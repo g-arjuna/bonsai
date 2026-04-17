@@ -53,7 +53,7 @@ impl GnmiSubscriber {
                     info!(target = %self.target, "shutdown signal received");
                     return;
                 }
-                result = self.subscribe_interfaces() => {
+                result = self.subscribe_telemetry() => {
                     if let Err(e) = result {
                         warn!(target = %self.target, error = %e, "subscription failed");
                     }
@@ -74,7 +74,7 @@ impl GnmiSubscriber {
         }
     }
 
-    pub async fn subscribe_interfaces(&self) -> Result<()> {
+    pub async fn subscribe_telemetry(&self) -> Result<()> {
         let channel = self.connect().await?;
         let username = self.username.clone();
         let password = self.password.clone();
@@ -95,12 +95,19 @@ impl GnmiSubscriber {
 
         let req = SubscribeRequest {
             request: Some(subscribe_request::Request::Subscribe(SubscriptionList {
-                subscription: vec![Subscription {
-                    path: Some(interface_counters_path()),
-                    mode: SubscriptionMode::Sample as i32,
-                    sample_interval: 10_000_000_000, // 10s in nanoseconds
-                    ..Default::default()
-                }],
+                subscription: vec![
+                    Subscription {
+                        path: Some(interface_counters_path()),
+                        mode: SubscriptionMode::Sample as i32,
+                        sample_interval: 10_000_000_000, // 10s in nanoseconds
+                        ..Default::default()
+                    },
+                    Subscription {
+                        path: Some(bgp_neighbors_path()),
+                        mode: SubscriptionMode::OnChange as i32,
+                        ..Default::default()
+                    },
+                ],
                 mode: subscription_list::Mode::Stream as i32,
                 encoding: crate::proto::gnmi::Encoding::JsonIetf as i32,
                 ..Default::default()
@@ -108,7 +115,7 @@ impl GnmiSubscriber {
             ..Default::default()
         };
 
-        info!(target = %target, "subscribing to interface counters");
+        info!(target = %target, "subscribing to interface counters and BGP neighbors");
 
         let mut stream = client
             .subscribe(tokio_stream::once(req))
@@ -200,6 +207,26 @@ fn interface_counters_path() -> Path {
                 key: [("name".to_string(), "*".to_string())].into(),
             },
             PathElem { name: "statistics".into(), key: Default::default() },
+        ],
+        ..Default::default()
+    }
+}
+
+fn bgp_neighbors_path() -> Path {
+    // SR Linux path for BGP neighbor state under the default network-instance.
+    // ON_CHANGE subscription — fires when session state transitions (Idle/Active/Established).
+    Path {
+        elem: vec![
+            PathElem {
+                name: "network-instance".into(),
+                key: [("name".to_string(), "default".to_string())].into(),
+            },
+            PathElem { name: "protocols".into(), key: Default::default() },
+            PathElem { name: "bgp".into(), key: Default::default() },
+            PathElem {
+                name: "neighbor".into(),
+                key: [("peer-address".to_string(), "*".to_string())].into(),
+            },
         ],
         ..Default::default()
     }
