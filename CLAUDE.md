@@ -9,9 +9,9 @@ learning project. Goal: replicate Google's ANO framework architecture
 at lab scale using only open source primitives.
 
 ## Current Phase
-Phase: 1 → 2 transition  
-Last completed: multi-node gNMI subscriber (3x SR Linux, interface counters + BGP ON_CHANGE, reconnect, graceful shutdown). Graph DB decided.  
-Working on: Phase 2 — The Graph (LadybugDB, graph schema design, telemetry → graph writer)
+Phase: 2 — The Graph  
+Last completed: Phase 1 complete (gNMI subscriber, 3x SR Linux, interface counters + BGP ON_CHANGE, reconnect, graceful shutdown). Graph writer wired, first clean release build done.  
+Working on: Phase 2 validation — Cypher queries, then LLDP subscription + StateChangeEvent log for temporal queries
 
 ## Architecture
 - Rust core: tokio async runtime, tonic gRPC, prost protobuf
@@ -63,7 +63,11 @@ OUT: SNMP, NETCONF, campus/wireless, optical transport, Kubernetes/HA/clustering
 
 ## Build Commands
 ```
-cargo build
-cargo test
-cargo clippy -- -D warnings   # must pass before any commit
+cargo build --release          # debug builds exceed MSVC 4GB static lib limit (lbug on Windows)
+cargo run --release
+cargo test --release
+cargo clippy --release -- -D warnings   # must pass before any commit
 ```
+
+**Windows note**: `cargo build` (debug) will fail with LNK1248 because lbug's C++ static lib
+exceeds the MSVC 4GB limit in debug mode. Always use `--release` on this machine.
