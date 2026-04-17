@@ -38,6 +38,9 @@ lbug = "0.15.3"
 # Timestamp conversion for lbug Value::TimestampNs
 time = { version = "0.3", features = ["parsing"] }
 
+# UUID generation for StateChangeEvent primary keys
+uuid = { version = "1", features = ["v4"] }
+
 [build-dependencies]
 tonic-build = "0.13"
 protoc-bin-vendored = "3"

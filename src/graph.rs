@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use lbug::{Connection, Database, SystemConfig, Value};
 use time::OffsetDateTime;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 use crate::telemetry::{json_i64, json_str, TelemetryEvent, TelemetryUpdate};
 
@@ -73,6 +74,41 @@ impl GraphStore {
         )
         .context("create PEERS_WITH rel")?;
 
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS LldpNeighbor(\
+                id             STRING,\
+                device_address STRING,\
+                local_if       STRING,\
+                neighbor_id    STRING,\
+                chassis_id     STRING,\
+                system_name    STRING,\
+                port_id        STRING,\
+                updated_at     TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create LldpNeighbor table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_LLDP_NEIGHBOR(FROM Device TO LldpNeighbor)",
+        )
+        .context("create HAS_LLDP_NEIGHBOR rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS StateChangeEvent(\
+                id             STRING,\
+                device_address STRING,\
+                event_type     STRING,\
+                detail         STRING,\
+                occurred_at    TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create StateChangeEvent table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS REPORTED_BY(FROM Device TO StateChangeEvent)",
+        )
+        .context("create REPORTED_BY rel")?;
+
         info!("graph schema initialised");
         Ok(())
     }
@@ -105,6 +141,9 @@ fn write_blocking(db: &Database, update: &TelemetryUpdate) -> Result<()> {
         }
         TelemetryEvent::BgpNeighborState { peer_address } => {
             write_bgp_neighbor(&conn, update, &peer_address)
+        }
+        TelemetryEvent::LldpNeighbor { local_if, neighbor_id } => {
+            write_lldp_neighbor(&conn, update, &local_if, &neighbor_id)
         }
         TelemetryEvent::Ignored => Ok(()),
     }
@@ -179,8 +218,12 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
 fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &str) -> Result<()> {
     let id = format!("{}:{}", u.target, peer_addr);
     let now = ts(u.timestamp_ns);
+    let new_state = json_str(&u.value, "session-state").to_string();
 
     upsert_device(conn, &u.target, now.clone())?;
+
+    // Read current state before upserting so we can detect transitions.
+    let old_state = get_bgp_state(conn, &id)?;
 
     let mut stmt = conn.prepare(
         "MERGE (n:BgpNeighbor {id: $id}) \
@@ -201,12 +244,23 @@ fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &st
             ("addr", Value::String(u.target.clone())),
             ("peer", Value::String(peer_addr.to_string())),
             ("peer_as", Value::Int64(json_i64(&u.value, "peer-as"))),
-            ("state", Value::String(json_str(&u.value, "session-state").to_string())),
+            ("state", Value::String(new_state.clone())),
             ("estab", Value::Int64(json_i64(&u.value, "established-transitions"))),
             ("ts", now.clone()),
         ],
     )
     .context("execute BgpNeighbor upsert")?;
+
+    // Emit a StateChangeEvent when session state transitions (or on first observation).
+    if old_state.as_deref() != Some(new_state.as_str()) {
+        let detail = format!(
+            r#"{{"peer":"{}","old_state":"{}","new_state":"{}"}}"#,
+            peer_addr,
+            old_state.as_deref().unwrap_or("none"),
+            new_state
+        );
+        write_state_change_event(conn, &u.target, "bgp_session_change", &detail, now.clone())?;
+    }
 
     // Ensure the Device→BgpNeighbor edge exists
     let mut edge_stmt = conn.prepare(
@@ -227,8 +281,134 @@ fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &st
     info!(
         target = %u.target,
         peer = %peer_addr,
-        state = %json_str(&u.value, "session-state"),
+        state = %new_state,
         "BGP neighbor written"
+    );
+    Ok(())
+}
+
+fn get_bgp_state(conn: &Connection<'_>, id: &str) -> Result<Option<String>> {
+    let mut stmt = conn
+        .prepare("MATCH (n:BgpNeighbor {id: $id}) RETURN n.session_state")
+        .context("prepare BGP state lookup")?;
+    let mut result = conn
+        .execute(&mut stmt, vec![("id", Value::String(id.to_string()))])
+        .context("execute BGP state lookup")?;
+    Ok(result.next().and_then(|row| {
+        if let Value::String(s) = &row[0] { Some(s.clone()) } else { None }
+    }))
+}
+
+fn write_state_change_event(
+    conn: &Connection<'_>,
+    device_address: &str,
+    event_type: &str,
+    detail: &str,
+    now: Value,
+) -> Result<()> {
+    let id = Uuid::new_v4().to_string();
+
+    let mut stmt = conn
+        .prepare(
+            "CREATE (e:StateChangeEvent {\
+                id: $id, device_address: $addr, event_type: $etype, \
+                detail: $detail, occurred_at: $ts})",
+        )
+        .context("prepare StateChangeEvent insert")?;
+
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(id.clone())),
+            ("addr", Value::String(device_address.to_string())),
+            ("etype", Value::String(event_type.to_string())),
+            ("detail", Value::String(detail.to_string())),
+            ("ts", now.clone()),
+        ],
+    )
+    .context("execute StateChangeEvent insert")?;
+
+    let mut edge_stmt = conn
+        .prepare(
+            "MATCH (d:Device {address: $addr}), (e:StateChangeEvent {id: $id}) \
+             CREATE (d)-[:REPORTED_BY]->(e)",
+        )
+        .context("prepare REPORTED_BY edge")?;
+
+    conn.execute(
+        &mut edge_stmt,
+        vec![
+            ("addr", Value::String(device_address.to_string())),
+            ("id", Value::String(id)),
+        ],
+    )
+    .context("execute REPORTED_BY edge")?;
+
+    debug!(device = %device_address, event_type = %event_type, "state change event recorded");
+    Ok(())
+}
+
+fn write_lldp_neighbor(
+    conn: &Connection<'_>,
+    u: &TelemetryUpdate,
+    local_if: &str,
+    neighbor_id: &str,
+) -> Result<()> {
+    let id = format!("{}:{}:{}", u.target, local_if, neighbor_id);
+    let now = ts(u.timestamp_ns);
+
+    upsert_device(conn, &u.target, now.clone())?;
+
+    let mut stmt = conn
+        .prepare(
+            "MERGE (n:LldpNeighbor {id: $id}) \
+             ON CREATE SET \
+               n.device_address = $addr, n.local_if = $local_if, n.neighbor_id = $nid, \
+               n.chassis_id = $chassis, n.system_name = $sysname, n.port_id = $port, \
+               n.updated_at = $ts \
+             ON MATCH SET \
+               n.chassis_id = $chassis, n.system_name = $sysname, n.port_id = $port, \
+               n.updated_at = $ts",
+        )
+        .context("prepare LldpNeighbor upsert")?;
+
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(id.clone())),
+            ("addr", Value::String(u.target.clone())),
+            ("local_if", Value::String(local_if.to_string())),
+            ("nid", Value::String(neighbor_id.to_string())),
+            ("chassis", Value::String(json_str(&u.value, "chassis-id").to_string())),
+            ("sysname", Value::String(json_str(&u.value, "system-name").to_string())),
+            ("port", Value::String(json_str(&u.value, "port-id").to_string())),
+            ("ts", now.clone()),
+        ],
+    )
+    .context("execute LldpNeighbor upsert")?;
+
+    let mut edge_stmt = conn
+        .prepare(
+            "MATCH (d:Device {address: $addr}), (n:LldpNeighbor {id: $id}) \
+             MERGE (d)-[:HAS_LLDP_NEIGHBOR]->(n)",
+        )
+        .context("prepare HAS_LLDP_NEIGHBOR merge")?;
+
+    conn.execute(
+        &mut edge_stmt,
+        vec![
+            ("addr", Value::String(u.target.clone())),
+            ("id", Value::String(id)),
+        ],
+    )
+    .context("execute HAS_LLDP_NEIGHBOR merge")?;
+
+    info!(
+        target = %u.target,
+        local_if = %local_if,
+        chassis_id = %json_str(&u.value, "chassis-id"),
+        system_name = %json_str(&u.value, "system-name"),
+        "LLDP neighbor written"
     );
     Ok(())
 }
@@ -259,9 +439,11 @@ fn upsert_device(conn: &Connection<'_>, address: &str, now: Value) -> Result<()>
 pub fn log_graph_summary(db: &Database) {
     let Ok(conn) = Connection::new(db) else { return };
     for (label, q) in [
-        ("devices", "MATCH (n:Device) RETURN count(n)"),
-        ("interfaces", "MATCH (n:Interface) RETURN count(n)"),
-        ("bgp-neighbors", "MATCH (n:BgpNeighbor) RETURN count(n)"),
+        ("devices",            "MATCH (n:Device) RETURN count(n)"),
+        ("interfaces",         "MATCH (n:Interface) RETURN count(n)"),
+        ("bgp-neighbors",      "MATCH (n:BgpNeighbor) RETURN count(n)"),
+        ("lldp-neighbors",     "MATCH (n:LldpNeighbor) RETURN count(n)"),
+        ("state-change-events","MATCH (n:StateChangeEvent) RETURN count(n)"),
     ] {
         match conn.query(q) {
             Ok(mut r) => {

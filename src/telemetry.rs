@@ -17,6 +17,10 @@ pub enum TelemetryEvent {
     BgpNeighborState {
         peer_address: String,
     },
+    LldpNeighbor {
+        local_if: String,
+        neighbor_id: String,
+    },
     Ignored,
 }
 
@@ -36,6 +40,20 @@ impl TelemetryUpdate {
                 if self.value.get("session-state").is_some() {
                     return TelemetryEvent::BgpNeighborState { peer_address: addr };
                 }
+            }
+        }
+        // SR Linux path: system/lldp/interface[name=X]/neighbor[id=Y]
+        // Only process the top-level notification that carries chassis-id (ignore sub-path updates).
+        if self.path.contains("lldp/interface[name=")
+            && self.path.contains("/neighbor[id=")
+            && self.path.ends_with(']')
+            && self.value.get("chassis-id").is_some()
+        {
+            if let (Some(local_if), Some(neighbor_id)) = (
+                extract_bracketed(&self.path, "lldp/interface[name="),
+                extract_bracketed(&self.path, "neighbor[id="),
+            ) {
+                return TelemetryEvent::LldpNeighbor { local_if, neighbor_id };
             }
         }
         TelemetryEvent::Ignored

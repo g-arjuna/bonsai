@@ -112,6 +112,11 @@ impl GnmiSubscriber {
                         mode: SubscriptionMode::OnChange as i32,
                         ..Default::default()
                     },
+                    Subscription {
+                        path: Some(lldp_neighbors_path()),
+                        mode: SubscriptionMode::OnChange as i32,
+                        ..Default::default()
+                    },
                 ],
                 mode: subscription_list::Mode::Stream as i32,
                 encoding: crate::proto::gnmi::Encoding::JsonIetf as i32,
@@ -120,7 +125,7 @@ impl GnmiSubscriber {
             ..Default::default()
         };
 
-        info!(target = %target, "subscribing to interface counters and BGP neighbors");
+        info!(target = %target, "subscribing to interface counters, BGP neighbors, and LLDP");
 
         let mut stream = client
             .subscribe(tokio_stream::once(req))
@@ -232,6 +237,26 @@ fn bgp_neighbors_path() -> Path {
             PathElem {
                 name: "neighbor".into(),
                 key: [("peer-address".to_string(), "*".to_string())].into(),
+            },
+        ],
+        ..Default::default()
+    }
+}
+
+fn lldp_neighbors_path() -> Path {
+    // SR Linux LLDP neighbor discovery path.
+    // ON_CHANGE fires when neighbors are added/removed.
+    Path {
+        elem: vec![
+            PathElem { name: "system".into(), key: Default::default() },
+            PathElem { name: "lldp".into(), key: Default::default() },
+            PathElem {
+                name: "interface".into(),
+                key: [("name".to_string(), "*".to_string())].into(),
+            },
+            PathElem {
+                name: "neighbor".into(),
+                key: [("id".to_string(), "*".to_string())].into(),
             },
         ],
         ..Default::default()
