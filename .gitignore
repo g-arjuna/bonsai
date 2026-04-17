@@ -2,3 +2,9 @@
 
 # ContainerLab runtime directories (TLS certs, node configs, topology state)
 lab/**/clab-*
+
+# Generated protobuf — work from .proto sources, not generated output
+src/proto/
+
+# ContainerLab CA cert (generated per deployment, not committed)
+lab/fast-iteration/ca.pem

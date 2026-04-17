@@ -19,6 +19,9 @@ case "$ACTION" in
     rsync -a --exclude='clab-*' "$SRC/" "$LINUX_LAB/"
     cd "$LINUX_LAB"
     sudo clab deploy -t 3node-srl.clab.yml
+    # Copy clab CA cert to Windows project dir so the Rust binary can use it for TLS
+    cp "$LINUX_LAB/clab-bonsai-srl/.tls/ca/ca.pem" "$SRC/ca.pem"
+    echo "CA cert copied to $SRC/ca.pem"
     ;;
   destroy)
     if [ -d "$LINUX_LAB" ]; then
