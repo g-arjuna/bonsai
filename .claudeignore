@@ -1,0 +1,24 @@
+# Rust build artefacts — never relevant to Claude
+target/
+
+# Lock files — Claude shouldn't read or modify these
+Cargo.lock
+poetry.lock
+
+# Lab-generated state that changes constantly
+lab/**/*.log
+lab/**/*.pcap
+
+# Secrets — never ever
+.env
+*.pem
+*.key
+credentials/
+
+# Python bytecode
+__pycache__/
+*.pyc
+.venv/
+
+# Generated protobuf — Claude should work from .proto, not generated output
+src/proto/generated/
