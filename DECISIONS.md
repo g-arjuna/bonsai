@@ -124,6 +124,75 @@ out of scope until Phase 2.
 
 ---
 
+## 2026-04-17 — gNMI authentication model: mTLS preferred, credentials-from-config as fallback
+
+**Decision**: The correct authentication model for gNMI is mTLS (mutual TLS). Username/password
+credentials are supported as a fallback for NOS implementations that require them, but
+credentials must never appear in source code.
+
+**Context and reasoning**:
+
+gNMI has no authentication specification of its own — it rides gRPC over TLS. Most NOS
+implementations (SR Linux, IOS-XR, Junos) bolt username/password onto gRPC metadata headers
+because their gNMI server reuses the same AAA stack as SSH. This is a vendor implementation
+detail, not a gNMI feature.
+
+With mTLS, both sides present certificates. The device trusts certificates signed by a known
+CA; bonsai presents a client certificate. No passwords are exchanged. This is the production-
+correct model and what Google's production systems use. The "onboarding" step becomes: issue a
+client cert to bonsai, add the CA to the device's trust store.
+
+**Credential storage hierarchy** (most to least preferred):
+1. No credentials (device configured with mTLS or `skip-authentication`)
+2. Environment variables referenced by name in `bonsai.toml`
+3. Inline plaintext in `bonsai.toml` — only for lab; `bonsai.toml` must not be committed
+4. Hardcoded in source — **never acceptable**
+
+**Impact on code**:
+- `GnmiSubscriber` accepts `Option<String>` for username and password
+- Interceptor only injects headers when credentials are `Some`
+- No credentials in `main.rs`, `bonsai-mv.rs`, or any compiled binary
+- mTLS client cert support added when needed (Phase 3 target)
+
+**Constraint**: Credentials in source code are a hard block on any PR.
+
+---
+
+## 2026-04-17 — Device onboarding model: config-file-driven, Capabilities-based vendor detection
+
+**Decision**: Targets are declared in an external `bonsai.toml` config file, not in source code.
+Vendor family is auto-detected at runtime via the gNMI Capabilities RPC. An optional `vendor`
+override in the config skips detection for known-problematic devices.
+
+**Onboarding flow**:
+1. Operator configures gNMI/gRPC on the device (port, TLS mode, credentials if required)
+2. Operator appends a `[[target]]` block to `bonsai.toml` with address, TLS settings, credentials
+3. Bonsai starts, reads `bonsai.toml`, connects to each target
+4. Capabilities RPC returns `supported_models` — bonsai inspects model names to detect vendor:
+   - `srl_nokia-*` prefix → `nokia_srl`
+   - `Cisco-IOS-XR-*` prefix → `cisco_xrd`
+   - `junos-*` prefix → `juniper_crpd`
+   - `arista-*` / EOS models → `arista_ceos`
+   - fallback → `openconfig` (uses OC canonical paths)
+5. Bonsai selects subscription paths for the detected vendor and subscribes
+
+**Dial-in vs dial-out**:
+Bonsai uses dial-in (bonsai connects to device). Dial-out (device pushes to a collector endpoint)
+is the correct model for large fleets but adds collector infrastructure complexity. Dial-out is
+a Phase 3+ consideration. Dial-in is correct for single-host lab deployment (Phase 1–2).
+
+**Config file security**:
+- `bonsai.toml` is listed in `.gitignore` — actual credentials never committed
+- `bonsai.toml.example` is committed — a redacted template with comments
+- Production path: credentials come from environment variables referenced by name in the config
+
+**Impact on code**:
+- Single `bonsai` binary handles all topologies; `bonsai-mv.rs` is deleted
+- `src/config.rs` owns the config model and TOML loading
+- `GnmiSubscriber::new()` accepts `vendor_hint: Option<String>` — None triggers Capabilities detection
+
+---
+
 ## 2026-04-17 — Graph database: LadybugDB (lbug crate) with Grafeo as fallback
 
 **Decision**: Use **LadybugDB** (`lbug` crate on crates.io) as the embedded graph

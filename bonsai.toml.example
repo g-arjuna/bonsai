@@ -1,0 +1,46 @@
+# bonsai.toml — runtime configuration
+# Copy this file to bonsai.toml, fill in your targets, and keep it out of git.
+# bonsai.toml is listed in .gitignore. Never commit credentials.
+
+graph_path = "bonsai.db"
+
+# ── Nokia SR Linux (TLS) ──────────────────────────────────────────────────────
+[[target]]
+address    = "172.100.100.11:57400"
+tls_domain = "clab-bonsai-srl-srl1"
+ca_cert    = "lab/fast-iteration/ca.pem"
+# vendor auto-detected via Capabilities; uncomment to override:
+# vendor = "nokia_srl"
+
+# Option A: credentials from environment variables (preferred)
+username_env = "BONSAI_SRL1_USER"
+password_env = "BONSAI_SRL1_PASS"
+
+# Option B: inline credentials — lab use only, never commit
+# username = "admin"
+# password = "changeme"
+
+[[target]]
+address    = "172.100.100.12:57400"
+tls_domain = "clab-bonsai-srl-srl2"
+ca_cert    = "lab/fast-iteration/ca.pem"
+username_env = "BONSAI_SRL2_USER"
+password_env = "BONSAI_SRL2_PASS"
+
+[[target]]
+address    = "172.100.100.13:57400"
+tls_domain = "clab-bonsai-srl-srl3"
+ca_cert    = "lab/fast-iteration/ca.pem"
+username_env = "BONSAI_SRL3_USER"
+password_env = "BONSAI_SRL3_PASS"
+
+# ── Cisco IOS-XRd (no TLS) ───────────────────────────────────────────────────
+# [[target]]
+# address  = "172.100.101.21:57400"
+# username = "cisco"
+# password = "cisco123!"
+
+# ── Juniper cRPD (no TLS, no credentials) ────────────────────────────────────
+# [[target]]
+# address = "172.100.101.31:50051"
+# skip-authentication is configured on the device; no credentials needed

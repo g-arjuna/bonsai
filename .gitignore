@@ -1,8 +1,13 @@
 /target
 
+# Runtime config — contains credentials, never commit
+bonsai.toml
+
 # LadybugDB graph database files
 bonsai.db
 bonsai.db.wal
+bonsai-mv.db
+bonsai-mv.db.wal
 
 # ContainerLab runtime directories (TLS certs, node configs, topology state)
 lab/**/clab-*
@@ -10,5 +15,6 @@ lab/**/clab-*
 # Generated protobuf — work from .proto sources, not generated output
 src/proto/
 
-# ContainerLab CA cert (generated per deployment, not committed)
+# ContainerLab CA certs (generated per deployment, not committed)
 lab/fast-iteration/ca.pem
+lab/fast-iteration/mv-ca.pem

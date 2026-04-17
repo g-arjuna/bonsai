@@ -6,7 +6,7 @@ use time::OffsetDateTime;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::telemetry::{json_i64, json_str, TelemetryEvent, TelemetryUpdate};
+use crate::telemetry::{json_i64, json_i64_multi, json_str, TelemetryEvent, TelemetryUpdate};
 
 pub struct GraphStore {
     db: Arc<Database>,
@@ -159,7 +159,7 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
     let id = format!("{}:{}", u.target, if_name);
     let now = ts(u.timestamp_ns);
 
-    upsert_device(conn, &u.target, now.clone())?;
+    upsert_device(conn, &u.target, &u.vendor, now.clone())?;
 
     let mut stmt = conn.prepare(
         "MERGE (i:Interface {id: $id}) \
@@ -183,13 +183,14 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
             ("id", Value::String(id.clone())),
             ("addr", Value::String(u.target.clone())),
             ("name", Value::String(if_name.to_string())),
-            ("in_pkts", Value::Int64(json_i64(&u.value, "in-packets"))),
-            ("out_pkts", Value::Int64(json_i64(&u.value, "out-packets"))),
-            ("in_octets", Value::Int64(json_i64(&u.value, "in-octets"))),
-            ("out_octets", Value::Int64(json_i64(&u.value, "out-octets"))),
-            ("in_errors", Value::Int64(json_i64(&u.value, "in-error-packets"))),
-            ("out_errors", Value::Int64(json_i64(&u.value, "out-error-packets"))),
-            ("carrier", Value::Int64(json_i64(&u.value, "carrier-transitions"))),
+            // Try SRL native names first, then OpenConfig names (XRd/cRPD)
+            ("in_pkts",    Value::Int64(json_i64_multi(&u.value, &["in-packets",       "in-pkts"]))),
+            ("out_pkts",   Value::Int64(json_i64_multi(&u.value, &["out-packets",      "out-pkts"]))),
+            ("in_octets",  Value::Int64(json_i64_multi(&u.value, &["in-octets",        "in-octets"]))),
+            ("out_octets", Value::Int64(json_i64_multi(&u.value, &["out-octets",       "out-octets"]))),
+            ("in_errors",  Value::Int64(json_i64_multi(&u.value, &["in-error-packets", "in-errors"]))),
+            ("out_errors", Value::Int64(json_i64_multi(&u.value, &["out-error-packets","out-errors"]))),
+            ("carrier",    Value::Int64(json_i64(&u.value, "carrier-transitions"))),
             ("ts", now.clone()),
         ],
     )
@@ -220,7 +221,7 @@ fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &st
     let now = ts(u.timestamp_ns);
     let new_state = json_str(&u.value, "session-state").to_string();
 
-    upsert_device(conn, &u.target, now.clone())?;
+    upsert_device(conn, &u.target, &u.vendor, now.clone())?;
 
     // Read current state before upserting so we can detect transitions.
     let old_state = get_bgp_state(conn, &id)?;
@@ -357,7 +358,7 @@ fn write_lldp_neighbor(
     let id = format!("{}:{}:{}", u.target, local_if, neighbor_id);
     let now = ts(u.timestamp_ns);
 
-    upsert_device(conn, &u.target, now.clone())?;
+    upsert_device(conn, &u.target, &u.vendor, now.clone())?;
 
     let mut stmt = conn
         .prepare(
@@ -413,7 +414,7 @@ fn write_lldp_neighbor(
     Ok(())
 }
 
-fn upsert_device(conn: &Connection<'_>, address: &str, now: Value) -> Result<()> {
+fn upsert_device(conn: &Connection<'_>, address: &str, vendor: &str, now: Value) -> Result<()> {
     let mut stmt = conn.prepare(
         "MERGE (d:Device {address: $addr}) \
          ON CREATE SET d.vendor = $vendor, d.updated_at = $ts \
@@ -425,7 +426,7 @@ fn upsert_device(conn: &Connection<'_>, address: &str, now: Value) -> Result<()>
         &mut stmt,
         vec![
             ("addr", Value::String(address.to_string())),
-            ("vendor", Value::String("nokia_srl".to_string())),
+            ("vendor", Value::String(vendor.to_string())),
             ("ts", now),
         ],
     )

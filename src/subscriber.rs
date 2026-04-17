@@ -8,41 +8,42 @@ use tracing::{debug, info, warn};
 
 const BACKOFF_INITIAL: Duration = Duration::from_secs(5);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
-// Reset backoff if the connection stayed up longer than this
 const BACKOFF_RESET_THRESHOLD: Duration = Duration::from_secs(60);
 
 use crate::proto::gnmi::g_nmi_client::GNmiClient;
 use crate::proto::gnmi::{
-    subscribe_request, subscription_list, Path, PathElem, SubscribeRequest, SubscriptionList,
-    Subscription, SubscriptionMode,
+    subscribe_request, subscription_list, CapabilityRequest, Path, PathElem, SubscribeRequest,
+    SubscriptionList, Subscription, SubscriptionMode,
 };
 use crate::telemetry::TelemetryUpdate;
 
 pub struct GnmiSubscriber {
     target: String,
-    username: String,
-    password: String,
-    /// DER or PEM bytes of the CA certificate used to verify the server's TLS cert.
-    ca_cert_pem: Vec<u8>,
-    /// TLS server name — must match the CN/SAN in the server cert.
+    username: Option<String>,
+    password: Option<String>,
+    /// Overrides Capabilities detection when set.
+    vendor_hint: Option<String>,
+    /// None = plaintext gRPC.
+    ca_cert_pem: Option<Vec<u8>>,
     tls_domain: String,
-    /// Channel to the graph writer task.
     tx: tokio::sync::mpsc::Sender<TelemetryUpdate>,
 }
 
 impl GnmiSubscriber {
     pub fn new(
         target: impl Into<String>,
-        username: impl Into<String>,
-        password: impl Into<String>,
-        ca_cert_pem: Vec<u8>,
+        username: Option<String>,
+        password: Option<String>,
+        vendor_hint: Option<String>,
         tls_domain: impl Into<String>,
+        ca_cert_pem: Option<Vec<u8>>,
         tx: tokio::sync::mpsc::Sender<TelemetryUpdate>,
     ) -> Self {
         Self {
             target: target.into(),
-            username: username.into(),
-            password: password.into(),
+            username,
+            password,
+            vendor_hint,
             ca_cert_pem,
             tls_domain: tls_domain.into(),
             tx,
@@ -81,43 +82,42 @@ impl GnmiSubscriber {
 
     pub async fn subscribe_telemetry(&self) -> Result<()> {
         let channel = self.connect().await?;
+        let target = self.target.clone();
+
+        // Detect vendor on a bare client (no interceptor needed for Capabilities).
+        let vendor = match &self.vendor_hint {
+            Some(v) => {
+                debug!(target = %target, vendor = %v, "using configured vendor hint");
+                v.clone()
+            }
+            None => {
+                let mut bare = GNmiClient::new(channel.clone());
+                detect_vendor(&mut bare, &target).await
+            }
+        };
+
         let username = self.username.clone();
         let password = self.password.clone();
-        let target = self.target.clone();
 
         #[allow(clippy::result_large_err)]
         let mut client = GNmiClient::with_interceptor(channel, move |mut req: Request<()>| {
-            req.metadata_mut().insert(
-                "username",
-                MetadataValue::try_from(username.as_str()).unwrap(),
-            );
-            req.metadata_mut().insert(
-                "password",
-                MetadataValue::try_from(password.as_str()).unwrap(),
-            );
+            if let Some(ref u) = username {
+                if let Ok(v) = MetadataValue::try_from(u.as_str()) {
+                    req.metadata_mut().insert("username", v);
+                }
+            }
+            if let Some(ref p) = password {
+                if let Ok(v) = MetadataValue::try_from(p.as_str()) {
+                    req.metadata_mut().insert("password", v);
+                }
+            }
             Ok(req)
         });
 
+        let subscriptions = build_subscriptions(&vendor);
         let req = SubscribeRequest {
             request: Some(subscribe_request::Request::Subscribe(SubscriptionList {
-                subscription: vec![
-                    Subscription {
-                        path: Some(interface_counters_path()),
-                        mode: SubscriptionMode::Sample as i32,
-                        sample_interval: 10_000_000_000, // 10s in nanoseconds
-                        ..Default::default()
-                    },
-                    Subscription {
-                        path: Some(bgp_neighbors_path()),
-                        mode: SubscriptionMode::OnChange as i32,
-                        ..Default::default()
-                    },
-                    Subscription {
-                        path: Some(lldp_neighbors_path()),
-                        mode: SubscriptionMode::OnChange as i32,
-                        ..Default::default()
-                    },
-                ],
+                subscription: subscriptions,
                 mode: subscription_list::Mode::Stream as i32,
                 encoding: crate::proto::gnmi::Encoding::JsonIetf as i32,
                 ..Default::default()
@@ -125,7 +125,7 @@ impl GnmiSubscriber {
             ..Default::default()
         };
 
-        info!(target = %target, "subscribing to interface counters, BGP neighbors, and LLDP");
+        info!(target = %target, vendor = %vendor, "subscribing");
 
         let mut stream = client
             .subscribe(tokio_stream::once(req))
@@ -153,6 +153,7 @@ impl GnmiSubscriber {
                                         .unwrap_or(serde_json::Value::Null);
                                     let msg = TelemetryUpdate {
                                         target: target.clone(),
+                                        vendor: vendor.clone(),
                                         timestamp_ns: notif.timestamp,
                                         path: path.clone(),
                                         value: val,
@@ -187,30 +188,106 @@ impl GnmiSubscriber {
     }
 
     async fn connect(&self) -> Result<Channel> {
-        let ca_cert = Certificate::from_pem(self.ca_cert_pem.clone());
+        let use_tls = self.ca_cert_pem.is_some();
+        let scheme = if use_tls { "https" } else { "http" };
+        let endpoint = format!("{scheme}://{}", self.target);
 
-        let tls = ClientTlsConfig::new()
-            .ca_certificate(ca_cert)
-            .domain_name(self.tls_domain.clone());
-
-        let endpoint = format!("https://{}", self.target);
-        let channel = Channel::from_shared(endpoint.clone())
+        let mut builder = Channel::from_shared(endpoint.clone())
             .context("invalid endpoint")?
-            .tls_config(tls)
-            .context("TLS config failed")?
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(30));
+
+        if let Some(cert_pem) = &self.ca_cert_pem {
+            let ca_cert = Certificate::from_pem(cert_pem.clone());
+            let tls = ClientTlsConfig::new()
+                .ca_certificate(ca_cert)
+                .domain_name(self.tls_domain.clone());
+            builder = builder.tls_config(tls).context("TLS config failed")?;
+        }
+
+        let channel = builder
             .connect()
             .await
             .with_context(|| format!("failed to connect to {endpoint}"))?;
 
-        info!(target = %self.target, "connected");
+        info!(target = %self.target, tls = %use_tls, "connected");
         Ok(channel)
     }
 }
 
-fn interface_counters_path() -> Path {
-    // SR Linux uses "interface" (singular) not "interfaces" (OpenConfig canonical).
-    // This is a known SR Linux path deviation — normalization lives here.
+// ── vendor detection ──────────────────────────────────────────────────────────
+
+async fn detect_vendor(
+    client: &mut GNmiClient<tonic::transport::Channel>,
+    target: &str,
+) -> String {
+    match client.capabilities(CapabilityRequest::default()).await {
+        Ok(resp) => {
+            let models = resp.into_inner().supported_models;
+            let vendor = if models.iter().any(|m| m.name.starts_with("srl_nokia")) {
+                "nokia_srl"
+            } else if models.iter().any(|m| m.name.starts_with("Cisco-IOS-XR")) {
+                "cisco_xrd"
+            } else if models.iter().any(|m| m.name.to_lowercase().starts_with("junos")) {
+                "juniper_crpd"
+            } else if models
+                .iter()
+                .any(|m| m.name.to_lowercase().contains("arista") || m.name.contains("EOS"))
+            {
+                "arista_ceos"
+            } else {
+                "openconfig"
+            };
+            info!(target, vendor, "vendor detected via Capabilities");
+            vendor.to_string()
+        }
+        Err(e) => {
+            warn!(target, error = %e, "Capabilities RPC failed — defaulting to openconfig paths");
+            "openconfig".to_string()
+        }
+    }
+}
+
+// ── subscription path selection ───────────────────────────────────────────────
+
+fn build_subscriptions(vendor: &str) -> Vec<Subscription> {
+    match vendor {
+        "nokia_srl" => vec![
+            Subscription {
+                path: Some(srl_interface_counters_path()),
+                mode: SubscriptionMode::Sample as i32,
+                sample_interval: 10_000_000_000,
+                ..Default::default()
+            },
+            Subscription {
+                path: Some(srl_bgp_neighbors_path()),
+                mode: SubscriptionMode::OnChange as i32,
+                ..Default::default()
+            },
+            Subscription {
+                path: Some(srl_lldp_neighbors_path()),
+                mode: SubscriptionMode::OnChange as i32,
+                ..Default::default()
+            },
+        ],
+        _ => vec![
+            Subscription {
+                path: Some(oc_interface_counters_path()),
+                mode: SubscriptionMode::Sample as i32,
+                sample_interval: 10_000_000_000,
+                ..Default::default()
+            },
+            Subscription {
+                path: Some(oc_bgp_neighbors_path()),
+                mode: SubscriptionMode::OnChange as i32,
+                ..Default::default()
+            },
+        ],
+    }
+}
+
+// ── SR Linux native paths ─────────────────────────────────────────────────────
+
+fn srl_interface_counters_path() -> Path {
     Path {
         elem: vec![
             PathElem {
@@ -223,9 +300,7 @@ fn interface_counters_path() -> Path {
     }
 }
 
-fn bgp_neighbors_path() -> Path {
-    // SR Linux path for BGP neighbor state under the default network-instance.
-    // ON_CHANGE subscription — fires when session state transitions (Idle/Active/Established).
+fn srl_bgp_neighbors_path() -> Path {
     Path {
         elem: vec![
             PathElem {
@@ -243,9 +318,7 @@ fn bgp_neighbors_path() -> Path {
     }
 }
 
-fn lldp_neighbors_path() -> Path {
-    // SR Linux LLDP neighbor discovery path.
-    // ON_CHANGE fires when neighbors are added/removed.
+fn srl_lldp_neighbors_path() -> Path {
     Path {
         elem: vec![
             PathElem { name: "system".into(), key: Default::default() },
@@ -263,6 +336,53 @@ fn lldp_neighbors_path() -> Path {
     }
 }
 
+// ── OpenConfig paths (XRd, cRPD, cEOS) ───────────────────────────────────────
+
+fn oc_interface_counters_path() -> Path {
+    Path {
+        elem: vec![
+            PathElem { name: "interfaces".into(), key: Default::default() },
+            PathElem {
+                name: "interface".into(),
+                key: [("name".to_string(), "*".to_string())].into(),
+            },
+            PathElem { name: "state".into(), key: Default::default() },
+            PathElem { name: "counters".into(), key: Default::default() },
+        ],
+        ..Default::default()
+    }
+}
+
+fn oc_bgp_neighbors_path() -> Path {
+    Path {
+        elem: vec![
+            PathElem { name: "network-instances".into(), key: Default::default() },
+            PathElem {
+                name: "network-instance".into(),
+                key: [("name".to_string(), "*".to_string())].into(),
+            },
+            PathElem { name: "protocols".into(), key: Default::default() },
+            PathElem {
+                name: "protocol".into(),
+                key: [
+                    ("identifier".to_string(), "BGP".to_string()),
+                    ("name".to_string(), "*".to_string()),
+                ]
+                .into(),
+            },
+            PathElem { name: "bgp".into(), key: Default::default() },
+            PathElem { name: "neighbors".into(), key: Default::default() },
+            PathElem {
+                name: "neighbor".into(),
+                key: [("neighbor-address".to_string(), "*".to_string())].into(),
+            },
+        ],
+        ..Default::default()
+    }
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
 fn path_to_string(path: &Path) -> String {
     path.elem
         .iter()
@@ -270,11 +390,8 @@ fn path_to_string(path: &Path) -> String {
             if e.key.is_empty() {
                 e.name.clone()
             } else {
-                let keys: String = e
-                    .key
-                    .iter()
-                    .map(|(k, v)| format!("[{k}={v}]"))
-                    .collect();
+                let keys: String =
+                    e.key.iter().map(|(k, v)| format!("[{k}={v}]")).collect();
                 format!("{}{}", e.name, keys)
             }
         })

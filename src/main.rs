@@ -1,32 +1,10 @@
 use anyhow::{Context, Result};
 use tracing::{info, warn};
 
-mod graph;
-mod subscriber;
-mod telemetry;
+use bonsai::{config, graph, subscriber, telemetry};
 
-pub mod proto {
-    pub mod gnmi {
-        #![allow(clippy::all)]
-        tonic::include_proto!("gnmi");
-    }
-    pub mod gnmi_ext {
-        #![allow(clippy::all)]
-        tonic::include_proto!("gnmi_ext");
-    }
-}
-
-// CA cert written by deploy.sh after each clab deployment.
-const CA_CERT_PATH: &str = "lab/fast-iteration/ca.pem";
-
-// ContainerLab assigns fixed mgmt IPs and names containers clab-<topology>-<node>.
-const TARGETS: &[(&str, &str)] = &[
-    ("172.100.100.11:57400", "clab-bonsai-srl-srl1"),
-    ("172.100.100.12:57400", "clab-bonsai-srl-srl2"),
-    ("172.100.100.13:57400", "clab-bonsai-srl-srl3"),
-];
-
-const GRAPH_PATH: &str = "bonsai.db";
+const CONFIG_PATH: &str = "bonsai.toml";
+const GRAPH_PATH_DEFAULT: &str = "bonsai.db";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -39,24 +17,25 @@ async fn main() -> Result<()> {
 
     info!("bonsai starting — Phase 2: The Graph");
 
-    let ca_cert_pem = tokio::fs::read(CA_CERT_PATH)
-        .await
-        .with_context(|| format!(
-            "could not read CA cert from '{CA_CERT_PATH}' — run deploy.sh first"
-        ))?;
+    let cfg = config::load(CONFIG_PATH).await?;
+    let graph_path = if cfg.graph_path.is_empty() {
+        GRAPH_PATH_DEFAULT
+    } else {
+        cfg.graph_path.as_str()
+    };
 
-    // Open the graph database (blocking — runs in current thread before tokio tasks start).
     let graph = std::sync::Arc::new(
-        tokio::task::spawn_blocking(|| graph::GraphStore::open(GRAPH_PATH))
-            .await
-            .context("graph open panicked")?
-            .context("graph open failed")?,
+        tokio::task::spawn_blocking({
+            let p = graph_path.to_string();
+            move || graph::GraphStore::open(&p)
+        })
+        .await
+        .context("graph open panicked")?
+        .context("graph open failed")?,
     );
 
-    // Telemetry channel: subscribers → graph writer (1 024 updates of headroom).
     let (tx, mut rx) = tokio::sync::mpsc::channel::<telemetry::TelemetryUpdate>(1024);
 
-    // Graph writer task — drains the channel and writes to LadybugDB.
     let graph_writer = std::sync::Arc::clone(&graph);
     tokio::spawn(async move {
         while let Some(update) = rx.recv().await {
@@ -70,13 +49,24 @@ async fn main() -> Result<()> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     let mut handles = Vec::new();
-    for (address, tls_domain) in TARGETS {
+    for t in &cfg.target {
+        let ca_cert_pem = match &t.ca_cert {
+            Some(path) => {
+                let bytes = tokio::fs::read(path)
+                    .await
+                    .with_context(|| format!("could not read CA cert from '{path}'"))?;
+                Some(bytes)
+            }
+            None => None,
+        };
+
         let sub = subscriber::GnmiSubscriber::new(
-            *address,
-            "admin",
-            "NokiaSrl1!",
-            ca_cert_pem.clone(),
-            *tls_domain,
+            t.address.clone(),
+            t.resolved_username(),
+            t.resolved_password(),
+            t.vendor.clone(),
+            t.tls_domain.clone().unwrap_or_default(),
+            ca_cert_pem,
             tx.clone(),
         );
         let rx = shutdown_rx.clone();
@@ -91,9 +81,7 @@ async fn main() -> Result<()> {
         let _ = handle.await;
     }
 
-    // Print a quick summary of what made it into the graph.
     graph::log_graph_summary(graph.db().as_ref());
-
     info!("bonsai stopped");
     Ok(())
 }

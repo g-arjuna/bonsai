@@ -3,6 +3,10 @@ name = "bonsai"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "bonsai"
+path = "src/lib.rs"
+
 [[bin]]
 name = "bonsai"
 path = "src/main.rs"
@@ -31,6 +35,9 @@ tokio-stream = "0.1"
 
 # Error handling
 anyhow = "1"
+
+# Config file parsing
+toml = "0.8"
 
 # Graph database
 lbug = "0.15.3"

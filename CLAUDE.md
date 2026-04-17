@@ -10,8 +10,8 @@ at lab scale using only open source primitives.
 
 ## Current Phase
 Phase: 2 — The Graph  
-Last completed: Phase 1 complete (gNMI subscriber, 3x SR Linux, interface counters + BGP ON_CHANGE, reconnect, graceful shutdown). Graph writer wired, first clean release build done.  
-Working on: Phase 2 validation — Cypher queries, then LLDP subscription + StateChangeEvent log for temporal queries
+Last completed: Phase 1 complete + graph validated (3x SR Linux, interface counters + BGP ON_CHANGE + LLDP, StateChangeEvent log, clean release build).  
+Working on: Config-file-driven multi-vendor (bonsai.toml + Capabilities auto-detection) → then multi-vendor lab validation (XRd + cRPD)
 
 ## Architecture
 - Rust core: tokio async runtime, tonic gRPC, prost protobuf
@@ -29,6 +29,7 @@ Working on: Phase 2 validation — Cypher queries, then LLDP subscription + Stat
 - Never add scope beyond current phase without flagging it explicitly
 - Rust code must compile before ending a session — no broken state
 - No campus/wireless, no optical transport, no Kubernetes, no RBAC — say no politely
+- Credentials (username/password) must never appear in source code or committed files — use bonsai.toml (gitignored) or env vars
 
 ## Scope Guardrails (enforce these)
 IN: DC + SP topologies, gNMI/OpenConfig only, four vendor families
@@ -60,6 +61,8 @@ OUT: SNMP, NETCONF, campus/wireless, optical transport, Kubernetes/HA/clustering
 - /docs — architecture notes
 - DECISIONS.md — append-only decision log (never edit past entries)
 - PROJECT_KICKOFF.md — origin thesis, full roadmap, research items
+- bonsai.toml — local runtime config (gitignored; copy from bonsai.toml.example)
+- bonsai.toml.example — committed template with placeholder values
 
 ## Build Commands
 ```

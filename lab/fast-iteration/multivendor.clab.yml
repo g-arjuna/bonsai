@@ -1,0 +1,34 @@
+name: bonsai-mv
+
+mgmt:
+  network: bonsai-mv-mgmt
+  ipv4-subnet: 172.100.101.0/24
+  ipv4-gw: 172.100.101.1
+
+topology:
+  nodes:
+    srl1:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: 172.100.101.11
+      startup-config: configs-mv/srl1.cfg
+
+    xrd1:
+      kind: cisco_xrd
+      image: ios-xr/xrd-control-plane:24.4.2
+      mgmt-ipv4: 172.100.101.21
+      startup-config: configs-mv/xrd1.cfg
+
+    crpd1:
+      kind: crpd
+      image: crpd:23.2R1.13
+      mgmt-ipv4: 172.100.101.31
+      startup-config: configs-mv/crpd1.cfg
+
+  links:
+    # srl1 <-> xrd1
+    - endpoints: ["srl1:e1-1", "xrd1:Gi0/0/0/0"]
+    # xrd1 <-> crpd1
+    - endpoints: ["xrd1:Gi0/0/0/1", "crpd1:eth1"]
+    # crpd1 <-> srl1
+    - endpoints: ["crpd1:eth2", "srl1:e1-2"]
