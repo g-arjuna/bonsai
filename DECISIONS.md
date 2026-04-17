@@ -123,3 +123,52 @@ uses `interface` (singular) with a wildcard key `name=*`. Path normalization is
 out of scope until Phase 2.
 
 ---
+
+## 2026-04-17 — Graph database: LadybugDB (lbug crate) with Grafeo as fallback
+
+**Decision**: Use **LadybugDB** (`lbug` crate on crates.io) as the embedded graph
+database for Phase 2. **Grafeo** is the named fallback if Ladybug stalls.
+
+**Candidates evaluated**:
+
+| Candidate | Status | License | Rust embed | Cypher | Temporal | Verdict |
+|---|---|---|---|---|---|---|
+| Kuzu v0.11.3 | Archived (Apple, Oct 2025) | Formerly MIT | FFI (frozen) | Yes | DIY | Avoid |
+| **LadybugDB v0.15.3** | Active, ~2-week cadence | MIT | FFI (`lbug`) | Yes | DIY | **Chosen** |
+| ArcadeDB v26.3.2 | Active | Apache 2.0 | JVM-only | Yes (97.8% TCK) | Time-series only | Wrong fit |
+| SurrealDB | Active | BSL 1.1 | Native Rust | No (SurrealQL) | Native, excellent | BSL + no Cypher |
+| Cozo | Abandoned (Dec 2023) | MPL 2.0 | Native Rust | No (Datalog) | Native, excellent | Abandoned |
+| Grafeo v0.5.x | New (Mar 2026) | Apache 2.0 | Native Rust | Yes | DIY | Too new — watch |
+| FalkorDB | Active | SSPLv1 | Redis module | Yes | DIY | SSPLv1 + Redis dep |
+
+**Rationale for LadybugDB**:
+- Only option satisfying all hard constraints at once: embedded in-process, MIT,
+  Rust bindings, Cypher/OpenCypher, active development
+- Direct code fork of Kuzu — same columnar storage, vectorized execution, MVCC
+  transactions, and Cypher implementation. Kuzu benchmarks apply as baseline.
+- v0.15.3 as of April 2026, consistent release cadence since November 2025
+- Arun Sharma (founder) has prior distributed graph systems experience (Facebook
+  Dragon, Google)
+
+**Known gap — temporal queries**: LadybugDB has no native time-travel or point-in-time
+snapshot feature. "What did the graph look like 5 minutes ago" requires DIY
+bitemporal modeling:
+- Every node and edge carries `valid_from TIMESTAMP` and `valid_to TIMESTAMP`
+- On update: set `valid_to = now()` on the existing record, insert new record with
+  `valid_from = now()` and `valid_to = NULL`
+- Historical queries: `WHERE valid_from <= $t AND (valid_to IS NULL OR valid_to > $t)`
+- This is standard practice, adds one extra write per update, and works cleanly
+  at our scale (hundreds of upserts/minute for Phase 1–2)
+
+**Risks and mitigations**:
+- Risk: Ladybug is a 6-month-old fork with a single primary maintainer — bus factor
+- Mitigation: Grafeo (Apache 2.0, pure Rust, embedded, Cypher) is the named fallback.
+  It appeared March 2026 and has code quality concerns (AI-generated at scale), but
+  if Ladybug stalls, Grafeo should be re-evaluated. Set a 6-month review checkpoint.
+- Risk: FFI bindings over C++ core (same as Kuzu) — not pure Rust
+- Mitigation: acceptable for Phase 2; Grafeo would resolve this if it matures
+
+**Fallback trigger**: if LadybugDB has no release activity for 60+ days, evaluate
+Grafeo for replacement before writing more graph code.
+
+---

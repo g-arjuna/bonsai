@@ -9,15 +9,15 @@ learning project. Goal: replicate Google's ANO framework architecture
 at lab scale using only open source primitives.
 
 ## Current Phase
-Phase: 1 — The Heartbeat  
-Last completed: project scaffolding (CLAUDE.md, .claudeignore, kickoff doc)  
-Working on: first-session tasks — name, README, DECISIONS.md, Rust bootstrap
+Phase: 1 → 2 transition  
+Last completed: multi-node gNMI subscriber (3x SR Linux, interface counters + BGP ON_CHANGE, reconnect, graceful shutdown). Graph DB decided.  
+Working on: Phase 2 — The Graph (LadybugDB, graph schema design, telemetry → graph writer)
 
 ## Architecture
 - Rust core: tokio async runtime, tonic gRPC, prost protobuf
-- Graph DB: **TBD** — evaluating Kuzu v0.11.3 (archived/stable) vs
-  Ladybug (active Kuzu fork) vs ArcadeDB (server-mode). Decision in
-  Phase 1 after benchmarking. Document outcome in DECISIONS.md.
+- Graph DB: **LadybugDB** (`lbug` crate, MIT, embedded, Cypher). Grafeo named fallback.
+  Temporal: DIY bitemporal (valid_from/valid_to on all nodes/edges).
+  Decision rationale in DECISIONS.md.
 - Python layer: REST API consumer (PyO3 later), rules engine, ML pipeline
 - Lab: ContainerLab — Holo/FRR for fast iteration, Nokia/Cisco/Juniper/Arista
   as primary vendor targets once accounts are approved
