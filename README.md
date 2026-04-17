@@ -1,6 +1,6 @@
 # bonsai
 
-> **Current status: Phase 1 in progress — nothing works yet.**
+> **Current status: Phase 2 in progress — Phase 1 complete, writing telemetry to graph.**
 
 A streaming-first, graph-native network state engine for closed-loop autonomous
 network operations. Replicates the architecture described in Google's ANO framework
@@ -75,10 +75,10 @@ layer. That is the exact layer bonsai targets.
 | Component | Choice | Notes |
 |---|---|---|
 | Core language | Rust (stable, edition 2024) | tokio async, tonic gRPC, prost protobuf |
-| Graph DB | TBD — evaluating Kuzu v0.11.3 / Ladybug / ArcadeDB | See DECISIONS.md |
+| Graph DB | LadybugDB (`lbug` crate, MIT) | Embedded, Cypher, active Kuzu fork. See DECISIONS.md |
 | Python integration | REST API (PyO3 later) | Phase 3+ |
 | ML | PyTorch + scikit-learn | Phase 5 |
-| Lab | ContainerLab | Holo/FRR now, real vendors once accounts approved |
+| Lab | ContainerLab | Nokia SR Linux running; Cisco/Juniper/Arista pending accounts |
 
 ---
 
@@ -98,24 +98,33 @@ in the first 6 months.
 
 ## Roadmap
 
-| Phase | Goal | Timeline |
+| Phase | Goal | Status |
 |---|---|---|
-| **1 — The Heartbeat** | Rust binary subscribes to gNMI, prints normalized JSON | Weeks 1–4 |
-| 2 — The Graph | Telemetry writes to graph DB, Cypher queries return live + historical state | Weeks 5–12 |
-| 3 — Python Layer | SDK queries graph, pushes remediation via gNMI Set | Weeks 13–18 |
-| 4 — Rules Detect+Heal | Deterministic anomaly detection, closed-loop healing demo | Weeks 19–26 |
-| 5 — ML Prediction | Autoencoder/LSTM predicts failures, classifier selects remediation | Months 7–10 |
-| 6 — MVP UI | Live topology view, event stream, closed-loop trace — view-only | Weeks 44–52 |
-| 7 — Presentation | Blog series, NANOG/AutoCon talk, demo video | Month 12+ |
+| **1 — The Heartbeat** ✓ | gNMI subscriber pool, interface counters + BGP ON_CHANGE, reconnect, graceful shutdown | **Complete** |
+| **2 — The Graph** | Telemetry writes to LadybugDB graph, Cypher queries return live + historical state | **In progress** |
+| 3 — Python Layer | SDK queries graph, pushes remediation via gNMI Set | Planned |
+| 4 — Rules Detect+Heal | Deterministic anomaly detection, closed-loop healing demo | Planned |
+| 5 — ML Prediction | Autoencoder/LSTM predicts failures, classifier selects remediation | Planned |
+| 6 — Demo UI | Live topology view, event stream, closed-loop trace — view-only | Planned |
 
 ---
 
-## Phase 1 Success Criteria
+## Phase 1 — Completed
 
-- `cargo run` subscribes to N devices in parallel
-- Handles subscription lifecycle (connect, authenticate, subscribe, reconnect on drop)
-- Prints interface counter updates and BGP state changes as human-readable JSON
-- Runs 24 hours without memory leaks or dropped subscriptions
+- [x] `cargo run` subscribes to 3 Nokia SR Linux nodes in parallel (tokio task per device)
+- [x] Handles full subscription lifecycle: connect, authenticate, subscribe, reconnect on drop (exponential backoff)
+- [x] Streams interface counter updates (SAMPLE/10s) and BGP neighbor state (ON_CHANGE) as JSON
+- [x] Graceful Ctrl+C shutdown via shared watch channel
+- [ ] 24-hour stability run (in progress)
+
+## Phase 2 — In Progress
+
+- [x] Graph DB decided: LadybugDB (embedded, MIT, Cypher) — rationale in DECISIONS.md
+- [x] Schema defined: Device, Interface, BgpNeighbor nodes; HAS_INTERFACE, PEERS_WITH edges
+- [x] Graph writer wired: telemetry channel → spawn_blocking → LadybugDB Cypher upserts
+- [ ] Validate Cypher queries: live topology + BGP state in graph
+- [ ] Temporal query: reconstruct graph state at past time T
+- [ ] Multi-vendor normalization: second NOS (Cisco XRd or Arista cEOS)
 
 ---
 

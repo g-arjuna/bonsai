@@ -16,6 +16,7 @@ use crate::proto::gnmi::{
     subscribe_request, subscription_list, Path, PathElem, SubscribeRequest, SubscriptionList,
     Subscription, SubscriptionMode,
 };
+use crate::telemetry::TelemetryUpdate;
 
 pub struct GnmiSubscriber {
     target: String,
@@ -25,6 +26,8 @@ pub struct GnmiSubscriber {
     ca_cert_pem: Vec<u8>,
     /// TLS server name — must match the CN/SAN in the server cert.
     tls_domain: String,
+    /// Channel to the graph writer task.
+    tx: tokio::sync::mpsc::Sender<TelemetryUpdate>,
 }
 
 impl GnmiSubscriber {
@@ -34,6 +37,7 @@ impl GnmiSubscriber {
         password: impl Into<String>,
         ca_cert_pem: Vec<u8>,
         tls_domain: impl Into<String>,
+        tx: tokio::sync::mpsc::Sender<TelemetryUpdate>,
     ) -> Self {
         Self {
             target: target.into(),
@@ -41,6 +45,7 @@ impl GnmiSubscriber {
             password: password.into(),
             ca_cert_pem,
             tls_domain: tls_domain.into(),
+            tx,
         }
     }
 
@@ -141,15 +146,16 @@ impl GnmiSubscriber {
                                         .as_ref()
                                         .map(typed_value_to_json)
                                         .unwrap_or(serde_json::Value::Null);
-                                    println!(
-                                        "{}",
-                                        serde_json::json!({
-                                            "target": target,
-                                            "timestamp": notif.timestamp,
-                                            "path": path,
-                                            "value": val,
-                                        })
-                                    );
+                                    let msg = TelemetryUpdate {
+                                        target: target.clone(),
+                                        timestamp_ns: notif.timestamp,
+                                        path: path.clone(),
+                                        value: val,
+                                    };
+                                    if self.tx.send(msg).await.is_err() {
+                                        warn!(target = %target, "graph writer channel closed — stopping subscriber");
+                                        return Ok(());
+                                    }
                                 }
                             }
                             Response::SyncResponse(sync) => {

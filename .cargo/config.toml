@@ -1,0 +1,6 @@
+[env]
+# Required by lbug's C++ build (cmake + ninja) — Windows only.
+# These are set here because cmake was installed after the shell started
+# and existing processes don't pick up the user PATH update.
+CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
+CMAKE_MAKE_PROGRAM = "C:/Users/arjun/bin/ninja.exe"

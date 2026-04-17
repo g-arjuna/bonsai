@@ -32,6 +32,12 @@ tokio-stream = "0.1"
 # Error handling
 anyhow = "1"
 
+# Graph database
+lbug = "0.15.3"
+
+# Timestamp conversion for lbug Value::TimestampNs
+time = { version = "0.3", features = ["parsing"] }
+
 [build-dependencies]
 tonic-build = "0.13"
 protoc-bin-vendored = "3"

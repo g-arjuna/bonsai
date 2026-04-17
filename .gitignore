@@ -1,5 +1,9 @@
 /target
 
+# LadybugDB graph database files
+bonsai.db
+bonsai.db.wal
+
 # ContainerLab runtime directories (TLS certs, node configs, topology state)
 lab/**/clab-*
 

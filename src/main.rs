@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
-use tracing::info;
+use tracing::{info, warn};
 
+mod graph;
 mod subscriber;
+mod telemetry;
 
 pub mod proto {
     pub mod gnmi {
@@ -24,6 +26,8 @@ const TARGETS: &[(&str, &str)] = &[
     ("172.100.100.13:57400", "clab-bonsai-srl-srl3"),
 ];
 
+const GRAPH_PATH: &str = "bonsai.db";
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -33,13 +37,35 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    info!("bonsai starting — Phase 1: The Heartbeat");
+    info!("bonsai starting — Phase 2: The Graph");
 
     let ca_cert_pem = tokio::fs::read(CA_CERT_PATH)
         .await
         .with_context(|| format!(
             "could not read CA cert from '{CA_CERT_PATH}' — run deploy.sh first"
         ))?;
+
+    // Open the graph database (blocking — runs in current thread before tokio tasks start).
+    let graph = std::sync::Arc::new(
+        tokio::task::spawn_blocking(|| graph::GraphStore::open(GRAPH_PATH))
+            .await
+            .context("graph open panicked")?
+            .context("graph open failed")?,
+    );
+
+    // Telemetry channel: subscribers → graph writer (1 024 updates of headroom).
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<telemetry::TelemetryUpdate>(1024);
+
+    // Graph writer task — drains the channel and writes to LadybugDB.
+    let graph_writer = std::sync::Arc::clone(&graph);
+    tokio::spawn(async move {
+        while let Some(update) = rx.recv().await {
+            if let Err(e) = graph_writer.write(update).await {
+                warn!(error = %e, "graph write failed");
+            }
+        }
+        info!("graph writer stopped");
+    });
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
@@ -51,6 +77,7 @@ async fn main() -> Result<()> {
             "NokiaSrl1!",
             ca_cert_pem.clone(),
             *tls_domain,
+            tx.clone(),
         );
         let rx = shutdown_rx.clone();
         handles.push(tokio::spawn(async move { sub.run_forever(rx).await }));
@@ -63,6 +90,9 @@ async fn main() -> Result<()> {
     for handle in handles {
         let _ = handle.await;
     }
+
+    // Print a quick summary of what made it into the graph.
+    graph::log_graph_summary(graph.db().as_ref());
 
     info!("bonsai stopped");
     Ok(())
