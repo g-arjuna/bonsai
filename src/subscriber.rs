@@ -84,7 +84,7 @@ impl GnmiSubscriber {
         let channel = self.connect().await?;
         let target = self.target.clone();
 
-        // Detect vendor on a bare client (no interceptor needed for Capabilities).
+        // Detect vendor on a bare client; credentials injected per-request.
         let vendor = match &self.vendor_hint {
             Some(v) => {
                 debug!(target = %target, vendor = %v, "using configured vendor hint");
@@ -92,7 +92,13 @@ impl GnmiSubscriber {
             }
             None => {
                 let mut bare = GNmiClient::new(channel.clone());
-                detect_vendor(&mut bare, &target).await
+                detect_vendor(
+                    &mut bare,
+                    &target,
+                    self.username.as_deref(),
+                    self.password.as_deref(),
+                )
+                .await
             }
         };
 
@@ -219,11 +225,27 @@ impl GnmiSubscriber {
 async fn detect_vendor(
     client: &mut GNmiClient<tonic::transport::Channel>,
     target: &str,
+    username: Option<&str>,
+    password: Option<&str>,
 ) -> String {
-    match client.capabilities(CapabilityRequest::default()).await {
+    let mut req = tonic::Request::new(CapabilityRequest::default());
+    if let Some(u) = username {
+        if let Ok(v) = MetadataValue::try_from(u) {
+            req.metadata_mut().insert("username", v);
+        }
+    }
+    if let Some(p) = password {
+        if let Ok(v) = MetadataValue::try_from(p) {
+            req.metadata_mut().insert("password", v);
+        }
+    }
+    match client.capabilities(req).await {
         Ok(resp) => {
             let models = resp.into_inner().supported_models;
-            let vendor = if models.iter().any(|m| m.name.starts_with("srl_nokia")) {
+            // Log first 5 model names to help tune detection if needed.
+            let sample: Vec<_> = models.iter().take(5).map(|m| m.name.as_str()).collect();
+            debug!(target, ?sample, "Capabilities model sample");
+            let vendor = if models.iter().any(|m| m.name.starts_with("srl_nokia") || m.name.contains("srl_nokia")) {
                 "nokia_srl"
             } else if models.iter().any(|m| m.name.starts_with("Cisco-IOS-XR")) {
                 "cisco_xrd"
@@ -235,6 +257,8 @@ async fn detect_vendor(
             {
                 "arista_ceos"
             } else {
+                let all: Vec<_> = models.iter().map(|m| m.name.as_str()).collect();
+                warn!(target, ?all, "vendor unrecognised — defaulting to openconfig paths");
                 "openconfig"
             };
             info!(target, vendor, "vendor detected via Capabilities");
