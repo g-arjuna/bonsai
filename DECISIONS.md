@@ -98,3 +98,28 @@ core discipline of this project — prune scope ruthlessly, shape carefully, let
 grow only where it should. The folder name was already bonsai; the metaphor fits.
 
 ---
+
+## 2026-04-17 — SR Linux gNMI path normalization: use native paths at ingestion, normalize in pipeline
+
+**Decision**: Subscribe using SR Linux native path `interface[name=*]/statistics`
+(singular, no `srl_nokia-interfaces:` prefix). Normalization to OpenConfig canonical
+paths (`/interfaces/interface[name=*]/state/counters`) is deferred to a Phase 2
+normalization layer.
+
+**Context**: Nokia SR Linux 26.x deviates from OpenConfig canonical paths:
+- Uses `interface` (singular) vs OpenConfig `interfaces` (plural)
+- Responses may carry the `srl_nokia-interfaces:` model prefix on returned values
+- ContainerLab gNMI server on port 57400; no separate `gnmi-server` config block
+  needed in SR Linux 26.x (enabled automatically)
+
+**Rationale**: Subscribing to native paths is required — SR Linux rejects the
+OpenConfig canonical path. Normalizing at ingestion time (in the subscriber) would
+couple device-specific quirks to the transport layer. A dedicated normalization
+stage in the pipeline is cleaner and easier to test. Each NOS will need its own
+normalization rules; centralizing them in one place is the right long-term shape.
+
+**Impact on current code**: `interface_counters_path()` in `src/subscriber.rs`
+uses `interface` (singular) with a wildcard key `name=*`. Path normalization is
+out of scope until Phase 2.
+
+---

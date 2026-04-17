@@ -6,6 +6,11 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig};
 use tonic::Request;
 use tracing::{debug, info, warn};
 
+const BACKOFF_INITIAL: Duration = Duration::from_secs(5);
+const BACKOFF_MAX: Duration = Duration::from_secs(60);
+// Reset backoff if the connection stayed up longer than this
+const BACKOFF_RESET_THRESHOLD: Duration = Duration::from_secs(60);
+
 use crate::proto::gnmi::g_nmi_client::GNmiClient;
 use crate::proto::gnmi::{
     subscribe_request, subscription_list, Path, PathElem, SubscribeRequest, SubscriptionList,
@@ -36,6 +41,36 @@ impl GnmiSubscriber {
             password: password.into(),
             ca_cert_pem,
             tls_domain: tls_domain.into(),
+        }
+    }
+
+    pub async fn run_forever(&self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
+        let mut backoff = BACKOFF_INITIAL;
+        loop {
+            let start = std::time::Instant::now();
+            tokio::select! {
+                _ = shutdown.changed() => {
+                    info!(target = %self.target, "shutdown signal received");
+                    return;
+                }
+                result = self.subscribe_interfaces() => {
+                    if let Err(e) = result {
+                        warn!(target = %self.target, error = %e, "subscription failed");
+                    }
+                    if start.elapsed() >= BACKOFF_RESET_THRESHOLD {
+                        backoff = BACKOFF_INITIAL;
+                    }
+                    warn!(target = %self.target, delay = ?backoff, "reconnecting");
+                }
+            }
+            tokio::select! {
+                _ = shutdown.changed() => {
+                    info!(target = %self.target, "shutdown signal received");
+                    return;
+                }
+                _ = tokio::time::sleep(backoff) => {}
+            }
+            backoff = (backoff * 2).min(BACKOFF_MAX);
         }
     }
 
