@@ -1,1 +1,4 @@
 /target
+
+# ContainerLab runtime directories (TLS certs, node configs, topology state)
+lab/**/clab-*
