@@ -25,10 +25,20 @@ topology:
       mgmt-ipv4: 172.100.101.31
       startup-config: configs-mv/crpd1.cfg
 
+    ceos1:
+      kind: arista_ceos
+      image: ceos64:4.36.0F
+      mgmt-ipv4: 172.100.101.41
+      startup-config: configs-mv/ceos1.cfg
+
   links:
     # srl1 <-> xrd1
-    - endpoints: ["srl1:e1-1", "xrd1:Gi0/0/0/0"]
+    - endpoints: ["srl1:e1-1", "xrd1:Gi0-0-0-0"]
     # xrd1 <-> crpd1
-    - endpoints: ["xrd1:Gi0/0/0/1", "crpd1:eth1"]
+    - endpoints: ["xrd1:Gi0-0-0-1", "crpd1:eth1"]
     # crpd1 <-> srl1
     - endpoints: ["crpd1:eth2", "srl1:e1-2"]
+    # srl1 <-> ceos1
+    - endpoints: ["srl1:e1-3", "ceos1:eth1"]
+    # xrd1 <-> ceos1
+    - endpoints: ["xrd1:Gi0-0-0-2", "ceos1:eth2"]

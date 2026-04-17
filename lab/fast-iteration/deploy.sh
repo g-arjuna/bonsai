@@ -22,6 +22,13 @@ case "$ACTION" in
     # Copy clab CA cert to Windows project dir so the Rust binary can use it for TLS
     cp "$LINUX_LAB/clab-bonsai-srl/.tls/ca/ca.pem" "$SRC/ca.pem"
     echo "CA cert copied to $SRC/ca.pem"
+
+    # Add Windows route so bonsai.exe can reach the 172.100.100.x management network.
+    WSL_IP=$(ip addr show eth0 2>/dev/null | awk '/inet / {split($2,a,"/"); print a[1]; exit}')
+    echo "Adding Windows route 172.100.100.0/24 via WSL ($WSL_IP) ..."
+    powershell.exe -Command "route add 172.100.100.0 mask 255.255.255.0 $WSL_IP" 2>/dev/null \
+      && echo "Route added." \
+      || echo "NOTE: run this in an admin PowerShell: route add 172.100.100.0 mask 255.255.255.0 $WSL_IP"
     ;;
   destroy)
     if [ -d "$LINUX_LAB" ]; then

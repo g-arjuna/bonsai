@@ -21,8 +21,10 @@ pub struct GnmiSubscriber {
     target: String,
     username: Option<String>,
     password: Option<String>,
-    /// Overrides Capabilities detection when set.
+    /// Overrides the vendor label in logs; model detection still uses Capabilities.
     vendor_hint: Option<String>,
+    /// Human-readable hostname for this device (e.g. "srl1"); stored on Device node.
+    hostname: Option<String>,
     /// None = plaintext gRPC.
     ca_cert_pem: Option<Vec<u8>>,
     tls_domain: String,
@@ -35,6 +37,7 @@ impl GnmiSubscriber {
         username: Option<String>,
         password: Option<String>,
         vendor_hint: Option<String>,
+        hostname: Option<String>,
         tls_domain: impl Into<String>,
         ca_cert_pem: Option<Vec<u8>>,
         tx: tokio::sync::mpsc::Sender<TelemetryUpdate>,
@@ -44,6 +47,7 @@ impl GnmiSubscriber {
             username,
             password,
             vendor_hint,
+            hostname,
             ca_cert_pem,
             tls_domain: tls_domain.into(),
             tx,
@@ -84,23 +88,17 @@ impl GnmiSubscriber {
         let channel = self.connect().await?;
         let target = self.target.clone();
 
-        // Detect vendor on a bare client; credentials injected per-request.
-        let vendor = match &self.vendor_hint {
-            Some(v) => {
-                debug!(target = %target, vendor = %v, "using configured vendor hint");
-                v.clone()
-            }
-            None => {
-                let mut bare = GNmiClient::new(channel.clone());
-                detect_vendor(
-                    &mut bare,
-                    &target,
-                    self.username.as_deref(),
-                    self.password.as_deref(),
-                )
-                .await
-            }
-        };
+        // Always call Capabilities — encoding and supported models come from the device.
+        // vendor_hint overrides the label; when Capabilities fails, it also seeds the fallback.
+        let mut bare = GNmiClient::new(channel.clone());
+        let caps = detect_capabilities(
+            &mut bare,
+            &target,
+            self.username.as_deref(),
+            self.password.as_deref(),
+            self.vendor_hint.as_deref(),
+        )
+        .await;
 
         let username = self.username.clone();
         let password = self.password.clone();
@@ -120,18 +118,29 @@ impl GnmiSubscriber {
             Ok(req)
         });
 
-        let subscriptions = build_subscriptions(&vendor);
+        let subscriptions = build_subscriptions(&caps);
+        info!(
+            target = %target,
+            vendor       = %caps.vendor_label,
+            encoding     = caps.encoding,
+            srl_native   = caps.has_srl_native,
+            xr_native    = caps.has_xr_native,
+
+            oc_interfaces = caps.has_oc_interfaces,
+            oc_bgp       = caps.has_oc_bgp,
+            paths        = subscriptions.len(),
+            "subscribing"
+        );
+
         let req = SubscribeRequest {
             request: Some(subscribe_request::Request::Subscribe(SubscriptionList {
                 subscription: subscriptions,
                 mode: subscription_list::Mode::Stream as i32,
-                encoding: crate::proto::gnmi::Encoding::JsonIetf as i32,
+                encoding: caps.encoding,
                 ..Default::default()
             })),
             ..Default::default()
         };
-
-        info!(target = %target, vendor = %vendor, "subscribing");
 
         let mut stream = client
             .subscribe(tokio_stream::once(req))
@@ -146,22 +155,44 @@ impl GnmiSubscriber {
                     if let Some(resp) = response.response {
                         match resp {
                             Response::Update(notif) => {
+                                use std::collections::HashMap;
+                                let prefix = notif.prefix.as_ref().map(path_to_string).unwrap_or_default();
+
+                                // Devices like cEOS stream individual scalar leaves rather than a
+                                // JSON blob at the container path. Group scalars within one
+                                // notification by their parent path so classifiers see the same
+                                // blob-at-container shape regardless of vendor.
+                                let mut blobs: Vec<(String, serde_json::Value)> = Vec::new();
+                                let mut leaf_groups: HashMap<String, serde_json::Map<String, serde_json::Value>> = HashMap::new();
+
                                 for update in &notif.update {
-                                    let path = update
-                                        .path
-                                        .as_ref()
-                                        .map(path_to_string)
-                                        .unwrap_or_default();
-                                    let val = update
-                                        .val
-                                        .as_ref()
-                                        .map(typed_value_to_json)
-                                        .unwrap_or(serde_json::Value::Null);
+                                    let update_path = update.path.as_ref().map(path_to_string).unwrap_or_default();
+                                    let path = match (prefix.is_empty(), update_path.is_empty()) {
+                                        (true, _)      => update_path,
+                                        (false, true)  => prefix.clone(),
+                                        (false, false) => format!("{prefix}/{update_path}"),
+                                    };
+                                    let val = update.val.as_ref().map(typed_value_to_json).unwrap_or(serde_json::Value::Null);
+                                    let is_scalar = matches!(val, serde_json::Value::Number(_) | serde_json::Value::String(_) | serde_json::Value::Bool(_));
+                                    if is_scalar {
+                                        if let Some(slash) = path.rfind('/') {
+                                            leaf_groups.entry(path[..slash].to_string()).or_default().insert(path[slash + 1..].to_string(), val);
+                                            continue;
+                                        }
+                                    }
+                                    blobs.push((path, val));
+                                }
+
+                                let all_updates = blobs.into_iter().chain(
+                                    leaf_groups.into_iter().map(|(p, obj)| (p, serde_json::Value::Object(obj)))
+                                );
+                                for (path, val) in all_updates {
                                     let msg = TelemetryUpdate {
                                         target: target.clone(),
-                                        vendor: vendor.clone(),
+                                        vendor: caps.vendor_label.clone(),
+                                        hostname: self.hostname.clone().unwrap_or_default(),
                                         timestamp_ns: notif.timestamp,
-                                        path: path.clone(),
+                                        path,
                                         value: val,
                                     };
                                     if self.tx.send(msg).await.is_err() {
@@ -220,14 +251,125 @@ impl GnmiSubscriber {
     }
 }
 
-// ── vendor detection ──────────────────────────────────────────────────────────
+// ── capabilities ──────────────────────────────────────────────────────────────
 
-async fn detect_vendor(
+/// Subscription capabilities derived entirely from the device's Capabilities response.
+/// Path selection is model-driven: OC models are preferred; vendor-native paths are
+/// used only when OC model names are not advertised.
+/// `vendor_label` is for logging and Device node tagging only — never for path routing.
+struct ModelCapabilities {
+    vendor_label: String,
+    encoding: i32,
+    /// OC interfaces model advertised → subscribe to OC interface paths.
+    has_oc_interfaces: bool,
+    /// OC BGP / network-instance model advertised → subscribe to OC BGP paths.
+    has_oc_bgp: bool,
+    /// OC LLDP model advertised → subscribe to OC LLDP paths.
+    has_oc_lldp: bool,
+    /// SRL native model tree present. SRL does not advertise OC model names; this
+    /// flag triggers SRL-native paths as the fallback for each concern.
+    has_srl_native: bool,
+    /// Cisco XR native stats model present. Kept as a diagnostic flag; OC is used
+    /// when both OC and XR-native are available.
+    has_xr_native: bool,
+}
+
+impl ModelCapabilities {
+    /// Build from a real Capabilities response — single source of truth for path selection.
+    fn from_response(
+        models: &[crate::proto::gnmi::ModelData],
+        encodings: &[i32],
+    ) -> Self {
+        let json_ietf = crate::proto::gnmi::Encoding::JsonIetf as i32;
+        let json      = crate::proto::gnmi::Encoding::Json as i32;
+
+        let has_oc_iface  = models.iter().any(|m| m.name == "openconfig-interfaces");
+        let has_oc_bgp    = models.iter().any(|m| {
+            m.name == "openconfig-bgp" || m.name == "openconfig-network-instance"
+        });
+        let has_oc_lldp   = models.iter().any(|m| m.name == "openconfig-lldp");
+        // SRL advertises models as Nokia URNs (urn:nokia.com:srlinux:*:srl_nokia-*),
+        // not as openconfig-* names — detect by the srl_nokia substring.
+        let has_srl       = models.iter().any(|m| m.name.contains("srl_nokia"));
+        let has_xr_native = models.iter().any(|m| m.name.contains("Cisco-IOS-XR-infra-statsd-oper"));
+
+        let encoding = if encodings.contains(&json_ietf) { json_ietf }
+                       else if encodings.contains(&json)  { json }
+                       else { json };
+
+        // Vendor label: informational only — derived from model names, never used for routing.
+        let vendor_label = if has_srl {
+            "nokia_srl"
+        } else if models.iter().any(|m| m.name.starts_with("Cisco-IOS-XR")) {
+            "cisco_xrd"
+        } else if models.iter().any(|m| {
+            m.name.to_lowercase().contains("arista") || m.name.contains("EOS")
+        }) {
+            "arista_ceos"
+        } else if models.iter().any(|m| m.name.to_lowercase().starts_with("junos")) {
+            "juniper_crpd"
+        } else {
+            "openconfig"
+        };
+
+        Self {
+            vendor_label: vendor_label.to_string(),
+            encoding,
+            has_oc_interfaces: has_oc_iface,
+            has_oc_bgp,
+            has_oc_lldp,
+            has_srl_native: has_srl,
+            has_xr_native,
+        }
+    }
+
+    /// Fallback when Capabilities RPC fails.
+    /// vendor_hint sets the label and distinguishes the two known cases:
+    ///   SRL  → native (SRL uses Nokia URN model names, not OC names)
+    ///   XRd  → XR native for interfaces, OC for BGP/LLDP
+    ///   else → assume OC (safe for any standard-compliant device)
+    fn fallback(vendor_hint: Option<&str>) -> Self {
+        let json_ietf = crate::proto::gnmi::Encoding::JsonIetf as i32;
+        let label = vendor_hint.unwrap_or("unknown").to_string();
+        match vendor_hint {
+            Some(h) if h.contains("srl") || h.contains("nokia") => Self {
+                vendor_label: label,
+                encoding: json_ietf,
+                has_srl_native: true,
+                has_xr_native: false,
+                has_oc_interfaces: false,
+                has_oc_bgp: false,
+                has_oc_lldp: false,
+            },
+            Some(h) if h.contains("xrd") || h.contains("cisco") => Self {
+                vendor_label: label,
+                encoding: json_ietf,
+                has_srl_native: false,
+                has_xr_native: true,
+                has_oc_interfaces: false,
+                has_oc_bgp: true,
+                has_oc_lldp: true,
+            },
+            _ => Self {
+                vendor_label: label,
+                encoding: json_ietf,
+                has_srl_native: false,
+                has_xr_native: false,
+                has_oc_interfaces: true,
+                has_oc_bgp: true,
+                has_oc_lldp: false,
+            },
+        }
+    }
+}
+
+async fn detect_capabilities(
     client: &mut GNmiClient<tonic::transport::Channel>,
     target: &str,
     username: Option<&str>,
     password: Option<&str>,
-) -> String {
+    hint: Option<&str>,
+) -> ModelCapabilities {
     let mut req = tonic::Request::new(CapabilityRequest::default());
     if let Some(u) = username {
         if let Ok(v) = MetadataValue::try_from(u) {
@@ -239,167 +381,175 @@ async fn detect_vendor(
             req.metadata_mut().insert("password", v);
         }
     }
+
     match client.capabilities(req).await {
         Ok(resp) => {
-            let models = resp.into_inner().supported_models;
-            // Log first 5 model names to help tune detection if needed.
+            let inner = resp.into_inner();
+            let models    = &inner.supported_models;
+            let encodings = &inner.supported_encodings;
+
             let sample: Vec<_> = models.iter().take(5).map(|m| m.name.as_str()).collect();
-            debug!(target, ?sample, "Capabilities model sample");
-            let vendor = if models.iter().any(|m| m.name.starts_with("srl_nokia") || m.name.contains("srl_nokia")) {
-                "nokia_srl"
-            } else if models.iter().any(|m| m.name.starts_with("Cisco-IOS-XR")) {
-                "cisco_xrd"
-            } else if models.iter().any(|m| m.name.to_lowercase().starts_with("junos")) {
-                "juniper_crpd"
-            } else if models
-                .iter()
-                .any(|m| m.name.to_lowercase().contains("arista") || m.name.contains("EOS"))
-            {
-                "arista_ceos"
-            } else {
-                let all: Vec<_> = models.iter().map(|m| m.name.as_str()).collect();
-                warn!(target, ?all, "vendor unrecognised — defaulting to openconfig paths");
-                "openconfig"
-            };
-            info!(target, vendor, "vendor detected via Capabilities");
-            vendor.to_string()
+            debug!(target, ?sample, ?encodings, "Capabilities probe");
+
+            let mut caps = ModelCapabilities::from_response(models, encodings);
+            // hint overrides label only when Capabilities succeeds
+            if let Some(h) = hint {
+                caps.vendor_label = h.to_string();
+            }
+            info!(
+                target,
+                vendor    = %caps.vendor_label,
+                encoding  = caps.encoding,
+                srl       = caps.has_srl_native,
+                oc_iface  = caps.has_oc_interfaces,
+                oc_bgp    = caps.has_oc_bgp,
+                oc_lldp   = caps.has_oc_lldp,
+                xr_native = caps.has_xr_native,
+                "capabilities detected"
+            );
+            caps
         }
         Err(e) => {
-            warn!(target, error = %e, "Capabilities RPC failed — defaulting to openconfig paths");
-            "openconfig".to_string()
+            warn!(target, error = %e, "Capabilities RPC failed — using hint-aware defaults");
+            ModelCapabilities::fallback(hint)
         }
     }
 }
 
-// ── subscription path selection ───────────────────────────────────────────────
+// ── subscription builder ──────────────────────────────────────────────────────
 
-fn build_subscriptions(vendor: &str) -> Vec<Subscription> {
-    match vendor {
-        "nokia_srl" => vec![
-            Subscription {
-                path: Some(srl_interface_counters_path()),
-                mode: SubscriptionMode::Sample as i32,
-                sample_interval: 10_000_000_000,
-                ..Default::default()
-            },
-            Subscription {
-                path: Some(srl_bgp_neighbors_path()),
-                mode: SubscriptionMode::OnChange as i32,
-                ..Default::default()
-            },
-            Subscription {
-                path: Some(srl_lldp_neighbors_path()),
-                mode: SubscriptionMode::OnChange as i32,
-                ..Default::default()
-            },
-        ],
-        _ => vec![
-            Subscription {
-                path: Some(oc_interface_counters_path()),
-                mode: SubscriptionMode::Sample as i32,
-                sample_interval: 10_000_000_000,
-                ..Default::default()
-            },
-            Subscription {
-                path: Some(oc_bgp_neighbors_path()),
-                mode: SubscriptionMode::OnChange as i32,
-                ..Default::default()
-            },
-        ],
+/// Build subscriptions from capability flags.
+///
+/// Native paths are preferred — they are richer and directly reflect what the
+/// device exposes. OC paths are the fallback when no native model is detected.
+/// The same rule applies to every vendor; no vendor-specific branching here.
+fn build_subscriptions(caps: &ModelCapabilities) -> Vec<Subscription> {
+    let mut subs = Vec::new();
+
+    // ── Interfaces ────────────────────────────────────────────────────────────
+    if caps.has_srl_native {
+        subs.push(sub_sample(
+            srl_path(&[("interface", &[("name", "*")])]).with_tail("statistics"),
+            10_000_000_000,
+        ));
+    } else if caps.has_xr_native {
+        subs.push(sub_sample(xr_native_stats_path(), 10_000_000_000));
+    } else if caps.has_oc_interfaces {
+        subs.push(sub_sample(oc_path(&["interfaces"]), 10_000_000_000));
+    }
+
+    // ── BGP ───────────────────────────────────────────────────────────────────
+    if caps.has_srl_native {
+        subs.push(sub_on_change(srl_bgp_neighbors_path()));
+    } else if caps.has_oc_bgp {
+        subs.push(sub_on_change(oc_path(&["network-instances"])));
+    }
+
+    // ── LLDP ──────────────────────────────────────────────────────────────────
+    if caps.has_srl_native {
+        subs.push(sub_on_change(srl_lldp_neighbors_path()));
+    } else if caps.has_oc_lldp {
+        subs.push(sub_on_change(oc_path(&["lldp"])));
+    }
+
+    if subs.is_empty() {
+        warn!(vendor = %caps.vendor_label, "no subscribable paths derived from capabilities");
+    }
+
+    subs
+}
+
+fn sub_sample(path: Path, interval_ns: u64) -> Subscription {
+    Subscription {
+        path: Some(path),
+        mode: SubscriptionMode::Sample as i32,
+        sample_interval: interval_ns,
+        ..Default::default()
     }
 }
 
-// ── SR Linux native paths ─────────────────────────────────────────────────────
-
-fn srl_interface_counters_path() -> Path {
-    Path {
-        elem: vec![
-            PathElem {
-                name: "interface".into(),
-                key: [("name".to_string(), "*".to_string())].into(),
-            },
-            PathElem { name: "statistics".into(), key: Default::default() },
-        ],
+fn sub_on_change(path: Path) -> Subscription {
+    Subscription {
+        path: Some(path),
+        mode: SubscriptionMode::OnChange as i32,
         ..Default::default()
+    }
+}
+
+// ── path builders ─────────────────────────────────────────────────────────────
+
+/// OpenConfig path: sets origin="openconfig" so devices can resolve the schema tree.
+fn oc_path(elems: &[&str]) -> Path {
+    Path {
+        origin: "openconfig".to_string(),
+        elem: elems
+            .iter()
+            .map(|name| PathElem { name: name.to_string(), key: Default::default() })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+/// SR Linux native path — no origin, key-value pairs per element.
+/// elems: &[("name", &[("key", "val"), ...])]
+fn srl_path(elems: &[(&str, &[(&str, &str)])]) -> Path {
+    Path {
+        elem: elems
+            .iter()
+            .map(|(name, keys)| PathElem {
+                name: name.to_string(),
+                key: keys.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+// Helper to extend a Path with a key-less tail element.
+trait PathExt {
+    fn with_tail(self, name: &str) -> Path;
+}
+
+impl PathExt for Path {
+    fn with_tail(mut self, name: &str) -> Path {
+        self.elem.push(PathElem { name: name.to_string(), key: Default::default() });
+        self
     }
 }
 
 fn srl_bgp_neighbors_path() -> Path {
-    Path {
-        elem: vec![
-            PathElem {
-                name: "network-instance".into(),
-                key: [("name".to_string(), "default".to_string())].into(),
-            },
-            PathElem { name: "protocols".into(), key: Default::default() },
-            PathElem { name: "bgp".into(), key: Default::default() },
-            PathElem {
-                name: "neighbor".into(),
-                key: [("peer-address".to_string(), "*".to_string())].into(),
-            },
-        ],
-        ..Default::default()
-    }
+    srl_path(&[
+        ("network-instance", &[("name", "default")]),
+        ("protocols",        &[]),
+        ("bgp",              &[]),
+        ("neighbor",         &[("peer-address", "*")]),
+    ])
 }
 
 fn srl_lldp_neighbors_path() -> Path {
-    Path {
-        elem: vec![
-            PathElem { name: "system".into(), key: Default::default() },
-            PathElem { name: "lldp".into(), key: Default::default() },
-            PathElem {
-                name: "interface".into(),
-                key: [("name".to_string(), "*".to_string())].into(),
-            },
-            PathElem {
-                name: "neighbor".into(),
-                key: [("id".to_string(), "*".to_string())].into(),
-            },
-        ],
-        ..Default::default()
-    }
+    srl_path(&[
+        ("system",    &[]),
+        ("lldp",      &[]),
+        ("interface", &[("name", "*")]),
+        ("neighbor",  &[("id", "*")]),
+    ])
 }
 
-// ── OpenConfig paths (XRd, cRPD, cEOS) ───────────────────────────────────────
-
-fn oc_interface_counters_path() -> Path {
+/// Cisco IOS-XR native interface counters.
+/// Empty origin; first element carries the module-qualified container name.
+/// Key is `interface-name` (not `name` used by OC). No `latest` container —
+/// `generic-counters` is a direct child of `interface` on XRd 24.x.
+fn xr_native_stats_path() -> Path {
+    use std::collections::HashMap;
+    let mut key = HashMap::new();
+    key.insert("interface-name".to_string(), "*".to_string());
     Path {
+        origin: String::new(),
         elem: vec![
-            PathElem { name: "interfaces".into(), key: Default::default() },
-            PathElem {
-                name: "interface".into(),
-                key: [("name".to_string(), "*".to_string())].into(),
-            },
-            PathElem { name: "state".into(), key: Default::default() },
-            PathElem { name: "counters".into(), key: Default::default() },
-        ],
-        ..Default::default()
-    }
-}
-
-fn oc_bgp_neighbors_path() -> Path {
-    Path {
-        elem: vec![
-            PathElem { name: "network-instances".into(), key: Default::default() },
-            PathElem {
-                name: "network-instance".into(),
-                key: [("name".to_string(), "*".to_string())].into(),
-            },
-            PathElem { name: "protocols".into(), key: Default::default() },
-            PathElem {
-                name: "protocol".into(),
-                key: [
-                    ("identifier".to_string(), "BGP".to_string()),
-                    ("name".to_string(), "*".to_string()),
-                ]
-                .into(),
-            },
-            PathElem { name: "bgp".into(), key: Default::default() },
-            PathElem { name: "neighbors".into(), key: Default::default() },
-            PathElem {
-                name: "neighbor".into(),
-                key: [("neighbor-address".to_string(), "*".to_string())].into(),
-            },
+            PathElem { name: "Cisco-IOS-XR-infra-statsd-oper:infra-statistics".to_string(), key: Default::default() },
+            PathElem { name: "interfaces".to_string(), key: Default::default() },
+            PathElem { name: "interface".to_string(), key },
+            PathElem { name: "generic-counters".to_string(), key: Default::default() },
         ],
         ..Default::default()
     }
@@ -414,8 +564,7 @@ fn path_to_string(path: &Path) -> String {
             if e.key.is_empty() {
                 e.name.clone()
             } else {
-                let keys: String =
-                    e.key.iter().map(|(k, v)| format!("[{k}={v}]")).collect();
+                let keys: String = e.key.iter().map(|(k, v)| format!("[{k}={v}]")).collect();
                 format!("{}{}", e.name, keys)
             }
         })
@@ -433,10 +582,10 @@ fn typed_value_to_json(val: &crate::proto::gnmi::TypedValue) -> serde_json::Valu
             serde_json::Value::String(String::from_utf8_lossy(b).into_owned()),
         ),
         Some(Value::StringVal(s)) => serde_json::Value::String(s.clone()),
-        Some(Value::IntVal(i)) => serde_json::json!(i),
-        Some(Value::UintVal(u)) => serde_json::json!(u),
-        Some(Value::BoolVal(b)) => serde_json::Value::Bool(*b),
-        Some(Value::FloatVal(f)) => serde_json::json!(f),
-        _ => serde_json::Value::Null,
+        Some(Value::IntVal(i))    => serde_json::json!(i),
+        Some(Value::UintVal(u))   => serde_json::json!(u),
+        Some(Value::BoolVal(b))   => serde_json::Value::Bool(*b),
+        Some(Value::FloatVal(f))  => serde_json::json!(f),
+        _                         => serde_json::Value::Null,
     }
 }

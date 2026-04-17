@@ -7,6 +7,7 @@ graph_path = "bonsai.db"
 # ── Nokia SR Linux (TLS) ──────────────────────────────────────────────────────
 [[target]]
 address    = "172.100.100.11:57400"
+hostname   = "srl1"
 tls_domain = "clab-bonsai-srl-srl1"
 ca_cert    = "lab/fast-iteration/ca.pem"
 # vendor auto-detected via Capabilities; uncomment to override:
@@ -22,6 +23,7 @@ password_env = "BONSAI_SRL1_PASS"
 
 [[target]]
 address    = "172.100.100.12:57400"
+hostname   = "srl2"
 tls_domain = "clab-bonsai-srl-srl2"
 ca_cert    = "lab/fast-iteration/ca.pem"
 username_env = "BONSAI_SRL2_USER"
@@ -29,6 +31,7 @@ password_env = "BONSAI_SRL2_PASS"
 
 [[target]]
 address    = "172.100.100.13:57400"
+hostname   = "srl3"
 tls_domain = "clab-bonsai-srl-srl3"
 ca_cert    = "lab/fast-iteration/ca.pem"
 username_env = "BONSAI_SRL3_USER"
@@ -37,10 +40,19 @@ password_env = "BONSAI_SRL3_PASS"
 # ── Cisco IOS-XRd (no TLS) ───────────────────────────────────────────────────
 # [[target]]
 # address  = "172.100.101.21:57400"
+# hostname = "xrd1"
 # username = "cisco"
 # password = "cisco123!"
 
 # ── Juniper cRPD (no TLS, no credentials) ────────────────────────────────────
 # [[target]]
-# address = "172.100.101.31:50051"
+# address  = "172.100.101.31:50051"
+# hostname = "crpd1"
 # skip-authentication is configured on the device; no credentials needed
+
+# ── Arista cEOS (no TLS, gNMI on port 6030) ──────────────────────────────────
+# [[target]]
+# address  = "172.100.101.41:6030"
+# hostname = "ceos1"
+# username = "admin"
+# password = "admin"

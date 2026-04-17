@@ -241,3 +241,64 @@ bitemporal modeling:
 Grafeo for replacement before writing more graph code.
 
 ---
+
+## 2026-04-18 — Capabilities-driven native-first subscription strategy
+
+**Decision**: All path selection is driven exclusively by the device's Capabilities
+response. Native vendor models are preferred when advertised; OpenConfig is the
+fallback. No per-vendor static branching in path selection logic.
+
+**Context**: Phase 2 multi-vendor lab (SRL, XRd, cEOS). Prior approach had static
+per-vendor path tables that required code changes when adding a new vendor or
+when a device firmware changed supported models.
+
+**Rules implemented**:
+- `has_srl_native` (srl_nokia in model names) → SRL native paths for all concerns
+- `has_xr_native` (Cisco-IOS-XR-infra-statsd-oper model present) → XR native stats
+- `has_oc_interfaces/bgp/lldp` → OC paths as fallback
+- Vendor label is derived from Capabilities for logging and Device node tagging only,
+  never for path routing decisions
+- Same rule applies to every vendor: native-first, OC second, no duplicates
+
+**Alternatives considered**: Static per-vendor tables (rejected — breaks at firmware
+boundaries and requires code changes per device), always-OC (rejected — SRL does not
+advertise OC model names; XR native stats are richer than OC counters).
+
+---
+
+## 2026-04-18 — Per-notification leaf grouping in subscriber
+
+**Decision**: In `subscribe_telemetry`, scalar leaf updates within a single gNMI
+notification are grouped by parent path before dispatch to the graph writer.
+
+**Context**: cEOS (and some XRd paths) send individual scalar leaves rather than a
+JSON blob at the container path. Without grouping, `interfaces/interface[name=X]/state/counters/in-pkts`
+arrives as path=`…/in-pkts`, value=`12345` — no classifier can match it.
+After grouping, the dispatcher sees path=`interfaces/interface[name=X]/state/counters`,
+value=`{"in-pkts":12345,"out-pkts":...}` — same blob-at-container-path shape as SRL.
+
+**Rule**: If a TypedValue is a scalar (Number/String/Bool), split on the last `/`,
+accumulate leaves into a `HashMap<parent_path, JSON object>`, and emit one synthetic
+TelemetryUpdate per parent path per notification. JSON object blobs and null values
+are forwarded as-is. This transform is invisible to all downstream classifiers.
+
+---
+
+## 2026-04-18 — XRd BGP blob walker
+
+**Decision**: XRd ON_CHANGE BGP sends partial `network-instances` JSON trees (one
+blob per neighbor) rather than individual leaf paths. A dedicated `walk_xrd_bgp_blob`
+function navigates `network-instance.protocols.protocol.bgp.neighbors.neighbor` to
+extract `neighbor-address` and the `state` sub-object.
+
+**Why a walker instead of path-based classification**: XRd does not send
+`neighbors/neighbor[neighbor-address=X]/state` as the path; it always uses
+`network-instances` as the top-level path with a partial JSON tree as the value.
+The walker is the only viable approach without changing the subscription path.
+
+**`BgpNeighborState` carries `state_value: Option<Value>`**: When the walker fires,
+the pre-extracted `state` sub-object is passed along so `write_bgp_neighbor` reads
+`session-state` and `peer-as` from the correct nesting level rather than the top-level
+update value. `None` means callers use `u.value` directly (SRL native, OC paths).
+
+---

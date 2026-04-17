@@ -24,6 +24,9 @@ pub struct TargetConfig {
     pub username: Option<String>,
     /// Inline password — lab use only.
     pub password: Option<String>,
+    /// Human-readable device hostname for graph indexing (e.g. "srl1").
+    /// Used to match LLDP system-name when building CONNECTED_TO edges.
+    pub hostname: Option<String>,
 }
 
 impl TargetConfig {

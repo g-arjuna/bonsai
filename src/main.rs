@@ -65,6 +65,7 @@ async fn main() -> Result<()> {
             t.resolved_username(),
             t.resolved_password(),
             t.vendor.clone(),
+            t.hostname.clone(),
             t.tls_domain.clone().unwrap_or_default(),
             ca_cert_pem,
             tx.clone(),

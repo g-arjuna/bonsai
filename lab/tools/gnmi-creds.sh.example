@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# gnmi-creds.sh — device credentials for the multi-vendor quad lab.
+# Copy this file to gnmi-creds.sh (gitignored) and fill in your values.
+#
+# Usage: sourced by probe-gnmi.sh
+#   cp gnmi-creds.sh.example gnmi-creds.sh
+#   bash probe-gnmi.sh
+
+# ── Nokia SR Linux ────────────────────────────────────────────────────────────
+SRL_ADDR="172.100.101.11:57400"
+SRL_USER="admin"
+SRL_PASS="NokiaSrl1!"
+SRL_CA="../../lab/fast-iteration/mv-ca.pem"
+SRL_TLS_SERVER="clab-bonsai-mv-srl1"
+
+# ── Cisco IOS-XRd ─────────────────────────────────────────────────────────────
+XRD_ADDR="172.100.101.21:57400"
+XRD_USER="cisco"
+XRD_PASS="cisco123!"
+
+# ── Juniper cRPD ─────────────────────────────────────────────────────────────
+CRPD_ADDR="172.100.101.31:50051"
+# cRPD uses skip-authentication; no credentials needed
+
+# ── Arista cEOS ───────────────────────────────────────────────────────────────
+CEOS_ADDR="172.100.101.41:6030"
+CEOS_USER="admin"
+CEOS_PASS="admin"

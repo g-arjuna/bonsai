@@ -29,6 +29,7 @@ impl GraphStore {
             "CREATE NODE TABLE IF NOT EXISTS Device(\
                 address    STRING,\
                 vendor     STRING,\
+                hostname   STRING,\
                 updated_at TIMESTAMP_NS,\
                 PRIMARY KEY (address))",
         )
@@ -109,6 +110,11 @@ impl GraphStore {
         )
         .context("create REPORTED_BY rel")?;
 
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS CONNECTED_TO(FROM Interface TO Interface)",
+        )
+        .context("create CONNECTED_TO rel")?;
+
         info!("graph schema initialised");
         Ok(())
     }
@@ -139,8 +145,8 @@ fn write_blocking(db: &Database, update: &TelemetryUpdate) -> Result<()> {
             }
             write_interface(&conn, update, &if_name)
         }
-        TelemetryEvent::BgpNeighborState { peer_address } => {
-            write_bgp_neighbor(&conn, update, &peer_address)
+        TelemetryEvent::BgpNeighborState { peer_address, state_value } => {
+            write_bgp_neighbor(&conn, update, &peer_address, state_value.as_ref().unwrap_or(&update.value))
         }
         TelemetryEvent::LldpNeighbor { local_if, neighbor_id } => {
             write_lldp_neighbor(&conn, update, &local_if, &neighbor_id)
@@ -159,7 +165,7 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
     let id = format!("{}:{}", u.target, if_name);
     let now = ts(u.timestamp_ns);
 
-    upsert_device(conn, &u.target, &u.vendor, now.clone())?;
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, now.clone())?;
 
     let mut stmt = conn.prepare(
         "MERGE (i:Interface {id: $id}) \
@@ -183,13 +189,41 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
             ("id", Value::String(id.clone())),
             ("addr", Value::String(u.target.clone())),
             ("name", Value::String(if_name.to_string())),
-            // Try SRL native names first, then OpenConfig names (XRd/cRPD)
-            ("in_pkts",    Value::Int64(json_i64_multi(&u.value, &["in-packets",       "in-pkts"]))),
-            ("out_pkts",   Value::Int64(json_i64_multi(&u.value, &["out-packets",      "out-pkts"]))),
-            ("in_octets",  Value::Int64(json_i64_multi(&u.value, &["in-octets",        "in-octets"]))),
-            ("out_octets", Value::Int64(json_i64_multi(&u.value, &["out-octets",       "out-octets"]))),
-            ("in_errors",  Value::Int64(json_i64_multi(&u.value, &["in-error-packets", "in-errors"]))),
-            ("out_errors", Value::Int64(json_i64_multi(&u.value, &["out-error-packets","out-errors"]))),
+            // Field name priority: SRL native → XR native → Junos native → OC
+            ("in_pkts",    Value::Int64(json_i64_multi(&u.value, &[
+                "in-packets",        // SRL native
+                "packets-received",  // XR native (generic-counters)
+                "input-packets",     // Junos native
+                "in-pkts",           // OC
+            ]))),
+            ("out_pkts",   Value::Int64(json_i64_multi(&u.value, &[
+                "out-packets",       // SRL native
+                "packets-sent",      // XR native
+                "output-packets",    // Junos native
+                "out-pkts",          // OC
+            ]))),
+            ("in_octets",  Value::Int64(json_i64_multi(&u.value, &[
+                "in-octets",         // SRL native & OC
+                "bytes-received",    // XR native
+                "input-bytes",       // Junos native
+            ]))),
+            ("out_octets", Value::Int64(json_i64_multi(&u.value, &[
+                "out-octets",        // SRL native & OC
+                "bytes-sent",        // XR native
+                "output-bytes",      // Junos native
+            ]))),
+            ("in_errors",  Value::Int64(json_i64_multi(&u.value, &[
+                "in-error-packets",  // SRL native
+                "input-total-errors",// XR native
+                "input-errors",      // Junos native
+                "in-errors",         // OC
+            ]))),
+            ("out_errors", Value::Int64(json_i64_multi(&u.value, &[
+                "out-error-packets", // SRL native
+                "output-total-errors",// XR native
+                "output-errors",     // Junos native
+                "out-errors",        // OC
+            ]))),
             ("carrier",    Value::Int64(json_i64(&u.value, "carrier-transitions"))),
             ("ts", now.clone()),
         ],
@@ -216,12 +250,12 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
     Ok(())
 }
 
-fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &str) -> Result<()> {
+fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &str, val: &serde_json::Value) -> Result<()> {
     let id = format!("{}:{}", u.target, peer_addr);
     let now = ts(u.timestamp_ns);
-    let new_state = json_str(&u.value, "session-state").to_string();
+    let new_state = json_str(val, "session-state").to_string();
 
-    upsert_device(conn, &u.target, &u.vendor, now.clone())?;
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, now.clone())?;
 
     // Read current state before upserting so we can detect transitions.
     let old_state = get_bgp_state(conn, &id)?;
@@ -244,9 +278,9 @@ fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &st
             ("id", Value::String(id.clone())),
             ("addr", Value::String(u.target.clone())),
             ("peer", Value::String(peer_addr.to_string())),
-            ("peer_as", Value::Int64(json_i64(&u.value, "peer-as"))),
+            ("peer_as", Value::Int64(json_i64(val, "peer-as"))),
             ("state", Value::String(new_state.clone())),
-            ("estab", Value::Int64(json_i64(&u.value, "established-transitions"))),
+            ("estab", Value::Int64(json_i64(val, "established-transitions"))),
             ("ts", now.clone()),
         ],
     )
@@ -358,7 +392,7 @@ fn write_lldp_neighbor(
     let id = format!("{}:{}:{}", u.target, local_if, neighbor_id);
     let now = ts(u.timestamp_ns);
 
-    upsert_device(conn, &u.target, &u.vendor, now.clone())?;
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, now.clone())?;
 
     let mut stmt = conn
         .prepare(
@@ -404,6 +438,15 @@ fn write_lldp_neighbor(
     )
     .context("execute HAS_LLDP_NEIGHBOR merge")?;
 
+    // Best-effort: link the local Interface to the remote Interface via LLDP data.
+    let system_name = json_str(&u.value, "system-name").to_string();
+    let port_id     = json_str(&u.value, "port-id").to_string();
+    if !system_name.is_empty() && !port_id.is_empty() {
+        if let Err(e) = try_connect_interfaces(conn, &u.target, local_if, &system_name, &port_id) {
+            debug!(error = %e, local_if, system_name, port_id, "CONNECTED_TO skipped");
+        }
+    }
+
     info!(
         target = %u.target,
         local_if = %local_if,
@@ -414,11 +457,57 @@ fn write_lldp_neighbor(
     Ok(())
 }
 
-fn upsert_device(conn: &Connection<'_>, address: &str, vendor: &str, now: Value) -> Result<()> {
+/// Resolve the remote Interface by hostname+port_id and MERGE a CONNECTED_TO edge.
+/// Returns Ok(()) if the remote is not yet in the graph — caller treats that as a no-op.
+fn try_connect_interfaces(
+    conn: &Connection<'_>,
+    local_addr: &str,
+    local_if: &str,
+    remote_hostname: &str,
+    remote_port_id: &str,
+) -> Result<()> {
+    // Find the remote device's address via its configured hostname.
+    let mut find_stmt = conn
+        .prepare("MATCH (d:Device {hostname: $hn}) RETURN d.address")
+        .context("prepare remote device lookup")?;
+    let mut result = conn
+        .execute(&mut find_stmt, vec![("hn", Value::String(remote_hostname.to_string()))])
+        .context("execute remote device lookup")?;
+
+    let remote_addr = match result.next() {
+        Some(row) => match &row[0] {
+            Value::String(s) if !s.is_empty() => s.clone(),
+            _ => return Ok(()),
+        },
+        None => return Ok(()),
+    };
+
+    let local_if_id  = format!("{}:{}", local_addr, local_if);
+    let remote_if_id = format!("{}:{}", remote_addr, remote_port_id);
+
+    let mut edge_stmt = conn
+        .prepare(
+            "MATCH (li:Interface {id: $lid}), (ri:Interface {id: $rid}) \
+             MERGE (li)-[:CONNECTED_TO]->(ri)",
+        )
+        .context("prepare CONNECTED_TO merge")?;
+    conn.execute(
+        &mut edge_stmt,
+        vec![
+            ("lid", Value::String(local_if_id)),
+            ("rid", Value::String(remote_if_id)),
+        ],
+    )
+    .context("execute CONNECTED_TO merge")?;
+
+    Ok(())
+}
+
+fn upsert_device(conn: &Connection<'_>, address: &str, vendor: &str, hostname: &str, now: Value) -> Result<()> {
     let mut stmt = conn.prepare(
         "MERGE (d:Device {address: $addr}) \
-         ON CREATE SET d.vendor = $vendor, d.updated_at = $ts \
-         ON MATCH SET d.updated_at = $ts",
+         ON CREATE SET d.vendor = $vendor, d.hostname = $hn, d.updated_at = $ts \
+         ON MATCH SET d.hostname = $hn, d.updated_at = $ts",
     )
     .context("prepare Device upsert")?;
 
@@ -427,6 +516,7 @@ fn upsert_device(conn: &Connection<'_>, address: &str, vendor: &str, now: Value)
         vec![
             ("addr", Value::String(address.to_string())),
             ("vendor", Value::String(vendor.to_string())),
+            ("hn", Value::String(hostname.to_string())),
             ("ts", now),
         ],
     )
@@ -444,6 +534,7 @@ pub fn log_graph_summary(db: &Database) {
         ("interfaces",         "MATCH (n:Interface) RETURN count(n)"),
         ("bgp-neighbors",      "MATCH (n:BgpNeighbor) RETURN count(n)"),
         ("lldp-neighbors",     "MATCH (n:LldpNeighbor) RETURN count(n)"),
+        ("connected-to",       "MATCH ()-[r:CONNECTED_TO]->() RETURN count(r)"),
         ("state-change-events","MATCH (n:StateChangeEvent) RETURN count(n)"),
     ] {
         match conn.query(q) {
