@@ -15,8 +15,15 @@ _FLAP_REGISTRY = WindowRegistry(window_seconds=300)
 _FLAP_THRESHOLD = 3  # flaps in 5 min before firing BgpSessionFlap
 
 
+# Only fire when a session that WAS established drops to idle.
+# active->idle is just the BGP retry timer cycling — normal reconnection behavior.
+# opensent/openconfirm are establishment steps. Only established->idle is a true loss.
+_HARD_DOWN_STATES = {"idle"}
+_ESTABLISHED_FROM = {"established"}
+
+
 class BgpSessionDown(Detector):
-    """Session transitions to a non-established, non-active state — peer is down."""
+    """Session transitions to idle — peer was reset or administratively disabled."""
     rule_id = "bgp_session_down"
     severity = "critical"
     auto_remediate = True
@@ -27,13 +34,13 @@ class BgpSessionDown(Detector):
             return None
         detail = json.loads(event.detail_json or "{}")
         new_state = detail.get("new_state", "")
-        if new_state in ("established", "active", ""):
-            return None   # not a hard-down state
+        old_state = detail.get("old_state", "")
+        if new_state not in _HARD_DOWN_STATES or old_state not in _ESTABLISHED_FROM:
+            return None
         f = Features.from_event(event, detail)
         f.peer_address = detail.get("peer", "")
-        f.old_state    = detail.get("old_state", "")
+        f.old_state    = old_state
         f.new_state    = new_state
-        # How many peers are still up on this device?
         try:
             neighbors = client.get_bgp_neighbors(event.device_address)
             f.peer_count_total       = len(neighbors)
@@ -43,7 +50,7 @@ class BgpSessionDown(Detector):
         return f
 
     def detect(self, features: Features) -> Optional[str]:
-        if features.new_state not in ("established", "active", ""):
+        if features.new_state in _HARD_DOWN_STATES:
             return (
                 f"BGP peer {features.peer_address} on {features.device_address} "
                 f"transitioned {features.old_state} -> {features.new_state} "
@@ -61,6 +68,11 @@ class BgpSessionFlap(Detector):
         if event.event_type != "bgp_session_change":
             return None
         detail = json.loads(event.detail_json or "{}")
+        new_state = detail.get("new_state", "")
+        old_state = detail.get("old_state", "")
+        # Only count established->idle as a flap — retry cycles don't count.
+        if new_state not in _HARD_DOWN_STATES or old_state not in _ESTABLISHED_FROM:
+            return None
         peer = detail.get("peer", "")
         key  = f"{event.device_address}:{peer}"
         win  = _FLAP_REGISTRY.get(key)
