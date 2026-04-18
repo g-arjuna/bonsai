@@ -83,6 +83,57 @@ class BonsaiClient:
         """Return CONNECTED_TO topology edges."""
         return list(self.stub.GetTopology(pb.GetTopologyRequest()).edges)
 
+    def create_detection(
+        self,
+        device_address: str,
+        rule_id: str,
+        severity: str,
+        features_json: str,
+        fired_at_ns: int,
+    ):
+        req = pb.CreateDetectionRequest(
+            device_address=device_address,
+            rule_id=rule_id,
+            severity=severity,
+            features_json=features_json,
+            fired_at_ns=fired_at_ns,
+        )
+        resp = self.stub.CreateDetection(req)
+        if resp.error:
+            raise RuntimeError(f"CreateDetection error: {resp.error}")
+        return resp
+
+    def create_remediation(
+        self,
+        detection_id: str,
+        action: str,
+        status: str,
+        detail_json: str,
+        attempted_at_ns: int,
+        completed_at_ns: int = 0,
+    ):
+        req = pb.CreateRemediationRequest(
+            detection_id=detection_id,
+            action=action,
+            status=status,
+            detail_json=detail_json,
+            attempted_at_ns=attempted_at_ns,
+            completed_at_ns=completed_at_ns,
+        )
+        resp = self.stub.CreateRemediation(req)
+        if resp.error:
+            raise RuntimeError(f"CreateRemediation error: {resp.error}")
+        return resp
+
+    def push_remediation(self, target_address: str, yang_path: str, json_value: str):
+        """Execute a gNMI Set on a managed device. Credentials stay in the Rust process."""
+        req = pb.PushRemediationRequest(
+            target_address=target_address,
+            yang_path=yang_path,
+            json_value=json_value,
+        )
+        return self.stub.PushRemediation(req)
+
     def stream_events(
         self,
         event_types: list[str] | None = None,

@@ -446,6 +446,17 @@ fn build_subscriptions(caps: &ModelCapabilities) -> Vec<Subscription> {
         subs.push(sub_on_change(oc_path(&["network-instances"])));
     }
 
+    // ── Interface oper-status ─────────────────────────────────────────────────
+    if caps.has_srl_native {
+        // ON_CHANGE: fires immediately when an interface goes up or down.
+        subs.push(sub_on_change(
+            srl_path(&[("interface", &[("name", "*")])]).with_tail("oper-state"),
+        ));
+    } else if caps.has_oc_interfaces {
+        // cEOS: OC path carries oper-status; subscribe to state container.
+        subs.push(sub_on_change(oc_path(&["interfaces"])));
+    }
+
     // ── LLDP ──────────────────────────────────────────────────────────────────
     if caps.has_srl_native {
         subs.push(sub_on_change(srl_lldp_neighbors_path()));

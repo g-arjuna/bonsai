@@ -6,6 +6,7 @@ use lbug::{Connection, Value};
 use tokio_stream::wrappers::BroadcastStream;
 use tonic::{Request, Response, Status};
 
+use crate::gnmi_set::gnmi_set;
 use crate::graph::{BonsaiEvent, GraphStore};
 
 pub mod pb {
@@ -16,13 +17,25 @@ pub mod pb {
 pub use pb::bonsai_graph_server::{BonsaiGraph, BonsaiGraphServer};
 use pb::*;
 
+/// Connection info for a managed target — passed to BonsaiService so PushRemediation
+/// can open a gNMI channel without Python ever touching credentials.
+#[derive(Clone)]
+pub struct TargetConnInfo {
+    pub address:     String,
+    pub username:    Option<String>,
+    pub password:    Option<String>,
+    pub ca_cert_pem: Option<Vec<u8>>,
+    pub tls_domain:  String,
+}
+
 pub struct BonsaiService {
-    store: Arc<GraphStore>,
+    store:   Arc<GraphStore>,
+    targets: Arc<Vec<TargetConnInfo>>,
 }
 
 impl BonsaiService {
-    pub fn new(store: Arc<GraphStore>) -> Self {
-        Self { store }
+    pub fn new(store: Arc<GraphStore>, targets: Vec<TargetConnInfo>) -> Self {
+        Self { store, targets: Arc::new(targets) }
     }
 }
 
@@ -208,6 +221,50 @@ impl BonsaiGraph for BonsaiService {
         });
 
         Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn create_detection(&self, req: Request<CreateDetectionRequest>) -> Result<Response<CreateDetectionResponse>, Status> {
+        let r = req.into_inner();
+        match self.store.write_detection(
+            r.device_address, r.rule_id, r.severity, r.features_json, r.fired_at_ns,
+        ).await {
+            Ok(id)  => Ok(Response::new(CreateDetectionResponse { id, error: String::new() })),
+            Err(e)  => Ok(Response::new(CreateDetectionResponse { id: String::new(), error: e.to_string() })),
+        }
+    }
+
+    async fn create_remediation(&self, req: Request<CreateRemediationRequest>) -> Result<Response<CreateRemediationResponse>, Status> {
+        let r = req.into_inner();
+        match self.store.write_remediation(
+            r.detection_id, r.action, r.status, r.detail_json, r.attempted_at_ns, r.completed_at_ns,
+        ).await {
+            Ok(id)  => Ok(Response::new(CreateRemediationResponse { id, error: String::new() })),
+            Err(e)  => Ok(Response::new(CreateRemediationResponse { id: String::new(), error: e.to_string() })),
+        }
+    }
+
+    async fn push_remediation(&self, req: Request<PushRemediationRequest>) -> Result<Response<PushRemediationResponse>, Status> {
+        let r = req.into_inner();
+        let target = self.targets.iter().find(|t| t.address == r.target_address);
+        let Some(t) = target else {
+            return Ok(Response::new(PushRemediationResponse {
+                success: false,
+                error: format!("unknown target '{}'", r.target_address),
+            }));
+        };
+        let result = gnmi_set(
+            &t.address,
+            t.username.as_deref(),
+            t.password.as_deref(),
+            t.ca_cert_pem.as_deref(),
+            &t.tls_domain,
+            &r.yang_path,
+            &r.json_value,
+        ).await;
+        match result {
+            Ok(())  => Ok(Response::new(PushRemediationResponse { success: true, error: String::new() })),
+            Err(e)  => Ok(Response::new(PushRemediationResponse { success: false, error: e.to_string() })),
+        }
     }
 }
 

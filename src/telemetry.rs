@@ -30,6 +30,12 @@ pub enum TelemetryEvent {
         /// whose native format differs from the flat-field shape expected by graph.rs.
         state_value: Option<serde_json::Value>,
     },
+    /// Interface operational status change (up/down). Emitted as a BonsaiEvent;
+    /// the Interface node itself is not updated (oper-status is not a counter).
+    InterfaceOperStatus {
+        if_name: String,
+        oper_status: String,
+    },
     Ignored,
 }
 
@@ -152,6 +158,31 @@ impl TelemetryUpdate {
         {
             if let Some(name) = extract_bracketed(&self.path, "interface[name=") {
                 return TelemetryEvent::InterfaceStats { if_name: name };
+            }
+        }
+
+        // ── SRL native oper-state (ON_CHANGE) ────────────────────────────────
+        // interface[name=X]/oper-state  →  {"oper-state": "up"/"down"}
+        if self.path.contains("interface[name=") && self.path.ends_with("/oper-state") {
+            if let Some(name) = extract_bracketed(&self.path, "interface[name=") {
+                let status = json_str(&self.value, "oper-state").to_string();
+                if !status.is_empty() {
+                    return TelemetryEvent::InterfaceOperStatus { if_name: name, oper_status: status };
+                }
+            }
+        }
+
+        // ── OC oper-status (cEOS leaf update) ────────────────────────────────
+        // interfaces/interface[name=X]/state → {"oper-status": "UP"/"DOWN"}
+        if self.path.contains("interfaces/interface[name=")
+            && (self.path.ends_with("/state") || self.path.ends_with(']'))
+            && json_find(&self.value, "oper-status").is_some()
+        {
+            if let Some(name) = extract_bracketed(&self.path, "interface[name=") {
+                let status = json_str(&self.value, "oper-status").to_lowercase();
+                if !status.is_empty() {
+                    return TelemetryEvent::InterfaceOperStatus { if_name: name, oper_status: status };
+                }
             }
         }
 

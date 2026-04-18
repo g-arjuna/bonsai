@@ -132,12 +132,135 @@ impl GraphStore {
         )
         .context("create CONNECTED_TO rel")?;
 
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS DetectionEvent(\
+                id             STRING,\
+                device_address STRING,\
+                rule_id        STRING,\
+                severity       STRING,\
+                features_json  STRING,\
+                fired_at       TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create DetectionEvent table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS TRIGGERED(FROM Device TO DetectionEvent)",
+        )
+        .context("create TRIGGERED rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS Remediation(\
+                id             STRING,\
+                detection_id   STRING,\
+                action         STRING,\
+                status         STRING,\
+                detail_json    STRING,\
+                attempted_at   TIMESTAMP_NS,\
+                completed_at   TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create Remediation table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS RESOLVES(FROM Remediation TO DetectionEvent)",
+        )
+        .context("create RESOLVES rel")?;
+
         info!("graph schema initialised");
         Ok(())
     }
 
     pub fn db(&self) -> Arc<Database> {
         Arc::clone(&self.db)
+    }
+
+    /// Write a DetectionEvent into the graph; returns the new node UUID.
+    pub async fn write_detection(
+        &self,
+        device_address: String,
+        rule_id: String,
+        severity: String,
+        features_json: String,
+        fired_at_ns: i64,
+    ) -> Result<String> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("detection write connection")?;
+            let id  = Uuid::new_v4().to_string();
+            let now = ts(fired_at_ns);
+            let mut stmt = conn.prepare(
+                "CREATE (e:DetectionEvent {\
+                    id: $id, device_address: $addr, rule_id: $rule,\
+                    severity: $sev, features_json: $feats, fired_at: $ts})",
+            ).context("prepare DetectionEvent insert")?;
+            conn.execute(&mut stmt, vec![
+                ("id",   Value::String(id.clone())),
+                ("addr", Value::String(device_address.clone())),
+                ("rule", Value::String(rule_id)),
+                ("sev",  Value::String(severity)),
+                ("feats",Value::String(features_json)),
+                ("ts",   now),
+            ]).context("execute DetectionEvent insert")?;
+            // TRIGGERED edge Device → DetectionEvent
+            let mut edge = conn.prepare(
+                "MATCH (d:Device {address: $addr}), (e:DetectionEvent {id: $id})\
+                 CREATE (d)-[:TRIGGERED]->(e)",
+            ).context("prepare TRIGGERED edge")?;
+            conn.execute(&mut edge, vec![
+                ("addr", Value::String(device_address)),
+                ("id",   Value::String(id.clone())),
+            ]).context("execute TRIGGERED edge")?;
+            Ok::<String, anyhow::Error>(id)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    /// Write a Remediation node and link it to its DetectionEvent.
+    pub async fn write_remediation(
+        &self,
+        detection_id: String,
+        action: String,
+        status: String,
+        detail_json: String,
+        attempted_at_ns: i64,
+        completed_at_ns: i64,
+    ) -> Result<String> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("remediation write connection")?;
+            let id       = Uuid::new_v4().to_string();
+            let att_ts   = ts(attempted_at_ns);
+            let comp_ts  = ts(if completed_at_ns > 0 { completed_at_ns } else { attempted_at_ns });
+            let mut stmt = conn.prepare(
+                "CREATE (r:Remediation {\
+                    id: $id, detection_id: $did, action: $action,\
+                    status: $status, detail_json: $detail,\
+                    attempted_at: $att, completed_at: $comp})",
+            ).context("prepare Remediation insert")?;
+            conn.execute(&mut stmt, vec![
+                ("id",     Value::String(id.clone())),
+                ("did",    Value::String(detection_id.clone())),
+                ("action", Value::String(action)),
+                ("status", Value::String(status)),
+                ("detail", Value::String(detail_json)),
+                ("att",    att_ts),
+                ("comp",   comp_ts),
+            ]).context("execute Remediation insert")?;
+            // RESOLVES edge Remediation → DetectionEvent
+            let mut edge = conn.prepare(
+                "MATCH (r:Remediation {id: $id}), (e:DetectionEvent {id: $did})\
+                 CREATE (r)-[:RESOLVES]->(e)",
+            ).context("prepare RESOLVES edge")?;
+            conn.execute(&mut edge, vec![
+                ("id",  Value::String(id.clone())),
+                ("did", Value::String(detection_id)),
+            ]).context("execute RESOLVES edge")?;
+            Ok::<String, anyhow::Error>(id)
+        })
+        .await
+        .context("spawn_blocking panicked")?
     }
 
     /// Write a single telemetry update to the graph.
@@ -168,6 +291,9 @@ fn write_blocking(db: &Database, update: &TelemetryUpdate, event_tx: &broadcast:
         }
         TelemetryEvent::LldpNeighbor { local_if, neighbor_id, state_value } => {
             write_lldp_neighbor(&conn, update, &local_if, &neighbor_id, state_value.as_ref().unwrap_or(&update.value))
+        }
+        TelemetryEvent::InterfaceOperStatus { if_name, oper_status } => {
+            emit_oper_status_event(&conn, update, &if_name, &oper_status, event_tx)
         }
         TelemetryEvent::Ignored => Ok(()),
     }
@@ -557,6 +683,29 @@ fn upsert_device(conn: &Connection<'_>, address: &str, vendor: &str, hostname: &
     Ok(())
 }
 
+fn emit_oper_status_event(
+    conn: &Connection<'_>,
+    u: &TelemetryUpdate,
+    if_name: &str,
+    oper_status: &str,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+) -> Result<()> {
+    let detail = format!(
+        r#"{{"if_name":"{}","oper_status":"{}"}}"#,
+        if_name, oper_status
+    );
+    let _ = event_tx.send(BonsaiEvent {
+        device_address: u.target.clone(),
+        event_type:     "interface_oper_status_change".to_string(),
+        detail_json:    detail,
+        occurred_at_ns: u.timestamp_ns,
+    });
+    // Best-effort: ensure Device node exists so graph queries stay consistent.
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, ts(u.timestamp_ns))?;
+    debug!(target = %u.target, if_name, oper_status, "interface oper-status event emitted");
+    Ok(())
+}
+
 // ── diagnostic query (callable from main after startup) ──────────────────────
 
 pub fn log_graph_summary(db: &Database) {
@@ -568,6 +717,8 @@ pub fn log_graph_summary(db: &Database) {
         ("lldp-neighbors",     "MATCH (n:LldpNeighbor) RETURN count(n)"),
         ("connected-to",       "MATCH ()-[r:CONNECTED_TO]->() RETURN count(r)"),
         ("state-change-events","MATCH (n:StateChangeEvent) RETURN count(n)"),
+        ("detection-events",   "MATCH (n:DetectionEvent) RETURN count(n)"),
+        ("remediations",       "MATCH (n:Remediation) RETURN count(n)"),
     ] {
         match conn.query(q) {
             Ok(mut r) => {

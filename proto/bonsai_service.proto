@@ -67,7 +67,7 @@ message TopologyEdge {
 message GetTopologyRequest  {}
 message GetTopologyResponse { repeated TopologyEdge edges = 1; }
 
-// ── Real-time event streaming (Phase 4 rules engine) ─────────────────────────
+// ── Real-time event streaming ─────────────────────────────────────────────────
 
 message StreamEventsRequest {
   repeated string event_types    = 1;  // empty = all types
@@ -81,19 +81,64 @@ message StateEvent {
   int64  occurred_at_ns = 4;
 }
 
+// ── Phase 4: Detection + Remediation writes ───────────────────────────────────
+
+message CreateDetectionRequest {
+  string device_address = 1;
+  string rule_id        = 2;
+  string severity       = 3;  // "info" | "warn" | "critical"
+  string features_json  = 4;  // full feature vector — stored for Phase 5 ML training
+  int64  fired_at_ns    = 5;
+}
+message CreateDetectionResponse {
+  string id    = 1;  // UUID of the new DetectionEvent node
+  string error = 2;
+}
+
+message CreateRemediationRequest {
+  string detection_id    = 1;
+  string action          = 2;
+  string status          = 3;  // "pending" | "success" | "failed" | "skipped"
+  string detail_json     = 4;
+  int64  attempted_at_ns = 5;
+  int64  completed_at_ns = 6;  // 0 if still pending
+}
+message CreateRemediationResponse {
+  string id    = 1;
+  string error = 2;
+}
+
+// ── Phase 4: gNMI Set back to device ─────────────────────────────────────────
+
+message PushRemediationRequest {
+  string target_address = 1;   // must match a [[target]] address in bonsai.toml
+  string yang_path      = 2;   // e.g. "interface[name=ethernet-1/1]/admin-state"
+  string json_value     = 3;   // RFC 7951 JSON value, e.g. "\"disable\""
+}
+message PushRemediationResponse {
+  bool   success = 1;
+  string error   = 2;
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 service BonsaiGraph {
-  // Execute a read-only Cypher query; rows returned as a JSON array-of-arrays.
+  // Execute a read-only Cypher query.
   rpc Query(QueryRequest) returns (QueryResponse);
 
-  // Typed helpers — preferred over raw Cypher for common access patterns.
+  // Typed read helpers.
   rpc GetDevices(GetDevicesRequest)           returns (GetDevicesResponse);
   rpc GetInterfaces(GetInterfacesRequest)     returns (GetInterfacesResponse);
   rpc GetBgpNeighbors(GetBgpNeighborsRequest) returns (GetBgpNeighborsResponse);
   rpc GetTopology(GetTopologyRequest)         returns (GetTopologyResponse);
 
-  // Server-streaming: push StateChangeEvents to the caller as they occur.
-  // Primary entry point for the Phase 4 rules engine.
+  // Server-streaming: push events to the caller as they occur.
   rpc StreamEvents(StreamEventsRequest) returns (stream StateEvent);
+
+  // Phase 4: write detections and remediations into the graph.
+  rpc CreateDetection(CreateDetectionRequest)   returns (CreateDetectionResponse);
+  rpc CreateRemediation(CreateRemediationRequest) returns (CreateRemediationResponse);
+
+  // Phase 4: execute a gNMI Set on a managed device (credentials stay in Rust).
+  rpc PushRemediation(PushRemediationRequest) returns (PushRemediationResponse);
 }

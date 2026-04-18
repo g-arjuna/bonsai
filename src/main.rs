@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use tracing::{info, warn};
 
-use bonsai::{api::{BonsaiGraphServer, BonsaiService}, config, graph, subscriber, telemetry};
+use bonsai::{api::{BonsaiGraphServer, BonsaiService, TargetConnInfo}, config, graph, subscriber, telemetry};
 
 const CONFIG_PATH: &str = "bonsai.toml";
 const GRAPH_PATH_DEFAULT: &str = "bonsai.db";
@@ -74,10 +74,26 @@ async fn main() -> Result<()> {
         handles.push(tokio::spawn(async move { sub.run_forever(rx).await }));
     }
 
+    // Build TargetConnInfo vec for PushRemediation credential lookup.
+    let mut target_conn_infos: Vec<TargetConnInfo> = Vec::new();
+    for t in &cfg.target {
+        let ca_cert_pem = match &t.ca_cert {
+            Some(path) => tokio::fs::read(path).await.ok(),
+            None => None,
+        };
+        target_conn_infos.push(TargetConnInfo {
+            address:     t.address.clone(),
+            username:    t.resolved_username(),
+            password:    t.resolved_password(),
+            ca_cert_pem,
+            tls_domain:  t.tls_domain.clone().unwrap_or_default(),
+        });
+    }
+
     // Start gRPC API server
     let api_addr = cfg.api_addr.parse()
         .with_context(|| format!("invalid api_addr '{}'", cfg.api_addr))?;
-    let svc = BonsaiGraphServer::new(BonsaiService::new(std::sync::Arc::clone(&graph)));
+    let svc = BonsaiGraphServer::new(BonsaiService::new(std::sync::Arc::clone(&graph), target_conn_infos));
     info!(%api_addr, "gRPC API server listening");
     tokio::spawn(async move {
         if let Err(e) = tonic::transport::Server::builder()
