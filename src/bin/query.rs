@@ -39,6 +39,17 @@ fn main() {
         println!("  {:?}", row);
     }
 
+    println!("\n=== BGP FLAPS (crpd peer 10.1.31.0, last 20) ===");
+    let mut r = conn.query(
+        "MATCH (d:Device)-[:REPORTED_BY]->(e:StateChangeEvent) \
+         WHERE e.detail CONTAINS '10.1.31.0' OR e.detail CONTAINS '10.1.23.1' \
+         RETURN d.address, e.detail, e.occurred_at \
+         ORDER BY e.occurred_at DESC LIMIT 20"
+    ).unwrap();
+    while let Some(row) = r.next() {
+        println!("  {:?}", row);
+    }
+
     println!("\n=== STATE CHANGE EVENTS (last 10) ===");
     let mut r = conn.query(
         "MATCH (d:Device)-[:REPORTED_BY]->(e:StateChangeEvent) \

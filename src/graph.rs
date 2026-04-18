@@ -253,7 +253,7 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
 fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &str, val: &serde_json::Value) -> Result<()> {
     let id = format!("{}:{}", u.target, peer_addr);
     let now = ts(u.timestamp_ns);
-    let new_state = json_str(val, "session-state").to_string();
+    let new_state = json_str(val, "session-state").to_lowercase();
 
     upsert_device(conn, &u.target, &u.vendor, &u.hostname, now.clone())?;
 
