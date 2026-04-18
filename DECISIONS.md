@@ -302,3 +302,30 @@ the pre-extracted `state` sub-object is passed along so `write_bgp_neighbor` rea
 update value. `None` means callers use `u.value` directly (SRL native, OC paths).
 
 ---
+
+## 2026-04-18 — XRd native LLDP: SAMPLE subscription + blob walker
+
+**Decision**: Subscribe to XRd's native LLDP path
+(`Cisco-IOS-XR-ethernet-lldp-oper:lldp/nodes/node/neighbors/details/detail`)
+using SAMPLE mode (60 s interval), not ON_CHANGE. Walk the `lldp-neighbor[0]`
+array to normalize into `{"chassis-id", "system-name", "port-id"}` before writing.
+
+**Why SAMPLE instead of ON_CHANGE**: LLDP neighbors discovered before the subscription
+starts will never trigger an ON_CHANGE event. SAMPLE guarantees the initial sync
+includes all existing neighbors regardless of when they were discovered.
+
+**Why native path**: The OC path (`openconfig/lldp`) root subscription returned no
+data from XRd even though `openconfig-lldp` is advertised in Capabilities. The native
+`ethernet-lldp-oper` path responds correctly.
+
+**`LldpNeighbor` carries `state_value: Option<Value>`**: Same pattern as `BgpNeighborState`.
+The walker produces a flat `{"chassis-id", "system-name", "port-id"}` object so
+`write_lldp_neighbor` works identically for SRL native, OC (cEOS), and XRd native
+without any vendor branching in graph.rs.
+
+**XRd hostname**: Default IOS-XR hostname is "ios". Added `hostname xrd1` to xrd1.cfg
+so LLDP broadcasts `system-name=xrd1`, allowing `try_connect_interfaces` to resolve
+the Device node from SRL/cEOS LLDP data. Without this, edges from SRL/cEOS to XRd
+are silently skipped (device lookup returns no rows).
+
+---

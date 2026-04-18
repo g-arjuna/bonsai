@@ -148,8 +148,8 @@ fn write_blocking(db: &Database, update: &TelemetryUpdate) -> Result<()> {
         TelemetryEvent::BgpNeighborState { peer_address, state_value } => {
             write_bgp_neighbor(&conn, update, &peer_address, state_value.as_ref().unwrap_or(&update.value))
         }
-        TelemetryEvent::LldpNeighbor { local_if, neighbor_id } => {
-            write_lldp_neighbor(&conn, update, &local_if, &neighbor_id)
+        TelemetryEvent::LldpNeighbor { local_if, neighbor_id, state_value } => {
+            write_lldp_neighbor(&conn, update, &local_if, &neighbor_id, state_value.as_ref().unwrap_or(&update.value))
         }
         TelemetryEvent::Ignored => Ok(()),
     }
@@ -388,12 +388,15 @@ fn write_lldp_neighbor(
     u: &TelemetryUpdate,
     local_if: &str,
     neighbor_id: &str,
+    val: &serde_json::Value,
 ) -> Result<()> {
     let id = format!("{}:{}:{}", u.target, local_if, neighbor_id);
     let now = ts(u.timestamp_ns);
 
     upsert_device(conn, &u.target, &u.vendor, &u.hostname, now.clone())?;
 
+    // cEOS sends chassis-id and system-name/port-id in separate notifications.
+    // Use CASE WHEN to preserve existing non-empty values on partial updates.
     let mut stmt = conn
         .prepare(
             "MERGE (n:LldpNeighbor {id: $id}) \
@@ -402,8 +405,10 @@ fn write_lldp_neighbor(
                n.chassis_id = $chassis, n.system_name = $sysname, n.port_id = $port, \
                n.updated_at = $ts \
              ON MATCH SET \
-               n.chassis_id = $chassis, n.system_name = $sysname, n.port_id = $port, \
-               n.updated_at = $ts",
+               n.chassis_id  = CASE WHEN $chassis  <> '' THEN $chassis  ELSE n.chassis_id  END, \
+               n.system_name = CASE WHEN $sysname  <> '' THEN $sysname  ELSE n.system_name END, \
+               n.port_id     = CASE WHEN $port     <> '' THEN $port     ELSE n.port_id     END, \
+               n.updated_at  = $ts",
         )
         .context("prepare LldpNeighbor upsert")?;
 
@@ -414,9 +419,9 @@ fn write_lldp_neighbor(
             ("addr", Value::String(u.target.clone())),
             ("local_if", Value::String(local_if.to_string())),
             ("nid", Value::String(neighbor_id.to_string())),
-            ("chassis", Value::String(json_str(&u.value, "chassis-id").to_string())),
-            ("sysname", Value::String(json_str(&u.value, "system-name").to_string())),
-            ("port", Value::String(json_str(&u.value, "port-id").to_string())),
+            ("chassis", Value::String(json_str(val, "chassis-id").to_string())),
+            ("sysname", Value::String(json_str(val, "system-name").to_string())),
+            ("port", Value::String(json_str(val, "port-id").to_string())),
             ("ts", now.clone()),
         ],
     )
@@ -439,8 +444,8 @@ fn write_lldp_neighbor(
     .context("execute HAS_LLDP_NEIGHBOR merge")?;
 
     // Best-effort: link the local Interface to the remote Interface via LLDP data.
-    let system_name = json_str(&u.value, "system-name").to_string();
-    let port_id     = json_str(&u.value, "port-id").to_string();
+    let system_name = json_str(val, "system-name").to_string();
+    let port_id     = json_str(val, "port-id").to_string();
     if !system_name.is_empty() && !port_id.is_empty() {
         if let Err(e) = try_connect_interfaces(conn, &u.target, local_if, &system_name, &port_id) {
             debug!(error = %e, local_if, system_name, port_id, "CONNECTED_TO skipped");
@@ -450,8 +455,8 @@ fn write_lldp_neighbor(
     info!(
         target = %u.target,
         local_if = %local_if,
-        chassis_id = %json_str(&u.value, "chassis-id"),
-        system_name = %json_str(&u.value, "system-name"),
+        chassis_id = %json_str(val, "chassis-id"),
+        system_name = %json_str(val, "system-name"),
         "LLDP neighbor written"
     );
     Ok(())

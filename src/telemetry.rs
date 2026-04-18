@@ -26,6 +26,9 @@ pub enum TelemetryEvent {
     LldpNeighbor {
         local_if: String,
         neighbor_id: String,
+        /// Pre-normalized `{"chassis-id", "system-name", "port-id"}` for vendors
+        /// whose native format differs from the flat-field shape expected by graph.rs.
+        state_value: Option<serde_json::Value>,
     },
     Ignored,
 }
@@ -59,21 +62,25 @@ impl TelemetryUpdate {
                 extract_bracketed(&self.path, "lldp/interface[name="),
                 extract_bracketed(&self.path, "neighbor[id="),
             ) {
-                return TelemetryEvent::LldpNeighbor { local_if, neighbor_id };
+                return TelemetryEvent::LldpNeighbor { local_if, neighbor_id, state_value: None };
             }
         }
 
         // OC LLDP (cEOS): lldp/interfaces/interface[name=X]/neighbors/neighbor[id=Y]/state
+        // cEOS sends chassis-id and system-name/port-id in SEPARATE notifications,
+        // so trigger on any useful LLDP field, not just chassis-id.
         if self.path.contains("lldp/interfaces/interface[name=")
             && self.path.contains("/neighbors/neighbor[id=")
             && (self.path.ends_with("/state") || self.path.ends_with(']'))
-            && json_find(&self.value, "chassis-id").is_some()
+            && (json_find(&self.value, "chassis-id").is_some()
+                || json_find(&self.value, "system-name").is_some()
+                || json_find(&self.value, "port-id").is_some())
         {
             if let (Some(local_if), Some(neighbor_id)) = (
                 extract_bracketed(&self.path, "lldp/interfaces/interface[name="),
                 extract_bracketed(&self.path, "neighbor[id="),
             ) {
-                return TelemetryEvent::LldpNeighbor { local_if, neighbor_id };
+                return TelemetryEvent::LldpNeighbor { local_if, neighbor_id, state_value: None };
             }
         }
 
@@ -119,6 +126,23 @@ impl TelemetryUpdate {
             }
         }
 
+        // ── Cisco IOS-XR native LLDP (ethernet-lldp-oper detail) ────────────────
+        // path: lldp/nodes/node[node-name=X]/neighbors/details/detail[interface-name=Y][device-id=Z]
+        // XRd drops the module prefix; keys: interface-name (local), device-id (neighbor system-name).
+        if self.path.contains("lldp/nodes/node[node-name=")
+            && self.path.contains("[interface-name=")
+            && self.path.contains("[device-id=")
+            && self.value.get("lldp-neighbor").is_some()
+        {
+            if let (Some(local_if), Some(neighbor_id)) = (
+                extract_bracketed(&self.path, "interface-name="),
+                extract_bracketed(&self.path, "device-id="),
+            ) {
+                let state_value = walk_xr_lldp_blob(&self.value);
+                return TelemetryEvent::LldpNeighbor { local_if, neighbor_id, state_value };
+            }
+        }
+
         // ── Junos native interface stats (no origin → junos-state-interfaces) ─
         // interfaces/interface[name=X]/... with Junos field names (input-bytes, output-bytes)
         if self.path.starts_with("interfaces/interface[name=")
@@ -154,6 +178,26 @@ fn walk_xrd_bgp_blob(value: &JsonValue) -> Option<TelemetryEvent> {
         peer_address,
         state_value: Some(state.clone()),
     })
+}
+
+/// Normalize an XRd `lldp/nodes/.../detail` blob into a flat `{"chassis-id", "system-name", "port-id"}`.
+/// XR native: value.lldp-neighbor[0] has chassis-id, port-id-detail, and detail.system-name.
+fn walk_xr_lldp_blob(value: &JsonValue) -> Option<JsonValue> {
+    let nbr = value.get("lldp-neighbor")?;
+    let entry = nbr.get(0).or_else(|| Some(nbr))?;
+    let chassis_id  = json_find(entry, "chassis-id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let port_id     = json_find(entry, "port-id-detail").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let system_name = entry.get("detail")
+        .and_then(|d| json_find(d, "system-name"))
+        .and_then(|v| v.as_str())
+        .or_else(|| json_find(entry, "system-name").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+    Some(serde_json::json!({
+        "chassis-id":  chassis_id,
+        "system-name": system_name,
+        "port-id":     port_id,
+    }))
 }
 
 fn extract_bracketed(path: &str, prefix: &str) -> Option<String> {

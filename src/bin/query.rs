@@ -1,8 +1,9 @@
 use lbug::{Connection, Database, SystemConfig};
 
 fn main() {
-    let db = Database::new("bonsai.db", SystemConfig::default())
-        .expect("failed to open bonsai.db — run from project root");
+    let db_path = std::env::args().nth(1).unwrap_or_else(|| "bonsai-mv.db".to_string());
+    let db = Database::new(&db_path, SystemConfig::default())
+        .unwrap_or_else(|_| panic!("failed to open {db_path} — run from project root"));
     let conn = Connection::new(&db).unwrap();
 
     println!("\n=== DEVICES ===");
@@ -59,6 +60,7 @@ fn main() {
         ("PEERS_WITH edges",       "MATCH ()-[r:PEERS_WITH]->() RETURN count(r)"),
         ("HAS_LLDP_NEIGHBOR edges","MATCH ()-[r:HAS_LLDP_NEIGHBOR]->() RETURN count(r)"),
         ("REPORTED_BY edges",      "MATCH ()-[r:REPORTED_BY]->() RETURN count(r)"),
+        ("CONNECTED_TO edges",     "MATCH ()-[r:CONNECTED_TO]->() RETURN count(r)"),
     ] {
         let mut r = conn.query(q).unwrap();
         if let Some(row) = r.next() {

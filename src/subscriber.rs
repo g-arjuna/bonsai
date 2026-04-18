@@ -187,6 +187,7 @@ impl GnmiSubscriber {
                                     leaf_groups.into_iter().map(|(p, obj)| (p, serde_json::Value::Object(obj)))
                                 );
                                 for (path, val) in all_updates {
+                                    debug!(target = %target, path = %path, "update");
                                     let msg = TelemetryUpdate {
                                         target: target.clone(),
                                         vendor: caps.vendor_label.clone(),
@@ -448,6 +449,9 @@ fn build_subscriptions(caps: &ModelCapabilities) -> Vec<Subscription> {
     // ── LLDP ──────────────────────────────────────────────────────────────────
     if caps.has_srl_native {
         subs.push(sub_on_change(srl_lldp_neighbors_path()));
+    } else if caps.has_xr_native {
+        // SAMPLE because ON_CHANGE misses neighbors already discovered before subscription starts.
+        subs.push(sub_sample(xr_native_lldp_path(), 60_000_000_000));
     } else if caps.has_oc_lldp {
         subs.push(sub_on_change(oc_path(&["lldp"])));
     }
@@ -533,6 +537,22 @@ fn srl_lldp_neighbors_path() -> Path {
         ("interface", &[("name", "*")]),
         ("neighbor",  &[("id", "*")]),
     ])
+}
+
+/// Cisco IOS-XR native LLDP neighbor details.
+fn xr_native_lldp_path() -> Path {
+    Path {
+        origin: String::new(),
+        elem: vec![
+            PathElem { name: "Cisco-IOS-XR-ethernet-lldp-oper:lldp".to_string(), key: Default::default() },
+            PathElem { name: "nodes".to_string(), key: Default::default() },
+            PathElem { name: "node".to_string(), key: Default::default() },
+            PathElem { name: "neighbors".to_string(), key: Default::default() },
+            PathElem { name: "details".to_string(), key: Default::default() },
+            PathElem { name: "detail".to_string(), key: Default::default() },
+        ],
+        ..Default::default()
+    }
 }
 
 /// Cisco IOS-XR native interface counters.
