@@ -229,7 +229,7 @@ impl BonsaiGraph for BonsaiService {
             r.device_address, r.rule_id, r.severity, r.features_json, r.fired_at_ns,
         ).await {
             Ok(id)  => Ok(Response::new(CreateDetectionResponse { id, error: String::new() })),
-            Err(e)  => Ok(Response::new(CreateDetectionResponse { id: String::new(), error: e.to_string() })),
+            Err(e)  => Ok(Response::new(CreateDetectionResponse { id: String::new(), error: format!("{:#}", e) })),
         }
     }
 
@@ -239,7 +239,7 @@ impl BonsaiGraph for BonsaiService {
             r.detection_id, r.action, r.status, r.detail_json, r.attempted_at_ns, r.completed_at_ns,
         ).await {
             Ok(id)  => Ok(Response::new(CreateRemediationResponse { id, error: String::new() })),
-            Err(e)  => Ok(Response::new(CreateRemediationResponse { id: String::new(), error: e.to_string() })),
+            Err(e)  => Ok(Response::new(CreateRemediationResponse { id: String::new(), error: format!("{:#}", e) })),
         }
     }
 

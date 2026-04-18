@@ -1,58 +1,42 @@
 # bonsai.toml — runtime configuration
-# Copy this file to bonsai.toml, fill in your targets, and keep it out of git.
-# bonsai.toml is listed in .gitignore. Never commit credentials.
+# Copy to bonsai.toml, fill in credentials, keep out of git (it is gitignored).
+# Never commit credentials.
+#
+# Phase 4 lab: bonsai-p4 (3x SRL + 1x XRd, mgmt 172.100.102.x)
+# Run lab/fast-iteration/deploy-p4.sh to generate p4-ca.pem and bring up nodes.
 
 graph_path = "bonsai.db"
 
-# ── Nokia SR Linux (TLS) ──────────────────────────────────────────────────────
+# ── Nokia SR Linux — spine (TLS) ─────────────────────────────────────────────
 [[target]]
-address    = "172.100.100.11:57400"
-hostname   = "srl1"
-tls_domain = "clab-bonsai-srl-srl1"
-ca_cert    = "lab/fast-iteration/ca.pem"
-# vendor auto-detected via Capabilities; uncomment to override:
-# vendor = "nokia_srl"
+address    = "172.100.102.11:57400"
+hostname   = "srl-spine1"
+tls_domain = "clab-bonsai-p4-srl-spine1"
+ca_cert    = "lab/fast-iteration/p4-ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
 
-# Option A: credentials from environment variables (preferred)
-username_env = "BONSAI_SRL1_USER"
-password_env = "BONSAI_SRL1_PASS"
-
-# Option B: inline credentials — lab use only, never commit
-# username = "admin"
-# password = "changeme"
-
+# ── Nokia SR Linux — leaf1 (TLS) ─────────────────────────────────────────────
 [[target]]
-address    = "172.100.100.12:57400"
-hostname   = "srl2"
-tls_domain = "clab-bonsai-srl-srl2"
-ca_cert    = "lab/fast-iteration/ca.pem"
-username_env = "BONSAI_SRL2_USER"
-password_env = "BONSAI_SRL2_PASS"
+address    = "172.100.102.12:57400"
+hostname   = "srl-leaf1"
+tls_domain = "clab-bonsai-p4-srl-leaf1"
+ca_cert    = "lab/fast-iteration/p4-ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
 
+# ── Nokia SR Linux — leaf2 (TLS) ─────────────────────────────────────────────
 [[target]]
-address    = "172.100.100.13:57400"
-hostname   = "srl3"
-tls_domain = "clab-bonsai-srl-srl3"
-ca_cert    = "lab/fast-iteration/ca.pem"
-username_env = "BONSAI_SRL3_USER"
-password_env = "BONSAI_SRL3_PASS"
+address    = "172.100.102.13:57400"
+hostname   = "srl-leaf2"
+tls_domain = "clab-bonsai-p4-srl-leaf2"
+ca_cert    = "lab/fast-iteration/p4-ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
 
-# ── Cisco IOS-XRd (no TLS) ───────────────────────────────────────────────────
-# [[target]]
-# address  = "172.100.101.21:57400"
-# hostname = "xrd1"
-# username = "cisco"
-# password = "cisco123!"
-
-# ── Juniper cRPD (no TLS, no credentials) ────────────────────────────────────
-# [[target]]
-# address  = "172.100.101.31:50051"
-# hostname = "crpd1"
-# skip-authentication is configured on the device; no credentials needed
-
-# ── Arista cEOS (no TLS, gNMI on port 6030) ──────────────────────────────────
-# [[target]]
-# address  = "172.100.101.41:6030"
-# hostname = "ceos1"
-# username = "admin"
-# password = "admin"
+# ── Cisco IOS-XRd — PE (no TLS) ──────────────────────────────────────────────
+[[target]]
+address  = "172.100.102.21:57400"
+hostname = "xrd-pe1"
+username = "cisco"
+password = "cisco123!"

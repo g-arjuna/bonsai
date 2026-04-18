@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use lbug::{Connection, Database, SystemConfig, Value};
@@ -19,8 +19,11 @@ pub struct BonsaiEvent {
 }
 
 pub struct GraphStore {
-    db:       Arc<Database>,
-    event_tx: broadcast::Sender<BonsaiEvent>,
+    db:         Arc<Database>,
+    event_tx:   broadcast::Sender<BonsaiEvent>,
+    /// KuzuDB permits only one concurrent write transaction. All spawn_blocking
+    /// write paths must hold this lock for the duration of their Connection.
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl GraphStore {
@@ -28,7 +31,7 @@ impl GraphStore {
         let db = Database::new(path, SystemConfig::default())
             .context("failed to open LadybugDB")?;
         let (event_tx, _) = broadcast::channel(1024);
-        let store = GraphStore { db: Arc::new(db), event_tx };
+        let store = GraphStore { db: Arc::new(db), event_tx, write_lock: Arc::new(Mutex::new(())) };
         store.init_schema()?;
         info!(path, "graph store opened");
         Ok(store)
@@ -184,15 +187,18 @@ impl GraphStore {
         features_json: String,
         fired_at_ns: i64,
     ) -> Result<String> {
-        let db = Arc::clone(&self.db);
+        let db         = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
         tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
             let conn = Connection::new(&db).context("detection write connection")?;
             let id  = Uuid::new_v4().to_string();
             let now = ts(fired_at_ns);
             let mut stmt = conn.prepare(
-                "CREATE (e:DetectionEvent {\
-                    id: $id, device_address: $addr, rule_id: $rule,\
-                    severity: $sev, features_json: $feats, fired_at: $ts})",
+                "MERGE (e:DetectionEvent {id: $id}) \
+                 ON CREATE SET \
+                   e.device_address = $addr, e.rule_id = $rule, \
+                   e.severity = $sev, e.features_json = $feats, e.fired_at = $ts",
             ).context("prepare DetectionEvent insert")?;
             conn.execute(&mut stmt, vec![
                 ("id",   Value::String(id.clone())),
@@ -227,17 +233,20 @@ impl GraphStore {
         attempted_at_ns: i64,
         completed_at_ns: i64,
     ) -> Result<String> {
-        let db = Arc::clone(&self.db);
+        let db         = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
         tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
             let conn = Connection::new(&db).context("remediation write connection")?;
             let id       = Uuid::new_v4().to_string();
             let att_ts   = ts(attempted_at_ns);
             let comp_ts  = ts(if completed_at_ns > 0 { completed_at_ns } else { attempted_at_ns });
             let mut stmt = conn.prepare(
-                "CREATE (r:Remediation {\
-                    id: $id, detection_id: $did, action: $action,\
-                    status: $status, detail_json: $detail,\
-                    attempted_at: $att, completed_at: $comp})",
+                "MERGE (r:Remediation {id: $id}) \
+                 ON CREATE SET \
+                   r.detection_id = $did, r.action = $action, \
+                   r.status = $status, r.detail_json = $detail, \
+                   r.attempted_at = $att, r.completed_at = $comp",
             ).context("prepare Remediation insert")?;
             conn.execute(&mut stmt, vec![
                 ("id",     Value::String(id.clone())),
@@ -266,11 +275,15 @@ impl GraphStore {
     /// Write a single telemetry update to the graph.
     /// Dispatches to a blocking thread so the caller's async task is not blocked.
     pub async fn write(&self, update: TelemetryUpdate) -> Result<()> {
-        let db       = Arc::clone(&self.db);
-        let event_tx = self.event_tx.clone();
-        tokio::task::spawn_blocking(move || write_blocking(&db, &update, &event_tx))
-            .await
-            .context("spawn_blocking panicked")?
+        let db         = Arc::clone(&self.db);
+        let event_tx   = self.event_tx.clone();
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            write_blocking(&db, &update, &event_tx)
+        })
+        .await
+        .context("spawn_blocking panicked")?
     }
 }
 
@@ -385,10 +398,14 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
         &mut edge_stmt,
         vec![
             ("addr", Value::String(u.target.clone())),
-            ("id", Value::String(id)),
+            ("id",   Value::String(id.clone())),
         ],
     )
     .context("execute HAS_INTERFACE merge")?;
+
+    // Retroactively build CONNECTED_TO for any LldpNeighbor rows that arrived
+    // before this Interface node was written (LLDP typically precedes stats).
+    let _ = backfill_connected_to(conn, &u.target, if_name);
 
     debug!(target = %u.target, interface = %if_name, "interface written");
     Ok(())
@@ -612,6 +629,49 @@ fn write_lldp_neighbor(
         system_name = %json_str(val, "system-name"),
         "LLDP neighbor written"
     );
+    Ok(())
+}
+
+/// After writing an Interface node, check if any LldpNeighbor rows already exist
+/// that reference this device+port from another node, and wire up CONNECTED_TO edges.
+/// Called from write_interface so edges get built even when LLDP arrived first.
+fn backfill_connected_to(conn: &Connection<'_>, local_addr: &str, local_if: &str) -> Result<()> {
+    // Case 1: This node has an LldpNeighbor entry for this interface — link outbound.
+    let mut find = conn.prepare(
+        "MATCH (n:LldpNeighbor {device_address: $addr, local_if: $lif}) \
+         RETURN n.system_name, n.port_id",
+    ).context("prepare lldp lookup for backfill")?;
+    let mut rows = conn.execute(&mut find, vec![
+        ("addr", Value::String(local_addr.to_string())),
+        ("lif",  Value::String(local_if.to_string())),
+    ]).context("execute lldp lookup for backfill")?;
+
+    while let Some(row) = rows.next() {
+        let system_name = match &row[0] { Value::String(s) => s.clone(), _ => continue };
+        let port_id     = match &row[1] { Value::String(s) => s.clone(), _ => continue };
+        if !system_name.is_empty() && !port_id.is_empty() {
+            let _ = try_connect_interfaces(conn, local_addr, local_if, &system_name, &port_id);
+        }
+    }
+
+    // Case 2: Another node's LldpNeighbor points TO this interface as port_id — link inbound.
+    let mut find2 = conn.prepare(
+        "MATCH (n:LldpNeighbor {port_id: $lif}) \
+         RETURN n.device_address, n.local_if, n.system_name",
+    ).context("prepare reverse lldp lookup")?;
+    let mut rows2 = conn.execute(&mut find2, vec![
+        ("lif", Value::String(local_if.to_string())),
+    ]).context("execute reverse lldp lookup")?;
+
+    while let Some(row) = rows2.next() {
+        let remote_addr = match &row[0] { Value::String(s) => s.clone(), _ => continue };
+        let remote_if   = match &row[1] { Value::String(s) => s.clone(), _ => continue };
+        let system_name = match &row[2] { Value::String(s) => s.clone(), _ => continue };
+        // Verify this LldpNeighbor's system_name matches our hostname.
+        if system_name.is_empty() { continue; }
+        let _ = try_connect_interfaces(conn, &remote_addr, &remote_if, &system_name, local_if);
+    }
+
     Ok(())
 }
 
