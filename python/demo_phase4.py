@@ -49,6 +49,7 @@ def on_detection(detection: Detection, client: BonsaiClient, executor: Remediati
             severity=detection.severity,
             features_json=detection.features.to_json(),
             fired_at_ns=detection.features.occurred_at_ns or int(time.time() * 1e9),
+            state_change_event_id=detection.features.state_change_event_id,
         )
         detection_id = resp.id
         print(f"  graph:   DetectionEvent written (id={detection_id[:8]}...)")

@@ -75,20 +75,22 @@ message StreamEventsRequest {
 }
 
 message StateEvent {
-  string device_address = 1;
-  string event_type     = 2;
-  string detail_json    = 3;
-  int64  occurred_at_ns = 4;
+  string device_address         = 1;
+  string event_type             = 2;
+  string detail_json            = 3;
+  int64  occurred_at_ns         = 4;
+  string state_change_event_id  = 5;  // UUID of the StateChangeEvent node in the graph
 }
 
 // ── Phase 4: Detection + Remediation writes ───────────────────────────────────
 
 message CreateDetectionRequest {
-  string device_address = 1;
-  string rule_id        = 2;
-  string severity       = 3;  // "info" | "warn" | "critical"
-  string features_json  = 4;  // full feature vector — stored for Phase 5 ML training
-  int64  fired_at_ns    = 5;
+  string device_address        = 1;
+  string rule_id               = 2;
+  string severity              = 3;  // "info" | "warn" | "critical"
+  string features_json         = 4;  // full feature vector — stored for Phase 5 ML training
+  int64  fired_at_ns           = 5;
+  string state_change_event_id = 6;  // UUID of the triggering StateChangeEvent; empty for poll-based rules
 }
 message CreateDetectionResponse {
   string id    = 1;  // UUID of the new DetectionEvent node

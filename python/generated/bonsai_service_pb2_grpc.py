@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from . import bonsai_service_pb2 as bonsai__service__pb2
+import bonsai_service_pb2 as bonsai__service__pb2
 
 GRPC_GENERATED_VERSION = '1.80.0'
 GRPC_VERSION = grpc.__version__

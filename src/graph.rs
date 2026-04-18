@@ -12,10 +12,13 @@ use crate::telemetry::{json_i64, json_i64_multi, json_str, TelemetryEvent, Telem
 /// A state-change event broadcast to all API streaming subscribers.
 #[derive(Clone, Debug)]
 pub struct BonsaiEvent {
-    pub device_address: String,
-    pub event_type:     String,
-    pub detail_json:    String,
-    pub occurred_at_ns: i64,
+    pub device_address:        String,
+    pub event_type:            String,
+    pub detail_json:           String,
+    pub occurred_at_ns:        i64,
+    /// UUID of the persisted StateChangeEvent node; empty for broadcast-only events
+    /// that don't write a node (e.g. oper-status events which are broadcast-only).
+    pub state_change_event_id: String,
 }
 
 pub struct GraphStore {
@@ -170,6 +173,11 @@ impl GraphStore {
         )
         .context("create RESOLVES rel")?;
 
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS TRIGGERED_BY(FROM DetectionEvent TO StateChangeEvent)",
+        )
+        .context("create TRIGGERED_BY rel")?;
+
         info!("graph schema initialised");
         Ok(())
     }
@@ -186,6 +194,7 @@ impl GraphStore {
         severity: String,
         features_json: String,
         fired_at_ns: i64,
+        state_change_event_id: String,
     ) -> Result<String> {
         let db         = Arc::clone(&self.db);
         let write_lock = Arc::clone(&self.write_lock);
@@ -217,6 +226,17 @@ impl GraphStore {
                 ("addr", Value::String(device_address)),
                 ("id",   Value::String(id.clone())),
             ]).context("execute TRIGGERED edge")?;
+            // TRIGGERED_BY edge DetectionEvent → StateChangeEvent (when available)
+            if !state_change_event_id.is_empty() {
+                let mut tb = conn.prepare(
+                    "MATCH (e:DetectionEvent {id: $eid}), (s:StateChangeEvent {id: $sid})\
+                     CREATE (e)-[:TRIGGERED_BY]->(s)",
+                ).context("prepare TRIGGERED_BY edge")?;
+                conn.execute(&mut tb, vec![
+                    ("eid", Value::String(id.clone())),
+                    ("sid", Value::String(state_change_event_id)),
+                ]).context("execute TRIGGERED_BY edge")?;
+            }
             Ok::<String, anyhow::Error>(id)
         })
         .await
@@ -503,7 +523,7 @@ fn write_state_change_event(
     now: Value,
     timestamp_ns: i64,
     event_tx: &broadcast::Sender<BonsaiEvent>,
-) -> Result<()> {
+) -> Result<String> {
     let id = Uuid::new_v4().to_string();
 
     let mut stmt = conn
@@ -537,20 +557,21 @@ fn write_state_change_event(
         &mut edge_stmt,
         vec![
             ("addr", Value::String(device_address.to_string())),
-            ("id", Value::String(id)),
+            ("id", Value::String(id.clone())),
         ],
     )
     .context("execute REPORTED_BY edge")?;
 
     let _ = event_tx.send(BonsaiEvent {
-        device_address: device_address.to_string(),
-        event_type:     event_type.to_string(),
-        detail_json:    detail.to_string(),
-        occurred_at_ns: timestamp_ns,
+        device_address:        device_address.to_string(),
+        event_type:            event_type.to_string(),
+        detail_json:           detail.to_string(),
+        occurred_at_ns:        timestamp_ns,
+        state_change_event_id: id.clone(),
     });
 
     debug!(device = %device_address, event_type = %event_type, "state change event recorded");
-    Ok(())
+    Ok(id)
 }
 
 fn write_lldp_neighbor(
@@ -755,10 +776,11 @@ fn emit_oper_status_event(
         if_name, oper_status
     );
     let _ = event_tx.send(BonsaiEvent {
-        device_address: u.target.clone(),
-        event_type:     "interface_oper_status_change".to_string(),
-        detail_json:    detail,
-        occurred_at_ns: u.timestamp_ns,
+        device_address:        u.target.clone(),
+        event_type:            "interface_oper_status_change".to_string(),
+        detail_json:           detail,
+        occurred_at_ns:        u.timestamp_ns,
+        state_change_event_id: String::new(),
     });
     // Best-effort: ensure Device node exists so graph queries stay consistent.
     upsert_device(conn, &u.target, &u.vendor, &u.hostname, ts(u.timestamp_ns))?;

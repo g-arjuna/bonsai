@@ -90,6 +90,7 @@ class BonsaiClient:
         severity: str,
         features_json: str,
         fired_at_ns: int,
+        state_change_event_id: str = "",
     ):
         req = pb.CreateDetectionRequest(
             device_address=device_address,
@@ -97,6 +98,7 @@ class BonsaiClient:
             severity=severity,
             features_json=features_json,
             fired_at_ns=fired_at_ns,
+            state_change_event_id=state_change_event_id,
         )
         resp = self.stub.CreateDetection(req)
         if resp.error:

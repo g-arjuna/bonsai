@@ -212,10 +212,11 @@ impl BonsaiGraph for BonsaiService {
                     return None;
                 }
                 Some(Ok(StateEvent {
-                    device_address: ev.device_address,
-                    event_type:     ev.event_type,
-                    detail_json:    ev.detail_json,
-                    occurred_at_ns: ev.occurred_at_ns,
+                    device_address:        ev.device_address,
+                    event_type:            ev.event_type,
+                    detail_json:           ev.detail_json,
+                    occurred_at_ns:        ev.occurred_at_ns,
+                    state_change_event_id: ev.state_change_event_id,
                 }))
             }
         });
@@ -227,6 +228,7 @@ impl BonsaiGraph for BonsaiService {
         let r = req.into_inner();
         match self.store.write_detection(
             r.device_address, r.rule_id, r.severity, r.features_json, r.fired_at_ns,
+            r.state_change_event_id,
         ).await {
             Ok(id)  => Ok(Response::new(CreateDetectionResponse { id, error: String::new() })),
             Err(e)  => Ok(Response::new(CreateDetectionResponse { id: String::new(), error: format!("{:#}", e) })),

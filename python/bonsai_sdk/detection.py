@@ -39,6 +39,8 @@ class Features:
 
     # Raw timestamp
     occurred_at_ns: int = 0
+    # UUID of the StateChangeEvent that triggered this detection; empty for poll-based rules
+    state_change_event_id: str = ""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -50,6 +52,7 @@ class Features:
             event_type=event.event_type,
             detail=detail,
             occurred_at_ns=event.occurred_at_ns,
+            state_change_event_id=getattr(event, "state_change_event_id", ""),
         )
 
 
