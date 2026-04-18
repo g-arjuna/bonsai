@@ -9,9 +9,9 @@ learning project. Goal: replicate Google's ANO framework architecture
 at lab scale using only open source primitives.
 
 ## Current Phase
-Phase: 2 — The Graph  
-Last completed: Phase 1 complete + graph validated (3x SR Linux, interface counters + BGP ON_CHANGE + LLDP, StateChangeEvent log, clean release build).  
-Working on: Config-file-driven multi-vendor (bonsai.toml + Capabilities auto-detection) → then multi-vendor lab validation (XRd + cRPD)
+Phase: 2 — The Graph (complete for SRL/XRd/cEOS; cRPD telemetry deferred)  
+Last completed: Multi-vendor graph validated — SRL + XRd + cEOS all writing interfaces/BGP/LLDP/CONNECTED_TO. Capabilities-driven subscription, per-vendor blob walkers, CONNECTED_TO topology edges, BGP state normalized to lowercase.  
+Next: Phase 3 — Python SDK (query layer over the graph)
 
 ## Architecture
 - Rust core: tokio async runtime, tonic gRPC, prost protobuf
