@@ -1,0 +1,67 @@
+name: bonsai-p4
+
+# Phase 4 lab — DC spine-leaf + SP PE edge
+#
+# Topology:
+#
+#         [srl-spine1]  AS 65001
+#         /     |     \
+#        /      |      \
+# [srl-leaf1]   |   [srl-leaf2]
+#  AS 65011     |    AS 65012
+#        \      |      /
+#         \     |     /
+#          [xrd-pe1]  AS 65100
+#
+# Every node has 2-3 BGP sessions — enough to test "one peer down" vs "all peers down".
+# OSPF area 0 runs as underlay on all links for adjacency telemetry.
+# SR-MPLS enabled on SRL nodes (prefix SIDs on loopbacks) for future SP rule testing.
+#
+# Fault injection:
+#   Link impairment:  clab tools netem set bonsai-p4 srl-spine1 e1-1 --delay 100ms --loss 5
+#   Interface down:   ssh to node, set interface admin-state disable
+#                     OR bonsai PushRemediation RPC (Phase 4)
+#   BGP session kill: clear bgp <peer> via gNMI Set (bonsai remediation playbook)
+
+mgmt:
+  network: bonsai-p4-mgmt
+  ipv4-subnet: 172.100.102.0/24
+  ipv4-gw: 172.100.102.1
+
+topology:
+  nodes:
+    srl-spine1:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: 172.100.102.11
+      startup-config: configs-p4/srl-spine1.cfg
+
+    srl-leaf1:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: 172.100.102.12
+      startup-config: configs-p4/srl-leaf1.cfg
+
+    srl-leaf2:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: 172.100.102.13
+      startup-config: configs-p4/srl-leaf2.cfg
+
+    xrd-pe1:
+      kind: cisco_xrd
+      image: ios-xr/xrd-control-plane:24.4.2
+      mgmt-ipv4: 172.100.102.21
+      startup-config: configs-p4/xrd-pe1.cfg
+
+  links:
+    # spine <-> leaf1
+    - endpoints: ["srl-spine1:e1-1", "srl-leaf1:e1-1"]
+    # spine <-> leaf2
+    - endpoints: ["srl-spine1:e1-2", "srl-leaf2:e1-1"]
+    # spine <-> XRd PE
+    - endpoints: ["srl-spine1:e1-3", "xrd-pe1:Gi0-0-0-0"]
+    # leaf1 <-> XRd PE (dual-homed to PE for richer fault scenarios)
+    - endpoints: ["srl-leaf1:e1-2", "xrd-pe1:Gi0-0-0-1"]
+    # leaf2 <-> XRd PE
+    - endpoints: ["srl-leaf2:e1-2", "xrd-pe1:Gi0-0-0-2"]

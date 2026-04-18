@@ -3,289 +3,345 @@
 **Goal**: Deterministic anomaly detection and closed-loop auto-remediation.
 A failure injected in ContainerLab is detected by a rule, a remediation fires, and
 the graph shows recovery — all without manual intervention. Every detection and
-remediation is written into the graph as training data for Phase 5 ML.
+remediation is written into the graph as labelled training data for Phase 5 ML.
 
 ---
 
 ## Progress Snapshot (Phases 1–3 Complete)
 
-### What exists today
-
 | Layer | Status | Notes |
 |---|---|---|
-| gNMI subscriber pool | ✅ Done | SRL + XRd + cEOS. ON_CHANGE + SAMPLE per path. Reconnects on drop. |
-| Vendor detection | ✅ Done | Capabilities-driven, native-first path selection, no static per-vendor branching. |
-| Graph writer | ✅ Done | Device, Interface, BgpNeighbor, LldpNeighbor, StateChangeEvent, CONNECTED_TO edges. |
-| BGP state transitions | ✅ Done | StateChangeEvent written on every session-state change; `BonsaiEvent` broadcast. |
-| Topology | ✅ Done | 7/8 CONNECTED_TO edges from LLDP (SRL↔cEOS↔XRd bidirectional). |
-| gRPC API | ✅ Done | `BonsaiGraph` service: Query, GetDevices, GetInterfaces, GetBgpNeighbors, GetTopology, StreamEvents. |
-| Python SDK | ✅ Done | `BonsaiClient`, typed wrappers for all RPCs, `stream_events()` iterator. End-to-end validated. |
-| cRPD telemetry | ⏸ Deferred | BGP flap diagnosed (capability mismatch); `hold-time 90` + `family inet unicast` config added. Return in Phase 4 when cRPD rules are needed. |
-| Temporal queries | ⏸ Deferred | Schema designed (valid_from/valid_to), writes not yet implemented. |
-| gNMI Set / remediation | ⏸ Not started | Phase 4 work. |
+| gNMI subscriber pool | ✅ | SRL + XRd + cEOS. ON_CHANGE + SAMPLE. Reconnects on drop. |
+| Vendor detection | ✅ | Capabilities-driven, native-first, no static per-vendor branching. |
+| Graph writer | ✅ | Device, Interface, BgpNeighbor, LldpNeighbor, StateChangeEvent, CONNECTED_TO. |
+| BGP state transitions | ✅ | StateChangeEvent + BonsaiEvent broadcast on every session-state change. |
+| Topology | ✅ | CONNECTED_TO edges from LLDP across all three vendors. |
+| gRPC API | ✅ | Query, GetDevices, GetInterfaces, GetBgpNeighbors, GetTopology, StreamEvents. |
+| Python SDK | ✅ | BonsaiClient with typed methods. End-to-end validated. |
+| OSPF/IS-IS adjacency telemetry | ⏸ | Phase 4 work when OSPF lab is up. |
+| Temporal queries | ⏸ | Schema designed, writes deferred. |
+| gNMI Set / remediation | ⏸ | Phase 4 work. |
+
+---
+
+## Lab for Phase 4
+
+**Use `lab/fast-iteration/bonsai-phase4.clab.yml`** (new, replaces multivendor.clab.yml for Phase 4).
+
+### Topology
+
+```
+        [srl-spine1]  AS 65001   lo: 10.255.0.1
+         /    |    \
+        /     |     \
+[srl-leaf1]   |  [srl-leaf2]
+AS 65011      |   AS 65012
+ lo:10.255.0.2 |   lo:10.255.0.3
+        \     |     /
+         \    |    /
+          [xrd-pe1]  AS 65100   lo: 10.255.0.4
+```
+
+| Node | Role | RAM | BGP sessions |
+|---|---|---|---|
+| srl-spine1 | DC spine | ~1.5 GB | 3 (leaf1, leaf2, xrd-pe1) |
+| srl-leaf1 | DC leaf | ~1.5 GB | 2 (spine1, xrd-pe1) |
+| srl-leaf2 | DC leaf | ~1.5 GB | 2 (spine1, xrd-pe1) |
+| xrd-pe1 | SP PE edge | ~2 GB | 3 (spine1, leaf1, leaf2) |
+| **Total** | | **~6.5 GB** | 10 sessions |
+
+**Protocols**:
+- OSPF area 0 on all data-plane links (underlay) → future OSPF adjacency rules
+- eBGP overlay (one session per link) → BGP rules
+- SR-MPLS prefix-SIDs on SRL loopbacks (SID = 16000 + node index) → future SR rules
+- LLDP on all nodes → topology edges
+
+### Fault injection cheatsheet
+
+```bash
+# Add 100ms delay + 5% loss on spine→leaf1 link
+clab tools netem set bonsai-p4 srl-spine1 e1-1 --delay 100ms --loss 5
+
+# Clear impairment
+clab tools netem set bonsai-p4 srl-spine1 e1-1 --delay 0ms
+
+# Shut an interface (triggers interface-down rule + BGP session-down on that link)
+ssh admin@172.100.102.11 'sr_cli "set / interface ethernet-1/1 admin-state disable"'
+
+# Re-enable
+ssh admin@172.100.102.11 'sr_cli "set / interface ethernet-1/1 admin-state enable"'
+
+# Clear a BGP session manually (test the remediation action)
+# XRd: ssh cisco@172.100.102.21 'clear bgp ipv4 unicast 10.0.14.0 soft'
+```
+
+---
+
+## ML-Ready Detection Architecture
+
+**Core principle**: rules and ML models are both *detectors*. The abstraction must
+not change when we swap from rules to ML — only the `detect()` implementation changes.
+Feature extraction is shared and writes to the graph from day one as training data.
+
+```
+gRPC StreamEvents
+       │
+       ▼
+ FeatureExtractor          ← queries graph for context (recent history, peer count, etc.)
+       │
+       ▼ Features (typed dict, same shape for rules and ML)
+       │
+  ┌────┴────────────────────────┐
+  │                             │
+RuleDetector              MLDetector (Phase 5)
+(threshold checks)        (model.predict(feature_vector))
+  │                             │
+  └────────────┬────────────────┘
+               │ Optional[Detection]
+               ▼
+       DetectionWriter        ← writes DetectionEvent to graph
+               │
+               ▼
+       RemediationExecutor    ← selects playbook, calls PushRemediation RPC
+               │
+               ▼
+       RemediationWriter      ← writes Remediation node to graph
+```
+
+### `Features` object
+
+```python
+@dataclass
+class Features:
+    # From the triggering event
+    device_address: str
+    event_type: str
+    detail: dict
+
+    # From graph context (queried at detection time)
+    peer_count_total: int        # total BGP sessions on device
+    peer_count_established: int  # currently established
+    recent_flap_count: int       # state changes for this peer in last 5 min
+    uptime_seconds: int          # time since session last established
+
+    # Raw timestamp (for training data labelling)
+    occurred_at_ns: int
+```
+
+This dict is written to `DetectionEvent.detail_json` verbatim. Phase 5 reads it
+back and builds a feature matrix with no re-extraction — the training data is
+already there in the graph.
+
+### Base classes
+
+```python
+class Detector(ABC):
+    rule_id: str
+    severity: str   # "info" | "warn" | "critical"
+
+    @abstractmethod
+    def extract_features(self, event: StateEvent, client: BonsaiClient) -> Optional[Features]:
+        """Return None to skip this event entirely (fast path)."""
+
+    @abstractmethod
+    def detect(self, features: Features) -> Optional[str]:
+        """Return a human-readable reason string if the rule fires, else None."""
+```
+
+A `RuleDetector` implements both methods with threshold logic.
+A future `MLDetector` keeps the same `extract_features()` and overrides `detect()`
+with `model.predict(features.to_vector()) > threshold`.
+
+**No refactor needed when adding ML** — the `RuleEngine` loop doesn't change,
+the graph schema doesn't change, only the `detect()` body is swapped.
 
 ---
 
 ## Phase 4 Task List
 
-### 1 — Graph schema: DetectionEvent + Remediation nodes
+### 1 — Graph schema: DetectionEvent + Remediation
 
-Add two new node types and their edges to `src/graph.rs`:
+New node types in `src/graph.rs`:
 
-- `DetectionEvent`: `id`, `device_address`, `rule_id`, `severity` (info/warn/critical),
-  `detail_json`, `fired_at TIMESTAMP_NS`
-- `Remediation`: `id`, `detection_id`, `action`, `status` (pending/success/failed/skipped),
-  `detail_json`, `attempted_at`, `completed_at`
-- Edge `TRIGGERED`: Device → DetectionEvent
-- Edge `RESOLVES`: Remediation → DetectionEvent
+```
+DetectionEvent(id, device_address, rule_id, severity, features_json, fired_at)
+Remediation(id, detection_id, action, status, detail_json, attempted_at, completed_at)
+```
 
-Add `CreateDetection` and `CreateRemediation` RPCs (or fold into `Query` write — decide, see §Decisions).
+New edges: `TRIGGERED` (Device → DetectionEvent), `RESOLVES` (Remediation → DetectionEvent).
 
-### 2 — Rust: gNMI Set RPC
+New API RPCs in `proto/bonsai_service.proto`:
+```proto
+rpc CreateDetection(CreateDetectionRequest) returns (CreateDetectionResponse);
+rpc CreateRemediation(CreateRemediationRequest) returns (CreateRemediationResponse);
+rpc PushRemediation(PushRemediationRequest) returns (PushRemediationResponse);
+```
 
-Add `PushRemediation` to `proto/bonsai_service.proto`:
+### 2 — Rust: PushRemediation gNMI Set
 
 ```proto
-message RemediationRequest {
-  string target_address = 1;   // e.g. "172.100.101.11:57400"
+message PushRemediationRequest {
+  string target_address = 1;
   string yang_path      = 2;
-  string json_value     = 3;   // RFC 7951 JSON
+  string json_value     = 3;  // RFC 7951 JSON
 }
-message RemediationResponse {
+message PushRemediationResponse {
   bool   success = 1;
   string error   = 2;
 }
-rpc PushRemediation(RemediationRequest) returns (RemediationResponse);
 ```
 
-Implement in `src/api.rs`: look up the target's subscriber connection (or open a
-short-lived gNMI Set connection), execute `gnmi.Set`, return result.
+Credentials never leave the Rust process — Python only passes the target address
+and YANG path, not credentials. The Rust handler looks up the target's existing
+connection (or opens a short-lived one) and executes `gnmi.Set`.
 
-### 3 — Python: rule engine runner
+### 3 — Python: Detector base class + FeatureExtractor
 
-`python/bonsai_sdk/rules.py`:
-- Base class `Rule` with `evaluate(event: StateEvent) -> Optional[Detection]`
-- `RuleEngine`: holds a list of `Rule` instances, subscribes to `StreamEvents`,
-  dispatches each event to all rules, collects `Detection` objects
-- Writes detections back to the graph via `BonsaiClient.create_detection()`
+`python/bonsai_sdk/detection.py`:
+- `Features` dataclass (as above)
+- `Detection` dataclass: `rule_id`, `severity`, `features`, `reason`
+- `Detector` ABC: `extract_features()` + `detect()`
 
-```python
-class Rule:
-    rule_id: str
-    severity: str
+### 4 — Python: EventWindow
 
-    def evaluate(self, event: StateEvent, client: BonsaiClient) -> Optional[Detection]:
-        ...
-```
+`python/bonsai_sdk/window.py`:
+- `EventWindow(device_address, peer_address, window_seconds=300)`
+- Thread-safe `deque` of `(timestamp_ns, event_type)` entries, pruned on access
+- `count(event_type)` → int (used for flap counting)
 
-### 4 — Python: state window for multi-event rules
+### 5 — Python: RuleEngine runner
 
-Rules like "BGP flapped 3 times in 5 minutes" need a sliding window of past events.
-Implement a simple `EventWindow` — a `deque` capped by time — passed into `evaluate()`.
-This is in-process state only; Phase 5 can replace it with graph queries over the
-`StateChangeEvent` history.
+`python/bonsai_sdk/engine.py`:
+- Subscribes to `StreamEvents` from the gRPC API
+- Dispatches each event to all registered `Detector` instances
+- Calls `detect()` on features where `extract_features()` returns non-None
+- Passes positive detections to `RemediationExecutor`
 
-### 5 — Python: initial rule set (target: 8–10 rules for demo)
+### 6 — Python: Rule implementations (target: 8 for demo)
 
-**BGP rules** (highest value, easiest to trigger in lab):
-- `BgpSessionDown` — session_state transitions to non-established → CRITICAL
-- `BgpSessionFlap` — session flapped ≥3 times in 5 minutes → CRITICAL
-- `BgpAllPeersDown` — all peers on a device go down simultaneously → CRITICAL (likely upstream)
-- `BgpSessionNeverEstablished` — new peer seen but never reaches established in 60s → WARN
+**BGP rules** (all trigger from `bgp_session_change` events):
 
-**Interface rules** (need oper-status telemetry — see Decision D4):
-- `InterfaceDown` — link goes operationally down → CRITICAL
-- `InterfaceErrorSpike` — in_errors or out_errors rate > threshold/s → WARN
-- `InterfaceHighUtilization` — in_octets or out_octets rate > 80% of capacity → WARN (needs capacity config)
-
-**Topology rules**:
-- `ConnectedToEdgeLost` — a CONNECTED_TO edge existed last cycle but is absent → WARN
-  (catches physical disconnect without an interface-down event)
-
-### 6 — Python: remediation playbooks
-
-For each rule with a safe automated action:
-
-| Detection | Action | gNMI Set path | Safe to automate? |
+| Rule ID | Condition | Severity | Auto-heal? |
 |---|---|---|---|
-| `BgpSessionDown` (stuck in active/idle) | Clear BGP session | vendor-specific reset path | Cautiously yes — clear only, not config change |
-| `BgpSessionFlap` | Log + alert only | — | No — too risky without root cause |
-| `InterfaceDown` | Log + alert only | — | No — may be intentional |
-| `InterfaceErrorSpike` | Log + alert only | — | No — needs diagnosis first |
-| `BgpAllPeersDown` | Log + alert only | — | No — upstream issue, local action won't help |
+| `bgp_session_down` | new_state ∉ {established, active} | critical | Yes — BGP soft-clear |
+| `bgp_session_flap` | ≥3 flaps in 5 min for same peer | critical | No — log only |
+| `bgp_all_peers_down` | established_count == 0 on device | critical | No — upstream fault |
+| `bgp_never_established` | peer seen >90s, never established | warn | No — config issue |
 
-Phase 4 realistic auto-heal: BGP session clear only. Everything else fires a
-`Remediation` node with `status=skipped` and a human-readable reason.
+**Interface rules** (trigger from interface telemetry — requires oper-status sub, see Task 7):
 
-### 7 — Python: remediation executor
+| Rule ID | Condition | Severity | Auto-heal? |
+|---|---|---|---|
+| `interface_down` | oper-status → down | critical | No |
+| `interface_error_spike` | error rate > 100/s | warn | No |
+| `interface_high_utilization` | octets rate > 80% of known capacity | warn | No |
+
+**Topology rule**:
+
+| Rule ID | Condition | Severity | Auto-heal? |
+|---|---|---|---|
+| `topology_edge_lost` | CONNECTED_TO edge absent after it existed | warn | No |
+
+### 7 — Rust: oper-status telemetry subscription
+
+Add oper-status subscription paths for the Phase 4 lab (SRL + XRd):
+
+| Vendor | Path |
+|---|---|
+| SRL | `interface[name=*]/oper-state` (native, ON_CHANGE) |
+| XRd | `Cisco-IOS-XR-pfi-im-cmd-oper:interfaces/interfaces/interface` (SAMPLE 30s) |
+
+Add `InterfaceOperStatus` event variant in `src/telemetry.rs`.
+Add `write_interface_oper_status()` in `src/graph.rs` (updates Interface node, emits BonsaiEvent).
+
+### 8 — Python: RemediationExecutor + circuit breaker
 
 `python/bonsai_sdk/remediations.py`:
-- `Executor`: takes a `Detection`, selects a playbook, calls `BonsaiClient.push_remediation()`,
-  writes a `Remediation` node with outcome
-- Safety guard: if >N remediations fired in last T minutes for the same device, skip
-  and log a circuit-breaker event
+- `Executor.run(detection)` → selects playbook from a whitelist dict
+- Calls `client.push_remediation()` for whitelisted rules, skips others
+- Circuit breaker: skip auto-heal if ≥5 remediations fired for same device in 10 min
+- Always writes a `Remediation` node (status=success/failed/skipped)
 
-### 8 — Demo script
+### 9 — Demo script
 
 `python/demo_phase4.py`:
 1. Start `RuleEngine` + `Executor` in background threads
-2. Print live detections and remediations as they arrive
-3. Instructions: manually shut a BGP session in ContainerLab
-4. Watch: detection fires → BGP-clear remediation executes → graph shows recovery
+2. Print live detection + remediation events
+3. Inject a BGP session failure (shut interface via ContainerLab)
+4. Watch: detection → BGP clear → graph shows recovery
 
-### 9 — Record all events in graph for Phase 5 training data
+---
 
-Ensure every `DetectionEvent` and `Remediation` node is written with full timestamps
-and detail JSON. Phase 5 ML will query these as labeled training examples
-(detection = anomaly label, remediation outcome = ground truth for classifier).
+## Resolved Decisions
+
+### D2 ✅ — gNMI Set transport: Rust proxy
+
+Credentials stay in one place (Rust, bonsai.toml). Python passes target address + YANG path
+only. `PushRemediation` RPC in `proto/bonsai_service.proto`. No credentials in Python.
+
+### D3 ✅ — Separate DetectionEvent node
+
+`StateChangeEvent` = raw telemetry transition. `DetectionEvent` = rule interpretation.
+Separate nodes keep Phase 5 ML training data unambiguous. `features_json` column stores
+the full feature vector so training requires no re-extraction.
+
+### D5 ✅ — Remediation safety model
+
+All three layers enforced:
+1. **Dry-run flag**: `BONSAI_DRY_RUN=1` — logs the action, no Set sent
+2. **Whitelist**: only rules with `auto_remediate=True` in the rule definition execute
+3. **Circuit breaker**: ≥5 remediations for same device in 10 min → halt + log
+
+### D6 ✅ — cRPD removed
+
+cRPD removed from all topologies. BGP capability negotiation between cRPD 23.2 and
+SRL 26.x/XRd 24.x causes persistent session flapping. Removing an unstable node is
+the right call — Phase 4 needs reliable baseline behaviour to distinguish injected faults
+from pre-existing flaps. cRPD can be revisited when a stable version is available.
 
 ---
 
 ## Open Decisions
 
-These must be resolved before or during Phase 4 implementation. Flag in DECISIONS.md
-when each is settled.
+### D1 — Rule trigger model (hybrid approach pending validation)
 
-### D1 — Rule trigger model: event-driven vs poll-based
+**Leaning**: event-driven (StreamEvents) for single-event rules (session down),
+poll-based query (30s) for pattern rules (flap rate, topology diff).
+Confirm this works before implementing the poll loop.
 
-**Option A — Event-driven** (consume `StreamEvents`, evaluate on each event):
-- Pro: sub-second detection latency; rules see every transition
-- Con: multi-event rules (flap counting) need in-process state; if the rule engine
-  restarts, window state is lost
+### D4 — Interface oper-status telemetry
 
-**Option B — Poll-based** (query graph on a timer, e.g. every 10s):
-- Pro: stateless rules, trivially restartable; can express any graph pattern as Cypher
-- Con: 10s latency on detection; misses transient events that resolve before next poll
+SRL: `interface[name=*]/oper-state` native ON_CHANGE — confirmed working in Phase 2.
+XRd: `Cisco-IOS-XR-pfi-im-cmd-oper:interfaces` SAMPLE — needs validation against xrd-pe1.
+Decision: subscribe to both in Phase 4, document which XRd path works.
 
-**Leaning**: Hybrid — event-driven for immediate single-event rules (session down),
-poll-based (30s) for pattern rules (flap rate, topology diff). Implement event-driven
-first, add poll loop for pattern rules when needed.
+### D7 — Rule authoring: Python classes for Phase 4, YAML DSL later
 
----
-
-### D2 — gNMI Set transport: Rust proxy vs Python direct
-
-**Option A — Python calls new `PushRemediation` gRPC on the Rust core**:
-- Pro: Rust manages all device connections (one connection pool); Python never touches
-  devices directly; credentials stay in Rust/bonsai.toml
-- Con: adds a new RPC and Rust code; Rust must store per-target connection handles
-
-**Option B — Python connects to devices directly via `pygnmi` or `scrapli-gnmi`**:
-- Pro: Python is fully self-contained for remediation; no new Rust code
-- Con: Python needs credentials (re-reads bonsai.toml or gets them separately);
-  connection lifecycle is duplicated; harder to test
-
-**Leaning**: Option A (Rust proxy). Credentials and connection lifecycle belong
-in one place. The new RPC is ~50 lines of Rust. This is also the right shape for
-Phase 5 where the ML model pushes remediations.
+Python classes now (faster to ship, full expressiveness).
+YAML DSL is the right end-state for network engineer authoring — design after
+Phase 4 rules are proven to have a stable shape.
 
 ---
 
-### D3 — DetectionEvent schema: extend StateChangeEvent vs separate node type
+## Phase 4 Success Criteria
 
-**Option A — Add `rule_id` and `severity` to `StateChangeEvent`**:
-- Pro: one table, simpler schema, existing RPCs cover it
-- Con: mixes raw telemetry transitions (phase 2) with rule-derived detections (phase 4);
-  confuses ML training data separation
-
-**Option B — Separate `DetectionEvent` node**:
-- Pro: clean separation; Phase 5 can query detections independently; graph traversal
-  `(d:Device)-[:TRIGGERED]->(de:DetectionEvent)-[:RESOLVES]-(r:Remediation)` is
-  natural and readable
-- Con: one more schema migration
-
-**Leaning**: Option B (separate node). The semantic distinction is real.
-`StateChangeEvent` = raw telemetry transition. `DetectionEvent` = rule interpretation.
-
----
-
-### D4 — Interface oper-status telemetry path
-
-Interface down detection requires an oper-status subscription. We currently subscribe
-to counters only. Need to add a path for `oper-status` / `admin-status` per vendor:
-
-| Vendor | Native path | OC path |
-|---|---|---|
-| SRL | `interface[name=*]/oper-state` | N/A (rejected) |
-| XRd | `Cisco-IOS-XR-pfi-im-cmd-oper:interfaces/interfaces/interface` | partial |
-| cEOS | leaf updates via `openconfig-interfaces:interfaces/interface/state/oper-status` | ✅ |
-
-Decision needed: subscribe to oper-status for all three vendors before Phase 4, or
-write interface-down rules only for vendors where the path is confirmed working.
-
-**Leaning**: Subscribe to SRL native + cEOS OC now; skip XRd oper-status until confirmed
-(XRd BGP rules cover the primary demo). Document per-vendor status in telemetry.rs.
-
----
-
-### D5 — Remediation safety model
-
-Three options in increasing strictness:
-1. **Dry-run flag** (`BONSAI_DRY_RUN=1`) — log what would be sent, no actual Set
-2. **Per-rule whitelist** — only rules explicitly marked `auto_remediate=True` execute
-3. **Circuit breaker** — auto-remediation halts if >N remediations fired in last T minutes for one device
-
-All three are non-exclusive. Recommendation: implement all three. Default for Phase 4:
-dry-run off, auto_remediate whitelist required, circuit breaker at 5 per device per 10 minutes.
-
----
-
-### D6 — cRPD inclusion in Phase 4
-
-cRPD was deferred in Phase 2 (BGP flap due to capability mismatch between cRPD 23.2
-and SRL 26.x/XRd 24.x). `hold-time 90` and `family inet unicast` were added to crpd1.cfg.
-
-Decision: test cRPD BGP stability before Phase 4 rules. If sessions stabilize, include
-cRPD in the demo. If not, document cRPD as a known gap and demo with SRL+XRd+cEOS only.
-
-**Leaning**: Test cRPD first. The Phase 4 demo is more compelling with all four vendors.
-If cRPD still flaps, file it as a Junos capability negotiation issue and move on.
-
----
-
-### D7 — Rule authoring format: Python classes vs YAML DSL
-
-**Option A — Python classes** with a `Rule` base class:
-- Pro: full Python expressiveness; easy to query graph, call external APIs;
-  no parser to write or maintain
-- Con: rules require Python knowledge; no hot-reload without restart
-
-**Option B — YAML rule definitions** with a Python interpreter:
-```yaml
-- id: bgp_session_down
-  match: event_type == "bgp_session_change" AND new_state != "established"
-  severity: critical
-  remediation: clear_bgp
-```
-- Pro: rules are readable by network engineers without Python; hot-reload possible
-- Con: limited expressiveness; multi-step rules need escape hatches back to Python
-
-**Leaning**: Python classes for Phase 4. The YAML DSL is the right end-state but
-adds a parser and a DSL design problem before the first rule is even working.
-YAML format can be added in Phase 5/6 once rule structure is proven.
-
----
-
-## Phase 4 Success Criteria (from PROJECT_KICKOFF.md)
-
-- [ ] Rule engine running, consuming `StreamEvents` from the gRPC server
-- [ ] ≥8 rules implemented across BGP and interface categories
-- [ ] Each fired rule writes a `DetectionEvent` node to the graph
-- [ ] At least one end-to-end auto-remediation working: BGP session stuck → clear → recovery
-- [ ] All remediations record outcome in a `Remediation` node
+- [ ] Rule engine running, consuming StreamEvents from gRPC server
+- [ ] ≥8 rules across BGP + interface categories
+- [ ] DetectionEvent written to graph for every fired rule
+- [ ] BGP session clear: end-to-end auto-heal working (shut interface → detect → clear → recover)
 - [ ] Circuit breaker prevents runaway remediation
-- [ ] Demo: break BGP in ContainerLab → detection → remediation → graph shows recovery
-- [ ] Demo works with ≥2 vendor combinations (SRL+XRd minimum)
-- [ ] All DetectionEvent + Remediation nodes timestamped and stored (Phase 5 training data)
+- [ ] All Remediation nodes timestamped with outcome (training data ready)
+- [ ] Demo works with srl-spine1 + srl-leaf1 + xrd-pe1 as minimum vendor mix
+- [ ] features_json on DetectionEvent is the complete Phase 5 feature vector (no re-extraction)
 
 ---
 
-## Dependencies and Risks
+## Risks
 
-| Risk | Likelihood | Mitigation |
-|---|---|---|
-| gNMI Set path varies per vendor | High | Research SRL + XRd Set paths before coding. SRL has good docs. |
-| cRPD BGP still flapping | Medium | Test first; demo without cRPD if needed |
-| Phase 4 scope creep into ML | Medium | No ML in Phase 4. Classifier = rule. Detection = labeled event. Nothing more. |
-| Auto-remediation causes worse state | Medium | Circuit breaker + whitelist + dry-run mode as defaults |
-| LadybugDB new node types break existing queries | Low | Test schema migration on bonsai-mv.db before coding |
+| Risk | Mitigation |
+|---|---|
+| SRL SR-MPLS config syntax wrong for this SRL version | Test with just OSPF first; add SR after OSPF adjacencies are confirmed in graph |
+| XRd oper-status path returns wrong structure | SAMPLE 30s + log raw updates before writing classifier |
+| gNMI Set BGP clear path differs per vendor | Research SRL + XRd Set paths before coding; start with SRL only if needed |
+| Phase 4 scope creep into ML | No model inference in Phase 4. Feature extraction + labelling only. |
+| LadybugDB schema migration breaks existing queries | Test on a copy of bonsai.db before adding new node types |
