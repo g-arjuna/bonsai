@@ -7,11 +7,18 @@ pub struct Config {
     /// gRPC listen address for the Bonsai API server. Default: "[::1]:50051".
     #[serde(default = "default_api_addr")]
     pub api_addr: String,
+    /// Prometheus /metrics HTTP listener. Default: "[::1]:9090". Set to "" to disable.
+    #[serde(default = "default_metrics_addr")]
+    pub metrics_addr: String,
     pub target: Vec<TargetConfig>,
 }
 
 fn default_api_addr() -> String {
     "[::1]:50051".to_string()
+}
+
+fn default_metrics_addr() -> String {
+    "[::1]:9090".to_string()
 }
 
 #[derive(Deserialize)]

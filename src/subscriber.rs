@@ -67,6 +67,8 @@ impl GnmiSubscriber {
                     if let Err(e) = result {
                         warn!(target = %self.target, error = %e, "subscription failed");
                     }
+                    metrics::counter!("bonsai_subscriber_reconnects_total",
+                        "target" => self.target.clone()).increment(1);
                     if start.elapsed() >= BACKOFF_RESET_THRESHOLD {
                         backoff = BACKOFF_INITIAL;
                     }

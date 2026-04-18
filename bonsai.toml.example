@@ -5,7 +5,9 @@
 # Phase 4 lab: bonsai-p4 (3x SRL + 1x XRd, mgmt 172.100.102.x)
 # Run lab/fast-iteration/deploy-p4.sh to generate p4-ca.pem and bring up nodes.
 
-graph_path = "bonsai.db"
+graph_path   = "bonsai.db"
+# api_addr     = "[::1]:50051"   # gRPC API (default shown)
+# metrics_addr = "[::1]:9090"    # Prometheus /metrics HTTP (set to "" to disable)
 
 # ── Nokia SR Linux — spine (TLS) ─────────────────────────────────────────────
 [[target]]

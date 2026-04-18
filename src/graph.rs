@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use lbug::{Connection, Database, SystemConfig, Value};
@@ -298,9 +299,16 @@ impl GraphStore {
         let db         = Arc::clone(&self.db);
         let event_tx   = self.event_tx.clone();
         let write_lock = Arc::clone(&self.write_lock);
+        let target     = update.target.clone();
         tokio::task::spawn_blocking(move || {
+            metrics::counter!("bonsai_telemetry_updates_total", "target" => target.clone())
+                .increment(1);
+            let t0 = Instant::now();
             let _guard = write_lock.lock().expect("write lock poisoned");
-            write_blocking(&db, &update, &event_tx)
+            let result = write_blocking(&db, &update, &event_tx);
+            metrics::histogram!("bonsai_graph_write_latency_seconds", "target" => target)
+                .record(t0.elapsed().as_secs_f64());
+            result
         })
         .await
         .context("spawn_blocking panicked")?
@@ -562,13 +570,15 @@ fn write_state_change_event(
     )
     .context("execute REPORTED_BY edge")?;
 
-    let _ = event_tx.send(BonsaiEvent {
+    if event_tx.send(BonsaiEvent {
         device_address:        device_address.to_string(),
         event_type:            event_type.to_string(),
         detail_json:           detail.to_string(),
         occurred_at_ns:        timestamp_ns,
         state_change_event_id: id.clone(),
-    });
+    }).is_err() {
+        metrics::counter!("bonsai_broadcast_drops_total").increment(1);
+    }
 
     debug!(device = %device_address, event_type = %event_type, "state change event recorded");
     Ok(id)

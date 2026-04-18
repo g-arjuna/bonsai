@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use tracing::{info, warn};
 
 use bonsai::{api::{BonsaiGraphServer, BonsaiService, TargetConnInfo}, config, graph, subscriber, telemetry};
+use metrics_exporter_prometheus::PrometheusBuilder;
 
 const CONFIG_PATH: &str = "bonsai.toml";
 const GRAPH_PATH_DEFAULT: &str = "bonsai.db";
@@ -15,9 +16,20 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    info!("bonsai starting — Phase 2: The Graph");
+    info!("bonsai starting — Phase 4: Detect-Predict-Heal");
 
     let cfg = config::load(CONFIG_PATH).await?;
+
+    // Install Prometheus metrics exporter (disabled when metrics_addr is empty)
+    if !cfg.metrics_addr.is_empty() {
+        let metrics_addr: std::net::SocketAddr = cfg.metrics_addr.parse()
+            .with_context(|| format!("invalid metrics_addr '{}'", cfg.metrics_addr))?;
+        PrometheusBuilder::new()
+            .with_http_listener(metrics_addr)
+            .install()
+            .context("failed to install Prometheus metrics exporter")?;
+        info!(%metrics_addr, "Prometheus metrics listening");
+    }
     let graph_path = if cfg.graph_path.is_empty() {
         GRAPH_PATH_DEFAULT
     } else {
