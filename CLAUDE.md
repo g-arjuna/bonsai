@@ -9,9 +9,10 @@ learning project. Goal: replicate Google's ANO framework architecture
 at lab scale using only open source primitives.
 
 ## Current Phase
-Phase: 2 — The Graph (complete for SRL/XRd/cEOS; cRPD telemetry deferred)  
-Last completed: Multi-vendor graph validated — SRL + XRd + cEOS all writing interfaces/BGP/LLDP/CONNECTED_TO. Capabilities-driven subscription, per-vendor blob walkers, CONNECTED_TO topology edges, BGP state normalized to lowercase.  
-Next: Phase 3 — Python SDK (query layer over the graph)
+Phase: 3 — Python SDK (complete)  
+Last completed: gRPC API server (tonic, `BonsaiGraph` service) + Python SDK validated end-to-end.
+All 6 RPCs working: `Query`, `GetDevices`, `GetInterfaces`, `GetBgpNeighbors`, `GetTopology`, `StreamEvents`.
+Next: Phase 4 — Rules-Based Detect and Heal. See PHASE4.md for task list and open decisions.
 
 ## Architecture
 - Rust core: tokio async runtime, tonic gRPC, prost protobuf
