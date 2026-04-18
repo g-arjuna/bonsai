@@ -1,6 +1,6 @@
 # bonsai
 
-> **Current status: Phase 2 in progress — Phase 1 complete, writing telemetry to graph.**
+> **Current status: Phase 4 complete — detect-predict-heal loop working end-to-end. Next: Phase 5 ML prediction.**
 
 A streaming-first, graph-native network state engine for closed-loop autonomous
 network operations. Replicates the architecture described in Google's ANO framework
@@ -101,9 +101,9 @@ in the first 6 months.
 | Phase | Goal | Status |
 |---|---|---|
 | **1 — The Heartbeat** ✓ | gNMI subscriber pool, interface counters + BGP ON_CHANGE, reconnect, graceful shutdown | **Complete** |
-| **2 — The Graph** | Telemetry writes to LadybugDB graph, Cypher queries return live + historical state | **In progress** |
-| 3 — Python Layer | SDK queries graph, pushes remediation via gNMI Set | Planned |
-| 4 — Rules Detect+Heal | Deterministic anomaly detection, closed-loop healing demo | Planned |
+| **2 — The Graph** ✓ | Telemetry writes to LadybugDB graph, Cypher queries return live + historical state | **Complete** |
+| **3 — Python Layer** ✓ | SDK queries graph, pushes remediation via gNMI Set | **Complete** |
+| **4 — Rules Detect+Heal** ✓ | Deterministic anomaly detection, closed-loop healing demo | **Complete** |
 | 5 — ML Prediction | Autoencoder/LSTM predicts failures, classifier selects remediation | Planned |
 | 6 — Demo UI | Live topology view, event stream, closed-loop trace — view-only | Planned |
 
@@ -117,14 +117,30 @@ in the first 6 months.
 - [x] Graceful Ctrl+C shutdown via shared watch channel
 - [ ] 24-hour stability run (in progress)
 
-## Phase 2 — In Progress
+## Phase 2 — Complete
 
 - [x] Graph DB decided: LadybugDB (embedded, MIT, Cypher) — rationale in DECISIONS.md
-- [x] Schema defined: Device, Interface, BgpNeighbor nodes; HAS_INTERFACE, PEERS_WITH edges
+- [x] Schema defined: Device, Interface, BgpNeighbor, LldpNeighbor, StateChangeEvent nodes
 - [x] Graph writer wired: telemetry channel → spawn_blocking → LadybugDB Cypher upserts
-- [ ] Validate Cypher queries: live topology + BGP state in graph
-- [ ] Temporal query: reconstruct graph state at past time T
-- [ ] Multi-vendor normalization: second NOS (Cisco XRd or Arista cEOS)
+- [x] Multi-vendor normalization: SRL + XRd + cEOS, Capabilities-based vendor detection
+- [x] LLDP topology: CONNECTED_TO edges across all three vendors
+- [x] Cypher queries validated: live topology + BGP state in graph
+
+## Phase 3 — Complete
+
+- [x] gRPC API server (tonic): Query, GetDevices, GetInterfaces, GetBgpNeighbors, GetTopology, StreamEvents
+- [x] Python SDK: BonsaiClient with typed methods, end-to-end validated
+- [x] BonsaiEvent broadcast: StateChangeEvent emitted on every BGP session-state change
+
+## Phase 4 — Complete
+
+- [x] Rule engine running, consuming StreamEvents from gRPC server
+- [x] 8 rules: BgpSessionDown, BgpSessionFlap, BgpAllPeersDown, BgpNeverEstablished, InterfaceDown, InterfaceErrorSpike, InterfaceHighUtilization, TopologyEdgeLost
+- [x] DetectionEvent written to graph for every fired rule (features_json = Phase 5 training data)
+- [x] BGP session bounce: end-to-end auto-heal working on SRL (admin-state disable → enable)
+- [x] Circuit breaker: ≥5 remediations per device in 10 min → halt
+- [x] Remediation nodes written with outcome timestamps
+- [x] Oper-status telemetry subscription: SRL (ON_CHANGE) + XRd (SAMPLE 30s)
 
 ---
 

@@ -325,14 +325,14 @@ Phase 4 rules are proven to have a stable shape.
 
 ## Phase 4 Success Criteria
 
-- [ ] Rule engine running, consuming StreamEvents from gRPC server
-- [ ] ≥8 rules across BGP + interface categories
-- [ ] DetectionEvent written to graph for every fired rule
-- [ ] BGP session clear: end-to-end auto-heal working (shut interface → detect → clear → recover)
-- [ ] Circuit breaker prevents runaway remediation
-- [ ] All Remediation nodes timestamped with outcome (training data ready)
-- [ ] Demo works with srl-spine1 + srl-leaf1 + xrd-pe1 as minimum vendor mix
-- [ ] features_json on DetectionEvent is the complete Phase 5 feature vector (no re-extraction)
+- [x] Rule engine running, consuming StreamEvents from gRPC server
+- [x] ≥8 rules across BGP + interface categories
+- [x] DetectionEvent written to graph for every fired rule
+- [x] BGP session clear: end-to-end auto-heal working (shut interface → detect → clear → recover)
+- [x] Circuit breaker prevents runaway remediation
+- [x] All Remediation nodes timestamped with outcome (training data ready)
+- [x] Demo works with srl-spine1 + srl-leaf1 + xrd-pe1 as minimum vendor mix
+- [x] features_json on DetectionEvent is the complete Phase 5 feature vector (no re-extraction)
 
 ---
 

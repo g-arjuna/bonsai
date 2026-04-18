@@ -9,10 +9,11 @@ learning project. Goal: replicate Google's ANO framework architecture
 at lab scale using only open source primitives.
 
 ## Current Phase
-Phase: 3 — Python SDK (complete)  
-Last completed: gRPC API server (tonic, `BonsaiGraph` service) + Python SDK validated end-to-end.
-All 6 RPCs working: `Query`, `GetDevices`, `GetInterfaces`, `GetBgpNeighbors`, `GetTopology`, `StreamEvents`.
-Next: Phase 4 — Rules-Based Detect and Heal. See PHASE4.md for task list and open decisions.
+Phase: 4 — Rules-Based Detect and Heal (complete)  
+Last completed: Detect-predict-heal loop working end-to-end. 8 rules across BGP + interface categories,
+DetectionEvent + Remediation nodes in graph, BGP session bounce auto-remediation on SRL,
+circuit breaker, oper-status telemetry (SRL + XRd), full validation suite passing.
+Next: Phase 5 — ML Prediction. See PHASE5.md (to be created) for task list.
 
 ## Architecture
 - Rust core: tokio async runtime, tonic gRPC, prost protobuf
