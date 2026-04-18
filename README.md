@@ -48,7 +48,7 @@ layer. That is the exact layer bonsai targets.
 │  ├────────────────────────────────────────────┤  │
 │  │ Graph writer (batched, debounced)           │  │
 │  │  → embedded graph DB                       │  │
-│  │  → temporal version chain                  │  │
+│  │  → StateChangeEvent append-only log         │  │
 │  ├────────────────────────────────────────────┤  │
 │  │ Query API (Cypher over REST)               │  │
 │  └────────────────────────────────────────────┘  │
@@ -65,7 +65,7 @@ layer. That is the exact layer bonsai targets.
 **Principles:**
 - **Streaming-first** — no polling, no scheduled scrapes, everything flows as telemetry arrives
 - **Graph-native** — relationships are first-class, topology traversal is the primary query pattern
-- **Temporal by design** — every state change versioned, reconstruct graph state at any past time
+- **Temporal (partial)** — `StateChangeEvent` append-only log captures every state transition; full bitemporal `valid_from`/`valid_to` on all nodes is deferred to Phase 5.5 (required for "reconstruct graph state at time T" queries)
 - **LLM-agnostic** — Cypher query API, any consumer (Python, LLM, Grafana, ServiceNow) can use it
 
 ---
