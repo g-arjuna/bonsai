@@ -149,18 +149,6 @@ impl TelemetryUpdate {
             }
         }
 
-        // ── Junos native interface stats (no origin → junos-state-interfaces) ─
-        // interfaces/interface[name=X]/... with Junos field names (input-bytes, output-bytes)
-        if self.path.starts_with("interfaces/interface[name=")
-            && (self.value.get("input-bytes").is_some()
-                || self.value.get("output-bytes").is_some()
-                || self.value.get("input-packets").is_some())
-        {
-            if let Some(name) = extract_bracketed(&self.path, "interface[name=") {
-                return TelemetryEvent::InterfaceStats { if_name: name };
-            }
-        }
-
         // ── SRL native oper-state (ON_CHANGE) ────────────────────────────────
         // Subscribed to interface[name=*]/oper-state (a scalar leaf).
         // The subscriber's leaf-grouping collects it at the parent container:

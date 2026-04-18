@@ -494,3 +494,70 @@ resets the session to idle, which triggers another detection, saturating the cir
 breaker within seconds. Only `established->idle` means a working session was lost
 and warrants remediation. All other non-established transitions are normal FSM cycling.
 
+---
+
+## 2026-04-18 — Junos native interface classifier paths removed from telemetry.rs
+
+**Decision**: The Junos-specific interface stats classifier block in `telemetry.rs`
+(lines matching `input-bytes` / `output-bytes` / `input-packets` field names from
+`junos-state-interfaces`) is removed. cRPD is not in scope for Phase 4/5 and these
+paths were never validated against a live device.
+
+**Rationale**: Dead code rots. An untested vendor path gives false confidence and
+creates maintenance surface with no benefit until cRPD is re-enabled. The block
+should be re-added when cRPD is back in scope, informed by actual Capabilities and
+live validation, not copied from a prior speculative attempt.
+
+**Re-enable condition**: When cRPD is added back to the Phase N lab topology, add
+an ADR capturing the validated Junos gNMI subscription path and field names before
+adding any code. Do not restore the old block without validation.
+
+---
+
+## 2026-04-18 — StateChangeEvent pruning deferred to Phase 5.5
+
+**Decision**: No event retention / pruning logic will run in Phases 4 or 5.
+A `retention` module seam (`src/retention.rs`, `prune_events` function) will be
+scaffolded in Phase 5.0 hygiene work so the entry point exists, but it will be
+a no-op and disabled by default in `bonsai.toml`.
+
+**Rationale**: The lab topology generates tens of events per minute — volume is
+irrelevant today. Phase 5 ML training needs the full DetectionEvent + Remediation
+history intact. Deleting events before Phase 5 training data is exported would
+destroy training labels. Pruning of raw StateChangeEvents (keeping 72h hot,
+exporting to Parquet) is the right long-term model but is Phase 5.5 work.
+
+**Phase 5.5 plan** (capture here so it is not forgotten):
+- StateChangeEvent: keep 72h in graph, export older records to Parquet (one file
+  per day, device-partitioned), delete from graph after export.
+- DetectionEvent + Remediation: keep forever in graph — small, high-value training data.
+- The `prune_events(store, cutoff)` function scaffolded now runs on a tokio interval;
+  enabling it requires setting `[retention] enabled = true` in `bonsai.toml`.
+
+---
+
+## 2026-04-18 — Schema migration story deferred; LadybugDB has no ALTER TABLE
+
+**Decision**: Adding columns to existing LadybugDB node tables (e.g., adding
+`firmware_version` to Device, or `triggered_by_id` to DetectionEvent) requires
+dropping and recreating the table. There is no `ALTER TABLE ADD COLUMN` in the
+current LadybugDB/Kuzu Cypher dialect. This is a known gap; no migration
+infrastructure is built for Phase 5.0.
+
+**Rationale**: The schema is stable at Phase 4. Phase 5.0 adds one new edge type
+(`TRIGGERED_BY` from DetectionEvent to StateChangeEvent) — this is an `CREATE REL TABLE`
+not an `ALTER`, so it is safe. No existing node table columns change. The migration
+problem only becomes real when a node property must be added to a table with existing
+data.
+
+**Mitigation until a migration story exists**:
+1. New properties are added via new edge types where possible (avoids ALTER).
+2. Node table schema changes require a `bonsai.db` rebuild (acceptable for a lab
+   deployment — stop bonsai, delete the DB, restart to rebuild from live telemetry).
+3. Schema version is tracked as a property on a singleton `SchemaVersion` node
+   (to be added). If the running code expects a higher version than the DB contains,
+   bonsai logs a warning and exits cleanly rather than writing corrupt state.
+
+**Long-term**: evaluate LadybugDB's migration support as it matures; if it gains
+`ALTER TABLE ADD COLUMN`, remove this constraint.
+
