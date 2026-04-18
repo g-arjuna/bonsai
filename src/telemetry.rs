@@ -162,12 +162,18 @@ impl TelemetryUpdate {
         }
 
         // ── SRL native oper-state (ON_CHANGE) ────────────────────────────────
-        // interface[name=X]/oper-state  →  {"oper-state": "up"/"down"}
-        if self.path.contains("interface[name=") && self.path.ends_with("/oper-state") {
-            if let Some(name) = extract_bracketed(&self.path, "interface[name=") {
-                let status = json_str(&self.value, "oper-state").to_string();
-                if !status.is_empty() {
-                    return TelemetryEvent::InterfaceOperStatus { if_name: name, oper_status: status };
+        // Subscribed to interface[name=*]/oper-state (a scalar leaf).
+        // The subscriber's leaf-grouping collects it at the parent container:
+        //   path  = srl_nokia-interfaces:interface[name=X]   (no /oper-state suffix)
+        //   value = {"oper-state": "up"|"down"}
+        // Guard on the oper-state key so statistics updates at the same container don't match.
+        if self.path.contains("interface[name=") {
+            if json_find(&self.value, "oper-state").is_some() {
+                if let Some(name) = extract_bracketed(&self.path, "interface[name=") {
+                    let status = json_str(&self.value, "oper-state").to_string();
+                    if !status.is_empty() {
+                        return TelemetryEvent::InterfaceOperStatus { if_name: name, oper_status: status };
+                    }
                 }
             }
         }

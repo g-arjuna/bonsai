@@ -442,3 +442,55 @@ one credential store, one connection pool.
 bonsai `PushRemediation` for interface/BGP-level faults. No external tool required.
 
 ---
+
+## 2026-04-18 — Rule trigger model: hybrid event + poll (D1 resolved)
+
+**Decision**: Event-driven (StreamEvents gRPC) for single-event rules; poll-based
+(30 s interval) for pattern rules requiring history or counter deltas.
+
+**Why**:
+- BGP state transitions (`bgp_session_change`) arrive as ON_CHANGE gNMI updates;
+  routing them directly through StreamEvents gives sub-second detection latency.
+- Interface counter deltas (error rate, utilisation) require two samples — polling
+  the graph every 30 s is simpler and correct; the SAMPLE interval is 10 s so
+  at least two data points are always available.
+- Topology diff (`topology_edge_lost`) requires comparing the current LLDP edge set
+  against the previous snapshot — inherently poll-based.
+- The `RuleEngine` implements both loops in parallel background threads. Validated
+  in Phase 4: event loop and poll loop coexist without interference.
+
+---
+
+## 2026-04-18 — Interface oper-status telemetry: SRL ON_CHANGE confirmed (D4 resolved)
+
+**Decision**: SRL native oper-state path (`interface[name=*]/oper-state`) with
+ON_CHANGE subscription is the primary interface oper-status source. XRd deferred.
+
+**What was found**:
+- SRL sends oper-state as a scalar leaf. The subscriber's leaf-grouping logic
+  consolidates it under the parent container path
+  (`srl_nokia-interfaces:interface[name=X]` with value `{"oper-state":"up/down"}`).
+  The original classifier checked `path.ends_with("/oper-state")` which never matched
+  the grouped form. Fixed by checking `json_find(value, "oper-state").is_some()`.
+- XRd: the `oc_interfaces` OC subscription is accepted by XRd but oper-status events
+  were not seen in Phase 4 testing. Deferred — XRd interface rules are not blocked
+  on this since the PE node is not a target for interface-level auto-remediation.
+
+**Phase 5 note**: When XRd oper-status is needed, subscribe to
+`Cisco-IOS-XR-pfi-im-cmd-oper:interfaces` (SAMPLE 30 s) and extend the OC
+oper-status classifier to normalise the XR native field names.
+
+---
+
+## 2026-04-18 — BgpSessionDown guard: established->idle only
+
+**Decision**: `BgpSessionDown` and `BgpSessionFlap` only fire when
+`old_state == "established"` transitions to `new_state == "idle"`.
+
+**Why**: The BGP FSM has many transient states (active, opensent, openconfirm,
+connect) that cycle during normal reconnection. Firing on `active->idle` (the
+exponential backoff retry) caused a remediation feedback loop: each `bgp_session_bounce`
+resets the session to idle, which triggers another detection, saturating the circuit
+breaker within seconds. Only `established->idle` means a working session was lost
+and warrants remediation. All other non-established transitions are normal FSM cycling.
+
