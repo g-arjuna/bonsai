@@ -47,7 +47,9 @@ pub async fn gnmi_set(
         ..Default::default()
     };
 
-    client.set(req).await.context("gNMI Set failed")?;
+    client.set(req).await.map_err(|s| {
+        anyhow::anyhow!("gNMI Set failed: {} — {}", s.code(), s.message())
+    })?;
     Ok(())
 }
 

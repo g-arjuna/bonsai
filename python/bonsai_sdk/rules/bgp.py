@@ -20,7 +20,7 @@ class BgpSessionDown(Detector):
     rule_id = "bgp_session_down"
     severity = "critical"
     auto_remediate = True
-    remediation_action = "bgp_soft_clear"
+    remediation_action = "bgp_session_bounce"
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "bgp_session_change":
@@ -46,7 +46,7 @@ class BgpSessionDown(Detector):
         if features.new_state not in ("established", "active", ""):
             return (
                 f"BGP peer {features.peer_address} on {features.device_address} "
-                f"transitioned {features.old_state} → {features.new_state} "
+                f"transitioned {features.old_state} -> {features.new_state} "
                 f"({features.peer_count_established}/{features.peer_count_total} peers still up)"
             )
         return None

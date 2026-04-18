@@ -35,7 +35,7 @@ class TopologyEdgeLost(Detector):
         results = []
         for src_dev, src_if, dst_dev, dst_if in lost:
             reason = (
-                f"CONNECTED_TO edge lost: {src_dev}:{src_if} → {dst_dev}:{dst_if} "
+                f"CONNECTED_TO edge lost: {src_dev}:{src_if} -> {dst_dev}:{dst_if} "
                 f"(was present, now absent from LLDP)"
             )
             results.append((src_dev, reason))

@@ -13,25 +13,21 @@ from .detection import Detection
 
 # Vendor-specific gNMI Set paths for BGP soft-clear.
 # Key: vendor label as stored on Device.vendor in the graph.
-_BGP_CLEAR_PATHS: dict[str, tuple[str, str]] = {
-    "nokia_srl": (
-        "network-instance[name=default]/protocols/bgp/neighbor[peer-address={peer}]/reset-peer",
-        "true",
-    ),
-    # XRd: no standard OC Set path for BGP clear; skip (log-only) for now.
+# SRL exposes BGP session reset only as a config admin-state toggle — not as an action/RPC.
+# admin-state bounce (disable then enable) is the only gNMI-accessible reset on SRL.
+_BGP_ADMIN_STATE_PATH: dict[str, str] = {
+    "nokia_srl": "network-instance[name=default]/protocols/bgp/neighbor[peer-address={peer}]/admin-state",
+    # XRd: no standard OC gNMI Set path confirmed; skip for now.
 }
 
 
-def _bgp_clear_path(vendor: str, peer_address: str) -> tuple[str, str] | None:
-    template = _BGP_CLEAR_PATHS.get(vendor)
-    if template is None:
-        return None
-    path, val = template
-    return path.format(peer=peer_address), val
+def _bgp_admin_state_path(vendor: str, peer_address: str) -> str | None:
+    template = _BGP_ADMIN_STATE_PATH.get(vendor)
+    return template.format(peer=peer_address) if template else None
 
 
 PLAYBOOKS: dict[str, bool] = {
-    "bgp_soft_clear":            True,
+    "bgp_session_bounce":        True,
     "log_only":                  False,
 }
 
@@ -86,27 +82,33 @@ class RemediationExecutor:
         self._write_remediation(detection_id, action, status, detail, now)
 
     def _execute(self, detection: Detection, action: str) -> tuple[bool, str]:
-        if action == "bgp_soft_clear":
-            return self._bgp_soft_clear(detection)
+        if action == "bgp_session_bounce":
+            return self._bgp_session_bounce(detection)
         return False, f"unknown action '{action}'"
 
-    def _bgp_soft_clear(self, detection: Detection) -> tuple[bool, str]:
+    def _bgp_session_bounce(self, detection: Detection) -> tuple[bool, str]:
+        """Admin-state disable → enable on the BGP neighbor (SRL only gNMI-accessible reset)."""
+        import time
         device = detection.features.device_address
         peer   = detection.features.peer_address
         if not peer:
             return False, "no peer_address in features"
         try:
-            # Look up vendor from graph
-            devices  = self._client.get_devices()
-            vendor   = next((d.vendor for d in devices if d.address == device), "")
-            path_val = _bgp_clear_path(vendor, peer)
-            if path_val is None:
-                return False, f"no BGP clear path defined for vendor '{vendor}'"
-            yang_path, json_val = path_val
-            resp = self._client.push_remediation(device, yang_path, json_val)
-            if resp.success:
-                return True, ""
-            return False, resp.error
+            devices = self._client.get_devices()
+            vendor  = next((d.vendor for d in devices if d.address == device), "")
+            path    = _bgp_admin_state_path(vendor, peer)
+            if path is None:
+                return False, f"no BGP admin-state path defined for vendor '{vendor}'"
+            # Step 1 — disable
+            resp = self._client.push_remediation(device, path, '"disable"')
+            if not resp.success:
+                return False, f"disable failed: {resp.error}"
+            time.sleep(1)
+            # Step 2 — enable
+            resp = self._client.push_remediation(device, path, '"enable"')
+            if not resp.success:
+                return False, f"enable failed: {resp.error}"
+            return True, ""
         except Exception as exc:
             return False, str(exc)
 
