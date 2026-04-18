@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use tracing::{info, warn};
 
-use bonsai::{config, graph, subscriber, telemetry};
+use bonsai::{api::{BonsaiGraphServer, BonsaiService}, config, graph, subscriber, telemetry};
 
 const CONFIG_PATH: &str = "bonsai.toml";
 const GRAPH_PATH_DEFAULT: &str = "bonsai.db";
@@ -73,6 +73,21 @@ async fn main() -> Result<()> {
         let rx = shutdown_rx.clone();
         handles.push(tokio::spawn(async move { sub.run_forever(rx).await }));
     }
+
+    // Start gRPC API server
+    let api_addr = cfg.api_addr.parse()
+        .with_context(|| format!("invalid api_addr '{}'", cfg.api_addr))?;
+    let svc = BonsaiGraphServer::new(BonsaiService::new(std::sync::Arc::clone(&graph)));
+    info!(%api_addr, "gRPC API server listening");
+    tokio::spawn(async move {
+        if let Err(e) = tonic::transport::Server::builder()
+            .add_service(svc)
+            .serve(api_addr)
+            .await
+        {
+            warn!(error = %e, "gRPC server error");
+        }
+    });
 
     tokio::signal::ctrl_c().await?;
     info!("Ctrl+C received — shutting down");

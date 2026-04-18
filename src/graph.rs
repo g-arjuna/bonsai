@@ -3,23 +3,40 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use lbug::{Connection, Database, SystemConfig, Value};
 use time::OffsetDateTime;
+use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::telemetry::{json_i64, json_i64_multi, json_str, TelemetryEvent, TelemetryUpdate};
 
+/// A state-change event broadcast to all API streaming subscribers.
+#[derive(Clone, Debug)]
+pub struct BonsaiEvent {
+    pub device_address: String,
+    pub event_type:     String,
+    pub detail_json:    String,
+    pub occurred_at_ns: i64,
+}
+
 pub struct GraphStore {
-    db: Arc<Database>,
+    db:       Arc<Database>,
+    event_tx: broadcast::Sender<BonsaiEvent>,
 }
 
 impl GraphStore {
     pub fn open(path: &str) -> Result<Self> {
         let db = Database::new(path, SystemConfig::default())
             .context("failed to open LadybugDB")?;
-        let store = GraphStore { db: Arc::new(db) };
+        let (event_tx, _) = broadcast::channel(1024);
+        let store = GraphStore { db: Arc::new(db), event_tx };
         store.init_schema()?;
         info!(path, "graph store opened");
         Ok(store)
+    }
+
+    /// Subscribe to state-change events broadcast by the graph writer.
+    pub fn subscribe_events(&self) -> broadcast::Receiver<BonsaiEvent> {
+        self.event_tx.subscribe()
     }
 
     fn init_schema(&self) -> Result<()> {
@@ -126,8 +143,9 @@ impl GraphStore {
     /// Write a single telemetry update to the graph.
     /// Dispatches to a blocking thread so the caller's async task is not blocked.
     pub async fn write(&self, update: TelemetryUpdate) -> Result<()> {
-        let db = Arc::clone(&self.db);
-        tokio::task::spawn_blocking(move || write_blocking(&db, &update))
+        let db       = Arc::clone(&self.db);
+        let event_tx = self.event_tx.clone();
+        tokio::task::spawn_blocking(move || write_blocking(&db, &update, &event_tx))
             .await
             .context("spawn_blocking panicked")?
     }
@@ -135,7 +153,7 @@ impl GraphStore {
 
 // ── blocking write helpers ────────────────────────────────────────────────────
 
-fn write_blocking(db: &Database, update: &TelemetryUpdate) -> Result<()> {
+fn write_blocking(db: &Database, update: &TelemetryUpdate, event_tx: &broadcast::Sender<BonsaiEvent>) -> Result<()> {
     let conn = Connection::new(db).context("graph write connection")?;
     match update.classify() {
         TelemetryEvent::InterfaceStats { if_name } => {
@@ -146,7 +164,7 @@ fn write_blocking(db: &Database, update: &TelemetryUpdate) -> Result<()> {
             write_interface(&conn, update, &if_name)
         }
         TelemetryEvent::BgpNeighborState { peer_address, state_value } => {
-            write_bgp_neighbor(&conn, update, &peer_address, state_value.as_ref().unwrap_or(&update.value))
+            write_bgp_neighbor(&conn, update, &peer_address, state_value.as_ref().unwrap_or(&update.value), event_tx)
         }
         TelemetryEvent::LldpNeighbor { local_if, neighbor_id, state_value } => {
             write_lldp_neighbor(&conn, update, &local_if, &neighbor_id, state_value.as_ref().unwrap_or(&update.value))
@@ -250,7 +268,7 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
     Ok(())
 }
 
-fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &str, val: &serde_json::Value) -> Result<()> {
+fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &str, val: &serde_json::Value, event_tx: &broadcast::Sender<BonsaiEvent>) -> Result<()> {
     let id = format!("{}:{}", u.target, peer_addr);
     let now = ts(u.timestamp_ns);
     let new_state = json_str(val, "session-state").to_lowercase();
@@ -294,7 +312,7 @@ fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &st
             old_state.as_deref().unwrap_or("none"),
             new_state
         );
-        write_state_change_event(conn, &u.target, "bgp_session_change", &detail, now.clone())?;
+        write_state_change_event(conn, &u.target, "bgp_session_change", &detail, now.clone(), u.timestamp_ns, event_tx)?;
     }
 
     // Ensure the Device→BgpNeighbor edge exists
@@ -340,6 +358,8 @@ fn write_state_change_event(
     event_type: &str,
     detail: &str,
     now: Value,
+    timestamp_ns: i64,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
 ) -> Result<()> {
     let id = Uuid::new_v4().to_string();
 
@@ -378,6 +398,13 @@ fn write_state_change_event(
         ],
     )
     .context("execute REPORTED_BY edge")?;
+
+    let _ = event_tx.send(BonsaiEvent {
+        device_address: device_address.to_string(),
+        event_type:     event_type.to_string(),
+        detail_json:    detail.to_string(),
+        occurred_at_ns: timestamp_ns,
+    });
 
     debug!(device = %device_address, event_type = %event_type, "state change event recorded");
     Ok(())

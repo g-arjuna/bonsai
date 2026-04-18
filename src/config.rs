@@ -4,7 +4,14 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 pub struct Config {
     pub graph_path: String,
+    /// gRPC listen address for the Bonsai API server. Default: "[::1]:50051".
+    #[serde(default = "default_api_addr")]
+    pub api_addr: String,
     pub target: Vec<TargetConfig>,
+}
+
+fn default_api_addr() -> String {
+    "[::1]:50051".to_string()
 }
 
 #[derive(Deserialize)]
