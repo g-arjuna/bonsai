@@ -40,7 +40,14 @@ class BonsaiClient:
         self.close()
 
     def connect(self) -> None:
-        self._channel = grpc.insecure_channel(self._address)
+        # keepalive: ping every 30s, timeout after 10s, allow pings without calls
+        options = [
+            ("grpc.keepalive_time_ms",              30_000),
+            ("grpc.keepalive_timeout_ms",           10_000),
+            ("grpc.keepalive_permit_without_calls",      1),
+            ("grpc.http2.max_pings_without_data",        0),
+        ]
+        self._channel = grpc.insecure_channel(self._address, options=options)
         self._stub = pb_grpc.BonsaiGraphStub(self._channel)
 
     def close(self) -> None:

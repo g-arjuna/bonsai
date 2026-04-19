@@ -72,13 +72,17 @@ class RuleEngine:
     def _event_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                for event in self._client.stream_events():
+                stream = self._client.stream_events()
+                for event in stream:
                     if self._stop.is_set():
                         break
                     self._dispatch(event)
+                # stream ended cleanly (server EOF) — reconnect immediately
+                if not self._stop.is_set():
+                    print("[engine] stream closed by server — reconnecting")
             except Exception as exc:
                 if not self._stop.is_set():
-                    print(f"[engine] stream error: {exc} — reconnecting in 5s")
+                    print(f"[engine] stream error: {exc} -- reconnecting in 5s")
                     time.sleep(5)
 
     def _dispatch(self, event) -> None:

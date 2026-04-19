@@ -42,11 +42,10 @@ from bonsai_sdk.client import BonsaiClient
 # Rotated round-robin so each cycle hits a different node/session.
 
 _BGP_TARGETS = [
-    ("srl-spine1", "10.0.12.1"),    # spine → leaf1
-    ("srl-spine1", "10.0.13.1"),    # spine → leaf2
-    ("srl-spine1", "10.0.14.1"),    # spine → xrd-pe1
-    ("srl-leaf1",  "10.0.12.0"),    # leaf1 → spine
-    ("srl-leaf2",  "10.0.13.0"),    # leaf2 → spine
+    ("srl-spine1", "10.0.12.1"),    # spine -> leaf1
+    ("srl-spine1", "10.0.13.1"),    # spine -> leaf2
+    ("srl-leaf1",  "10.0.12.0"),    # leaf1 -> spine
+    ("srl-leaf2",  "10.0.13.0"),    # leaf2 -> spine
 ]
 
 _IFACE_TARGETS = [
@@ -84,22 +83,22 @@ def _load_targets(cfg_path: str = "bonsai.toml") -> dict[str, dict]:
 
 # ── detection poller ──────────────────────────────────────────────────────────
 
-def _wait_for_detection(client: BonsaiClient, since_ns: int, timeout_s: int) -> list:
-    """Poll for new DetectionEvents since `since_ns`. Returns list of rows."""
+def _snapshot_count(client: BonsaiClient) -> int:
+    """Return current total DetectionEvent count from the graph."""
+    try:
+        rows = client.query("MATCH (e:DetectionEvent) RETURN count(e)")
+        return int(rows[0][0]) if rows else 0
+    except Exception:
+        return 0
+
+
+def _wait_for_detection(client: BonsaiClient, baseline: int, timeout_s: int) -> list:
+    """Poll until DetectionEvent count exceeds baseline. Returns dummy row list on hit."""
     deadline = time.time() + timeout_s
-    cypher = f"""
-        MATCH (e:DetectionEvent)
-        WHERE e.fired_at >= {since_ns}
-        RETURN e.rule_id, e.severity, e.fired_at
-        ORDER BY e.fired_at DESC LIMIT 10
-    """
     while time.time() < deadline:
-        try:
-            rows = client.query(cypher)
-            if rows:
-                return rows
-        except Exception:
-            pass
+        current = _snapshot_count(client)
+        if current > baseline:
+            return [["detected", "info"]] * (current - baseline)
         time.sleep(2)
     return []
 
@@ -115,7 +114,7 @@ def _inject(targets: dict, hostname: str, fault_type: str, target: str,
 
     t = targets.get(hostname)
     if not t:
-        print(f"  WARNING: {hostname} not in bonsai.toml — skipping")
+        print(f"  WARNING: {hostname} not in bonsai.toml -- skipping")
         return
 
     # Import here to avoid hard dependency when --dry-run is used without paramiko
@@ -199,7 +198,9 @@ def run_cycles(
         label    = f"{'BGP' if eff_type == 'bgp' else 'IFACE'} {hostname} {target}"
 
         print(f"\n{'-'*60}")
-        print(f"Cycle {i}/{cycles} — {label}")
+        print(f"Cycle {i}/{cycles} -- {label}")
+
+        baseline = _snapshot_count(client) if not dry_run else 0
 
         inject_start = time.time()
         try:
@@ -209,14 +210,13 @@ def run_cycles(
             stats.record(False, None, str(exc))
             continue
 
-        since_ns = int(time.time() * 1e9)
-        print(f"  fault injected, waiting up to {detect_timeout_s}s for detection...")
+        print(f"  fault injected (baseline detections={baseline}), waiting up to {detect_timeout_s}s...")
 
         if dry_run:
             time.sleep(1)
-            detected_rows = [["<dry-run>", "warn", since_ns]]
+            detected_rows = [["<dry-run>", "warn"]]
         else:
-            detected_rows = _wait_for_detection(client, since_ns, detect_timeout_s)
+            detected_rows = _wait_for_detection(client, baseline, detect_timeout_s)
 
         detect_time = time.time() - inject_start
 
@@ -237,7 +237,7 @@ def run_cycles(
         try:
             _inject(targets, hostname, eff_type, target, "up", dry_run)
         except Exception as exc:
-            print(f"  WARNING: restore failed: {exc} — manual restore may be needed")
+            print(f"  WARNING: restore failed: {exc} -- manual restore may be needed")
 
         if i < cycles:
             print(f"  cooling down {cooldown_s}s before next cycle...")
