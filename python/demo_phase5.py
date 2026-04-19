@@ -119,7 +119,7 @@ def on_remediation(action: str, status: str, detail: dict) -> None:
     reset = _C["reset"]
     detail_str = json.dumps(detail) if detail else ""
     print(
-        f"{color}[{ts}] REMEDIATION {action} → {status}{reset}"
+        f"{color}[{ts}] REMEDIATION {action} -> {status}{reset}"
         + (f"  {detail_str}" if detail_str else "")
     )
 

@@ -90,18 +90,35 @@ def _ssh_connect(address: str, username: str, password: str) -> paramiko.SSHClie
 
 
 def _run_srl(address: str, username: str, password: str, command: str) -> str:
-    """Run a single sr_cli command on an SRL node. Returns stdout."""
+    """Run a configuration command on an SRL node.
+
+    SSH to SRL drops directly into the SRL CLI (not bash), so set commands
+    require entering candidate mode first then committing.
+    """
+    import re
+    _ansi = re.compile(r'\x1b\[[0-9;?]*[a-zA-Z]|\x1b\([a-zA-Z]|\x1b[=>]|\r')
+
     client = _ssh_connect(address, username, password)
     try:
-        # SRL accepts sr_cli "..." as a shell command
-        _, stdout, stderr = client.exec_command(
-            f'sr_cli "{command}"', timeout=CMD_TIMEOUT
-        )
-        out = stdout.read().decode(errors="replace").strip()
-        err = stderr.read().decode(errors="replace").strip()
-        if err:
-            print(f"  [stderr] {err}", file=sys.stderr)
-        return out
+        shell = client.invoke_shell()
+        time.sleep(1.2)
+        shell.recv(8192)  # drain banner/prompt
+
+        # Exclusive candidate prevents conflicts from stale shared-candidate changes
+        for cmd in ["enter candidate exclusive", command, "commit now"]:
+            shell.send(cmd + "\n")
+            time.sleep(0.8)
+
+        time.sleep(1.5)  # let commit complete
+        chunks = []
+        while shell.recv_ready():
+            chunks.append(shell.recv(8192).decode(errors="replace"))
+        out = "".join(chunks)
+        shell.close()
+        # Return last non-empty line as the status indicator
+        clean = _ansi.sub("", out).strip()
+        last_line = next((l.strip() for l in reversed(clean.splitlines()) if l.strip()), "ok")
+        return last_line
     finally:
         client.close()
 
