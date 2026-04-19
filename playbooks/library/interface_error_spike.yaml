@@ -1,0 +1,96 @@
+detection_rule_id: interface_error_spike
+description: |
+  Interface error counters are increasing at an anomalous rate. The playbooks
+  below intentionally avoid automated state toggles because raw error spikes do
+  not identify a safe remediation.
+
+playbooks:
+  - name: srl_interface_error_manual_investigation
+    vendor: nokia_srl
+    operation: Manual interface error investigation
+    description: |
+      Do not automatically bounce an SR Linux interface solely because error
+      counters are rising. Physical optics, cabling, speed/duplex mismatch, or
+      far-end faults are more likely than a recoverable local admin-state issue.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.if_name != ""
+    steps: []
+    verification:
+      wait_seconds: 60
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:HAS_INTERFACE]->(i:Interface {name: $if_name})
+        WHERE i.updated_at IS NOT NULL
+        RETURN count(i) > 0
+    source_doc:
+      url: "https://documentation.nokia.com/srlinux/22-3/SR_Linux_Book_Files/Data_Model_Reference/srl_nokia-interfaces_0.html"
+      excerpt_summary: |
+        SR Linux exposes interface administrative controls and interface
+        statistics in the interface model. Those data support diagnosis, but the
+        existence of writable admin-state does not make an automatic bounce a
+        safe response to rising error counters.
+    notes: |
+      This is a deliberate no-op playbook. The current graph stores counters
+      but does not classify the root cause of an error spike. The verification
+      query above is only a liveness check, not proof of recovery.
+
+  - name: xrd_interface_error_manual_investigation
+    vendor: cisco_xrd
+    operation: Manual interface error investigation
+    description: |
+      Do not automatically bounce an XRd interface because of error growth
+      alone. This symptom needs physical and policy investigation first.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.if_name != ""
+    steps: []
+    verification:
+      wait_seconds: 60
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:HAS_INTERFACE]->(i:Interface {name: $if_name})
+        WHERE i.updated_at IS NOT NULL
+        RETURN count(i) > 0
+    source_doc:
+      url: "https://www.cisco.com/c/en/us/td/docs/iosxr/cisco8000/programmability/b-programmability-configuration-guide-cisco8000/m-data-models-for-network-automation.html"
+      excerpt_summary: |
+        Cisco IOS XR documents how modeled configuration can be managed through
+        gNMI/OpenConfig. That confirms a programmable surface, but not that an
+        interface reset is the correct response to an error-rate anomaly.
+    notes: |
+      This is a deliberate no-op playbook. Error spikes can be caused by
+      optics, media, FEC, queueing, or far-end conditions that a local reset
+      may not improve.
+
+  - name: ceos_interface_error_manual_investigation
+    vendor: arista_ceos
+    operation: Manual interface error investigation
+    description: |
+      Do not automatically bounce a cEOS interface on counter growth alone.
+      The signal is useful for detection, but not specific enough for closed-
+      loop remediation.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.if_name != ""
+    steps: []
+    verification:
+      wait_seconds: 60
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:HAS_INTERFACE]->(i:Interface {name: $if_name})
+        WHERE i.updated_at IS NOT NULL
+        RETURN count(i) > 0
+    source_doc:
+      url: "https://www.arista.com/support/toi/eos-4-28-0f"
+      excerpt_summary: |
+        Arista documents writable OpenConfig access over gNMI when OpenConfig
+        is enabled. The sourced material confirms the control surface, but not
+        a safe automatic action for an interface error spike.
+    notes: |
+      This is a deliberate no-op playbook. The verification query above is
+      only a liveness check because the graph does not yet encode error-rate
+      recovery semantics.

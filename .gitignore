@@ -21,3 +21,20 @@ lab/fast-iteration/mv-ca.pem
 
 # gNMI probe credentials (copy from gnmi-creds.sh.example)
 lab/tools/gnmi-creds.sh
+
+# ContainerLab p4 CA cert (generated per deployment)
+lab/fast-iteration/p4-ca.pem
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Trained ML model binaries (large, runtime-generated — train locally)
+python/models/
+
+# Debug / run logs
+*.log
+
+# Claude Code session memory (local tooling state, not project content)
+.claude/

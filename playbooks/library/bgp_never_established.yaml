@@ -1,0 +1,98 @@
+detection_rule_id: bgp_never_established
+description: |
+  A BGP peer has been observed for an extended period without ever reaching
+  established state. The playbooks below remain manual-only because this
+  symptom is usually an intent mismatch rather than a recoverable transient.
+
+playbooks:
+  - name: srl_bgp_never_established_manual_investigation
+    vendor: nokia_srl
+    operation: Manual BGP intent investigation
+    description: |
+      Do not automatically reset an SR Linux peer that has never established.
+      This pattern commonly indicates ASN, address-family, policy, auth, or
+      transport mismatches that a forced bounce will not fix.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.peer_address != ""
+      - features.new_state != "established"
+    steps: []
+    verification:
+      wait_seconds: 60
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:PEERS_WITH]->(n:BgpNeighbor {peer_address: $peer_address})
+        WHERE n.session_state = "established"
+        RETURN count(n) > 0
+    source_doc:
+      url: "https://documentation.nokia.com/srlinux/24-10/books/routing-protocols/bgp.html"
+      excerpt_summary: |
+        SR Linux documents the configuration inputs required for BGP neighbor
+        formation, including peer relationships and associated parameters.
+        Those requirements make a never-established session more indicative of
+        configuration or reachability mismatch than of a stale session.
+    notes: |
+      This is a deliberate no-op playbook. Bonsai does not yet carry enough
+      intended-state context to distinguish remote-AS mismatch, missing AFI-
+      SAFI enablement, policy rejection, or authentication failure.
+
+  - name: xrd_bgp_never_established_manual_investigation
+    vendor: cisco_xrd
+    operation: Manual BGP intent investigation
+    description: |
+      Do not automatically reset an XRd peer that has never established. This
+      state usually means configuration or transport intent is wrong.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.peer_address != ""
+      - features.new_state != "established"
+    steps: []
+    verification:
+      wait_seconds: 60
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:PEERS_WITH]->(n:BgpNeighbor {peer_address: $peer_address})
+        WHERE n.session_state = "established"
+        RETURN count(n) > 0
+    source_doc:
+      url: "https://www.cisco.com/c/en/us/support/docs/ios-nx-os-software/ios-xr-software/221690-configure-gnmi-and-implement-pyang-in-io.html"
+      excerpt_summary: |
+        Cisco IOS XR documents gNMI management of modeled configuration, but
+        the sourced material does not provide evidence that a reset is the right
+        response when a BGP peer has never reached established state.
+    notes: |
+      This is a deliberate no-op playbook. A never-established peer should be
+      treated as an intent-validation problem, not as a candidate for repeated
+      automatic resets.
+
+  - name: ceos_bgp_never_established_manual_investigation
+    vendor: arista_ceos
+    operation: Manual BGP intent investigation
+    description: |
+      Do not automatically reset a cEOS peer that has never established. This
+      symptom typically reflects an input mismatch, not a stale session.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.peer_address != ""
+      - features.new_state != "established"
+    steps: []
+    verification:
+      wait_seconds: 60
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:PEERS_WITH]->(n:BgpNeighbor {peer_address: $peer_address})
+        WHERE n.session_state = "established"
+        RETURN count(n) > 0
+    source_doc:
+      url: "https://www.arista.com/support/toi/eos-4-28-0f"
+      excerpt_summary: |
+        Arista documents writable OpenConfig access over gNMI when OpenConfig
+        support is enabled. That establishes management access, but not a safe
+        automated fix for a peer that has never successfully established.
+    notes: |
+      This is a deliberate no-op playbook. Human review should confirm peer
+      addressing, ASNs, password/auth settings, activated address families, and
+      underlay transport before any manual reset is attempted.

@@ -1,0 +1,102 @@
+detection_rule_id: bfd_session_down
+description: |
+  A BFD session transitioned from up to down. The playbooks below are
+  intentionally manual-only at first because BFD is usually the earliest signal
+  of lower-layer or protocol-owner instability, not the safest direct target
+  for immediate automated action.
+
+playbooks:
+  - name: srl_bfd_manual_investigation
+    vendor: nokia_srl
+    operation: Manual BFD session investigation
+    description: |
+      Do not automatically bounce an SR Linux BFD session on first detection.
+      Investigate the owning interface, protocol, and transport path before any
+      manual recovery action.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.old_state == "up"
+      - features.new_state == "down"
+    steps: []
+    verification:
+      wait_seconds: 45
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:HAS_BFD_SESSION]->(b:BfdSession)
+        WHERE b.if_name = $if_name AND b.session_state = "up"
+        RETURN count(b) > 0
+    source_doc:
+      url: "https://documentation.nokia.com/srlinux/25-3/books/data-model-reference/srl_nokia-bfd_0.html"
+      excerpt_summary: |
+        SR Linux exposes native BFD session state and configurable BFD
+        administrative controls. Those capabilities make BFD observable and
+        potentially recoverable, but they do not make a session bounce the
+        safest first response to a down event.
+    notes: |
+      This is a deliberate no-op playbook. A BFD session down event often means
+      the transport path or the protocol owner is unhealthy. Bonsai should keep
+      this human-first until BFD graph coverage, protocol-owner correlation,
+      and vendor behavior are lab-validated.
+
+  - name: xrd_bfd_manual_investigation
+    vendor: cisco_xrd
+    operation: Manual BFD session investigation
+    description: |
+      Do not automatically bounce an XRd BFD session on first detection. The
+      signal is valuable, but the safest response is still operator review.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.old_state == "up"
+      - features.new_state == "down"
+    steps: []
+    verification:
+      wait_seconds: 45
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:HAS_BFD_SESSION]->(b:BfdSession)
+        WHERE b.if_name = $if_name AND b.session_state = "up"
+        RETURN count(b) > 0
+    source_doc:
+      url: "https://www.cisco.com/c/en/us/td/docs/iosxr/ncs5500/routing/79x/b-routing-cg-ncs5500-79x/implementing-bfd.html"
+      excerpt_summary: |
+        Cisco IOS XR documents BFD behavior and explicitly states that
+        `openconfig-bfd.yang` can be used for configuration and operational
+        state. That confirms a programmable surface, but not an operator-safe
+        automatic bounce policy for Bonsai.
+    notes: |
+      This is a deliberate no-op playbook. Keep BFD human-first on XRd until
+      the OpenConfig BFD write path and graph verification are validated in the
+      lab.
+
+  - name: ceos_bfd_manual_investigation
+    vendor: arista_ceos
+    operation: Manual BFD session investigation
+    description: |
+      Do not automatically bounce a cEOS BFD session on first detection. Use
+      the event as a high-value troubleshooting signal rather than an immediate
+      closed-loop action.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.old_state == "up"
+      - features.new_state == "down"
+    steps: []
+    verification:
+      wait_seconds: 45
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:HAS_BFD_SESSION]->(b:BfdSession)
+        WHERE b.if_name = $if_name AND b.session_state = "up"
+        RETURN count(b) > 0
+    source_doc:
+      url: "https://www.arista.com/support/toi/eos-4-28-0f"
+      excerpt_summary: |
+        Arista documents read/write OpenConfig support over gNMI when
+        OpenConfig is enabled. That is enough to treat BFD as a future modeled
+        control surface, but not enough to justify automatic BFD restarts in
+        Bonsai.
+    notes: |
+      This is a deliberate no-op playbook. Keep BFD human-first on cEOS until
+      OpenConfig BFD behavior and verification are lab-tested.

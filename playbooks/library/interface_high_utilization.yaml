@@ -1,0 +1,94 @@
+detection_rule_id: interface_high_utilization
+description: |
+  Interface utilization is above the current threshold. The playbooks below are
+  intentionally manual-only because high utilization is often expected traffic
+  load, not a fault that should trigger an automated config change.
+
+playbooks:
+  - name: srl_high_utilization_manual_investigation
+    vendor: nokia_srl
+    operation: Manual high-utilization investigation
+    description: |
+      Do not automatically change SR Linux interface state because a link is
+      busy. High utilization is a planning, policy, or congestion-management
+      problem, not a generic admin-state remediation case.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.if_name != ""
+    steps: []
+    verification:
+      wait_seconds: 60
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:HAS_INTERFACE]->(i:Interface {name: $if_name})
+        WHERE i.updated_at IS NOT NULL
+        RETURN count(i) > 0
+    source_doc:
+      url: "https://documentation.nokia.com/srlinux/22-3/SR_Linux_Book_Files/Data_Model_Reference/srl_nokia-interfaces_0.html"
+      excerpt_summary: |
+        SR Linux exposes interface counters and administrative controls in the
+        interface model. Those counters can indicate load, but the model does
+        not imply that toggling admin-state is an appropriate response to high
+        utilization.
+    notes: |
+      This is a deliberate no-op playbook. High utilization should drive
+      traffic engineering, capacity review, or policy tuning rather than an
+      interface bounce.
+
+  - name: xrd_high_utilization_manual_investigation
+    vendor: cisco_xrd
+    operation: Manual high-utilization investigation
+    description: |
+      Do not automatically change XRd interface state because a link is busy.
+      Treat this as congestion analysis, not closed-loop repair.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.if_name != ""
+    steps: []
+    verification:
+      wait_seconds: 60
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:HAS_INTERFACE]->(i:Interface {name: $if_name})
+        WHERE i.updated_at IS NOT NULL
+        RETURN count(i) > 0
+    source_doc:
+      url: "https://www.cisco.com/c/en/us/td/docs/iosxr/cisco8000/programmability/b-programmability-configuration-guide-cisco8000/m-data-models-for-network-automation.html"
+      excerpt_summary: |
+        Cisco IOS XR documents gNMI/OpenConfig configuration handling. That is
+        sufficient to establish a programmable interface, but not a safe
+        generic remediation for sustained high utilization.
+    notes: |
+      This is a deliberate no-op playbook. High utilization is not, by itself,
+      evidence that toggling interface state would improve service.
+
+  - name: ceos_high_utilization_manual_investigation
+    vendor: arista_ceos
+    operation: Manual high-utilization investigation
+    description: |
+      Do not automatically change cEOS interface state because utilization is
+      high. This signal is better routed to human review or future traffic-
+      engineering logic.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.if_name != ""
+    steps: []
+    verification:
+      wait_seconds: 60
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:HAS_INTERFACE]->(i:Interface {name: $if_name})
+        WHERE i.updated_at IS NOT NULL
+        RETURN count(i) > 0
+    source_doc:
+      url: "https://www.arista.com/support/toi/eos-4-28-0f"
+      excerpt_summary: |
+        Arista documents writable OpenConfig access over gNMI when OpenConfig
+        is enabled. That does not mean busy links should be auto-remediated by
+        config mutation.
+    notes: |
+      This is a deliberate no-op playbook. Use this detection for visibility
+      and escalation until Bonsai grows explicit congestion-management logic.

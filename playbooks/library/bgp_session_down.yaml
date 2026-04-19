@@ -1,0 +1,118 @@
+detection_rule_id: bgp_session_down
+description: |
+  BGP session transitioned from established to idle. Playbooks below prefer
+  the least-invasive gNMI-remediable action that could restore the session,
+  and stay explicit about vendors where a trustworthy Set path is not yet
+  validated.
+
+playbooks:
+  - name: srl_bgp_admin_state_bounce
+    vendor: nokia_srl
+    operation: BGP neighbor admin-state bounce
+    description: |
+      Disable then re-enable a BGP neighbor's admin-state to force a clean
+      session reset on SR Linux. Use this when a previously established peer
+      has dropped and a targeted neighbor reset is appropriate.
+    risk_tier: safe
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.peer_address != ""
+      - features.old_state == "established"
+    steps:
+      - gnmi_set:
+          path: "network-instance[name=default]/protocols/bgp/neighbor[peer-address={peer_address}]/admin-state"
+          value: '"disable"'
+      - sleep: 1
+      - gnmi_set:
+          path: "network-instance[name=default]/protocols/bgp/neighbor[peer-address={peer_address}]/admin-state"
+          value: '"enable"'
+    verification:
+      wait_seconds: 30
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:PEERS_WITH]->(n:BgpNeighbor {peer_address: $peer_address})
+        WHERE n.session_state = "established"
+        RETURN count(n) > 0
+    source_doc:
+      url: "https://documentation.nokia.com/srlinux/24-10/books/routing-protocols/bgp.html"
+      excerpt_summary: |
+        SR Linux documents BGP configuration management through the
+        network-instance/protocols/bgp hierarchy and states that disabling and
+        re-enabling BGP administrative state restarts sessions. The SR Linux
+        data model reference exposes neighbor-level admin-state as a writable
+        leaf under the BGP neighbor subtree.
+    notes: |
+      Path validated against the SR Linux data model reference tree where
+      `network-instance/name/protocols/bgp/neighbor/peer-address/admin-state`
+      is configurable. This entry assumes the peer lives in
+      `network-instance[name=default]`; harvest a VRF-aware variant later if
+      non-default network-instances become part of the detection context.
+
+  - name: xrd_bgp_manual_reset_required
+    vendor: cisco_xrd
+    operation: BGP neighbor admin-state bounce
+    description: |
+      No trustworthy Cisco XRd gNMI Set path for a per-neighbor BGP reset was
+      validated in this harvest. Keep the entry explicit so the catalog records
+      the gap instead of fabricating a path.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.peer_address != ""
+      - features.old_state == "established"
+    steps: []
+    verification:
+      wait_seconds: 30
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:PEERS_WITH]->(n:BgpNeighbor {peer_address: $peer_address})
+        WHERE n.session_state = "established"
+        RETURN count(n) > 0
+    source_doc:
+      url: "https://www.cisco.com/c/en/us/td/docs/iosxr/cisco8000/programmability/b-programmability-configuration-guide-cisco8000/m-grpc-fundamentals-and-authentication.html"
+      excerpt_summary: |
+        Cisco IOS XR documents gNMI Set support and the use of OpenConfig,
+        Cisco native, and CLI origins. However, the sourced transport and YANG
+        material used in this harvest did not provide a validated per-neighbor
+        BGP reset or admin-state Set path suitable for Bonsai.
+    notes: |
+      This operation is not currently gNMI-remediable on Cisco XRd for Bonsai.
+      Cisco's sourced gNMI documentation confirms transport/origin handling,
+      but this harvest did not validate a writable per-neighbor BGP reset path
+      from either the sourced OpenConfig trees or a Cisco XR action model.
+      Use operator-driven manual reset/clear procedures outside Bonsai until a
+      vendor-native writable YANG path is confirmed and lab-tested.
+
+  - name: ceos_bgp_manual_reset_required
+    vendor: arista_ceos
+    operation: BGP neighbor admin-state bounce
+    description: |
+      No trustworthy Arista cEOS gNMI Set path for a per-neighbor BGP reset was
+      validated in this harvest. The library should preserve that uncertainty
+      rather than pretend a portable reset leaf exists.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.peer_address != ""
+      - features.old_state == "established"
+    steps: []
+    verification:
+      wait_seconds: 30
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:PEERS_WITH]->(n:BgpNeighbor {peer_address: $peer_address})
+        WHERE n.session_state = "established"
+        RETURN count(n) > 0
+    source_doc:
+      url: "https://www.arista.com/support/toi/eos-4-28-0f"
+      excerpt_summary: |
+        Arista documents that, when OpenConfig is enabled, the OpenConfig YANG
+        tree is exposed for read and write access over gNMI. In the sourced
+        Arista and OpenConfig material used for this harvest, that did not
+        yield a validated per-neighbor BGP reset/admin-state path.
+    notes: |
+      This operation is not currently gNMI-remediable on Arista cEOS for
+      Bonsai. The sourced documentation confirms writable OpenConfig access in
+      general, but this harvest did not validate a BGP neighbor reset path in a
+      sourced YANG tree. Use operator-driven manual EOS BGP reset procedures
+      until a vendor-native or OpenConfig path is confirmed and lab-tested.

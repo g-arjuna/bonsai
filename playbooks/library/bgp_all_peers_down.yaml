@@ -1,0 +1,101 @@
+detection_rule_id: bgp_all_peers_down
+description: |
+  All BGP sessions on a device are currently down. The playbooks below stay
+  manual-only because the blast radius is too large for a safe generic closed-
+  loop action.
+
+playbooks:
+  - name: srl_all_bgp_peers_down_manual_investigation
+    vendor: nokia_srl
+    operation: Manual all-peers-down investigation
+    description: |
+      Do not automatically restart all SR Linux BGP peers when the entire box
+      has lost adjacency. This pattern is more consistent with isolation,
+      transport failure, or control-plane health issues than with a single bad
+      neighbor.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.peer_count_total > 0
+      - features.peer_count_established == 0
+    steps: []
+    verification:
+      wait_seconds: 60
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:PEERS_WITH]->(n:BgpNeighbor)
+        WHERE n.session_state = "established"
+        RETURN count(n) > 0
+    source_doc:
+      url: "https://documentation.nokia.com/srlinux/24-10/books/routing-protocols/bgp.html"
+      excerpt_summary: |
+        SR Linux documents BGP instance and neighbor administrative controls,
+        including the fact that disabling BGP tears down established sessions.
+        That makes a full restart possible, but not safe as a generic response
+        when every peer on the device is already down.
+    notes: |
+      This is a deliberate no-op playbook. A box-wide BGP outage is usually a
+      symptom of node isolation, source-interface loss, control-plane process
+      failure, or a broader fabric event. Automatically tearing down and
+      recreating every session risks hiding the fault and increasing impact.
+
+  - name: xrd_all_bgp_peers_down_manual_investigation
+    vendor: cisco_xrd
+    operation: Manual all-peers-down investigation
+    description: |
+      Do not automatically reset all XRd BGP peers. This condition requires
+      human review of platform health, reachability, and control-plane state.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.peer_count_total > 0
+      - features.peer_count_established == 0
+    steps: []
+    verification:
+      wait_seconds: 60
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:PEERS_WITH]->(n:BgpNeighbor)
+        WHERE n.session_state = "established"
+        RETURN count(n) > 0
+    source_doc:
+      url: "https://www.cisco.com/c/en/us/td/docs/iosxr/cisco8000/programmability/b-programmability-configuration-guide-cisco8000/m-grpc-fundamentals-and-authentication.html"
+      excerpt_summary: |
+        Cisco IOS XR documents gNMI Set behavior and supported origins for
+        modeled configuration. The sourced material confirms programmability,
+        but it does not justify a generic automatic action when all peers on a
+        router are simultaneously lost.
+    notes: |
+      This is a deliberate no-op playbook. A device-wide peer loss pattern is
+      a high-blast-radius symptom and should trip human investigation, not
+      closed-loop resets.
+
+  - name: ceos_all_bgp_peers_down_manual_investigation
+    vendor: arista_ceos
+    operation: Manual all-peers-down investigation
+    description: |
+      Do not automatically reset all cEOS BGP peers. A fabric-wide or node-
+      level issue is more likely than a single missing config leaf.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.peer_count_total > 0
+      - features.peer_count_established == 0
+    steps: []
+    verification:
+      wait_seconds: 60
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:PEERS_WITH]->(n:BgpNeighbor)
+        WHERE n.session_state = "established"
+        RETURN count(n) > 0
+    source_doc:
+      url: "https://www.arista.com/support/toi/eos-4-28-0f"
+      excerpt_summary: |
+        Arista documents writable OpenConfig access over gNMI when OpenConfig
+        is enabled. That provides a control surface, but not a safe generic
+        action for a total loss of BGP adjacency on a device.
+    notes: |
+      This is a deliberate no-op playbook. Treat this detection as escalation
+      to human investigation of reachability, routing policy, control-plane
+      health, and recent config changes.

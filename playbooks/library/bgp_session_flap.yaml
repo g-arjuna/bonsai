@@ -1,0 +1,105 @@
+detection_rule_id: bgp_session_flap
+description: |
+  A BGP peer has flapped repeatedly in a short window. The playbooks below
+  deliberately avoid automated resets because repeated intervention can worsen
+  an unstable control-plane or transport condition.
+
+playbooks:
+  - name: srl_bgp_flap_manual_investigation
+    vendor: nokia_srl
+    operation: Manual BGP flap investigation
+    description: |
+      Do not automatically bounce a repeatedly flapping SR Linux BGP neighbor.
+      This condition usually needs root-cause investigation of transport,
+      optics, timers, or policy rather than another forced reset.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.peer_address != ""
+      - features.recent_flap_count >= 3
+    steps: []
+    verification:
+      wait_seconds: 60
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:PEERS_WITH]->(n:BgpNeighbor {peer_address: $peer_address})
+        WHERE n.session_state = "established"
+        RETURN count(n) > 0
+    source_doc:
+      url: "https://documentation.nokia.com/srlinux/24-10/books/routing-protocols/bgp.html"
+      excerpt_summary: |
+        SR Linux documents BGP neighbor and instance administrative controls,
+        including reset behavior when administrative state is toggled. Those
+        controls exist, but the documentation does not make repeated reset the
+        preferred remedy for an already unstable peer.
+    notes: |
+      This is a deliberate no-op playbook. The operation is technically
+      gNMI-remediable on SR Linux via neighbor admin-state, but Bonsai should
+      not auto-bounce a peer that is already flapping. Repeated resets can
+      amplify churn and obscure root cause. Human investigation should check
+      transport reachability, hold/keepalive mismatches, BFD coupling, optics,
+      and policy changes before any manual reset.
+
+  - name: xrd_bgp_flap_manual_investigation
+    vendor: cisco_xrd
+    operation: Manual BGP flap investigation
+    description: |
+      Do not automatically reset a flapping XRd BGP neighbor. The condition is
+      broader than a single safe gNMI Set action and needs operator review.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.peer_address != ""
+      - features.recent_flap_count >= 3
+    steps: []
+    verification:
+      wait_seconds: 60
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:PEERS_WITH]->(n:BgpNeighbor {peer_address: $peer_address})
+        WHERE n.session_state = "established"
+        RETURN count(n) > 0
+    source_doc:
+      url: "https://www.cisco.com/c/en/us/support/docs/ios-nx-os-software/ios-xr-software/221690-configure-gnmi-and-implement-pyang-in-io.html"
+      excerpt_summary: |
+        Cisco IOS XR documents gNMI transport and Set semantics for managing
+        modeled configuration. The sourced material supports using gNMI for
+        configuration changes, but does not establish an automated best action
+        for a repeatedly flapping BGP neighbor.
+    notes: |
+      This is a deliberate no-op playbook. A flapping BGP session is usually a
+      symptom of an external instability, not a lack of resets. Bonsai should
+      not auto-remediate until vendor-specific reset paths and root-cause-aware
+      selection logic are validated.
+
+  - name: ceos_bgp_flap_manual_investigation
+    vendor: arista_ceos
+    operation: Manual BGP flap investigation
+    description: |
+      Do not automatically reset a flapping cEOS BGP neighbor. This condition
+      is better treated as an investigation workflow than a closed-loop action.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.peer_address != ""
+      - features.recent_flap_count >= 3
+    steps: []
+    verification:
+      wait_seconds: 60
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:PEERS_WITH]->(n:BgpNeighbor {peer_address: $peer_address})
+        WHERE n.session_state = "established"
+        RETURN count(n) > 0
+    source_doc:
+      url: "https://www.arista.com/support/toi/eos-4-28-0f"
+      excerpt_summary: |
+        Arista documents that OpenConfig paths can be exposed with read and
+        write access over gNMI. That establishes a programmable surface, but it
+        does not make repeated automated BGP resets the correct response to a
+        flapping peer.
+    notes: |
+      This is a deliberate no-op playbook. Repeated resets can worsen churn on
+      an unstable cEOS neighbor. Operator review should confirm underlay reach-
+      ability, session timers, BFD interactions, and recent config drift before
+      any manual intervention.

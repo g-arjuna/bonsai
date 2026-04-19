@@ -1,0 +1,110 @@
+detection_rule_id: topology_edge_lost
+description: |
+  A previously observed LLDP-derived connectivity edge has disappeared from the
+  graph. The playbooks below focus on the local interface where the topology
+  signal vanished and prefer low-blast-radius actions.
+
+playbooks:
+  - name: srl_lldp_interface_bounce
+    vendor: nokia_srl
+    operation: LLDP interface admin-state bounce
+    description: |
+      Disable then re-enable LLDP on the affected SR Linux interface to recover
+      from a stale or wedged LLDP adjacency advertisement path without touching
+      the underlying forwarding interface.
+    risk_tier: safe
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.if_name != ""
+    steps:
+      - gnmi_set:
+          path: "system/lldp/interface[name={if_name}]/admin-state"
+          value: '"disable"'
+      - sleep: 1
+      - gnmi_set:
+          path: "system/lldp/interface[name={if_name}]/admin-state"
+          value: '"enable"'
+    verification:
+      wait_seconds: 45
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:HAS_LLDP_NEIGHBOR]->(n:LldpNeighbor {local_if: $if_name})
+        RETURN count(n) > 0
+    source_doc:
+      url: "https://documentation.nokia.com/srlinux/26-3/books/interfaces/lldp.html"
+      excerpt_summary: |
+        SR Linux documents LLDP administrative control at both the system and
+        interface level and explicitly shows `system lldp interface <name>
+        admin-state` in configuration examples. The data model reference
+        exposes `system/lldp/interface/name/admin-state` as a configurable leaf
+        with `enable` and `disable` values.
+    notes: |
+      Path validated against the SR Linux system data model reference where
+      `system lldp interface name admin-state` is configurable. This action is
+      intentionally scoped to the LLDP protocol on one interface rather than
+      bouncing the forwarding interface itself. If the edge loss reflects a
+      real physical or far-end fault, the verification query will remain false
+      and no recovery is claimed.
+
+  - name: xrd_topology_edge_manual_investigation
+    vendor: cisco_xrd
+    operation: Manual LLDP/topology investigation
+    description: |
+      Do not automatically remediate a lost LLDP-derived edge on XRd yet. The
+      right response depends on whether the issue is LLDP configuration,
+      transport loss, or a real topology change.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.if_name != ""
+    steps: []
+    verification:
+      wait_seconds: 45
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:HAS_LLDP_NEIGHBOR]->(n:LldpNeighbor {local_if: $if_name})
+        RETURN count(n) > 0
+    source_doc:
+      url: "https://www.cisco.com/c/en/us/td/docs/routers/asr9000/software/25xx/programmability/configuration/guide/b-programmability-cg-asr9000-25xx/unified-data-models.html"
+      excerpt_summary: |
+        Cisco documents OpenConfig and native LLDP model behavior on IOS XR and
+        describes how global OpenConfig LLDP configuration interacts with native
+        LLDP behavior. The sourced material is enough to confirm LLDP is
+        modeled, but not enough to claim a safe, validated per-interface Set
+        path for Bonsai across XRd targets.
+    notes: |
+      This is a deliberate no-op playbook. XRd LLDP state is observable, but
+      this harvest did not validate a trustworthy per-interface LLDP bounce
+      path through sourced YANG plus lab testing. Operator review should first
+      distinguish between LLDP suppression, interface loss, and legitimate
+      topology change.
+
+  - name: ceos_topology_edge_manual_investigation
+    vendor: arista_ceos
+    operation: Manual LLDP/topology investigation
+    description: |
+      Do not automatically remediate a lost LLDP-derived edge on cEOS yet. The
+      symptom may be a real topology change, LLDP scope issue, or a lower-layer
+      failure rather than a recoverable protocol stall.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.if_name != ""
+    steps: []
+    verification:
+      wait_seconds: 45
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:HAS_LLDP_NEIGHBOR]->(n:LldpNeighbor {local_if: $if_name})
+        RETURN count(n) > 0
+    source_doc:
+      url: "https://www.arista.com/support/toi/eos-4-28-0f"
+      excerpt_summary: |
+        Arista documents that OpenConfig paths can be exposed with read and
+        write access over gNMI when OpenConfig is enabled. Combined with the
+        OpenConfig LLDP model, this indicates a programmable LLDP surface, but
+        this harvest did not validate a safe cEOS per-interface bounce path.
+    notes: |
+      This is a deliberate no-op playbook. Keep topology-edge loss human-first
+      on cEOS until per-interface LLDP configuration paths are validated from
+      vendor-published YANG and lab-tested against the graph verification query.

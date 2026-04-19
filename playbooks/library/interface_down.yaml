@@ -1,0 +1,116 @@
+detection_rule_id: interface_down
+description: |
+  Interface oper-status transitioned to down or lower-layer-down. The entries
+  below intentionally remain no-op for now because Bonsai cannot yet verify
+  interface recovery from graph state with sufficient confidence.
+
+playbooks:
+  - name: srl_interface_manual_recovery_required
+    vendor: nokia_srl
+    operation: Interface admin-state enable
+    description: |
+      SR Linux exposes interface admin-state as a writable leaf, but this
+      detection currently lacks the graph context required to distinguish an
+      admin-down condition from a cabling, optics, or lower-layer failure.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.if_name != ""
+      - features.oper_status in ("down", "lower-layer-down")
+    steps: []
+    verification:
+      wait_seconds: 30
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:HAS_INTERFACE]->(i:Interface {name: $if_name})
+        WHERE i.updated_at IS NOT NULL
+        RETURN count(i) > 0
+    source_doc:
+      url: "https://documentation.nokia.com/srlinux/22-3/SR_Linux_Book_Files/Data_Model_Reference/srl_nokia-interfaces_0.html"
+      excerpt_summary: |
+        SR Linux exposes `interface/name/admin-state` as a configurable leaf
+        with `enable` and `disable` values. The path is suitable for gNMI Set,
+        but the current Bonsai graph schema cannot confirm that setting the
+        leaf actually restored interface service.
+    notes: |
+      This catalog entry is intentionally non-executable for now. The vendor
+      path exists, but Bonsai's graph currently stores counters on `Interface`
+      nodes without interface admin/oper state, so recovery cannot be verified
+      deterministically. The verification query above is therefore only an
+      interface-presence/liveness check, not a true recovery assertion. Do not
+      auto-heal this symptom until interface status is part of the graph or a
+      separate admin-down detection is added.
+
+  - name: xrd_interface_manual_recovery_required
+    vendor: cisco_xrd
+    operation: Interface admin-state enable
+    description: |
+      Cisco XR can expose OpenConfig and native models over gNMI, and the
+      OpenConfig interfaces model includes a writable `enabled` leaf. Bonsai
+      still treats this symptom as manual-only until verification is stronger.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.if_name != ""
+      - features.oper_status in ("down", "lower-layer-down")
+    steps: []
+    verification:
+      wait_seconds: 30
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:HAS_INTERFACE]->(i:Interface {name: $if_name})
+        WHERE i.updated_at IS NOT NULL
+        RETURN count(i) > 0
+    source_doc:
+      url: "https://www.cisco.com/c/en/us/td/docs/iosxr/cisco8000/programmability/b-programmability-configuration-guide-cisco8000/m-data-models-for-network-automation.html"
+      excerpt_summary: |
+        Cisco IOS XR documents OpenConfig behavior over gNMI and the rules for
+        configuring OpenConfig leaves on the active management agent. Combined
+        with the official OpenConfig interfaces model, this is enough to treat
+        interface admin-state as harvestable, but not yet safe for autonomous
+        remediation in Bonsai.
+    notes: |
+      This entry remains non-executable because the current graph schema cannot
+      prove interface recovery, and `interface_down` by itself is too
+      ambiguous for safe automation. The verification query above is therefore
+      only an interface-presence/liveness check, not a true recovery
+      assertion. The intended future path is the OpenConfig leaf
+      `interfaces/interface[name={if_name}]/config/enabled` with RFC 7951
+      boolean `true`, after graph verification and lab tests are in place.
+
+  - name: ceos_interface_manual_recovery_required
+    vendor: arista_ceos
+    operation: Interface admin-state enable
+    description: |
+      Arista EOS documents writable OpenConfig access over gNMI, and the
+      OpenConfig interfaces model exposes a writable `enabled` leaf. Bonsai
+      still keeps this symptom manual-only until it can verify recovery from
+      graph state.
+    risk_tier: last_resort
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.if_name != ""
+      - features.oper_status in ("down", "lower-layer-down")
+    steps: []
+    verification:
+      wait_seconds: 30
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:HAS_INTERFACE]->(i:Interface {name: $if_name})
+        WHERE i.updated_at IS NOT NULL
+        RETURN count(i) > 0
+    source_doc:
+      url: "https://www.arista.com/support/toi/eos-4-28-0f"
+      excerpt_summary: |
+        Arista documents that enabling OpenConfig exposes the OpenConfig YANG
+        tree for read and write access over gNMI. That makes interface
+        administrative state a plausible future playbook target, but Bonsai's
+        present graph model still cannot verify interface recovery reliably.
+    notes: |
+      This entry remains non-executable because the current graph schema cannot
+      prove interface recovery, and `interface_down` alone does not separate
+      administrative shutdown from physical-layer loss. The verification query
+      above is therefore only an interface-presence/liveness check, not a true
+      recovery assertion. The intended future path is
+      `interfaces/interface[name={if_name}]/config/enabled` with RFC 7951
+      boolean `true`, after graph verification and lab tests are added.
