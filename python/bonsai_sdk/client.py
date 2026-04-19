@@ -10,6 +10,7 @@ import grpc
 
 # Allow running from the repo root without installing the package
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "generated"))
 from generated import bonsai_service_pb2 as pb
 from generated import bonsai_service_pb2_grpc as pb_grpc
 

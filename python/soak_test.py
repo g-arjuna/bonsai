@@ -198,7 +198,7 @@ def run_cycles(
         eff_type = "bgp" if (hostname, target) in bgp_set else "iface"
         label    = f"{'BGP' if eff_type == 'bgp' else 'IFACE'} {hostname} {target}"
 
-        print(f"\n{'─'*60}")
+        print(f"\n{'-'*60}")
         print(f"Cycle {i}/{cycles} — {label}")
 
         inject_start = time.time()
@@ -222,10 +222,10 @@ def run_cycles(
 
         if detected_rows:
             rule_ids = [r[0] for r in detected_rows]
-            print(f"  ✓ detected in {detect_time:.1f}s — rules: {rule_ids}")
+            print(f"  [OK] detected in {detect_time:.1f}s - rules: {rule_ids}")
             stats.record(True, detect_time)
         else:
-            print(f"  ✗ no detection within {detect_timeout_s}s")
+            print(f"  [MISS] no detection within {detect_timeout_s}s")
             stats.record(False, None)
 
         print(f"  restoring (hold was {hold_s}s)...")
@@ -297,7 +297,7 @@ def main() -> None:
             dry_run    = args.dry_run,
         )
 
-    print(f"\n{'═'*60}")
+    print(f"\n{'='*60}")
     print("Soak test complete")
     print(stats.summary())
     print()
