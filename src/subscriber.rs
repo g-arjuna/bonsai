@@ -126,6 +126,7 @@ impl GnmiSubscriber {
             vendor       = %caps.vendor_label,
             encoding     = caps.encoding,
             srl_native   = caps.has_srl_native,
+            srl_bfd      = caps.has_srl_native_bfd,
             xr_native    = caps.has_xr_native,
             oc_interfaces = caps.has_oc_interfaces,
             oc_bfd       = caps.has_oc_bfd,
@@ -274,6 +275,8 @@ struct ModelCapabilities {
     /// SRL native model tree present. SRL does not advertise OC model names; this
     /// flag triggers SRL-native paths as the fallback for each concern.
     has_srl_native: bool,
+    /// SRL native BFD model advertised (srl_nokia-bfd) — subscribe to SRL BFD paths.
+    has_srl_native_bfd: bool,
     /// Cisco XR native stats model present. Kept as a diagnostic flag; OC is used
     /// when both OC and XR-native are available.
     has_xr_native: bool,
@@ -297,6 +300,7 @@ impl ModelCapabilities {
         // SRL advertises models as Nokia URNs (urn:nokia.com:srlinux:*:srl_nokia-*),
         // not as openconfig-* names — detect by the srl_nokia substring.
         let has_srl       = models.iter().any(|m| m.name.contains("srl_nokia"));
+        let has_srl_bfd   = models.iter().any(|m| m.name.contains("srl_nokia-bfd"));
         let has_xr_native = models.iter().any(|m| m.name.contains("Cisco-IOS-XR-infra-statsd-oper"));
 
         let encoding = if encodings.contains(&json_ietf) { json_ietf }
@@ -326,6 +330,7 @@ impl ModelCapabilities {
             has_oc_bgp,
             has_oc_lldp,
             has_srl_native: has_srl,
+            has_srl_native_bfd: has_srl_bfd,
             has_xr_native,
         }
     }
@@ -343,6 +348,7 @@ impl ModelCapabilities {
                 vendor_label: label,
                 encoding: json_ietf,
                 has_srl_native: true,
+                has_srl_native_bfd: true,
                 has_xr_native: false,
                 has_oc_interfaces: false,
                 has_oc_bfd: false,
@@ -353,6 +359,7 @@ impl ModelCapabilities {
                 vendor_label: label,
                 encoding: json_ietf,
                 has_srl_native: false,
+                has_srl_native_bfd: false,
                 has_xr_native: true,
                 has_oc_interfaces: false,
                 has_oc_bfd: true,
@@ -363,6 +370,7 @@ impl ModelCapabilities {
                 vendor_label: label,
                 encoding: json_ietf,
                 has_srl_native: false,
+                has_srl_native_bfd: false,
                 has_xr_native: false,
                 has_oc_interfaces: true,
                 has_oc_bfd: false,
@@ -411,6 +419,7 @@ async fn detect_capabilities(
                 vendor    = %caps.vendor_label,
                 encoding  = caps.encoding,
                 srl       = caps.has_srl_native,
+                srl_bfd   = caps.has_srl_native_bfd,
                 oc_iface  = caps.has_oc_interfaces,
                 oc_bfd    = caps.has_oc_bfd,
                 oc_bgp    = caps.has_oc_bgp,
@@ -450,7 +459,12 @@ fn build_subscriptions(caps: &ModelCapabilities) -> Vec<Subscription> {
     }
 
     // ── BFD ───────────────────────────────────────────────────────────────────
-    if caps.has_oc_bfd {
+    if caps.has_srl_native && caps.has_srl_native_bfd {
+        subs.push(sub_on_change(srl_path(&[
+            ("bfd",          &[]),
+            ("subinterface", &[("id", "*")]),
+        ])));
+    } else if caps.has_oc_bfd {
         subs.push(sub_on_change(oc_path(&["bfd"])));
     }
 

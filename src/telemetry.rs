@@ -107,6 +107,24 @@ impl TelemetryUpdate {
             }
         }
 
+        // SRL native BFD: bfd/subinterface[id=X]/peer[local-discriminator=Y]
+        if self.path.contains("bfd/subinterface[id=")
+            && self.path.contains("/peer[local-discriminator=")
+            && (self.path.ends_with(']') || self.path.ends_with("/state"))
+            && json_find(&self.value, "session-state").is_some()
+        {
+            if let (Some(if_name), Some(local_discriminator)) = (
+                extract_bracketed(&self.path, "subinterface[id="),
+                extract_bracketed(&self.path, "peer[local-discriminator="),
+            ) {
+                return TelemetryEvent::BfdSessionState {
+                    if_name,
+                    local_discriminator,
+                    state_value: None,
+                };
+            }
+        }
+
         // OpenConfig BFD: bfd/interfaces/interface[id=X]/peers/peer[local-discriminator=Y]/state
         if self.path.contains("bfd/interfaces/interface[id=")
             && self.path.contains("/peers/peer[local-discriminator=")
