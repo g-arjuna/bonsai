@@ -14,6 +14,7 @@ from typing import Callable, Optional
 
 from .client import BonsaiClient
 from .detection import Detection
+from .ml_remediation import MLRemediationSelector
 from .playbooks import PlaybookCatalog, PlaybookExecutor
 
 CIRCUIT_BREAKER_WINDOW_S = 600    # 10 minutes
@@ -36,6 +37,7 @@ class RemediationExecutor:
         client: BonsaiClient,
         on_remediation: Optional[Callable] = None,
         catalog: Optional[PlaybookCatalog] = None,
+        ml_selector: Optional["MLRemediationSelector"] = None,
     ) -> None:
         self._client         = client
         self._on_remediation = on_remediation
@@ -48,6 +50,8 @@ class RemediationExecutor:
             client=client,
             on_step=lambda t, d: None,
         )
+        # Optional Model C selector — when present, overrides catalog ordering.
+        self._ml_selector: Optional[MLRemediationSelector] = ml_selector
 
     def handle(self, detection: Detection, detection_id: str) -> None:
         device = detection.features.device_address
@@ -72,11 +76,26 @@ class RemediationExecutor:
         # Look up the device vendor for playbook selection.
         vendor = self._get_vendor(device)
 
-        # Select and execute via PlaybookExecutor.
-        playbook = self._pb_executor.select(detection, vendor)
-        if playbook is None:
+        # Build the candidate playbook list for this detection.
+        candidates = self._catalog.for_detection(detection.rule_id, vendor)
+        if not candidates:
             self._write_remediation(detection_id, "log_only", "skipped",
                                     {"reason": f"no playbook for rule={detection.rule_id} vendor={vendor}"}, now)
+            return
+
+        # ML selector picks the best candidate when loaded and confident;
+        # falls back to catalog ordering (first match) when confidence is low.
+        playbook = None
+        if self._ml_selector is not None:
+            candidate_names = [p.get("name", "") for p in candidates]
+            chosen = self._ml_selector.select(detection, candidate_names)
+            if chosen:
+                playbook = next((p for p in candidates if p.get("name") == chosen), None)
+        if playbook is None:
+            playbook = self._pb_executor.select(detection, vendor)
+        if playbook is None:
+            self._write_remediation(detection_id, "log_only", "skipped",
+                                    {"reason": f"no playbook selected for rule={detection.rule_id}"}, now)
             return
 
         action = playbook.get("name", "unknown_playbook")

@@ -154,3 +154,67 @@ def _empty_features(device_address: str, event_type: str, detail: dict, occurred
         "recent_flap_count":      0,
     })
     return base
+
+
+# ── Remediation training export ────────────────────────────────────────────────
+
+# Columns for the remediation training set.
+_REM_COLS = [
+    "remediation_id", "detection_id", "rule_id", "action",
+    "status",          # "success" | "failed" | "skipped" — the label
+    "vendor",
+    "fired_at_ns",
+]
+
+
+def export_remediation_training_set(
+    client: "BonsaiClient",
+    output_path: str,
+    since_ns: int = 0,
+    until_ns: int | None = None,
+) -> int:
+    """Export Remediation nodes joined to DetectionEvent features for Model C training.
+
+    Each row is one attempted remediation with:
+      - Feature columns from the triggering DetectionEvent
+      - action: what was attempted
+      - status: success / failed / skipped (the multi-class label)
+      - vendor: from features_json device_address (best-effort lookup)
+
+    Returns the number of rows written.
+    """
+    if until_ns is None:
+        until_ns = int(time.time() * 1e9)
+
+    cypher = """
+        MATCH (r:Remediation)-[:RESOLVES]->(e:DetectionEvent)
+        WHERE e.fired_at >= $since AND e.fired_at < $until
+        RETURN r.id, r.detection_id, e.rule_id, r.action, r.status, e.features_json, e.fired_at
+    """
+    cypher = cypher.replace("$since", str(since_ns)).replace("$until", str(until_ns))
+    rows = client.query(cypher)
+
+    result = []
+    for row in rows:
+        rem_id, det_id, rule_id, action, status, features_json, fired_at = (
+            row + [None] * (7 - len(row))
+        )
+        features = _parse_features(features_json)
+        record = {
+            "remediation_id": rem_id or "",
+            "detection_id":   det_id or "",
+            "rule_id":        rule_id or "",
+            "action":         action or "",
+            "status":         status or "",
+            "vendor":         features.get("device_address", ""),
+            "fired_at_ns":    fired_at or 0,
+            **features,
+        }
+        result.append(record)
+
+    if not result:
+        return 0
+
+    df = pd.DataFrame(result)
+    pq.write_table(pa.Table.from_pandas(df), output_path)
+    return len(result)
