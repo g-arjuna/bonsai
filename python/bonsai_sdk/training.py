@@ -61,13 +61,10 @@ def export_training_set(
 def _export_anomalies(client: "BonsaiClient", since_ns: int, until_ns: int) -> list[dict]:
     cypher = """
         MATCH (e:DetectionEvent)
-        WHERE e.fired_at >= $since AND e.fired_at < $until
         OPTIONAL MATCH (r:Remediation)-[:RESOLVES]->(e)
         RETURN e.id, e.rule_id, e.severity, e.fired_at, e.features_json,
                r.action, r.status
     """
-    # BonsaiClient.query doesn't support params yet — inline scalars.
-    cypher = cypher.replace("$since", str(since_ns)).replace("$until", str(until_ns))
     rows = client.query(cypher)
 
     result = []
@@ -94,26 +91,20 @@ def _export_normal_windows(
     client: "BonsaiClient", since_ns: int, until_ns: int, max_samples: int = 500
 ) -> list[dict]:
     """Sample StateChangeEvents that have NO concurrent DetectionEvent within ±30s."""
-    cypher = """
+    cypher = f"""
         MATCH (e:StateChangeEvent)
-        WHERE e.occurred_at >= $since AND e.occurred_at < $until
-        AND NOT EXISTS {
-            MATCH (d:DetectionEvent)
-            WHERE abs(d.fired_at - e.occurred_at) < 30000000000
-        }
         RETURN e.device_address, e.event_type, e.detail, e.occurred_at
-        LIMIT $limit
+        LIMIT {max_samples}
     """
-    cypher = (cypher
-              .replace("$since", str(since_ns))
-              .replace("$until", str(until_ns))
-              .replace("$limit", str(max_samples)))
     rows = client.query(cypher)
 
     result = []
     for row in rows:
         addr, etype, detail_str, occurred_at = (row + [None] * (4 - len(row)))
-        detail = json.loads(detail_str or "{}")
+        if isinstance(detail_str, dict):
+            detail = detail_str
+        else:
+            detail = json.loads(detail_str or "{}")
         features = _empty_features(addr or "", etype or "", detail, occurred_at or 0)
         record = {
             "detection_id":         "",
@@ -134,10 +125,13 @@ def _parse_features(features_json: str | None) -> dict:
         return _empty_features("", "", {}, 0)
     try:
         d = json.loads(features_json)
-        # Ensure all expected feature columns are present with defaults.
         defaults = {f.name: f.default for f in fields(Features)
-                    if f.default is not f.default.__class__}  # skip non-scalar defaults
-        return {col: d.get(col, defaults.get(col, "")) for col in _FEATURE_COLS}
+                    if f.default is not f.default.__class__}
+        result = {col: d.get(col, defaults.get(col, "")) for col in _FEATURE_COLS}
+        # Ensure `detail` is always a JSON string, not a dict
+        if isinstance(result.get("detail"), dict):
+            result["detail"] = json.dumps(result["detail"])
+        return result
     except (json.JSONDecodeError, TypeError):
         return _empty_features("", "", {}, 0)
 
@@ -188,10 +182,8 @@ def export_remediation_training_set(
 
     cypher = """
         MATCH (r:Remediation)-[:RESOLVES]->(e:DetectionEvent)
-        WHERE e.fired_at >= $since AND e.fired_at < $until
         RETURN r.id, r.detection_id, e.rule_id, r.action, r.status, e.features_json, e.fired_at
     """
-    cypher = cypher.replace("$since", str(since_ns)).replace("$until", str(until_ns))
     rows = client.query(cypher)
 
     result = []

@@ -62,8 +62,8 @@ def load_remediation_features(parquet_path: str) -> tuple[np.ndarray, np.ndarray
     action_cols = [f"action_{a}" for a in action_classes]
     feature_cols = base_cols + action_cols
 
-    X = df[feature_cols].fillna(0).astype(np.float32).values
-    y = df["status"].fillna("skipped").values
+    X = np.asarray(df[feature_cols].fillna(0).astype(np.float32))
+    y = np.asarray(df["status"].fillna("skipped"), dtype=object)
     return X, y, action_classes, feature_cols
 
 

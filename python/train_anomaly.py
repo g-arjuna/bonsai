@@ -49,8 +49,8 @@ def load_features(parquet_path: str) -> tuple[np.ndarray, np.ndarray]:
         "oper_status_enc",
         "event_type_enc",
     ]
-    X = df[feature_cols].fillna(0).astype(np.float32).values
-    y = df["label"].astype(int).values
+    X = np.asarray(df[feature_cols].fillna(0).astype(np.float32))
+    y = np.asarray(df["label"].astype(int))
     return X, y
 
 
