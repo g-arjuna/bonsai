@@ -459,10 +459,12 @@ fn build_subscriptions(caps: &ModelCapabilities) -> Vec<Subscription> {
     }
 
     // ── BFD ───────────────────────────────────────────────────────────────────
+    // SRL peer sessions live under bfd/network-instance[name=X]/peer[local-discriminator=Y],
+    // not under bfd/subinterface — subscribe to the network-instance container for state.
     if caps.has_srl_native && caps.has_srl_native_bfd {
         subs.push(sub_on_change(srl_path(&[
-            ("bfd",          &[]),
-            ("subinterface", &[("id", "*")]),
+            ("bfd",              &[]),
+            ("network-instance", &[("name", "default")]),
         ])));
     } else if caps.has_oc_bfd {
         subs.push(sub_on_change(oc_path(&["bfd"])));

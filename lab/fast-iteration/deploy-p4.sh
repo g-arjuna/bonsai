@@ -26,13 +26,15 @@ add_route() {
   WSL_IP=$(ip addr show eth0 2>/dev/null | awk '/inet / {split($2,a,"/"); print a[1]; exit}')
   if [ -z "$WSL_IP" ]; then
     echo "WARN: could not detect WSL eth0 IP — add route manually:"
+    echo "  route delete 172.100.102.0"
     echo "  route add 172.100.102.0 mask 255.255.255.0 <WSL_IP>"
     return
   fi
-  echo "Adding Windows route 172.100.102.0/24 via WSL ($WSL_IP) ..."
-  powershell.exe -Command "route add 172.100.102.0 mask 255.255.255.0 $WSL_IP" 2>/dev/null \
-    && echo "  Route added." \
-    || echo "  NOTE: run in admin PowerShell: route add 172.100.102.0 mask 255.255.255.0 $WSL_IP"
+  echo "Refreshing Windows route 172.100.102.0/24 via WSL ($WSL_IP) ..."
+  # Always delete first — WSL IP changes on every WSL restart so the old gateway is stale.
+  powershell.exe -Command "route delete 172.100.102.0 >$null 2>&1; route add 172.100.102.0 mask 255.255.255.0 $WSL_IP" 2>/dev/null \
+    && echo "  Route updated." \
+    || echo "  NOTE: run in admin PowerShell: route delete 172.100.102.0 ; route add 172.100.102.0 mask 255.255.255.0 $WSL_IP"
 }
 
 destroy_old_mv() {

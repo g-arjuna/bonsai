@@ -107,14 +107,15 @@ impl TelemetryUpdate {
             }
         }
 
-        // SRL native BFD: bfd/subinterface[id=X]/peer[local-discriminator=Y]
-        if self.path.contains("bfd/subinterface[id=")
+        // SRL native BFD: bfd/network-instance[name=X]/peer[local-discriminator=Y]
+        // Peer sessions live under network-instance, not subinterface (subinterface holds config only).
+        if self.path.contains("bfd/network-instance[name=")
             && self.path.contains("/peer[local-discriminator=")
             && (self.path.ends_with(']') || self.path.ends_with("/state"))
             && json_find(&self.value, "session-state").is_some()
         {
             if let (Some(if_name), Some(local_discriminator)) = (
-                extract_bracketed(&self.path, "subinterface[id="),
+                extract_bracketed(&self.path, "network-instance[name="),
                 extract_bracketed(&self.path, "peer[local-discriminator="),
             ) {
                 return TelemetryEvent::BfdSessionState {
