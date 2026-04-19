@@ -46,3 +46,4 @@ ui/node_modules/
 
 # Claude Code session memory (local tooling state, not project content)
 .claude/
+ui/.vscode/
