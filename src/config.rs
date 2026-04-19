@@ -10,7 +10,23 @@ pub struct Config {
     /// Prometheus /metrics HTTP listener. Default: "[::1]:9090". Set to "" to disable.
     #[serde(default = "default_metrics_addr")]
     pub metrics_addr: String,
+    #[serde(default)]
+    pub retention: RetentionConfig,
     pub target: Vec<TargetConfig>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct RetentionConfig {
+    /// Enable periodic pruning of old StateChangeEvents. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Delete StateChangeEvents older than this many hours. Default: 72.
+    #[serde(default = "default_retention_hours")]
+    pub max_age_hours: u64,
+}
+
+fn default_retention_hours() -> u64 {
+    72
 }
 
 fn default_api_addr() -> String {
@@ -21,7 +37,7 @@ fn default_metrics_addr() -> String {
     "[::1]:9090".to_string()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct TargetConfig {
     pub address: String,
     /// TLS server name (SNI). Required when ca_cert is set.

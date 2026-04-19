@@ -127,8 +127,8 @@ impl GnmiSubscriber {
             encoding     = caps.encoding,
             srl_native   = caps.has_srl_native,
             xr_native    = caps.has_xr_native,
-
             oc_interfaces = caps.has_oc_interfaces,
+            oc_bfd       = caps.has_oc_bfd,
             oc_bgp       = caps.has_oc_bgp,
             paths        = subscriptions.len(),
             "subscribing"
@@ -265,6 +265,8 @@ struct ModelCapabilities {
     encoding: i32,
     /// OC interfaces model advertised → subscribe to OC interface paths.
     has_oc_interfaces: bool,
+    /// OC BFD model advertised → subscribe to OC BFD paths.
+    has_oc_bfd: bool,
     /// OC BGP / network-instance model advertised → subscribe to OC BGP paths.
     has_oc_bgp: bool,
     /// OC LLDP model advertised → subscribe to OC LLDP paths.
@@ -287,6 +289,7 @@ impl ModelCapabilities {
         let json      = crate::proto::gnmi::Encoding::Json as i32;
 
         let has_oc_iface  = models.iter().any(|m| m.name == "openconfig-interfaces");
+        let has_oc_bfd    = models.iter().any(|m| m.name == "openconfig-bfd");
         let has_oc_bgp    = models.iter().any(|m| {
             m.name == "openconfig-bgp" || m.name == "openconfig-network-instance"
         });
@@ -319,6 +322,7 @@ impl ModelCapabilities {
             vendor_label: vendor_label.to_string(),
             encoding,
             has_oc_interfaces: has_oc_iface,
+            has_oc_bfd,
             has_oc_bgp,
             has_oc_lldp,
             has_srl_native: has_srl,
@@ -341,6 +345,7 @@ impl ModelCapabilities {
                 has_srl_native: true,
                 has_xr_native: false,
                 has_oc_interfaces: false,
+                has_oc_bfd: false,
                 has_oc_bgp: false,
                 has_oc_lldp: false,
             },
@@ -350,6 +355,7 @@ impl ModelCapabilities {
                 has_srl_native: false,
                 has_xr_native: true,
                 has_oc_interfaces: false,
+                has_oc_bfd: true,
                 has_oc_bgp: true,
                 has_oc_lldp: true,
             },
@@ -359,6 +365,7 @@ impl ModelCapabilities {
                 has_srl_native: false,
                 has_xr_native: false,
                 has_oc_interfaces: true,
+                has_oc_bfd: false,
                 has_oc_bgp: true,
                 has_oc_lldp: false,
             },
@@ -405,6 +412,7 @@ async fn detect_capabilities(
                 encoding  = caps.encoding,
                 srl       = caps.has_srl_native,
                 oc_iface  = caps.has_oc_interfaces,
+                oc_bfd    = caps.has_oc_bfd,
                 oc_bgp    = caps.has_oc_bgp,
                 oc_lldp   = caps.has_oc_lldp,
                 xr_native = caps.has_xr_native,
@@ -439,6 +447,11 @@ fn build_subscriptions(caps: &ModelCapabilities) -> Vec<Subscription> {
         subs.push(sub_sample(xr_native_stats_path(), 10_000_000_000));
     } else if caps.has_oc_interfaces {
         subs.push(sub_sample(oc_path(&["interfaces"]), 10_000_000_000));
+    }
+
+    // ── BFD ───────────────────────────────────────────────────────────────────
+    if caps.has_oc_bfd {
+        subs.push(sub_on_change(oc_path(&["bfd"])));
     }
 
     // ── BGP ───────────────────────────────────────────────────────────────────

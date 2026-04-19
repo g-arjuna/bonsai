@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use tracing::{info, warn};
+use time;
 
-use bonsai::{api::{BonsaiGraphServer, BonsaiService, TargetConnInfo}, config, graph, subscriber, telemetry};
+use bonsai::{api::{BonsaiGraphServer, BonsaiService, TargetConnInfo}, config, graph, retention, registry::{self, DeviceRegistry}, subscriber, telemetry};
 use metrics_exporter_prometheus::PrometheusBuilder;
 
 const CONFIG_PATH: &str = "bonsai.toml";
@@ -114,6 +115,36 @@ async fn main() -> Result<()> {
             .await
         {
             warn!(error = %e, "gRPC server error");
+        }
+    });
+
+    // Retention: prune old StateChangeEvents on a 1-hour interval (disabled by default)
+    if cfg.retention.enabled {
+        let store       = std::sync::Arc::clone(&graph);
+        let max_age_h   = cfg.retention.max_age_hours;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                let cutoff = time::OffsetDateTime::now_utc()
+                    - time::Duration::hours(max_age_h as i64);
+                if let Err(e) = retention::prune_events(std::sync::Arc::clone(&store), cutoff).await {
+                    warn!(error = %e, "retention prune failed");
+                }
+            }
+        });
+    }
+
+    // DeviceRegistry: consume change events (seam for future dynamic onboarding)
+    let reg = registry::FileRegistry::new(cfg.target.clone());
+    let mut change_rx = reg.subscribe_changes();
+    tokio::spawn(async move {
+        while let Some(change) = change_rx.recv().await {
+            match change {
+                registry::RegistryChange::Added(t)   => info!(address = %t.address, "registry: device added"),
+                registry::RegistryChange::Removed(a) => info!(address = %a, "registry: device removed"),
+                registry::RegistryChange::Updated(t) => info!(address = %t.address, "registry: device updated"),
+            }
         }
     });
 

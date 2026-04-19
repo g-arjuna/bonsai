@@ -90,6 +90,20 @@ impl GraphStore {
         .context("create BgpNeighbor table")?;
 
         conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS BfdSession(\
+                id                  STRING,\
+                device_address      STRING,\
+                if_name             STRING,\
+                local_discriminator STRING,\
+                local_address       STRING,\
+                remote_address      STRING,\
+                session_state       STRING,\
+                updated_at          TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create BfdSession table")?;
+
+        conn.query(
             "CREATE REL TABLE IF NOT EXISTS HAS_INTERFACE(FROM Device TO Interface)",
         )
         .context("create HAS_INTERFACE rel")?;
@@ -98,6 +112,11 @@ impl GraphStore {
             "CREATE REL TABLE IF NOT EXISTS PEERS_WITH(FROM Device TO BgpNeighbor)",
         )
         .context("create PEERS_WITH rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_BFD_SESSION(FROM Device TO BfdSession)",
+        )
+        .context("create HAS_BFD_SESSION rel")?;
 
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS LldpNeighbor(\
@@ -330,6 +349,16 @@ fn write_blocking(db: &Database, update: &TelemetryUpdate, event_tx: &broadcast:
         TelemetryEvent::BgpNeighborState { peer_address, state_value } => {
             write_bgp_neighbor(&conn, update, &peer_address, state_value.as_ref().unwrap_or(&update.value), event_tx)
         }
+        TelemetryEvent::BfdSessionState { if_name, local_discriminator, state_value } => {
+            write_bfd_session(
+                &conn,
+                update,
+                &if_name,
+                &local_discriminator,
+                state_value.as_ref().unwrap_or(&update.value),
+                event_tx,
+            )
+        }
         TelemetryEvent::LldpNeighbor { local_if, neighbor_id, state_value } => {
             write_lldp_neighbor(&conn, update, &local_if, &neighbor_id, state_value.as_ref().unwrap_or(&update.value))
         }
@@ -511,6 +540,96 @@ fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &st
     Ok(())
 }
 
+fn write_bfd_session(
+    conn: &Connection<'_>,
+    u: &TelemetryUpdate,
+    if_name: &str,
+    local_discriminator: &str,
+    val: &serde_json::Value,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+) -> Result<()> {
+    let id = format!("{}:{}:{}", u.target, if_name, local_discriminator);
+    let now = ts(u.timestamp_ns);
+    let new_state = json_str(val, "session-state").to_lowercase();
+    let remote_address = json_str(val, "remote-address").to_string();
+    let local_address = json_str(val, "local-address").to_string();
+
+    if new_state.is_empty() {
+        return Ok(());
+    }
+
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, now.clone())?;
+
+    let old_state = get_bfd_state(conn, &id)?;
+
+    let mut stmt = conn.prepare(
+        "MERGE (b:BfdSession {id: $id}) \
+         ON CREATE SET \
+           b.device_address = $addr, b.if_name = $if_name, \
+           b.local_discriminator = $disc, b.local_address = $local_addr, \
+           b.remote_address = $remote_addr, b.session_state = $state, \
+           b.updated_at = $ts \
+         ON MATCH SET \
+           b.if_name = $if_name, b.local_address = $local_addr, \
+           b.remote_address = $remote_addr, b.session_state = $state, \
+           b.updated_at = $ts",
+    )
+    .context("prepare BfdSession upsert")?;
+
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(id.clone())),
+            ("addr", Value::String(u.target.clone())),
+            ("if_name", Value::String(if_name.to_string())),
+            ("disc", Value::String(local_discriminator.to_string())),
+            ("local_addr", Value::String(local_address.clone())),
+            ("remote_addr", Value::String(remote_address.clone())),
+            ("state", Value::String(new_state.clone())),
+            ("ts", now.clone()),
+        ],
+    )
+    .context("execute BfdSession upsert")?;
+
+    if old_state.as_deref() != Some(new_state.as_str()) {
+        let detail = format!(
+            r#"{{"if_name":"{}","peer":"{}","local_address":"{}","local_discriminator":"{}","old_state":"{}","new_state":"{}"}}"#,
+            if_name,
+            remote_address,
+            local_address,
+            local_discriminator,
+            old_state.as_deref().unwrap_or("none"),
+            new_state
+        );
+        write_state_change_event(conn, &u.target, "bfd_session_change", &detail, now.clone(), u.timestamp_ns, event_tx)?;
+    }
+
+    let mut edge_stmt = conn.prepare(
+        "MATCH (d:Device {address: $addr}), (b:BfdSession {id: $id}) \
+         MERGE (d)-[:HAS_BFD_SESSION]->(b)",
+    )
+    .context("prepare HAS_BFD_SESSION merge")?;
+
+    conn.execute(
+        &mut edge_stmt,
+        vec![
+            ("addr", Value::String(u.target.clone())),
+            ("id", Value::String(id)),
+        ],
+    )
+    .context("execute HAS_BFD_SESSION merge")?;
+
+    info!(
+        target = %u.target,
+        if_name = %if_name,
+        local_discriminator = %local_discriminator,
+        remote_address = %remote_address,
+        state = %new_state,
+        "BFD session written"
+    );
+    Ok(())
+}
+
 fn get_bgp_state(conn: &Connection<'_>, id: &str) -> Result<Option<String>> {
     let mut stmt = conn
         .prepare("MATCH (n:BgpNeighbor {id: $id}) RETURN n.session_state")
@@ -518,6 +637,18 @@ fn get_bgp_state(conn: &Connection<'_>, id: &str) -> Result<Option<String>> {
     let mut result = conn
         .execute(&mut stmt, vec![("id", Value::String(id.to_string()))])
         .context("execute BGP state lookup")?;
+    Ok(result.next().and_then(|row| {
+        if let Value::String(s) = &row[0] { Some(s.clone()) } else { None }
+    }))
+}
+
+fn get_bfd_state(conn: &Connection<'_>, id: &str) -> Result<Option<String>> {
+    let mut stmt = conn
+        .prepare("MATCH (b:BfdSession {id: $id}) RETURN b.session_state")
+        .context("prepare BFD state lookup")?;
+    let mut result = conn
+        .execute(&mut stmt, vec![("id", Value::String(id.to_string()))])
+        .context("execute BFD state lookup")?;
     Ok(result.next().and_then(|row| {
         if let Value::String(s) = &row[0] { Some(s.clone()) } else { None }
     }))
@@ -806,6 +937,7 @@ pub fn log_graph_summary(db: &Database) {
         ("devices",            "MATCH (n:Device) RETURN count(n)"),
         ("interfaces",         "MATCH (n:Interface) RETURN count(n)"),
         ("bgp-neighbors",      "MATCH (n:BgpNeighbor) RETURN count(n)"),
+        ("bfd-sessions",       "MATCH (n:BfdSession) RETURN count(n)"),
         ("lldp-neighbors",     "MATCH (n:LldpNeighbor) RETURN count(n)"),
         ("connected-to",       "MATCH ()-[r:CONNECTED_TO]->() RETURN count(r)"),
         ("state-change-events","MATCH (n:StateChangeEvent) RETURN count(n)"),

@@ -8,6 +8,7 @@ from typing import Callable, Optional
 
 from .client import BonsaiClient
 from .detection import Detection, Detector, Features
+from .rules.bfd import BFD_RULES
 from .rules.bgp import BGP_RULES
 from .rules.interface import INTERFACE_RULES, InterfaceErrorSpike, InterfaceHighUtilization
 from .rules.topology import TOPOLOGY_RULES
@@ -31,7 +32,7 @@ class RuleEngine:
         self._client       = client
         self._on_detection = on_detection
         self._dry_run      = dry_run or os.environ.get("BONSAI_DRY_RUN", "0") == "1"
-        self._rules: list[Detector] = BGP_RULES + INTERFACE_RULES
+        self._rules: list[Detector] = BFD_RULES + BGP_RULES + INTERFACE_RULES
         self._stop = threading.Event()
 
     def start(self) -> None:
@@ -112,10 +113,10 @@ class RuleEngine:
     def _poll_topology(self) -> None:
         now_ns = time.time_ns()
         edges  = self._client.get_topology()
-        for device_address, reason in TOPOLOGY_RULES.evaluate_topology(edges, self._client):
+        for device_address, if_name, reason in TOPOLOGY_RULES.evaluate_topology(edges, self._client):
             self._fire_poll_detection(
                 "topology_edge_lost", "warn",
-                device_address, "", reason, now_ns,
+                device_address, if_name, reason, now_ns,
             )
 
     def _fire_poll_detection(

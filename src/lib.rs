@@ -2,6 +2,8 @@ pub mod api;
 pub mod config;
 pub mod gnmi_set;
 pub mod graph;
+pub mod registry;
+pub mod retention;
 pub mod subscriber;
 pub mod telemetry;
 

@@ -17,6 +17,13 @@ pub enum TelemetryEvent {
     InterfaceStats {
         if_name: String,
     },
+    BfdSessionState {
+        if_name: String,
+        local_discriminator: String,
+        /// Pre-extracted state object for blob-style updates.
+        /// When None, callers read fields directly from `TelemetryUpdate::value`.
+        state_value: Option<serde_json::Value>,
+    },
     BgpNeighborState {
         peer_address: String,
         /// Pre-extracted `state` object for blob-style updates (e.g. XRd network-instances).
@@ -97,6 +104,24 @@ impl TelemetryUpdate {
         {
             if let Some(name) = extract_bracketed(&self.path, "interfaces/interface[name=") {
                 return TelemetryEvent::InterfaceStats { if_name: name };
+            }
+        }
+
+        // OpenConfig BFD: bfd/interfaces/interface[id=X]/peers/peer[local-discriminator=Y]/state
+        if self.path.contains("bfd/interfaces/interface[id=")
+            && self.path.contains("/peers/peer[local-discriminator=")
+            && (self.path.ends_with("/state") || self.path.ends_with(']'))
+            && json_find(&self.value, "session-state").is_some()
+        {
+            if let (Some(if_name), Some(local_discriminator)) = (
+                extract_bracketed(&self.path, "interface[id="),
+                extract_bracketed(&self.path, "peer[local-discriminator="),
+            ) {
+                return TelemetryEvent::BfdSessionState {
+                    if_name,
+                    local_discriminator,
+                    state_value: None,
+                };
             }
         }
 

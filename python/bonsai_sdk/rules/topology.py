@@ -24,8 +24,8 @@ class TopologyEdgeLost(Detector):
         return None
 
     @classmethod
-    def evaluate_topology(cls, current_edges: list, client: "BonsaiClient") -> list[tuple[str, str]]:
-        """Returns list of (device_address, reason) for lost edges. Updates internal state."""
+    def evaluate_topology(cls, current_edges: list, client: "BonsaiClient") -> list[tuple[str, str, str]]:
+        """Returns list of (device_address, if_name, reason) for lost edges. Updates internal state."""
         current_set = {
             (e.src_device, e.src_interface, e.dst_device, e.dst_interface)
             for e in current_edges
@@ -38,7 +38,7 @@ class TopologyEdgeLost(Detector):
                 f"CONNECTED_TO edge lost: {src_dev}:{src_if} -> {dst_dev}:{dst_if} "
                 f"(was present, now absent from LLDP)"
             )
-            results.append((src_dev, reason))
+            results.append((src_dev, src_if, reason))
         return results
 
 
