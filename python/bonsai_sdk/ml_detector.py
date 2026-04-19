@@ -107,24 +107,43 @@ class MLDetector(Detector):
         self._threshold     = threshold
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
-        # MLDetector runs on every event that has features; delegate to a shared
-        # helper or re-use an existing rule's extract_features().
-        # For now, build a minimal Features from the raw event fields.
-        # Richer context (peer counts, flap history) requires graph queries —
-        # add those here as needed once training shows which features matter.
-        detail = {}
+        detail: dict = {}
         try:
             detail = json.loads(event.detail_json or "{}")
         except (json.JSONDecodeError, AttributeError):
             pass
 
-        return Features(
+        f = Features(
             device_address=event.device_address,
             event_type=event.event_type,
             detail=detail,
             occurred_at_ns=event.occurred_at_ns,
             state_change_event_id=getattr(event, "state_change_event_id", ""),
         )
+
+        # Populate oper_status from either an interface or BGP state field.
+        f.oper_status = detail.get("oper_status", detail.get("new_state", ""))
+
+        # For BGP events fetch peer context — same fields the model was trained on.
+        if event.event_type == "bgp_session_change":
+            f.peer_address = detail.get("peer", "")
+            f.old_state    = detail.get("old_state", "")
+            f.new_state    = detail.get("new_state", "")
+            try:
+                neighbors = client.get_bgp_neighbors(event.device_address)
+                f.peer_count_total       = len(neighbors)
+                f.peer_count_established = sum(
+                    1 for n in neighbors if n.session_state == "established"
+                )
+            except Exception:
+                pass
+
+        # For interface events populate if_name and oper_status.
+        if event.event_type in ("interface_oper_status_change", "interface_stats"):
+            f.if_name     = detail.get("if_name", "")
+            f.oper_status = detail.get("oper_status", "")
+
+        return f
 
     def detect(self, features: Features) -> Optional[str]:
         vec   = features_to_vector(features).reshape(1, -1)

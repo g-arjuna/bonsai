@@ -8,10 +8,16 @@ from typing import Callable, Optional
 
 from .client import BonsaiClient
 from .detection import Detection, Detector, Features
+from .ml_detector import MLDetector
 from .rules.bfd import BFD_RULES
 from .rules.bgp import BGP_RULES
 from .rules.interface import INTERFACE_RULES, InterfaceErrorSpike, InterfaceHighUtilization
 from .rules.topology import TOPOLOGY_RULES
+
+# Model files scanned at startup. Each entry: (filename, rule_id, threshold, severity).
+_ML_MODELS = [
+    ("anomaly_v1.joblib", "ml_anomaly_v1", 0.6, "warn"),
+]
 
 
 class RuleEngine:
@@ -21,6 +27,9 @@ class RuleEngine:
       2. Poll loop: queries graph every 30s for pattern/counter rules and topology diff.
 
     On detection, calls the registered on_detection callback.
+
+    ML models are loaded from `model_dir` (default "models/") at startup.
+    If a model file is absent the engine starts in rules-only mode — no error.
     """
 
     def __init__(
@@ -28,12 +37,28 @@ class RuleEngine:
         client: BonsaiClient,
         on_detection: Callable[[Detection], None],
         dry_run: bool = False,
+        model_dir: str = "models",
     ):
         self._client       = client
         self._on_detection = on_detection
         self._dry_run      = dry_run or os.environ.get("BONSAI_DRY_RUN", "0") == "1"
         self._rules: list[Detector] = BFD_RULES + BGP_RULES + INTERFACE_RULES
         self._stop = threading.Event()
+        self._load_ml_detectors(model_dir)
+
+    def _load_ml_detectors(self, model_dir: str) -> None:
+        loaded = 0
+        for filename, rule_id, threshold, severity in _ML_MODELS:
+            path = os.path.join(model_dir, filename)
+            if os.path.exists(path):
+                try:
+                    self._rules.append(MLDetector(rule_id, path, threshold, severity))
+                    print(f"[engine] ML detector loaded: {rule_id} from {path}")
+                    loaded += 1
+                except Exception as exc:
+                    print(f"[engine] WARNING: failed to load {path}: {exc}")
+        if loaded == 0:
+            print(f"[engine] no ML models found in '{model_dir}' — running rules-only mode")
 
     def start(self) -> None:
         threading.Thread(target=self._event_loop, daemon=True, name="bonsai-event-loop").start()
