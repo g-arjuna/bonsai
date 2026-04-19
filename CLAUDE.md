@@ -9,11 +9,13 @@ learning project. Goal: replicate Google's ANO framework architecture
 at lab scale using only open source primitives.
 
 ## Current Phase
-Phase: 4 — Rules-Based Detect and Heal (complete)  
-Last completed: Detect-predict-heal loop working end-to-end. 8 rules across BGP + interface categories,
-DetectionEvent + Remediation nodes in graph, BGP session bounce auto-remediation on SRL,
-circuit breaker, oper-status telemetry (SRL + XRd), full validation suite passing.
-Next: Phase 5 — ML Prediction. See PHASE5.md (to be created) for task list.
+Phase: 5 — ML Prediction (in progress, 5.0–5.2 complete)  
+Last completed:
+- Phase 5.0 hygiene: TRIGGERED_BY edge, Prometheus /metrics, retention/registry seams, PlaybookCatalog, integration smoke test, 3 ADRs.
+- Phase 5.1: training data export (Parquet), MLDetector (IsolationForest), features_to_vector contract, wired into RuleEngine with rules-only fallback.
+- Phase 5.2: MLRemediationSelector (GBT), export_remediation_training_set(), wired into RemediationExecutor.
+- demo_phase5.py: rules + ML running in parallel, session summary, training workflow instructions.
+Next: Phase 5.3 — Model B (LSTM sequence predictor). Requires ~weeks of failure data. Defer until lab has accumulated sufficient DetectionEvent history.
 
 ## Architecture
 - Rust core: tokio async runtime, tonic gRPC, prost protobuf

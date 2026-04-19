@@ -561,3 +561,54 @@ data.
 **Long-term**: evaluate LadybugDB's migration support as it matures; if it gains
 `ALTER TABLE ADD COLUMN`, remove this constraint.
 
+
+---
+
+## 2026-04-19 — ML feature contract: `features_to_vector()` as shared training/inference path
+
+**Decision**: A single module-level function `features_to_vector(Features) -> np.ndarray` in
+`python/bonsai_sdk/ml_detector.py` is the exclusive encoding path for both training data
+export and live inference.
+
+**Rationale**: The most common failure mode in applied ML on streaming systems is maintaining
+two feature pipelines — one in pandas for training, one in Python dicts for inference — that
+drift apart. Models that worked in the notebook fail silently in production. By enforcing a
+single function as the contract, training rows and inference vectors are always identical.
+The `Features` dataclass is the API boundary; `features_to_vector()` is the serialiser.
+
+**Consequences**: Any new feature added to `Features` must also be added to
+`features_to_vector()` and models must be retrained. Feature vector layout is append-only —
+prepending or reordering breaks existing models without a version bump.
+
+---
+
+## 2026-04-19 — Model sequencing: A before C before B
+
+**Decision**: Phase 5 trains three models in order: A (IsolationForest anomaly detector),
+C (GBT remediation classifier), B (LSTM sequence predictor).
+
+**Rationale**:
+- Model A requires only normal + anomaly windows, accumulates from day one of Phase 4.
+  IsolationForest needs no GPU, trains in seconds, interpretable. Start here.
+- Model C requires labelled Remediation nodes (action + success/failed status). These
+  accumulate naturally as Phase 4 auto-remediation runs. Train once ~50+ remediations exist.
+- Model B requires enough *failure precursor sequences* (N samples before each critical event).
+  This needs deliberate fault injection over weeks. Train last.
+Training B before A wastes effort on data that doesn't exist yet.
+
+---
+
+## 2026-04-19 — MLDetector integrated as a standard Detector in RuleEngine
+
+**Decision**: `MLDetector` implements the same `Detector` ABC as rule-based detectors.
+`RuleEngine` scans `model_dir` at startup and appends loaded `MLDetector` instances to
+`self._rules`. If no model files are found the engine starts in rules-only mode without error.
+
+**Rationale**: Keeping ML and rules under the same dispatch loop means: (1) the engine
+doesn't know or care whether a detector is rules-based or ML, (2) ML detections follow the
+exact same path to `DetectionEvent` write and `RemediationExecutor` as rule detections,
+(3) model upgrades are a file drop — replace `models/anomaly_v1.joblib`, restart engine.
+
+**Consequences**: `MLDetector.extract_features()` must do graph queries itself (no feature
+sharing with co-firing rule detectors). Acceptable at lab scale; at fleet scale, a shared
+feature cache per event would avoid duplicate graph reads.
