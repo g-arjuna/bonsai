@@ -9,13 +9,24 @@ learning project. Goal: replicate Google's ANO framework architecture
 at lab scale using only open source primitives.
 
 ## Current Phase
-Phase: 5 — ML Prediction (in progress, 5.0–5.2 complete)  
+Phase: 6 — UI (in progress)
 Last completed:
 - Phase 5.0 hygiene: TRIGGERED_BY edge, Prometheus /metrics, retention/registry seams, PlaybookCatalog, integration smoke test, 3 ADRs.
 - Phase 5.1: training data export (Parquet), MLDetector (IsolationForest), features_to_vector contract, wired into RuleEngine with rules-only fallback.
 - Phase 5.2: MLRemediationSelector (GBT), export_remediation_training_set(), wired into RemediationExecutor.
-- demo_phase5.py: rules + ML running in parallel, session summary, training workflow instructions.
-Next: Phase 5.3 — Model B (LSTM sequence predictor). Requires ~weeks of failure data. Defer until lab has accumulated sufficient DetectionEvent history.
+- Phase 5.3 (Model B LSTM): deferred — requires weeks of failure data. Resume when DetectionEvent history is sufficient.
+- Phase 6.0: Axum HTTP server (port 3000) serving REST API + SSE + Svelte SPA.
+  - GET /api/topology — devices, LLDP links, BGP sessions, health
+  - GET /api/detections — recent DetectionEvents + Remediations
+  - GET /api/trace/:id — closed-loop trace for one DetectionEvent
+  - GET /api/events — SSE stream of live BonsaiEvents
+  - Svelte SPA: Topology (D3-force graph, zoom/pan, health colors), Events (SSE feed), Trace (timeline)
+  - Bug fix: BGP peer_as no longer clobbered to 0 on ON_CHANGE session-state updates
+Next: Phase 6.1 — Device onboarding UI.
+  - DiscoverDevice RPC: connect → Capabilities → return vendor/models/recommended paths
+  - AddDevice / RemoveDevice RPCs + ApiRegistry (runtime mutations, no restart required)
+  - Onboarding wizard in UI: address input → discovery result → path selection → add to monitoring
+  - Credentials via env var name only — never plaintext in UI or API
 
 ## Architecture
 - Rust core: tokio async runtime, tonic gRPC, prost protobuf
@@ -59,10 +70,10 @@ OUT: SNMP, NETCONF, campus/wireless, optical transport, Kubernetes/HA/clustering
 ## File Structure
 - /src — Rust core
 - /python — Python SDK and rule engine
+- /ui — Svelte + Vite SPA (npm run build → ui/dist/ served by Axum)
 - /lab — ContainerLab topology YAMLs
   - /lab/fast-iteration — Holo/FRR topologies (immediate use)
   - /lab/real-vendors — Nokia/Cisco/Juniper/Arista topologies
-- /docs — architecture notes
 - DECISIONS.md — append-only decision log (never edit past entries)
 - PROJECT_KICKOFF.md — origin thesis, full roadmap, research items
 - bonsai.toml — local runtime config (gitignored; copy from bonsai.toml.example)

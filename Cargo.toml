@@ -55,6 +55,10 @@ uuid = { version = "1", features = ["v4"] }
 metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
 
+# HTTP API server for the Phase 6 UI (Axum + tower-http for CORS + static files)
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+
 [build-dependencies]
 tonic-build = "0.13"
 protoc-bin-vendored = "3"

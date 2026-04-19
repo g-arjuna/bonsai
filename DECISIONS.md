@@ -612,3 +612,74 @@ exact same path to `DetectionEvent` write and `RemediationExecutor` as rule dete
 **Consequences**: `MLDetector.extract_features()` must do graph queries itself (no feature
 sharing with co-firing rule detectors). Acceptable at lab scale; at fleet scale, a shared
 feature cache per event would avoid duplicate graph reads.
+
+---
+
+## 2026-04-19 — Phase 6 HTTP server: Axum in-process over FastAPI
+
+**Decision**: Phase 6 HTTP/SSE server is implemented in Rust (Axum 0.8) running
+in-process alongside the Tonic gRPC server, not as a separate FastAPI process.
+
+**Alternatives considered**: FastAPI (Python), separate Go HTTP proxy.
+
+**Rationale**:
+- Axum shares the same `Arc<GraphStore>` and `broadcast::Sender<BonsaiEvent>` as
+  Tonic — SSE subscribers receive events with zero extra serialization (no gRPC hop).
+- FastAPI would require 3 serialization round-trips per SSE event: BonsaiEvent →
+  protobuf → gRPC → Python → JSON → HTTP. At fleet scale this is significant overhead.
+- Both Axum and Tonic run on the same tokio runtime — no cross-runtime contention.
+- Long-term scalability: Axum handles tens of thousands of concurrent SSE connections
+  without a GIL. FastAPI is capped by Python threading for CPU-bound work.
+- Single binary, single process, single port pair (50051 gRPC + 3000 HTTP). No
+  inter-process coordination, no credential duplication.
+
+**Endpoints**:
+- `GET /api/topology` — devices, LLDP links, BGP sessions, computed health
+- `GET /api/detections?limit=N` — recent DetectionEvents + Remediations
+- `GET /api/trace/:id` — closed-loop trace steps for one DetectionEvent
+- `GET /api/events` — SSE stream of live BonsaiEvents (BroadcastStream)
+- `/*` fallback — Svelte SPA static files from `ui/dist/`
+
+**Constraint**: Phase 6 UI is view-only. No config writing to devices, no admin
+features, no authentication beyond TLS. Onboarding (Phase 6.1) means "add a device
+to bonsai's monitoring scope via AddDevice RPC" — not writing config to the device.
+
+---
+
+## 2026-04-19 — BGP peer_as write-through bug: ON_CHANGE clobber fix
+
+**Decision**: `write_bgp_neighbor` only updates `peer_as` on MERGE ON MATCH when the
+incoming value is non-zero. Previously, ON_CHANGE notifications for session-state
+transitions (e.g. idle→established after remediation) omitted `peer-as`, causing
+`json_i64(val, "peer-as")` to return 0 and clobber the stored value.
+
+**Fix**: Construct the MERGE cypher dynamically — include `n.peer_as = $peer_as` in
+the ON MATCH SET clause only when `peer_as != 0`. ON CREATE always sets it (correct
+for initial population). The pattern generalises: any field that arrives only on
+initial advertisement should use conditional ON MATCH writes.
+
+**Why this matters**: The same class of bug affects any field that gNMI devices send
+once at session start but not on subsequent ON_CHANGE updates. Review other MERGE
+statements if similar staleness bugs are observed on other fields.
+
+---
+
+## 2026-04-19 — Phase 6 UI: Svelte + Vite + D3
+
+**Decision**: Phase 6 SPA uses Svelte 5 + Vite + D3-force for the topology graph.
+
+**Rationale**: Minimum build-system complexity. Svelte compiles to vanilla JS with no
+runtime framework overhead. D3-force gives a physics-based graph layout with zoom/pan
+in ~100 lines. The built output in `ui/dist/` is served as static files by Axum's
+ServeDir — no separate web server needed.
+
+**Three views**:
+1. Topology — D3-force graph (zoom/pan/drag), health-colored nodes (green/yellow/red),
+   LLDP link hover shows interface names, BGP peer table below. Auto-refreshes 15s.
+2. Events — SSE consumer on `/api/events`, live reverse-chronological feed,
+   pause/clear, "View trace →" link on each event with a state_change_event_id.
+3. Trace — Fetches `/api/trace/:id`, shows trigger → detection → remediation timeline.
+
+**Build**: `cd ui && npm run build` → `ui/dist/`. `ui/dist/` and `ui/node_modules/`
+are gitignored (reproducible from source). Committed: all src/ files, package.json,
+vite.config.js, svelte.config.js.

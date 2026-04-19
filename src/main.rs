@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use tracing::{info, warn};
 use time;
+use axum;
 
 use bonsai::{api::{BonsaiGraphServer, BonsaiService, TargetConnInfo}, config, graph, retention, registry::{self, DeviceRegistry}, subscriber, telemetry};
 use metrics_exporter_prometheus::PrometheusBuilder;
@@ -117,6 +118,20 @@ async fn main() -> Result<()> {
             warn!(error = %e, "gRPC server error");
         }
     });
+
+    // Start HTTP UI server (Axum) on port 3000
+    {
+        let http_store = std::sync::Arc::clone(&graph);
+        let http_addr: std::net::SocketAddr = "0.0.0.0:3000".parse().unwrap();
+        info!(%http_addr, "HTTP UI server listening");
+        tokio::spawn(async move {
+            let listener = tokio::net::TcpListener::bind(http_addr).await
+                .expect("failed to bind HTTP port 3000");
+            axum::serve(listener, bonsai::http_server::router(http_store))
+                .await
+                .expect("HTTP server error");
+        });
+    }
 
     // Retention: prune old StateChangeEvents on a 1-hour interval (disabled by default)
     if cfg.retention.enabled {

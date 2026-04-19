@@ -32,6 +32,14 @@ __pycache__/
 
 # Trained ML model binaries (large, runtime-generated — train locally)
 python/models/
+models/
+
+# Training data exports (large Parquet files, runtime-generated)
+data/
+
+# Svelte UI build output and dependencies (reproducible from source)
+ui/dist/
+ui/node_modules/
 
 # Debug / run logs
 *.log

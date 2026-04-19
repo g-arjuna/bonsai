@@ -1,6 +1,6 @@
 # bonsai
 
-> **Current status: Phase 4 complete — detect-predict-heal loop working end-to-end. Next: Phase 5 ML prediction.**
+> **Current status: Phase 6 in progress — Axum HTTP server + Svelte UI live. Phase 5 ML (IsolationForest + GBT) complete. Next: Phase 6.1 device onboarding UI.**
 
 A streaming-first, graph-native network state engine for closed-loop autonomous
 network operations. Replicates the architecture described in Google's ANO framework

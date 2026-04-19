@@ -1,8 +1,10 @@
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use lbug::{Connection, Database, SystemConfig, Value};
+use serde::Serialize;
 use time::OffsetDateTime;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
@@ -20,6 +22,35 @@ pub struct BonsaiEvent {
     /// UUID of the persisted StateChangeEvent node; empty for broadcast-only events
     /// that don't write a node (e.g. oper-status events which are broadcast-only).
     pub state_change_event_id: String,
+}
+
+/// A detection + its linked remediation (if any). Used by the HTTP topology API.
+#[derive(Debug, Clone, Serialize)]
+pub struct DetectionRow {
+    pub id:                   String,
+    pub device_address:       String,
+    pub rule_id:              String,
+    pub severity:             String,
+    pub features_json:        String,
+    pub fired_at_ns:          i64,
+    pub remediation_id:       String,
+    pub remediation_action:   String,
+    pub remediation_status:   String,
+}
+
+/// One step in a closed-loop trace: trigger → detection → remediation.
+#[derive(Debug, Clone, Serialize)]
+pub struct TraceStep {
+    pub kind:           String,  // "trigger" | "detection" | "remediation"
+    pub id:             String,
+    pub device_address: String,
+    pub event_type:     String,
+    pub rule_id:        String,
+    pub severity:       String,
+    pub action:         String,
+    pub status:         String,
+    pub detail_json:    String,
+    pub occurred_at_ns: i64,
 }
 
 pub struct GraphStore {
@@ -312,6 +343,126 @@ impl GraphStore {
         .context("spawn_blocking panicked")?
     }
 
+    /// Return the most recent `limit` DetectionEvents joined with their Remediation.
+    pub async fn read_detections(&self, limit: u32) -> Result<Vec<DetectionRow>> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("read_detections connection")?;
+            let cypher = format!(
+                "MATCH (e:DetectionEvent) \
+                 OPTIONAL MATCH (r:Remediation)-[:RESOLVES]->(e) \
+                 RETURN e.id, e.device_address, e.rule_id, e.severity, \
+                        e.features_json, e.fired_at, r.id, r.action, r.status \
+                 ORDER BY e.fired_at DESC LIMIT {limit}"
+            );
+            let mut rows = conn.query(&cypher).context("read_detections query")?;
+            let mut out  = Vec::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            for row in rows {
+                let id = read_str(&row[0]);
+                // OPTIONAL MATCH can produce duplicate detection rows when multiple
+                // remediations exist for one detection — keep only the first.
+                if seen.insert(id.clone()) {
+                    out.push(DetectionRow {
+                        id,
+                        device_address:     read_str(&row[1]),
+                        rule_id:            read_str(&row[2]),
+                        severity:           read_str(&row[3]),
+                        features_json:      read_str(&row[4]),
+                        fired_at_ns:        read_ts_ns(&row[5]),
+                        remediation_id:     read_str(&row[6]),
+                        remediation_action: read_str(&row[7]),
+                        remediation_status: read_str(&row[8]),
+                    });
+                }
+            }
+            Ok::<_, anyhow::Error>(out)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    /// Return all steps in a closed-loop trace for a given DetectionEvent id.
+    /// Steps are ordered: trigger → detection → remediation.
+    pub async fn read_closed_loop_trace(&self, detection_id: String) -> Result<Vec<TraceStep>> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("read_trace connection")?;
+            let mut stmt = conn.prepare(
+                "MATCH (e:DetectionEvent {id: $id}) \
+                 OPTIONAL MATCH (e)-[:TRIGGERED_BY]->(s:StateChangeEvent) \
+                 OPTIONAL MATCH (r:Remediation)-[:RESOLVES]->(e) \
+                 RETURN e.id, e.device_address, e.rule_id, e.severity, e.fired_at, \
+                        s.id, s.event_type, s.detail, s.occurred_at, s.device_address, \
+                        r.id, r.action, r.status, r.detail_json, r.attempted_at",
+            ).context("prepare trace query")?;
+            let mut rows = conn.execute(&mut stmt, vec![
+                ("id", Value::String(detection_id)),
+            ]).context("execute trace query")?;
+
+            let mut steps: Vec<TraceStep> = Vec::new();
+            let mut seen_det = false;
+            let mut seen_trig: HashSet<String> = HashSet::new();
+            let mut seen_rem:  HashSet<String> = HashSet::new();
+
+            for row in rows {
+                if !seen_det {
+                    seen_det = true;
+                    steps.push(TraceStep {
+                        kind:           "detection".into(),
+                        id:             read_str(&row[0]),
+                        device_address: read_str(&row[1]),
+                        rule_id:        read_str(&row[2]),
+                        severity:       read_str(&row[3]),
+                        occurred_at_ns: read_ts_ns(&row[4]),
+                        event_type:     String::new(),
+                        action:         String::new(),
+                        status:         String::new(),
+                        detail_json:    String::new(),
+                    });
+                }
+                let trig_id = read_str(&row[5]);
+                if !trig_id.is_empty() && seen_trig.insert(trig_id.clone()) {
+                    steps.push(TraceStep {
+                        kind:           "trigger".into(),
+                        id:             trig_id,
+                        device_address: read_str(&row[9]),
+                        event_type:     read_str(&row[6]),
+                        detail_json:    read_str(&row[7]),
+                        occurred_at_ns: read_ts_ns(&row[8]),
+                        rule_id:        String::new(),
+                        severity:       String::new(),
+                        action:         String::new(),
+                        status:         String::new(),
+                    });
+                }
+                let rem_id = read_str(&row[10]);
+                if !rem_id.is_empty() && seen_rem.insert(rem_id.clone()) {
+                    steps.push(TraceStep {
+                        kind:           "remediation".into(),
+                        id:             rem_id,
+                        action:         read_str(&row[11]),
+                        status:         read_str(&row[12]),
+                        detail_json:    read_str(&row[13]),
+                        occurred_at_ns: read_ts_ns(&row[14]),
+                        device_address: String::new(),
+                        event_type:     String::new(),
+                        rule_id:        String::new(),
+                        severity:       String::new(),
+                    });
+                }
+            }
+            // Sort: trigger first, detection second, remediation last; within each kind by time.
+            steps.sort_by_key(|s| (
+                match s.kind.as_str() { "trigger" => 0u8, "detection" => 1, _ => 2 },
+                s.occurred_at_ns,
+            ));
+            Ok::<_, anyhow::Error>(steps)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
     /// Write a single telemetry update to the graph.
     /// Dispatches to a blocking thread so the caller's async task is not blocked.
     pub async fn write(&self, update: TelemetryUpdate) -> Result<()> {
@@ -367,6 +518,15 @@ fn write_blocking(db: &Database, update: &TelemetryUpdate, event_tx: &broadcast:
         }
         TelemetryEvent::Ignored => Ok(()),
     }
+}
+
+/// Read helpers for query result rows — used by the read_* methods above.
+fn read_str(v: &Value) -> String {
+    match v { Value::String(s) => s.clone(), _ => String::new() }
+}
+
+fn read_ts_ns(v: &Value) -> i64 {
+    match v { Value::TimestampNs(dt) => dt.unix_timestamp_nanos() as i64, _ => 0 }
 }
 
 fn ts(ns: i64) -> Value {
@@ -478,17 +638,23 @@ fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &st
     // Read current state before upserting so we can detect transitions.
     let old_state = get_bgp_state(conn, &id)?;
 
-    let mut stmt = conn.prepare(
-        "MERGE (n:BgpNeighbor {id: $id}) \
+    let peer_as = json_i64(val, "peer-as");
+
+    // ON MATCH: only overwrite peer_as when the notification actually carries it
+    // (non-zero). ON_CHANGE updates for session-state transitions omit peer-as,
+    // which would clobber the stored value with 0.
+    let on_match_peer_as = if peer_as != 0 { "n.peer_as = $peer_as, " } else { "" };
+    let cypher = format!(
+        "MERGE (n:BgpNeighbor {{id: $id}}) \
          ON CREATE SET \
            n.device_address = $addr, n.peer_address = $peer, \
            n.peer_as = $peer_as, n.session_state = $state, \
            n.established_transitions = $estab, n.updated_at = $ts \
          ON MATCH SET \
-           n.peer_as = $peer_as, n.session_state = $state, \
-           n.established_transitions = $estab, n.updated_at = $ts",
-    )
-    .context("prepare BgpNeighbor upsert")?;
+           {on_match_peer_as}n.session_state = $state, \
+           n.established_transitions = $estab, n.updated_at = $ts"
+    );
+    let mut stmt = conn.prepare(&cypher).context("prepare BgpNeighbor upsert")?;
 
     conn.execute(
         &mut stmt,
@@ -496,7 +662,7 @@ fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &st
             ("id", Value::String(id.clone())),
             ("addr", Value::String(u.target.clone())),
             ("peer", Value::String(peer_addr.to_string())),
-            ("peer_as", Value::Int64(json_i64(val, "peer-as"))),
+            ("peer_as", Value::Int64(peer_as)),
             ("state", Value::String(new_state.clone())),
             ("estab", Value::Int64(json_i64(val, "established-transitions"))),
             ("ts", now.clone()),
