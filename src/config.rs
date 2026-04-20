@@ -12,6 +12,8 @@ pub struct Config {
     pub metrics_addr: String,
     #[serde(default)]
     pub retention: RetentionConfig,
+    #[serde(default)]
+    pub event_bus: EventBusConfig,
     pub target: Vec<TargetConfig>,
 }
 
@@ -23,10 +25,45 @@ pub struct RetentionConfig {
     /// Delete StateChangeEvents older than this many hours. Default: 72.
     #[serde(default = "default_retention_hours")]
     pub max_age_hours: u64,
+    /// Hard cap on total StateChangeEvents kept. 0 = unlimited. Default: 50000.
+    /// When the count exceeds this, oldest events are deleted to get back under the limit.
+    #[serde(default = "default_max_state_change_events")]
+    pub max_state_change_events: u64,
+}
+
+#[derive(Deserialize)]
+pub struct EventBusConfig {
+    /// broadcast channel capacity. Default: 2048.
+    #[serde(default = "default_bus_capacity")]
+    pub capacity: usize,
+    /// Minimum interval between counter writes per (device, interface). Default: 10s.
+    #[serde(default = "default_debounce_secs")]
+    pub counter_debounce_secs: u64,
+}
+
+impl Default for EventBusConfig {
+    fn default() -> Self {
+        Self {
+            capacity: default_bus_capacity(),
+            counter_debounce_secs: default_debounce_secs(),
+        }
+    }
 }
 
 fn default_retention_hours() -> u64 {
     72
+}
+
+fn default_max_state_change_events() -> u64 {
+    50_000
+}
+
+fn default_bus_capacity() -> usize {
+    2048
+}
+
+fn default_debounce_secs() -> u64 {
+    10
 }
 
 fn default_api_addr() -> String {

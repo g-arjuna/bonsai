@@ -49,9 +49,9 @@ impl BonsaiGraph for BonsaiService {
 
         let result = tokio::task::spawn_blocking(move || {
             let conn = Connection::new(&db).map_err(|e| e.to_string())?;
-            let mut rows = conn.query(&cypher).map_err(|e| e.to_string())?;
+            let rows = conn.query(&cypher).map_err(|e| e.to_string())?;
             let mut out: Vec<Vec<serde_json::Value>> = Vec::new();
-            while let Some(row) = rows.next() {
+            for row in rows {
                 out.push(row.iter().map(value_to_json).collect());
             }
             serde_json::to_string(&out).map_err(|e| e.to_string())
@@ -69,11 +69,11 @@ impl BonsaiGraph for BonsaiService {
         let db = self.store.db();
         let devices = tokio::task::spawn_blocking(move || {
             let conn = Connection::new(&db).map_err(|e| e.to_string())?;
-            let mut rows = conn
+            let rows = conn
                 .query("MATCH (d:Device) RETURN d.address, d.vendor, d.hostname, d.updated_at")
                 .map_err(|e| e.to_string())?;
             let mut out = Vec::new();
-            while let Some(row) = rows.next() {
+            for row in rows {
                 out.push(Device {
                     address:       str_val(&row[0]),
                     vendor:        str_val(&row[1]),
@@ -99,12 +99,12 @@ impl BonsaiGraph for BonsaiService {
             let mut out = Vec::new();
 
             if device_address.is_empty() {
-                let mut rows = conn.query(
+                let rows = conn.query(
                     "MATCH (i:Interface) RETURN i.device_address, i.name, \
                      i.in_pkts, i.out_pkts, i.in_octets, i.out_octets, \
                      i.in_errors, i.out_errors, i.updated_at",
                 ).map_err(|e| e.to_string())?;
-                while let Some(row) = rows.next() {
+                for row in rows {
                     out.push(interface_from_row(&row));
                 }
             } else {
@@ -113,10 +113,10 @@ impl BonsaiGraph for BonsaiService {
                      i.in_pkts, i.out_pkts, i.in_octets, i.out_octets, \
                      i.in_errors, i.out_errors, i.updated_at",
                 ).map_err(|e| e.to_string())?;
-                let mut rows = conn.execute(&mut stmt, vec![
+                let rows = conn.execute(&mut stmt, vec![
                     ("addr", Value::String(device_address)),
                 ]).map_err(|e| e.to_string())?;
-                while let Some(row) = rows.next() {
+                for row in rows {
                     out.push(interface_from_row(&row));
                 }
             }
@@ -138,11 +138,11 @@ impl BonsaiGraph for BonsaiService {
             let mut out = Vec::new();
 
             if device_address.is_empty() {
-                let mut rows = conn.query(
+                let rows = conn.query(
                     "MATCH (n:BgpNeighbor) RETURN n.device_address, n.peer_address, \
                      n.peer_as, n.session_state, n.updated_at",
                 ).map_err(|e| e.to_string())?;
-                while let Some(row) = rows.next() {
+                for row in rows {
                     out.push(bgp_neighbor_from_row(&row));
                 }
             } else {
@@ -150,10 +150,10 @@ impl BonsaiGraph for BonsaiService {
                     "MATCH (n:BgpNeighbor {device_address: $addr}) RETURN n.device_address, n.peer_address, \
                      n.peer_as, n.session_state, n.updated_at",
                 ).map_err(|e| e.to_string())?;
-                let mut rows = conn.execute(&mut stmt, vec![
+                let rows = conn.execute(&mut stmt, vec![
                     ("addr", Value::String(device_address)),
                 ]).map_err(|e| e.to_string())?;
-                while let Some(row) = rows.next() {
+                for row in rows {
                     out.push(bgp_neighbor_from_row(&row));
                 }
             }
@@ -170,12 +170,12 @@ impl BonsaiGraph for BonsaiService {
         let db = self.store.db();
         let edges = tokio::task::spawn_blocking(move || {
             let conn = Connection::new(&db).map_err(|e| e.to_string())?;
-            let mut rows = conn.query(
+            let rows = conn.query(
                 "MATCH (li:Interface)-[:CONNECTED_TO]->(ri:Interface) \
                  RETURN li.device_address, li.name, ri.device_address, ri.name",
             ).map_err(|e| e.to_string())?;
             let mut out = Vec::new();
-            while let Some(row) = rows.next() {
+            for row in rows {
                 out.push(TopologyEdge {
                     src_device:    str_val(&row[0]),
                     src_interface: str_val(&row[1]),

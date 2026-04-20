@@ -355,7 +355,7 @@ impl GraphStore {
                         e.features_json, e.fired_at, r.id, r.action, r.status \
                  ORDER BY e.fired_at DESC LIMIT {limit}"
             );
-            let mut rows = conn.query(&cypher).context("read_detections query")?;
+            let rows = conn.query(&cypher).context("read_detections query")?;
             let mut out  = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
             for row in rows {
@@ -396,7 +396,7 @@ impl GraphStore {
                         s.id, s.event_type, s.detail, s.occurred_at, s.device_address, \
                         r.id, r.action, r.status, r.detail_json, r.attempted_at",
             ).context("prepare trace query")?;
-            let mut rows = conn.execute(&mut stmt, vec![
+            let rows = conn.execute(&mut stmt, vec![
                 ("id", Value::String(detection_id)),
             ]).context("execute trace query")?;
 
@@ -944,10 +944,10 @@ fn write_lldp_neighbor(
     // Best-effort: link the local Interface to the remote Interface via LLDP data.
     let system_name = json_str(val, "system-name").to_string();
     let port_id     = json_str(val, "port-id").to_string();
-    if !system_name.is_empty() && !port_id.is_empty() {
-        if let Err(e) = try_connect_interfaces(conn, &u.target, local_if, &system_name, &port_id) {
-            debug!(error = %e, local_if, system_name, port_id, "CONNECTED_TO skipped");
-        }
+    if !system_name.is_empty() && !port_id.is_empty()
+        && let Err(e) = try_connect_interfaces(conn, &u.target, local_if, &system_name, &port_id)
+    {
+        debug!(error = %e, local_if, system_name, port_id, "CONNECTED_TO skipped");
     }
 
     info!(
@@ -969,12 +969,12 @@ fn backfill_connected_to(conn: &Connection<'_>, local_addr: &str, local_if: &str
         "MATCH (n:LldpNeighbor {device_address: $addr, local_if: $lif}) \
          RETURN n.system_name, n.port_id",
     ).context("prepare lldp lookup for backfill")?;
-    let mut rows = conn.execute(&mut find, vec![
+    let rows = conn.execute(&mut find, vec![
         ("addr", Value::String(local_addr.to_string())),
         ("lif",  Value::String(local_if.to_string())),
     ]).context("execute lldp lookup for backfill")?;
 
-    while let Some(row) = rows.next() {
+    for row in rows {
         let system_name = match &row[0] { Value::String(s) => s.clone(), _ => continue };
         let port_id     = match &row[1] { Value::String(s) => s.clone(), _ => continue };
         if !system_name.is_empty() && !port_id.is_empty() {
@@ -987,11 +987,11 @@ fn backfill_connected_to(conn: &Connection<'_>, local_addr: &str, local_if: &str
         "MATCH (n:LldpNeighbor {port_id: $lif}) \
          RETURN n.device_address, n.local_if, n.system_name",
     ).context("prepare reverse lldp lookup")?;
-    let mut rows2 = conn.execute(&mut find2, vec![
+    let rows2 = conn.execute(&mut find2, vec![
         ("lif", Value::String(local_if.to_string())),
     ]).context("execute reverse lldp lookup")?;
 
-    while let Some(row) = rows2.next() {
+    for row in rows2 {
         let remote_addr = match &row[0] { Value::String(s) => s.clone(), _ => continue };
         let remote_if   = match &row[1] { Value::String(s) => s.clone(), _ => continue };
         let system_name = match &row[2] { Value::String(s) => s.clone(), _ => continue };

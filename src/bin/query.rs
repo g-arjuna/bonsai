@@ -7,56 +7,56 @@ fn main() {
     let conn = Connection::new(&db).unwrap();
 
     println!("\n=== DEVICES ===");
-    let mut r = conn.query("MATCH (d:Device) RETURN d.address, d.vendor, d.updated_at").unwrap();
-    while let Some(row) = r.next() {
+    let r = conn.query("MATCH (d:Device) RETURN d.address, d.vendor, d.updated_at").unwrap();
+    for row in r {
         println!("  {:?}", row);
     }
 
     println!("\n=== INTERFACES (sample: 5) ===");
-    let mut r = conn.query(
+    let r = conn.query(
         "MATCH (d:Device)-[:HAS_INTERFACE]->(i:Interface) \
          RETURN d.address, i.name, i.in_pkts, i.out_pkts, i.in_octets LIMIT 5"
     ).unwrap();
-    while let Some(row) = r.next() {
+    for row in r {
         println!("  {:?}", row);
     }
 
     println!("\n=== BGP NEIGHBORS ===");
-    let mut r = conn.query(
+    let r = conn.query(
         "MATCH (d:Device)-[:PEERS_WITH]->(n:BgpNeighbor) \
          RETURN d.address, n.peer_address, n.peer_as, n.session_state"
     ).unwrap();
-    while let Some(row) = r.next() {
+    for row in r {
         println!("  {:?}", row);
     }
 
     println!("\n=== LLDP NEIGHBORS ===");
-    let mut r = conn.query(
+    let r = conn.query(
         "MATCH (d:Device)-[:HAS_LLDP_NEIGHBOR]->(n:LldpNeighbor) \
          RETURN d.address, n.local_if, n.chassis_id, n.system_name, n.port_id"
     ).unwrap();
-    while let Some(row) = r.next() {
+    for row in r {
         println!("  {:?}", row);
     }
 
     println!("\n=== BGP FLAPS (crpd peer 10.1.31.0, last 20) ===");
-    let mut r = conn.query(
+    let r = conn.query(
         "MATCH (d:Device)-[:REPORTED_BY]->(e:StateChangeEvent) \
          WHERE e.detail CONTAINS '10.1.31.0' OR e.detail CONTAINS '10.1.23.1' \
          RETURN d.address, e.detail, e.occurred_at \
          ORDER BY e.occurred_at DESC LIMIT 20"
     ).unwrap();
-    while let Some(row) = r.next() {
+    for row in r {
         println!("  {:?}", row);
     }
 
     println!("\n=== STATE CHANGE EVENTS (last 10) ===");
-    let mut r = conn.query(
+    let r = conn.query(
         "MATCH (d:Device)-[:REPORTED_BY]->(e:StateChangeEvent) \
          RETURN d.address, e.event_type, e.detail, e.occurred_at \
          ORDER BY e.occurred_at DESC LIMIT 10"
     ).unwrap();
-    while let Some(row) = r.next() {
+    for row in r {
         println!("  {:?}", row);
     }
 

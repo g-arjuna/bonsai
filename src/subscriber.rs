@@ -15,6 +15,9 @@ use crate::proto::gnmi::{
     subscribe_request, subscription_list, CapabilityRequest, Path, PathElem, SubscribeRequest,
     SubscriptionList, Subscription, SubscriptionMode,
 };
+use std::sync::Arc;
+
+use crate::event_bus::InProcessBus;
 use crate::telemetry::TelemetryUpdate;
 
 pub struct GnmiSubscriber {
@@ -28,10 +31,11 @@ pub struct GnmiSubscriber {
     /// None = plaintext gRPC.
     ca_cert_pem: Option<Vec<u8>>,
     tls_domain: String,
-    tx: tokio::sync::mpsc::Sender<TelemetryUpdate>,
+    bus: Arc<InProcessBus>,
 }
 
 impl GnmiSubscriber {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         target: impl Into<String>,
         username: Option<String>,
@@ -40,7 +44,7 @@ impl GnmiSubscriber {
         hostname: Option<String>,
         tls_domain: impl Into<String>,
         ca_cert_pem: Option<Vec<u8>>,
-        tx: tokio::sync::mpsc::Sender<TelemetryUpdate>,
+        bus: Arc<InProcessBus>,
     ) -> Self {
         Self {
             target: target.into(),
@@ -50,7 +54,7 @@ impl GnmiSubscriber {
             hostname,
             ca_cert_pem,
             tls_domain: tls_domain.into(),
-            tx,
+            bus,
         }
     }
 
@@ -107,15 +111,11 @@ impl GnmiSubscriber {
 
         #[allow(clippy::result_large_err)]
         let mut client = GNmiClient::with_interceptor(channel, move |mut req: Request<()>| {
-            if let Some(ref u) = username {
-                if let Ok(v) = MetadataValue::try_from(u.as_str()) {
-                    req.metadata_mut().insert("username", v);
-                }
+            if let Some(ref u) = username && let Ok(v) = MetadataValue::try_from(u.as_str()) {
+                req.metadata_mut().insert("username", v);
             }
-            if let Some(ref p) = password {
-                if let Ok(v) = MetadataValue::try_from(p.as_str()) {
-                    req.metadata_mut().insert("password", v);
-                }
+            if let Some(ref p) = password && let Ok(v) = MetadataValue::try_from(p.as_str()) {
+                req.metadata_mut().insert("password", v);
             }
             Ok(req)
         });
@@ -177,11 +177,9 @@ impl GnmiSubscriber {
                                     };
                                     let val = update.val.as_ref().map(typed_value_to_json).unwrap_or(serde_json::Value::Null);
                                     let is_scalar = matches!(val, serde_json::Value::Number(_) | serde_json::Value::String(_) | serde_json::Value::Bool(_));
-                                    if is_scalar {
-                                        if let Some(slash) = path.rfind('/') {
-                                            leaf_groups.entry(path[..slash].to_string()).or_default().insert(path[slash + 1..].to_string(), val);
-                                            continue;
-                                        }
+                                    if is_scalar && let Some(slash) = path.rfind('/') {
+                                        leaf_groups.entry(path[..slash].to_string()).or_default().insert(path[slash + 1..].to_string(), val);
+                                        continue;
                                     }
                                     blobs.push((path, val));
                                 }
@@ -199,10 +197,7 @@ impl GnmiSubscriber {
                                         path,
                                         value: val,
                                     };
-                                    if self.tx.send(msg).await.is_err() {
-                                        warn!(target = %target, "graph writer channel closed — stopping subscriber");
-                                        return Ok(());
-                                    }
+                                    self.bus.publish(msg);
                                 }
                             }
                             Response::SyncResponse(sync) => {
@@ -303,9 +298,7 @@ impl ModelCapabilities {
         let has_srl_bfd   = models.iter().any(|m| m.name.contains("srl_nokia-bfd"));
         let has_xr_native = models.iter().any(|m| m.name.contains("Cisco-IOS-XR-infra-statsd-oper"));
 
-        let encoding = if encodings.contains(&json_ietf) { json_ietf }
-                       else if encodings.contains(&json)  { json }
-                       else { json };
+        let encoding = if encodings.contains(&json_ietf) { json_ietf } else { json };
 
         // Vendor label: informational only — derived from model names, never used for routing.
         let vendor_label = if has_srl {
@@ -389,15 +382,11 @@ async fn detect_capabilities(
     hint: Option<&str>,
 ) -> ModelCapabilities {
     let mut req = tonic::Request::new(CapabilityRequest::default());
-    if let Some(u) = username {
-        if let Ok(v) = MetadataValue::try_from(u) {
-            req.metadata_mut().insert("username", v);
-        }
+    if let Some(u) = username && let Ok(v) = MetadataValue::try_from(u) {
+        req.metadata_mut().insert("username", v);
     }
-    if let Some(p) = password {
-        if let Ok(v) = MetadataValue::try_from(p) {
-            req.metadata_mut().insert("password", v);
-        }
+    if let Some(p) = password && let Ok(v) = MetadataValue::try_from(p) {
+        req.metadata_mut().insert("password", v);
     }
 
     match client.capabilities(req).await {

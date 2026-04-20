@@ -1,9 +1,19 @@
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
 use anyhow::{Context, Result};
 use tracing::{info, warn};
-use time;
-use axum;
 
-use bonsai::{api::{BonsaiGraphServer, BonsaiService, TargetConnInfo}, config, graph, retention, registry::{self, DeviceRegistry}, subscriber, telemetry};
+use bonsai::{
+    api::{BonsaiGraphServer, BonsaiService, TargetConnInfo},
+    config,
+    event_bus::InProcessBus,
+    graph,
+    registry::{self, DeviceRegistry},
+    retention,
+    subscriber,
+    telemetry::TelemetryEvent,
+};
 use metrics_exporter_prometheus::PrometheusBuilder;
 
 const CONFIG_PATH: &str = "bonsai.toml";
@@ -18,7 +28,7 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    info!("bonsai starting — Phase 4: Detect-Predict-Heal");
+    info!("bonsai starting — Phase 6: UI");
 
     let cfg = config::load(CONFIG_PATH).await?;
 
@@ -32,6 +42,7 @@ async fn main() -> Result<()> {
             .context("failed to install Prometheus metrics exporter")?;
         info!(%metrics_addr, "Prometheus metrics listening");
     }
+
     let graph_path = if cfg.graph_path.is_empty() {
         GRAPH_PATH_DEFAULT
     } else {
@@ -48,17 +59,59 @@ async fn main() -> Result<()> {
         .context("graph open failed")?,
     );
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<telemetry::TelemetryUpdate>(1024);
+    // ── Event bus (T1-1a) ────────────────────────────────────────────────────
+    let bus = InProcessBus::new(cfg.event_bus.capacity);
+    let debounce_secs = cfg.event_bus.counter_debounce_secs;
 
-    let graph_writer = std::sync::Arc::clone(&graph);
-    tokio::spawn(async move {
-        while let Some(update) = rx.recv().await {
-            if let Err(e) = graph_writer.write(update).await {
-                warn!(error = %e, "graph write failed");
+    // ── Graph writer (T1-1b + T1-1d) ────────────────────────────────────────
+    // Subscribes to the bus; debounces InterfaceStats writes so counter floods
+    // don't saturate the graph lock. State-transition events always write.
+    {
+        let graph_writer = std::sync::Arc::clone(&graph);
+        let mut rx = bus.subscribe();
+        tokio::spawn(async move {
+            // last-write timestamps for (device, interface) counter debounce
+            let mut last_counter_write: HashMap<String, Instant> = HashMap::new();
+            let debounce = Duration::from_secs(debounce_secs);
+
+            loop {
+                match rx.recv().await {
+                    Ok(update) => {
+                        // Debounce counter-only updates (T1-1d).
+                        // State transitions (BGP, BFD, LLDP, InterfaceOperStatus) always write.
+                        let classified = update.classify();
+                        let is_counter = matches!(classified, TelemetryEvent::InterfaceStats { .. });
+
+                        if is_counter {
+                            let key = format!("{}:{}", update.target,
+                                if let TelemetryEvent::InterfaceStats { ref if_name } = classified {
+                                    if_name.clone()
+                                } else { String::new() });
+                            let now = Instant::now();
+                            let skip = last_counter_write
+                                .get(&key)
+                                .is_some_and(|t| now.duration_since(*t) < debounce);
+                            if skip {
+                                continue;
+                            }
+                            last_counter_write.insert(key, now);
+                        }
+
+                        if let Err(e) = graph_writer.write(update).await {
+                            warn!(error = %e, "graph write failed");
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(dropped = n, "graph writer lagged on event bus — slow consumer");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        info!("event bus closed — graph writer stopping");
+                        break;
+                    }
+                }
             }
-        }
-        info!("graph writer stopped");
-    });
+        });
+    }
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
@@ -82,7 +135,7 @@ async fn main() -> Result<()> {
             t.hostname.clone(),
             t.tls_domain.clone().unwrap_or_default(),
             ca_cert_pem,
-            tx.clone(),
+            std::sync::Arc::clone(&bus),
         );
         let rx = shutdown_rx.clone();
         handles.push(tokio::spawn(async move { sub.run_forever(rx).await }));
@@ -133,18 +186,24 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Retention: prune old StateChangeEvents on a 1-hour interval (disabled by default)
+    // Retention: prune old StateChangeEvents on a 1-hour interval (T1-1e)
     if cfg.retention.enabled {
-        let store       = std::sync::Arc::clone(&graph);
-        let max_age_h   = cfg.retention.max_age_hours;
+        let store          = std::sync::Arc::clone(&graph);
+        let max_age_h      = cfg.retention.max_age_hours;
+        let max_count      = cfg.retention.max_state_change_events;
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            let mut interval = tokio::time::interval(Duration::from_secs(3600));
             loop {
                 interval.tick().await;
+                // Age-based prune
                 let cutoff = time::OffsetDateTime::now_utc()
                     - time::Duration::hours(max_age_h as i64);
                 if let Err(e) = retention::prune_events(std::sync::Arc::clone(&store), cutoff).await {
-                    warn!(error = %e, "retention prune failed");
+                    warn!(error = %e, "retention age-prune failed");
+                }
+                // Count-based cap (T1-1e)
+                if let Err(e) = retention::prune_events_by_count(std::sync::Arc::clone(&store), max_count).await {
+                    warn!(error = %e, "retention count-prune failed");
                 }
             }
         });

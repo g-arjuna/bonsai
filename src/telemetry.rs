@@ -50,19 +50,18 @@ impl TelemetryUpdate {
     pub fn classify(&self) -> TelemetryEvent {
         // ── SR Linux native paths ──────────────────────────────────────────────
         // interface[name=X]/statistics
-        if self.path.contains("interface[name=") && self.path.ends_with("/statistics") {
-            if let Some(name) = extract_bracketed(&self.path, "interface[name=") {
-                return TelemetryEvent::InterfaceStats { if_name: name };
-            }
+        if self.path.contains("interface[name=") && self.path.ends_with("/statistics")
+            && let Some(name) = extract_bracketed(&self.path, "interface[name=")
+        {
+            return TelemetryEvent::InterfaceStats { if_name: name };
         }
 
         // network-instance[name=default]/protocols/bgp/neighbor[peer-address=X]
-        if self.path.contains("bgp/neighbor[peer-address=") && self.path.ends_with(']') {
-            if let Some(addr) = extract_bracketed(&self.path, "bgp/neighbor[peer-address=") {
-                if self.value.get("session-state").is_some() {
-                    return TelemetryEvent::BgpNeighborState { peer_address: addr, state_value: None };
-                }
-            }
+        if self.path.contains("bgp/neighbor[peer-address=") && self.path.ends_with(']')
+            && let Some(addr) = extract_bracketed(&self.path, "bgp/neighbor[peer-address=")
+            && self.value.get("session-state").is_some()
+        {
+            return TelemetryEvent::BgpNeighborState { peer_address: addr, state_value: None };
         }
 
         // SRL native: system/lldp/interface[name=X]/neighbor[id=Y]
@@ -70,13 +69,12 @@ impl TelemetryUpdate {
             && self.path.contains("/neighbor[id=")
             && self.path.ends_with(']')
             && self.value.get("chassis-id").is_some()
-        {
-            if let (Some(local_if), Some(neighbor_id)) = (
+            && let (Some(local_if), Some(neighbor_id)) = (
                 extract_bracketed(&self.path, "lldp/interface[name="),
                 extract_bracketed(&self.path, "neighbor[id="),
-            ) {
-                return TelemetryEvent::LldpNeighbor { local_if, neighbor_id, state_value: None };
-            }
+            )
+        {
+            return TelemetryEvent::LldpNeighbor { local_if, neighbor_id, state_value: None };
         }
 
         // OC LLDP (cEOS): lldp/interfaces/interface[name=X]/neighbors/neighbor[id=Y]/state
@@ -88,23 +86,21 @@ impl TelemetryUpdate {
             && (json_find(&self.value, "chassis-id").is_some()
                 || json_find(&self.value, "system-name").is_some()
                 || json_find(&self.value, "port-id").is_some())
-        {
-            if let (Some(local_if), Some(neighbor_id)) = (
+            && let (Some(local_if), Some(neighbor_id)) = (
                 extract_bracketed(&self.path, "lldp/interfaces/interface[name="),
                 extract_bracketed(&self.path, "neighbor[id="),
-            ) {
-                return TelemetryEvent::LldpNeighbor { local_if, neighbor_id, state_value: None };
-            }
+            )
+        {
+            return TelemetryEvent::LldpNeighbor { local_if, neighbor_id, state_value: None };
         }
 
         // ── OpenConfig paths (XRd OC, cEOS, cRPD BGP) ────────────────────────
         // interfaces/interface[name=X]/state/counters
         if self.path.contains("interfaces/interface[name=")
             && self.path.ends_with("/state/counters")
+            && let Some(name) = extract_bracketed(&self.path, "interfaces/interface[name=")
         {
-            if let Some(name) = extract_bracketed(&self.path, "interfaces/interface[name=") {
-                return TelemetryEvent::InterfaceStats { if_name: name };
-            }
+            return TelemetryEvent::InterfaceStats { if_name: name };
         }
 
         // SRL native BFD: bfd/network-instance[name=X]/peer[local-discriminator=Y]
@@ -113,17 +109,12 @@ impl TelemetryUpdate {
             && self.path.contains("/peer[local-discriminator=")
             && (self.path.ends_with(']') || self.path.ends_with("/state"))
             && json_find(&self.value, "session-state").is_some()
-        {
-            if let (Some(if_name), Some(local_discriminator)) = (
+            && let (Some(if_name), Some(local_discriminator)) = (
                 extract_bracketed(&self.path, "network-instance[name="),
                 extract_bracketed(&self.path, "peer[local-discriminator="),
-            ) {
-                return TelemetryEvent::BfdSessionState {
-                    if_name,
-                    local_discriminator,
-                    state_value: None,
-                };
-            }
+            )
+        {
+            return TelemetryEvent::BfdSessionState { if_name, local_discriminator, state_value: None };
         }
 
         // OpenConfig BFD: bfd/interfaces/interface[id=X]/peers/peer[local-discriminator=Y]/state
@@ -131,38 +122,30 @@ impl TelemetryUpdate {
             && self.path.contains("/peers/peer[local-discriminator=")
             && (self.path.ends_with("/state") || self.path.ends_with(']'))
             && json_find(&self.value, "session-state").is_some()
-        {
-            if let (Some(if_name), Some(local_discriminator)) = (
+            && let (Some(if_name), Some(local_discriminator)) = (
                 extract_bracketed(&self.path, "interface[id="),
                 extract_bracketed(&self.path, "peer[local-discriminator="),
-            ) {
-                return TelemetryEvent::BfdSessionState {
-                    if_name,
-                    local_discriminator,
-                    state_value: None,
-                };
-            }
+            )
+        {
+            return TelemetryEvent::BfdSessionState { if_name, local_discriminator, state_value: None };
         }
 
         // .../bgp/neighbors/neighbor[neighbor-address=X] or .../neighbor[neighbor-address=X]/state
-        if self.path.contains("neighbors/neighbor[neighbor-address=") {
-            let ends_ok = self.path.ends_with(']') || self.path.ends_with("/state");
-            if ends_ok && self.value.get("session-state").is_some() {
-                if let Some(addr) =
-                    extract_bracketed(&self.path, "neighbor[neighbor-address=")
-                {
-                    return TelemetryEvent::BgpNeighborState { peer_address: addr, state_value: None };
-                }
-            }
+        if self.path.contains("neighbors/neighbor[neighbor-address=")
+            && (self.path.ends_with(']') || self.path.ends_with("/state"))
+            && self.value.get("session-state").is_some()
+            && let Some(addr) = extract_bracketed(&self.path, "neighbor[neighbor-address=")
+        {
+            return TelemetryEvent::BgpNeighborState { peer_address: addr, state_value: None };
         }
 
         // XRd ON_CHANGE BGP: path="network-instances", value is a partial OC tree blob.
         // Each notification covers exactly one neighbor. Navigate the nested JSON to extract
         // neighbor-address and state without requiring a specific sub-path.
-        if self.path == "network-instances" {
-            if let Some(event) = walk_xrd_bgp_blob(&self.value) {
-                return event;
-            }
+        if self.path == "network-instances"
+            && let Some(event) = walk_xrd_bgp_blob(&self.value)
+        {
+            return event;
         }
 
         // ── Cisco IOS-XR native (infra-statsd-oper generic-counters) ──────────
@@ -170,10 +153,9 @@ impl TelemetryUpdate {
         // so match on the key/tail patterns only. Key is `interface-name` (not `name`).
         if self.path.contains("interface[interface-name=")
             && self.path.ends_with("/generic-counters")
+            && let Some(name) = extract_bracketed(&self.path, "interface[interface-name=")
         {
-            if let Some(name) = extract_bracketed(&self.path, "interface[interface-name=") {
-                return TelemetryEvent::InterfaceStats { if_name: name };
-            }
+            return TelemetryEvent::InterfaceStats { if_name: name };
         }
 
         // ── Cisco IOS-XR native LLDP (ethernet-lldp-oper detail) ────────────────
@@ -183,14 +165,13 @@ impl TelemetryUpdate {
             && self.path.contains("[interface-name=")
             && self.path.contains("[device-id=")
             && self.value.get("lldp-neighbor").is_some()
-        {
-            if let (Some(local_if), Some(neighbor_id)) = (
+            && let (Some(local_if), Some(neighbor_id)) = (
                 extract_bracketed(&self.path, "interface-name="),
                 extract_bracketed(&self.path, "device-id="),
-            ) {
-                let state_value = walk_xr_lldp_blob(&self.value);
-                return TelemetryEvent::LldpNeighbor { local_if, neighbor_id, state_value };
-            }
+            )
+        {
+            let state_value = walk_xr_lldp_blob(&self.value);
+            return TelemetryEvent::LldpNeighbor { local_if, neighbor_id, state_value };
         }
 
         // ── SRL native oper-state (ON_CHANGE) ────────────────────────────────
@@ -199,14 +180,13 @@ impl TelemetryUpdate {
         //   path  = srl_nokia-interfaces:interface[name=X]   (no /oper-state suffix)
         //   value = {"oper-state": "up"|"down"}
         // Guard on the oper-state key so statistics updates at the same container don't match.
-        if self.path.contains("interface[name=") {
-            if json_find(&self.value, "oper-state").is_some() {
-                if let Some(name) = extract_bracketed(&self.path, "interface[name=") {
-                    let status = json_str(&self.value, "oper-state").to_string();
-                    if !status.is_empty() {
-                        return TelemetryEvent::InterfaceOperStatus { if_name: name, oper_status: status };
-                    }
-                }
+        if self.path.contains("interface[name=")
+            && json_find(&self.value, "oper-state").is_some()
+            && let Some(name) = extract_bracketed(&self.path, "interface[name=")
+        {
+            let status = json_str(&self.value, "oper-state").to_string();
+            if !status.is_empty() {
+                return TelemetryEvent::InterfaceOperStatus { if_name: name, oper_status: status };
             }
         }
 
@@ -215,12 +195,11 @@ impl TelemetryUpdate {
         if self.path.contains("interfaces/interface[name=")
             && (self.path.ends_with("/state") || self.path.ends_with(']'))
             && json_find(&self.value, "oper-status").is_some()
+            && let Some(name) = extract_bracketed(&self.path, "interface[name=")
         {
-            if let Some(name) = extract_bracketed(&self.path, "interface[name=") {
-                let status = json_str(&self.value, "oper-status").to_lowercase();
-                if !status.is_empty() {
-                    return TelemetryEvent::InterfaceOperStatus { if_name: name, oper_status: status };
-                }
+            let status = json_str(&self.value, "oper-status").to_lowercase();
+            if !status.is_empty() {
+                return TelemetryEvent::InterfaceOperStatus { if_name: name, oper_status: status };
             }
         }
 
@@ -240,9 +219,7 @@ fn walk_xrd_bgp_blob(value: &JsonValue) -> Option<TelemetryEvent> {
         .get("neighbor")?;
     let peer_address = neighbor.get("neighbor-address")?.as_str()?.to_string();
     let state = neighbor.get("state")?;
-    if json_find(state, "session-state").is_none() {
-        return None;
-    }
+    json_find(state, "session-state")?;
     Some(TelemetryEvent::BgpNeighborState {
         peer_address,
         state_value: Some(state.clone()),
@@ -253,7 +230,7 @@ fn walk_xrd_bgp_blob(value: &JsonValue) -> Option<TelemetryEvent> {
 /// XR native: value.lldp-neighbor[0] has chassis-id, port-id-detail, and detail.system-name.
 fn walk_xr_lldp_blob(value: &JsonValue) -> Option<JsonValue> {
     let nbr = value.get("lldp-neighbor")?;
-    let entry = nbr.get(0).or_else(|| Some(nbr))?;
+    let entry = nbr.get(0).or(Some(nbr))?;
     let chassis_id  = json_find(entry, "chassis-id").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let port_id     = json_find(entry, "port-id-detail").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let system_name = entry.get("detail")

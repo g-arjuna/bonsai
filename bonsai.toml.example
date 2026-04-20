@@ -9,6 +9,17 @@ graph_path   = "bonsai.db"
 # api_addr     = "[::1]:50051"   # gRPC API (default shown)
 # metrics_addr = "[::1]:9090"    # Prometheus /metrics HTTP (set to "" to disable)
 
+# ── Event bus (T1-1) ──────────────────────────────────────────────────────────
+# [event_bus]
+# capacity              = 2048   # broadcast channel depth; increase for high-rate labs
+# counter_debounce_secs = 10     # min interval between interface counter graph writes
+
+# ── Retention (T1-1e) ────────────────────────────────────────────────────────
+# [retention]
+# enabled                  = false   # enable hourly prune pass
+# max_age_hours            = 72      # delete events older than this
+# max_state_change_events  = 50000   # hard cap; 0 = unlimited
+
 # ── Nokia SR Linux — spine (TLS) ─────────────────────────────────────────────
 [[target]]
 address    = "172.100.102.11:57400"

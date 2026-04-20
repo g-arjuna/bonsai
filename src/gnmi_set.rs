@@ -24,15 +24,11 @@ pub async fn gnmi_set(
 
     #[allow(clippy::result_large_err)]
     let mut client = GNmiClient::with_interceptor(channel, move |mut req: Request<()>| {
-        if let Some(ref u) = user {
-            if let Ok(v) = MetadataValue::try_from(u.as_str()) {
-                req.metadata_mut().insert("username", v);
-            }
+        if let Some(ref u) = user && let Ok(v) = MetadataValue::try_from(u.as_str()) {
+            req.metadata_mut().insert("username", v);
         }
-        if let Some(ref p) = pass {
-            if let Ok(v) = MetadataValue::try_from(p.as_str()) {
-                req.metadata_mut().insert("password", v);
-            }
+        if let Some(ref p) = pass && let Ok(v) = MetadataValue::try_from(p.as_str()) {
+            req.metadata_mut().insert("password", v);
         }
         Ok(req)
     });
@@ -83,7 +79,7 @@ async fn open_channel(address: &str, ca_cert_pem: Option<&[u8]>, tls_domain: &st
 
     if let Some(pem) = ca_cert_pem {
         let tls = ClientTlsConfig::new()
-            .ca_certificate(Certificate::from_pem(pem.to_vec()))
+            .ca_certificate(Certificate::from_pem(pem))
             .domain_name(tls_domain.to_string());
         builder = builder.tls_config(tls).context("TLS config failed")?;
     }

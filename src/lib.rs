@@ -1,5 +1,6 @@
 pub mod api;
 pub mod config;
+pub mod event_bus;
 pub mod gnmi_set;
 pub mod graph;
 pub mod http_server;

@@ -130,7 +130,7 @@ async fn topology_handler(
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
 
         // Devices
-        let mut dev_rows = conn
+        let dev_rows = conn
             .query("MATCH (d:Device) RETURN d.address, d.vendor, d.hostname")
             .map_err(|e| e.to_string())?;
         let devices_raw: Vec<(String, String, String)> = dev_rows
