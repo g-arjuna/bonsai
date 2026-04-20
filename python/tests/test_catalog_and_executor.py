@@ -149,3 +149,48 @@ def test_verify_no_verification_block_returns_true():
     result = executor.verify({}, _make_detection())
     assert result is True
     assert not client.query.called
+
+
+# ── T2-1: $if_name substitution in verify() ───────────────────────────────────
+
+def _make_interface_detection(if_name="ethernet-1/1", device="172.0.0.1:57400"):
+    from bonsai_sdk.detection import Detection, Features
+    features = Features(
+        device_address=device,
+        event_type="interface_oper_status_change",
+        detail={},
+        if_name=if_name,
+        oper_status="down",
+        occurred_at_ns=0,
+    )
+    return Detection(rule_id="interface_down", severity="critical",
+                     features=features, reason="test")
+
+
+def test_verify_substitutes_if_name():
+    """verify() must substitute $if_name from features.if_name (T2-1 audit fix)."""
+    client = MagicMock()
+    client.query.return_value = [[True]]
+
+    catalog = MagicMock()
+    executor = PlaybookExecutor(catalog=catalog, client=client)
+
+    playbook = {
+        "verification": {
+            "wait_seconds": 1,
+            "expected_graph_state": (
+                'MATCH (d:Device {address: $device_address})-[:HAS_INTERFACE]->'
+                '(i:Interface {name: $if_name}) RETURN count(i) > 0'
+            ),
+        }
+    }
+    result = executor.verify(playbook, _make_interface_detection(if_name="ethernet-1/1"))
+    assert result is True
+
+    cypher_sent = client.query.call_args[0][0]
+    assert "$if_name" not in cypher_sent, (
+        "Literal '$if_name' still present — substitution did not happen"
+    )
+    assert '"ethernet-1/1"' in cypher_sent, (
+        "Expected if_name value not found in substituted Cypher"
+    )

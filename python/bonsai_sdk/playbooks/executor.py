@@ -77,11 +77,13 @@ class PlaybookExecutor:
         wait_seconds = int(vfy.get("wait_seconds", 30))
         peer         = detection.features.peer_address
         device       = detection.features.device_address
+        if_name      = detection.features.if_name
 
         # Substitute named params into the Cypher query string.
         cypher_filled = (cypher
             .replace("$device_address", f'"{device}"')
-            .replace("$peer_address",   f'"{peer}"'))
+            .replace("$peer_address",   f'"{peer}"')
+            .replace("$if_name",        f'"{if_name}"'))
 
         deadline = time.time() + wait_seconds
         while time.time() < deadline:
