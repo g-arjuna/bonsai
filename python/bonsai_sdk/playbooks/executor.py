@@ -66,10 +66,14 @@ class PlaybookExecutor:
     def verify(self, playbook: dict[str, Any], detection: "Detection") -> bool:
         """Poll the graph for recovery confirmation. Returns True if confirmed."""
         vfy = playbook.get("verification")
-        if not vfy or not vfy.get("cypher"):
+        if not vfy:
             return True
-
-        cypher       = vfy["cypher"]
+        # Canonical field name is `expected_graph_state` (matches all YAML in
+        # playbooks/library/). `cypher` is kept as a legacy alias so any
+        # hand-written playbooks using the old name still work.
+        cypher = vfy.get("expected_graph_state") or vfy.get("cypher")
+        if not cypher:
+            return True
         wait_seconds = int(vfy.get("wait_seconds", 30))
         peer         = detection.features.peer_address
         device       = detection.features.device_address
