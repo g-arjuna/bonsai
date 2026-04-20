@@ -31,7 +31,7 @@ Next: Phase 6.1 — Device onboarding UI.
 ## Architecture
 - Rust core: tokio async runtime, tonic gRPC, prost protobuf
 - Graph DB: **LadybugDB** (`lbug` crate, MIT, embedded, Cypher). Grafeo named fallback.
-  Temporal: DIY bitemporal (valid_from/valid_to on all nodes/edges).
+  Temporal: append-only StateChangeEvent log (current); full bitemporal valid_from/valid_to deferred to T4-3.
   Decision rationale in DECISIONS.md.
 - Python layer: REST API consumer (PyO3 later), rules engine, ML pipeline
 - Lab: ContainerLab — Holo/FRR for fast iteration, Nokia/Cisco/Juniper/Arista

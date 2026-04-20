@@ -137,7 +137,14 @@ def _parse_features(features_json: str | None) -> dict:
 
 
 def _empty_features(device_address: str, event_type: str, detail: dict, occurred_at: int) -> dict:
-    base = {f.name: "" for f in fields(Features)}
+    # Build defaults typed by each field's annotation so numeric columns never
+    # default to "" (which produces mixed-dtype Parquet columns, T0-4).
+    # Use typing.get_type_hints() to resolve string annotations from
+    # `from __future__ import annotations` to actual types.
+    import typing
+    hints = typing.get_type_hints(Features)
+    _TYPE_DEFAULTS: dict = {int: 0, float: 0.0, str: "", dict: "{}"}
+    base = {name: _TYPE_DEFAULTS.get(hint, "") for name, hint in hints.items()}
     base.update({
         "device_address": device_address,
         "event_type":     event_type,
@@ -180,16 +187,20 @@ def export_remediation_training_set(
     if until_ns is None:
         until_ns = int(time.time() * 1e9)
 
+    # Join to Device to get the real vendor string (T0-5).
+    # device_address alone is an IP:port — useless as a vendor feature.
     cypher = """
         MATCH (r:Remediation)-[:RESOLVES]->(e:DetectionEvent)
-        RETURN r.id, r.detection_id, e.rule_id, r.action, r.status, e.features_json, e.fired_at
+        OPTIONAL MATCH (d:Device {address: e.device_address})
+        RETURN r.id, r.detection_id, e.rule_id, r.action, r.status,
+               e.features_json, e.fired_at, d.vendor
     """
     rows = client.query(cypher)
 
     result = []
     for row in rows:
-        rem_id, det_id, rule_id, action, status, features_json, fired_at = (
-            row + [None] * (7 - len(row))
+        rem_id, det_id, rule_id, action, status, features_json, fired_at, vendor = (
+            row + [None] * (8 - len(row))
         )
         features = _parse_features(features_json)
         record = {
@@ -198,7 +209,7 @@ def export_remediation_training_set(
             "rule_id":        rule_id or "",
             "action":         action or "",
             "status":         status or "",
-            "vendor":         features.get("device_address", ""),
+            "vendor":         vendor or "",
             "fired_at_ns":    fired_at or 0,
             **features,
         }
