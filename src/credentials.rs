@@ -340,6 +340,12 @@ fn now_ns() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn temp_vault_dir(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -351,6 +357,7 @@ mod tests {
 
     #[test]
     fn vault_adds_lists_resolves_and_removes_credentials() {
+        let _guard = env_lock().lock().expect("credential env test lock");
         let dir = temp_vault_dir("vault-round-trip");
         unsafe {
             std::env::set_var(
@@ -385,6 +392,7 @@ mod tests {
 
     #[test]
     fn wrong_passphrase_fails_during_open() {
+        let _guard = env_lock().lock().expect("credential env test lock");
         let dir = temp_vault_dir("vault-wrong-passphrase");
         unsafe { std::env::set_var("BONSAI_TEST_VAULT_PASSPHRASE", "right") };
         let vault = CredentialVault::open(&dir, "BONSAI_TEST_VAULT_PASSPHRASE").unwrap();

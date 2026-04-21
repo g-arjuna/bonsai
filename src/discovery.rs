@@ -50,6 +50,7 @@ pub struct SubscriptionPath {
     pub mode: String,
     pub sample_interval_ns: u64,
     pub rationale: String,
+    pub optional: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -244,6 +245,7 @@ fn recommend_profiles_builtin(
                 mode: "ON_CHANGE".to_string(),
                 sample_interval_ns: 0,
                 rationale: "SP profile requested and openconfig-mpls is advertised".to_string(),
+                optional: false,
             },
         );
         add_if_supported(
@@ -256,6 +258,7 @@ fn recommend_profiles_builtin(
                 sample_interval_ns: 0,
                 rationale: "SP profile requested and openconfig-segment-routing is advertised"
                     .to_string(),
+                optional: false,
             },
         );
         add_if_supported(
@@ -267,6 +270,7 @@ fn recommend_profiles_builtin(
                 mode: "ON_CHANGE".to_string(),
                 sample_interval_ns: 0,
                 rationale: "SP profile requested and openconfig-isis is advertised".to_string(),
+                optional: false,
             },
         );
         expected.extend([
@@ -364,6 +368,7 @@ fn supported_template_paths(
                 mode: path.mode.clone(),
                 sample_interval_ns: path.sample_interval_ns,
                 rationale: path.rationale.clone(),
+                optional: path.optional,
             }),
             Some(reason) => {
                 let kind = if path.optional {
@@ -595,6 +600,7 @@ fn sample(path: &str, origin: &str, interval: u64, rationale: &str) -> Subscript
         mode: "SAMPLE".to_string(),
         sample_interval_ns: interval,
         rationale: rationale.to_string(),
+        optional: false,
     }
 }
 
@@ -605,6 +611,7 @@ fn on_change(path: &str, origin: &str, rationale: &str) -> SubscriptionPath {
         mode: "ON_CHANGE".to_string(),
         sample_interval_ns: 0,
         rationale: rationale.to_string(),
+        optional: false,
     }
 }
 

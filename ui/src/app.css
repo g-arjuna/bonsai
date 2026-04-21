@@ -338,6 +338,240 @@ button.danger {
   color: var(--text);
 }
 
+.workspace-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.workspace-switcher button.active,
+.wizard-rail button.active {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(88,166,255,0.12);
+}
+
+.wizard-shell {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.wizard-rail {
+  position: sticky;
+  top: 18px;
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(88,166,255,0.14), transparent 28%),
+    var(--bg2);
+}
+
+.wizard-rail button {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-start;
+  background: rgba(255,255,255,0.02);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.wizard-rail button span {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 999px;
+  background: #0b1118;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.wizard-rail button.complete span {
+  background: rgba(63,185,80,0.18);
+  color: var(--green);
+}
+
+.wizard-panel,
+.tool-card,
+.confirm-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgba(88,166,255,0.08), transparent 34%),
+    var(--bg2);
+}
+
+.wizard-panel {
+  min-height: 580px;
+  padding: 22px;
+}
+
+.panel-heading {
+  max-width: 780px;
+  margin-bottom: 20px;
+}
+
+.panel-heading h3 {
+  margin: 4px 0 6px;
+  font-size: 24px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.sidecar-grid,
+.profile-grid,
+.report-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.tool-card {
+  padding: 16px;
+}
+
+.compact-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.metric {
+  padding: 15px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #0b1118;
+}
+
+.metric span,
+.confirm-card span,
+.armed-paths span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.metric strong,
+.confirm-card strong {
+  display: block;
+  margin-top: 5px;
+  font-size: 20px;
+}
+
+.model-list,
+.warning-stack,
+.path-checklist,
+.selected-path-summary,
+.armed-paths {
+  margin-top: 16px;
+}
+
+.model-list code,
+.selected-path-summary code,
+.armed-paths code {
+  display: inline-block;
+  max-width: 100%;
+  margin: 6px 6px 0 0;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #0b1118;
+  overflow-wrap: anywhere;
+}
+
+.profile-card {
+  min-height: 155px;
+  padding: 16px;
+  text-align: left;
+  background: #0b1118;
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.profile-card.active {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(63,185,80,0.12);
+}
+
+.profile-card span,
+.profile-card p,
+.path-checklist small,
+.confirm-card small {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+}
+
+.path-checklist {
+  display: grid;
+  gap: 10px;
+}
+
+.path-checklist label {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #0b1118;
+}
+
+.path-checklist label.optional {
+  border-color: rgba(210,153,34,0.4);
+}
+
+.path-checklist code {
+  display: block;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.confirm-card {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  padding: 1px;
+  overflow: hidden;
+}
+
+.confirm-card > div {
+  padding: 18px;
+  background: rgba(11,17,24,0.86);
+}
+
+.wizard-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.separate-workspace {
+  margin-top: 0;
+}
+
+.armed-paths {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
 @media (max-width: 900px) {
   .workspace-header,
   .managed-device header {
@@ -353,5 +587,27 @@ button.danger {
 
   .status-row {
     grid-template-columns: 1fr;
+  }
+
+  .workspace-switcher {
+    justify-content: flex-start;
+  }
+
+  .wizard-shell,
+  .form-grid,
+  .sidecar-grid,
+  .profile-grid,
+  .report-grid,
+  .confirm-card {
+    grid-template-columns: 1fr;
+  }
+
+  .wizard-rail {
+    position: static;
+  }
+
+  .wizard-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 }

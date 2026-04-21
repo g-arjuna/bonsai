@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use anyhow::{Context, Result};
 use tonic::Request;
@@ -17,6 +17,7 @@ use crate::proto::gnmi::{
 };
 use std::sync::Arc;
 
+use crate::config::SelectedSubscriptionPath;
 use crate::event_bus::InProcessBus;
 use crate::subscription_status::{SubscriptionPathExpectation, SubscriptionPlan};
 use crate::telemetry::TelemetryUpdate;
@@ -34,6 +35,7 @@ pub struct GnmiSubscriber {
     tls_domain: String,
     bus: Arc<InProcessBus>,
     subscription_plan_tx: Option<tokio::sync::mpsc::Sender<SubscriptionPlan>>,
+    selected_paths: Vec<SelectedSubscriptionPath>,
 }
 
 impl GnmiSubscriber {
@@ -48,6 +50,7 @@ impl GnmiSubscriber {
         ca_cert_pem: Option<Vec<u8>>,
         bus: Arc<InProcessBus>,
         subscription_plan_tx: Option<tokio::sync::mpsc::Sender<SubscriptionPlan>>,
+        selected_paths: Vec<SelectedSubscriptionPath>,
     ) -> Self {
         Self {
             target: target.into(),
@@ -59,6 +62,7 @@ impl GnmiSubscriber {
             tls_domain: tls_domain.into(),
             bus,
             subscription_plan_tx,
+            selected_paths,
         }
     }
 
@@ -132,7 +136,20 @@ impl GnmiSubscriber {
             Ok(req)
         });
 
-        let subscriptions = build_subscriptions(&caps);
+        let selected_subscriptions = build_selected_subscriptions(&self.selected_paths);
+        let using_selected_paths = !selected_subscriptions.is_empty();
+        let subscriptions = if using_selected_paths {
+            selected_subscriptions
+        } else {
+            if !self.selected_paths.is_empty() {
+                warn!(
+                    target = %target,
+                    selected_paths = self.selected_paths.len(),
+                    "configured subscription path selection produced no valid paths; falling back to capabilities"
+                );
+            }
+            build_subscriptions(&caps)
+        };
         let plan_paths = subscriptions
             .iter()
             .filter_map(subscription_expectation)
@@ -148,6 +165,7 @@ impl GnmiSubscriber {
             oc_bfd       = caps.has_oc_bfd,
             oc_bgp       = caps.has_oc_bgp,
             paths        = subscriptions.len(),
+            selected     = using_selected_paths,
             "subscribing"
         );
 
@@ -565,6 +583,77 @@ fn build_subscriptions(caps: &ModelCapabilities) -> Vec<Subscription> {
     subs
 }
 
+fn build_selected_subscriptions(selected_paths: &[SelectedSubscriptionPath]) -> Vec<Subscription> {
+    selected_paths
+        .iter()
+        .filter_map(subscription_from_selected_path)
+        .collect()
+}
+
+fn subscription_from_selected_path(selected: &SelectedSubscriptionPath) -> Option<Subscription> {
+    let Some(path) = selected_path_to_gnmi(&selected.origin, &selected.path) else {
+        warn!(
+            path = %selected.path,
+            "skipping selected subscription path with invalid syntax"
+        );
+        return None;
+    };
+    match selected.mode.trim().to_ascii_uppercase().as_str() {
+        "SAMPLE" => Some(sub_sample(path, selected.sample_interval_ns)),
+        "ON_CHANGE" => Some(sub_on_change(path)),
+        other => {
+            warn!(
+                path = %selected.path,
+                mode = %other,
+                "skipping selected subscription path with unsupported mode"
+            );
+            None
+        }
+    }
+}
+
+fn selected_path_to_gnmi(origin: &str, raw_path: &str) -> Option<Path> {
+    let mut elem = Vec::new();
+    for segment in raw_path.split('/').filter(|segment| !segment.is_empty()) {
+        let (name, key) = parse_selected_path_segment(segment)?;
+        elem.push(PathElem { name, key });
+    }
+
+    if elem.is_empty() {
+        return None;
+    }
+
+    Some(Path {
+        origin: origin.trim().to_string(),
+        elem,
+        ..Default::default()
+    })
+}
+
+fn parse_selected_path_segment(segment: &str) -> Option<(String, HashMap<String, String>)> {
+    let first_key = segment.find('[').unwrap_or(segment.len());
+    let name = segment[..first_key].trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    let mut key = HashMap::new();
+    let mut rest = &segment[first_key..];
+    while !rest.is_empty() {
+        let after_open = rest.strip_prefix('[')?;
+        let close = after_open.find(']')?;
+        let pair = &after_open[..close];
+        let (key_name, key_value) = pair.split_once('=')?;
+        if key_name.trim().is_empty() || key_value.trim().is_empty() {
+            return None;
+        }
+        key.insert(key_name.trim().to_string(), key_value.trim().to_string());
+        rest = &after_open[close + 1..];
+    }
+
+    Some((name.to_string(), key))
+}
+
 fn sub_sample(path: Path, interval_ns: u64) -> Subscription {
     Subscription {
         path: Some(path),
@@ -765,5 +854,42 @@ fn typed_value_to_json(val: &crate::proto::gnmi::TypedValue) -> serde_json::Valu
         Some(Value::BoolVal(b)) => serde_json::Value::Bool(*b),
         Some(Value::FloatVal(f)) => serde_json::json!(f),
         _ => serde_json::Value::Null,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selected_path_parser_handles_keys_and_origin() {
+        let path = selected_path_to_gnmi(
+            "",
+            "network-instance[name=default]/protocols/bgp/neighbor[peer-address=*]",
+        )
+        .expect("parse selected path");
+
+        assert_eq!(path.origin, "");
+        assert_eq!(path.elem[0].name, "network-instance");
+        assert_eq!(path.elem[0].key.get("name"), Some(&"default".to_string()));
+        assert_eq!(path.elem[3].name, "neighbor");
+        assert_eq!(path.elem[3].key.get("peer-address"), Some(&"*".to_string()));
+    }
+
+    #[test]
+    fn selected_subscription_preserves_mode_and_interval() {
+        let selected = SelectedSubscriptionPath {
+            path: "interfaces".to_string(),
+            origin: "openconfig".to_string(),
+            mode: "SAMPLE".to_string(),
+            sample_interval_ns: 10_000_000_000,
+            rationale: "operator selected".to_string(),
+            optional: false,
+        };
+
+        let sub = subscription_from_selected_path(&selected).expect("subscription");
+        assert_eq!(sub.mode, SubscriptionMode::Sample as i32);
+        assert_eq!(sub.sample_interval, 10_000_000_000);
+        assert_eq!(sub.path.as_ref().expect("path").origin, "openconfig");
     }
 }

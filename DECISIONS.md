@@ -1177,3 +1177,33 @@ store site hierarchy only in the registry JSON.
   does not leave multiple active location edges.
 - Site ACLs, map visualization, and automatic site inference remain out of
   scope for v1; sites are operational graph metadata, not a security boundary.
+
+---
+
+## 2026-04-21 - Onboarding wizard persists operator-selected subscription paths
+
+**Decision**: Discovery recommendations now carry per-path `optional` metadata,
+and managed devices may persist `selected_paths` in the runtime registry. The
+subscriber still performs Capabilities detection for encoding and vendor labels,
+but when a non-empty selected path plan exists it builds the gNMI Subscribe
+request from that operator-approved plan instead of deriving paths solely from
+Capabilities. The HTTP onboarding facade exposes this through
+`POST /api/onboarding/devices/with_paths`; the Svelte onboarding workspace is a
+four-step wizard with a separate managed-device list.
+
+**Alternatives considered**: keep path selection UI-only until a later runtime
+refactor, store only the profile name and recompute paths on every restart, or
+replace Capabilities-derived fallback paths entirely.
+
+**Rationale**:
+- A wizard path checklist is only useful if the runtime honors the selected
+  paths. Persisting the concrete path list makes the saved operator intent
+  visible and restart-safe.
+- Required/optional metadata belongs in discovery output because the YAML
+  profile already owns that knowledge; the UI should not infer it from path
+  names.
+- Keeping Capabilities detection in the subscriber preserves encoding selection
+  and safe fallback behavior for legacy registry entries that do not yet have
+  `selected_paths`.
+- Storing concrete paths instead of just profile names avoids surprises if YAML
+  templates change after a device has already been onboarded.

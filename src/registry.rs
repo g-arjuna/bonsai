@@ -350,6 +350,7 @@ mod tests {
             hostname: Some(format!("{vendor}-host")),
             role: Some("leaf".to_string()),
             site: Some("lab".to_string()),
+            selected_paths: Vec::new(),
         }
     }
 

@@ -29,7 +29,7 @@ use tower_http::{cors::CorsLayer, services::ServeDir};
 
 use crate::graph::{DetectionRow, GraphStore, REMEDIATION_TRUST_CUTOFF_ISO, SiteRecord, TraceStep};
 use crate::{
-    config::TargetConfig,
+    config::{SelectedSubscriptionPath, TargetConfig},
     credentials::{CredentialSummary, CredentialVault, ResolvedCredential},
     discovery::{self, DiscoveryInput},
     registry::{ApiRegistry, DeviceRegistry},
@@ -106,6 +106,7 @@ struct ManagedDeviceJson {
     hostname: String,
     role: String,
     site: String,
+    selected_paths: Vec<SelectedSubscriptionPath>,
     subscription_statuses: Vec<SubscriptionStatusJson>,
 }
 
@@ -159,6 +160,8 @@ struct ManagedDeviceRequest {
     role: String,
     #[serde(default)]
     site: String,
+    #[serde(default)]
+    selected_paths: Vec<SelectedSubscriptionPath>,
 }
 
 #[derive(Deserialize)]
@@ -288,6 +291,10 @@ pub fn router(
         .route(
             "/api/onboarding/devices",
             get(managed_devices_handler).post(add_managed_device_handler),
+        )
+        .route(
+            "/api/onboarding/devices/with_paths",
+            post(add_managed_device_with_paths_handler),
         )
         .route(
             "/api/onboarding/devices/remove",
@@ -525,6 +532,27 @@ async fn add_managed_device_handler(
     State(state): State<AppState>,
     Json(req): Json<ManagedDeviceRequest>,
 ) -> Result<Json<MutationResponse>, (StatusCode, String)> {
+    save_managed_device(state, req).await
+}
+
+async fn add_managed_device_with_paths_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ManagedDeviceRequest>,
+) -> Result<Json<MutationResponse>, (StatusCode, String)> {
+    if req.selected_paths.is_empty() {
+        return Ok(Json(MutationResponse {
+            success: false,
+            error: "selected_paths is required for /api/onboarding/devices/with_paths".to_string(),
+            device: None,
+        }));
+    }
+    save_managed_device(state, req).await
+}
+
+async fn save_managed_device(
+    state: AppState,
+    req: ManagedDeviceRequest,
+) -> Result<Json<MutationResponse>, (StatusCode, String)> {
     let mut target = target_from_request(req)?;
     if let Ok(Some(existing)) = state.registry.get_device(&target.address) {
         if target.credential_alias.is_none() {
@@ -541,6 +569,9 @@ async fn add_managed_device_handler(
         }
         if target.password.is_none() {
             target.password = existing.password;
+        }
+        if target.selected_paths.is_empty() {
+            target.selected_paths = existing.selected_paths;
         }
     }
     let address = target.address.clone();
@@ -829,6 +860,7 @@ fn managed_device_json(
         hostname: target.hostname.unwrap_or_default(),
         role: target.role.unwrap_or_default(),
         site: target.site.unwrap_or_default(),
+        selected_paths: target.selected_paths,
         subscription_statuses: statuses.get(&address).cloned().unwrap_or_default(),
         address,
     }
@@ -867,6 +899,11 @@ fn target_from_request(req: ManagedDeviceRequest) -> Result<TargetConfig, (Statu
         hostname: option_string(req.hostname),
         role: option_string(req.role),
         site: option_string(req.site),
+        selected_paths: req
+            .selected_paths
+            .into_iter()
+            .filter(|path| !path.path.trim().is_empty())
+            .collect(),
     })
 }
 

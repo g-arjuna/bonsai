@@ -237,6 +237,23 @@ pub struct TargetConfig {
     pub role: Option<String>,
     /// Site label for future topology grouping and TSDB/graph enrichment.
     pub site: Option<String>,
+    /// Operator-selected subscription paths from onboarding discovery.
+    #[serde(default)]
+    pub selected_paths: Vec<SelectedSubscriptionPath>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
+pub struct SelectedSubscriptionPath {
+    pub path: String,
+    #[serde(default)]
+    pub origin: String,
+    pub mode: String,
+    #[serde(default)]
+    pub sample_interval_ns: u64,
+    #[serde(default)]
+    pub rationale: String,
+    #[serde(default)]
+    pub optional: bool,
 }
 
 impl TargetConfig {

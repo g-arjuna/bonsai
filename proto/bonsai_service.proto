@@ -36,6 +36,7 @@ message ManagedDevice {
   string role         = 8;
   string site         = 9;
   string credential_alias = 10;
+  repeated SubscriptionPath selected_paths = 11;
 }
 
 message AddDeviceRequest        { ManagedDevice device = 1; }
@@ -110,6 +111,7 @@ message SubscriptionPath {
   string mode               = 3;
   uint64 sample_interval_ns = 4;
   string rationale          = 5;
+  bool optional             = 6;
 }
 
 message PathProfileMatch {

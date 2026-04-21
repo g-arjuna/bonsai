@@ -326,6 +326,17 @@ create-site-from-target and `Device-[:LOCATED_AT]->Site` query behavior.
 - DeviceList workspace is separate navigation, not part of the wizard
 - Going through the wizard end-to-end against an SR Linux leaf produces a device with specifically-selected paths and observable `SubscriptionStatus` transitions from pending to observed
 
+**Execution update - 2026-04-21**: implementation slice completed.
+`Onboarding.svelte` is now a four-step wizard (address/credentials, discovery,
+profile/path selection, confirm) with a separate Device List workspace. Discovery
+now exposes `optional` on each `SubscriptionPath`; required paths are always
+selected and optional paths can be toggled. The new HTTP endpoint
+`POST /api/onboarding/devices/with_paths` accepts `selected_paths`, persists
+them in `TargetConfig.selected_paths`, and the subscriber honors that concrete
+plan when present while retaining Capabilities-derived fallback behavior for
+older entries. Managed device responses now show the armed path plan alongside
+subscription status.
+
 **Explicitly out of scope**:
 - Bulk onboarding (import from CSV) — T5 item
 - Onboarding via discovery broadcast (LLDP-based auto-discovery) — future, requires network-side agent

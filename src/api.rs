@@ -6,7 +6,7 @@ use lbug::{Connection, Value};
 use tokio_stream::wrappers::BroadcastStream;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::config::TargetConfig;
+use crate::config::{SelectedSubscriptionPath, TargetConfig};
 use crate::credentials::{CredentialSummary, CredentialVault, ResolvedCredential};
 use crate::discovery;
 use crate::event_bus::InProcessBus;
@@ -656,6 +656,12 @@ fn managed_device_from_target(target: &TargetConfig) -> ManagedDevice {
         hostname: target.hostname.clone().unwrap_or_default(),
         role: target.role.clone().unwrap_or_default(),
         site: target.site.clone().unwrap_or_default(),
+        selected_paths: target
+            .selected_paths
+            .iter()
+            .cloned()
+            .map(selected_path_to_proto)
+            .collect(),
     }
 }
 
@@ -678,7 +684,34 @@ fn target_from_managed_device(device: Option<ManagedDevice>) -> Result<TargetCon
         hostname: option_string(device.hostname),
         role: option_string(device.role),
         site: option_string(device.site),
+        selected_paths: device
+            .selected_paths
+            .into_iter()
+            .map(selected_path_from_proto)
+            .collect(),
     })
+}
+
+fn selected_path_to_proto(path: SelectedSubscriptionPath) -> SubscriptionPath {
+    SubscriptionPath {
+        path: path.path,
+        origin: path.origin,
+        mode: path.mode,
+        sample_interval_ns: path.sample_interval_ns,
+        rationale: path.rationale,
+        optional: path.optional,
+    }
+}
+
+fn selected_path_from_proto(path: SubscriptionPath) -> SelectedSubscriptionPath {
+    SelectedSubscriptionPath {
+        path: path.path,
+        origin: path.origin,
+        mode: path.mode,
+        sample_interval_ns: path.sample_interval_ns,
+        rationale: path.rationale,
+        optional: path.optional,
+    }
 }
 
 fn site_to_proto(site: SiteRecord) -> Site {
@@ -725,6 +758,7 @@ fn discovery_report_to_proto(report: discovery::DiscoveryReport) -> DiscoveryRep
                         mode: path.mode,
                         sample_interval_ns: path.sample_interval_ns,
                         rationale: path.rationale,
+                        optional: path.optional,
                     })
                     .collect(),
                 rationale: profile.rationale,

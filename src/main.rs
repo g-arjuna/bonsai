@@ -405,6 +405,7 @@ async fn spawn_subscriber(
         ca_cert_pem,
         std::sync::Arc::clone(bus),
         subscription_plan_tx.cloned(),
+        target.selected_paths.clone(),
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let handle = tokio::spawn(async move { subscriber.run_forever(shutdown_rx).await });

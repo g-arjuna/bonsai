@@ -1974,6 +1974,7 @@ mod tests {
                 hostname: Some("dut1".to_string()),
                 role: Some("leaf".to_string()),
                 site: Some("lab-london".to_string()),
+                selected_paths: Vec::new(),
             }])
             .await
             .expect("sync sites");
