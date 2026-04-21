@@ -203,6 +203,10 @@ fn default_core_ingest_endpoint() -> String {
     "http://[::1]:50051".to_string()
 }
 
+fn default_target_enabled() -> bool {
+    true
+}
+
 fn default_api_addr() -> String {
     "[::1]:50051".to_string()
 }
@@ -214,6 +218,9 @@ fn default_metrics_addr() -> String {
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct TargetConfig {
     pub address: String,
+    /// Whether the runtime subscriber should be running for this target.
+    #[serde(default = "default_target_enabled")]
+    pub enabled: bool,
     /// TLS server name (SNI). Required when ca_cert is set.
     pub tls_domain: Option<String>,
     /// Path to PEM CA cert. Enables TLS for this target.

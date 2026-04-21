@@ -172,6 +172,27 @@ tr:hover td { background: rgba(255,255,255,0.03); cursor: pointer; }
   text-transform: uppercase;
 }
 
+.toggle-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #0b1118;
+}
+
+.toggle-row strong,
+.toggle-row small {
+  display: block;
+}
+
+.toggle-row small {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
 input,
 select {
   width: 100%;
@@ -292,6 +313,26 @@ button.danger {
   margin-bottom: 12px;
 }
 
+.bulk-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(11,17,24,0.7);
+}
+
+.select-all {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
+  font-weight: 700;
+}
+
 .device-list {
   display: grid;
   gap: 12px;
@@ -306,6 +347,11 @@ button.danger {
   justify-content: space-between;
   gap: 16px;
   align-items: flex-start;
+}
+
+.device-select {
+  width: auto;
+  margin-top: 4px;
 }
 
 .managed-device h4 {

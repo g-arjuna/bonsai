@@ -1207,3 +1207,29 @@ replace Capabilities-derived fallback paths entirely.
   `selected_paths`.
 - Storing concrete paths instead of just profile names avoids surprises if YAML
   templates change after a device has already been onboarded.
+
+---
+
+## 2026-04-21 - Device stop/start is registry state, not deletion
+
+**Decision**: Managed devices now carry an `enabled` flag in the runtime
+registry. Disabled devices remain visible and editable, but the subscriber
+manager skips them at startup and stops any running subscriber when an update
+sets `enabled = false`. Bulk Stop/Start/Restart in the UI and
+`bonsai device stop|start|restart` in the CLI update this same flag instead of
+removing registry entries.
+
+**Alternatives considered**: implement stop as device removal, keep stop/start
+as UI-only buttons with no persisted state, or add a separate in-memory
+subscriber control plane that would be lost on restart.
+
+**Rationale**:
+- Operators need a maintenance state that survives a Bonsai restart; deleting a
+  device loses onboarding metadata and selected paths.
+- Reusing registry update events keeps lifecycle control in the same path as
+  device edits, avoiding a second subscriber-control mechanism.
+- Restart is represented as an update with `enabled = true`, which intentionally
+  reuses the existing stop-then-spawn behavior for updated targets.
+- Removal confirmation reports subscription and remediation-trust impact, but
+  it does not physically delete graph history. Bonsai's graph remains
+  operational history; the registry only controls active management.

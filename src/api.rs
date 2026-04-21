@@ -647,6 +647,7 @@ impl BonsaiGraph for BonsaiService {
 fn managed_device_from_target(target: &TargetConfig) -> ManagedDevice {
     ManagedDevice {
         address: target.address.clone(),
+        enabled: Some(target.enabled),
         tls_domain: target.tls_domain.clone().unwrap_or_default(),
         ca_cert: target.ca_cert.clone().unwrap_or_default(),
         vendor: target.vendor.clone().unwrap_or_default(),
@@ -673,6 +674,7 @@ fn target_from_managed_device(device: Option<ManagedDevice>) -> Result<TargetCon
 
     Ok(TargetConfig {
         address: device.address,
+        enabled: device.enabled.unwrap_or(true),
         tls_domain: option_string(device.tls_domain),
         ca_cert: option_string(device.ca_cert),
         vendor: option_string(device.vendor),

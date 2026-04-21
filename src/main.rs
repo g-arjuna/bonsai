@@ -32,6 +32,10 @@ type SubscriberHandleMap = HashMap<
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if let Some(command) = DeviceCliCommand::parse()? {
+        return run_device_cli(command).await;
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -226,6 +230,10 @@ async fn main() -> Result<()> {
             match registry.list_active() {
                 Ok(targets) => {
                     for target in targets {
+                        if !target.enabled {
+                            info!(address = %target.address, "subscriber disabled by registry");
+                            continue;
+                        }
                         if let Err(error) = spawn_subscriber(
                             target,
                             &credentials,
@@ -261,8 +269,12 @@ async fn main() -> Result<()> {
                                 }
                             }
                             RegistryChange::Updated(target) => {
-                                if let Err(error) = restart_subscriber(target, &credentials, &bus, subscription_plan_tx.as_ref(), &mut subscribers).await {
-                                    warn!(%error, "failed to restart subscriber for updated device");
+                                if target.enabled {
+                                    if let Err(error) = restart_subscriber(target, &credentials, &bus, subscription_plan_tx.as_ref(), &mut subscribers).await {
+                                        warn!(%error, "failed to restart subscriber for updated device");
+                                    }
+                                } else {
+                                    stop_subscriber(&target.address, &mut subscribers).await;
                                 }
                             }
                             RegistryChange::Removed(address) => {
@@ -376,6 +388,218 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+enum DeviceCliCommand {
+    List,
+    Add(Box<DeviceCliAdd>),
+    Remove { address: String },
+    SetEnabled { address: String, enabled: bool },
+    Restart { address: String },
+}
+
+struct DeviceCliAdd {
+    address: String,
+    hostname: Option<String>,
+    vendor: Option<String>,
+    role: Option<String>,
+    site: Option<String>,
+    credential_alias: Option<String>,
+    username_env: Option<String>,
+    password_env: Option<String>,
+    tls_domain: Option<String>,
+    ca_cert: Option<String>,
+    enabled: bool,
+}
+
+impl DeviceCliCommand {
+    fn parse() -> Result<Option<Self>> {
+        let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+        if args.first().map(String::as_str) != Some("device") {
+            return Ok(None);
+        }
+        args.remove(0);
+        let Some(action) = args.first().cloned() else {
+            print_device_cli_usage();
+            return Ok(Some(Self::List));
+        };
+        args.remove(0);
+
+        match action.as_str() {
+            "list" => Ok(Some(Self::List)),
+            "add" => Ok(Some(Self::Add(Box::new(DeviceCliAdd::parse(args)?)))),
+            "remove" => Ok(Some(Self::Remove {
+                address: parse_address_arg(args)?,
+            })),
+            "stop" => Ok(Some(Self::SetEnabled {
+                address: parse_address_arg(args)?,
+                enabled: false,
+            })),
+            "start" => Ok(Some(Self::SetEnabled {
+                address: parse_address_arg(args)?,
+                enabled: true,
+            })),
+            "restart" => Ok(Some(Self::Restart {
+                address: parse_address_arg(args)?,
+            })),
+            "help" | "--help" | "-h" => {
+                print_device_cli_usage();
+                Ok(Some(Self::List))
+            }
+            other => anyhow::bail!("unknown device command '{other}'"),
+        }
+    }
+}
+
+impl DeviceCliAdd {
+    fn parse(args: Vec<String>) -> Result<Self> {
+        let mut add = Self {
+            address: String::new(),
+            hostname: None,
+            vendor: None,
+            role: None,
+            site: None,
+            credential_alias: None,
+            username_env: None,
+            password_env: None,
+            tls_domain: None,
+            ca_cert: None,
+            enabled: true,
+        };
+
+        let mut iter = args.into_iter();
+        while let Some(arg) = iter.next() {
+            match arg.as_str() {
+                "--address" => add.address = require_flag_value("--address", iter.next())?,
+                "--hostname" => add.hostname = Some(require_flag_value("--hostname", iter.next())?),
+                "--vendor" => add.vendor = Some(require_flag_value("--vendor", iter.next())?),
+                "--role" => add.role = Some(require_flag_value("--role", iter.next())?),
+                "--site" => add.site = Some(require_flag_value("--site", iter.next())?),
+                "--credential-alias" => {
+                    add.credential_alias =
+                        Some(require_flag_value("--credential-alias", iter.next())?)
+                }
+                "--username-env" => {
+                    add.username_env = Some(require_flag_value("--username-env", iter.next())?)
+                }
+                "--password-env" => {
+                    add.password_env = Some(require_flag_value("--password-env", iter.next())?)
+                }
+                "--tls-domain" => {
+                    add.tls_domain = Some(require_flag_value("--tls-domain", iter.next())?)
+                }
+                "--ca-cert" => add.ca_cert = Some(require_flag_value("--ca-cert", iter.next())?),
+                "--disabled" => add.enabled = false,
+                "--enabled" => add.enabled = true,
+                other if add.address.is_empty() && !other.starts_with("--") => {
+                    add.address = other.to_string();
+                }
+                other => anyhow::bail!("unknown device add argument '{other}'"),
+            }
+        }
+
+        if add.address.trim().is_empty() {
+            anyhow::bail!("device add requires --address <host:port>");
+        }
+        Ok(add)
+    }
+}
+
+async fn run_device_cli(command: DeviceCliCommand) -> Result<()> {
+    let cfg = config::load(CONFIG_PATH).await?;
+    let registry = ApiRegistry::open(REGISTRY_PATH, cfg.target.clone())?;
+
+    match command {
+        DeviceCliCommand::List => {
+            let devices = registry.list_active()?;
+            println!(
+                "{:<24} {:<8} {:<16} {:<12} {:<12} credential",
+                "address", "state", "hostname", "vendor", "site"
+            );
+            for device in devices {
+                println!(
+                    "{:<24} {:<8} {:<16} {:<12} {:<12} {}",
+                    device.address,
+                    if device.enabled { "enabled" } else { "stopped" },
+                    device.hostname.unwrap_or_default(),
+                    device.vendor.unwrap_or_default(),
+                    device.site.unwrap_or_default(),
+                    device.credential_alias.unwrap_or_default(),
+                );
+            }
+        }
+        DeviceCliCommand::Add(add) => {
+            let device = registry.add_device(TargetConfig {
+                address: add.address,
+                enabled: add.enabled,
+                tls_domain: add.tls_domain,
+                ca_cert: add.ca_cert,
+                vendor: add.vendor,
+                credential_alias: add.credential_alias,
+                username_env: add.username_env,
+                password_env: add.password_env,
+                username: None,
+                password: None,
+                hostname: add.hostname,
+                role: add.role,
+                site: add.site,
+                selected_paths: Vec::new(),
+            })?;
+            println!("added {}", device.address);
+        }
+        DeviceCliCommand::Remove { address } => match registry.remove_device(&address)? {
+            Some(_) => println!("removed {address}"),
+            None => println!("device {address} not found"),
+        },
+        DeviceCliCommand::SetEnabled { address, enabled } => {
+            let mut device = registry
+                .get_device(&address)?
+                .ok_or_else(|| anyhow::anyhow!("device {address} not found"))?;
+            device.enabled = enabled;
+            registry.update_device(device)?;
+            println!(
+                "{} {address}",
+                if enabled {
+                    "started/enabled"
+                } else {
+                    "stopped/disabled"
+                }
+            );
+        }
+        DeviceCliCommand::Restart { address } => {
+            let mut device = registry
+                .get_device(&address)?
+                .ok_or_else(|| anyhow::anyhow!("device {address} not found"))?;
+            device.enabled = true;
+            registry.update_device(device)?;
+            println!("restart requested for {address}");
+        }
+    }
+    Ok(())
+}
+
+fn parse_address_arg(args: Vec<String>) -> Result<String> {
+    let mut iter = args.into_iter();
+    let Some(arg) = iter.next() else {
+        anyhow::bail!("device command requires an address");
+    };
+    match arg.as_str() {
+        "--address" => require_flag_value("--address", iter.next()),
+        other if !other.starts_with("--") => Ok(other.to_string()),
+        other => anyhow::bail!("unknown address argument '{other}'"),
+    }
+}
+
+fn require_flag_value(flag: &str, value: Option<String>) -> Result<String> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("{flag} requires a value"))
+}
+
+fn print_device_cli_usage() {
+    println!(
+        "usage:\n  bonsai device list\n  bonsai device add --address <host:port> [--hostname name] [--vendor label] [--role role] [--site site] [--credential-alias alias]\n  bonsai device remove <host:port>\n  bonsai device stop <host:port>\n  bonsai device start <host:port>\n  bonsai device restart <host:port>"
+    );
+}
+
 async fn spawn_subscriber(
     target: TargetConfig,
     credentials: &std::sync::Arc<CredentialVault>,
@@ -384,6 +608,10 @@ async fn spawn_subscriber(
     subscribers: &mut SubscriberHandleMap,
 ) -> Result<()> {
     let address = target.address.clone();
+    if !target.enabled {
+        info!(address = %address, "subscriber start skipped because target is disabled");
+        return Ok(());
+    }
     if subscribers.contains_key(&address) {
         info!(address = %address, "subscriber already running");
         return Ok(());

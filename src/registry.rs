@@ -339,6 +339,7 @@ mod tests {
     fn target(address: &str, vendor: &str) -> TargetConfig {
         TargetConfig {
             address: address.to_string(),
+            enabled: true,
             tls_domain: None,
             ca_cert: None,
             vendor: Some(vendor.to_string()),

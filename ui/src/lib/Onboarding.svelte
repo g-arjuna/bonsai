@@ -24,6 +24,7 @@
   let selectedPathIds = $state([]);
   let editingDeviceAddress = $state('');
   let editingSavedPaths = $state([]);
+  let selectedDeviceAddresses = $state([]);
 
   let form = $state(emptyForm());
 
@@ -47,6 +48,7 @@
       vendor: '',
       role: 'leaf',
       site: 'lab',
+      enabled: true,
       credential_alias: '',
       username_env: '',
       password_env: '',
@@ -61,6 +63,9 @@
       if (!response.ok) throw new Error(await response.text());
       const body = await response.json();
       devices = body.devices || [];
+      selectedDeviceAddresses = selectedDeviceAddresses.filter((address) =>
+        devices.some((device) => device.address === address)
+      );
       error = '';
     } catch (e) {
       error = e.message;
@@ -186,6 +191,7 @@
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           ...form,
+          enabled: form.enabled,
           selected_paths: paths.map((path) => ({
             path: path.path,
             origin: path.origin || '',
@@ -214,7 +220,22 @@
   }
 
   async function removeDevice(address) {
-    if (!confirm(`Remove ${address} from the runtime registry?`)) return;
+    let impact = null;
+    try {
+      const response = await fetch('/api/onboarding/devices/remove-impact', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ address })
+      });
+      if (response.ok) impact = await response.json();
+    } catch (_) {
+      impact = null;
+    }
+
+    const impactText = impact
+      ? `\n\nSubscriptions: ${impact.subscription_total} total (${impact.subscription_observed} observed, ${impact.subscription_pending} pending)\nRemediation trust marks: ${impact.trust_marks_total} linked, ${impact.trust_marks_active} active/trusted`
+      : '';
+    if (!confirm(`Remove ${address} from the runtime registry?${impactText}`)) return;
     try {
       const response = await fetch('/api/onboarding/devices/remove', {
         method: 'POST',
@@ -225,6 +246,7 @@
       const body = await response.json();
       if (!body.success) throw new Error(body.error || 'device remove failed');
       message = `Removed ${address}; subscriber cancellation is in progress.`;
+      selectedDeviceAddresses = selectedDeviceAddresses.filter((value) => value !== address);
       await loadDevices();
     } catch (e) {
       error = e.message;
@@ -240,6 +262,7 @@
       vendor: device.vendor,
       role: device.role || 'leaf',
       site: device.site || 'lab',
+      enabled: device.enabled,
       username_env: device.username_env,
       password_env: device.password_env,
       credential_alias: device.credential_alias,
@@ -262,6 +285,7 @@
     selectedPathIds = [];
     editingDeviceAddress = '';
     editingSavedPaths = [];
+    selectedDeviceAddresses = [];
     step = 1;
     message = '';
     error = '';
@@ -323,6 +347,49 @@
       selectedPathIds = selectedPathIds.filter((value) => value !== id);
     } else {
       selectedPathIds = [...selectedPathIds, id];
+    }
+  }
+
+  async function bulkDeviceAction(action) {
+    if (!selectedDeviceAddresses.length) {
+      error = 'Select at least one device first.';
+      return;
+    }
+    const label = action === 'stop' ? 'stop' : action === 'start' ? 'start' : 'restart';
+    if (!confirm(`${label} ${selectedDeviceAddresses.length} selected device(s)?`)) return;
+
+    error = '';
+    message = '';
+    try {
+      const response = await fetch('/api/onboarding/devices/bulk', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ addresses: selectedDeviceAddresses, action })
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const body = await response.json();
+      if (!body.success) throw new Error(body.error || `bulk ${label} failed`);
+      message = `${label} requested for ${body.devices.length} device(s).`;
+      selectedDeviceAddresses = [];
+      await loadDevices();
+    } catch (e) {
+      error = e.message;
+    }
+  }
+
+  function toggleDeviceSelection(address) {
+    if (selectedDeviceAddresses.includes(address)) {
+      selectedDeviceAddresses = selectedDeviceAddresses.filter((value) => value !== address);
+    } else {
+      selectedDeviceAddresses = [...selectedDeviceAddresses, address];
+    }
+  }
+
+  function toggleAllDevices() {
+    if (selectedDeviceAddresses.length === devices.length) {
+      selectedDeviceAddresses = [];
+    } else {
+      selectedDeviceAddresses = devices.map((device) => device.address);
     }
   }
 
@@ -471,6 +538,13 @@
                 {/if}
               </select>
             </div>
+            <label class="toggle-row">
+              <input type="checkbox" bind:checked={form.enabled} />
+              <span>
+                <strong>Subscriber enabled</strong>
+                <small>When off, the registry entry is saved but the runtime subscriber stays stopped.</small>
+              </span>
+            </label>
             <div class="form-row">
               <label for="onboard-username-env">Username env var</label>
               <input id="onboard-username-env" bind:value={form.username_env} oninput={invalidateDiscovery} placeholder="BONSAI_GNMI_USER" />
@@ -649,6 +723,21 @@
         <h3>Managed devices</h3>
         <span>{devices.length} active registry entries</span>
       </div>
+      {#if devices.length}
+        <div class="bulk-toolbar">
+          <label class="select-all">
+            <input
+              type="checkbox"
+              checked={selectedDeviceAddresses.length === devices.length}
+              onchange={toggleAllDevices}
+            />
+            <span>{selectedDeviceAddresses.length} selected</span>
+          </label>
+          <button class="ghost" onclick={() => bulkDeviceAction('stop')} disabled={!selectedDeviceAddresses.length}>Stop selected</button>
+          <button class="ghost" onclick={() => bulkDeviceAction('start')} disabled={!selectedDeviceAddresses.length}>Start selected</button>
+          <button onclick={() => bulkDeviceAction('restart')} disabled={!selectedDeviceAddresses.length}>Restart selected</button>
+        </div>
+      {/if}
 
       {#if loading}
         <p class="empty">Loading managed devices...</p>
@@ -659,9 +748,19 @@
           {#each devices as device}
             <article class="managed-device">
               <header>
+                <input
+                  class="device-select"
+                  type="checkbox"
+                  checked={selectedDeviceAddresses.includes(device.address)}
+                  onchange={() => toggleDeviceSelection(device.address)}
+                  aria-label={`Select ${device.address}`}
+                />
                 <div>
                   <h4>{device.hostname || device.address}</h4>
-                  <p>{device.address} - {device.vendor || 'vendor pending'} - {device.role || 'role unset'} - {device.credential_alias || 'env credentials'}</p>
+                  <p>
+                    <span class="badge {device.enabled ? 'healthy' : 'critical'}">{device.enabled ? 'enabled' : 'stopped'}</span>
+                    {device.address} - {device.vendor || 'vendor pending'} - {device.role || 'role unset'} - {device.credential_alias || 'env credentials'}
+                  </p>
                 </div>
                 <div class="device-actions">
                   <button class="ghost" onclick={() => editDevice(device)}>Edit in wizard</button>

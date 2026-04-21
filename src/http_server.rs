@@ -97,6 +97,7 @@ struct ManagedDevicesResponse {
 #[derive(Serialize)]
 struct ManagedDeviceJson {
     address: String,
+    enabled: bool,
     tls_domain: String,
     ca_cert: String,
     vendor: String,
@@ -142,6 +143,8 @@ struct OnboardingDiscoveryRequest {
 #[derive(Deserialize)]
 struct ManagedDeviceRequest {
     address: String,
+    #[serde(default = "default_enabled")]
+    enabled: bool,
     #[serde(default)]
     tls_domain: String,
     #[serde(default)]
@@ -167,6 +170,29 @@ struct ManagedDeviceRequest {
 #[derive(Deserialize)]
 struct RemoveManagedDeviceRequest {
     address: String,
+}
+
+#[derive(Deserialize)]
+struct BulkManagedDeviceActionRequest {
+    addresses: Vec<String>,
+    action: String,
+}
+
+#[derive(Serialize)]
+struct BulkManagedDeviceActionResponse {
+    success: bool,
+    error: String,
+    devices: Vec<ManagedDeviceJson>,
+}
+
+#[derive(Serialize)]
+struct RemoveImpactResponse {
+    address: String,
+    subscription_total: usize,
+    subscription_observed: usize,
+    subscription_pending: usize,
+    trust_marks_total: usize,
+    trust_marks_active: usize,
 }
 
 #[derive(Serialize)]
@@ -259,6 +285,10 @@ fn default_limit() -> u32 {
     50
 }
 
+fn default_enabled() -> bool {
+    true
+}
+
 // ── App state ─────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -299,6 +329,14 @@ pub fn router(
         .route(
             "/api/onboarding/devices/remove",
             post(remove_managed_device_handler),
+        )
+        .route(
+            "/api/onboarding/devices/remove-impact",
+            post(remove_impact_handler),
+        )
+        .route(
+            "/api/onboarding/devices/bulk",
+            post(bulk_managed_device_action_handler),
         )
         .route("/api/onboarding/discover", post(discover_handler))
         .route("/api/sites", get(sites_handler).post(upsert_site_handler))
@@ -671,6 +709,80 @@ async fn remove_managed_device_handler(
     }
 }
 
+async fn bulk_managed_device_action_handler(
+    State(state): State<AppState>,
+    Json(req): Json<BulkManagedDeviceActionRequest>,
+) -> Result<Json<BulkManagedDeviceActionResponse>, (StatusCode, String)> {
+    if req.addresses.is_empty() {
+        return Ok(Json(BulkManagedDeviceActionResponse {
+            success: false,
+            error: "at least one address is required".to_string(),
+            devices: Vec::new(),
+        }));
+    }
+
+    let action = req.action.trim().to_ascii_lowercase();
+    if !matches!(action.as_str(), "stop" | "start" | "restart") {
+        return Ok(Json(BulkManagedDeviceActionResponse {
+            success: false,
+            error: "action must be one of: stop, start, restart".to_string(),
+            devices: Vec::new(),
+        }));
+    }
+
+    let statuses = read_subscription_statuses(state.store.db()).await?;
+    let mut devices = Vec::new();
+    let mut errors = Vec::new();
+    for address in req.addresses {
+        match state.registry.get_device(&address) {
+            Ok(Some(mut target)) => {
+                target.enabled = action != "stop";
+                match state.registry.update_device(target) {
+                    Ok(device) => devices.push(managed_device_json(device, &statuses)),
+                    Err(error) => errors.push(format!("{address}: {error:#}")),
+                }
+            }
+            Ok(None) => errors.push(format!("{address}: device not found")),
+            Err(error) => errors.push(format!("{address}: {error:#}")),
+        }
+    }
+
+    Ok(Json(BulkManagedDeviceActionResponse {
+        success: errors.is_empty(),
+        error: errors.join("; "),
+        devices,
+    }))
+}
+
+async fn remove_impact_handler(
+    State(state): State<AppState>,
+    Json(req): Json<RemoveManagedDeviceRequest>,
+) -> Result<Json<RemoveImpactResponse>, (StatusCode, String)> {
+    let statuses = read_subscription_statuses(state.store.db()).await?;
+    let device_statuses = statuses.get(&req.address).cloned().unwrap_or_default();
+    let subscription_total = device_statuses.len();
+    let subscription_observed = device_statuses
+        .iter()
+        .filter(|status| status.status == "observed")
+        .count();
+    let subscription_pending = device_statuses
+        .iter()
+        .filter(|status| status.status == "pending")
+        .count();
+
+    let (trust_marks_total, trust_marks_active) =
+        read_trust_mark_impact(state.store.db(), req.address.clone()).await?;
+
+    Ok(Json(RemoveImpactResponse {
+        address: req.address,
+        subscription_total,
+        subscription_observed,
+        subscription_pending,
+        trust_marks_total,
+        trust_marks_active,
+    }))
+}
+
 async fn detections_handler(
     State(state): State<AppState>,
     Query(params): Query<DetectionsParams>,
@@ -845,12 +957,45 @@ async fn read_subscription_statuses(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
 }
 
+async fn read_trust_mark_impact(
+    db: Arc<lbug::Database>,
+    address: String,
+) -> Result<(usize, usize), (StatusCode, String)> {
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "MATCH (m:RemediationTrustMark)-[:TRUST_MARKS]->(r:Remediation)-[:RESOLVES]->(e:DetectionEvent) \
+                 WHERE e.device_address = $addr \
+                 RETURN m.trustworthy",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = conn
+            .execute(&mut stmt, vec![("addr", Value::String(address))])
+            .map_err(|e| e.to_string())?;
+
+        let mut total = 0usize;
+        let mut active = 0usize;
+        for row in rows {
+            total += 1;
+            if read_i64(&row[0]) == 1 {
+                active += 1;
+            }
+        }
+        Ok::<_, String>((total, active))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
 fn managed_device_json(
     target: TargetConfig,
     statuses: &HashMap<String, Vec<SubscriptionStatusJson>>,
 ) -> ManagedDeviceJson {
     let address = target.address;
     ManagedDeviceJson {
+        enabled: target.enabled,
         tls_domain: target.tls_domain.unwrap_or_default(),
         ca_cert: target.ca_cert.unwrap_or_default(),
         vendor: target.vendor.unwrap_or_default(),
@@ -888,6 +1033,7 @@ fn target_from_request(req: ManagedDeviceRequest) -> Result<TargetConfig, (Statu
 
     Ok(TargetConfig {
         address: req.address.trim().to_string(),
+        enabled: req.enabled,
         tls_domain: option_string(req.tls_domain),
         ca_cert: option_string(req.ca_cert),
         vendor: option_string(req.vendor),

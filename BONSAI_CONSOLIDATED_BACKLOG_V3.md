@@ -366,6 +366,16 @@ preserves saved optional choices when they still match the current discovery
 recommendations, so editing cannot bypass Capabilities validation or silently
 drop the operator's saved subscription plan.
 
+**Execution update - 2026-04-21**: T1-4b/c/d completed as the immediate
+operator-control slice. Removal now fetches a confirmation summary with current
+subscription counts and linked/trusted `RemediationTrustMark` counts before
+deleting a device. Managed devices have an `enabled` registry flag; bulk
+Stop/Start/Restart actions update that flag and let the subscriber manager stop
+or restart selected devices without deleting them. The Windows binary now
+supports `bonsai device list|add|remove|stop|start|restart` against the same
+local registry file, providing the requested CLI mirror for common device
+operations.
+
 ---
 
 ## <a id="tier-2"></a>TIER 2 — Distributed Hardening and Remaining Carryovers

@@ -1963,6 +1963,7 @@ mod tests {
         store
             .sync_sites_from_targets(vec![TargetConfig {
                 address: "dut:57400".to_string(),
+                enabled: true,
                 tls_domain: None,
                 ca_cert: None,
                 vendor: Some("nokia_srl".to_string()),

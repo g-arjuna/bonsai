@@ -37,6 +37,7 @@ message ManagedDevice {
   string site         = 9;
   string credential_alias = 10;
   repeated SubscriptionPath selected_paths = 11;
+  optional bool enabled = 12;
 }
 
 message AddDeviceRequest        { ManagedDevice device = 1; }
