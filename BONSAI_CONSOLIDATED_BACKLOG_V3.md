@@ -776,6 +776,13 @@ Exit: GNN model running alongside rules and MLDetector, evaluation shows it catc
 
 The branch contains a substantial amount of correct, tested work. It should be merged, but staged — one big-bang merge is higher risk than necessary and harder to bisect if something regresses.
 
+**Execution update - 2026-04-21**: Sprint 1 Tier 0 fixes were completed and verified, then
+`main` was fast-forwarded from `511d9d3` to `ba048d5` and pushed to `origin/main`. The
+fast-forward included the prior v2 backlog branch commit plus the V3 Tier 0 closeout commit.
+No merge conflicts occurred. Verification before merge: `cargo test --release normalize_address`,
+`cargo test --release telemetry_ingest`, `cargo clippy --release --all-targets -- -D warnings`,
+and `cargo build --release`.
+
 ### Stage 1 — Tier 0 fixes to main first (1 PR, 1 session)
 
 Create small commits on `main` directly for:
