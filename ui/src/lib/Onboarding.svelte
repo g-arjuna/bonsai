@@ -22,6 +22,8 @@
   let discovery = $state(null);
   let selectedProfileName = $state('');
   let selectedPathIds = $state([]);
+  let editingDeviceAddress = $state('');
+  let editingSavedPaths = $state([]);
 
   let form = $state(emptyForm());
 
@@ -155,9 +157,11 @@
       if (!response.ok) throw new Error(await response.text());
       discovery = await response.json();
       form.vendor = discovery.vendor_detected || form.vendor;
-      const firstProfile = discovery.recommended_profiles?.[0];
-      if (firstProfile) selectProfile(firstProfile.profile_name);
-      message = `Discovery succeeded: ${discovery.vendor_detected || 'openconfig'} with ${discovery.models_advertised.length} advertised models.`;
+      const matchedCount = applyInitialPathSelection();
+      const editNote = editingDeviceAddress
+        ? ` ${matchedCount} previously saved path${matchedCount === 1 ? '' : 's'} matched current recommendations.`
+        : '';
+      message = `Discovery succeeded: ${discovery.vendor_detected || 'openconfig'} with ${discovery.models_advertised.length} advertised models.${editNote}`;
     } catch (e) {
       error = e.message;
     } finally {
@@ -195,7 +199,11 @@
       if (!response.ok) throw new Error(await response.text());
       const body = await response.json();
       if (!body.success) throw new Error(body.error || 'device save failed');
-      message = `Device ${body.device.address} is managed with ${paths.length} selected subscription paths.`;
+      message = editingDeviceAddress
+        ? `Device ${body.device.address} was updated with ${paths.length} selected subscription paths.`
+        : `Device ${body.device.address} is managed with ${paths.length} selected subscription paths.`;
+      editingDeviceAddress = '';
+      editingSavedPaths = [];
       workspace = 'devices';
       await loadDevices();
     } catch (e) {
@@ -224,6 +232,8 @@
   }
 
   function editDevice(device) {
+    editingDeviceAddress = device.address;
+    editingSavedPaths = device.selected_paths || [];
     form = {
       address: device.address,
       hostname: device.hostname,
@@ -241,7 +251,8 @@
     selectedPathIds = [];
     step = 1;
     workspace = 'wizard';
-    message = `Editing ${device.address}. Run discovery again before saving path changes.`;
+    error = '';
+    message = `Editing ${device.address}. The wizard is pre-populated; run discovery to revalidate its saved path plan before saving.`;
   }
 
   function resetForm() {
@@ -249,6 +260,8 @@
     discovery = null;
     selectedProfileName = '';
     selectedPathIds = [];
+    editingDeviceAddress = '';
+    editingSavedPaths = [];
     step = 1;
     message = '';
     error = '';
@@ -267,8 +280,40 @@
   function selectProfile(profileName) {
     const profile = profileByName(profileName);
     if (!profile) return;
+    armProfile(profile);
+  }
+
+  function applyInitialPathSelection() {
+    const profiles = discovery?.recommended_profiles || [];
+    if (!profiles.length) return 0;
+    if (!editingSavedPaths.length) {
+      armProfile(profiles[0]);
+      return 0;
+    }
+
+    const savedIds = new Set(editingSavedPaths.map(pathId));
+    const ranked = profiles
+      .map((profile) => ({
+        profile,
+        matches: profile.paths.filter((path) => savedIds.has(pathId(path))).length
+      }))
+      .sort((a, b) => b.matches - a.matches);
+
+    const best = ranked[0];
+    armProfile(best.profile, editingSavedPaths);
+    return best.matches;
+  }
+
+  function armProfile(profile, preferredPaths = []) {
+    const preferredIds = new Set(preferredPaths.map(pathId));
     selectedProfileName = profile.profile_name;
-    selectedPathIds = profile.paths.map(pathId);
+    selectedPathIds = [
+      ...new Set(
+        profile.paths
+          .filter((path) => !path.optional || !preferredPaths.length || preferredIds.has(pathId(path)))
+          .map(pathId)
+      )
+    ];
   }
 
   function togglePath(path) {
@@ -369,10 +414,20 @@
       </aside>
 
       <div class="wizard-panel">
+        {#if editingDeviceAddress}
+          <div class="edit-banner">
+            <div>
+              <span>Editing existing device</span>
+              <strong>{editingDeviceAddress}</strong>
+            </div>
+            <p>{editingSavedPaths.length ? `${editingSavedPaths.length} saved paths will be revalidated after discovery.` : 'No saved path plan exists yet; discovery will create one.'}</p>
+          </div>
+        {/if}
+
         {#if step === 1}
           <div class="panel-heading">
             <p class="eyebrow">Step 1</p>
-            <h3>Address and credentials</h3>
+            <h3>{editingDeviceAddress ? 'Review address and credentials' : 'Address and credentials'}</h3>
             <p class="muted">Vault aliases are preferred. Env vars remain available for lab compatibility, but secrets never enter the registry JSON.</p>
           </div>
 
@@ -516,6 +571,12 @@
           </div>
 
           {#if discovery?.recommended_profiles?.length}
+            {#if editingSavedPaths.length}
+              <div class="saved-plan-note">
+                <strong>Saved plan carried into wizard</strong>
+                <span>{selectedPaths().length} selected paths are currently armed after matching the saved plan against discovery.</span>
+              </div>
+            {/if}
             <div class="profile-grid">
               {#each discovery.recommended_profiles as profile}
                 <button class="profile-card" class:active={currentProfile()?.profile_name === profile.profile_name} onclick={() => selectProfile(profile.profile_name)}>
@@ -603,7 +664,7 @@
                   <p>{device.address} - {device.vendor || 'vendor pending'} - {device.role || 'role unset'} - {device.credential_alias || 'env credentials'}</p>
                 </div>
                 <div class="device-actions">
-                  <button class="ghost" onclick={() => editDevice(device)}>Edit</button>
+                  <button class="ghost" onclick={() => editDevice(device)}>Edit in wizard</button>
                   <button class="danger" onclick={() => removeDevice(device.address)}>Remove</button>
                 </div>
               </header>

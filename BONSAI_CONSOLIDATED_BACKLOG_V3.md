@@ -358,6 +358,14 @@ subscription status.
 
 **Priority**: T1-4a is required. T1-4b/c/d are nice-to-have after the wizard lands.
 
+**Execution update - 2026-04-21**: T1-4a completed. Device-list edit now opens
+the same four-step wizard in explicit edit mode, pre-populates the saved device
+identity, credentials, role, site, TLS fields, and carries the existing
+`selected_paths` plan into discovery matching. Step 3 re-arms required paths and
+preserves saved optional choices when they still match the current discovery
+recommendations, so editing cannot bypass Capabilities validation or silently
+drop the operator's saved subscription plan.
+
 ---
 
 ## <a id="tier-2"></a>TIER 2 — Distributed Hardening and Remaining Carryovers

@@ -412,6 +412,37 @@ button.danger {
   padding: 22px;
 }
 
+.edit-banner,
+.saved-plan-note {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border: 1px solid rgba(88,166,255,0.38);
+  border-radius: 12px;
+  background: rgba(88,166,255,0.08);
+}
+
+.edit-banner span,
+.saved-plan-note span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.edit-banner strong,
+.saved-plan-note strong {
+  display: block;
+  margin-top: 3px;
+}
+
+.edit-banner p {
+  margin: 0;
+  color: var(--muted);
+}
+
 .panel-heading {
   max-width: 780px;
   margin-bottom: 20px;
@@ -609,5 +640,11 @@ button.danger {
   .wizard-actions {
     justify-content: flex-start;
     flex-wrap: wrap;
+  }
+
+  .edit-banner,
+  .saved-plan-note {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
