@@ -25,6 +25,62 @@ message Device {
 message GetDevicesRequest  {}
 message GetDevicesResponse { repeated Device devices = 1; }
 
+message ManagedDevice {
+  string address      = 1;
+  string tls_domain   = 2;
+  string ca_cert      = 3;
+  string vendor       = 4;
+  string username_env = 5;
+  string password_env = 6;
+  string hostname     = 7;
+  string role         = 8;
+  string site         = 9;
+}
+
+message AddDeviceRequest        { ManagedDevice device = 1; }
+message UpdateDeviceRequest     { ManagedDevice device = 1; }
+message RemoveDeviceRequest     { string address = 1; }
+message ListManagedDevicesRequest  {}
+message ListManagedDevicesResponse { repeated ManagedDevice devices = 1; }
+
+message DeviceMutationResponse {
+  bool          success = 1;
+  string        error   = 2;
+  ManagedDevice device  = 3;
+}
+
+message DiscoverRequest {
+  string address      = 1;
+  string username_env = 2;
+  string password_env = 3;
+  string ca_cert_path = 4;
+  string tls_domain   = 5;
+  string role_hint    = 6;
+}
+
+message SubscriptionPath {
+  string path               = 1;
+  string origin             = 2;
+  string mode               = 3;
+  uint64 sample_interval_ns = 4;
+  string rationale          = 5;
+}
+
+message PathProfileMatch {
+  string profile_name             = 1;
+  repeated SubscriptionPath paths = 2;
+  string rationale                = 3;
+  float  confidence               = 4;
+}
+
+message DiscoveryReport {
+  string vendor_detected                     = 1;
+  repeated string models_advertised          = 2;
+  string gnmi_encoding                       = 3;
+  repeated PathProfileMatch recommended_profiles = 4;
+  repeated string warnings                   = 5;
+}
+
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
 message Interface {
@@ -82,6 +138,24 @@ message StateEvent {
   string state_change_event_id  = 5;  // UUID of the StateChangeEvent node in the graph
 }
 
+// Distributed collector ingest. Collector-mode instances stream decoded gNMI
+// telemetry to a core-mode instance, which republishes each update onto its
+// local event bus for graph/archive/rule consumers.
+message TelemetryIngestUpdate {
+  string collector_id = 1;
+  string target       = 2;
+  string vendor       = 3;
+  string hostname     = 4;
+  int64  timestamp_ns = 5;
+  string path         = 6;
+  string value_json   = 7;
+}
+
+message TelemetryIngestResponse {
+  uint64 accepted = 1;
+  string error    = 2;
+}
+
 // ── Phase 4: Detection + Remediation writes ───────────────────────────────────
 
 message CreateDetectionRequest {
@@ -134,8 +208,18 @@ service BonsaiGraph {
   rpc GetBgpNeighbors(GetBgpNeighborsRequest) returns (GetBgpNeighborsResponse);
   rpc GetTopology(GetTopologyRequest)         returns (GetTopologyResponse);
 
+  // Runtime-managed device registry.
+  rpc ListManagedDevices(ListManagedDevicesRequest) returns (ListManagedDevicesResponse);
+  rpc AddDevice(AddDeviceRequest)                   returns (DeviceMutationResponse);
+  rpc UpdateDevice(UpdateDeviceRequest)             returns (DeviceMutationResponse);
+  rpc RemoveDevice(RemoveDeviceRequest)             returns (DeviceMutationResponse);
+  rpc DiscoverDevice(DiscoverRequest)               returns (DiscoveryReport);
+
   // Server-streaming: push events to the caller as they occur.
   rpc StreamEvents(StreamEventsRequest) returns (stream StateEvent);
+
+  // Client-streaming: collectors push decoded telemetry updates into a core.
+  rpc TelemetryIngest(stream TelemetryIngestUpdate) returns (TelemetryIngestResponse);
 
   // Phase 4: write detections and remediations into the graph.
   rpc CreateDetection(CreateDetectionRequest)   returns (CreateDetectionResponse);

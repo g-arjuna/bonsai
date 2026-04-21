@@ -1,11 +1,10 @@
 """BGP anomaly detection rules."""
 from __future__ import annotations
 
-import json
-import time
 from typing import TYPE_CHECKING, Optional
 
-from ..detection import Detector, Detection, Features
+from ..detection import Detector, Features
+from ..ml_detector import extract_features_for_event
 from ..window import WindowRegistry
 
 if TYPE_CHECKING:
@@ -32,21 +31,9 @@ class BgpSessionDown(Detector):
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "bgp_session_change":
             return None
-        detail = json.loads(event.detail_json or "{}")
-        new_state = detail.get("new_state", "")
-        old_state = detail.get("old_state", "")
-        if new_state not in _HARD_DOWN_STATES or old_state not in _ESTABLISHED_FROM:
+        f = extract_features_for_event(event, client)
+        if f.new_state not in _HARD_DOWN_STATES or f.old_state not in _ESTABLISHED_FROM:
             return None
-        f = Features.from_event(event, detail)
-        f.peer_address = detail.get("peer", "")
-        f.old_state    = old_state
-        f.new_state    = new_state
-        try:
-            neighbors = client.get_bgp_neighbors(event.device_address)
-            f.peer_count_total       = len(neighbors)
-            f.peer_count_established = sum(1 for n in neighbors if n.session_state == "established")
-        except Exception:
-            pass
         return f
 
     def detect(self, features: Features) -> Optional[str]:
@@ -67,23 +54,16 @@ class BgpSessionFlap(Detector):
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "bgp_session_change":
             return None
-        detail = json.loads(event.detail_json or "{}")
-        new_state = detail.get("new_state", "")
-        old_state = detail.get("old_state", "")
-        # Only count established->idle as a flap — retry cycles don't count.
-        if new_state not in _HARD_DOWN_STATES or old_state not in _ESTABLISHED_FROM:
+        f = extract_features_for_event(event, client)
+        # Only count established->idle as a flap - retry cycles don't count.
+        if f.new_state not in _HARD_DOWN_STATES or f.old_state not in _ESTABLISHED_FROM:
             return None
-        peer = detail.get("peer", "")
-        key  = f"{event.device_address}:{peer}"
+        key  = f"{event.device_address}:{f.peer_address}"
         win  = _FLAP_REGISTRY.get(key)
         win.record(event.occurred_at_ns, "bgp_session_change")
         flap_count = win.count()
         if flap_count < _FLAP_THRESHOLD:
             return None
-        f = Features.from_event(event, detail)
-        f.peer_address      = peer
-        f.old_state         = detail.get("old_state", "")
-        f.new_state         = detail.get("new_state", "")
         f.recent_flap_count = flap_count
         return f
 
@@ -104,19 +84,9 @@ class BgpAllPeersDown(Detector):
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "bgp_session_change":
             return None
-        detail = json.loads(event.detail_json or "{}")
-        try:
-            neighbors = client.get_bgp_neighbors(event.device_address)
-        except Exception:
+        f = extract_features_for_event(event, client)
+        if f.peer_count_total == 0 or f.peer_count_established > 0:
             return None
-        total       = len(neighbors)
-        established = sum(1 for n in neighbors if n.session_state == "established")
-        if total == 0 or established > 0:
-            return None
-        f = Features.from_event(event, detail)
-        f.peer_address           = detail.get("peer", "")
-        f.peer_count_total       = total
-        f.peer_count_established = 0
         return f
 
     def detect(self, features: Features) -> Optional[str]:
@@ -140,12 +110,10 @@ class BgpNeverEstablished(Detector):
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "bgp_session_change":
             return None
-        detail = json.loads(event.detail_json or "{}")
-        peer   = detail.get("peer", "")
-        new_state = detail.get("new_state", "")
-        key    = f"{event.device_address}:{peer}"
+        f = extract_features_for_event(event, client)
+        key = f"{event.device_address}:{f.peer_address}"
 
-        if new_state == "established":
+        if f.new_state == "established":
             self._first_seen.pop(key, None)
             return None
 
@@ -157,9 +125,6 @@ class BgpNeverEstablished(Detector):
         if age_ns < self._TIMEOUT_NS:
             return None
 
-        f = Features.from_event(event, detail)
-        f.peer_address = peer
-        f.new_state    = new_state
         return f
 
     def detect(self, features: Features) -> Optional[str]:

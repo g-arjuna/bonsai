@@ -37,6 +37,12 @@ Next: Phase 6.1 — Device onboarding UI.
 - Lab: ContainerLab — Holo/FRR for fast iteration, Nokia/Cisco/Juniper/Arista
   as primary vendor targets once accounts are approved
 
+## Local Environment
+- Python dependencies are declared in `python/pyproject.toml`
+- Use a repo-local `.venv/` created from WSL for Python work
+- Run chaos tooling, `python/inject_fault.py`, and any `clab` commands from WSL because the live lab runs there
+- Keep Rust build/test/clippy on Windows with `--release` on this machine
+
 ## Non-Negotiable Rules
 - No SNMP, no NETCONF — gNMI only, always
 - No async runtime other than tokio

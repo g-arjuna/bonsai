@@ -23,23 +23,25 @@
 | T1-1e retention with count cap | ✅ Done | `retention.rs` both `prune_events` (age) and `prune_events_by_count` exist |
 | T1-1f config surface | ✅ Done | `[event_bus]` and extended `[retention]` sections in `config.rs` |
 | T3-2 chaos runner | ✅ Done (mostly) | `scripts/chaos_runner.py` — well-structured, SIGINT-safe, CSV-flush per cycle |
+| T0-6-cont shared extractor migration | ✅ Done | `rules/bgp.py`, `rules/interface.py`, and `rules/bfd.py` call `extract_features_for_event`; `topology.py` remains poll-based by design; regression added in `python/tests/test_t0_fixes.py` |
+| T0-7 ADR debt | ✅ Done | 2026-04-20 ADR entries added for event bus seam, debounce scope, retention tie-breaking, verification field alias, shared extractor split, typed defaults |
+| T0-8 retention tie-breaking | ✅ Done | `retention.rs` now deletes exact oldest IDs; unit test covers same-timestamp over-delete behaviour |
+| T1-1c Parquet archive consumer | ✅ Done | `src/archive.rs`, `[archive]` config, `scripts/archive_stats.py`, ADR, and a live-lab smoke run writing Parquet batches |
+| T2-4 playbook validation script | ✅ Done | `scripts/validate_playbooks.py` plus focused tests in `python/tests/test_validate_playbooks.py` |
 
-**Partially done — carried forward as -cont items:**
+| T3-2-cont chaos plans | âœ… Done | `chaos_plans/` now contains the three plan files plus README, helper scripts exist, and the live 1-hour `baseline_mix` run completed cleanly with 17 injections recorded in `chaos_runs/20260420T133343Z/injections.csv` |
+| T3-3 training readiness check | âœ… Done | `scripts/check_training_readiness.py` now supports gRPC plus Windows-safe HTTP fallback via `/api/readiness`, and it was validated against the live Bonsai process on 2026-04-20 |
 
-- **T0-6-cont**: shared `extract_features_for_event` exists and MLDetector delegates, but the rule detectors in `rules/bgp.py`, `rules/interface.py`, `rules/topology.py`, `rules/bfd.py` still have their own inline extraction — four separate implementations the shared path was meant to replace.
-- **T3-2-cont**: chaos runner works but `chaos_plans/baseline_mix.yaml` does not exist. Nothing to run until someone writes at least one plan.
+**In progress:**
+
+- **Model C data volume**: T2-5 hygiene is now explicit in the graph via `RemediationTrustMark`; the remaining work is operational, not correctness-related. Model C still needs more trusted `success` outcomes to cross the training bar.
+- **T1-2 Distributed collector architecture**: first slice landed on 2026-04-21 with runtime modes plus `TelemetryIngest`; compression, outage queue, mTLS, and live two-process validation remain.
 
 **Not yet started — remain in backlog:**
 
-- T1-1c Parquet archive consumer (the only Tier-1 hole)
-- T1-2 Distributed collector architecture
-- T1-3 Dynamic device onboarding
-- T2-1 (renumbered T2-4) Playbook validation script — `$if_name` substitution landed but catalog-wide `catalog.validate()` did not
 - T2-2 ML feature schema versioning
-- T2-3 Training data validity check
 - T2-4 (original) BFD schema extension — superseded; BFD playbook now coexists without schema changes
 - T3-1 Lab expansion
-- T3-3 Training readiness check
 - T3-4 Gradual degradation scenarios
 - All T4 extensions
 
@@ -201,6 +203,14 @@ max_batch_rows = 1000
 
 **What**: replace `FileRegistry` (which returns a never-yielding channel) with a real `ApiRegistry` that mutates at runtime via gRPC RPCs, plus a `DiscoverDevice` RPC that connects to a candidate device and reports capabilities and recommended paths.
 
+**Status update (2026-04-21)**: `T1-3a` through `T1-3e` are landed. Bonsai now has a
+JSON-backed `ApiRegistry`, managed-device CRUD RPCs, persistent local runtime state in
+`bonsai-registry.json`, subscriber start/stop/restart behavior driven by registry
+state instead of startup-only config spawning, a `DiscoverDevice` RPC with
+Capabilities probing, YAML-backed path profile recommendations, and graph-backed
+`SubscriptionStatus` nodes that mark active paths `pending`, `observed`, or
+`subscribed_but_silent`.
+
 **Why before T1-2**: every time the lab needs a new device or a different vendor mix, the current workflow is "edit bonsai.toml, restart bonsai, lose the in-memory state." Chaos runs currently require fixed topologies. Training data variety suffers because adding a fifth device is friction. Onboarding is the unblock.
 
 **Where**:
@@ -270,6 +280,13 @@ Each profile lists path specs that get filtered by the device's actual capabilit
 
 ## T1-2 — Distributed collector architecture
 
+**Status update (2026-04-21)**: first slice landed. Bonsai now has one-binary
+runtime modes (`all`, `core`, `collector`), a client-streaming `TelemetryIngest`
+RPC, collector-mode forwarding from the local event bus to a core endpoint, and
+core-mode republishing of ingested telemetry onto the existing graph/rule/status
+event bus. Remaining T1-2 work: stream compression, disk-backed collector queue,
+mTLS, and live two-process lab validation.
+
 **Same scope and sub-tasks as v1 T1-2.** No changes — this item was not touched in v4. Deferred behind T1-1c and T1-3 because:
 
 1. The event bus is the boundary the collector/core split lands on; that's now in place.
@@ -279,7 +296,7 @@ Each profile lists path specs that get filtered by the device's actual capabilit
 Scope reminder:
 - One binary, three modes (`collector`, `core`, `all`)
 - `TelemetryIngest` gRPC service streaming `TelemetryUpdate` protobufs
-- zstd compression on that stream
+- zstd compression on that stream (follow-up; tonic zstd currently conflicts with LadybugDB bundled zstd on Windows/MSVC)
 - Disk-backed local queue on collector for core-outage resilience
 - mTLS between collector and core
 
@@ -313,6 +330,8 @@ Status check: today `features_to_vector()` is hardcoded to produce 6 floats in a
 
 Status check: `train_anomaly.py` and `train_remediation.py` exist but have no pre-training validation. Row count, class balance, null rates, value ranges — none are checked. This blocks Model A from being trustworthy even after chaos runs accumulate data.
 
+**Execution update — 2026-04-20**: partially addressed. Shared readiness validation now exists in `python/bonsai_sdk/training_readiness.py`, and both training scripts gate on it by default with `--force` overrides. Focused WSL tests cover anomaly/remediation validation and export filtering. What remains is live-readiness validation against a running bonsai gRPC endpoint and any follow-up threshold tuning after real data accumulates.
+
 ## T2-5 — NEW — Model C training blocked until verify() produces real labels
 
 **What**: before the T0-2 fix, every `Remediation.status` in the graph read `success` because `verify()` short-circuited. Any training data accumulated before v4 is tainted. Model C cannot be trained on it.
@@ -326,6 +345,8 @@ Status check: `train_anomaly.py` and `train_remediation.py` exist but have no pr
 - A dated entry in DECISIONS.md captures the data-hygiene cutoff
 - `train_remediation.py` is updated to filter by `attempted_at > <cutoff>`
 - Accumulating fresh, post-fix Remediation data is explicitly part of the T3-3 readiness check
+
+**Execution update — 2026-04-20**: completed. The cutoff ADR is documented, graph-level trust is now explicit via `RemediationTrustMark`, startup backfills trust marks for historical rows, `export_remediation_training_set()` and readiness checks read only trusted remediations, and historical rows are no longer relying on a Python-only filter convention.
 
 ---
 
@@ -344,6 +365,8 @@ Status check: `train_anomaly.py` and `train_remediation.py` exist but have no pr
 - A short `chaos_plans/README.md` explaining which plan serves which training data goal
 - The chaos runner has been executed end-to-end at least once against `baseline_mix.yaml` with `--duration-hours 1` and the resulting CSV verified
 
+**Execution update — 2026-04-20**: the three plan files and README now exist, the runner is WSL-first, and a short live smoke run succeeded. A full 1-hour `baseline_mix` run is currently active in WSL with status tracked by `scripts/check_baseline_chaos.sh` and a thread heartbeat. This item should be marked fully complete once that run exits cleanly and the final CSV is reviewed.
+
 ## T3-1 — Lab expansion
 
 **Same as v1.** Not touched. Still needed for variety. Priority: after T1-3 (dynamic onboarding) lands so new topologies can be swapped in without fighting the config file.
@@ -353,6 +376,8 @@ Status check: `train_anomaly.py` and `train_remediation.py` exist but have no pr
 **Same as v1.** Not touched. Script `scripts/check_training_readiness.py` that queries the graph and reports counts against the minimum bars for each model. Training scripts default to fail below the bar with a `--force` override.
 
 **Additional requirement tied to T2-5**: the readiness check must filter Remediation rows by the data-hygiene cutoff so stale pre-fix data doesn't inflate the count.
+
+**Execution update — 2026-04-20**: mostly implemented. `scripts/check_training_readiness.py` now exists and reports Model A / Model C readiness using shared logic in `python/bonsai_sdk/training_readiness.py`; trainer scripts default to blocking below the bar unless `--force` is provided. The remaining work is operational: run it against a reachable bonsai gRPC endpoint and validate the counts against live graph data while the long chaos run is producing fresh samples.
 
 ## T3-4 — Gradual degradation scenarios
 

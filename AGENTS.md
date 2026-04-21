@@ -22,6 +22,16 @@ Working on: Config-file-driven multi-vendor (bonsai.toml + Capabilities auto-det
 - Lab: ContainerLab — Holo/FRR for fast iteration, Nokia/Cisco/Juniper/Arista
   as primary vendor targets once accounts are approved
 
+## Local Environment
+- Python dependencies are declared in `python/pyproject.toml`
+- Use a repo-local `.venv/` created from WSL for Python work
+- Run chaos tooling, `python/inject_fault.py`, and any `clab` commands from WSL because the live lab runs there
+- Keep Rust build/test/clippy on Windows with `--release` on this machine
+- Run the Bonsai core from Windows PowerShell, not WSL: `scripts\start_bonsai_windows.ps1`
+- Use `scripts\search_repo.ps1` instead of bare `rg`; the Chocolatey `rg.exe` shim can fail with access denied
+- Use `scripts\regenerate_python_stubs.ps1` after editing `proto/bonsai_service.proto`; it resolves the verified Windows Python with `grpc_tools`
+- Use `scripts\check_dev_env.ps1` when tool resolution or Windows/WSL reachability looks suspicious
+
 ## Non-Negotiable Rules
 - No SNMP, no NETCONF — gNMI only, always
 - No async runtime other than tokio
@@ -74,3 +84,13 @@ cargo clippy --release -- -D warnings   # must pass before any commit
 
 **Windows note**: `cargo build` (debug) will fail with LNK1248 because lbug's C++ static lib
 exceeds the MSVC 4GB limit in debug mode. Always use `--release` on this machine.
+
+## Runtime Modes
+- Default `runtime.mode = "all"` preserves the local Windows Bonsai process: local
+  gNMI subscribers plus graph/API/UI in one binary.
+- `runtime.mode = "core"` runs graph/API/UI and accepts `TelemetryIngest` streams;
+  it does not start local gNMI subscribers.
+- `runtime.mode = "collector"` runs local gNMI subscribers and forwards decoded
+  telemetry to `runtime.core_ingest_endpoint`.
+- T1-2 follow-ups still pending: stream compression, disk-backed collector queue,
+  collector/core mTLS, and live two-process lab validation.

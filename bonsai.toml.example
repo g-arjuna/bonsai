@@ -6,6 +6,16 @@
 # Run lab/fast-iteration/deploy-p4.sh to generate p4-ca.pem and bring up nodes.
 
 graph_path   = "bonsai.db"
+# Runtime mode (T1-2 distributed collector seam)
+# [runtime]
+# mode = "all"  # one of: all, core, collector
+# collector_id = "local"
+# core_ingest_endpoint = "http://[::1]:50051"  # used only by collector mode
+#
+# all: current single-process behavior; subscribes to devices and runs graph/API/UI.
+# core: graph/API/UI plus TelemetryIngest server; no local gNMI subscribers.
+# collector: local gNMI subscribers plus optional collector-local archive; forwards
+# decoded telemetry to the core ingest endpoint.
 # api_addr     = "[::1]:50051"   # gRPC API (default shown)
 # metrics_addr = "[::1]:9090"    # Prometheus /metrics HTTP (set to "" to disable)
 
@@ -13,6 +23,11 @@ graph_path   = "bonsai.db"
 # [event_bus]
 # capacity              = 2048   # broadcast channel depth; increase for high-rate labs
 # counter_debounce_secs = 10     # min interval between interface counter graph writes
+# [archive]
+# enabled                = true     # write telemetry updates to parquet for cold storage
+# path                   = "archive"
+# flush_interval_seconds = 10
+# max_batch_rows         = 1000
 
 # ── Retention (T1-1e) ────────────────────────────────────────────────────────
 # [retention]

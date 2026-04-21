@@ -23,7 +23,6 @@ Both paths call the same code, preventing training/inference skew.
 from __future__ import annotations
 
 import json
-from dataclasses import fields
 from typing import TYPE_CHECKING, Optional
 
 import joblib
@@ -110,10 +109,14 @@ def extract_features_for_event(event, client: "BonsaiClient") -> Features:
 
     f.oper_status = detail.get("oper_status", detail.get("new_state", ""))
 
-    if event.event_type == "bgp_session_change":
+    if event.event_type in ("bgp_session_change", "bfd_session_change"):
         f.peer_address = detail.get("peer", "")
         f.old_state    = detail.get("old_state", "")
         f.new_state    = detail.get("new_state", "")
+        if event.event_type == "bfd_session_change":
+            f.if_name = detail.get("if_name", "")
+
+    if event.event_type == "bgp_session_change":
         try:
             neighbors = client.get_bgp_neighbors(event.device_address)
             f.peer_count_total       = len(neighbors)

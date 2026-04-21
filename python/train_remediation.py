@@ -6,6 +6,9 @@ Usage:
     # 1. Export remediation training data:
     python export_training.py --mode remediation --output data/remediation.parquet
 
+    # 1.5. Check graph readiness first:
+    python ../scripts/check_training_readiness.py
+
     # 2. Train:
     python train_remediation.py --input data/remediation.parquet --output models/remediation_v1.joblib
 
@@ -36,11 +39,29 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 
 from bonsai_sdk.ml_detector import OPER_STATUS_ENCODING, EVENT_TYPE_ENCODING
+from bonsai_sdk.training_readiness import (
+    TRAINING_HYGIENE_CUTOFF_ISO,
+    TRAINING_HYGIENE_CUTOFF_NS,
+    format_check,
+    validate_remediation_dataframe,
+)
 
 
-def load_remediation_features(parquet_path: str) -> tuple[np.ndarray, np.ndarray, list[str], list[str]]:
+def load_remediation_features(
+    parquet_path: str,
+) -> tuple[pd.DataFrame, np.ndarray, np.ndarray, list[str], list[str]]:
     """Load Parquet, build feature matrix X, label vector y, action_classes list."""
     df = pq.read_table(parquet_path).to_pandas()
+    if "attempted_at_ns" not in df.columns:
+        print(
+            "ERROR: remediation training parquet is missing attempted_at_ns. "
+            "Re-export with the updated export_training.py first.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    attempted = pd.to_numeric(df["attempted_at_ns"], errors="coerce").fillna(0).astype("int64")
+    df = df.loc[attempted > TRAINING_HYGIENE_CUTOFF_NS].copy()
     print(f"Loaded {len(df)} remediation rows")
     print(f"Status distribution:\n{df['status'].value_counts()}")
     print(f"Action distribution:\n{df['action'].value_counts()}")
@@ -64,7 +85,7 @@ def load_remediation_features(parquet_path: str) -> tuple[np.ndarray, np.ndarray
 
     X = np.asarray(df[feature_cols].fillna(0).astype(np.float32))
     y = np.asarray(df["status"].fillna("skipped"), dtype=object)
-    return X, y, action_classes, feature_cols
+    return df, X, y, action_classes, feature_cols
 
 
 def train(X_train: np.ndarray, y_train: np.ndarray) -> GradientBoostingClassifier:
@@ -85,13 +106,26 @@ def main() -> None:
     ap.add_argument("--eval",   action="store_true", help="Evaluate on 20%% held-out split")
     ap.add_argument("--min-rows", type=int, default=20,
                     help="Minimum rows required to proceed (default 20)")
+    ap.add_argument("--force", action="store_true",
+                    help="Train even when readiness checks fail")
     args = ap.parse_args()
 
     if not os.path.exists(args.input):
         print(f"ERROR: input not found: {args.input}", file=sys.stderr)
         sys.exit(1)
 
-    X, y, action_classes, feature_cols = load_remediation_features(args.input)
+    raw_df = pq.read_table(args.input).to_pandas()
+    readiness = validate_remediation_dataframe(raw_df)
+    print(format_check(readiness))
+    if readiness.problems and not args.force:
+        print(
+            f"\nERROR: remediation readiness failed. Only post-cutoff rows after "
+            f"{TRAINING_HYGIENE_CUTOFF_ISO} are considered. Re-run with --force to override.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    df, X, y, action_classes, feature_cols = load_remediation_features(args.input)
 
     if len(X) < args.min_rows:
         print(f"Only {len(X)} rows — need at least {args.min_rows} to train Model C.")

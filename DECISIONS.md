@@ -683,3 +683,383 @@ ServeDir — no separate web server needed.
 **Build**: `cd ui && npm run build` → `ui/dist/`. `ui/dist/` and `ui/node_modules/`
 are gitignored (reproducible from source). Committed: all src/ files, package.json,
 vite.config.js, svelte.config.js.
+
+---
+
+## 2026-04-20 — Event bus seam: `InProcessBus` over tokio broadcast
+
+**Decision**: Inter-component event fan-out uses a small `EventBus` trait with an
+`InProcessBus` implementation backed by `tokio::sync::broadcast`. Subscribers publish
+`TelemetryUpdate` events to the bus; downstream consumers subscribe independently.
+
+**Alternatives considered**: Keep the original single `mpsc` channel from subscriber
+to graph writer, introduce NATS/Kafka immediately, or use a trait-less direct
+`broadcast::Sender` everywhere.
+
+**Rationale**:
+- The original `mpsc` shape hard-wired one producer to one consumer. Adding archive,
+  metrics, or external sinks would have required touching the subscriber path each time.
+- `broadcast` provides the needed one-to-many fan-out today with minimal operational
+  overhead and no extra infrastructure, which matches the single-host Phase 2 scope.
+- The trait wrapper preserves a migration seam for a future distributed bus without
+  leaking transport details throughout the codebase.
+- Going straight to NATS/Kafka would add operational breadth before the local graph
+  and archive pipeline are stable, which violates the project’s scope discipline.
+
+---
+
+## 2026-04-20 — Counter write debounce: 10 seconds per `(device, interface)`
+
+**Decision**: `InterfaceStats` writes to the graph are debounced to at most once every
+10 seconds for each `(device, interface)` key. State-transition events (BGP, BFD, LLDP,
+interface oper-status) bypass the debounce and write immediately.
+
+**Alternatives considered**: No debounce, a global debounce across all counters,
+shorter intervals such as 1–5 seconds, or longer intervals such as 30–60 seconds.
+
+**Rationale**:
+- Counter telemetry is the highest-volume stream and was the main source of graph
+  write pressure; debouncing reduces lock contention without sacrificing topology or
+  state-transition fidelity.
+- The per-`(device, interface)` scope keeps hot interfaces from suppressing updates on
+  unrelated links. A global debounce would create cross-interface coupling and hide data.
+- Ten seconds is long enough to collapse flood-style counter churn but short enough to
+  preserve useful utilisation and error-rate trends at lab scale.
+- State transitions represent control-plane truth changes, not rolling counters, so they
+  must stay immediate even under load.
+
+---
+
+## 2026-04-20 — Retention count-cap semantics: exact oldest-event deletion
+
+**Decision**: Count-based retention deletes the exact oldest `StateChangeEvent` IDs
+needed to return under `max_state_change_events`. Ties on `occurred_at` are resolved by
+selecting the oldest limited ID set first and deleting only those rows.
+
+**Alternatives considered**: Age-based retention only, deleting all rows at or before
+the timestamp of the excess-th oldest event, or disabling count caps until Parquet
+archive exists.
+
+**Rationale**:
+- A hard count cap is still useful before the Parquet archive lands because it bounds
+  graph growth independently of wall-clock age and protects long-lived lab runs.
+- Timestamp-based cutoff deletion is simpler but can over-delete when multiple events
+  share the same timestamp, which distorts training history unevenly.
+- Exact ID deletion is deterministic and preserves the intended retention budget even
+  during bursty event storms.
+- Detection and remediation history remain outside this cap; only `StateChangeEvent`
+  hot history is pruned.
+
+---
+
+## 2026-04-20 — Playbook verification field: `expected_graph_state` is canonical
+
+**Decision**: Playbook verification queries use `expected_graph_state` as the canonical
+field name. `cypher` remains supported as a legacy alias for backward compatibility with
+older or hand-written playbooks.
+
+**Alternatives considered**: Keep `cypher` as the canonical field, support only one name
+and break older playbooks, or defer verification entirely and accept unverified
+remediation outcomes.
+
+**Rationale**:
+- `expected_graph_state` is semantically clearer: it names the purpose of the query
+  rather than the query language alone.
+- Keeping the legacy alias avoids needless breakage while the playbook catalog is still
+  young and likely to have hand-authored variants.
+- Verification cannot be optional in practice because remediation success labels feed
+  Model C training. Silent “success” without a graph check corrupts the dataset.
+- This choice lets the catalog converge on one documented shape without forcing an
+  immediate cleanup of every historical YAML.
+
+---
+
+## 2026-04-20 — Shared feature extraction split: unconditional ML, gated rules
+
+**Decision**: `extract_features_for_event()` in `ml_detector.py` is the canonical event
+feature extractor. `MLDetector` calls it unconditionally for every event; rule detectors
+perform fast event/rule gating and then call the shared extractor before applying any
+rule-specific thresholds or windows.
+
+**Alternatives considered**: Separate feature extraction paths for ML and rules, keep
+all rule-specific inline extraction logic, or build a per-event shared cache inside the
+engine before the rule/ML split.
+
+**Rationale**:
+- Training/inference skew is a real failure mode; one canonical extractor keeps field
+  population logic in one place and makes regressions testable.
+- ML needs a dense, always-on feature path because the model decides whether an event is
+  anomalous; skipping extraction based on rule semantics would bias the model input.
+- Rules still benefit from pre-extraction gating so they can cheaply ignore unrelated
+  events and preserve their explicit semantics.
+- A richer shared cache may be worthwhile later, but the current split solves the drift
+  problem without introducing a heavier engine redesign.
+
+---
+
+## 2026-04-20 — Typed defaults for training rows via `typing.get_type_hints()`
+
+**Decision**: Empty/default feature rows in the training pipeline are generated using
+`typing.get_type_hints(Features)` so each field gets a type-correct default (`0`, `0.0`,
+`""`, `{}`) even under `from __future__ import annotations`.
+
+**Alternatives considered**: Maintain a handwritten default map, use dataclass field
+metadata without resolving postponed annotations, or tolerate mixed dtypes and clean
+them later in pandas/pyarrow.
+
+**Rationale**:
+- Postponed annotations turn field types into strings at runtime; naive inspection can
+  default numeric columns to `""`, which poisons Parquet schema inference.
+- Resolving type hints from the source dataclass keeps the defaulting logic coupled to
+  the actual `Features` contract instead of a second manually synchronized map.
+- Type-correct defaults preserve stable Arrow/Parquet schemas and make downstream ML
+  exports predictable.
+- Cleaning bad dtypes later is the wrong layer; the exporter should emit structurally
+  correct rows at the source.
+
+---
+
+## 2026-04-20 — Cold archive format: collector-local parquet batches off the event bus
+
+**Decision**: Raw `TelemetryUpdate` events are archived from the event bus into Parquet
+files on local disk. The archive is collector-local in the future distributed design;
+today it is core-local only because the current deployment is single-process and
+single-host. Default flush cadence is 10 seconds with an early flush at 1000 rows.
+
+**Alternatives considered**: Keep raw events only in the graph, archive directly from
+the graph after retention pruning, or introduce a remote object store / TSDB before a
+local Parquet layer exists.
+
+**Rationale**:
+- The graph is the hot state store, not the long-range raw-history substrate. Training
+  needs more history than the bounded `StateChangeEvent` graph should retain.
+- Archiving off the event bus keeps the cold path additive: the graph writer and archive
+  subscriber both observe the same decoded `TelemetryUpdate` stream without coupling the
+  graph schema to archival needs.
+- Local Parquet is the simplest useful format: columnar, compressible, readable from
+  Python/pandas, and operationally aligned with the single-host phase.
+- Ten seconds is short enough to keep data fresh for inspection while avoiding a file
+  per event burst. The row-count flush cap prevents large in-memory buffers during
+  sustained telemetry floods.
+- In a future distributed topology, each collector should write its own local archive
+  shard with the same schema and partitioning. No central archive coordinator is needed
+  for v1.
+
+---
+
+## 2026-04-20 — Python tooling and live lab operations are WSL-first with a repo-local `.venv`
+
+**Decision**: Python tooling for Bonsai runs from a project-local `.venv/` created
+inside WSL. Dependency declarations stay in `python/pyproject.toml`. Chaos tooling,
+fault injection, and any `clab`-dependent workflows are executed from WSL because the
+live ContainerLab lab and `clab` binary live there on this machine.
+
+**Alternatives considered**: Install Python packages into machine-global Windows
+interpreters, rely on the Codex bundled runtime for project dependencies, or keep a
+Windows-hosted venv and shell out across the Windows/WSL boundary for `clab`.
+
+**Rationale**:
+- The live lab is hosted in WSL, so Windows Python cannot be the trusted execution
+  environment for `clab tools netem` and related lab-side actions.
+- A repo-local `.venv/` makes Python dependencies reproducible, isolated, and visible
+  to every contributor without coupling the project to one developer's global package
+  state.
+- `python/pyproject.toml` already expresses the dependency contract; the venv is the
+  installation target, not a second dependency specification.
+- Keeping Rust on the existing Windows `--release` path avoids churn in the validated
+  build workflow while still moving the lab-facing Python path to the environment where
+  the lab actually runs.
+
+---
+
+## 2026-04-20 — Model C remediation training excludes pre-T0-2 outcomes
+
+**Decision**: Model C training data uses a hard remediation cutoff at
+`2026-04-20T09:32:50Z`, the timestamp of commit `4a5cd707b7e59aa77d3f08a0bffb7a0c3ec72189`
+(`T0-1 + T0-2: fix playbook catalog path and verification field name`). Remediation
+rows with `attempted_at <= cutoff` are considered untrustworthy for training because
+they were recorded before `verify()` produced real success/failure labels.
+
+**Alternatives considered**: Keep all historical Remediation rows, manually scrub old
+rows from the graph, or add a new `trustworthy` property to the schema and migrate all
+historical data.
+
+**Rationale**:
+- The verification fix changed the semantic meaning of `Remediation.status`; old rows
+  can overstate success and would poison Model C if left unfiltered.
+- A dated cutoff is the smallest honest move: it is explicit, auditable, and works with
+  the current schema without a graph migration.
+- Filtering in both readiness checks and the training path prevents stale data from
+  silently inflating counts or leaking into the classifier.
+- A future schema-level `trustworthy` flag may still be worthwhile, but the cutoff gets
+  the project back to truthful training data immediately.
+
+---
+
+## 2026-04-20 â€” Remediation trust is explicit in the graph via sidecar marks
+
+**Decision**: trust for remediation outcomes is represented in-graph using a
+`RemediationTrustMark` node linked to each `Remediation` by `TRUST_MARKS`. Startup
+backfills marks for legacy rows using the existing `2026-04-20T09:32:50Z` cutoff, and
+new remediations are marked at write time.
+
+**Alternatives considered**: continue filtering only in Python training code, delete all
+pre-cutoff remediation rows, or alter the `Remediation` node schema in place to add a
+new property.
+
+**Rationale**:
+- The previous cutoff-only approach was honest for training, but the graph itself still
+  looked authoritative even though historical rows were semantically tainted.
+- A sidecar mark makes trust explicit without risking an in-place mutation of the
+  existing `Remediation` table on LadybugDB.
+- Backfilling on startup keeps legacy databases truthful without a one-off migration
+  command.
+- Training readiness and Model C export can now query trusted remediations directly from
+  graph state instead of carrying the trust boundary only as an application convention.
+
+---
+
+## 2026-04-20 - Dynamic device registry uses a local JSON backing file in v1
+
+**Decision**: the runtime `ApiRegistry` persists managed devices in a local
+`bonsai-registry.json` file, seeded from `bonsai.toml` on startup and then mutated
+through Bonsai gRPC CRUD calls. The registry file is gitignored and treated as local
+runtime state rather than source-controlled configuration.
+
+**Alternatives considered**: add a dedicated SQLite registry database immediately,
+keep managed-device state only in memory, or continue using `bonsai.toml` as the only
+source of truth and require a restart for every device change.
+
+**Rationale**:
+- JSON is the lightest durable store that closes T1-3a without introducing a second
+  embedded database beside LadybugDB.
+- Seeding from `bonsai.toml` preserves today's static-target workflow while allowing
+  API-added devices to survive a process restart.
+- Keeping the registry local and gitignored avoids leaking lab-specific env-var names
+  or CA file paths into committed project configuration.
+- If onboarding later needs richer queries or relationships, the JSON-backed seam can
+  be replaced with SQLite without changing the gRPC surface or subscriber manager
+  contract.
+
+---
+
+## 2026-04-21 - Device discovery is a probe-only gNMI Capabilities RPC
+
+**Decision**: `DiscoverDevice` probes a candidate device with gNMI Capabilities and
+returns a structured report without mutating the runtime registry. The RPC accepts
+credential environment variable names only, never plaintext credential values. Discovery
+now reads file-backed path profiles when available and retains the original built-in
+recommendation logic as a fallback for missing or malformed local profile files.
+
+**Alternatives considered**: make discovery automatically add devices to the registry,
+allow plaintext credentials in the request for convenience, or block `T1-3c` until the
+path-profile YAML templates exist.
+
+**Rationale**:
+- Probe-only behavior keeps operator intent explicit: discovery answers "what is this
+  device and what should we subscribe to?" while `AddDevice` remains the lifecycle
+  mutation.
+- Env-var-only credentials keep the API aligned with the project rule that credentials
+  must not appear in source or committed files.
+- File-backed recommendations keep the Capabilities/reporting seam operator-visible
+  while the built-in fallback keeps local discovery usable if profiles are temporarily
+  broken during development.
+- Reusing model-family rules avoids vendor branching by config string and keeps
+  OpenConfig/native path choice tied to what the device actually advertises.
+
+---
+
+## 2026-04-21 - Local runtime ownership is Windows core, WSL lab
+
+**Decision**: On this workstation, Bonsai's Rust core/API/UI process runs from Windows
+PowerShell, while the live ContainerLab lab and lab-affecting Python tools run from WSL.
+Repo helper scripts are the canonical interface for repeated local tasks:
+`start_bonsai_windows.ps1`, `stop_bonsai_windows.ps1`, `check_dev_env.ps1`,
+`search_repo.ps1`, and `regenerate_python_stubs.ps1`.
+
+**Alternatives considered**: run Bonsai itself from WSL, rely on ambiguous PATH commands
+such as bare `python`, `python3`, and `rg`, or keep using one-off Start-Process commands.
+
+**Rationale**:
+- Bonsai has already been validated on the Windows Rust `--release` path, and Windows is
+  where the UI/API process is expected to listen for local operator access.
+- ContainerLab, `clab`, and `netem` live in WSL, so lab mutation must stay there.
+- The local PATH contains unreliable entries: the Chocolatey `rg.exe` shim can fail with
+  access denied, and sandboxed shells may not execute user Python without explicit
+  permission even though the interpreter exists.
+- Durable scripts make tool resolution explicit and keep future sessions from
+  rediscovering the same environment boundary.
+
+---
+
+## 2026-04-21 - Discovery path recommendations are YAML-backed templates
+
+**Decision**: `DiscoverDevice` path recommendations are driven by YAML profile files
+under `config/path_profiles/`. Each path declares its gNMI path, origin, subscription
+mode, sample interval, rationale, and required model gates. Discovery loads the profiles,
+selects by role, filters paths against advertised Capabilities models, and reports
+warnings for unsupported paths that were dropped.
+
+**Alternatives considered**: keep path recommendations hardcoded in Rust, wait until a
+future UI wizard exists before adding templates, or store profiles in TOML/JSON to avoid
+a YAML parser.
+
+**Rationale**:
+- Templates make onboarding behavior inspectable and editable without changing Rust code.
+- Model gates preserve the project rule that path selection follows what the device
+  advertises, not a vendor string alone.
+- YAML is the backlog-requested operator-facing format and is easier to read for path
+  catalog work than JSON.
+- The previous Rust built-in recommendations remain as a fallback so malformed or
+  missing template files do not make discovery unusable during local development.
+
+---
+
+## 2026-04-21 - Subscription path health is explicit graph state
+
+**Decision**: Bonsai records subscription path health in graph `SubscriptionStatus`
+nodes linked from `Device` by `HAS_SUBSCRIPTION_STATUS`. Subscribers publish their
+actual path plan after a successful Subscribe RPC. A verifier task watches the telemetry
+bus for 30 seconds and marks each path as `pending`, `observed`, or
+`subscribed_but_silent`.
+
+**Alternatives considered**: infer subscription health only from logs, write status only
+inside the subscriber task, or treat missing telemetry as a subscriber connection error
+instead of path-level graph state.
+
+**Rationale**:
+- The operator needs to know which subscribed paths are truly producing data, not just
+  whether the gNMI stream is connected.
+- Keeping status in graph state makes the honesty layer queryable by API, UI, and later
+  CLI commands without scraping logs.
+- The verifier observes the same event bus as the graph/archive consumers, so it stays
+  additive and does not sit in the hot subscriber write path.
+- Event-family matching handles vendor response shape differences while still preserving
+  path-level accountability.
+
+---
+
+## 2026-04-21 - Distributed collector lands as runtime modes plus ingest seam
+
+**Decision**: T1-2 starts with one Bonsai binary and three runtime modes: `all`,
+`core`, and `collector`. `all` preserves today's single-process behavior. `core`
+runs the graph/API/UI side and exposes a client-streaming `TelemetryIngest` RPC.
+`collector` runs local gNMI subscribers and forwards decoded telemetry updates to
+the configured core endpoint. The core republishes ingested updates onto its local
+event bus so graph, rule, and status consumers do not need a second write path.
+
+**Alternatives considered**: split the repository into separate binaries, introduce
+NATS/Kafka before there is a remote collector, or delay all T1-2 work until mTLS,
+zstd compression, and disk-backed queues could land together.
+
+**Rationale**:
+- A mode switch keeps deployment simple while making the collector/core boundary
+  explicit and testable.
+- Reusing the event bus on both sides preserves the additive subscriber architecture:
+  local gNMI and remote collector ingest feed the same downstream consumers.
+- `all` mode keeps the Windows lab workflow stable while `core` and `collector`
+  allow distributed validation to start incrementally.
+- gRPC zstd compression is deferred because enabling tonic's zstd feature on this
+  Windows/MSVC build links `zstd-sys` alongside LadybugDB's bundled `zstd.lib`,
+  causing duplicate symbol failures. The seam is intentionally left ready for a
+  follow-up compression slice once the link strategy is chosen.

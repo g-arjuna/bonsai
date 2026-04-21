@@ -1,0 +1,48 @@
+name: sp_pe_full
+roles: ["pe", "rr"]
+description: "Service-provider PE/RR profile: base telemetry plus MPLS, IS-IS, and segment-routing when advertised."
+rationale: "PE and route-reflector devices need base control-plane health plus SP transport/control-plane model coverage."
+paths:
+  - path: "interfaces"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface counters."
+  - path: "interfaces"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface oper-state changes."
+  - path: "network-instances"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-bgp", "openconfig-network-instance"]
+    rationale: "OpenConfig BGP/network-instance state for PE/RR control plane."
+  - path: "lldp"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-lldp"]
+    optional: true
+    rationale: "OpenConfig LLDP topology evidence when advertised."
+  - path: "bfd"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-bfd"]
+    optional: true
+    rationale: "OpenConfig BFD state when available."
+  - path: "mpls"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-mpls"]
+    rationale: "MPLS state for PE transport health."
+  - path: "network-instances/network-instance/protocols/protocol/isis"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-isis"]
+    rationale: "IS-IS state for SP underlay health."
+  - path: "segment-routing"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-segment-routing"]
+    rationale: "Segment-routing state when the model is advertised."

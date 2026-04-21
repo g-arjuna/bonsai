@@ -72,12 +72,15 @@ def _export_anomalies(client: "BonsaiClient", since_ns: int, until_ns: int) -> l
         det_id, rule_id, severity, fired_at, features_json, action, status = (
             row + [None] * (7 - len(row))
         )
+        fired_at_ns = int(fired_at or 0)
+        if fired_at_ns < since_ns or fired_at_ns >= until_ns:
+            continue
         features = _parse_features(features_json)
         record = {
             "detection_id":         det_id or "",
             "rule_id":              rule_id or "",
             "severity":             severity or "",
-            "fired_at_ns":          fired_at or 0,
+            "fired_at_ns":          fired_at_ns,
             "remediation_action":   action or "",
             "remediation_status":   status or "",
             "label":                1,
@@ -101,16 +104,19 @@ def _export_normal_windows(
     result = []
     for row in rows:
         addr, etype, detail_str, occurred_at = (row + [None] * (4 - len(row)))
+        occurred_at_ns = int(occurred_at or 0)
+        if occurred_at_ns < since_ns or occurred_at_ns >= until_ns:
+            continue
         if isinstance(detail_str, dict):
             detail = detail_str
         else:
             detail = json.loads(detail_str or "{}")
-        features = _empty_features(addr or "", etype or "", detail, occurred_at or 0)
+        features = _empty_features(addr or "", etype or "", detail, occurred_at_ns)
         record = {
             "detection_id":         "",
             "rule_id":              "",
             "severity":             "",
-            "fired_at_ns":          occurred_at or 0,
+            "fired_at_ns":          occurred_at_ns,
             "remediation_action":   "",
             "remediation_status":   "",
             "label":                0,
@@ -164,6 +170,7 @@ _REM_COLS = [
     "remediation_id", "detection_id", "rule_id", "action",
     "status",          # "success" | "failed" | "skipped" — the label
     "vendor",
+    "attempted_at_ns",
     "fired_at_ns",
 ]
 
@@ -190,18 +197,23 @@ def export_remediation_training_set(
     # Join to Device to get the real vendor string (T0-5).
     # device_address alone is an IP:port — useless as a vendor feature.
     cypher = """
-        MATCH (r:Remediation)-[:RESOLVES]->(e:DetectionEvent)
+        MATCH (m:RemediationTrustMark)-[:TRUST_MARKS]->(r:Remediation)-[:RESOLVES]->(e:DetectionEvent)
+        WHERE m.trustworthy = 1
         OPTIONAL MATCH (d:Device {address: e.device_address})
         RETURN r.id, r.detection_id, e.rule_id, r.action, r.status,
+               r.attempted_at,
                e.features_json, e.fired_at, d.vendor
     """
     rows = client.query(cypher)
 
     result = []
     for row in rows:
-        rem_id, det_id, rule_id, action, status, features_json, fired_at, vendor = (
-            row + [None] * (8 - len(row))
+        rem_id, det_id, rule_id, action, status, attempted_at, features_json, fired_at, vendor = (
+            row + [None] * (9 - len(row))
         )
+        attempted_at_ns = int(attempted_at or 0)
+        if attempted_at_ns < since_ns or attempted_at_ns >= until_ns:
+            continue
         features = _parse_features(features_json)
         record = {
             "remediation_id": rem_id or "",
@@ -210,7 +222,8 @@ def export_remediation_training_set(
             "action":         action or "",
             "status":         status or "",
             "vendor":         vendor or "",
-            "fired_at_ns":    fired_at or 0,
+            "attempted_at_ns": attempted_at_ns,
+            "fired_at_ns":    int(fired_at or 0),
             **features,
         }
         result.append(record)

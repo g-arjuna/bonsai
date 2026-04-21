@@ -8,10 +8,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(true)
         .compile_protos(&["proto/gnmi.proto"], &["proto"])?;
 
-    // Bonsai API: server-only (Python/SDK is the client)
+    // Bonsai API: server + client. Collector mode uses the Rust client to
+    // stream decoded telemetry into a remote core.
     tonic_build::configure()
         .build_server(true)
-        .build_client(false)
+        .build_client(true)
         .compile_protos(&["proto/bonsai_service.proto"], &["proto"])?;
 
     Ok(())

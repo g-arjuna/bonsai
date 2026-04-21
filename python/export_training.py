@@ -7,6 +7,9 @@ Usage:
     # Model C — remediation classifier (Remediation nodes joined to DetectionEvents)
     python export_training.py --mode remediation --output data/remediation.parquet
 
+    # Check graph readiness before exporting for training
+    python ../scripts/check_training_readiness.py
+
     # With date filter:
     python export_training.py --since 2026-04-01 --output data/training.parquet
 """

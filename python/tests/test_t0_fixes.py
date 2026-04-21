@@ -44,7 +44,7 @@ def test_empty_features_str_fields_are_strings():
 # ── T0-5: vendor column uses Device join ──────────────────────────────────────
 
 def test_remediation_export_vendor_join():
-    """export_remediation_training_set must query d.vendor, not device_address."""
+    """export_remediation_training_set must query trusted remediations and d.vendor."""
     from bonsai_sdk.training import export_remediation_training_set
 
     client = MagicMock()
@@ -52,6 +52,7 @@ def test_remediation_export_vendor_join():
     client.query.return_value = [[
         "rem-1", "det-1", "bgp_session_down", "bgp_session_bounce",
         "success",
+        1000000,
         '{"device_address":"10.0.0.1","event_type":"bgp_session_change","detail":"{}","peer_address":"10.0.0.2","old_state":"established","new_state":"idle","peer_count_total":2,"peer_count_established":1,"recent_flap_count":0,"if_name":"","oper_status":"","occurred_at_ns":0,"state_change_event_id":""}',
         1000000,
         "nokia_srl",   # d.vendor — this is the fix
@@ -63,6 +64,12 @@ def test_remediation_export_vendor_join():
         export_remediation_training_set(client, "/tmp/test.parquet")
 
     cypher_called = client.query.call_args[0][0]
+    assert "RemediationTrustMark" in cypher_called, (
+        "Cypher query must read graph trust marks so Model C excludes untrusted rows"
+    )
+    assert "m.trustworthy = 1" in cypher_called, (
+        "Cypher query must filter to trusted remediations"
+    )
     assert "d.vendor" in cypher_called, (
         "Cypher query must join to Device and return d.vendor (T0-5 fix)"
     )
@@ -118,6 +125,26 @@ def test_ml_detector_uses_shared_extractor():
         ev = _make_bgp_event()
         detector.extract_features(ev, client)
         mock_extract.assert_called_once_with(ev, client)
+
+
+def test_rule_detector_matches_ml_detector_features_for_bgp_down():
+    """Rule and ML detectors should share the same canonical BGP feature extraction."""
+    from bonsai_sdk.ml_detector import MLDetector
+    from bonsai_sdk.rules.bgp import BgpSessionDown
+
+    client = MagicMock()
+    client.get_bgp_neighbors.return_value = [
+        MagicMock(session_state="established"),
+        MagicMock(session_state="idle"),
+    ]
+
+    with patch("bonsai_sdk.ml_detector.load_model", return_value=MagicMock()):
+        ml_detector = MLDetector("ml_test", "fake_path.joblib", threshold=0.5)
+
+    rule_features = BgpSessionDown().extract_features(_make_bgp_event(), client)
+    ml_features = ml_detector.extract_features(_make_bgp_event(), client)
+
+    assert rule_features == ml_features
 
 
 def test_shared_extractor_interface_event():

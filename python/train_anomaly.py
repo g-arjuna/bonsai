@@ -4,6 +4,9 @@ Usage:
     # 1. Export training data while bonsai is running (or has run):
     python export_training.py --output data/training.parquet
 
+    # 1.5. Check graph readiness first:
+    python ../scripts/check_training_readiness.py
+
     # 2. Train the model:
     python train_anomaly.py --input data/training.parquet --output models/anomaly_v1.joblib
 
@@ -28,9 +31,10 @@ from sklearn.metrics import classification_report
 from sklearn.model_selection import train_test_split
 
 from bonsai_sdk.ml_detector import NUMERIC_FEATURES, OPER_STATUS_ENCODING, EVENT_TYPE_ENCODING
+from bonsai_sdk.training_readiness import format_check, validate_anomaly_dataframe
 
 
-def load_features(parquet_path: str) -> tuple[np.ndarray, np.ndarray]:
+def load_features(parquet_path: str) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
     """Load Parquet, build feature matrix X and label vector y."""
     df = pq.read_table(parquet_path).to_pandas()
     print(f"Loaded {len(df)} rows ({df['label'].sum()} anomalies, "
@@ -51,7 +55,7 @@ def load_features(parquet_path: str) -> tuple[np.ndarray, np.ndarray]:
     ]
     X = np.asarray(df[feature_cols].fillna(0).astype(np.float32))
     y = np.asarray(df["label"].astype(int))
-    return X, y
+    return df, X, y
 
 
 def train(X_train: np.ndarray, contamination: float) -> IsolationForest:
@@ -80,13 +84,21 @@ def main() -> None:
     ap.add_argument("--contamination", type=float, default=0.1,
                     help="Fraction of anomalies in training data (default 0.1)")
     ap.add_argument("--eval", action="store_true", help="Evaluate on 20%% held-out split")
+    ap.add_argument("--force", action="store_true",
+                    help="Train even when readiness checks fail")
     args = ap.parse_args()
 
     if not os.path.exists(args.input):
         print(f"ERROR: input file not found: {args.input}", file=sys.stderr)
         sys.exit(1)
 
-    X, y = load_features(args.input)
+    df, X, y = load_features(args.input)
+    readiness = validate_anomaly_dataframe(df)
+    print(format_check(readiness))
+    if readiness.problems and not args.force:
+        print("\nERROR: training readiness check failed. Re-run with --force to override.",
+              file=sys.stderr)
+        sys.exit(1)
     if len(X) < 10:
         print("ERROR: need at least 10 rows to train", file=sys.stderr)
         sys.exit(1)

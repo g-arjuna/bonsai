@@ -5,6 +5,7 @@ Reads node credentials from bonsai.toml so nothing is hardcoded.
 Supports BGP session kill/restore, interface down/up, and gradual netem impairment.
 
 Usage:
+    # Preferred: run inside WSL from the repo-local .venv so clab/netem are available
     # Disable one BGP neighbor on spine1
     python python/inject_fault.py bgp-down srl-spine1 10.0.12.1
 

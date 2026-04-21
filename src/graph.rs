@@ -10,15 +10,20 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::telemetry::{json_i64, json_i64_multi, json_str, TelemetryEvent, TelemetryUpdate};
+use crate::telemetry::{TelemetryEvent, TelemetryUpdate, json_i64, json_i64_multi, json_str};
+
+pub const REMEDIATION_TRUST_CUTOFF_ISO: &str = "2026-04-20T09:32:50+00:00";
+pub const REMEDIATION_TRUST_CUTOFF_NS: i64 = 1_776_677_570_000_000_000;
+const REMEDIATION_TRUST_REASON_PRE_CUTOFF: &str = "pre_t0_2_verify_cutoff";
+const REMEDIATION_TRUST_REASON_POST_CUTOFF: &str = "post_t0_2_verify_cutoff";
 
 /// A state-change event broadcast to all API streaming subscribers.
 #[derive(Clone, Debug)]
 pub struct BonsaiEvent {
-    pub device_address:        String,
-    pub event_type:            String,
-    pub detail_json:           String,
-    pub occurred_at_ns:        i64,
+    pub device_address: String,
+    pub event_type: String,
+    pub detail_json: String,
+    pub occurred_at_ns: i64,
     /// UUID of the persisted StateChangeEvent node; empty for broadcast-only events
     /// that don't write a node (e.g. oper-status events which are broadcast-only).
     pub state_change_event_id: String,
@@ -27,35 +32,48 @@ pub struct BonsaiEvent {
 /// A detection + its linked remediation (if any). Used by the HTTP topology API.
 #[derive(Debug, Clone, Serialize)]
 pub struct DetectionRow {
-    pub id:                   String,
-    pub device_address:       String,
-    pub rule_id:              String,
-    pub severity:             String,
-    pub features_json:        String,
-    pub fired_at_ns:          i64,
-    pub remediation_id:       String,
-    pub remediation_action:   String,
-    pub remediation_status:   String,
+    pub id: String,
+    pub device_address: String,
+    pub rule_id: String,
+    pub severity: String,
+    pub features_json: String,
+    pub fired_at_ns: i64,
+    pub remediation_id: String,
+    pub remediation_action: String,
+    pub remediation_status: String,
 }
 
 /// One step in a closed-loop trace: trigger → detection → remediation.
 #[derive(Debug, Clone, Serialize)]
 pub struct TraceStep {
-    pub kind:           String,  // "trigger" | "detection" | "remediation"
-    pub id:             String,
+    pub kind: String, // "trigger" | "detection" | "remediation"
+    pub id: String,
     pub device_address: String,
-    pub event_type:     String,
-    pub rule_id:        String,
-    pub severity:       String,
-    pub action:         String,
-    pub status:         String,
-    pub detail_json:    String,
+    pub event_type: String,
+    pub rule_id: String,
+    pub severity: String,
+    pub action: String,
+    pub status: String,
+    pub detail_json: String,
     pub occurred_at_ns: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct SubscriptionStatusWrite {
+    pub device_address: String,
+    pub path: String,
+    pub origin: String,
+    pub mode: String,
+    pub sample_interval_ns: i64,
+    pub status: String,
+    pub first_observed_at_ns: i64,
+    pub last_observed_at_ns: i64,
+    pub updated_at_ns: i64,
+}
+
 pub struct GraphStore {
-    db:         Arc<Database>,
-    event_tx:   broadcast::Sender<BonsaiEvent>,
+    db: Arc<Database>,
+    event_tx: broadcast::Sender<BonsaiEvent>,
     /// KuzuDB permits only one concurrent write transaction. All spawn_blocking
     /// write paths must hold this lock for the duration of their Connection.
     write_lock: Arc<Mutex<()>>,
@@ -63,11 +81,16 @@ pub struct GraphStore {
 
 impl GraphStore {
     pub fn open(path: &str) -> Result<Self> {
-        let db = Database::new(path, SystemConfig::default())
-            .context("failed to open LadybugDB")?;
+        let db =
+            Database::new(path, SystemConfig::default()).context("failed to open LadybugDB")?;
         let (event_tx, _) = broadcast::channel(1024);
-        let store = GraphStore { db: Arc::new(db), event_tx, write_lock: Arc::new(Mutex::new(())) };
+        let store = GraphStore {
+            db: Arc::new(db),
+            event_tx,
+            write_lock: Arc::new(Mutex::new(())),
+        };
         store.init_schema()?;
+        store.backfill_remediation_trust_marks()?;
         info!(path, "graph store opened");
         Ok(store)
     }
@@ -134,20 +157,14 @@ impl GraphStore {
         )
         .context("create BfdSession table")?;
 
-        conn.query(
-            "CREATE REL TABLE IF NOT EXISTS HAS_INTERFACE(FROM Device TO Interface)",
-        )
-        .context("create HAS_INTERFACE rel")?;
+        conn.query("CREATE REL TABLE IF NOT EXISTS HAS_INTERFACE(FROM Device TO Interface)")
+            .context("create HAS_INTERFACE rel")?;
 
-        conn.query(
-            "CREATE REL TABLE IF NOT EXISTS PEERS_WITH(FROM Device TO BgpNeighbor)",
-        )
-        .context("create PEERS_WITH rel")?;
+        conn.query("CREATE REL TABLE IF NOT EXISTS PEERS_WITH(FROM Device TO BgpNeighbor)")
+            .context("create PEERS_WITH rel")?;
 
-        conn.query(
-            "CREATE REL TABLE IF NOT EXISTS HAS_BFD_SESSION(FROM Device TO BfdSession)",
-        )
-        .context("create HAS_BFD_SESSION rel")?;
+        conn.query("CREATE REL TABLE IF NOT EXISTS HAS_BFD_SESSION(FROM Device TO BfdSession)")
+            .context("create HAS_BFD_SESSION rel")?;
 
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS LldpNeighbor(\
@@ -163,10 +180,8 @@ impl GraphStore {
         )
         .context("create LldpNeighbor table")?;
 
-        conn.query(
-            "CREATE REL TABLE IF NOT EXISTS HAS_LLDP_NEIGHBOR(FROM Device TO LldpNeighbor)",
-        )
-        .context("create HAS_LLDP_NEIGHBOR rel")?;
+        conn.query("CREATE REL TABLE IF NOT EXISTS HAS_LLDP_NEIGHBOR(FROM Device TO LldpNeighbor)")
+            .context("create HAS_LLDP_NEIGHBOR rel")?;
 
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS StateChangeEvent(\
@@ -179,15 +194,11 @@ impl GraphStore {
         )
         .context("create StateChangeEvent table")?;
 
-        conn.query(
-            "CREATE REL TABLE IF NOT EXISTS REPORTED_BY(FROM Device TO StateChangeEvent)",
-        )
-        .context("create REPORTED_BY rel")?;
+        conn.query("CREATE REL TABLE IF NOT EXISTS REPORTED_BY(FROM Device TO StateChangeEvent)")
+            .context("create REPORTED_BY rel")?;
 
-        conn.query(
-            "CREATE REL TABLE IF NOT EXISTS CONNECTED_TO(FROM Interface TO Interface)",
-        )
-        .context("create CONNECTED_TO rel")?;
+        conn.query("CREATE REL TABLE IF NOT EXISTS CONNECTED_TO(FROM Interface TO Interface)")
+            .context("create CONNECTED_TO rel")?;
 
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS DetectionEvent(\
@@ -201,10 +212,8 @@ impl GraphStore {
         )
         .context("create DetectionEvent table")?;
 
-        conn.query(
-            "CREATE REL TABLE IF NOT EXISTS TRIGGERED(FROM Device TO DetectionEvent)",
-        )
-        .context("create TRIGGERED rel")?;
+        conn.query("CREATE REL TABLE IF NOT EXISTS TRIGGERED(FROM Device TO DetectionEvent)")
+            .context("create TRIGGERED rel")?;
 
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS Remediation(\
@@ -219,15 +228,49 @@ impl GraphStore {
         )
         .context("create Remediation table")?;
 
+        conn.query("CREATE REL TABLE IF NOT EXISTS RESOLVES(FROM Remediation TO DetectionEvent)")
+            .context("create RESOLVES rel")?;
+
         conn.query(
-            "CREATE REL TABLE IF NOT EXISTS RESOLVES(FROM Remediation TO DetectionEvent)",
+            "CREATE NODE TABLE IF NOT EXISTS RemediationTrustMark(\
+                remediation_id STRING,\
+                trustworthy    INT64,\
+                reason         STRING,\
+                decided_at     TIMESTAMP_NS,\
+                PRIMARY KEY (remediation_id))",
         )
-        .context("create RESOLVES rel")?;
+        .context("create RemediationTrustMark table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS TRUST_MARKS(FROM RemediationTrustMark TO Remediation)",
+        )
+        .context("create TRUST_MARKS rel")?;
 
         conn.query(
             "CREATE REL TABLE IF NOT EXISTS TRIGGERED_BY(FROM DetectionEvent TO StateChangeEvent)",
         )
         .context("create TRIGGERED_BY rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS SubscriptionStatus(\
+                id                 STRING,\
+                device_address     STRING,\
+                path               STRING,\
+                origin             STRING,\
+                mode               STRING,\
+                sample_interval_ns INT64,\
+                status             STRING,\
+                first_observed_at  TIMESTAMP_NS,\
+                last_observed_at   TIMESTAMP_NS,\
+                updated_at         TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create SubscriptionStatus table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_SUBSCRIPTION_STATUS(FROM Device TO SubscriptionStatus)",
+        )
+        .context("create HAS_SUBSCRIPTION_STATUS rel")?;
 
         info!("graph schema initialised");
         Ok(())
@@ -235,6 +278,35 @@ impl GraphStore {
 
     pub fn db(&self) -> Arc<Database> {
         Arc::clone(&self.db)
+    }
+
+    fn backfill_remediation_trust_marks(&self) -> Result<()> {
+        let conn = Connection::new(&self.db).context("trust-mark backfill connection")?;
+        let mut stmt = conn
+            .prepare(
+                "MATCH (r:Remediation) \
+                 OPTIONAL MATCH (m:RemediationTrustMark {remediation_id: r.id}) \
+                 RETURN r.id, r.attempted_at, m.remediation_id",
+            )
+            .context("prepare trust-mark backfill query")?;
+        let rows = conn
+            .execute(&mut stmt, Vec::new())
+            .context("execute trust-mark backfill query")?;
+
+        let mut created = 0usize;
+        for row in rows {
+            let remediation_id = read_str(&row[0]);
+            if remediation_id.is_empty() || !read_str(&row[2]).is_empty() {
+                continue;
+            }
+            write_remediation_trust_mark(&conn, &remediation_id, read_ts_ns(&row[1]))?;
+            created += 1;
+        }
+
+        if created > 0 {
+            info!(created, "backfilled remediation trust marks");
+        }
+        Ok(())
     }
 
     /// Write a DetectionEvent into the graph; returns the new node UUID.
@@ -247,46 +319,64 @@ impl GraphStore {
         fired_at_ns: i64,
         state_change_event_id: String,
     ) -> Result<String> {
-        let db         = Arc::clone(&self.db);
+        let db = Arc::clone(&self.db);
         let write_lock = Arc::clone(&self.write_lock);
         tokio::task::spawn_blocking(move || {
             let _guard = write_lock.lock().expect("write lock poisoned");
             let conn = Connection::new(&db).context("detection write connection")?;
-            let id  = Uuid::new_v4().to_string();
+            let id = Uuid::new_v4().to_string();
             let now = ts(fired_at_ns);
-            let mut stmt = conn.prepare(
-                "MERGE (e:DetectionEvent {id: $id}) \
+            let mut stmt = conn
+                .prepare(
+                    "MERGE (e:DetectionEvent {id: $id}) \
                  ON CREATE SET \
                    e.device_address = $addr, e.rule_id = $rule, \
                    e.severity = $sev, e.features_json = $feats, e.fired_at = $ts",
-            ).context("prepare DetectionEvent insert")?;
-            conn.execute(&mut stmt, vec![
-                ("id",   Value::String(id.clone())),
-                ("addr", Value::String(device_address.clone())),
-                ("rule", Value::String(rule_id)),
-                ("sev",  Value::String(severity)),
-                ("feats",Value::String(features_json)),
-                ("ts",   now),
-            ]).context("execute DetectionEvent insert")?;
+                )
+                .context("prepare DetectionEvent insert")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("addr", Value::String(device_address.clone())),
+                    ("rule", Value::String(rule_id)),
+                    ("sev", Value::String(severity)),
+                    ("feats", Value::String(features_json)),
+                    ("ts", now),
+                ],
+            )
+            .context("execute DetectionEvent insert")?;
             // TRIGGERED edge Device → DetectionEvent
-            let mut edge = conn.prepare(
-                "MATCH (d:Device {address: $addr}), (e:DetectionEvent {id: $id})\
+            let mut edge = conn
+                .prepare(
+                    "MATCH (d:Device {address: $addr}), (e:DetectionEvent {id: $id})\
                  CREATE (d)-[:TRIGGERED]->(e)",
-            ).context("prepare TRIGGERED edge")?;
-            conn.execute(&mut edge, vec![
-                ("addr", Value::String(device_address)),
-                ("id",   Value::String(id.clone())),
-            ]).context("execute TRIGGERED edge")?;
+                )
+                .context("prepare TRIGGERED edge")?;
+            conn.execute(
+                &mut edge,
+                vec![
+                    ("addr", Value::String(device_address)),
+                    ("id", Value::String(id.clone())),
+                ],
+            )
+            .context("execute TRIGGERED edge")?;
             // TRIGGERED_BY edge DetectionEvent → StateChangeEvent (when available)
             if !state_change_event_id.is_empty() {
-                let mut tb = conn.prepare(
-                    "MATCH (e:DetectionEvent {id: $eid}), (s:StateChangeEvent {id: $sid})\
+                let mut tb = conn
+                    .prepare(
+                        "MATCH (e:DetectionEvent {id: $eid}), (s:StateChangeEvent {id: $sid})\
                      CREATE (e)-[:TRIGGERED_BY]->(s)",
-                ).context("prepare TRIGGERED_BY edge")?;
-                conn.execute(&mut tb, vec![
-                    ("eid", Value::String(id.clone())),
-                    ("sid", Value::String(state_change_event_id)),
-                ]).context("execute TRIGGERED_BY edge")?;
+                    )
+                    .context("prepare TRIGGERED_BY edge")?;
+                conn.execute(
+                    &mut tb,
+                    vec![
+                        ("eid", Value::String(id.clone())),
+                        ("sid", Value::String(state_change_event_id)),
+                    ],
+                )
+                .context("execute TRIGGERED_BY edge")?;
             }
             Ok::<String, anyhow::Error>(id)
         })
@@ -304,39 +394,56 @@ impl GraphStore {
         attempted_at_ns: i64,
         completed_at_ns: i64,
     ) -> Result<String> {
-        let db         = Arc::clone(&self.db);
+        let db = Arc::clone(&self.db);
         let write_lock = Arc::clone(&self.write_lock);
         tokio::task::spawn_blocking(move || {
             let _guard = write_lock.lock().expect("write lock poisoned");
             let conn = Connection::new(&db).context("remediation write connection")?;
-            let id       = Uuid::new_v4().to_string();
-            let att_ts   = ts(attempted_at_ns);
-            let comp_ts  = ts(if completed_at_ns > 0 { completed_at_ns } else { attempted_at_ns });
-            let mut stmt = conn.prepare(
-                "MERGE (r:Remediation {id: $id}) \
+            let id = Uuid::new_v4().to_string();
+            let att_ts = ts(attempted_at_ns);
+            let comp_ts = ts(if completed_at_ns > 0 {
+                completed_at_ns
+            } else {
+                attempted_at_ns
+            });
+            let mut stmt = conn
+                .prepare(
+                    "MERGE (r:Remediation {id: $id}) \
                  ON CREATE SET \
                    r.detection_id = $did, r.action = $action, \
                    r.status = $status, r.detail_json = $detail, \
                    r.attempted_at = $att, r.completed_at = $comp",
-            ).context("prepare Remediation insert")?;
-            conn.execute(&mut stmt, vec![
-                ("id",     Value::String(id.clone())),
-                ("did",    Value::String(detection_id.clone())),
-                ("action", Value::String(action)),
-                ("status", Value::String(status)),
-                ("detail", Value::String(detail_json)),
-                ("att",    att_ts),
-                ("comp",   comp_ts),
-            ]).context("execute Remediation insert")?;
+                )
+                .context("prepare Remediation insert")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("did", Value::String(detection_id.clone())),
+                    ("action", Value::String(action)),
+                    ("status", Value::String(status)),
+                    ("detail", Value::String(detail_json)),
+                    ("att", att_ts),
+                    ("comp", comp_ts),
+                ],
+            )
+            .context("execute Remediation insert")?;
             // RESOLVES edge Remediation → DetectionEvent
-            let mut edge = conn.prepare(
-                "MATCH (r:Remediation {id: $id}), (e:DetectionEvent {id: $did})\
+            let mut edge = conn
+                .prepare(
+                    "MATCH (r:Remediation {id: $id}), (e:DetectionEvent {id: $did})\
                  CREATE (r)-[:RESOLVES]->(e)",
-            ).context("prepare RESOLVES edge")?;
-            conn.execute(&mut edge, vec![
-                ("id",  Value::String(id.clone())),
-                ("did", Value::String(detection_id)),
-            ]).context("execute RESOLVES edge")?;
+                )
+                .context("prepare RESOLVES edge")?;
+            conn.execute(
+                &mut edge,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("did", Value::String(detection_id)),
+                ],
+            )
+            .context("execute RESOLVES edge")?;
+            write_remediation_trust_mark(&conn, &id, attempted_at_ns)?;
             Ok::<String, anyhow::Error>(id)
         })
         .await
@@ -356,7 +463,7 @@ impl GraphStore {
                  ORDER BY e.fired_at DESC LIMIT {limit}"
             );
             let rows = conn.query(&cypher).context("read_detections query")?;
-            let mut out  = Vec::new();
+            let mut out = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
             for row in rows {
                 let id = read_str(&row[0]);
@@ -365,12 +472,12 @@ impl GraphStore {
                 if seen.insert(id.clone()) {
                     out.push(DetectionRow {
                         id,
-                        device_address:     read_str(&row[1]),
-                        rule_id:            read_str(&row[2]),
-                        severity:           read_str(&row[3]),
-                        features_json:      read_str(&row[4]),
-                        fired_at_ns:        read_ts_ns(&row[5]),
-                        remediation_id:     read_str(&row[6]),
+                        device_address: read_str(&row[1]),
+                        rule_id: read_str(&row[2]),
+                        severity: read_str(&row[3]),
+                        features_json: read_str(&row[4]),
+                        fired_at_ns: read_ts_ns(&row[5]),
+                        remediation_id: read_str(&row[6]),
                         remediation_action: read_str(&row[7]),
                         remediation_status: read_str(&row[8]),
                     });
@@ -388,75 +495,83 @@ impl GraphStore {
         let db = Arc::clone(&self.db);
         tokio::task::spawn_blocking(move || {
             let conn = Connection::new(&db).context("read_trace connection")?;
-            let mut stmt = conn.prepare(
-                "MATCH (e:DetectionEvent {id: $id}) \
+            let mut stmt = conn
+                .prepare(
+                    "MATCH (e:DetectionEvent {id: $id}) \
                  OPTIONAL MATCH (e)-[:TRIGGERED_BY]->(s:StateChangeEvent) \
                  OPTIONAL MATCH (r:Remediation)-[:RESOLVES]->(e) \
                  RETURN e.id, e.device_address, e.rule_id, e.severity, e.fired_at, \
                         s.id, s.event_type, s.detail, s.occurred_at, s.device_address, \
                         r.id, r.action, r.status, r.detail_json, r.attempted_at",
-            ).context("prepare trace query")?;
-            let rows = conn.execute(&mut stmt, vec![
-                ("id", Value::String(detection_id)),
-            ]).context("execute trace query")?;
+                )
+                .context("prepare trace query")?;
+            let rows = conn
+                .execute(&mut stmt, vec![("id", Value::String(detection_id))])
+                .context("execute trace query")?;
 
             let mut steps: Vec<TraceStep> = Vec::new();
             let mut seen_det = false;
             let mut seen_trig: HashSet<String> = HashSet::new();
-            let mut seen_rem:  HashSet<String> = HashSet::new();
+            let mut seen_rem: HashSet<String> = HashSet::new();
 
             for row in rows {
                 if !seen_det {
                     seen_det = true;
                     steps.push(TraceStep {
-                        kind:           "detection".into(),
-                        id:             read_str(&row[0]),
+                        kind: "detection".into(),
+                        id: read_str(&row[0]),
                         device_address: read_str(&row[1]),
-                        rule_id:        read_str(&row[2]),
-                        severity:       read_str(&row[3]),
+                        rule_id: read_str(&row[2]),
+                        severity: read_str(&row[3]),
                         occurred_at_ns: read_ts_ns(&row[4]),
-                        event_type:     String::new(),
-                        action:         String::new(),
-                        status:         String::new(),
-                        detail_json:    String::new(),
+                        event_type: String::new(),
+                        action: String::new(),
+                        status: String::new(),
+                        detail_json: String::new(),
                     });
                 }
                 let trig_id = read_str(&row[5]);
                 if !trig_id.is_empty() && seen_trig.insert(trig_id.clone()) {
                     steps.push(TraceStep {
-                        kind:           "trigger".into(),
-                        id:             trig_id,
+                        kind: "trigger".into(),
+                        id: trig_id,
                         device_address: read_str(&row[9]),
-                        event_type:     read_str(&row[6]),
-                        detail_json:    read_str(&row[7]),
+                        event_type: read_str(&row[6]),
+                        detail_json: read_str(&row[7]),
                         occurred_at_ns: read_ts_ns(&row[8]),
-                        rule_id:        String::new(),
-                        severity:       String::new(),
-                        action:         String::new(),
-                        status:         String::new(),
+                        rule_id: String::new(),
+                        severity: String::new(),
+                        action: String::new(),
+                        status: String::new(),
                     });
                 }
                 let rem_id = read_str(&row[10]);
                 if !rem_id.is_empty() && seen_rem.insert(rem_id.clone()) {
                     steps.push(TraceStep {
-                        kind:           "remediation".into(),
-                        id:             rem_id,
-                        action:         read_str(&row[11]),
-                        status:         read_str(&row[12]),
-                        detail_json:    read_str(&row[13]),
+                        kind: "remediation".into(),
+                        id: rem_id,
+                        action: read_str(&row[11]),
+                        status: read_str(&row[12]),
+                        detail_json: read_str(&row[13]),
                         occurred_at_ns: read_ts_ns(&row[14]),
                         device_address: String::new(),
-                        event_type:     String::new(),
-                        rule_id:        String::new(),
-                        severity:       String::new(),
+                        event_type: String::new(),
+                        rule_id: String::new(),
+                        severity: String::new(),
                     });
                 }
             }
             // Sort: trigger first, detection second, remediation last; within each kind by time.
-            steps.sort_by_key(|s| (
-                match s.kind.as_str() { "trigger" => 0u8, "detection" => 1, _ => 2 },
-                s.occurred_at_ns,
-            ));
+            steps.sort_by_key(|s| {
+                (
+                    match s.kind.as_str() {
+                        "trigger" => 0u8,
+                        "detection" => 1,
+                        _ => 2,
+                    },
+                    s.occurred_at_ns,
+                )
+            });
             Ok::<_, anyhow::Error>(steps)
         })
         .await
@@ -466,10 +581,10 @@ impl GraphStore {
     /// Write a single telemetry update to the graph.
     /// Dispatches to a blocking thread so the caller's async task is not blocked.
     pub async fn write(&self, update: TelemetryUpdate) -> Result<()> {
-        let db         = Arc::clone(&self.db);
-        let event_tx   = self.event_tx.clone();
+        let db = Arc::clone(&self.db);
+        let event_tx = self.event_tx.clone();
         let write_lock = Arc::clone(&self.write_lock);
-        let target     = update.target.clone();
+        let target = update.target.clone();
         tokio::task::spawn_blocking(move || {
             metrics::counter!("bonsai_telemetry_updates_total", "target" => target.clone())
                 .increment(1);
@@ -483,55 +598,237 @@ impl GraphStore {
         .await
         .context("spawn_blocking panicked")?
     }
+
+    pub async fn write_subscription_status(&self, status: SubscriptionStatusWrite) -> Result<()> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("subscription status write connection")?;
+            write_subscription_status_blocking(&conn, status)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
 }
 
 // ── blocking write helpers ────────────────────────────────────────────────────
 
-fn write_blocking(db: &Database, update: &TelemetryUpdate, event_tx: &broadcast::Sender<BonsaiEvent>) -> Result<()> {
+fn write_blocking(
+    db: &Database,
+    update: &TelemetryUpdate,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+) -> Result<()> {
     let conn = Connection::new(db).context("graph write connection")?;
     match update.classify() {
         TelemetryEvent::InterfaceStats { if_name } => {
             // Skip interfaces with no data (SR Linux sends empty {} for unconfigured ports)
-            if update.value.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+            if update
+                .value
+                .as_object()
+                .map(|o| o.is_empty())
+                .unwrap_or(true)
+            {
                 return Ok(());
             }
             write_interface(&conn, update, &if_name)
         }
-        TelemetryEvent::BgpNeighborState { peer_address, state_value } => {
-            write_bgp_neighbor(&conn, update, &peer_address, state_value.as_ref().unwrap_or(&update.value), event_tx)
-        }
-        TelemetryEvent::BfdSessionState { if_name, local_discriminator, state_value } => {
-            write_bfd_session(
-                &conn,
-                update,
-                &if_name,
-                &local_discriminator,
-                state_value.as_ref().unwrap_or(&update.value),
-                event_tx,
-            )
-        }
-        TelemetryEvent::LldpNeighbor { local_if, neighbor_id, state_value } => {
-            write_lldp_neighbor(&conn, update, &local_if, &neighbor_id, state_value.as_ref().unwrap_or(&update.value))
-        }
-        TelemetryEvent::InterfaceOperStatus { if_name, oper_status } => {
-            emit_oper_status_event(&conn, update, &if_name, &oper_status, event_tx)
-        }
+        TelemetryEvent::BgpNeighborState {
+            peer_address,
+            state_value,
+        } => write_bgp_neighbor(
+            &conn,
+            update,
+            &peer_address,
+            state_value.as_ref().unwrap_or(&update.value),
+            event_tx,
+        ),
+        TelemetryEvent::BfdSessionState {
+            if_name,
+            local_discriminator,
+            state_value,
+        } => write_bfd_session(
+            &conn,
+            update,
+            &if_name,
+            &local_discriminator,
+            state_value.as_ref().unwrap_or(&update.value),
+            event_tx,
+        ),
+        TelemetryEvent::LldpNeighbor {
+            local_if,
+            neighbor_id,
+            state_value,
+        } => write_lldp_neighbor(
+            &conn,
+            update,
+            &local_if,
+            &neighbor_id,
+            state_value.as_ref().unwrap_or(&update.value),
+        ),
+        TelemetryEvent::InterfaceOperStatus {
+            if_name,
+            oper_status,
+        } => emit_oper_status_event(&conn, update, &if_name, &oper_status, event_tx),
         TelemetryEvent::Ignored => Ok(()),
     }
 }
 
+fn write_subscription_status_blocking(
+    conn: &Connection<'_>,
+    status: SubscriptionStatusWrite,
+) -> Result<()> {
+    let id = subscription_status_id(
+        &status.device_address,
+        &status.path,
+        &status.origin,
+        &status.mode,
+        status.sample_interval_ns,
+    );
+    let updated_at = ts(status.updated_at_ns);
+    let first_observed_at = ts(status.first_observed_at_ns);
+    let last_observed_at = ts(status.last_observed_at_ns);
+
+    upsert_device(conn, &status.device_address, "", "", updated_at.clone())?;
+
+    let mut stmt = conn
+        .prepare(
+            "MERGE (s:SubscriptionStatus {id: $id}) \
+             ON CREATE SET \
+               s.device_address = $addr, s.path = $path, s.origin = $origin, \
+               s.mode = $mode, s.sample_interval_ns = $interval, s.status = $status, \
+               s.first_observed_at = $first, s.last_observed_at = $last, s.updated_at = $updated \
+             ON MATCH SET \
+               s.device_address = $addr, s.path = $path, s.origin = $origin, \
+               s.mode = $mode, s.sample_interval_ns = $interval, s.status = $status, \
+               s.first_observed_at = $first, s.last_observed_at = $last, s.updated_at = $updated",
+        )
+        .context("prepare SubscriptionStatus upsert")?;
+
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(id.clone())),
+            ("addr", Value::String(status.device_address.clone())),
+            ("path", Value::String(status.path)),
+            ("origin", Value::String(status.origin)),
+            ("mode", Value::String(status.mode)),
+            ("interval", Value::Int64(status.sample_interval_ns)),
+            ("status", Value::String(status.status)),
+            ("first", first_observed_at),
+            ("last", last_observed_at),
+            ("updated", updated_at),
+        ],
+    )
+    .context("execute SubscriptionStatus upsert")?;
+
+    let mut edge_stmt = conn
+        .prepare(
+            "MATCH (d:Device {address: $addr}), (s:SubscriptionStatus {id: $id}) \
+             MERGE (d)-[:HAS_SUBSCRIPTION_STATUS]->(s)",
+        )
+        .context("prepare HAS_SUBSCRIPTION_STATUS merge")?;
+    conn.execute(
+        &mut edge_stmt,
+        vec![
+            ("addr", Value::String(status.device_address)),
+            ("id", Value::String(id)),
+        ],
+    )
+    .context("execute HAS_SUBSCRIPTION_STATUS merge")?;
+
+    Ok(())
+}
+
+fn subscription_status_id(
+    device_address: &str,
+    path: &str,
+    origin: &str,
+    mode: &str,
+    sample_interval_ns: i64,
+) -> String {
+    format!("{device_address}|{origin}|{mode}|{sample_interval_ns}|{path}")
+}
+
 /// Read helpers for query result rows — used by the read_* methods above.
 fn read_str(v: &Value) -> String {
-    match v { Value::String(s) => s.clone(), _ => String::new() }
+    match v {
+        Value::String(s) => s.clone(),
+        _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+fn read_i64(v: &Value) -> i64 {
+    match v {
+        Value::Int64(n) => *n,
+        _ => 0,
+    }
 }
 
 fn read_ts_ns(v: &Value) -> i64 {
-    match v { Value::TimestampNs(dt) => dt.unix_timestamp_nanos() as i64, _ => 0 }
+    match v {
+        Value::TimestampNs(dt) => dt.unix_timestamp_nanos() as i64,
+        _ => 0,
+    }
+}
+
+fn write_remediation_trust_mark(
+    conn: &Connection<'_>,
+    remediation_id: &str,
+    attempted_at_ns: i64,
+) -> Result<()> {
+    let trustworthy = if attempted_at_ns > REMEDIATION_TRUST_CUTOFF_NS {
+        1
+    } else {
+        0
+    };
+    let reason = if trustworthy == 1 {
+        REMEDIATION_TRUST_REASON_POST_CUTOFF
+    } else {
+        REMEDIATION_TRUST_REASON_PRE_CUTOFF
+    };
+
+    let mut stmt = conn
+        .prepare(
+            "MERGE (m:RemediationTrustMark {remediation_id: $rid}) \
+             ON CREATE SET \
+               m.trustworthy = $trustworthy, m.reason = $reason, m.decided_at = $decided_at \
+             ON MATCH SET \
+               m.trustworthy = $trustworthy, m.reason = $reason, m.decided_at = $decided_at",
+        )
+        .context("prepare RemediationTrustMark upsert")?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("rid", Value::String(remediation_id.to_string())),
+            ("trustworthy", Value::Int64(trustworthy)),
+            ("reason", Value::String(reason.to_string())),
+            (
+                "decided_at",
+                ts(attempted_at_ns.max(REMEDIATION_TRUST_CUTOFF_NS)),
+            ),
+        ],
+    )
+    .context("execute RemediationTrustMark upsert")?;
+
+    let mut edge_stmt = conn
+        .prepare(
+            "MATCH (m:RemediationTrustMark {remediation_id: $rid}), (r:Remediation {id: $rid}) \
+             MERGE (m)-[:TRUST_MARKS]->(r)",
+        )
+        .context("prepare TRUST_MARKS edge")?;
+    conn.execute(
+        &mut edge_stmt,
+        vec![("rid", Value::String(remediation_id.to_string()))],
+    )
+    .context("execute TRUST_MARKS edge")?;
+
+    Ok(())
 }
 
 fn ts(ns: i64) -> Value {
-    let dt = OffsetDateTime::UNIX_EPOCH
-        + time::Duration::nanoseconds(ns);
+    let dt = OffsetDateTime::UNIX_EPOCH + time::Duration::nanoseconds(ns);
     Value::TimestampNs(dt)
 }
 
@@ -541,8 +838,9 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
 
     upsert_device(conn, &u.target, &u.vendor, &u.hostname, now.clone())?;
 
-    let mut stmt = conn.prepare(
-        "MERGE (i:Interface {id: $id}) \
+    let mut stmt = conn
+        .prepare(
+            "MERGE (i:Interface {id: $id}) \
          ON CREATE SET \
            i.device_address = $addr, i.name = $name, \
            i.in_pkts = $in_pkts, i.out_pkts = $out_pkts, \
@@ -554,8 +852,8 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
            i.in_octets = $in_octets, i.out_octets = $out_octets, \
            i.in_errors = $in_errors, i.out_errors = $out_errors, \
            i.carrier_transitions = $carrier, i.updated_at = $ts",
-    )
-    .context("prepare interface upsert")?;
+        )
+        .context("prepare interface upsert")?;
 
     conn.execute(
         &mut stmt,
@@ -564,58 +862,98 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
             ("addr", Value::String(u.target.clone())),
             ("name", Value::String(if_name.to_string())),
             // Field name priority: SRL native → XR native → Junos native → OC
-            ("in_pkts",    Value::Int64(json_i64_multi(&u.value, &[
-                "in-packets",        // SRL native
-                "packets-received",  // XR native (generic-counters)
-                "input-packets",     // Junos native
-                "in-pkts",           // OC
-            ]))),
-            ("out_pkts",   Value::Int64(json_i64_multi(&u.value, &[
-                "out-packets",       // SRL native
-                "packets-sent",      // XR native
-                "output-packets",    // Junos native
-                "out-pkts",          // OC
-            ]))),
-            ("in_octets",  Value::Int64(json_i64_multi(&u.value, &[
-                "in-octets",         // SRL native & OC
-                "bytes-received",    // XR native
-                "input-bytes",       // Junos native
-            ]))),
-            ("out_octets", Value::Int64(json_i64_multi(&u.value, &[
-                "out-octets",        // SRL native & OC
-                "bytes-sent",        // XR native
-                "output-bytes",      // Junos native
-            ]))),
-            ("in_errors",  Value::Int64(json_i64_multi(&u.value, &[
-                "in-error-packets",  // SRL native
-                "input-total-errors",// XR native
-                "input-errors",      // Junos native
-                "in-errors",         // OC
-            ]))),
-            ("out_errors", Value::Int64(json_i64_multi(&u.value, &[
-                "out-error-packets", // SRL native
-                "output-total-errors",// XR native
-                "output-errors",     // Junos native
-                "out-errors",        // OC
-            ]))),
-            ("carrier",    Value::Int64(json_i64(&u.value, "carrier-transitions"))),
+            (
+                "in_pkts",
+                Value::Int64(json_i64_multi(
+                    &u.value,
+                    &[
+                        "in-packets",       // SRL native
+                        "packets-received", // XR native (generic-counters)
+                        "input-packets",    // Junos native
+                        "in-pkts",          // OC
+                    ],
+                )),
+            ),
+            (
+                "out_pkts",
+                Value::Int64(json_i64_multi(
+                    &u.value,
+                    &[
+                        "out-packets",    // SRL native
+                        "packets-sent",   // XR native
+                        "output-packets", // Junos native
+                        "out-pkts",       // OC
+                    ],
+                )),
+            ),
+            (
+                "in_octets",
+                Value::Int64(json_i64_multi(
+                    &u.value,
+                    &[
+                        "in-octets",      // SRL native & OC
+                        "bytes-received", // XR native
+                        "input-bytes",    // Junos native
+                    ],
+                )),
+            ),
+            (
+                "out_octets",
+                Value::Int64(json_i64_multi(
+                    &u.value,
+                    &[
+                        "out-octets",   // SRL native & OC
+                        "bytes-sent",   // XR native
+                        "output-bytes", // Junos native
+                    ],
+                )),
+            ),
+            (
+                "in_errors",
+                Value::Int64(json_i64_multi(
+                    &u.value,
+                    &[
+                        "in-error-packets",   // SRL native
+                        "input-total-errors", // XR native
+                        "input-errors",       // Junos native
+                        "in-errors",          // OC
+                    ],
+                )),
+            ),
+            (
+                "out_errors",
+                Value::Int64(json_i64_multi(
+                    &u.value,
+                    &[
+                        "out-error-packets",   // SRL native
+                        "output-total-errors", // XR native
+                        "output-errors",       // Junos native
+                        "out-errors",          // OC
+                    ],
+                )),
+            ),
+            (
+                "carrier",
+                Value::Int64(json_i64(&u.value, "carrier-transitions")),
+            ),
             ("ts", now.clone()),
         ],
     )
     .context("execute interface upsert")?;
 
     // Ensure the Device→Interface edge exists
-    let mut edge_stmt = conn.prepare(
-        "MATCH (d:Device {address: $addr}), (i:Interface {id: $id}) \
+    let mut edge_stmt = conn
+        .prepare(
+            "MATCH (d:Device {address: $addr}), (i:Interface {id: $id}) \
          MERGE (d)-[:HAS_INTERFACE]->(i)",
-    )
-    .context("prepare HAS_INTERFACE merge")?;
+        )
+        .context("prepare HAS_INTERFACE merge")?;
 
     conn.execute(
         &mut edge_stmt,
         vec![
             ("addr", Value::String(u.target.clone())),
-            ("id",   Value::String(id.clone())),
+            ("id", Value::String(id.clone())),
         ],
     )
     .context("execute HAS_INTERFACE merge")?;
@@ -628,7 +966,13 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
     Ok(())
 }
 
-fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &str, val: &serde_json::Value, event_tx: &broadcast::Sender<BonsaiEvent>) -> Result<()> {
+fn write_bgp_neighbor(
+    conn: &Connection<'_>,
+    u: &TelemetryUpdate,
+    peer_addr: &str,
+    val: &serde_json::Value,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+) -> Result<()> {
     let id = format!("{}:{}", u.target, peer_addr);
     let now = ts(u.timestamp_ns);
     let new_state = json_str(val, "session-state").to_lowercase();
@@ -643,7 +987,11 @@ fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &st
     // ON MATCH: only overwrite peer_as when the notification actually carries it
     // (non-zero). ON_CHANGE updates for session-state transitions omit peer-as,
     // which would clobber the stored value with 0.
-    let on_match_peer_as = if peer_as != 0 { "n.peer_as = $peer_as, " } else { "" };
+    let on_match_peer_as = if peer_as != 0 {
+        "n.peer_as = $peer_as, "
+    } else {
+        ""
+    };
     let cypher = format!(
         "MERGE (n:BgpNeighbor {{id: $id}}) \
          ON CREATE SET \
@@ -654,7 +1002,9 @@ fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &st
            {on_match_peer_as}n.session_state = $state, \
            n.established_transitions = $estab, n.updated_at = $ts"
     );
-    let mut stmt = conn.prepare(&cypher).context("prepare BgpNeighbor upsert")?;
+    let mut stmt = conn
+        .prepare(&cypher)
+        .context("prepare BgpNeighbor upsert")?;
 
     conn.execute(
         &mut stmt,
@@ -664,7 +1014,10 @@ fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &st
             ("peer", Value::String(peer_addr.to_string())),
             ("peer_as", Value::Int64(peer_as)),
             ("state", Value::String(new_state.clone())),
-            ("estab", Value::Int64(json_i64(val, "established-transitions"))),
+            (
+                "estab",
+                Value::Int64(json_i64(val, "established-transitions")),
+            ),
             ("ts", now.clone()),
         ],
     )
@@ -678,15 +1031,24 @@ fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &st
             old_state.as_deref().unwrap_or("none"),
             new_state
         );
-        write_state_change_event(conn, &u.target, "bgp_session_change", &detail, now.clone(), u.timestamp_ns, event_tx)?;
+        write_state_change_event(
+            conn,
+            &u.target,
+            "bgp_session_change",
+            &detail,
+            now.clone(),
+            u.timestamp_ns,
+            event_tx,
+        )?;
     }
 
     // Ensure the Device→BgpNeighbor edge exists
-    let mut edge_stmt = conn.prepare(
-        "MATCH (d:Device {address: $addr}), (n:BgpNeighbor {id: $id}) \
+    let mut edge_stmt = conn
+        .prepare(
+            "MATCH (d:Device {address: $addr}), (n:BgpNeighbor {id: $id}) \
          MERGE (d)-[:PEERS_WITH]->(n)",
-    )
-    .context("prepare PEERS_WITH merge")?;
+        )
+        .context("prepare PEERS_WITH merge")?;
 
     conn.execute(
         &mut edge_stmt,
@@ -728,8 +1090,9 @@ fn write_bfd_session(
 
     let old_state = get_bfd_state(conn, &id)?;
 
-    let mut stmt = conn.prepare(
-        "MERGE (b:BfdSession {id: $id}) \
+    let mut stmt = conn
+        .prepare(
+            "MERGE (b:BfdSession {id: $id}) \
          ON CREATE SET \
            b.device_address = $addr, b.if_name = $if_name, \
            b.local_discriminator = $disc, b.local_address = $local_addr, \
@@ -739,8 +1102,8 @@ fn write_bfd_session(
            b.if_name = $if_name, b.local_address = $local_addr, \
            b.remote_address = $remote_addr, b.session_state = $state, \
            b.updated_at = $ts",
-    )
-    .context("prepare BfdSession upsert")?;
+        )
+        .context("prepare BfdSession upsert")?;
 
     conn.execute(
         &mut stmt,
@@ -767,14 +1130,23 @@ fn write_bfd_session(
             old_state.as_deref().unwrap_or("none"),
             new_state
         );
-        write_state_change_event(conn, &u.target, "bfd_session_change", &detail, now.clone(), u.timestamp_ns, event_tx)?;
+        write_state_change_event(
+            conn,
+            &u.target,
+            "bfd_session_change",
+            &detail,
+            now.clone(),
+            u.timestamp_ns,
+            event_tx,
+        )?;
     }
 
-    let mut edge_stmt = conn.prepare(
-        "MATCH (d:Device {address: $addr}), (b:BfdSession {id: $id}) \
+    let mut edge_stmt = conn
+        .prepare(
+            "MATCH (d:Device {address: $addr}), (b:BfdSession {id: $id}) \
          MERGE (d)-[:HAS_BFD_SESSION]->(b)",
-    )
-    .context("prepare HAS_BFD_SESSION merge")?;
+        )
+        .context("prepare HAS_BFD_SESSION merge")?;
 
     conn.execute(
         &mut edge_stmt,
@@ -804,7 +1176,11 @@ fn get_bgp_state(conn: &Connection<'_>, id: &str) -> Result<Option<String>> {
         .execute(&mut stmt, vec![("id", Value::String(id.to_string()))])
         .context("execute BGP state lookup")?;
     Ok(result.next().and_then(|row| {
-        if let Value::String(s) = &row[0] { Some(s.clone()) } else { None }
+        if let Value::String(s) = &row[0] {
+            Some(s.clone())
+        } else {
+            None
+        }
     }))
 }
 
@@ -816,7 +1192,11 @@ fn get_bfd_state(conn: &Connection<'_>, id: &str) -> Result<Option<String>> {
         .execute(&mut stmt, vec![("id", Value::String(id.to_string()))])
         .context("execute BFD state lookup")?;
     Ok(result.next().and_then(|row| {
-        if let Value::String(s) = &row[0] { Some(s.clone()) } else { None }
+        if let Value::String(s) = &row[0] {
+            Some(s.clone())
+        } else {
+            None
+        }
     }))
 }
 
@@ -867,13 +1247,16 @@ fn write_state_change_event(
     )
     .context("execute REPORTED_BY edge")?;
 
-    if event_tx.send(BonsaiEvent {
-        device_address:        device_address.to_string(),
-        event_type:            event_type.to_string(),
-        detail_json:           detail.to_string(),
-        occurred_at_ns:        timestamp_ns,
-        state_change_event_id: id.clone(),
-    }).is_err() {
+    if event_tx
+        .send(BonsaiEvent {
+            device_address: device_address.to_string(),
+            event_type: event_type.to_string(),
+            detail_json: detail.to_string(),
+            occurred_at_ns: timestamp_ns,
+            state_change_event_id: id.clone(),
+        })
+        .is_err()
+    {
         metrics::counter!("bonsai_broadcast_drops_total").increment(1);
     }
 
@@ -917,8 +1300,14 @@ fn write_lldp_neighbor(
             ("addr", Value::String(u.target.clone())),
             ("local_if", Value::String(local_if.to_string())),
             ("nid", Value::String(neighbor_id.to_string())),
-            ("chassis", Value::String(json_str(val, "chassis-id").to_string())),
-            ("sysname", Value::String(json_str(val, "system-name").to_string())),
+            (
+                "chassis",
+                Value::String(json_str(val, "chassis-id").to_string()),
+            ),
+            (
+                "sysname",
+                Value::String(json_str(val, "system-name").to_string()),
+            ),
             ("port", Value::String(json_str(val, "port-id").to_string())),
             ("ts", now.clone()),
         ],
@@ -943,8 +1332,9 @@ fn write_lldp_neighbor(
 
     // Best-effort: link the local Interface to the remote Interface via LLDP data.
     let system_name = json_str(val, "system-name").to_string();
-    let port_id     = json_str(val, "port-id").to_string();
-    if !system_name.is_empty() && !port_id.is_empty()
+    let port_id = json_str(val, "port-id").to_string();
+    if !system_name.is_empty()
+        && !port_id.is_empty()
         && let Err(e) = try_connect_interfaces(conn, &u.target, local_if, &system_name, &port_id)
     {
         debug!(error = %e, local_if, system_name, port_id, "CONNECTED_TO skipped");
@@ -965,38 +1355,67 @@ fn write_lldp_neighbor(
 /// Called from write_interface so edges get built even when LLDP arrived first.
 fn backfill_connected_to(conn: &Connection<'_>, local_addr: &str, local_if: &str) -> Result<()> {
     // Case 1: This node has an LldpNeighbor entry for this interface — link outbound.
-    let mut find = conn.prepare(
-        "MATCH (n:LldpNeighbor {device_address: $addr, local_if: $lif}) \
+    let mut find = conn
+        .prepare(
+            "MATCH (n:LldpNeighbor {device_address: $addr, local_if: $lif}) \
          RETURN n.system_name, n.port_id",
-    ).context("prepare lldp lookup for backfill")?;
-    let rows = conn.execute(&mut find, vec![
-        ("addr", Value::String(local_addr.to_string())),
-        ("lif",  Value::String(local_if.to_string())),
-    ]).context("execute lldp lookup for backfill")?;
+        )
+        .context("prepare lldp lookup for backfill")?;
+    let rows = conn
+        .execute(
+            &mut find,
+            vec![
+                ("addr", Value::String(local_addr.to_string())),
+                ("lif", Value::String(local_if.to_string())),
+            ],
+        )
+        .context("execute lldp lookup for backfill")?;
 
     for row in rows {
-        let system_name = match &row[0] { Value::String(s) => s.clone(), _ => continue };
-        let port_id     = match &row[1] { Value::String(s) => s.clone(), _ => continue };
+        let system_name = match &row[0] {
+            Value::String(s) => s.clone(),
+            _ => continue,
+        };
+        let port_id = match &row[1] {
+            Value::String(s) => s.clone(),
+            _ => continue,
+        };
         if !system_name.is_empty() && !port_id.is_empty() {
             let _ = try_connect_interfaces(conn, local_addr, local_if, &system_name, &port_id);
         }
     }
 
     // Case 2: Another node's LldpNeighbor points TO this interface as port_id — link inbound.
-    let mut find2 = conn.prepare(
-        "MATCH (n:LldpNeighbor {port_id: $lif}) \
+    let mut find2 = conn
+        .prepare(
+            "MATCH (n:LldpNeighbor {port_id: $lif}) \
          RETURN n.device_address, n.local_if, n.system_name",
-    ).context("prepare reverse lldp lookup")?;
-    let rows2 = conn.execute(&mut find2, vec![
-        ("lif", Value::String(local_if.to_string())),
-    ]).context("execute reverse lldp lookup")?;
+        )
+        .context("prepare reverse lldp lookup")?;
+    let rows2 = conn
+        .execute(
+            &mut find2,
+            vec![("lif", Value::String(local_if.to_string()))],
+        )
+        .context("execute reverse lldp lookup")?;
 
     for row in rows2 {
-        let remote_addr = match &row[0] { Value::String(s) => s.clone(), _ => continue };
-        let remote_if   = match &row[1] { Value::String(s) => s.clone(), _ => continue };
-        let system_name = match &row[2] { Value::String(s) => s.clone(), _ => continue };
+        let remote_addr = match &row[0] {
+            Value::String(s) => s.clone(),
+            _ => continue,
+        };
+        let remote_if = match &row[1] {
+            Value::String(s) => s.clone(),
+            _ => continue,
+        };
+        let system_name = match &row[2] {
+            Value::String(s) => s.clone(),
+            _ => continue,
+        };
         // Verify this LldpNeighbor's system_name matches our hostname.
-        if system_name.is_empty() { continue; }
+        if system_name.is_empty() {
+            continue;
+        }
         let _ = try_connect_interfaces(conn, &remote_addr, &remote_if, &system_name, local_if);
     }
 
@@ -1017,7 +1436,10 @@ fn try_connect_interfaces(
         .prepare("MATCH (d:Device {hostname: $hn}) RETURN d.address")
         .context("prepare remote device lookup")?;
     let mut result = conn
-        .execute(&mut find_stmt, vec![("hn", Value::String(remote_hostname.to_string()))])
+        .execute(
+            &mut find_stmt,
+            vec![("hn", Value::String(remote_hostname.to_string()))],
+        )
         .context("execute remote device lookup")?;
 
     let remote_addr = match result.next() {
@@ -1028,7 +1450,7 @@ fn try_connect_interfaces(
         None => return Ok(()),
     };
 
-    let local_if_id  = format!("{}:{}", local_addr, local_if);
+    let local_if_id = format!("{}:{}", local_addr, local_if);
     let remote_if_id = format!("{}:{}", remote_addr, remote_port_id);
 
     let mut edge_stmt = conn
@@ -1049,13 +1471,23 @@ fn try_connect_interfaces(
     Ok(())
 }
 
-fn upsert_device(conn: &Connection<'_>, address: &str, vendor: &str, hostname: &str, now: Value) -> Result<()> {
-    let mut stmt = conn.prepare(
-        "MERGE (d:Device {address: $addr}) \
+fn upsert_device(
+    conn: &Connection<'_>,
+    address: &str,
+    vendor: &str,
+    hostname: &str,
+    now: Value,
+) -> Result<()> {
+    let mut stmt = conn
+        .prepare(
+            "MERGE (d:Device {address: $addr}) \
          ON CREATE SET d.vendor = $vendor, d.hostname = $hn, d.updated_at = $ts \
-         ON MATCH SET d.hostname = $hn, d.updated_at = $ts",
-    )
-    .context("prepare Device upsert")?;
+         ON MATCH SET \
+           d.vendor = CASE WHEN $vendor <> '' THEN $vendor ELSE d.vendor END, \
+           d.hostname = CASE WHEN $hn <> '' THEN $hn ELSE d.hostname END, \
+           d.updated_at = $ts",
+        )
+        .context("prepare Device upsert")?;
 
     conn.execute(
         &mut stmt,
@@ -1083,10 +1515,10 @@ fn emit_oper_status_event(
         if_name, oper_status
     );
     let _ = event_tx.send(BonsaiEvent {
-        device_address:        u.target.clone(),
-        event_type:            "interface_oper_status_change".to_string(),
-        detail_json:           detail,
-        occurred_at_ns:        u.timestamp_ns,
+        device_address: u.target.clone(),
+        event_type: "interface_oper_status_change".to_string(),
+        detail_json: detail,
+        occurred_at_ns: u.timestamp_ns,
         state_change_event_id: String::new(),
     });
     // Best-effort: ensure Device node exists so graph queries stay consistent.
@@ -1098,17 +1530,36 @@ fn emit_oper_status_event(
 // ── diagnostic query (callable from main after startup) ──────────────────────
 
 pub fn log_graph_summary(db: &Database) {
-    let Ok(conn) = Connection::new(db) else { return };
+    let Ok(conn) = Connection::new(db) else {
+        return;
+    };
     for (label, q) in [
-        ("devices",            "MATCH (n:Device) RETURN count(n)"),
-        ("interfaces",         "MATCH (n:Interface) RETURN count(n)"),
-        ("bgp-neighbors",      "MATCH (n:BgpNeighbor) RETURN count(n)"),
-        ("bfd-sessions",       "MATCH (n:BfdSession) RETURN count(n)"),
-        ("lldp-neighbors",     "MATCH (n:LldpNeighbor) RETURN count(n)"),
-        ("connected-to",       "MATCH ()-[r:CONNECTED_TO]->() RETURN count(r)"),
-        ("state-change-events","MATCH (n:StateChangeEvent) RETURN count(n)"),
-        ("detection-events",   "MATCH (n:DetectionEvent) RETURN count(n)"),
-        ("remediations",       "MATCH (n:Remediation) RETURN count(n)"),
+        ("devices", "MATCH (n:Device) RETURN count(n)"),
+        ("interfaces", "MATCH (n:Interface) RETURN count(n)"),
+        ("bgp-neighbors", "MATCH (n:BgpNeighbor) RETURN count(n)"),
+        ("bfd-sessions", "MATCH (n:BfdSession) RETURN count(n)"),
+        ("lldp-neighbors", "MATCH (n:LldpNeighbor) RETURN count(n)"),
+        (
+            "connected-to",
+            "MATCH ()-[r:CONNECTED_TO]->() RETURN count(r)",
+        ),
+        (
+            "state-change-events",
+            "MATCH (n:StateChangeEvent) RETURN count(n)",
+        ),
+        (
+            "detection-events",
+            "MATCH (n:DetectionEvent) RETURN count(n)",
+        ),
+        ("remediations", "MATCH (n:Remediation) RETURN count(n)"),
+        (
+            "remediation-trust-marks",
+            "MATCH (n:RemediationTrustMark) RETURN count(n)",
+        ),
+        (
+            "subscription-status",
+            "MATCH (n:SubscriptionStatus) RETURN count(n)",
+        ),
     ] {
         match conn.query(q) {
             Ok(mut r) => {
@@ -1118,5 +1569,135 @@ pub fn log_graph_summary(db: &Database) {
             }
             Err(e) => warn!(label, error = %e, "summary query failed"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_graph_path(label: &str) -> String {
+        std::env::temp_dir()
+            .join(format!("bonsai-{}-{}", label, Uuid::new_v4()))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn backfill_remediation_trust_marks_marks_legacy_rows() {
+        let path = temp_graph_path("trust-backfill");
+        let store = GraphStore::open(&path).expect("open graph store");
+        let conn = Connection::new(&store.db).expect("graph connection");
+
+        let mut old_stmt = conn
+            .prepare(
+                "CREATE (r:Remediation {\
+                    id: $id, detection_id: $did, action: $action, status: $status, \
+                    detail_json: $detail, attempted_at: $att, completed_at: $comp})",
+            )
+            .expect("prepare old remediation");
+        conn.execute(
+            &mut old_stmt,
+            vec![
+                ("id", Value::String("legacy-old".to_string())),
+                ("did", Value::String("det-1".to_string())),
+                ("action", Value::String("log_only".to_string())),
+                ("status", Value::String("success".to_string())),
+                ("detail", Value::String("{}".to_string())),
+                ("att", ts(REMEDIATION_TRUST_CUTOFF_NS - 1)),
+                ("comp", ts(REMEDIATION_TRUST_CUTOFF_NS - 1)),
+            ],
+        )
+        .expect("insert old remediation");
+
+        let mut new_stmt = conn
+            .prepare(
+                "CREATE (r:Remediation {\
+                    id: $id, detection_id: $did, action: $action, status: $status, \
+                    detail_json: $detail, attempted_at: $att, completed_at: $comp})",
+            )
+            .expect("prepare new remediation");
+        conn.execute(
+            &mut new_stmt,
+            vec![
+                ("id", Value::String("legacy-new".to_string())),
+                ("did", Value::String("det-2".to_string())),
+                ("action", Value::String("log_only".to_string())),
+                ("status", Value::String("success".to_string())),
+                ("detail", Value::String("{}".to_string())),
+                ("att", ts(REMEDIATION_TRUST_CUTOFF_NS + 1)),
+                ("comp", ts(REMEDIATION_TRUST_CUTOFF_NS + 1)),
+            ],
+        )
+        .expect("insert new remediation");
+
+        store
+            .backfill_remediation_trust_marks()
+            .expect("backfill trust marks");
+
+        let mut query = conn
+            .prepare(
+                "MATCH (m:RemediationTrustMark) \
+                 RETURN m.remediation_id, m.trustworthy, m.reason \
+                 ORDER BY m.remediation_id",
+            )
+            .expect("prepare trust-mark query");
+        let rows = conn
+            .execute(&mut query, Vec::new())
+            .expect("query trust marks")
+            .collect::<Vec<_>>();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(read_str(&rows[0][0]), "legacy-new");
+        assert_eq!(read_i64(&rows[0][1]), 1);
+        assert_eq!(read_str(&rows[0][2]), REMEDIATION_TRUST_REASON_POST_CUTOFF);
+        assert_eq!(read_str(&rows[1][0]), "legacy-old");
+        assert_eq!(read_i64(&rows[1][1]), 0);
+        assert_eq!(read_str(&rows[1][2]), REMEDIATION_TRUST_REASON_PRE_CUTOFF);
+    }
+
+    #[tokio::test]
+    async fn subscription_status_write_preserves_device_metadata() {
+        let path = temp_graph_path("subscription-status");
+        let store = GraphStore::open(&path).expect("open graph store");
+        let conn = Connection::new(&store.db).expect("graph connection");
+
+        upsert_device(&conn, "dut:57400", "nokia_srl", "dut1", ts(1_000_000_000))
+            .expect("seed device");
+
+        store
+            .write_subscription_status(SubscriptionStatusWrite {
+                device_address: "dut:57400".to_string(),
+                path: "interface[name=*]/statistics".to_string(),
+                origin: String::new(),
+                mode: "SAMPLE".to_string(),
+                sample_interval_ns: 10_000_000_000,
+                status: "subscribed_but_silent".to_string(),
+                first_observed_at_ns: 0,
+                last_observed_at_ns: 0,
+                updated_at_ns: 2_000_000_000,
+            })
+            .await
+            .expect("write subscription status");
+
+        let mut status_query = conn
+            .prepare(
+                "MATCH (d:Device {address: $addr})-[:HAS_SUBSCRIPTION_STATUS]->(s:SubscriptionStatus) \
+                 RETURN d.vendor, d.hostname, s.path, s.status",
+            )
+            .expect("prepare status query");
+        let rows = conn
+            .execute(
+                &mut status_query,
+                vec![("addr", Value::String("dut:57400".to_string()))],
+            )
+            .expect("query status")
+            .collect::<Vec<_>>();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(read_str(&rows[0][0]), "nokia_srl");
+        assert_eq!(read_str(&rows[0][1]), "dut1");
+        assert_eq!(read_str(&rows[0][2]), "interface[name=*]/statistics");
+        assert_eq!(read_str(&rows[0][3]), "subscribed_but_silent");
     }
 }

@@ -27,6 +27,8 @@ remediation is written into the graph as labelled training data for Phase 5 ML.
 ## Lab for Phase 4
 
 **Use `lab/fast-iteration/bonsai-phase4.clab.yml`** (new, replaces multivendor.clab.yml for Phase 4).
+Run the Phase 4 Python tooling from WSL with the repo-local `.venv/`, because the
+live ContainerLab lab and `clab` binary live there.
 
 ### Topology
 
@@ -73,6 +75,15 @@ ssh admin@172.100.102.11 'sr_cli "set / interface ethernet-1/1 admin-state enabl
 
 # Clear a BGP session manually (test the remediation action)
 # XRd: ssh cisco@172.100.102.21 'clear bgp ipv4 unicast 10.0.14.0 soft'
+```
+
+Before using the Python fault tooling:
+
+```bash
+cd /mnt/c/Users/arjun/Desktop/bonsai
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e './python[dev,ml]'
 ```
 
 ---

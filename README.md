@@ -82,6 +82,23 @@ layer. That is the exact layer bonsai targets.
 
 ---
 
+## Development Environment
+
+Python and live lab operations are WSL-first.
+
+- Create a repo-local `.venv/` from WSL and install dependencies from `python/pyproject.toml`.
+- Run `scripts/chaos_runner.py`, `python/inject_fault.py`, and any `clab` or `netem` commands from WSL because the ContainerLab lab runs there.
+- Run `scripts/check_training_readiness.py` from Windows or WSL. It prefers gRPC, but on Windows it now auto-falls back to `http://127.0.0.1:3000/api/readiness` when local Python does not have `grpc` installed.
+- Keep Rust builds on Windows with `cargo --release` as documented below.
+- Use `scripts\start_bonsai_windows.ps1` / `scripts\stop_bonsai_windows.ps1` for the Windows Bonsai process.
+- Use `scripts\search_repo.ps1` instead of bare `rg` on this machine; it bypasses the unreliable Chocolatey shim.
+- Use `scripts\regenerate_python_stubs.ps1` after editing `proto/bonsai_service.proto`.
+- Runtime mode defaults to `all`. `core` runs graph/API/UI plus `TelemetryIngest`; `collector` runs local gNMI subscribers and forwards decoded telemetry to the core endpoint.
+
+Setup details live in `docs/DEVELOPMENT.md`.
+
+---
+
 ## Scope
 
 **In scope:** Data center + service provider topologies · gNMI/OpenConfig only ·

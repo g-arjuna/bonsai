@@ -1,12 +1,16 @@
 pub mod api;
+pub mod archive;
 pub mod config;
+pub mod discovery;
 pub mod event_bus;
 pub mod gnmi_set;
 pub mod graph;
 pub mod http_server;
+pub mod ingest;
 pub mod registry;
 pub mod retention;
 pub mod subscriber;
+pub mod subscription_status;
 pub mod telemetry;
 
 pub mod proto {

@@ -8,6 +8,7 @@ bonsai.db
 bonsai.db.wal
 bonsai-mv.db
 bonsai-mv.db.wal
+bonsai-registry.json
 
 # ContainerLab runtime directories (TLS certs, node configs, topology state)
 lab/**/clab-*
@@ -29,6 +30,8 @@ lab/fast-iteration/p4-ca.pem
 __pycache__/
 *.py[cod]
 *.pyo
+.venv/
+venv/
 
 # Trained ML model binaries (large, runtime-generated — train locally)
 python/models/
@@ -36,6 +39,9 @@ models/
 
 # Training data exports (large Parquet files, runtime-generated)
 data/
+archive/
+archive_smoke*/
+chaos_runs/
 
 # Svelte UI build output and dependencies (reproducible from source)
 ui/dist/
@@ -43,6 +49,7 @@ ui/node_modules/
 
 # Debug / run logs
 *.log
+runtime/
 
 # Claude Code session memory (local tooling state, not project content)
 .claude/

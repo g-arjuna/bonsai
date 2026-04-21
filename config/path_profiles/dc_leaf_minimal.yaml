@@ -1,0 +1,72 @@
+name: dc_leaf_minimal
+roles: ["leaf"]
+description: "Minimal data-center leaf telemetry: interfaces, BGP, LLDP, and BFD when available."
+rationale: "Leaf devices need interface health, BGP adjacency state, and LLDP topology evidence."
+paths:
+  - path: "interface[name=*]/statistics"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_any_models: ["srl_nokia"]
+    rationale: "SR Linux native interface counters."
+  - path: "interface[name=*]/oper-state"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    rationale: "SR Linux native interface state transitions."
+  - path: "network-instance[name=default]/protocols/bgp/neighbor[peer-address=*]"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    rationale: "SR Linux native BGP neighbor state."
+  - path: "system/lldp/interface[name=*]/neighbor[id=*]"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    rationale: "SR Linux native LLDP topology evidence."
+  - path: "bfd/network-instance[name=default]"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia-bfd"]
+    optional: true
+    rationale: "SR Linux native BFD state when the BFD model is advertised."
+  - path: "Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface[interface-name=*]/generic-counters"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_any_models: ["Cisco-IOS-XR-infra-statsd-oper"]
+    rationale: "IOS-XR native interface counters."
+  - path: "Cisco-IOS-XR-ethernet-lldp-oper:lldp/nodes/node/neighbors/details/detail"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 60000000000
+    required_any_models: ["Cisco-IOS-XR-ethernet-lldp-oper"]
+    optional: true
+    rationale: "IOS-XR native LLDP neighbors; sampled so existing neighbors are observed."
+  - path: "interfaces"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface counters."
+  - path: "interfaces"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface oper-state changes."
+  - path: "network-instances"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-bgp", "openconfig-network-instance"]
+    rationale: "OpenConfig BGP/network-instance state."
+  - path: "bfd"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-bfd"]
+    optional: true
+    rationale: "OpenConfig BFD state when available."
+  - path: "lldp"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-lldp"]
+    rationale: "OpenConfig LLDP topology evidence."

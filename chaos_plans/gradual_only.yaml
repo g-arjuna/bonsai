@@ -1,0 +1,13 @@
+duration_hours: 1
+topology: bonsai-p4
+injection_interval_seconds: [180, 300]
+
+faults:
+  - type: gradual_degradation
+    weight: 1
+    targets: [srl-spine1, srl-leaf1, srl-leaf2]
+    interfaces: ["e1-1", "e1-2"]
+    start_loss_percent: [0.5, 1.0]
+    max_loss_percent: [3.0, 8.0]
+    step_seconds: [60, 180]
+    healing_delay_seconds: [180, 300]

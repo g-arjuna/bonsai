@@ -5,6 +5,7 @@ Reads a YAML fault plan, runs for a configured duration, injects faults at rando
 intervals, heals them, and writes a ground-truth CSV for detection evaluation.
 
 Usage:
+    # Preferred: run inside WSL from the repo-local .venv so clab/netem are available
     python scripts/chaos_runner.py chaos_plans/baseline_mix.yaml
     python scripts/chaos_runner.py chaos_plans/baseline_mix.yaml --dry-run
     python scripts/chaos_runner.py chaos_plans/baseline_mix.yaml --duration-hours 2
@@ -16,6 +17,7 @@ import csv
 import logging
 import os
 import random
+import shutil
 import signal
 import sys
 import time
@@ -56,6 +58,33 @@ def _validate_plan(plan: dict) -> None:
 
 
 # ── Weighted random selection ─────────────────────────────────────────────────
+
+def _fault_support_reason(fault_type: str) -> str | None:
+    """Return a reason when a fault type cannot run on the current host."""
+    if fault_type == "gradual_degradation":
+        return "fault type is not implemented yet"
+
+    if fault_type in {"netem_loss", "netem_delay"} and shutil.which("clab") is None:
+        return "`clab` is not available on PATH"
+
+    return None
+
+
+def filter_supported_faults(faults: list[dict]) -> tuple[list[dict], list[tuple[str, str]]]:
+    """Split plan faults into runnable and skipped sets for the current environment."""
+    supported: list[dict] = []
+    skipped: list[tuple[str, str]] = []
+
+    for fault in faults:
+        fault_type = fault["type"]
+        reason = _fault_support_reason(fault_type)
+        if reason is None:
+            supported.append(fault)
+        else:
+            skipped.append((fault_type, reason))
+
+    return supported, skipped
+
 
 def weighted_choice(faults: list[dict]) -> dict:
     weights = [f.get("weight", 1) for f in faults]
@@ -196,7 +225,9 @@ def run(plan: dict, args: argparse.Namespace) -> None:
     duration_s = duration_h * 3600
     interval_range = plan.get("injection_interval_seconds", [60, 300])
     topology = plan.get("topology", inject_fault.TOPOLOGY_NAME)
-    faults = plan["faults"]
+    faults, skipped_faults = filter_supported_faults(plan["faults"])
+    if not faults:
+        raise SystemExit("No runnable faults remain after host capability checks")
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_dir = Path("chaos_runs") / run_id
@@ -207,6 +238,9 @@ def run(plan: dict, args: argparse.Namespace) -> None:
 
     log.info("Chaos run %s starting — duration=%.1fh  targets=%s  dry_run=%s",
              run_id, duration_h, list(targets), args.dry_run)
+
+    for fault_type, reason in skipped_faults:
+        log.warning("Skipping fault type %s: %s", fault_type, reason)
 
     records: list[dict] = []
     deadline = time.monotonic() + duration_s

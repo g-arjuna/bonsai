@@ -1,10 +1,10 @@
 """BFD anomaly detection rules."""
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Optional
 
 from ..detection import Detector, Features
+from ..ml_detector import extract_features_for_event
 
 if TYPE_CHECKING:
     from ..client import BonsaiClient
@@ -22,16 +22,13 @@ class BfdSessionDown(Detector):
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "bfd_session_change":
             return None
-        detail = json.loads(event.detail_json or "{}")
-        new_state = detail.get("new_state", "").lower()
-        old_state = detail.get("old_state", "").lower()
+        f = extract_features_for_event(event, client)
+        new_state = f.new_state.lower()
+        old_state = f.old_state.lower()
         if new_state not in _DOWN_STATES or old_state not in _UP_STATES:
             return None
-        f = Features.from_event(event, detail)
-        f.peer_address = detail.get("peer", "")
         f.old_state = old_state
         f.new_state = new_state
-        f.if_name = detail.get("if_name", "")
         return f
 
     def detect(self, features: Features) -> Optional[str]:

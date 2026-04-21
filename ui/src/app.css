@@ -99,3 +99,246 @@ tr:hover td { background: rgba(255,255,255,0.03); cursor: pointer; }
 .empty { color: var(--muted); text-align: center; padding: 40px; }
 
 #topo-svg { width: 100%; height: 560px; background: var(--bg2); border-radius: 6px; border: 1px solid var(--border); }
+
+.workspace-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: flex-start;
+  margin-bottom: 20px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.workspace-header h2 {
+  max-width: 760px;
+  margin: 3px 0 8px;
+  font-size: 28px;
+  letter-spacing: -0.03em;
+}
+
+.eyebrow {
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.muted { color: var(--muted); }
+
+.notice {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+
+.notice.error { border-color: rgba(248,81,73,0.5); color: var(--red); background: rgba(248,81,73,0.08); }
+.notice.success { border-color: rgba(63,185,80,0.5); color: var(--green); background: rgba(63,185,80,0.08); }
+
+.onboarding-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
+  gap: 18px;
+  align-items: stretch;
+}
+
+.onboarding-form,
+.discovery-panel,
+.managed-device {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.onboarding-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  padding: 18px;
+}
+
+.form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-row label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+input,
+select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #0b1118;
+  color: var(--text);
+  padding: 10px 11px;
+  outline: none;
+}
+
+input:focus,
+select:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(88,166,255,0.12);
+}
+
+.span-2 { grid-column: span 2; }
+
+button {
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent);
+  color: white;
+  padding: 9px 13px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+button:hover { filter: brightness(1.1); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+button.ghost {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text);
+}
+
+button.danger {
+  background: rgba(248,81,73,0.12);
+  border-color: rgba(248,81,73,0.45);
+  color: var(--red);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.discovery-panel {
+  padding: 18px;
+  min-height: 100%;
+}
+
+.discovery-panel h3,
+.managed-section h3 {
+  margin-bottom: 12px;
+  font-size: 18px;
+}
+
+.discovery-panel h4 {
+  margin: 16px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.report-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.report-line span,
+.profile span,
+.section-title span,
+.managed-device p,
+.status-row small {
+  color: var(--muted);
+}
+
+.profile {
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.profile p,
+.warning {
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.warning { color: var(--yellow); }
+
+.managed-section { margin-top: 22px; }
+
+.section-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 12px;
+}
+
+.device-list {
+  display: grid;
+  gap: 12px;
+}
+
+.managed-device {
+  padding: 14px;
+}
+
+.managed-device header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.managed-device h4 {
+  margin-bottom: 4px;
+  font-size: 16px;
+}
+
+.device-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.status-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.status-row {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr) 140px;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.status-row code {
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+@media (max-width: 900px) {
+  .workspace-header,
+  .managed-device header {
+    flex-direction: column;
+  }
+
+  .onboarding-grid,
+  .onboarding-form {
+    grid-template-columns: 1fr;
+  }
+
+  .span-2 { grid-column: span 1; }
+
+  .status-row {
+    grid-template-columns: 1fr;
+  }
+}

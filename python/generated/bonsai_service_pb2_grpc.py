@@ -61,10 +61,40 @@ class BonsaiGraphStub(object):
                 request_serializer=bonsai__service__pb2.GetTopologyRequest.SerializeToString,
                 response_deserializer=bonsai__service__pb2.GetTopologyResponse.FromString,
                 _registered_method=True)
+        self.ListManagedDevices = channel.unary_unary(
+                '/bonsai.v1.BonsaiGraph/ListManagedDevices',
+                request_serializer=bonsai__service__pb2.ListManagedDevicesRequest.SerializeToString,
+                response_deserializer=bonsai__service__pb2.ListManagedDevicesResponse.FromString,
+                _registered_method=True)
+        self.AddDevice = channel.unary_unary(
+                '/bonsai.v1.BonsaiGraph/AddDevice',
+                request_serializer=bonsai__service__pb2.AddDeviceRequest.SerializeToString,
+                response_deserializer=bonsai__service__pb2.DeviceMutationResponse.FromString,
+                _registered_method=True)
+        self.UpdateDevice = channel.unary_unary(
+                '/bonsai.v1.BonsaiGraph/UpdateDevice',
+                request_serializer=bonsai__service__pb2.UpdateDeviceRequest.SerializeToString,
+                response_deserializer=bonsai__service__pb2.DeviceMutationResponse.FromString,
+                _registered_method=True)
+        self.RemoveDevice = channel.unary_unary(
+                '/bonsai.v1.BonsaiGraph/RemoveDevice',
+                request_serializer=bonsai__service__pb2.RemoveDeviceRequest.SerializeToString,
+                response_deserializer=bonsai__service__pb2.DeviceMutationResponse.FromString,
+                _registered_method=True)
+        self.DiscoverDevice = channel.unary_unary(
+                '/bonsai.v1.BonsaiGraph/DiscoverDevice',
+                request_serializer=bonsai__service__pb2.DiscoverRequest.SerializeToString,
+                response_deserializer=bonsai__service__pb2.DiscoveryReport.FromString,
+                _registered_method=True)
         self.StreamEvents = channel.unary_stream(
                 '/bonsai.v1.BonsaiGraph/StreamEvents',
                 request_serializer=bonsai__service__pb2.StreamEventsRequest.SerializeToString,
                 response_deserializer=bonsai__service__pb2.StateEvent.FromString,
+                _registered_method=True)
+        self.TelemetryIngest = channel.stream_unary(
+                '/bonsai.v1.BonsaiGraph/TelemetryIngest',
+                request_serializer=bonsai__service__pb2.TelemetryIngestUpdate.SerializeToString,
+                response_deserializer=bonsai__service__pb2.TelemetryIngestResponse.FromString,
                 _registered_method=True)
         self.CreateDetection = channel.unary_unary(
                 '/bonsai.v1.BonsaiGraph/CreateDetection',
@@ -120,8 +150,46 @@ class BonsaiGraphServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListManagedDevices(self, request, context):
+        """Runtime-managed device registry.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AddDevice(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UpdateDevice(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RemoveDevice(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DiscoverDevice(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def StreamEvents(self, request, context):
         """Server-streaming: push events to the caller as they occur.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def TelemetryIngest(self, request_iterator, context):
+        """Client-streaming: collectors push decoded telemetry updates into a core.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -175,10 +243,40 @@ def add_BonsaiGraphServicer_to_server(servicer, server):
                     request_deserializer=bonsai__service__pb2.GetTopologyRequest.FromString,
                     response_serializer=bonsai__service__pb2.GetTopologyResponse.SerializeToString,
             ),
+            'ListManagedDevices': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListManagedDevices,
+                    request_deserializer=bonsai__service__pb2.ListManagedDevicesRequest.FromString,
+                    response_serializer=bonsai__service__pb2.ListManagedDevicesResponse.SerializeToString,
+            ),
+            'AddDevice': grpc.unary_unary_rpc_method_handler(
+                    servicer.AddDevice,
+                    request_deserializer=bonsai__service__pb2.AddDeviceRequest.FromString,
+                    response_serializer=bonsai__service__pb2.DeviceMutationResponse.SerializeToString,
+            ),
+            'UpdateDevice': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpdateDevice,
+                    request_deserializer=bonsai__service__pb2.UpdateDeviceRequest.FromString,
+                    response_serializer=bonsai__service__pb2.DeviceMutationResponse.SerializeToString,
+            ),
+            'RemoveDevice': grpc.unary_unary_rpc_method_handler(
+                    servicer.RemoveDevice,
+                    request_deserializer=bonsai__service__pb2.RemoveDeviceRequest.FromString,
+                    response_serializer=bonsai__service__pb2.DeviceMutationResponse.SerializeToString,
+            ),
+            'DiscoverDevice': grpc.unary_unary_rpc_method_handler(
+                    servicer.DiscoverDevice,
+                    request_deserializer=bonsai__service__pb2.DiscoverRequest.FromString,
+                    response_serializer=bonsai__service__pb2.DiscoveryReport.SerializeToString,
+            ),
             'StreamEvents': grpc.unary_stream_rpc_method_handler(
                     servicer.StreamEvents,
                     request_deserializer=bonsai__service__pb2.StreamEventsRequest.FromString,
                     response_serializer=bonsai__service__pb2.StateEvent.SerializeToString,
+            ),
+            'TelemetryIngest': grpc.stream_unary_rpc_method_handler(
+                    servicer.TelemetryIngest,
+                    request_deserializer=bonsai__service__pb2.TelemetryIngestUpdate.FromString,
+                    response_serializer=bonsai__service__pb2.TelemetryIngestResponse.SerializeToString,
             ),
             'CreateDetection': grpc.unary_unary_rpc_method_handler(
                     servicer.CreateDetection,
@@ -344,6 +442,141 @@ class BonsaiGraph(object):
             _registered_method=True)
 
     @staticmethod
+    def ListManagedDevices(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bonsai.v1.BonsaiGraph/ListManagedDevices',
+            bonsai__service__pb2.ListManagedDevicesRequest.SerializeToString,
+            bonsai__service__pb2.ListManagedDevicesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AddDevice(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bonsai.v1.BonsaiGraph/AddDevice',
+            bonsai__service__pb2.AddDeviceRequest.SerializeToString,
+            bonsai__service__pb2.DeviceMutationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpdateDevice(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bonsai.v1.BonsaiGraph/UpdateDevice',
+            bonsai__service__pb2.UpdateDeviceRequest.SerializeToString,
+            bonsai__service__pb2.DeviceMutationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RemoveDevice(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bonsai.v1.BonsaiGraph/RemoveDevice',
+            bonsai__service__pb2.RemoveDeviceRequest.SerializeToString,
+            bonsai__service__pb2.DeviceMutationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DiscoverDevice(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bonsai.v1.BonsaiGraph/DiscoverDevice',
+            bonsai__service__pb2.DiscoverRequest.SerializeToString,
+            bonsai__service__pb2.DiscoveryReport.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def StreamEvents(request,
             target,
             options=(),
@@ -360,6 +593,33 @@ class BonsaiGraph(object):
             '/bonsai.v1.BonsaiGraph/StreamEvents',
             bonsai__service__pb2.StreamEventsRequest.SerializeToString,
             bonsai__service__pb2.StateEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def TelemetryIngest(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_unary(
+            request_iterator,
+            target,
+            '/bonsai.v1.BonsaiGraph/TelemetryIngest',
+            bonsai__service__pb2.TelemetryIngestUpdate.SerializeToString,
+            bonsai__service__pb2.TelemetryIngestResponse.FromString,
             options,
             channel_credentials,
             insecure,

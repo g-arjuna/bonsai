@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use tonic::Request;
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig};
-use tonic::Request;
 use tracing::{debug, info, warn};
 
 const BACKOFF_INITIAL: Duration = Duration::from_secs(5);
@@ -12,12 +12,13 @@ const BACKOFF_RESET_THRESHOLD: Duration = Duration::from_secs(60);
 
 use crate::proto::gnmi::g_nmi_client::GNmiClient;
 use crate::proto::gnmi::{
-    subscribe_request, subscription_list, CapabilityRequest, Path, PathElem, SubscribeRequest,
-    SubscriptionList, Subscription, SubscriptionMode,
+    CapabilityRequest, Path, PathElem, SubscribeRequest, Subscription, SubscriptionList,
+    SubscriptionMode, subscribe_request, subscription_list,
 };
 use std::sync::Arc;
 
 use crate::event_bus::InProcessBus;
+use crate::subscription_status::{SubscriptionPathExpectation, SubscriptionPlan};
 use crate::telemetry::TelemetryUpdate;
 
 pub struct GnmiSubscriber {
@@ -32,6 +33,7 @@ pub struct GnmiSubscriber {
     ca_cert_pem: Option<Vec<u8>>,
     tls_domain: String,
     bus: Arc<InProcessBus>,
+    subscription_plan_tx: Option<tokio::sync::mpsc::Sender<SubscriptionPlan>>,
 }
 
 impl GnmiSubscriber {
@@ -45,6 +47,7 @@ impl GnmiSubscriber {
         tls_domain: impl Into<String>,
         ca_cert_pem: Option<Vec<u8>>,
         bus: Arc<InProcessBus>,
+        subscription_plan_tx: Option<tokio::sync::mpsc::Sender<SubscriptionPlan>>,
     ) -> Self {
         Self {
             target: target.into(),
@@ -55,6 +58,7 @@ impl GnmiSubscriber {
             ca_cert_pem,
             tls_domain: tls_domain.into(),
             bus,
+            subscription_plan_tx,
         }
     }
 
@@ -62,12 +66,13 @@ impl GnmiSubscriber {
         let mut backoff = BACKOFF_INITIAL;
         loop {
             let start = std::time::Instant::now();
+            let mut stream_shutdown = shutdown.clone();
             tokio::select! {
                 _ = shutdown.changed() => {
                     info!(target = %self.target, "shutdown signal received");
                     return;
                 }
-                result = self.subscribe_telemetry() => {
+                result = self.subscribe_telemetry(&mut stream_shutdown) => {
                     if let Err(e) = result {
                         warn!(target = %self.target, error = %e, "subscription failed");
                     }
@@ -90,7 +95,10 @@ impl GnmiSubscriber {
         }
     }
 
-    pub async fn subscribe_telemetry(&self) -> Result<()> {
+    pub async fn subscribe_telemetry(
+        &self,
+        shutdown: &mut tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()> {
         let channel = self.connect().await?;
         let target = self.target.clone();
 
@@ -111,16 +119,24 @@ impl GnmiSubscriber {
 
         #[allow(clippy::result_large_err)]
         let mut client = GNmiClient::with_interceptor(channel, move |mut req: Request<()>| {
-            if let Some(ref u) = username && let Ok(v) = MetadataValue::try_from(u.as_str()) {
+            if let Some(ref u) = username
+                && let Ok(v) = MetadataValue::try_from(u.as_str())
+            {
                 req.metadata_mut().insert("username", v);
             }
-            if let Some(ref p) = password && let Ok(v) = MetadataValue::try_from(p.as_str()) {
+            if let Some(ref p) = password
+                && let Ok(v) = MetadataValue::try_from(p.as_str())
+            {
                 req.metadata_mut().insert("password", v);
             }
             Ok(req)
         });
 
         let subscriptions = build_subscriptions(&caps);
+        let plan_paths = subscriptions
+            .iter()
+            .filter_map(subscription_expectation)
+            .collect::<Vec<_>>();
         info!(
             target = %target,
             vendor       = %caps.vendor_label,
@@ -151,41 +167,85 @@ impl GnmiSubscriber {
             .context("Subscribe RPC failed")?
             .into_inner();
 
+        if let Some(tx) = &self.subscription_plan_tx
+            && let Err(error) = tx
+                .send(SubscriptionPlan {
+                    target: target.clone(),
+                    paths: plan_paths,
+                })
+                .await
+        {
+            warn!(target = %target, %error, "failed to publish subscription plan");
+        }
+
         loop {
-            match stream.message().await {
+            let next_message = tokio::select! {
+                _ = shutdown.changed() => {
+                    info!(target = %target, "shutdown signal received during telemetry stream");
+                    return Ok(());
+                }
+                message = stream.message() => message,
+            };
+
+            match next_message {
                 Ok(Some(response)) => {
                     use crate::proto::gnmi::subscribe_response::Response;
                     if let Some(resp) = response.response {
                         match resp {
                             Response::Update(notif) => {
                                 use std::collections::HashMap;
-                                let prefix = notif.prefix.as_ref().map(path_to_string).unwrap_or_default();
+                                let prefix = notif
+                                    .prefix
+                                    .as_ref()
+                                    .map(path_to_string)
+                                    .unwrap_or_default();
 
                                 // Devices like cEOS stream individual scalar leaves rather than a
                                 // JSON blob at the container path. Group scalars within one
                                 // notification by their parent path so classifiers see the same
                                 // blob-at-container shape regardless of vendor.
                                 let mut blobs: Vec<(String, serde_json::Value)> = Vec::new();
-                                let mut leaf_groups: HashMap<String, serde_json::Map<String, serde_json::Value>> = HashMap::new();
+                                let mut leaf_groups: HashMap<
+                                    String,
+                                    serde_json::Map<String, serde_json::Value>,
+                                > = HashMap::new();
 
                                 for update in &notif.update {
-                                    let update_path = update.path.as_ref().map(path_to_string).unwrap_or_default();
+                                    let update_path = update
+                                        .path
+                                        .as_ref()
+                                        .map(path_to_string)
+                                        .unwrap_or_default();
                                     let path = match (prefix.is_empty(), update_path.is_empty()) {
-                                        (true, _)      => update_path,
-                                        (false, true)  => prefix.clone(),
+                                        (true, _) => update_path,
+                                        (false, true) => prefix.clone(),
                                         (false, false) => format!("{prefix}/{update_path}"),
                                     };
-                                    let val = update.val.as_ref().map(typed_value_to_json).unwrap_or(serde_json::Value::Null);
-                                    let is_scalar = matches!(val, serde_json::Value::Number(_) | serde_json::Value::String(_) | serde_json::Value::Bool(_));
+                                    let val = update
+                                        .val
+                                        .as_ref()
+                                        .map(typed_value_to_json)
+                                        .unwrap_or(serde_json::Value::Null);
+                                    let is_scalar = matches!(
+                                        val,
+                                        serde_json::Value::Number(_)
+                                            | serde_json::Value::String(_)
+                                            | serde_json::Value::Bool(_)
+                                    );
                                     if is_scalar && let Some(slash) = path.rfind('/') {
-                                        leaf_groups.entry(path[..slash].to_string()).or_default().insert(path[slash + 1..].to_string(), val);
+                                        leaf_groups
+                                            .entry(path[..slash].to_string())
+                                            .or_default()
+                                            .insert(path[slash + 1..].to_string(), val);
                                         continue;
                                     }
                                     blobs.push((path, val));
                                 }
 
                                 let all_updates = blobs.into_iter().chain(
-                                    leaf_groups.into_iter().map(|(p, obj)| (p, serde_json::Value::Object(obj)))
+                                    leaf_groups
+                                        .into_iter()
+                                        .map(|(p, obj)| (p, serde_json::Value::Object(obj))),
                                 );
                                 for (path, val) in all_updates {
                                     debug!(target = %target, path = %path, "update");
@@ -279,37 +339,44 @@ struct ModelCapabilities {
 
 impl ModelCapabilities {
     /// Build from a real Capabilities response — single source of truth for path selection.
-    fn from_response(
-        models: &[crate::proto::gnmi::ModelData],
-        encodings: &[i32],
-    ) -> Self {
+    fn from_response(models: &[crate::proto::gnmi::ModelData], encodings: &[i32]) -> Self {
         let json_ietf = crate::proto::gnmi::Encoding::JsonIetf as i32;
-        let json      = crate::proto::gnmi::Encoding::Json as i32;
+        let json = crate::proto::gnmi::Encoding::Json as i32;
 
-        let has_oc_iface  = models.iter().any(|m| m.name == "openconfig-interfaces");
-        let has_oc_bfd    = models.iter().any(|m| m.name == "openconfig-bfd");
-        let has_oc_bgp    = models.iter().any(|m| {
-            m.name == "openconfig-bgp" || m.name == "openconfig-network-instance"
-        });
-        let has_oc_lldp   = models.iter().any(|m| m.name == "openconfig-lldp");
+        let has_oc_iface = models.iter().any(|m| m.name == "openconfig-interfaces");
+        let has_oc_bfd = models.iter().any(|m| m.name == "openconfig-bfd");
+        let has_oc_bgp = models
+            .iter()
+            .any(|m| m.name == "openconfig-bgp" || m.name == "openconfig-network-instance");
+        let has_oc_lldp = models.iter().any(|m| m.name == "openconfig-lldp");
         // SRL advertises models as Nokia URNs (urn:nokia.com:srlinux:*:srl_nokia-*),
         // not as openconfig-* names — detect by the srl_nokia substring.
-        let has_srl       = models.iter().any(|m| m.name.contains("srl_nokia"));
-        let has_srl_bfd   = models.iter().any(|m| m.name.contains("srl_nokia-bfd"));
-        let has_xr_native = models.iter().any(|m| m.name.contains("Cisco-IOS-XR-infra-statsd-oper"));
+        let has_srl = models.iter().any(|m| m.name.contains("srl_nokia"));
+        let has_srl_bfd = models.iter().any(|m| m.name.contains("srl_nokia-bfd"));
+        let has_xr_native = models
+            .iter()
+            .any(|m| m.name.contains("Cisco-IOS-XR-infra-statsd-oper"));
 
-        let encoding = if encodings.contains(&json_ietf) { json_ietf } else { json };
+        let encoding = if encodings.contains(&json_ietf) {
+            json_ietf
+        } else {
+            json
+        };
 
         // Vendor label: informational only — derived from model names, never used for routing.
         let vendor_label = if has_srl {
             "nokia_srl"
         } else if models.iter().any(|m| m.name.starts_with("Cisco-IOS-XR")) {
             "cisco_xrd"
-        } else if models.iter().any(|m| {
-            m.name.to_lowercase().contains("arista") || m.name.contains("EOS")
-        }) {
+        } else if models
+            .iter()
+            .any(|m| m.name.to_lowercase().contains("arista") || m.name.contains("EOS"))
+        {
             "arista_ceos"
-        } else if models.iter().any(|m| m.name.to_lowercase().starts_with("junos")) {
+        } else if models
+            .iter()
+            .any(|m| m.name.to_lowercase().starts_with("junos"))
+        {
             "juniper_crpd"
         } else {
             "openconfig"
@@ -382,17 +449,21 @@ async fn detect_capabilities(
     hint: Option<&str>,
 ) -> ModelCapabilities {
     let mut req = tonic::Request::new(CapabilityRequest::default());
-    if let Some(u) = username && let Ok(v) = MetadataValue::try_from(u) {
+    if let Some(u) = username
+        && let Ok(v) = MetadataValue::try_from(u)
+    {
         req.metadata_mut().insert("username", v);
     }
-    if let Some(p) = password && let Ok(v) = MetadataValue::try_from(p) {
+    if let Some(p) = password
+        && let Ok(v) = MetadataValue::try_from(p)
+    {
         req.metadata_mut().insert("password", v);
     }
 
     match client.capabilities(req).await {
         Ok(resp) => {
             let inner = resp.into_inner();
-            let models    = &inner.supported_models;
+            let models = &inner.supported_models;
             let encodings = &inner.supported_encodings;
 
             let sample: Vec<_> = models.iter().take(5).map(|m| m.name.as_str()).collect();
@@ -452,7 +523,7 @@ fn build_subscriptions(caps: &ModelCapabilities) -> Vec<Subscription> {
     // not under bfd/subinterface — subscribe to the network-instance container for state.
     if caps.has_srl_native && caps.has_srl_native_bfd {
         subs.push(sub_on_change(srl_path(&[
-            ("bfd",              &[]),
+            ("bfd", &[]),
             ("network-instance", &[("name", "default")]),
         ])));
     } else if caps.has_oc_bfd {
@@ -513,13 +584,33 @@ fn sub_on_change(path: Path) -> Subscription {
 
 // ── path builders ─────────────────────────────────────────────────────────────
 
+fn subscription_expectation(sub: &Subscription) -> Option<SubscriptionPathExpectation> {
+    let path = sub.path.as_ref()?;
+    let mode = if sub.mode == SubscriptionMode::Sample as i32 {
+        "SAMPLE"
+    } else if sub.mode == SubscriptionMode::OnChange as i32 {
+        "ON_CHANGE"
+    } else {
+        "UNKNOWN"
+    };
+    Some(SubscriptionPathExpectation {
+        path: path_to_string(path),
+        origin: path.origin.clone(),
+        mode: mode.to_string(),
+        sample_interval_ns: sub.sample_interval,
+    })
+}
+
 /// OpenConfig path: sets origin="openconfig" so devices can resolve the schema tree.
 fn oc_path(elems: &[&str]) -> Path {
     Path {
         origin: "openconfig".to_string(),
         elem: elems
             .iter()
-            .map(|name| PathElem { name: name.to_string(), key: Default::default() })
+            .map(|name| PathElem {
+                name: name.to_string(),
+                key: Default::default(),
+            })
             .collect(),
         ..Default::default()
     }
@@ -533,7 +624,10 @@ fn srl_path(elems: &[(&str, &[(&str, &str)])]) -> Path {
             .iter()
             .map(|(name, keys)| PathElem {
                 name: name.to_string(),
-                key: keys.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+                key: keys
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
             })
             .collect(),
         ..Default::default()
@@ -547,7 +641,10 @@ trait PathExt {
 
 impl PathExt for Path {
     fn with_tail(mut self, name: &str) -> Path {
-        self.elem.push(PathElem { name: name.to_string(), key: Default::default() });
+        self.elem.push(PathElem {
+            name: name.to_string(),
+            key: Default::default(),
+        });
         self
     }
 }
@@ -555,18 +652,18 @@ impl PathExt for Path {
 fn srl_bgp_neighbors_path() -> Path {
     srl_path(&[
         ("network-instance", &[("name", "default")]),
-        ("protocols",        &[]),
-        ("bgp",              &[]),
-        ("neighbor",         &[("peer-address", "*")]),
+        ("protocols", &[]),
+        ("bgp", &[]),
+        ("neighbor", &[("peer-address", "*")]),
     ])
 }
 
 fn srl_lldp_neighbors_path() -> Path {
     srl_path(&[
-        ("system",    &[]),
-        ("lldp",      &[]),
+        ("system", &[]),
+        ("lldp", &[]),
         ("interface", &[("name", "*")]),
-        ("neighbor",  &[("id", "*")]),
+        ("neighbor", &[("id", "*")]),
     ])
 }
 
@@ -575,12 +672,30 @@ fn xr_native_lldp_path() -> Path {
     Path {
         origin: String::new(),
         elem: vec![
-            PathElem { name: "Cisco-IOS-XR-ethernet-lldp-oper:lldp".to_string(), key: Default::default() },
-            PathElem { name: "nodes".to_string(), key: Default::default() },
-            PathElem { name: "node".to_string(), key: Default::default() },
-            PathElem { name: "neighbors".to_string(), key: Default::default() },
-            PathElem { name: "details".to_string(), key: Default::default() },
-            PathElem { name: "detail".to_string(), key: Default::default() },
+            PathElem {
+                name: "Cisco-IOS-XR-ethernet-lldp-oper:lldp".to_string(),
+                key: Default::default(),
+            },
+            PathElem {
+                name: "nodes".to_string(),
+                key: Default::default(),
+            },
+            PathElem {
+                name: "node".to_string(),
+                key: Default::default(),
+            },
+            PathElem {
+                name: "neighbors".to_string(),
+                key: Default::default(),
+            },
+            PathElem {
+                name: "details".to_string(),
+                key: Default::default(),
+            },
+            PathElem {
+                name: "detail".to_string(),
+                key: Default::default(),
+            },
         ],
         ..Default::default()
     }
@@ -597,10 +712,22 @@ fn xr_native_stats_path() -> Path {
     Path {
         origin: String::new(),
         elem: vec![
-            PathElem { name: "Cisco-IOS-XR-infra-statsd-oper:infra-statistics".to_string(), key: Default::default() },
-            PathElem { name: "interfaces".to_string(), key: Default::default() },
-            PathElem { name: "interface".to_string(), key },
-            PathElem { name: "generic-counters".to_string(), key: Default::default() },
+            PathElem {
+                name: "Cisco-IOS-XR-infra-statsd-oper:infra-statistics".to_string(),
+                key: Default::default(),
+            },
+            PathElem {
+                name: "interfaces".to_string(),
+                key: Default::default(),
+            },
+            PathElem {
+                name: "interface".to_string(),
+                key,
+            },
+            PathElem {
+                name: "generic-counters".to_string(),
+                key: Default::default(),
+            },
         ],
         ..Default::default()
     }
@@ -629,14 +756,14 @@ fn typed_value_to_json(val: &crate::proto::gnmi::TypedValue) -> serde_json::Valu
         Some(Value::JsonIetfVal(b)) => serde_json::from_slice(b).unwrap_or(
             serde_json::Value::String(String::from_utf8_lossy(b).into_owned()),
         ),
-        Some(Value::JsonVal(b)) => serde_json::from_slice(b).unwrap_or(
-            serde_json::Value::String(String::from_utf8_lossy(b).into_owned()),
-        ),
+        Some(Value::JsonVal(b)) => serde_json::from_slice(b).unwrap_or(serde_json::Value::String(
+            String::from_utf8_lossy(b).into_owned(),
+        )),
         Some(Value::StringVal(s)) => serde_json::Value::String(s.clone()),
-        Some(Value::IntVal(i))    => serde_json::json!(i),
-        Some(Value::UintVal(u))   => serde_json::json!(u),
-        Some(Value::BoolVal(b))   => serde_json::Value::Bool(*b),
-        Some(Value::FloatVal(f))  => serde_json::json!(f),
-        _                         => serde_json::Value::Null,
+        Some(Value::IntVal(i)) => serde_json::json!(i),
+        Some(Value::UintVal(u)) => serde_json::json!(u),
+        Some(Value::BoolVal(b)) => serde_json::Value::Bool(*b),
+        Some(Value::FloatVal(f)) => serde_json::json!(f),
+        _ => serde_json::Value::Null,
     }
 }
