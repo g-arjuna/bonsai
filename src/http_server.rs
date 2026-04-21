@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::BroadcastStream;
 use tower_http::{cors::CorsLayer, services::ServeDir};
 
-use crate::graph::{DetectionRow, GraphStore, REMEDIATION_TRUST_CUTOFF_ISO, TraceStep};
+use crate::graph::{DetectionRow, GraphStore, REMEDIATION_TRUST_CUTOFF_ISO, SiteRecord, TraceStep};
 use crate::{
     config::TargetConfig,
     credentials::{CredentialSummary, CredentialVault, ResolvedCredential},
@@ -167,6 +167,35 @@ struct RemoveManagedDeviceRequest {
 }
 
 #[derive(Serialize)]
+struct SitesResponse {
+    sites: Vec<SiteJson>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SiteJson {
+    #[serde(default)]
+    id: String,
+    name: String,
+    #[serde(default)]
+    parent_id: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    lat: f64,
+    #[serde(default)]
+    lon: f64,
+    #[serde(default)]
+    metadata_json: String,
+}
+
+#[derive(Serialize)]
+struct SiteMutationResponse {
+    success: bool,
+    error: String,
+    site: Option<SiteJson>,
+}
+
+#[derive(Serialize)]
 struct CredentialsResponse {
     credentials: Vec<CredentialJson>,
     unlocked: bool,
@@ -265,6 +294,7 @@ pub fn router(
             post(remove_managed_device_handler),
         )
         .route("/api/onboarding/discover", post(discover_handler))
+        .route("/api/sites", get(sites_handler).post(upsert_site_handler))
         .route(
             "/api/credentials",
             get(credentials_handler).post(add_credential_handler),
@@ -529,6 +559,17 @@ async fn add_managed_device_handler(
 
     match result {
         Ok(device) => {
+            if let Err(error) = state
+                .store
+                .sync_sites_from_targets(vec![device.clone()])
+                .await
+            {
+                return Ok(Json(MutationResponse {
+                    success: false,
+                    error: format!("device saved but site graph sync failed: {error:#}"),
+                    device: Some(managed_device_json(device, &HashMap::new())),
+                }));
+            }
             let statuses = read_subscription_statuses(state.store.db()).await?;
             Ok(Json(MutationResponse {
                 success: true,
@@ -540,6 +581,38 @@ async fn add_managed_device_handler(
             success: false,
             error,
             device: None,
+        })),
+    }
+}
+
+async fn sites_handler(
+    State(state): State<AppState>,
+) -> Result<Json<SitesResponse>, (StatusCode, String)> {
+    let sites = state
+        .store
+        .list_sites()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
+        .into_iter()
+        .map(site_json)
+        .collect();
+    Ok(Json(SitesResponse { sites }))
+}
+
+async fn upsert_site_handler(
+    State(state): State<AppState>,
+    Json(req): Json<SiteJson>,
+) -> Result<Json<SiteMutationResponse>, (StatusCode, String)> {
+    match state.store.upsert_site(site_record(req)).await {
+        Ok(site) => Ok(Json(SiteMutationResponse {
+            success: true,
+            error: String::new(),
+            site: Some(site_json(site)),
+        })),
+        Err(error) => Ok(Json(SiteMutationResponse {
+            success: false,
+            error: format!("{error:#}"),
+            site: None,
         })),
     }
 }
@@ -795,6 +868,30 @@ fn target_from_request(req: ManagedDeviceRequest) -> Result<TargetConfig, (Statu
         role: option_string(req.role),
         site: option_string(req.site),
     })
+}
+
+fn site_json(site: SiteRecord) -> SiteJson {
+    SiteJson {
+        id: site.id,
+        name: site.name,
+        parent_id: site.parent_id,
+        kind: site.kind,
+        lat: site.lat,
+        lon: site.lon,
+        metadata_json: site.metadata_json,
+    }
+}
+
+fn site_record(site: SiteJson) -> SiteRecord {
+    SiteRecord {
+        id: site.id,
+        name: site.name,
+        parent_id: site.parent_id,
+        kind: site.kind,
+        lat: site.lat,
+        lon: site.lon,
+        metadata_json: site.metadata_json,
+    }
 }
 
 fn credential_json(credential: CredentialSummary) -> CredentialJson {

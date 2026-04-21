@@ -1147,3 +1147,33 @@ onboarding wizard exists.
 - Using `age` avoids inventing cryptography and keeps the vault format simple
   enough for a v1 single-host Bonsai deployment. Remote stores and key rotation
   remain out of scope until real operator demand appears.
+
+---
+
+## 2026-04-21 - Site is first-class graph state
+
+**Decision**: Bonsai represents operator sites as `Site` nodes with stable IDs,
+display names, parent IDs, kind labels, optional coordinates, metadata JSON, and
+`PARENT_OF` hierarchy edges. Managed devices remain configured with a
+human-facing `TargetConfig.site` string for now; startup and registry add/update
+paths migrate that string into a `Site` node with `kind = "unknown"` when needed
+and link the device with `Device-[:LOCATED_AT]->Site`. Site management is exposed
+through gRPC, HTTP, Python, and a minimal onboarding picker.
+
+**Alternatives considered**: keep `site` as an opaque device attribute until the
+wizard rewrite, require operators to pre-create sites before adding devices, or
+store site hierarchy only in the registry JSON.
+
+**Rationale**:
+- Putting sites in the graph makes locality queryable by the same Cypher
+  traversal model as devices, interfaces, BGP neighbors, detections, and
+  remediations.
+- Keeping `TargetConfig.site` as a string alias avoids a registry migration and
+  lets existing `bonsai-registry.json`/`bonsai.toml` entries self-heal into graph
+  sites on startup.
+- Existing string sites get `kind = "unknown"` so no operator data is lost while
+  the later onboarding wizard adds richer site creation and editing affordances.
+- `LOCATED_AT` is rewired on each registry sync so moving a device between sites
+  does not leave multiple active location edges.
+- Site ACLs, map visualization, and automatic site inference remain out of
+  scope for v1; sites are operational graph metadata, not a security boundary.

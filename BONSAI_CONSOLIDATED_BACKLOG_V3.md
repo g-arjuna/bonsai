@@ -278,6 +278,14 @@ Edges:
 - An integration test covers create-site → add-device-with-site → query-by-site
 - Existing string-site devices are migrated on startup: each unique string value becomes a Site node with `kind: "unknown"` and the old string as name; devices get `LOCATED_AT` edges to them. ADR documents the migration.
 
+**Execution update - 2026-04-21**: First backend/UI slice implemented after the credential
+vault checkpoint. Added `Site` graph schema plus `LOCATED_AT` and `PARENT_OF` relationships.
+`GraphStore::sync_sites_from_targets` now migrates registry `TargetConfig.site` strings into
+stable Site IDs and links devices on startup and after registry add/update. Added gRPC
+`ListSites`, `AddSite`, and `UpdateSite`, HTTP `/api/sites`, Python `list_sites`/`add_site`,
+and a minimal onboarding site picker/new-site form. Focused release test verifies
+create-site-from-target and `Device-[:LOCATED_AT]->Site` query behavior.
+
 **Explicitly out of scope for v1**:
 - Map visualisation UI — defer to T5-UI-map
 - Site ACLs — bonsai has no auth model; sites are metadata, not security boundaries

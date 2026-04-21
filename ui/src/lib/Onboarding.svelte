@@ -8,6 +8,7 @@
   let message = $state('');
   let devices = $state([]);
   let credentials = $state([]);
+  let sites = $state([]);
   let vaultUnlocked = $state(false);
   let discovery = $state(null);
 
@@ -28,6 +29,13 @@
     alias: '',
     username: '',
     password: ''
+  });
+
+  let siteForm = $state({
+    name: '',
+    kind: 'dc',
+    parent_id: '',
+    metadata_json: '{}'
   });
 
   async function loadDevices() {
@@ -51,6 +59,37 @@
       const body = await response.json();
       credentials = body.credentials || [];
       vaultUnlocked = !!body.unlocked;
+    } catch (e) {
+      error = e.message;
+    }
+  }
+
+  async function loadSites() {
+    try {
+      const response = await fetch('/api/sites');
+      if (!response.ok) throw new Error(await response.text());
+      const body = await response.json();
+      sites = body.sites || [];
+    } catch (e) {
+      error = e.message;
+    }
+  }
+
+  async function addSite() {
+    message = '';
+    try {
+      const response = await fetch('/api/sites', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(siteForm)
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const body = await response.json();
+      if (!body.success) throw new Error(body.error || 'site save failed');
+      form.site = body.site.name;
+      siteForm = { name: '', kind: 'dc', parent_id: '', metadata_json: '{}' };
+      message = `Site ${body.site.name} is available for onboarding.`;
+      await loadSites();
     } catch (e) {
       error = e.message;
     }
@@ -187,6 +226,7 @@
   onMount(() => {
     loadDevices();
     loadCredentials();
+    loadSites();
     const interval = setInterval(loadDevices, 10000);
     return () => clearInterval(interval);
   });
@@ -269,7 +309,15 @@
 
       <div class="form-row">
         <label for="onboard-site">Site</label>
-        <input id="onboard-site" bind:value={form.site} placeholder="lab" />
+        <select id="onboard-site" bind:value={form.site}>
+          <option value="">No site</option>
+          {#each sites as site}
+            <option value={site.name}>{site.name} ({site.kind || 'unknown'})</option>
+          {/each}
+          {#if form.site && !sites.some((site) => site.name === form.site)}
+            <option value={form.site}>{form.site}</option>
+          {/if}
+        </select>
       </div>
 
       <div class="actions span-2">
@@ -296,6 +344,34 @@
         <div class="alias-list">
           {#each credentials as credential}
             <button type="button" class="ghost" onclick={() => form.credential_alias = credential.alias}>{credential.alias}</button>
+          {/each}
+        </div>
+      {/if}
+
+      <h3>Sites</h3>
+      <p class="muted">Sites become graph nodes. Devices saved with a site get a LOCATED_AT edge.</p>
+      <form class="credential-form" onsubmit={(event) => { event.preventDefault(); addSite(); }}>
+        <input bind:value={siteForm.name} placeholder="lab-london" />
+        <select bind:value={siteForm.kind}>
+          <option value="region">region</option>
+          <option value="country">country</option>
+          <option value="city">city</option>
+          <option value="dc">dc</option>
+          <option value="rack">rack</option>
+          <option value="unknown">unknown</option>
+        </select>
+        <select bind:value={siteForm.parent_id}>
+          <option value="">No parent</option>
+          {#each sites as site}
+            <option value={site.id}>{site.name}</option>
+          {/each}
+        </select>
+        <button type="submit" disabled={!siteForm.name}>Add site</button>
+      </form>
+      {#if sites.length}
+        <div class="alias-list">
+          {#each sites as site}
+            <button type="button" class="ghost" onclick={() => form.site = site.name}>{site.name}</button>
           {/each}
         </div>
       {/if}

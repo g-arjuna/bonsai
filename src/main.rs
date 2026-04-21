@@ -180,6 +180,19 @@ async fn main() -> Result<()> {
     }
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
+    if let Some(graph) = &graph {
+        match registry.list_active() {
+            Ok(targets) => {
+                graph
+                    .sync_sites_from_targets(targets)
+                    .await
+                    .context("failed to sync registry sites into graph")?;
+                info!("registry site labels synced into graph");
+            }
+            Err(error) => warn!(%error, "failed to list managed devices for site graph sync"),
+        }
+    }
+
     let subscription_plan_tx = if let Some(graph) = &graph {
         let (subscription_plan_tx, subscription_plan_rx) =
             tokio::sync::mpsc::channel::<SubscriptionPlan>(128);

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use lbug::{Connection, Database, SystemConfig, Value};
@@ -10,6 +10,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::config::TargetConfig;
 use crate::telemetry::{TelemetryEvent, TelemetryUpdate, json_i64, json_i64_multi, json_str};
 
 pub const REMEDIATION_TRUST_CUTOFF_ISO: &str = "2026-04-20T09:32:50+00:00";
@@ -71,6 +72,17 @@ pub struct SubscriptionStatusWrite {
     pub updated_at_ns: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SiteRecord {
+    pub id: String,
+    pub name: String,
+    pub parent_id: String,
+    pub kind: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub metadata_json: String,
+}
+
 pub struct GraphStore {
     db: Arc<Database>,
     event_tx: broadcast::Sender<BonsaiEvent>,
@@ -112,6 +124,20 @@ impl GraphStore {
                 PRIMARY KEY (address))",
         )
         .context("create Device table")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS Site(\
+                id            STRING,\
+                name          STRING,\
+                parent_id     STRING,\
+                kind          STRING,\
+                lat           DOUBLE,\
+                lon           DOUBLE,\
+                metadata_json STRING,\
+                updated_at    TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create Site table")?;
 
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS Interface(\
@@ -159,6 +185,12 @@ impl GraphStore {
 
         conn.query("CREATE REL TABLE IF NOT EXISTS HAS_INTERFACE(FROM Device TO Interface)")
             .context("create HAS_INTERFACE rel")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS LOCATED_AT(FROM Device TO Site)")
+            .context("create LOCATED_AT rel")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS PARENT_OF(FROM Site TO Site)")
+            .context("create PARENT_OF rel")?;
 
         conn.query("CREATE REL TABLE IF NOT EXISTS PEERS_WITH(FROM Device TO BgpNeighbor)")
             .context("create PEERS_WITH rel")?;
@@ -278,6 +310,78 @@ impl GraphStore {
 
     pub fn db(&self) -> Arc<Database> {
         Arc::clone(&self.db)
+    }
+
+    pub async fn list_sites(&self) -> Result<Vec<SiteRecord>> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("list sites connection")?;
+            let rows = conn
+                .query(
+                    "MATCH (s:Site) \
+                     RETURN s.id, s.name, s.parent_id, s.kind, s.lat, s.lon, s.metadata_json \
+                     ORDER BY s.name",
+                )
+                .context("list sites query")?;
+            Ok::<_, anyhow::Error>(rows.map(site_from_row).collect())
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn upsert_site(&self, site: SiteRecord) -> Result<SiteRecord> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("site write connection")?;
+            let site = normalize_site(site)?;
+            upsert_site_record(&conn, &site, ts(now_ns()))?;
+            Ok::<_, anyhow::Error>(site)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn sync_sites_from_targets(&self, targets: Vec<TargetConfig>) -> Result<()> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("site sync connection")?;
+            let now = ts(now_ns());
+            for target in targets {
+                let Some(site_name) = target
+                    .site
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                else {
+                    continue;
+                };
+                let site = SiteRecord {
+                    id: site_id_from_name(site_name),
+                    name: site_name.to_string(),
+                    parent_id: String::new(),
+                    kind: "unknown".to_string(),
+                    lat: 0.0,
+                    lon: 0.0,
+                    metadata_json: "{}".to_string(),
+                };
+                upsert_device(
+                    &conn,
+                    &target.address,
+                    target.vendor.as_deref().unwrap_or_default(),
+                    target.hostname.as_deref().unwrap_or_default(),
+                    now.clone(),
+                )?;
+                upsert_site_record(&conn, &site, now.clone())?;
+                link_device_to_site(&conn, &target.address, &site.id)?;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("spawn_blocking panicked")?
     }
 
     fn backfill_remediation_trust_marks(&self) -> Result<()> {
@@ -755,6 +859,14 @@ fn read_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         _ => String::new(),
+    }
+}
+
+fn read_f64(v: &Value) -> f64 {
+    match v {
+        Value::Double(n) => *n,
+        Value::Float(n) => (*n).into(),
+        _ => 0.0,
     }
 }
 
@@ -1503,6 +1615,148 @@ fn upsert_device(
     Ok(())
 }
 
+fn normalize_site(mut site: SiteRecord) -> Result<SiteRecord> {
+    site.name = site.name.trim().to_string();
+    if site.name.is_empty() {
+        anyhow::bail!("site name is required");
+    }
+    site.id = site.id.trim().to_string();
+    if site.id.is_empty() {
+        site.id = site_id_from_name(&site.name);
+    }
+    site.parent_id = site.parent_id.trim().to_string();
+    site.kind = site.kind.trim().to_ascii_lowercase();
+    if site.kind.is_empty() {
+        site.kind = "unknown".to_string();
+    }
+    if site.metadata_json.trim().is_empty() {
+        site.metadata_json = "{}".to_string();
+    }
+    Ok(site)
+}
+
+fn site_id_from_name(name: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_dash = false;
+    for ch in name.trim().to_ascii_lowercase().chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch);
+            last_was_dash = false;
+        } else if !last_was_dash {
+            slug.push('-');
+            last_was_dash = true;
+        }
+    }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "site".to_string()
+    } else {
+        slug.to_string()
+    }
+}
+
+fn upsert_site_record(conn: &Connection<'_>, site: &SiteRecord, now: Value) -> Result<()> {
+    let mut stmt = conn
+        .prepare(
+            "MERGE (s:Site {id: $id}) \
+         ON CREATE SET \
+           s.name = $name, s.parent_id = $parent_id, s.kind = $kind, \
+           s.lat = $lat, s.lon = $lon, s.metadata_json = $metadata_json, s.updated_at = $ts \
+         ON MATCH SET \
+           s.name = $name, s.parent_id = $parent_id, s.kind = $kind, \
+           s.lat = $lat, s.lon = $lon, s.metadata_json = $metadata_json, s.updated_at = $ts",
+        )
+        .context("prepare Site upsert")?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(site.id.clone())),
+            ("name", Value::String(site.name.clone())),
+            ("parent_id", Value::String(site.parent_id.clone())),
+            ("kind", Value::String(site.kind.clone())),
+            ("lat", Value::Double(site.lat)),
+            ("lon", Value::Double(site.lon)),
+            ("metadata_json", Value::String(site.metadata_json.clone())),
+            ("ts", now),
+        ],
+    )
+    .context("execute Site upsert")?;
+
+    let mut clear_parent = conn
+        .prepare("MATCH (:Site)-[r:PARENT_OF]->(s:Site {id: $id}) DELETE r")
+        .context("prepare PARENT_OF clear")?;
+    conn.execute(
+        &mut clear_parent,
+        vec![("id", Value::String(site.id.clone()))],
+    )
+    .context("execute PARENT_OF clear")?;
+
+    if !site.parent_id.is_empty() && site.parent_id != site.id {
+        let mut parent_edge = conn
+            .prepare(
+                "MATCH (p:Site {id: $parent_id}), (s:Site {id: $id}) \
+             MERGE (p)-[:PARENT_OF]->(s)",
+            )
+            .context("prepare PARENT_OF edge")?;
+        conn.execute(
+            &mut parent_edge,
+            vec![
+                ("parent_id", Value::String(site.parent_id.clone())),
+                ("id", Value::String(site.id.clone())),
+            ],
+        )
+        .context("execute PARENT_OF edge")?;
+    }
+
+    Ok(())
+}
+
+fn link_device_to_site(conn: &Connection<'_>, device_address: &str, site_id: &str) -> Result<()> {
+    let mut clear = conn
+        .prepare("MATCH (d:Device {address: $addr})-[r:LOCATED_AT]->(:Site) DELETE r")
+        .context("prepare LOCATED_AT clear")?;
+    conn.execute(
+        &mut clear,
+        vec![("addr", Value::String(device_address.to_string()))],
+    )
+    .context("execute LOCATED_AT clear")?;
+
+    let mut link = conn
+        .prepare(
+            "MATCH (d:Device {address: $addr}), (s:Site {id: $site_id}) \
+         MERGE (d)-[:LOCATED_AT]->(s)",
+        )
+        .context("prepare LOCATED_AT edge")?;
+    conn.execute(
+        &mut link,
+        vec![
+            ("addr", Value::String(device_address.to_string())),
+            ("site_id", Value::String(site_id.to_string())),
+        ],
+    )
+    .context("execute LOCATED_AT edge")?;
+    Ok(())
+}
+
+fn site_from_row(row: Vec<Value>) -> SiteRecord {
+    SiteRecord {
+        id: read_str(&row[0]),
+        name: read_str(&row[1]),
+        parent_id: read_str(&row[2]),
+        kind: read_str(&row[3]),
+        lat: read_f64(&row[4]),
+        lon: read_f64(&row[5]),
+        metadata_json: read_str(&row[6]),
+    }
+}
+
+fn now_ns() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or_default()
+}
+
 fn emit_oper_status_event(
     conn: &Connection<'_>,
     u: &TelemetryUpdate,
@@ -1699,5 +1953,50 @@ mod tests {
         assert_eq!(read_str(&rows[0][1]), "dut1");
         assert_eq!(read_str(&rows[0][2]), "interface[name=*]/statistics");
         assert_eq!(read_str(&rows[0][3]), "subscribed_but_silent");
+    }
+
+    #[tokio::test]
+    async fn site_sync_creates_site_and_located_at_edge() {
+        let path = temp_graph_path("site-sync");
+        let store = GraphStore::open(&path).expect("open graph store");
+
+        store
+            .sync_sites_from_targets(vec![TargetConfig {
+                address: "dut:57400".to_string(),
+                tls_domain: None,
+                ca_cert: None,
+                vendor: Some("nokia_srl".to_string()),
+                credential_alias: None,
+                username_env: None,
+                password_env: None,
+                username: None,
+                password: None,
+                hostname: Some("dut1".to_string()),
+                role: Some("leaf".to_string()),
+                site: Some("lab-london".to_string()),
+            }])
+            .await
+            .expect("sync sites");
+
+        let conn = Connection::new(&store.db).expect("graph connection");
+        let mut site_query = conn
+            .prepare(
+                "MATCH (d:Device {address: $addr})-[:LOCATED_AT]->(s:Site) \
+                 RETURN d.hostname, s.id, s.name, s.kind",
+            )
+            .expect("prepare site query");
+        let rows = conn
+            .execute(
+                &mut site_query,
+                vec![("addr", Value::String("dut:57400".to_string()))],
+            )
+            .expect("query site edge")
+            .collect::<Vec<_>>();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(read_str(&rows[0][0]), "dut1");
+        assert_eq!(read_str(&rows[0][1]), "lab-london");
+        assert_eq!(read_str(&rows[0][2]), "lab-london");
+        assert_eq!(read_str(&rows[0][3]), "unknown");
     }
 }

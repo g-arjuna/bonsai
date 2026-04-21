@@ -91,6 +91,39 @@ class BonsaiClient:
         """Return CONNECTED_TO topology edges."""
         return list(self.stub.GetTopology(pb.GetTopologyRequest()).edges)
 
+    def list_sites(self) -> list:
+        """Return Site graph nodes used by onboarding and topology grouping."""
+        return list(self.stub.ListSites(pb.ListSitesRequest()).sites)
+
+    def add_site(
+        self,
+        name: str,
+        *,
+        site_id: str = "",
+        parent_id: str = "",
+        kind: str = "unknown",
+        lat: float = 0.0,
+        lon: float = 0.0,
+        metadata_json: str = "{}",
+    ):
+        """Create or update a Site node. Empty site_id is slugged by the server."""
+        resp = self.stub.AddSite(
+            pb.AddSiteRequest(
+                site=pb.Site(
+                    id=site_id,
+                    name=name,
+                    parent_id=parent_id,
+                    kind=kind,
+                    lat=lat,
+                    lon=lon,
+                    metadata_json=metadata_json,
+                )
+            )
+        )
+        if not resp.success:
+            raise RuntimeError(f"AddSite error: {resp.error}")
+        return resp.site
+
     def list_credentials(self) -> list:
         """Return credential aliases and metadata only; secrets never leave Rust."""
         return list(self.stub.ListCredentials(pb.ListCredentialsRequest()).credentials)

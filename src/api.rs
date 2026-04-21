@@ -11,7 +11,7 @@ use crate::credentials::{CredentialSummary, CredentialVault, ResolvedCredential}
 use crate::discovery;
 use crate::event_bus::InProcessBus;
 use crate::gnmi_set::gnmi_set;
-use crate::graph::{BonsaiEvent, GraphStore};
+use crate::graph::{BonsaiEvent, GraphStore, SiteRecord};
 use crate::ingest;
 use crate::registry::{ApiRegistry, DeviceRegistry};
 
@@ -138,11 +138,24 @@ impl BonsaiGraph for BonsaiService {
         let target = target_from_managed_device(req.into_inner().device)
             .map_err(Status::invalid_argument)?;
         match self.registry.add_device(target) {
-            Ok(target) => Ok(Response::new(DeviceMutationResponse {
-                success: true,
-                error: String::new(),
-                device: Some(managed_device_from_target(&target)),
-            })),
+            Ok(target) => {
+                if let Err(error) = self
+                    .store
+                    .sync_sites_from_targets(vec![target.clone()])
+                    .await
+                {
+                    return Ok(Response::new(DeviceMutationResponse {
+                        success: false,
+                        error: format!("device saved but site graph sync failed: {error:#}"),
+                        device: Some(managed_device_from_target(&target)),
+                    }));
+                }
+                Ok(Response::new(DeviceMutationResponse {
+                    success: true,
+                    error: String::new(),
+                    device: Some(managed_device_from_target(&target)),
+                }))
+            }
             Err(e) => Ok(Response::new(DeviceMutationResponse {
                 success: false,
                 error: e.to_string(),
@@ -158,11 +171,24 @@ impl BonsaiGraph for BonsaiService {
         let target = target_from_managed_device(req.into_inner().device)
             .map_err(Status::invalid_argument)?;
         match self.registry.update_device(target) {
-            Ok(target) => Ok(Response::new(DeviceMutationResponse {
-                success: true,
-                error: String::new(),
-                device: Some(managed_device_from_target(&target)),
-            })),
+            Ok(target) => {
+                if let Err(error) = self
+                    .store
+                    .sync_sites_from_targets(vec![target.clone()])
+                    .await
+                {
+                    return Ok(Response::new(DeviceMutationResponse {
+                        success: false,
+                        error: format!("device saved but site graph sync failed: {error:#}"),
+                        device: Some(managed_device_from_target(&target)),
+                    }));
+                }
+                Ok(Response::new(DeviceMutationResponse {
+                    success: true,
+                    error: String::new(),
+                    device: Some(managed_device_from_target(&target)),
+                }))
+            }
             Err(e) => Ok(Response::new(DeviceMutationResponse {
                 success: false,
                 error: e.to_string(),
@@ -227,6 +253,61 @@ impl BonsaiGraph for BonsaiService {
             .map_err(|e| Status::failed_precondition(format!("{e:#}")))?;
 
         Ok(Response::new(discovery_report_to_proto(report)))
+    }
+
+    async fn list_sites(
+        &self,
+        _req: Request<ListSitesRequest>,
+    ) -> Result<Response<ListSitesResponse>, Status> {
+        let sites = self
+            .store
+            .list_sites()
+            .await
+            .map_err(|e| Status::internal(format!("{e:#}")))?
+            .into_iter()
+            .map(site_to_proto)
+            .collect();
+        Ok(Response::new(ListSitesResponse { sites }))
+    }
+
+    async fn add_site(
+        &self,
+        req: Request<AddSiteRequest>,
+    ) -> Result<Response<SiteMutationResponse>, Status> {
+        let site = site_from_proto(req.into_inner().site)
+            .map_err(|e| Status::invalid_argument(format!("{e:#}")))?;
+        match self.store.upsert_site(site).await {
+            Ok(site) => Ok(Response::new(SiteMutationResponse {
+                success: true,
+                error: String::new(),
+                site: Some(site_to_proto(site)),
+            })),
+            Err(error) => Ok(Response::new(SiteMutationResponse {
+                success: false,
+                error: format!("{error:#}"),
+                site: None,
+            })),
+        }
+    }
+
+    async fn update_site(
+        &self,
+        req: Request<UpdateSiteRequest>,
+    ) -> Result<Response<SiteMutationResponse>, Status> {
+        let site = site_from_proto(req.into_inner().site)
+            .map_err(|e| Status::invalid_argument(format!("{e:#}")))?;
+        match self.store.upsert_site(site).await {
+            Ok(site) => Ok(Response::new(SiteMutationResponse {
+                success: true,
+                error: String::new(),
+                site: Some(site_to_proto(site)),
+            })),
+            Err(error) => Ok(Response::new(SiteMutationResponse {
+                success: false,
+                error: format!("{error:#}"),
+                site: None,
+            })),
+        }
     }
 
     async fn list_credentials(
@@ -597,6 +678,31 @@ fn target_from_managed_device(device: Option<ManagedDevice>) -> Result<TargetCon
         hostname: option_string(device.hostname),
         role: option_string(device.role),
         site: option_string(device.site),
+    })
+}
+
+fn site_to_proto(site: SiteRecord) -> Site {
+    Site {
+        id: site.id,
+        name: site.name,
+        parent_id: site.parent_id,
+        kind: site.kind,
+        lat: site.lat,
+        lon: site.lon,
+        metadata_json: site.metadata_json,
+    }
+}
+
+fn site_from_proto(site: Option<Site>) -> anyhow::Result<SiteRecord> {
+    let site = site.ok_or_else(|| anyhow::anyhow!("site is required"))?;
+    Ok(SiteRecord {
+        id: site.id,
+        name: site.name,
+        parent_id: site.parent_id,
+        kind: site.kind,
+        lat: site.lat,
+        lon: site.lon,
+        metadata_json: site.metadata_json,
     })
 }
 

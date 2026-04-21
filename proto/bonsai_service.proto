@@ -50,6 +50,27 @@ message DeviceMutationResponse {
   ManagedDevice device  = 3;
 }
 
+message Site {
+  string id            = 1;
+  string name          = 2;
+  string parent_id     = 3;
+  string kind          = 4;
+  double lat           = 5;
+  double lon           = 6;
+  string metadata_json = 7;
+}
+
+message ListSitesRequest {}
+message ListSitesResponse { repeated Site sites = 1; }
+message AddSiteRequest    { Site site = 1; }
+message UpdateSiteRequest { Site site = 1; }
+
+message SiteMutationResponse {
+  bool   success = 1;
+  string error   = 2;
+  Site   site    = 3;
+}
+
 message Credential {
   string alias            = 1;
   int64  created_at_ns    = 2;
@@ -239,6 +260,9 @@ service BonsaiGraph {
   rpc UpdateDevice(UpdateDeviceRequest)             returns (DeviceMutationResponse);
   rpc RemoveDevice(RemoveDeviceRequest)             returns (DeviceMutationResponse);
   rpc DiscoverDevice(DiscoverRequest)               returns (DiscoveryReport);
+  rpc ListSites(ListSitesRequest)                    returns (ListSitesResponse);
+  rpc AddSite(AddSiteRequest)                        returns (SiteMutationResponse);
+  rpc UpdateSite(UpdateSiteRequest)                  returns (SiteMutationResponse);
   rpc ListCredentials(ListCredentialsRequest)        returns (ListCredentialsResponse);
   rpc AddCredential(AddCredentialRequest)            returns (CredentialMutationResponse);
   rpc RemoveCredential(RemoveCredentialRequest)      returns (CredentialMutationResponse);
