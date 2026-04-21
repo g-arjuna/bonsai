@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -246,10 +247,79 @@ impl DeviceRegistry for ApiRegistry {
 
 fn normalize_address(address: &str) -> Result<String> {
     let normalized = address.trim();
-    if normalized.is_empty() {
-        bail!("device address cannot be empty");
+    if is_valid_host_port(normalized) {
+        Ok(normalized.to_string())
+    } else {
+        bail!("device address must be host:port")
     }
-    Ok(normalized.to_string())
+}
+
+fn is_valid_host_port(address: &str) -> bool {
+    if address.is_empty() {
+        return false;
+    }
+
+    let Some((host, port)) = split_host_port(address) else {
+        return false;
+    };
+
+    is_valid_port(port) && is_valid_host(host)
+}
+
+fn split_host_port(address: &str) -> Option<(&str, &str)> {
+    if let Some(rest) = address.strip_prefix('[') {
+        let end = rest.find(']')?;
+        let host = &rest[..end];
+        let remainder = &rest[end + 1..];
+        let port = remainder.strip_prefix(':')?;
+        if port.contains(':') {
+            return None;
+        }
+        return Some((host, port));
+    }
+
+    let (host, port) = address.rsplit_once(':')?;
+    if host.contains(':') || port.contains(':') {
+        return None;
+    }
+    Some((host, port))
+}
+
+fn is_valid_port(port: &str) -> bool {
+    port.parse::<u16>().is_ok_and(|p| p > 0)
+}
+
+fn is_valid_host(host: &str) -> bool {
+    if host.is_empty() || host.len() > 253 || host.contains(char::is_whitespace) {
+        return false;
+    }
+
+    if host.parse::<Ipv4Addr>().is_ok() {
+        return true;
+    }
+
+    if host.parse::<Ipv6Addr>().is_ok() {
+        return true;
+    }
+
+    host.split('.').all(is_valid_hostname_label)
+}
+
+fn is_valid_hostname_label(label: &str) -> bool {
+    if label.is_empty() || label.len() > 63 {
+        return false;
+    }
+
+    let bytes = label.as_bytes();
+    let first = bytes[0] as char;
+    let last = bytes[bytes.len() - 1] as char;
+    if !first.is_ascii_alphanumeric() || !last.is_ascii_alphanumeric() {
+        return false;
+    }
+
+    label
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
 }
 
 #[cfg(test)]
@@ -279,6 +349,44 @@ mod tests {
             hostname: Some(format!("{vendor}-host")),
             role: Some("leaf".to_string()),
             site: Some("lab".to_string()),
+        }
+    }
+
+    #[test]
+    fn normalize_address_accepts_host_port_forms() {
+        for address in [
+            "10.0.0.1:57400",
+            "leaf-1.lab.local:57400",
+            "localhost:50051",
+            "[2001:db8::1]:57400",
+        ] {
+            assert_eq!(normalize_address(address).unwrap(), address);
+        }
+        assert_eq!(
+            normalize_address("  leaf-1.lab.local:57400  ").unwrap(),
+            "leaf-1.lab.local:57400"
+        );
+    }
+
+    #[test]
+    fn normalize_address_rejects_invalid_forms() {
+        for address in [
+            "",
+            "garbage",
+            "10.0.0.1",
+            "10.0.0.1:0",
+            ":57400",
+            "bad host:57400",
+            "2001:db8::1:57400",
+            "leaf-.lab:57400",
+            "-leaf.lab:57400",
+            "leaf:70000",
+        ] {
+            let error = normalize_address(address).unwrap_err().to_string();
+            assert!(
+                error.contains("device address must be host:port"),
+                "unexpected error for {address:?}: {error}"
+            );
         }
     }
 

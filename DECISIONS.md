@@ -1063,3 +1063,53 @@ zstd compression, and disk-backed queues could land together.
   Windows/MSVC build links `zstd-sys` alongside LadybugDB's bundled `zstd.lib`,
   causing duplicate symbol failures. The seam is intentionally left ready for a
   follow-up compression slice once the link strategy is chosen.
+
+---
+
+## 2026-04-21 - Managed device addresses are validated before persistence
+
+**Decision**: The runtime registry accepts only explicit `host:port` device
+addresses. Hosts may be DNS-style hostnames, IPv4 addresses, or bracketed IPv6
+addresses; ports must parse as `1..=65535`. Invalid input fails before writing
+`bonsai-registry.json` with the operator-facing message `device address must be
+host:port`.
+
+**Alternatives considered**: continue accepting arbitrary strings and let the
+subscriber surface connection errors later, require IP literals only, or resolve
+hostnames during validation.
+
+**Rationale**:
+- Onboarding should catch malformed input at Save time, not after the subscriber
+  loop starts and emits a transport error.
+- Hostnames remain valid because lab and production inventories often use DNS
+  names rather than management IPs.
+- Validation does not perform DNS resolution, keeping registry writes fast,
+  deterministic, and usable before the lab or network is reachable.
+
+---
+
+## 2026-04-21 - Collector ingest values use MessagePack bytes
+
+**Decision**: `TelemetryIngestUpdate` now carries telemetry values as
+`bytes value_msgpack = 7`. The bytes are MessagePack-encoded
+`serde_json::Value` payloads. The Rust collector/core conversion layer owns
+the encode/decode boundary, and generated Python gRPC stubs are regenerated
+from the same proto so external consumers see the binary field name and type.
+
+**Alternatives considered**: keep the JSON string field until distributed
+hardening, use `google.protobuf.Any`, add a custom value `oneof`, or add
+compression before changing the value encoding.
+
+**Rationale**:
+- MessagePack preserves Bonsai's current schemaless telemetry value model
+  without requiring a custom proto value taxonomy before the normalized graph
+  model is fully stable.
+- Binary encoding removes JSON text overhead for numeric counter values while
+  keeping the distributed ingest seam simple and testable.
+- This is intentionally a protocol break while collector/core callsites are
+  still few; changing it after disk queues and compression would create a more
+  expensive migration.
+- The value-field change reduces encoded value bytes and total protobuf bytes,
+  but repeated per-update metadata such as `target` and `path` still dominate
+  scalar counter messages. Larger stream-level reductions belong in the later
+  T2 compression/queue/batching work.

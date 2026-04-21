@@ -148,7 +148,7 @@ message TelemetryIngestUpdate {
   string hostname     = 4;
   int64  timestamp_ns = 5;
   string path         = 6;
-  string value_json   = 7;
+  bytes  value_msgpack = 7;
 }
 
 message TelemetryIngestResponse {

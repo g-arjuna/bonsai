@@ -127,7 +127,8 @@ impl BonsaiGraph for BonsaiService {
         &self,
         req: Request<AddDeviceRequest>,
     ) -> Result<Response<DeviceMutationResponse>, Status> {
-        let target = target_from_managed_device(req.into_inner().device)?;
+        let target = target_from_managed_device(req.into_inner().device)
+            .map_err(Status::invalid_argument)?;
         match self.registry.add_device(target) {
             Ok(target) => Ok(Response::new(DeviceMutationResponse {
                 success: true,
@@ -146,7 +147,8 @@ impl BonsaiGraph for BonsaiService {
         &self,
         req: Request<UpdateDeviceRequest>,
     ) -> Result<Response<DeviceMutationResponse>, Status> {
-        let target = target_from_managed_device(req.into_inner().device)?;
+        let target = target_from_managed_device(req.into_inner().device)
+            .map_err(Status::invalid_argument)?;
         match self.registry.update_device(target) {
             Ok(target) => Ok(Response::new(DeviceMutationResponse {
                 success: true,
@@ -494,10 +496,10 @@ fn managed_device_from_target(target: &TargetConfig) -> ManagedDevice {
     }
 }
 
-fn target_from_managed_device(device: Option<ManagedDevice>) -> Result<TargetConfig, Status> {
-    let device = device.ok_or_else(|| Status::invalid_argument("device is required"))?;
+fn target_from_managed_device(device: Option<ManagedDevice>) -> Result<TargetConfig, &'static str> {
+    let device = device.ok_or("device is required")?;
     if device.address.trim().is_empty() {
-        return Err(Status::invalid_argument("device.address is required"));
+        return Err("device.address is required");
     }
 
     Ok(TargetConfig {

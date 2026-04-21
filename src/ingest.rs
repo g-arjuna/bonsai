@@ -27,14 +27,14 @@ pub fn telemetry_to_ingest_update(
         hostname: update.hostname.clone(),
         timestamp_ns: update.timestamp_ns,
         path: update.path.clone(),
-        value_json: serde_json::to_string(&update.value)
-            .context("failed to serialize telemetry value as JSON")?,
+        value_msgpack: rmp_serde::to_vec(&update.value)
+            .context("failed to serialize telemetry value as MessagePack")?,
     })
 }
 
 pub fn ingest_update_to_telemetry(update: ProtoTelemetryIngestUpdate) -> Result<TelemetryUpdate> {
-    let value = serde_json::from_str(&update.value_json)
-        .with_context(|| format!("invalid telemetry value_json for path '{}'", update.path))?;
+    let value = rmp_serde::from_slice(&update.value_msgpack)
+        .with_context(|| format!("invalid telemetry value_msgpack for path '{}'", update.path))?;
 
     Ok(TelemetryUpdate {
         target: update.target,
@@ -157,13 +157,14 @@ async fn send_bus_updates(
 
 #[cfg(test)]
 mod tests {
+    use prost::Message;
     use serde_json::json;
 
     use super::{ingest_update_to_telemetry, telemetry_to_ingest_update};
     use crate::telemetry::TelemetryUpdate;
 
     #[test]
-    fn telemetry_ingest_proto_round_trips_json_payload() {
+    fn telemetry_ingest_proto_round_trips_msgpack_payload() {
         let update = TelemetryUpdate {
             target: "10.0.0.1:57400".to_string(),
             vendor: "nokia_srl".to_string(),
@@ -175,6 +176,7 @@ mod tests {
 
         let proto = telemetry_to_ingest_update("collector-a", &update).unwrap();
         assert_eq!(proto.collector_id, "collector-a");
+        assert!(!proto.value_msgpack.is_empty());
 
         let round_trip = ingest_update_to_telemetry(proto).unwrap();
         assert_eq!(round_trip.target, update.target);
@@ -183,5 +185,62 @@ mod tests {
         assert_eq!(round_trip.timestamp_ns, update.timestamp_ns);
         assert_eq!(round_trip.path, update.path);
         assert_eq!(round_trip.value, update.value);
+    }
+
+    #[test]
+    fn telemetry_ingest_msgpack_counter_payload_is_smaller_than_json_baseline() {
+        let mut msgpack_wire_bytes = 0;
+        let mut json_wire_bytes = 0;
+        let mut msgpack_payload_bytes = 0;
+        let mut json_payload_bytes = 0;
+
+        for index in 0_u64..1_000 {
+            let update = TelemetryUpdate {
+                target: "10.0.0.1:57400".to_string(),
+                vendor: "nokia_srl".to_string(),
+                hostname: "srl1".to_string(),
+                timestamp_ns: 1_777_777_000_000_000_000 + index as i64,
+                path: "interfaces/interface[name=ethernet-1/1]/state/counters/in-octets"
+                    .to_string(),
+                value: json!(1_234_567_890_123_456_789_u64 + index),
+            };
+
+            let proto = telemetry_to_ingest_update("collector-a", &update).unwrap();
+            let json_payload = serde_json::to_vec(&update.value).unwrap();
+
+            msgpack_wire_bytes += proto.encoded_len();
+            msgpack_payload_bytes += proto.value_msgpack.len();
+            json_payload_bytes += json_payload.len();
+
+            let mut old_json_proto = proto.clone();
+            old_json_proto.value_msgpack.clear();
+            json_wire_bytes +=
+                old_json_proto.encoded_len() + len_delimited_field_size(7, json_payload.len());
+        }
+
+        let payload_reduction = 1.0 - (msgpack_payload_bytes as f64 / json_payload_bytes as f64);
+        assert!(
+            payload_reduction >= 0.30,
+            "expected MessagePack counter payloads to be at least 30% smaller; json={json_payload_bytes}, msgpack={msgpack_payload_bytes}, reduction={payload_reduction:.2}"
+        );
+        assert!(
+            msgpack_wire_bytes < json_wire_bytes,
+            "expected MessagePack ingest wire bytes to be smaller; json={json_wire_bytes}, msgpack={msgpack_wire_bytes}"
+        );
+    }
+
+    fn len_delimited_field_size(field_number: u32, payload_len: usize) -> usize {
+        varint_size(((field_number << 3) | 2) as u64)
+            + varint_size(payload_len as u64)
+            + payload_len
+    }
+
+    fn varint_size(mut value: u64) -> usize {
+        let mut size = 1;
+        while value >= 0x80 {
+            value >>= 7;
+            size += 1;
+        }
+        size
     }
 }
