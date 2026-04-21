@@ -218,6 +218,18 @@ Vault is unlocked on bonsai startup with a passphrase (provided via env var `BON
 - Integration test covers the full flow
 - ADR entry explains the design and the threat model (protects against on-disk snooping, not against a compromised process)
 
+**Execution update - 2026-04-21**: Backend plus minimal onboarding UI slice implemented on
+`codex/t1-1-credentials-vault`. Added `src/credentials.rs` using passphrase-encrypted
+`age` storage at `bonsai-credentials/vault.age` plus plaintext alias metadata at
+`metadata.json`; the directory is gitignored. Added `credential_alias` to `TargetConfig`,
+managed-device proto/API/HTTP payloads, and the Python client. Added gRPC
+`ListCredentials`, `AddCredential`, and `RemoveCredential` plus HTTP `/api/credentials`
+endpoints. Subscriber startup, discovery, and remediation now resolve credentials in the
+intended order: vault alias first, then env vars, then inline lab config. The current unlock
+mechanism is `BONSAI_VAULT_PASSPHRASE`; a richer passphrase prompt remains part of the
+later wizard polish. Focused release tests cover add/list/resolve/remove, restart decrypt,
+and wrong-passphrase failure at vault open.
+
 **Explicitly out of scope for v1 of the vault**:
 - Remote secret stores (Vault, 1Password, cloud KMS) — add later via a `CredentialStore` trait if there's demand
 - Per-device encryption (one passphrase protects the whole vault)

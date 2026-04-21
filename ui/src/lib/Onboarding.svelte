@@ -7,6 +7,8 @@
   let error = $state('');
   let message = $state('');
   let devices = $state([]);
+  let credentials = $state([]);
+  let vaultUnlocked = $state(false);
   let discovery = $state(null);
 
   let form = $state({
@@ -15,10 +17,17 @@
     vendor: '',
     role: 'leaf',
     site: 'lab',
+    credential_alias: '',
     username_env: '',
     password_env: '',
     tls_domain: '',
     ca_cert: ''
+  });
+
+  let credentialForm = $state({
+    alias: '',
+    username: '',
+    password: ''
   });
 
   async function loadDevices() {
@@ -35,6 +44,38 @@
     }
   }
 
+  async function loadCredentials() {
+    try {
+      const response = await fetch('/api/credentials');
+      if (!response.ok) throw new Error(await response.text());
+      const body = await response.json();
+      credentials = body.credentials || [];
+      vaultUnlocked = !!body.unlocked;
+    } catch (e) {
+      error = e.message;
+    }
+  }
+
+  async function addCredential() {
+    message = '';
+    try {
+      const response = await fetch('/api/credentials', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(credentialForm)
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const body = await response.json();
+      if (!body.success) throw new Error(body.error || 'credential save failed');
+      form.credential_alias = body.credential.alias;
+      credentialForm = { alias: '', username: '', password: '' };
+      message = `Credential alias ${body.credential.alias} is stored in the local vault.`;
+      await loadCredentials();
+    } catch (e) {
+      error = e.message;
+    }
+  }
+
   async function discoverDevice() {
     discovering = true;
     message = '';
@@ -45,6 +86,7 @@
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           address: form.address,
+          credential_alias: form.credential_alias,
           username_env: form.username_env,
           password_env: form.password_env,
           ca_cert_path: form.ca_cert,
@@ -111,6 +153,7 @@
       site: device.site || 'lab',
       username_env: device.username_env,
       password_env: device.password_env,
+      credential_alias: device.credential_alias,
       tls_domain: device.tls_domain,
       ca_cert: device.ca_cert
     };
@@ -125,6 +168,7 @@
       vendor: '',
       role: 'leaf',
       site: 'lab',
+      credential_alias: '',
       username_env: '',
       password_env: '',
       tls_domain: '',
@@ -142,6 +186,7 @@
 
   onMount(() => {
     loadDevices();
+    loadCredentials();
     const interval = setInterval(loadDevices, 10000);
     return () => clearInterval(interval);
   });
@@ -188,6 +233,16 @@
       </div>
 
       <div class="form-row">
+        <label for="onboard-credential-alias">Credential alias</label>
+        <select id="onboard-credential-alias" bind:value={form.credential_alias}>
+          <option value="">Use env vars or inline lab config</option>
+          {#each credentials as credential}
+            <option value={credential.alias}>{credential.alias}</option>
+          {/each}
+        </select>
+      </div>
+
+      <div class="form-row">
         <label for="onboard-username-env">Username env var</label>
         <input id="onboard-username-env" bind:value={form.username_env} placeholder="BONSAI_GNMI_USER" />
       </div>
@@ -229,6 +284,22 @@
     </form>
 
     <aside class="discovery-panel">
+      <h3>Credential vault</h3>
+      <p class="muted">{vaultUnlocked ? 'Vault unlocked. Secrets stay server-side; devices store aliases only.' : 'Vault locked. Start Bonsai with BONSAI_VAULT_PASSPHRASE to add or use aliases.'}</p>
+      <form class="credential-form" onsubmit={(event) => { event.preventDefault(); addCredential(); }}>
+        <input bind:value={credentialForm.alias} placeholder="srl-lab-admin" disabled={!vaultUnlocked} />
+        <input bind:value={credentialForm.username} placeholder="username" autocomplete="username" disabled={!vaultUnlocked} />
+        <input bind:value={credentialForm.password} placeholder="password" type="password" autocomplete="new-password" disabled={!vaultUnlocked} />
+        <button type="submit" disabled={!vaultUnlocked || !credentialForm.alias || !credentialForm.username || !credentialForm.password}>Store alias</button>
+      </form>
+      {#if credentials.length}
+        <div class="alias-list">
+          {#each credentials as credential}
+            <button type="button" class="ghost" onclick={() => form.credential_alias = credential.alias}>{credential.alias}</button>
+          {/each}
+        </div>
+      {/if}
+
       <h3>Discovery report</h3>
       {#if discovery}
         <div class="report-line">
@@ -282,7 +353,7 @@
             <header>
               <div>
                 <h4>{device.hostname || device.address}</h4>
-                <p>{device.address} · {device.vendor || 'vendor pending'} · {device.role || 'role unset'}</p>
+                <p>{device.address} · {device.vendor || 'vendor pending'} · {device.role || 'role unset'} · {device.credential_alias || 'env credentials'}</p>
               </div>
               <div class="device-actions">
                 <button class="ghost" onclick={() => editDevice(device)}>Edit</button>

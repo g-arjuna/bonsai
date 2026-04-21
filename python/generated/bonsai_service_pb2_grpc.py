@@ -86,6 +86,21 @@ class BonsaiGraphStub(object):
                 request_serializer=bonsai__service__pb2.DiscoverRequest.SerializeToString,
                 response_deserializer=bonsai__service__pb2.DiscoveryReport.FromString,
                 _registered_method=True)
+        self.ListCredentials = channel.unary_unary(
+                '/bonsai.v1.BonsaiGraph/ListCredentials',
+                request_serializer=bonsai__service__pb2.ListCredentialsRequest.SerializeToString,
+                response_deserializer=bonsai__service__pb2.ListCredentialsResponse.FromString,
+                _registered_method=True)
+        self.AddCredential = channel.unary_unary(
+                '/bonsai.v1.BonsaiGraph/AddCredential',
+                request_serializer=bonsai__service__pb2.AddCredentialRequest.SerializeToString,
+                response_deserializer=bonsai__service__pb2.CredentialMutationResponse.FromString,
+                _registered_method=True)
+        self.RemoveCredential = channel.unary_unary(
+                '/bonsai.v1.BonsaiGraph/RemoveCredential',
+                request_serializer=bonsai__service__pb2.RemoveCredentialRequest.SerializeToString,
+                response_deserializer=bonsai__service__pb2.CredentialMutationResponse.FromString,
+                _registered_method=True)
         self.StreamEvents = channel.unary_stream(
                 '/bonsai.v1.BonsaiGraph/StreamEvents',
                 request_serializer=bonsai__service__pb2.StreamEventsRequest.SerializeToString,
@@ -181,6 +196,24 @@ class BonsaiGraphServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListCredentials(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AddCredential(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RemoveCredential(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def StreamEvents(self, request, context):
         """Server-streaming: push events to the caller as they occur.
         """
@@ -267,6 +300,21 @@ def add_BonsaiGraphServicer_to_server(servicer, server):
                     servicer.DiscoverDevice,
                     request_deserializer=bonsai__service__pb2.DiscoverRequest.FromString,
                     response_serializer=bonsai__service__pb2.DiscoveryReport.SerializeToString,
+            ),
+            'ListCredentials': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListCredentials,
+                    request_deserializer=bonsai__service__pb2.ListCredentialsRequest.FromString,
+                    response_serializer=bonsai__service__pb2.ListCredentialsResponse.SerializeToString,
+            ),
+            'AddCredential': grpc.unary_unary_rpc_method_handler(
+                    servicer.AddCredential,
+                    request_deserializer=bonsai__service__pb2.AddCredentialRequest.FromString,
+                    response_serializer=bonsai__service__pb2.CredentialMutationResponse.SerializeToString,
+            ),
+            'RemoveCredential': grpc.unary_unary_rpc_method_handler(
+                    servicer.RemoveCredential,
+                    request_deserializer=bonsai__service__pb2.RemoveCredentialRequest.FromString,
+                    response_serializer=bonsai__service__pb2.CredentialMutationResponse.SerializeToString,
             ),
             'StreamEvents': grpc.unary_stream_rpc_method_handler(
                     servicer.StreamEvents,
@@ -566,6 +614,87 @@ class BonsaiGraph(object):
             '/bonsai.v1.BonsaiGraph/DiscoverDevice',
             bonsai__service__pb2.DiscoverRequest.SerializeToString,
             bonsai__service__pb2.DiscoveryReport.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListCredentials(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bonsai.v1.BonsaiGraph/ListCredentials',
+            bonsai__service__pb2.ListCredentialsRequest.SerializeToString,
+            bonsai__service__pb2.ListCredentialsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AddCredential(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bonsai.v1.BonsaiGraph/AddCredential',
+            bonsai__service__pb2.AddCredentialRequest.SerializeToString,
+            bonsai__service__pb2.CredentialMutationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RemoveCredential(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bonsai.v1.BonsaiGraph/RemoveCredential',
+            bonsai__service__pb2.RemoveCredentialRequest.SerializeToString,
+            bonsai__service__pb2.CredentialMutationResponse.FromString,
             options,
             channel_credentials,
             insecure,

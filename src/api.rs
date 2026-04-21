@@ -7,6 +7,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::config::TargetConfig;
+use crate::credentials::{CredentialSummary, CredentialVault, ResolvedCredential};
 use crate::discovery;
 use crate::event_bus::InProcessBus;
 use crate::gnmi_set::gnmi_set;
@@ -35,14 +36,21 @@ pub struct TargetConnInfo {
 pub struct BonsaiService {
     store: Arc<GraphStore>,
     registry: Arc<ApiRegistry>,
+    credentials: Arc<CredentialVault>,
     bus: Arc<InProcessBus>,
 }
 
 impl BonsaiService {
-    pub fn new(store: Arc<GraphStore>, registry: Arc<ApiRegistry>, bus: Arc<InProcessBus>) -> Self {
+    pub fn new(
+        store: Arc<GraphStore>,
+        registry: Arc<ApiRegistry>,
+        credentials: Arc<CredentialVault>,
+        bus: Arc<InProcessBus>,
+    ) -> Self {
         Self {
             store,
             registry,
+            credentials,
             bus,
         }
     }
@@ -192,10 +200,23 @@ impl BonsaiGraph for BonsaiService {
         req: Request<DiscoverRequest>,
     ) -> Result<Response<DiscoveryReport>, Status> {
         let request = req.into_inner();
+        let credentials = resolve_request_credentials(
+            &self.credentials,
+            option_string(request.credential_alias),
+            option_string(request.username_env),
+            option_string(request.password_env),
+        )
+        .map_err(|e| Status::failed_precondition(format!("{e:#}")))?;
+        let (username, password) = match credentials {
+            Some(credentials) => (Some(credentials.username), Some(credentials.password)),
+            None => (None, None),
+        };
         let input = discovery::DiscoveryInput {
             address: request.address,
-            username_env: option_string(request.username_env),
-            password_env: option_string(request.password_env),
+            username,
+            password,
+            username_env: None,
+            password_env: None,
             ca_cert_path: option_string(request.ca_cert_path),
             tls_domain: option_string(request.tls_domain),
             role_hint: option_string(request.role_hint),
@@ -206,6 +227,66 @@ impl BonsaiGraph for BonsaiService {
             .map_err(|e| Status::failed_precondition(format!("{e:#}")))?;
 
         Ok(Response::new(discovery_report_to_proto(report)))
+    }
+
+    async fn list_credentials(
+        &self,
+        _req: Request<ListCredentialsRequest>,
+    ) -> Result<Response<ListCredentialsResponse>, Status> {
+        let credentials = self
+            .credentials
+            .list()
+            .map_err(|e| Status::failed_precondition(format!("{e:#}")))?
+            .into_iter()
+            .map(credential_to_proto)
+            .collect();
+        Ok(Response::new(ListCredentialsResponse { credentials }))
+    }
+
+    async fn add_credential(
+        &self,
+        req: Request<AddCredentialRequest>,
+    ) -> Result<Response<CredentialMutationResponse>, Status> {
+        let req = req.into_inner();
+        match self
+            .credentials
+            .add(&req.alias, &req.username, &req.password)
+        {
+            Ok(credential) => Ok(Response::new(CredentialMutationResponse {
+                success: true,
+                error: String::new(),
+                credential: Some(credential_to_proto(credential)),
+            })),
+            Err(error) => Ok(Response::new(CredentialMutationResponse {
+                success: false,
+                error: format!("{error:#}"),
+                credential: None,
+            })),
+        }
+    }
+
+    async fn remove_credential(
+        &self,
+        req: Request<RemoveCredentialRequest>,
+    ) -> Result<Response<CredentialMutationResponse>, Status> {
+        let alias = req.into_inner().alias;
+        match self.credentials.remove(&alias) {
+            Ok(Some(credential)) => Ok(Response::new(CredentialMutationResponse {
+                success: true,
+                error: String::new(),
+                credential: Some(credential_to_proto(credential)),
+            })),
+            Ok(None) => Ok(Response::new(CredentialMutationResponse {
+                success: false,
+                error: format!("credential alias '{alias}' not found"),
+                credential: None,
+            })),
+            Err(error) => Ok(Response::new(CredentialMutationResponse {
+                success: false,
+                error: format!("{error:#}"),
+                credential: None,
+            })),
+        }
     }
 
     async fn get_interfaces(
@@ -458,7 +539,7 @@ impl BonsaiGraph for BonsaiService {
             }));
         };
 
-        let conn_info = target_conn_info_from_config(&target).await?;
+        let conn_info = target_conn_info_from_config(&target, &self.credentials).await?;
         let result = gnmi_set(
             &conn_info.address,
             conn_info.username.as_deref(),
@@ -488,6 +569,7 @@ fn managed_device_from_target(target: &TargetConfig) -> ManagedDevice {
         tls_domain: target.tls_domain.clone().unwrap_or_default(),
         ca_cert: target.ca_cert.clone().unwrap_or_default(),
         vendor: target.vendor.clone().unwrap_or_default(),
+        credential_alias: target.credential_alias.clone().unwrap_or_default(),
         username_env: target.username_env.clone().unwrap_or_default(),
         password_env: target.password_env.clone().unwrap_or_default(),
         hostname: target.hostname.clone().unwrap_or_default(),
@@ -507,6 +589,7 @@ fn target_from_managed_device(device: Option<ManagedDevice>) -> Result<TargetCon
         tls_domain: option_string(device.tls_domain),
         ca_cert: option_string(device.ca_cert),
         vendor: option_string(device.vendor),
+        credential_alias: option_string(device.credential_alias),
         username_env: option_string(device.username_env),
         password_env: option_string(device.password_env),
         username: None,
@@ -546,7 +629,10 @@ fn discovery_report_to_proto(report: discovery::DiscoveryReport) -> DiscoveryRep
     }
 }
 
-async fn target_conn_info_from_config(target: &TargetConfig) -> Result<TargetConnInfo, Status> {
+async fn target_conn_info_from_config(
+    target: &TargetConfig,
+    credentials: &CredentialVault,
+) -> Result<TargetConnInfo, Status> {
     let ca_cert_pem =
         match &target.ca_cert {
             Some(path) => Some(tokio::fs::read(path).await.map_err(|e| {
@@ -555,12 +641,66 @@ async fn target_conn_info_from_config(target: &TargetConfig) -> Result<TargetCon
             None => None,
         };
 
+    let resolved_credentials = resolve_target_credentials(target, credentials)
+        .map_err(|e| Status::failed_precondition(format!("{e:#}")))?;
+    let (username, password) = match resolved_credentials {
+        Some(credentials) => (Some(credentials.username), Some(credentials.password)),
+        None => (None, None),
+    };
+
     Ok(TargetConnInfo {
         address: target.address.clone(),
-        username: target.resolved_username(),
-        password: target.resolved_password(),
+        username,
+        password,
         ca_cert_pem,
         tls_domain: target.tls_domain.clone().unwrap_or_default(),
+    })
+}
+
+fn credential_to_proto(credential: CredentialSummary) -> Credential {
+    Credential {
+        alias: credential.alias,
+        created_at_ns: credential.created_at_ns,
+        updated_at_ns: credential.updated_at_ns,
+        last_used_at_ns: credential.last_used_at_ns,
+    }
+}
+
+fn resolve_target_credentials(
+    target: &TargetConfig,
+    credentials: &CredentialVault,
+) -> anyhow::Result<Option<ResolvedCredential>> {
+    if let Some(alias) = target.credential_alias.as_deref() {
+        return credentials.resolve(alias).map(Some);
+    }
+
+    Ok(
+        match (target.resolved_username(), target.resolved_password()) {
+            (Some(username), Some(password)) => Some(ResolvedCredential { username, password }),
+            _ => None,
+        },
+    )
+}
+
+fn resolve_request_credentials(
+    credentials: &CredentialVault,
+    credential_alias: Option<String>,
+    username_env: Option<String>,
+    password_env: Option<String>,
+) -> anyhow::Result<Option<ResolvedCredential>> {
+    if let Some(alias) = credential_alias {
+        return credentials.resolve(&alias).map(Some);
+    }
+
+    let username = username_env
+        .as_deref()
+        .and_then(|key| std::env::var(key).ok());
+    let password = password_env
+        .as_deref()
+        .and_then(|key| std::env::var(key).ok());
+    Ok(match (username, password) {
+        (Some(username), Some(password)) => Some(ResolvedCredential { username, password }),
+        _ => None,
     })
 }
 

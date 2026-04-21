@@ -18,6 +18,8 @@ pub struct Config {
     pub event_bus: EventBusConfig,
     #[serde(default)]
     pub archive: ArchiveConfig,
+    #[serde(default)]
+    pub credentials: CredentialsConfig,
     pub target: Vec<TargetConfig>,
 }
 
@@ -134,6 +136,25 @@ impl Default for ArchiveConfig {
     }
 }
 
+#[derive(Deserialize, Clone)]
+pub struct CredentialsConfig {
+    /// Directory containing vault.age and metadata.json. Default: "bonsai-credentials".
+    #[serde(default = "default_credentials_path")]
+    pub path: String,
+    /// Environment variable containing the vault passphrase for this backend slice.
+    #[serde(default = "default_credentials_passphrase_env")]
+    pub passphrase_env: String,
+}
+
+impl Default for CredentialsConfig {
+    fn default() -> Self {
+        Self {
+            path: default_credentials_path(),
+            passphrase_env: default_credentials_passphrase_env(),
+        }
+    }
+}
+
 fn default_retention_hours() -> u64 {
     72
 }
@@ -160,6 +181,14 @@ fn default_archive_flush_interval_seconds() -> u64 {
 
 fn default_archive_max_batch_rows() -> usize {
     1000
+}
+
+fn default_credentials_path() -> String {
+    "bonsai-credentials".to_string()
+}
+
+fn default_credentials_passphrase_env() -> String {
+    "BONSAI_VAULT_PASSPHRASE".to_string()
 }
 
 fn default_runtime_mode() -> String {
@@ -191,6 +220,8 @@ pub struct TargetConfig {
     pub ca_cert: Option<String>,
     /// Override vendor detection. If absent, Capabilities RPC auto-detects.
     pub vendor: Option<String>,
+    /// Alias into the local encrypted credential vault.
+    pub credential_alias: Option<String>,
     /// Env var name whose value is the username. Takes precedence over `username`.
     pub username_env: Option<String>,
     /// Env var name whose value is the password. Takes precedence over `password`.

@@ -1113,3 +1113,37 @@ compression before changing the value encoding.
   but repeated per-update metadata such as `target` and `path` still dominate
   scalar counter messages. Larger stream-level reductions belong in the later
   T2 compression/queue/batching work.
+
+---
+
+## 2026-04-21 - Local credential vault stores aliases, not secrets, in APIs
+
+**Decision**: Bonsai stores reusable device credentials in a local
+passphrase-encrypted `age` vault under `bonsai-credentials/vault.age`, with
+plaintext `metadata.json` containing only aliases and timestamps. Devices may
+reference `credential_alias`; subscriber startup, discovery, and remediation
+resolve credentials in-process using this order: vault alias, environment
+variables, then inline lab-only config. gRPC, HTTP, UI, and Python APIs can
+list/add/remove aliases, but list responses never include usernames or
+passwords. The current unlock mechanism is the environment variable
+`BONSAI_VAULT_PASSPHRASE`.
+
+**Alternatives considered**: keep env-var-only credentials, store credentials
+inline in `bonsai-registry.json`, use a remote secret manager, implement a
+lower-level AES-GCM vault directly, or delay vault integration until the full
+onboarding wizard exists.
+
+**Rationale**:
+- Alias-based credentials make onboarding usable for multiple devices without
+  restarting Bonsai or creating per-device process environment variables.
+- The threat model is local disk snooping: encrypted `vault.age` protects
+  secrets at rest, while `metadata.json` is intentionally non-secret. This does
+  not protect against a compromised Bonsai process or host memory inspection.
+- Secrets stay in Rust process memory and flow only to gNMI client calls; HTTP,
+  gRPC, Python, and UI list operations return alias metadata only.
+- Env vars and inline lab config remain valid fallbacks for headless and lab
+  workflows, preserving existing deployments while making the safer path
+  available.
+- Using `age` avoids inventing cryptography and keeps the vault format simple
+  enough for a v1 single-host Bonsai deployment. Remote stores and key rotation
+  remain out of scope until real operator demand appears.

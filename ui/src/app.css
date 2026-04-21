@@ -227,6 +227,19 @@ button.danger {
   min-height: 100%;
 }
 
+.credential-form {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.alias-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
 .discovery-panel h3,
 .managed-section h3 {
   margin-bottom: 12px;

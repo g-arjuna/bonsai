@@ -91,6 +91,26 @@ class BonsaiClient:
         """Return CONNECTED_TO topology edges."""
         return list(self.stub.GetTopology(pb.GetTopologyRequest()).edges)
 
+    def list_credentials(self) -> list:
+        """Return credential aliases and metadata only; secrets never leave Rust."""
+        return list(self.stub.ListCredentials(pb.ListCredentialsRequest()).credentials)
+
+    def add_credential(self, alias: str, username: str, password: str):
+        """Store or update a credential alias in the local encrypted vault."""
+        resp = self.stub.AddCredential(
+            pb.AddCredentialRequest(alias=alias, username=username, password=password)
+        )
+        if not resp.success:
+            raise RuntimeError(f"AddCredential error: {resp.error}")
+        return resp.credential
+
+    def remove_credential(self, alias: str):
+        """Remove a credential alias from the local encrypted vault."""
+        resp = self.stub.RemoveCredential(pb.RemoveCredentialRequest(alias=alias))
+        if not resp.success:
+            raise RuntimeError(f"RemoveCredential error: {resp.error}")
+        return resp.credential
+
     def create_detection(
         self,
         device_address: str,

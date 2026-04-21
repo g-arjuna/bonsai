@@ -30,6 +30,7 @@ use tower_http::{cors::CorsLayer, services::ServeDir};
 use crate::graph::{DetectionRow, GraphStore, REMEDIATION_TRUST_CUTOFF_ISO, TraceStep};
 use crate::{
     config::TargetConfig,
+    credentials::{CredentialSummary, CredentialVault, ResolvedCredential},
     discovery::{self, DiscoveryInput},
     registry::{ApiRegistry, DeviceRegistry},
 };
@@ -99,6 +100,7 @@ struct ManagedDeviceJson {
     tls_domain: String,
     ca_cert: String,
     vendor: String,
+    credential_alias: String,
     username_env: String,
     password_env: String,
     hostname: String,
@@ -127,6 +129,8 @@ struct OnboardingDiscoveryRequest {
     #[serde(default)]
     password_env: String,
     #[serde(default)]
+    credential_alias: String,
+    #[serde(default)]
     ca_cert_path: String,
     #[serde(default)]
     tls_domain: String,
@@ -144,6 +148,8 @@ struct ManagedDeviceRequest {
     #[serde(default)]
     vendor: String,
     #[serde(default)]
+    credential_alias: String,
+    #[serde(default)]
     username_env: String,
     #[serde(default)]
     password_env: String,
@@ -158,6 +164,39 @@ struct ManagedDeviceRequest {
 #[derive(Deserialize)]
 struct RemoveManagedDeviceRequest {
     address: String,
+}
+
+#[derive(Serialize)]
+struct CredentialsResponse {
+    credentials: Vec<CredentialJson>,
+    unlocked: bool,
+}
+
+#[derive(Serialize)]
+struct CredentialJson {
+    alias: String,
+    created_at_ns: i64,
+    updated_at_ns: i64,
+    last_used_at_ns: i64,
+}
+
+#[derive(Deserialize)]
+struct AddCredentialRequest {
+    alias: String,
+    username: String,
+    password: String,
+}
+
+#[derive(Deserialize)]
+struct RemoveCredentialRequest {
+    alias: String,
+}
+
+#[derive(Serialize)]
+struct CredentialMutationResponse {
+    success: bool,
+    error: String,
+    credential: Option<CredentialJson>,
 }
 
 #[derive(Serialize)]
@@ -194,12 +233,21 @@ fn default_limit() -> u32 {
 pub struct AppState {
     pub store: Arc<GraphStore>,
     pub registry: Arc<ApiRegistry>,
+    pub credentials: Arc<CredentialVault>,
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
-pub fn router(store: Arc<GraphStore>, registry: Arc<ApiRegistry>) -> Router {
-    let state = AppState { store, registry };
+pub fn router(
+    store: Arc<GraphStore>,
+    registry: Arc<ApiRegistry>,
+    credentials: Arc<CredentialVault>,
+) -> Router {
+    let state = AppState {
+        store,
+        registry,
+        credentials,
+    };
 
     // Serve the Svelte SPA from ui/dist/. Fall back to index.html so
     // client-side routing works (the SPA handles /events and /trace/:id paths).
@@ -217,6 +265,11 @@ pub fn router(store: Arc<GraphStore>, registry: Arc<ApiRegistry>) -> Router {
             post(remove_managed_device_handler),
         )
         .route("/api/onboarding/discover", post(discover_handler))
+        .route(
+            "/api/credentials",
+            get(credentials_handler).post(add_credential_handler),
+        )
+        .route("/api/credentials/remove", post(remove_credential_handler))
         .route("/api/detections", get(detections_handler))
         .route("/api/readiness", get(readiness_handler))
         .route("/api/trace/{id}", get(trace_handler))
@@ -343,12 +396,27 @@ async fn managed_devices_handler(
 }
 
 async fn discover_handler(
+    State(state): State<AppState>,
     Json(req): Json<OnboardingDiscoveryRequest>,
 ) -> Result<Json<discovery::DiscoveryReport>, (StatusCode, String)> {
+    let credentials = resolve_request_credentials(
+        &state.credentials,
+        option_string(req.credential_alias),
+        option_string(req.username_env),
+        option_string(req.password_env),
+    )
+    .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    let (username, password) = match credentials {
+        Some(credentials) => (Some(credentials.username), Some(credentials.password)),
+        None => (None, None),
+    };
+
     let report = discovery::discover_device(DiscoveryInput {
         address: req.address,
-        username_env: option_string(req.username_env),
-        password_env: option_string(req.password_env),
+        username,
+        password,
+        username_env: None,
+        password_env: None,
         ca_cert_path: option_string(req.ca_cert_path),
         tls_domain: option_string(req.tls_domain),
         role_hint: option_string(req.role_hint),
@@ -359,12 +427,79 @@ async fn discover_handler(
     Ok(Json(report))
 }
 
+async fn credentials_handler(
+    State(state): State<AppState>,
+) -> Result<Json<CredentialsResponse>, (StatusCode, String)> {
+    let credentials = state
+        .credentials
+        .list()
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?
+        .into_iter()
+        .map(credential_json)
+        .collect();
+    let unlocked = state
+        .credentials
+        .is_unlocked()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(Json(CredentialsResponse {
+        credentials,
+        unlocked,
+    }))
+}
+
+async fn add_credential_handler(
+    State(state): State<AppState>,
+    Json(req): Json<AddCredentialRequest>,
+) -> Result<Json<CredentialMutationResponse>, (StatusCode, String)> {
+    match state
+        .credentials
+        .add(&req.alias, &req.username, &req.password)
+    {
+        Ok(credential) => Ok(Json(CredentialMutationResponse {
+            success: true,
+            error: String::new(),
+            credential: Some(credential_json(credential)),
+        })),
+        Err(error) => Ok(Json(CredentialMutationResponse {
+            success: false,
+            error: format!("{error:#}"),
+            credential: None,
+        })),
+    }
+}
+
+async fn remove_credential_handler(
+    State(state): State<AppState>,
+    Json(req): Json<RemoveCredentialRequest>,
+) -> Result<Json<CredentialMutationResponse>, (StatusCode, String)> {
+    match state.credentials.remove(&req.alias) {
+        Ok(Some(credential)) => Ok(Json(CredentialMutationResponse {
+            success: true,
+            error: String::new(),
+            credential: Some(credential_json(credential)),
+        })),
+        Ok(None) => Ok(Json(CredentialMutationResponse {
+            success: false,
+            error: format!("credential alias '{}' not found", req.alias),
+            credential: None,
+        })),
+        Err(error) => Ok(Json(CredentialMutationResponse {
+            success: false,
+            error: format!("{error:#}"),
+            credential: None,
+        })),
+    }
+}
+
 async fn add_managed_device_handler(
     State(state): State<AppState>,
     Json(req): Json<ManagedDeviceRequest>,
 ) -> Result<Json<MutationResponse>, (StatusCode, String)> {
     let mut target = target_from_request(req)?;
     if let Ok(Some(existing)) = state.registry.get_device(&target.address) {
+        if target.credential_alias.is_none() {
+            target.credential_alias = existing.credential_alias;
+        }
         if target.username_env.is_none() {
             target.username_env = existing.username_env;
         }
@@ -615,6 +750,7 @@ fn managed_device_json(
         tls_domain: target.tls_domain.unwrap_or_default(),
         ca_cert: target.ca_cert.unwrap_or_default(),
         vendor: target.vendor.unwrap_or_default(),
+        credential_alias: target.credential_alias.unwrap_or_default(),
         username_env: target.username_env.unwrap_or_default(),
         password_env: target.password_env.unwrap_or_default(),
         hostname: target.hostname.unwrap_or_default(),
@@ -650,6 +786,7 @@ fn target_from_request(req: ManagedDeviceRequest) -> Result<TargetConfig, (Statu
         tls_domain: option_string(req.tls_domain),
         ca_cert: option_string(req.ca_cert),
         vendor: option_string(req.vendor),
+        credential_alias: option_string(req.credential_alias),
         username_env: option_string(req.username_env),
         password_env: option_string(req.password_env),
         username: None,
@@ -657,6 +794,37 @@ fn target_from_request(req: ManagedDeviceRequest) -> Result<TargetConfig, (Statu
         hostname: option_string(req.hostname),
         role: option_string(req.role),
         site: option_string(req.site),
+    })
+}
+
+fn credential_json(credential: CredentialSummary) -> CredentialJson {
+    CredentialJson {
+        alias: credential.alias,
+        created_at_ns: credential.created_at_ns,
+        updated_at_ns: credential.updated_at_ns,
+        last_used_at_ns: credential.last_used_at_ns,
+    }
+}
+
+fn resolve_request_credentials(
+    credentials: &CredentialVault,
+    credential_alias: Option<String>,
+    username_env: Option<String>,
+    password_env: Option<String>,
+) -> anyhow::Result<Option<ResolvedCredential>> {
+    if let Some(alias) = credential_alias {
+        return credentials.resolve(&alias).map(Some);
+    }
+
+    let username = username_env
+        .as_deref()
+        .and_then(|key| std::env::var(key).ok());
+    let password = password_env
+        .as_deref()
+        .and_then(|key| std::env::var(key).ok());
+    Ok(match (username, password) {
+        (Some(username), Some(password)) => Some(ResolvedCredential { username, password }),
+        _ => None,
     })
 }
 

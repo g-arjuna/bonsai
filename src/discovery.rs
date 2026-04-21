@@ -17,6 +17,8 @@ const SAMPLE_INTERVAL_60S: u64 = 60_000_000_000;
 #[derive(Clone, Debug)]
 pub struct DiscoveryInput {
     pub address: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
     pub username_env: Option<String>,
     pub password_env: Option<String>,
     pub ca_cert_path: Option<String>,
@@ -98,8 +100,8 @@ struct PathTemplate {
 
 pub async fn discover_device(input: DiscoveryInput) -> Result<DiscoveryReport> {
     let address = normalize_required("address", input.address)?;
-    let username = env_value(input.username_env.as_deref())?;
-    let password = env_value(input.password_env.as_deref())?;
+    let username = input.username.or(env_value(input.username_env.as_deref())?);
+    let password = input.password.or(env_value(input.password_env.as_deref())?);
     let channel = connect(
         &address,
         input.ca_cert_path.as_deref(),

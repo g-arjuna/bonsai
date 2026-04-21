@@ -19,6 +19,13 @@ graph_path   = "bonsai.db"
 # api_addr     = "[::1]:50051"   # gRPC API (default shown)
 # metrics_addr = "[::1]:9090"    # Prometheus /metrics HTTP (set to "" to disable)
 
+# Local credential vault (T1-1). Set BONSAI_VAULT_PASSPHRASE before starting
+# Bonsai to unlock alias-based credentials. Secrets are encrypted in vault.age;
+# metadata.json stores alias names and timestamps only.
+# [credentials]
+# path = "bonsai-credentials"
+# passphrase_env = "BONSAI_VAULT_PASSPHRASE"
+
 # ── Event bus (T1-1) ──────────────────────────────────────────────────────────
 # [event_bus]
 # capacity              = 2048   # broadcast channel depth; increase for high-rate labs
@@ -41,6 +48,7 @@ address    = "172.100.102.11:57400"
 hostname   = "srl-spine1"
 tls_domain = "clab-bonsai-p4-srl-spine1"
 ca_cert    = "lab/fast-iteration/p4-ca.pem"
+# credential_alias = "srl-lab-admin"  # preferred once added via /api/credentials
 username   = "admin"
 password   = "NokiaSrl1!"
 

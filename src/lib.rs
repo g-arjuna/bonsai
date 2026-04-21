@@ -1,6 +1,7 @@
 pub mod api;
 pub mod archive;
 pub mod config;
+pub mod credentials;
 pub mod discovery;
 pub mod event_bus;
 pub mod gnmi_set;

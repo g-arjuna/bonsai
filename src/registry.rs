@@ -342,6 +342,7 @@ mod tests {
             tls_domain: None,
             ca_cert: None,
             vendor: Some(vendor.to_string()),
+            credential_alias: None,
             username_env: Some("BONSAI_TEST_USER".to_string()),
             password_env: Some("BONSAI_TEST_PASS".to_string()),
             username: None,

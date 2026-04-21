@@ -8,6 +8,7 @@ use bonsai::{
     api::{BonsaiGraphServer, BonsaiService},
     archive, config,
     config::TargetConfig,
+    credentials::{CredentialVault, ResolvedCredential},
     event_bus::InProcessBus,
     graph, ingest,
     registry::{ApiRegistry, DeviceRegistry, RegistryChange},
@@ -161,6 +162,22 @@ async fn main() -> Result<()> {
     }
 
     let registry = std::sync::Arc::new(ApiRegistry::open(REGISTRY_PATH, cfg.target.clone())?);
+    let credentials = std::sync::Arc::new(CredentialVault::open(
+        &cfg.credentials.path,
+        &cfg.credentials.passphrase_env,
+    )?);
+    if credentials.is_unlocked()? {
+        info!(
+            path = %cfg.credentials.path,
+            "credential vault unlocked"
+        );
+    } else {
+        info!(
+            path = %cfg.credentials.path,
+            passphrase_env = %cfg.credentials.passphrase_env,
+            "credential vault locked; alias-based credentials are unavailable until restart with passphrase"
+        );
+    }
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     let subscription_plan_tx = if let Some(graph) = &graph {
@@ -185,6 +202,7 @@ async fn main() -> Result<()> {
 
     let subscriber_manager = if run_collector {
         let registry = std::sync::Arc::clone(&registry);
+        let credentials = std::sync::Arc::clone(&credentials);
         let bus = std::sync::Arc::clone(&bus);
         let subscription_plan_tx = subscription_plan_tx.clone();
         let mut shutdown = shutdown_rx.clone();
@@ -197,6 +215,7 @@ async fn main() -> Result<()> {
                     for target in targets {
                         if let Err(error) = spawn_subscriber(
                             target,
+                            &credentials,
                             &bus,
                             subscription_plan_tx.as_ref(),
                             &mut subscribers,
@@ -224,12 +243,12 @@ async fn main() -> Result<()> {
 
                         match change {
                             RegistryChange::Added(target) => {
-                                if let Err(error) = spawn_subscriber(target, &bus, subscription_plan_tx.as_ref(), &mut subscribers).await {
+                                if let Err(error) = spawn_subscriber(target, &credentials, &bus, subscription_plan_tx.as_ref(), &mut subscribers).await {
                                     warn!(%error, "failed to start subscriber for added device");
                                 }
                             }
                             RegistryChange::Updated(target) => {
-                                if let Err(error) = restart_subscriber(target, &bus, subscription_plan_tx.as_ref(), &mut subscribers).await {
+                                if let Err(error) = restart_subscriber(target, &credentials, &bus, subscription_plan_tx.as_ref(), &mut subscribers).await {
                                     warn!(%error, "failed to restart subscriber for updated device");
                                 }
                             }
@@ -271,6 +290,7 @@ async fn main() -> Result<()> {
         let svc = BonsaiGraphServer::new(BonsaiService::new(
             std::sync::Arc::clone(graph),
             std::sync::Arc::clone(&registry),
+            std::sync::Arc::clone(&credentials),
             std::sync::Arc::clone(&bus),
         ));
         info!(%api_addr, "gRPC API and telemetry ingest server listening");
@@ -293,7 +313,11 @@ async fn main() -> Result<()> {
                 .expect("failed to bind HTTP port 3000");
             axum::serve(
                 listener,
-                bonsai::http_server::router(http_store, std::sync::Arc::clone(&registry)),
+                bonsai::http_server::router(
+                    http_store,
+                    std::sync::Arc::clone(&registry),
+                    std::sync::Arc::clone(&credentials),
+                ),
             )
             .await
             .expect("HTTP server error");
@@ -341,6 +365,7 @@ async fn main() -> Result<()> {
 
 async fn spawn_subscriber(
     target: TargetConfig,
+    credentials: &std::sync::Arc<CredentialVault>,
     bus: &std::sync::Arc<InProcessBus>,
     subscription_plan_tx: Option<&tokio::sync::mpsc::Sender<SubscriptionPlan>>,
     subscribers: &mut SubscriberHandleMap,
@@ -352,10 +377,15 @@ async fn spawn_subscriber(
     }
 
     let ca_cert_pem = load_ca_cert_pem(&target).await?;
+    let resolved_credentials = resolve_target_credentials(&target, credentials)?;
+    let (username, password) = match resolved_credentials {
+        Some(credentials) => (Some(credentials.username), Some(credentials.password)),
+        None => (None, None),
+    };
     let subscriber = subscriber::GnmiSubscriber::new(
         target.address.clone(),
-        target.resolved_username(),
-        target.resolved_password(),
+        username,
+        password,
         target.vendor.clone(),
         target.hostname.clone(),
         target.tls_domain.clone().unwrap_or_default(),
@@ -372,13 +402,14 @@ async fn spawn_subscriber(
 
 async fn restart_subscriber(
     target: TargetConfig,
+    credentials: &std::sync::Arc<CredentialVault>,
     bus: &std::sync::Arc<InProcessBus>,
     subscription_plan_tx: Option<&tokio::sync::mpsc::Sender<SubscriptionPlan>>,
     subscribers: &mut SubscriberHandleMap,
 ) -> Result<()> {
     let address = target.address.clone();
     stop_subscriber(&address, subscribers).await;
-    spawn_subscriber(target, bus, subscription_plan_tx, subscribers).await
+    spawn_subscriber(target, credentials, bus, subscription_plan_tx, subscribers).await
 }
 
 async fn stop_subscriber(address: &str, subscribers: &mut SubscriberHandleMap) {
@@ -406,4 +437,20 @@ async fn load_ca_cert_pem(target: &TargetConfig) -> Result<Option<Vec<u8>>> {
         }
         None => Ok(None),
     }
+}
+
+fn resolve_target_credentials(
+    target: &TargetConfig,
+    credentials: &CredentialVault,
+) -> Result<Option<ResolvedCredential>> {
+    if let Some(alias) = target.credential_alias.as_deref() {
+        return credentials.resolve(alias).map(Some);
+    }
+
+    Ok(
+        match (target.resolved_username(), target.resolved_password()) {
+            (Some(username), Some(password)) => Some(ResolvedCredential { username, password }),
+            _ => None,
+        },
+    )
 }

@@ -9,6 +9,7 @@ bonsai.db.wal
 bonsai-mv.db
 bonsai-mv.db.wal
 bonsai-registry.json
+bonsai-credentials/
 
 # ContainerLab runtime directories (TLS certs, node configs, topology state)
 lab/**/clab-*
