@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 use crate::event_bus::InProcessBus;
-use crate::graph::{GraphStore, SubscriptionStatusWrite};
+use crate::graph::{BonsaiEvent, GraphStore, SubscriptionStatusWrite};
 use crate::telemetry::{TelemetryEvent, TelemetryUpdate};
 
 pub const VERIFICATION_WINDOW: Duration = Duration::from_secs(30);
@@ -93,21 +93,22 @@ async fn register_plan(
                 deadline,
             },
         );
-        if let Err(error) = store
-            .write_subscription_status(SubscriptionStatusWrite {
-                device_address: target.clone(),
-                path: expectation.path,
-                origin: expectation.origin,
-                mode: expectation.mode,
-                sample_interval_ns: expectation.sample_interval_ns as i64,
-                status: "pending".to_string(),
-                first_observed_at_ns: 0,
-                last_observed_at_ns: 0,
-                updated_at_ns: now,
-            })
-            .await
-        {
+        let status = SubscriptionStatusWrite {
+            device_address: target.clone(),
+            path: expectation.path,
+            origin: expectation.origin,
+            mode: expectation.mode,
+            sample_interval_ns: expectation.sample_interval_ns as i64,
+            status: "pending".to_string(),
+            first_observed_at_ns: 0,
+            last_observed_at_ns: 0,
+            updated_at_ns: now,
+        };
+        let event = subscription_status_event(&status);
+        if let Err(error) = store.write_subscription_status(status).await {
             warn!(%error, target = %target, path_key = %key.1, "failed to write pending subscription status");
+        } else {
+            store.publish_event(event);
         }
     }
 }
@@ -132,27 +133,29 @@ async fn observe_update(
         let Some(tracked_path) = tracked.get_mut(&key) else {
             continue;
         };
-        if tracked_path.status != "observed" {
+        let status_changed = tracked_path.status != "observed";
+        if status_changed {
             tracked_path.first_observed_at_ns = now;
         }
         tracked_path.status = "observed".to_string();
         tracked_path.last_observed_at_ns = now;
 
-        if let Err(error) = store
-            .write_subscription_status(SubscriptionStatusWrite {
-                device_address: key.0.clone(),
-                path: tracked_path.expectation.path.clone(),
-                origin: tracked_path.expectation.origin.clone(),
-                mode: tracked_path.expectation.mode.clone(),
-                sample_interval_ns: tracked_path.expectation.sample_interval_ns as i64,
-                status: tracked_path.status.clone(),
-                first_observed_at_ns: tracked_path.first_observed_at_ns,
-                last_observed_at_ns: tracked_path.last_observed_at_ns,
-                updated_at_ns: now,
-            })
-            .await
-        {
+        let status = SubscriptionStatusWrite {
+            device_address: key.0.clone(),
+            path: tracked_path.expectation.path.clone(),
+            origin: tracked_path.expectation.origin.clone(),
+            mode: tracked_path.expectation.mode.clone(),
+            sample_interval_ns: tracked_path.expectation.sample_interval_ns as i64,
+            status: tracked_path.status.clone(),
+            first_observed_at_ns: tracked_path.first_observed_at_ns,
+            last_observed_at_ns: tracked_path.last_observed_at_ns,
+            updated_at_ns: now,
+        };
+        let event = subscription_status_event(&status);
+        if let Err(error) = store.write_subscription_status(status).await {
             warn!(%error, target = %key.0, path_key = %key.1, "failed to write observed subscription status");
+        } else if status_changed {
+            store.publish_event(event);
         }
     }
 }
@@ -175,22 +178,42 @@ async fn mark_silent_paths(
         };
         tracked_path.status = "subscribed_but_silent".to_string();
 
-        if let Err(error) = store
-            .write_subscription_status(SubscriptionStatusWrite {
-                device_address: key.0.clone(),
-                path: tracked_path.expectation.path.clone(),
-                origin: tracked_path.expectation.origin.clone(),
-                mode: tracked_path.expectation.mode.clone(),
-                sample_interval_ns: tracked_path.expectation.sample_interval_ns as i64,
-                status: tracked_path.status.clone(),
-                first_observed_at_ns: 0,
-                last_observed_at_ns: 0,
-                updated_at_ns: now,
-            })
-            .await
-        {
+        let status = SubscriptionStatusWrite {
+            device_address: key.0.clone(),
+            path: tracked_path.expectation.path.clone(),
+            origin: tracked_path.expectation.origin.clone(),
+            mode: tracked_path.expectation.mode.clone(),
+            sample_interval_ns: tracked_path.expectation.sample_interval_ns as i64,
+            status: tracked_path.status.clone(),
+            first_observed_at_ns: 0,
+            last_observed_at_ns: 0,
+            updated_at_ns: now,
+        };
+        let event = subscription_status_event(&status);
+        if let Err(error) = store.write_subscription_status(status).await {
             warn!(%error, target = %key.0, path_key = %key.1, "failed to write silent subscription status");
+        } else {
+            store.publish_event(event);
         }
+    }
+}
+
+fn subscription_status_event(status: &SubscriptionStatusWrite) -> BonsaiEvent {
+    BonsaiEvent {
+        device_address: status.device_address.clone(),
+        event_type: "subscription_status_change".to_string(),
+        detail_json: serde_json::json!({
+            "path": &status.path,
+            "origin": &status.origin,
+            "mode": &status.mode,
+            "sample_interval_ns": status.sample_interval_ns,
+            "status": &status.status,
+            "first_observed_at_ns": status.first_observed_at_ns,
+            "last_observed_at_ns": status.last_observed_at_ns,
+        })
+        .to_string(),
+        occurred_at_ns: status.updated_at_ns,
+        state_change_event_id: String::new(),
     }
 }
 

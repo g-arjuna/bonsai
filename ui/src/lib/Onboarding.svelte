@@ -25,6 +25,8 @@
   let editingDeviceAddress = $state('');
   let editingSavedPaths = $state([]);
   let selectedDeviceAddresses = $state([]);
+  let events = null;
+  let refreshTimer = null;
 
   let form = $state(emptyForm());
 
@@ -72,6 +74,52 @@
     } finally {
       loading = false;
     }
+  }
+
+  function scheduleDeviceRefresh() {
+    if (document.hidden) return;
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => {
+      refreshTimer = null;
+      loadDevices();
+    }, 250);
+  }
+
+  function shouldRefreshForEvent(ev) {
+    return ev.event_type?.startsWith('registry_') || ev.event_type === 'subscription_status_change';
+  }
+
+  function connectEvents() {
+    if (events || document.hidden) return;
+    events = new EventSource('/api/events');
+    events.onmessage = (messageEvent) => {
+      try {
+        const ev = JSON.parse(messageEvent.data);
+        if (shouldRefreshForEvent(ev)) scheduleDeviceRefresh();
+      } catch {}
+    };
+    events.onerror = () => {
+      /* Browser-managed SSE reconnect keeps the onboarding view event-driven. */
+    };
+  }
+
+  function disconnectEvents() {
+    if (!events) return;
+    events.close();
+    events = null;
+  }
+
+  function handleVisibilityChange() {
+    if (document.hidden) {
+      disconnectEvents();
+      if (refreshTimer) {
+        clearTimeout(refreshTimer);
+        refreshTimer = null;
+      }
+      return;
+    }
+    loadDevices();
+    connectEvents();
   }
 
   async function loadCredentials() {
@@ -443,8 +491,13 @@
     loadDevices();
     loadCredentials();
     loadSites();
-    const interval = setInterval(loadDevices, 10000);
-    return () => clearInterval(interval);
+    connectEvents();
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      disconnectEvents();
+      if (refreshTimer) clearTimeout(refreshTimer);
+    };
   });
 </script>
 

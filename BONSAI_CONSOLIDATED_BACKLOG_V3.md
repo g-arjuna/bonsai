@@ -140,7 +140,7 @@ full stream-level reductions should be handled by the later T2 compression/queue
 
 ---
 
-### T0-4 (v3) — UI polls every 10 seconds even when idle
+### T0-4 (v3) — UI polls every 10 seconds even when idle — ✅ Done
 
 **What**: `ui/src/lib/Onboarding.svelte::onMount` sets `setInterval(loadDevices, 10000)`. That's a full `GET /api/onboarding/devices` every 10 seconds for every open browser tab, forever.
 
@@ -155,6 +155,15 @@ full stream-level reductions should be handled by the later T2 compression/queue
 **Done when**:
 - Onboarding page stops network traffic when browser tab is backgrounded
 - Registry edits and subscription-status transitions appear in the UI without waiting for the next poll tick
+
+**Execution update - 2026-04-22**: Replaced the onboarding page's unconditional
+10-second `setInterval` refresh with the existing `/api/events` SSE stream.
+The HTTP SSE handler now also emits registry lifecycle events, while the
+subscription verifier publishes `subscription_status_change` only on state
+transitions (`pending`, first `observed`, and `subscribed_but_silent`) so the UI
+updates promptly without refreshing on every telemetry sample. The onboarding
+page debounces SSE-driven refreshes and closes the EventSource whenever the tab
+is hidden, reopening and doing one catch-up load when visible again.
 
 ---
 

@@ -112,6 +112,13 @@ impl GraphStore {
         self.event_tx.subscribe()
     }
 
+    /// Publish a best-effort event to HTTP/SSE subscribers.
+    pub fn publish_event(&self, event: BonsaiEvent) {
+        if self.event_tx.send(event).is_err() {
+            metrics::counter!("bonsai_broadcast_drops_total").increment(1);
+        }
+    }
+
     fn init_schema(&self) -> Result<()> {
         let conn = Connection::new(&self.db).context("schema connection")?;
 

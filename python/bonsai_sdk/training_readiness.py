@@ -19,6 +19,8 @@ MODEL_A_MIN_NORMAL_ROWS = 200
 MODEL_C_MIN_SUCCESS_ROWS = 50
 MODEL_C_MIN_ACTIONS = 2
 MODEL_C_MIN_STATUS_CLASSES = 2
+MODEL_C_MIN_ROWS_PER_ACTION = 2
+MODEL_C_MIN_ROWS_PER_STATUS = 2
 VALID_REMEDIATION_STATUSES = {"success", "failed", "skipped"}
 
 _ANOMALY_REQUIRED_COLUMNS = {
@@ -77,15 +79,25 @@ def validate_anomaly_dataframe(df: pd.DataFrame) -> ReadinessCheck:
         "rows_anomaly": 0,
         "rows_normal": 0,
         "null_cells": 0,
+        "null_rate_required": 0.0,
         "rule_ids": 0,
+        "label_distribution": {},
+        "event_type_distribution": {},
+        "numeric_ranges": {},
     }
 
     if not problems:
         labels = pd.to_numeric(df["label"], errors="coerce")
+        label_counts = Counter(labels.dropna().astype(int).astype(str))
         stats["rows_anomaly"] = int((labels == 1).sum())
         stats["rows_normal"] = int((labels == 0).sum())
-        stats["null_cells"] = int(df[list(_ANOMALY_REQUIRED_COLUMNS)].isna().sum().sum())
+        null_cells, null_rate = _required_null_stats(df, _ANOMALY_REQUIRED_COLUMNS)
+        stats["null_cells"] = null_cells
+        stats["null_rate_required"] = null_rate
         stats["rule_ids"] = int(df.loc[labels == 1, "rule_id"].fillna("").astype(str).replace("", pd.NA).dropna().nunique()) if "rule_id" in df.columns else 0
+        stats["label_distribution"] = dict(label_counts)
+        stats["event_type_distribution"] = _value_counts(df["event_type"])
+        stats["numeric_ranges"] = _numeric_ranges(df, _NUMERIC_COLUMNS)
 
         if stats["rows_anomaly"] < MODEL_A_MIN_ANOMALY_ROWS:
             problems.append(
@@ -95,20 +107,18 @@ def validate_anomaly_dataframe(df: pd.DataFrame) -> ReadinessCheck:
             problems.append(
                 f"need at least {MODEL_A_MIN_NORMAL_ROWS} normal rows, found {stats['rows_normal']}"
             )
+        if labels.isna().any():
+            problems.append("label column contains non-numeric values")
         if set(labels.dropna().astype(int).unique()) - {0, 1}:
             problems.append("label column must contain only 0/1 values")
         if stats["null_cells"] > 0:
-            problems.append(f"required columns contain {stats['null_cells']} null cells")
+            problems.append(
+                f"required columns contain {stats['null_cells']} null cells "
+                f"({stats['null_rate_required']:.2%} null rate)"
+            )
 
-        for col in _NUMERIC_COLUMNS:
-            values = pd.to_numeric(df[col], errors="coerce")
-            if values.isna().any():
-                problems.append(f"{col} contains non-numeric values")
-                continue
-            if not np.isfinite(values.to_numpy(dtype=np.float64)).all():
-                problems.append(f"{col} contains non-finite numeric values")
-            if (values < 0).any():
-                problems.append(f"{col} contains negative values")
+        _validate_numeric_columns(df, _NUMERIC_COLUMNS, problems)
+        _validate_feature_ranges(df, problems)
 
     return ReadinessCheck("model_a", not problems, stats, problems)
 
@@ -125,16 +135,27 @@ def validate_remediation_dataframe(
         "action_classes": 0,
         "status_classes": 0,
         "null_cells": 0,
+        "null_rate_required": 0.0,
         "cutoff_iso": TRAINING_HYGIENE_CUTOFF_ISO,
+        "action_distribution": {},
+        "status_distribution": {},
+        "numeric_ranges": {},
     }
 
     if not problems:
         statuses = filtered["status"].fillna("").astype(str)
         actions = filtered["action"].fillna("").astype(str)
+        action_distribution = _value_counts(actions)
+        status_distribution = _value_counts(statuses)
         stats["rows_success"] = int((statuses == "success").sum())
         stats["action_classes"] = int(actions.replace("", pd.NA).dropna().nunique())
         stats["status_classes"] = int(statuses.replace("", pd.NA).dropna().nunique())
-        stats["null_cells"] = int(filtered[list(_REMEDIATION_REQUIRED_COLUMNS)].isna().sum().sum())
+        null_cells, null_rate = _required_null_stats(filtered, _REMEDIATION_REQUIRED_COLUMNS)
+        stats["null_cells"] = null_cells
+        stats["null_rate_required"] = null_rate
+        stats["action_distribution"] = action_distribution
+        stats["status_distribution"] = status_distribution
+        stats["numeric_ranges"] = _numeric_ranges(filtered, _NUMERIC_COLUMNS + ["attempted_at_ns"])
 
         if stats["rows_post_cutoff"] == 0:
             problems.append(
@@ -153,7 +174,10 @@ def validate_remediation_dataframe(
                 f"need at least {MODEL_C_MIN_STATUS_CLASSES} remediation status classes after cutoff, found {stats['status_classes']}"
             )
         if stats["null_cells"] > 0:
-            problems.append(f"required columns contain {stats['null_cells']} null cells after cutoff")
+            problems.append(
+                f"required columns contain {stats['null_cells']} null cells after cutoff "
+                f"({stats['null_rate_required']:.2%} null rate)"
+            )
 
         invalid_statuses = sorted(set(statuses.unique()) - VALID_REMEDIATION_STATUSES - {""})
         if invalid_statuses:
@@ -161,15 +185,24 @@ def validate_remediation_dataframe(
         if (actions == "").any():
             problems.append("action column contains empty values after cutoff")
 
-        for col in _NUMERIC_COLUMNS + ["attempted_at_ns"]:
-            values = pd.to_numeric(filtered[col], errors="coerce")
-            if values.isna().any():
-                problems.append(f"{col} contains non-numeric values after cutoff")
-                continue
-            if not np.isfinite(values.to_numpy(dtype=np.float64)).all():
-                problems.append(f"{col} contains non-finite numeric values after cutoff")
-            if (values < 0).any():
-                problems.append(f"{col} contains negative values after cutoff")
+        for action, count in action_distribution.items():
+            if count < MODEL_C_MIN_ROWS_PER_ACTION:
+                problems.append(
+                    f"action class '{action}' has {count} row(s) after cutoff; "
+                    f"need at least {MODEL_C_MIN_ROWS_PER_ACTION}"
+                )
+        for status, count in status_distribution.items():
+            if status and count < MODEL_C_MIN_ROWS_PER_STATUS:
+                problems.append(
+                    f"status class '{status}' has {count} row(s) after cutoff; "
+                    f"need at least {MODEL_C_MIN_ROWS_PER_STATUS}"
+                )
+
+        _validate_numeric_columns(
+            filtered, _NUMERIC_COLUMNS + ["attempted_at_ns"], problems, " after cutoff"
+        )
+        _validate_feature_ranges(filtered, problems, " after cutoff")
+        _validate_remediation_time_order(filtered, problems)
 
     return ReadinessCheck("model_c", not problems, stats, problems)
 
@@ -304,6 +337,77 @@ def _missing_columns(df: pd.DataFrame, required: set[str]) -> list[str]:
     if not missing:
         return []
     return [f"missing required columns: {', '.join(missing)}"]
+
+
+def _required_null_stats(df: pd.DataFrame, columns: set[str]) -> tuple[int, float]:
+    if len(df) == 0 or not columns:
+        return 0, 0.0
+    null_cells = int(df[list(columns)].isna().sum().sum())
+    total_cells = len(df) * len(columns)
+    return null_cells, null_cells / total_cells if total_cells else 0.0
+
+
+def _value_counts(values: pd.Series) -> dict[str, int]:
+    return {
+        str(key): int(value)
+        for key, value in values.fillna("").astype(str).value_counts().sort_index().items()
+        if str(key)
+    }
+
+
+def _numeric_ranges(df: pd.DataFrame, columns: list[str]) -> dict[str, dict[str, float]]:
+    ranges: dict[str, dict[str, float]] = {}
+    for col in columns:
+        if col not in df.columns or len(df) == 0:
+            continue
+        values = pd.to_numeric(df[col], errors="coerce")
+        finite = values[np.isfinite(values.to_numpy(dtype=np.float64, na_value=np.nan))]
+        if finite.empty:
+            continue
+        ranges[col] = {"min": float(finite.min()), "max": float(finite.max())}
+    return ranges
+
+
+def _validate_numeric_columns(
+    df: pd.DataFrame,
+    columns: list[str],
+    problems: list[str],
+    suffix: str = "",
+) -> None:
+    for col in columns:
+        values = pd.to_numeric(df[col], errors="coerce")
+        if values.isna().any():
+            problems.append(f"{col} contains non-numeric values{suffix}")
+            continue
+        if not np.isfinite(values.to_numpy(dtype=np.float64)).all():
+            problems.append(f"{col} contains non-finite numeric values{suffix}")
+        if (values < 0).any():
+            problems.append(f"{col} contains negative values{suffix}")
+
+
+def _validate_feature_ranges(
+    df: pd.DataFrame, problems: list[str], suffix: str = ""
+) -> None:
+    total = pd.to_numeric(df["peer_count_total"], errors="coerce")
+    established = pd.to_numeric(df["peer_count_established"], errors="coerce")
+    if not total.isna().any() and not established.isna().any():
+        if (established > total).any():
+            problems.append(f"peer_count_established exceeds peer_count_total{suffix}")
+
+    occurred = pd.to_numeric(df["occurred_at_ns"], errors="coerce")
+    if not occurred.isna().any() and (occurred <= 0).any():
+        problems.append(f"occurred_at_ns must be positive{suffix}")
+
+
+def _validate_remediation_time_order(
+    df: pd.DataFrame, problems: list[str]
+) -> None:
+    occurred = pd.to_numeric(df["occurred_at_ns"], errors="coerce")
+    attempted = pd.to_numeric(df["attempted_at_ns"], errors="coerce")
+    if occurred.isna().any() or attempted.isna().any():
+        return
+    if (attempted < occurred).any():
+        problems.append("attempted_at_ns is earlier than occurred_at_ns after cutoff")
 
 
 def _as_count_mapping(raw: object) -> dict[str, int]:

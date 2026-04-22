@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
     Json, Router,
@@ -24,7 +25,7 @@ use axum::{
 use futures::stream::{Stream, StreamExt};
 use lbug::{Connection, Value};
 use serde::{Deserialize, Serialize};
-use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use tower_http::{cors::CorsLayer, services::ServeDir};
 
 use crate::graph::{DetectionRow, GraphStore, REMEDIATION_TRUST_CUTOFF_ISO, SiteRecord, TraceStep};
@@ -32,7 +33,7 @@ use crate::{
     config::{SelectedSubscriptionPath, TargetConfig},
     credentials::{CredentialSummary, CredentialVault, ResolvedCredential},
     discovery::{self, DiscoveryInput},
-    registry::{ApiRegistry, DeviceRegistry},
+    registry::{ApiRegistry, DeviceRegistry, RegistryChange},
 };
 
 // ── JSON response types ───────────────────────────────────────────────────────
@@ -883,8 +884,9 @@ async fn events_handler(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = state.store.subscribe_events();
+    let registry_rx = state.registry.subscribe_changes();
 
-    let stream = BroadcastStream::new(rx).map(|item| {
+    let graph_stream = BroadcastStream::new(rx).map(|item| {
         let data = match item {
             Ok(ev) => serde_json::to_string(&SsePayload {
                 device_address: ev.device_address,
@@ -900,7 +902,56 @@ async fn events_handler(
         Ok(Event::default().data(data))
     });
 
+    let registry_stream = ReceiverStream::new(registry_rx).map(|change| {
+        let data = serde_json::to_string(&registry_change_payload(change)).unwrap_or_default();
+        Ok(Event::default().data(data))
+    });
+
+    let stream = futures::stream::select(graph_stream, registry_stream);
+
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+fn registry_change_payload(change: RegistryChange) -> SsePayload {
+    match change {
+        RegistryChange::Added(target) => registry_target_payload("registry_added", target),
+        RegistryChange::Updated(target) => registry_target_payload("registry_updated", target),
+        RegistryChange::Removed(address) => SsePayload {
+            device_address: address.clone(),
+            event_type: "registry_removed".to_string(),
+            detail_json: serde_json::json!({ "address": address }).to_string(),
+            occurred_at_ns: now_ns(),
+            state_change_event_id: String::new(),
+        },
+    }
+}
+
+fn registry_target_payload(event_type: &str, target: TargetConfig) -> SsePayload {
+    let address = target.address.clone();
+    SsePayload {
+        device_address: address.clone(),
+        event_type: event_type.to_string(),
+        detail_json: serde_json::json!({
+            "address": address,
+            "enabled": target.enabled,
+            "hostname": target.hostname.unwrap_or_default(),
+            "vendor": target.vendor.unwrap_or_default(),
+            "role": target.role.unwrap_or_default(),
+            "site": target.site.unwrap_or_default(),
+            "credential_alias": target.credential_alias.unwrap_or_default(),
+            "selected_path_count": target.selected_paths.len(),
+        })
+        .to_string(),
+        occurred_at_ns: now_ns(),
+        state_change_event_id: String::new(),
+    }
+}
+
+fn now_ns() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or_default()
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
