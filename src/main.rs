@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fs;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -17,6 +18,8 @@ use bonsai::{
     telemetry::TelemetryEvent,
 };
 use metrics_exporter_prometheus::PrometheusBuilder;
+use tonic::codec::CompressionEncoding;
+use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 
 const CONFIG_PATH: &str = "bonsai.toml";
 const GRAPH_PATH_DEFAULT: &str = "bonsai.db";
@@ -32,6 +35,8 @@ type SubscriberHandleMap = HashMap<
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    install_rustls_crypto_provider();
+
     if let Some(command) = DeviceCliCommand::parse()? {
         return run_device_cli(command).await;
     }
@@ -45,7 +50,8 @@ async fn main() -> Result<()> {
 
     info!("bonsai starting - distributed runtime capable");
 
-    let cfg = config::load(CONFIG_PATH).await?;
+    let config_path = config_path();
+    let cfg = config::load(&config_path).await?;
     let runtime_mode = cfg.runtime.parsed_mode()?;
     let run_core = runtime_mode.runs_core();
     let run_collector = runtime_mode.runs_collector();
@@ -142,17 +148,21 @@ async fn main() -> Result<()> {
         });
     }
 
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
     if cfg.archive.enabled && run_collector {
         let archive_root = std::path::PathBuf::from(&cfg.archive.path);
         let flush_interval = Duration::from_secs(cfg.archive.flush_interval_seconds);
         let max_batch_rows = cfg.archive.max_batch_rows;
         let bus_for_archive = std::sync::Arc::clone(&bus);
+        let archive_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
             if let Err(error) = archive::run_archiver(
                 bus_for_archive,
                 archive_root,
                 flush_interval,
                 max_batch_rows,
+                archive_shutdown,
             )
             .await
             {
@@ -182,8 +192,6 @@ async fn main() -> Result<()> {
             "credential vault locked; alias-based credentials are unavailable until restart with passphrase"
         );
     }
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-
     if let Some(graph) = &graph {
         match registry.list_active() {
             Ok(targets) => {
@@ -295,12 +303,16 @@ async fn main() -> Result<()> {
         let forwarder_bus = std::sync::Arc::clone(&bus);
         let core_endpoint = cfg.runtime.core_ingest_endpoint.clone();
         let collector_id = cfg.runtime.collector_id.clone();
+        let queue_config = cfg.collector.queue.clone();
+        let tls_config = cfg.runtime.tls.clone();
         let forwarder_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
             ingest::run_core_forwarder(
                 forwarder_bus,
                 core_endpoint,
                 collector_id,
+                queue_config,
+                tls_config,
                 forwarder_shutdown,
             )
             .await;
@@ -317,14 +329,24 @@ async fn main() -> Result<()> {
             std::sync::Arc::clone(&registry),
             std::sync::Arc::clone(&credentials),
             std::sync::Arc::clone(&bus),
-        ));
-        info!(%api_addr, "gRPC API and telemetry ingest server listening");
+        ))
+        .accept_compressed(CompressionEncoding::Zstd);
+        let mut server = tonic::transport::Server::builder();
+        if cfg.runtime.tls.enabled {
+            server = server
+                .tls_config(server_tls_config(&cfg.runtime.tls)?)
+                .context("failed to configure runtime.tls for gRPC server")?;
+            info!(
+                %api_addr,
+                ingest_compression = "zstd",
+                mtls = true,
+                "gRPC API and telemetry ingest server listening"
+            );
+        } else {
+            info!(%api_addr, ingest_compression = "zstd", mtls = false, "gRPC API and telemetry ingest server listening");
+        }
         tokio::spawn(async move {
-            if let Err(error) = tonic::transport::Server::builder()
-                .add_service(svc)
-                .serve(api_addr)
-                .await
-            {
+            if let Err(error) = server.add_service(svc).serve(api_addr).await {
                 warn!(%error, "gRPC server error");
             }
         });
@@ -386,6 +408,28 @@ async fn main() -> Result<()> {
     }
     info!("bonsai stopped");
     Ok(())
+}
+
+fn server_tls_config(tls: &config::RuntimeTlsConfig) -> Result<ServerTlsConfig> {
+    let cert_path = required_tls_path(tls.cert.as_deref(), "runtime.tls.cert")?;
+    let key_path = required_tls_path(tls.key.as_deref(), "runtime.tls.key")?;
+    let ca_path = required_tls_path(tls.ca_cert.as_deref(), "runtime.tls.ca_cert")?;
+    let cert = fs::read(cert_path)
+        .with_context(|| format!("failed to read runtime.tls.cert '{cert_path}'"))?;
+    let key = fs::read(key_path)
+        .with_context(|| format!("failed to read runtime.tls.key '{key_path}'"))?;
+    let ca = fs::read(ca_path)
+        .with_context(|| format!("failed to read runtime.tls.ca_cert '{ca_path}'"))?;
+
+    Ok(ServerTlsConfig::new()
+        .identity(Identity::from_pem(cert, key))
+        .client_ca_root(Certificate::from_pem(ca)))
+}
+
+fn required_tls_path<'a>(value: Option<&'a str>, field: &str) -> Result<&'a str> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("{field} is required when runtime.tls.enabled = true"))
 }
 
 enum DeviceCliCommand {
@@ -504,7 +548,8 @@ impl DeviceCliAdd {
 }
 
 async fn run_device_cli(command: DeviceCliCommand) -> Result<()> {
-    let cfg = config::load(CONFIG_PATH).await?;
+    let config_path = config_path();
+    let cfg = config::load(&config_path).await?;
     let registry = ApiRegistry::open(REGISTRY_PATH, cfg.target.clone())?;
 
     match command {
@@ -574,6 +619,17 @@ async fn run_device_cli(command: DeviceCliCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn config_path() -> String {
+    std::env::var("BONSAI_CONFIG")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| CONFIG_PATH.to_string())
+}
+
+fn install_rustls_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
 fn parse_address_arg(args: Vec<String>) -> Result<String> {

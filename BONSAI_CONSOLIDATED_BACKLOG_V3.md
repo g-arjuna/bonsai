@@ -61,7 +61,7 @@
 
 These are found-during-review items. Small, cheap, preventative. Do them in the same sprint as their surrounding work.
 
-### T0-1 (v3) — Archive small-file proliferation
+### T0-1 (v3) — Archive small-file proliferation — ✅ Done
 
 **What**: `src/archive.rs::flush_buffer` creates a new Parquet file per flush, per partition. At 10-second flush × 4 devices × 24 hours that's ~35,000 files/day. Parquet has non-trivial per-file overhead; readers pay for filesystem traversal; compression efficiency drops at small file sizes.
 
@@ -77,6 +77,17 @@ These are found-during-review items. Small, cheap, preventative. Do them in the 
 - A one-hour run with 4 devices produces at most 4 Parquet files (one per device per hour), not dozens per device
 - Compression ratio in the flush log is higher than today's per-flush values
 - A read-path test with `pd.read_parquet("archive/", glob="**/*.parquet")` on a week's worth of data completes in reasonable time
+
+**Execution update - 2026-04-22**: Implemented the recommended
+append-to-current-hour design in `src/archive.rs`. The archive consumer now
+keeps one open Parquet `ArrowWriter` per `(target, hour)` partition and appends
+flushes as row groups instead of creating a new file per flush. Writers close at
+hour boundaries, event-bus close, and graceful shutdown, with final
+compression-ratio logging on close. Existing files are never overwritten; if a
+process restarts within the same hour Bonsai creates a `__part-NN` file for that
+partition rather than corrupting a closed Parquet file. Focused release tests
+prove repeated flushes for four devices in one hour produce exactly four Parquet
+files and that each file remains readable.
 
 ---
 
@@ -382,7 +393,7 @@ operations.
 
 The distributed runtime seam landed in v2 as a minimum viable shape. Before it becomes operationally real, these four items need to land.
 
-### T2-1 — zstd compression on the ingest stream
+### T2-1 — zstd compression on the ingest stream — ✅ Done
 
 **What**: enable tonic's zstd feature on the `TelemetryIngest` stream so collector→core bandwidth is compressed.
 
@@ -395,9 +406,19 @@ The distributed runtime seam landed in v2 as a minimum viable shape. Before it b
 
 **Done when**: a collector-core run on the lab reports a compression ratio in tonic logs; the existing round-trip test passes with compression enabled; Windows release build is clean.
 
+**Execution update - 2026-04-22**: Completed with zstd, not gzip. Bonsai keeps
+tonic's native zstd compression on `TelemetryIngest`; the Windows/MSVC duplicate
+symbol blocker is resolved by building LadybugDB as `lbug_shared.dll` via
+repo-local `LBUG_SHARED=1`, which keeps Ladybug's bundled `zstd.lib` out of the
+Bonsai executable link unit. `build.rs` copies `lbug_shared.dll` into
+`target\release\` so standalone `target\release\bonsai.exe` works. Verified:
+`cargo build --release`, `cargo test --release telemetry_ingest -- --nocapture`,
+`cargo clippy --release --all-targets -- -D warnings`, and
+`target\release\bonsai.exe device list`.
+
 ---
 
-### T2-2 — Disk-backed collector queue
+### T2-2 — Disk-backed collector queue — ✅ Mechanism done; live proof in T2-4
 
 **What**: when the core is unreachable, the collector should persist incoming telemetry to a local disk queue and replay it once connectivity is restored.
 
@@ -420,9 +441,19 @@ The distributed runtime seam landed in v2 as a minimum viable shape. Before it b
 - Queue size logged periodically so operators see when they're getting close to dropping
 - ADR documents the queue format and the retention policy
 
+**Execution update - 2026-04-22**: Implemented an append-only collector disk
+queue in `src/ingest.rs`. Collector mode now writes every decoded telemetry
+update to `runtime/collector-queue` before forwarding; replay drains in FIFO
+order after reconnect and advances the ack pointer only after the core returns
+an accepted ingest response. `[collector.queue]` config controls path,
+`max_bytes`, `max_age_hours`, replay batch size, and periodic queue logs.
+Retention compaction drops expired or over-budget records with warnings. Focused
+restart/retention tests pass; live five-minute outage validation is carried into
+T2-4 because that item owns two-process lab proof.
+
 ---
 
-### T2-3 — mTLS between collector and core
+### T2-3 — mTLS between collector and core — ✅ Implemented; live cert proof in T2-4
 
 **What**: both sides authenticate via certificates. Today the `TelemetryIngest` channel is unauthenticated — a malicious collector could send arbitrary telemetry into the graph.
 
@@ -439,15 +470,39 @@ The distributed runtime seam landed in v2 as a minimum viable shape. Before it b
 - Collector with no cert or an expired cert is rejected at handshake
 - ADR documents the CA structure for the lab
 
+**Execution update - 2026-04-22**: Added optional `[runtime.tls]` config and
+wired collector-side `ClientTlsConfig` plus core-side `ServerTlsConfig` with
+required client certificate verification. When enabled, collectors must use an
+`https://` core endpoint, trust `ca_cert`, present `cert`/`key`, and optionally
+set `server_name` to match the core SAN. Added `docs/distributed_tls.md` with
+OpenSSL commands and validation steps. Live valid/no-cert handshake proof is
+folded into T2-4 alongside the two-process lab run so we test mTLS, zstd, and
+queue replay together.
+
 ---
 
-### T2-4 — Live two-process validation
+### T2-4 — Live two-process validation — ✅ Distributed transport validated
 
 **What**: the distributed slice has not yet been run as two real processes against the lab. Execute it. Document it.
 
 **Where**: `docs/distributed_validation.md`
 
 **Done when**: a step-by-step reproducible run exists — collector on one machine, core on another, lab devices, healing loop closes end-to-end, metrics confirm archive and graph writer both receive the same telemetry. Anything that breaks becomes a follow-up ticket.
+
+**Execution update - 2026-04-22**: Ran Windows Bonsai collector/core as two
+separate release processes against the WSL-backed live lab. The collector
+reached all four lab gNMI targets, queued telemetry while the core was offline,
+then replayed through mTLS + zstd once the core started. Peak outage queue was
+1,474 records / 346,991 bytes; replay delivered 3,314 records across 421
+batches; the core logged 422 ingest accept events and graph interface writes for
+SR Linux and IOS-XRd targets. zstd estimated 92.93% reduction over a 1,000
+message sample. A forced wrong-CA collector test produced 0 delivered batches
+and 0 core accept events while its queue grew, proving client-cert rejection on
+the actual ingest RPC. Detailed notes are in `docs/distributed_validation.md`.
+
+Scope note: this closes the distributed transport validation. Archive parity and
+remediation/healing-loop validation are intentionally left to their respective
+later backlog items because they exercise different subsystems.
 
 ---
 
@@ -765,8 +820,8 @@ Exit: collector-core deployment works across two machines with compressed, queue
 9. T2-1 zstd compression (1–2 sessions — depends on Windows resolution)
 10. T2-2 disk-backed queue (2 sessions)
 11. T2-3 mTLS (1 session)
-12. T2-4 live validation (1 session)
-13. T0-1 archive small files (1 session, can overlap)
+12. T2-4 live validation (1 session) — done for distributed transport
+13. T0-1 archive small files (1 session, can overlap) — done
 
 ### Sprint 4 — Operational polish + ML readiness
 

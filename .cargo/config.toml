@@ -4,3 +4,8 @@
 # and existing processes don't pick up the user PATH update.
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 CMAKE_MAKE_PROGRAM = "C:/Users/arjun/bin/ninja.exe"
+# Required for tonic zstd on Windows/MSVC: Ladybug's static build bundles
+# zstd.lib, which conflicts with zstd-sys. Shared Ladybug keeps Ladybug's
+# bundled zstd out of the Bonsai executable link unit while preserving
+# tonic's native zstd compression.
+LBUG_SHARED = "1"

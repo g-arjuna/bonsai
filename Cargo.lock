@@ -399,9 +399,11 @@ dependencies = [
  "prost-types",
  "protoc-bin-vendored",
  "rmp-serde",
+ "rustls",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
  "time",
  "tokio",
  "tokio-stream",
@@ -412,6 +414,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zstd",
 ]
 
 [[package]]
@@ -3026,6 +3029,7 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+ "zstd",
 ]
 
 [[package]]

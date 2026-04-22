@@ -1,7 +1,8 @@
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -11,7 +12,7 @@ use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use time::OffsetDateTime;
-use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::{broadcast::error::RecvError, watch};
 use tracing::{info, warn};
 
 use crate::event_bus::InProcessBus;
@@ -21,8 +22,10 @@ use crate::telemetry::{TelemetryEvent, TelemetryUpdate};
 struct FlushStats {
     path: PathBuf,
     rows: usize,
+    total_rows: usize,
     file_bytes: u64,
     raw_bytes: usize,
+    total_raw_bytes: usize,
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -31,7 +34,22 @@ struct ArchivePartition {
     month: u8,
     day: u8,
     hour: u8,
+    hour_start_ns: i64,
     target: String,
+}
+
+#[derive(Debug)]
+struct CloseStats {
+    path: PathBuf,
+    total_rows: usize,
+    file_bytes: u64,
+    total_raw_bytes: usize,
+}
+
+#[derive(Debug, Default)]
+struct ArchiveWriteStats {
+    flushes: Vec<FlushStats>,
+    closes: Vec<CloseStats>,
 }
 
 pub async fn run_archiver(
@@ -39,11 +57,13 @@ pub async fn run_archiver(
     archive_path: PathBuf,
     flush_interval: Duration,
     max_batch_rows: usize,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     let mut rx = bus.subscribe();
     let mut buffer: Vec<TelemetryUpdate> = Vec::with_capacity(max_batch_rows);
     let mut flush_timer = tokio::time::interval(flush_interval);
     flush_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let writer = Arc::new(Mutex::new(HourlyArchiveWriter::new(archive_path.clone())));
 
     info!(
         path = %archive_path.display(),
@@ -54,11 +74,19 @@ pub async fn run_archiver(
 
     loop {
         tokio::select! {
+            _ = shutdown.changed() => {
+                if !buffer.is_empty() {
+                    flush_buffer(std::mem::take(&mut buffer), Arc::clone(&writer)).await?;
+                }
+                close_archive_writers(Arc::clone(&writer)).await?;
+                info!("archive consumer stopping: shutdown signal received");
+                break;
+            }
             recv = rx.recv() => match recv {
                 Ok(update) => {
                     buffer.push(update);
                     if buffer.len() >= max_batch_rows {
-                        flush_buffer(std::mem::take(&mut buffer), archive_path.clone()).await?;
+                        flush_buffer(std::mem::take(&mut buffer), Arc::clone(&writer)).await?;
                     }
                 }
                 Err(RecvError::Lagged(n)) => {
@@ -66,15 +94,16 @@ pub async fn run_archiver(
                 }
                 Err(RecvError::Closed) => {
                     if !buffer.is_empty() {
-                        flush_buffer(std::mem::take(&mut buffer), archive_path.clone()).await?;
+                        flush_buffer(std::mem::take(&mut buffer), Arc::clone(&writer)).await?;
                     }
+                    close_archive_writers(Arc::clone(&writer)).await?;
                     info!("archive consumer stopping: event bus closed");
                     break;
                 }
             },
             _ = flush_timer.tick() => {
                 if !buffer.is_empty() {
-                    flush_buffer(std::mem::take(&mut buffer), archive_path.clone()).await?;
+                    flush_buffer(std::mem::take(&mut buffer), Arc::clone(&writer)).await?;
                 }
             }
         }
@@ -83,16 +112,24 @@ pub async fn run_archiver(
     Ok(())
 }
 
-async fn flush_buffer(buffer: Vec<TelemetryUpdate>, archive_root: PathBuf) -> Result<()> {
+async fn flush_buffer(
+    buffer: Vec<TelemetryUpdate>,
+    writer: Arc<Mutex<HourlyArchiveWriter>>,
+) -> Result<()> {
     if buffer.is_empty() {
         return Ok(());
     }
 
-    let stats = tokio::task::spawn_blocking(move || flush_buffer_blocking(buffer, &archive_root))
-        .await
-        .context("archive flush panicked")??;
+    let stats = tokio::task::spawn_blocking(move || {
+        let mut writer = writer
+            .lock()
+            .map_err(|_| anyhow::anyhow!("archive writer lock poisoned"))?;
+        writer.append(buffer)
+    })
+    .await
+    .context("archive flush panicked")??;
 
-    for stat in stats {
+    for stat in stats.flushes {
         let compression_ratio = if stat.file_bytes > 0 {
             stat.raw_bytes as f64 / stat.file_bytes as f64
         } else {
@@ -101,28 +138,136 @@ async fn flush_buffer(buffer: Vec<TelemetryUpdate>, archive_root: PathBuf) -> Re
         info!(
             path = %stat.path.display(),
             rows = stat.rows,
+            total_rows = stat.total_rows,
             file_bytes = stat.file_bytes,
             raw_bytes = stat.raw_bytes,
+            total_raw_bytes = stat.total_raw_bytes,
             compression_ratio,
-            "archive flush wrote parquet batch"
+            "archive flush appended parquet row group"
         );
     }
+    log_close_stats(stats.closes);
 
     Ok(())
 }
 
-fn flush_buffer_blocking(
-    buffer: Vec<TelemetryUpdate>,
-    archive_root: &Path,
-) -> Result<Vec<FlushStats>> {
-    let mut grouped: HashMap<ArchivePartition, Vec<TelemetryUpdate>> = HashMap::new();
-    for update in buffer {
-        let partition = ArchivePartition::from_update(&update)?;
-        grouped.entry(partition).or_default().push(update);
+async fn close_archive_writers(writer: Arc<Mutex<HourlyArchiveWriter>>) -> Result<()> {
+    let stats = tokio::task::spawn_blocking(move || {
+        let mut writer = writer
+            .lock()
+            .map_err(|_| anyhow::anyhow!("archive writer lock poisoned"))?;
+        writer.close_all()
+    })
+    .await
+    .context("archive close panicked")??;
+
+    log_close_stats(stats);
+
+    Ok(())
+}
+
+fn log_close_stats(stats: Vec<CloseStats>) {
+    for stat in stats {
+        let compression_ratio = if stat.file_bytes > 0 {
+            stat.total_raw_bytes as f64 / stat.file_bytes as f64
+        } else {
+            0.0
+        };
+        info!(
+            path = %stat.path.display(),
+            total_rows = stat.total_rows,
+            file_bytes = stat.file_bytes,
+            total_raw_bytes = stat.total_raw_bytes,
+            compression_ratio,
+            "archive closed hourly parquet file"
+        );
+    }
+}
+
+struct HourlyArchiveWriter {
+    archive_root: PathBuf,
+    open: HashMap<ArchivePartition, OpenPartitionWriter>,
+}
+
+impl HourlyArchiveWriter {
+    fn new(archive_root: PathBuf) -> Self {
+        Self {
+            archive_root,
+            open: HashMap::new(),
+        }
     }
 
-    let mut stats = Vec::with_capacity(grouped.len());
-    for (partition, updates) in grouped {
+    fn append(&mut self, buffer: Vec<TelemetryUpdate>) -> Result<ArchiveWriteStats> {
+        let mut grouped: HashMap<ArchivePartition, Vec<TelemetryUpdate>> = HashMap::new();
+        let mut max_hour_start_ns = i64::MIN;
+        for update in buffer {
+            let partition = ArchivePartition::from_update(&update)?;
+            max_hour_start_ns = max_hour_start_ns.max(partition.hour_start_ns);
+            grouped.entry(partition).or_default().push(update);
+        }
+
+        let mut stats = ArchiveWriteStats {
+            flushes: Vec::with_capacity(grouped.len()),
+            closes: Vec::new(),
+        };
+        for (partition, updates) in grouped {
+            let writer = self.open_partition_writer(partition)?;
+            stats.flushes.push(writer.append(updates)?);
+        }
+
+        stats.closes = self.close_hours_before(max_hour_start_ns)?;
+        Ok(stats)
+    }
+
+    fn close_all(&mut self) -> Result<Vec<CloseStats>> {
+        let writers = std::mem::take(&mut self.open);
+        writers
+            .into_values()
+            .map(OpenPartitionWriter::close)
+            .collect()
+    }
+
+    fn close_hours_before(&mut self, hour_start_ns: i64) -> Result<Vec<CloseStats>> {
+        let stale: Vec<_> = self
+            .open
+            .keys()
+            .filter(|partition| partition.hour_start_ns < hour_start_ns)
+            .cloned()
+            .collect();
+        let mut stats = Vec::with_capacity(stale.len());
+        for partition in stale {
+            if let Some(writer) = self.open.remove(&partition) {
+                stats.push(writer.close()?);
+            }
+        }
+        Ok(stats)
+    }
+
+    fn open_partition_writer(
+        &mut self,
+        partition: ArchivePartition,
+    ) -> Result<&mut OpenPartitionWriter> {
+        if !self.open.contains_key(&partition) {
+            let writer = OpenPartitionWriter::open(&self.archive_root, &partition)?;
+            self.open.insert(partition.clone(), writer);
+        }
+
+        Ok(self
+            .open
+            .get_mut(&partition)
+            .expect("partition writer was just inserted"))
+    }
+}
+
+struct OpenPartitionWriter {
+    path: PathBuf,
+    writer: ArrowWriter<File>,
+    total_rows: usize,
+    total_raw_bytes: usize,
+}
+
+impl OpenPartitionWriter {
+    fn open(archive_root: &Path, partition: &ArchivePartition) -> Result<Self> {
         let dir = archive_root
             .join(format!("{:04}", partition.year))
             .join(format!("{:02}", partition.month))
@@ -130,15 +275,96 @@ fn flush_buffer_blocking(
         fs::create_dir_all(&dir)
             .with_context(|| format!("failed to create archive directory '{}'", dir.display()))?;
 
-        let file_name = batch_file_name(&partition, &updates);
-        let path = dir.join(file_name);
-        stats.push(write_partition_file(&path, updates)?);
+        let (path, file) = create_hourly_archive_file(&dir, partition)?;
+        let writer = ArrowWriter::try_new(file, archive_schema(), Some(writer_properties()?))
+            .with_context(|| format!("failed to open parquet writer '{}'", path.display()))?;
+
+        Ok(Self {
+            path,
+            writer,
+            total_rows: 0,
+            total_raw_bytes: 0,
+        })
     }
 
-    Ok(stats)
+    fn append(&mut self, updates: Vec<TelemetryUpdate>) -> Result<FlushStats> {
+        let rows = updates.len();
+        let (batch, raw_bytes) = build_record_batch(updates)?;
+        self.writer
+            .write(&batch)
+            .with_context(|| format!("failed to write parquet batch '{}'", self.path.display()))?;
+        self.total_rows += rows;
+        self.total_raw_bytes += raw_bytes;
+
+        let file_bytes = fs::metadata(&self.path)
+            .with_context(|| format!("failed to stat archive file '{}'", self.path.display()))?
+            .len();
+
+        Ok(FlushStats {
+            path: self.path.clone(),
+            rows,
+            total_rows: self.total_rows,
+            file_bytes,
+            raw_bytes,
+            total_raw_bytes: self.total_raw_bytes,
+        })
+    }
+
+    fn close(self) -> Result<CloseStats> {
+        self.writer
+            .close()
+            .with_context(|| format!("failed to close parquet writer '{}'", self.path.display()))?;
+        let file_bytes = fs::metadata(&self.path)
+            .with_context(|| format!("failed to stat archive file '{}'", self.path.display()))?
+            .len();
+
+        Ok(CloseStats {
+            path: self.path,
+            total_rows: self.total_rows,
+            file_bytes,
+            total_raw_bytes: self.total_raw_bytes,
+        })
+    }
 }
 
-fn write_partition_file(path: &Path, updates: Vec<TelemetryUpdate>) -> Result<FlushStats> {
+fn create_hourly_archive_file(dir: &Path, partition: &ArchivePartition) -> Result<(PathBuf, File)> {
+    for part in 0.. {
+        let path = dir.join(hourly_file_name(partition, part));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to create archive file '{}'", path.display())
+                });
+            }
+        }
+    }
+
+    unreachable!("unbounded part search must return or error")
+}
+
+fn archive_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("timestamp_ns", DataType::Int64, false),
+        Field::new("target", DataType::Utf8, false),
+        Field::new("vendor", DataType::Utf8, false),
+        Field::new("hostname", DataType::Utf8, false),
+        Field::new("path", DataType::Utf8, false),
+        Field::new("value", DataType::Utf8, false),
+        Field::new("event_type", DataType::Utf8, false),
+    ]))
+}
+
+fn writer_properties() -> Result<WriterProperties> {
+    Ok(WriterProperties::builder()
+        .set_compression(Compression::ZSTD(
+            ZstdLevel::try_new(3).context("invalid zstd level")?,
+        ))
+        .build())
+}
+
+fn build_record_batch(updates: Vec<TelemetryUpdate>) -> Result<(RecordBatch, usize)> {
     let rows = updates.len();
     let mut timestamp_ns = Vec::with_capacity(rows);
     let mut target = Vec::with_capacity(rows);
@@ -170,18 +396,10 @@ fn write_partition_file(path: &Path, updates: Vec<TelemetryUpdate>) -> Result<Fl
         event_type.push(classified.to_string());
     }
 
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("timestamp_ns", DataType::Int64, false),
-        Field::new("target", DataType::Utf8, false),
-        Field::new("vendor", DataType::Utf8, false),
-        Field::new("hostname", DataType::Utf8, false),
-        Field::new("path", DataType::Utf8, false),
-        Field::new("value", DataType::Utf8, false),
-        Field::new("event_type", DataType::Utf8, false),
-    ]));
+    let schema = archive_schema();
 
     let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
+        schema,
         vec![
             Arc::new(Int64Array::from(timestamp_ns)) as ArrayRef,
             Arc::new(StringArray::from(target)) as ArrayRef,
@@ -194,33 +412,7 @@ fn write_partition_file(path: &Path, updates: Vec<TelemetryUpdate>) -> Result<Fl
     )
     .context("failed to build archive record batch")?;
 
-    let props = WriterProperties::builder()
-        .set_compression(Compression::ZSTD(
-            ZstdLevel::try_new(3).context("invalid zstd level")?,
-        ))
-        .build();
-
-    let file = File::create(path)
-        .with_context(|| format!("failed to create archive file '{}'", path.display()))?;
-    let mut writer = ArrowWriter::try_new(file, schema, Some(props))
-        .with_context(|| format!("failed to open parquet writer '{}'", path.display()))?;
-    writer
-        .write(&batch)
-        .with_context(|| format!("failed to write parquet batch '{}'", path.display()))?;
-    writer
-        .close()
-        .with_context(|| format!("failed to close parquet writer '{}'", path.display()))?;
-
-    let file_bytes = fs::metadata(path)
-        .with_context(|| format!("failed to stat archive file '{}'", path.display()))?
-        .len();
-
-    Ok(FlushStats {
-        path: path.to_path_buf(),
-        rows,
-        file_bytes,
-        raw_bytes,
-    })
+    Ok((batch, raw_bytes))
 }
 
 fn classified_event_type(update: &TelemetryUpdate) -> &'static str {
@@ -234,24 +426,16 @@ fn classified_event_type(update: &TelemetryUpdate) -> &'static str {
     }
 }
 
-fn batch_file_name(partition: &ArchivePartition, updates: &[TelemetryUpdate]) -> String {
-    let min_ts = updates
-        .iter()
-        .map(|update| update.timestamp_ns)
-        .min()
-        .unwrap_or_default();
-    let max_ts = updates
-        .iter()
-        .map(|update| update.timestamp_ns)
-        .max()
-        .unwrap_or_default();
+fn hourly_file_name(partition: &ArchivePartition, part: usize) -> String {
+    let suffix = if part == 0 {
+        String::new()
+    } else {
+        format!("__part-{part:02}")
+    };
     format!(
-        "{}__hour-{:02}__{}-{}__rows-{}.parquet",
+        "{}__hour-{:02}{suffix}.parquet",
         sanitize_for_filename(&partition.target),
         partition.hour,
-        min_ts,
-        max_ts,
-        updates.len()
     )
 }
 
@@ -269,11 +453,16 @@ impl ArchivePartition {
     fn from_update(update: &TelemetryUpdate) -> Result<Self> {
         let ts = OffsetDateTime::from_unix_timestamp_nanos(update.timestamp_ns as i128)
             .with_context(|| format!("invalid telemetry timestamp_ns {}", update.timestamp_ns))?;
+        let hour_start_ns = update
+            .timestamp_ns
+            .div_euclid(3_600_000_000_000)
+            .saturating_mul(3_600_000_000_000);
         Ok(Self {
             year: ts.year(),
             month: ts.month() as u8,
             day: ts.day(),
             hour: ts.hour(),
+            hour_start_ns,
             target: update.target.clone(),
         })
     }
@@ -281,30 +470,140 @@ impl ArchivePartition {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
+    use parquet::file::reader::{FileReader, SerializedFileReader};
     use serde_json::json;
 
     use super::*;
 
     #[test]
-    fn batch_file_name_sanitizes_target() {
+    fn hourly_file_name_sanitizes_target() {
         let partition = ArchivePartition {
             year: 2026,
             month: 4,
             day: 20,
             hour: 14,
+            hour_start_ns: 1_776_693_600_000_000_000,
             target: "10.1.1.1:57400".to_string(),
         };
-        let updates = vec![TelemetryUpdate {
-            target: partition.target.clone(),
+
+        let name = hourly_file_name(&partition, 0);
+        assert_eq!(name, "10.1.1.1_57400__hour-14.parquet");
+        assert_eq!(
+            hourly_file_name(&partition, 2),
+            "10.1.1.1_57400__hour-14__part-02.parquet"
+        );
+    }
+
+    #[test]
+    fn hourly_writer_reuses_file_across_flushes_for_same_target_hour() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let mut writer = HourlyArchiveWriter::new(tempdir.path().to_path_buf());
+        let target = "10.1.1.1:57400";
+
+        writer
+            .append(vec![sample_update(target, 1_776_695_400_000_000_000, 1)])
+            .unwrap();
+        writer
+            .append(vec![sample_update(target, 1_776_695_401_000_000_000, 2)])
+            .unwrap();
+        let close_stats = writer.close_all().unwrap();
+
+        assert_eq!(close_stats.len(), 1);
+        let files = parquet_files(tempdir.path());
+        assert_eq!(files.len(), 1);
+        let file = File::open(&files[0]).unwrap();
+        let reader = SerializedFileReader::new(file).unwrap();
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 2);
+    }
+
+    #[test]
+    fn hourly_writer_rolls_file_at_hour_boundary() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let mut writer = HourlyArchiveWriter::new(tempdir.path().to_path_buf());
+        let target = "10.1.1.1:57400";
+
+        writer
+            .append(vec![sample_update(target, 1_776_695_400_000_000_000, 1)])
+            .unwrap();
+        writer
+            .append(vec![sample_update(target, 1_776_699_000_000_000_000, 2)])
+            .unwrap();
+        writer.close_all().unwrap();
+
+        let files = parquet_files(tempdir.path());
+        assert_eq!(files.len(), 2);
+        let file_names: HashSet<_> = files
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert!(file_names.contains("10.1.1.1_57400__hour-14.parquet"));
+        assert!(file_names.contains("10.1.1.1_57400__hour-15.parquet"));
+    }
+
+    #[test]
+    fn hourly_writer_limits_one_hour_four_targets_to_four_files() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let mut writer = HourlyArchiveWriter::new(tempdir.path().to_path_buf());
+        let targets = [
+            "10.1.1.1:57400",
+            "10.1.1.2:57400",
+            "10.1.1.3:57400",
+            "10.1.1.4:57400",
+        ];
+
+        for flush in 0..5 {
+            let updates = targets
+                .iter()
+                .enumerate()
+                .map(|(index, target)| {
+                    sample_update(
+                        target,
+                        1_776_695_400_000_000_000 + (flush * 1_000_000_000) as i64,
+                        index as i64,
+                    )
+                })
+                .collect();
+            writer.append(updates).unwrap();
+        }
+        writer.close_all().unwrap();
+
+        let files = parquet_files(tempdir.path());
+        assert_eq!(files.len(), 4, "{files:#?}");
+        for path in files {
+            let file = File::open(path).unwrap();
+            let reader = SerializedFileReader::new(file).unwrap();
+            assert_eq!(reader.metadata().file_metadata().num_rows(), 5);
+        }
+    }
+
+    fn sample_update(target: &str, timestamp_ns: i64, value: i64) -> TelemetryUpdate {
+        TelemetryUpdate {
+            target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: "leaf1".to_string(),
-            timestamp_ns: 123,
+            timestamp_ns,
             path: "interfaces/interface[name=ethernet-1/1]/state/counters".to_string(),
-            value: json!({"in-octets": 1}),
-        }];
+            value: json!({"in-octets": value}),
+        }
+    }
 
-        let name = batch_file_name(&partition, &updates);
-        assert!(name.starts_with("10.1.1.1_57400__hour-14__"));
-        assert!(name.ends_with(".parquet"));
+    fn parquet_files(root: &Path) -> Vec<PathBuf> {
+        let mut stack = vec![root.to_path_buf()];
+        let mut files = Vec::new();
+        while let Some(path) = stack.pop() {
+            for entry in fs::read_dir(path).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "parquet") {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        files
     }
 }

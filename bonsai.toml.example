@@ -11,6 +11,12 @@ graph_path   = "bonsai.db"
 # mode = "all"  # one of: all, core, collector
 # collector_id = "local"
 # core_ingest_endpoint = "http://[::1]:50051"  # used only by collector mode
+# [runtime.tls]
+# enabled = false
+# ca_cert = "config/tls/ca.pem"
+# cert = "config/tls/core.pem"       # core cert in core/all mode; collector cert in collector mode
+# key = "config/tls/core-key.pem"
+# server_name = "bonsai-core.local"  # collector-side verification name; must match core SAN
 #
 # all: current single-process behavior; subscribes to devices and runs graph/API/UI.
 # core: graph/API/UI plus TelemetryIngest server; no local gNMI subscribers.
@@ -18,6 +24,13 @@ graph_path   = "bonsai.db"
 # decoded telemetry to the core ingest endpoint.
 # api_addr     = "[::1]:50051"   # gRPC API (default shown)
 # metrics_addr = "[::1]:9090"    # Prometheus /metrics HTTP (set to "" to disable)
+#
+# [collector.queue]
+# path = "runtime/collector-queue"
+# max_bytes = 1073741824       # 1 GiB; oldest unacked records are dropped above this
+# max_age_hours = 24           # 0 disables age-based drops
+# drain_batch_size = 1000      # records per reconnect replay stream
+# log_interval_seconds = 30    # periodic queue size visibility; 0 disables
 
 # Local credential vault (T1-1). Set BONSAI_VAULT_PASSPHRASE before starting
 # Bonsai to unlock alias-based credentials. Secrets are encrypted in vault.age;

@@ -46,6 +46,16 @@ cargo test --release
 cargo clippy --release -- -D warnings
 ```
 
+Set `BONSAI_CONFIG` to point a process at a non-default config file. This is
+useful for distributed validation where a core and collector run side by side
+with separate working directories and separate `bonsai.toml` files.
+
+The repo-local `.cargo\config.toml` sets `LBUG_SHARED=1` on this Windows
+workspace. That keeps LadybugDB's bundled `zstd.lib` out of the Bonsai
+executable link unit so tonic's native zstd support can link cleanly. The root
+build script copies `lbug_shared.dll` into `target\release\` for standalone
+`target\release\bonsai.exe` runs.
+
 ## Canonical Local Helpers
 
 Use these scripts instead of ad hoc PATH-dependent commands:
@@ -94,13 +104,21 @@ core_ingest_endpoint = "http://[::1]:50051"
 Use `mode = "core"` for a graph/API/UI process that accepts `TelemetryIngest` streams and
 does not start local gNMI subscribers. Use `mode = "collector"` for a lab-side process that
 subscribes to local gNMI targets and forwards decoded telemetry to `core_ingest_endpoint`.
+Collector mode persists decoded telemetry to `[collector.queue]` before forwarding, so a
+core outage does not silently drop updates. Defaults write to `runtime/collector-queue`,
+retain up to 1 GiB or 24 hours, and log queue size every 30 seconds.
+Set `[runtime.tls].enabled = true` on both core and collector to require mTLS
+for `TelemetryIngest`; see `docs/distributed_tls.md` for the lab CA flow.
 
 Current T1-2 boundary:
 
 - `all` is still the normal Windows workflow for this machine.
 - `collector` should run wherever the gNMI targets are reachable.
-- collector-local archive is supported when `[archive].enabled = true`.
-- gRPC zstd compression, disk-backed outage queue, and collector/core mTLS remain follow-up slices.
+- collector-local archive is supported when `[archive].enabled = true`; it writes
+  one Parquet file per target per hour during normal operation, closing files at
+  hour rollover or graceful shutdown.
+- gRPC zstd compression, the disk-backed outage queue, and optional mTLS are
+  enabled for collector-to-core ingest.
 
 ## Why This Split Exists
 

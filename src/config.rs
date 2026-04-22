@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     #[serde(default)]
     pub runtime: RuntimeConfig,
+    #[serde(default)]
+    pub collector: CollectorConfig,
     pub graph_path: String,
     /// gRPC listen address for the Bonsai API server. Default: "[::1]:50051".
     #[serde(default = "default_api_addr")]
@@ -23,6 +25,43 @@ pub struct Config {
     pub target: Vec<TargetConfig>,
 }
 
+#[derive(Deserialize, Clone, Default)]
+pub struct CollectorConfig {
+    #[serde(default)]
+    pub queue: CollectorQueueConfig,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct CollectorQueueConfig {
+    /// Directory containing append-only collector queue files.
+    #[serde(default = "default_collector_queue_path")]
+    pub path: String,
+    /// Maximum queue bytes before oldest unacked records are dropped. 0 = unlimited.
+    #[serde(default = "default_collector_queue_max_bytes")]
+    pub max_bytes: u64,
+    /// Drop records older than this many hours. 0 = unlimited.
+    #[serde(default = "default_collector_queue_max_age_hours")]
+    pub max_age_hours: u64,
+    /// Maximum records sent in one client-streaming replay.
+    #[serde(default = "default_collector_queue_drain_batch_size")]
+    pub drain_batch_size: usize,
+    /// Periodic operator visibility interval. 0 disables periodic queue logs.
+    #[serde(default = "default_collector_queue_log_interval_seconds")]
+    pub log_interval_seconds: u64,
+}
+
+impl Default for CollectorQueueConfig {
+    fn default() -> Self {
+        Self {
+            path: default_collector_queue_path(),
+            max_bytes: default_collector_queue_max_bytes(),
+            max_age_hours: default_collector_queue_max_age_hours(),
+            drain_batch_size: default_collector_queue_drain_batch_size(),
+            log_interval_seconds: default_collector_queue_log_interval_seconds(),
+        }
+    }
+}
+
 #[derive(Deserialize, Clone)]
 pub struct RuntimeConfig {
     /// One binary, three modes: "all" (default), "core", or "collector".
@@ -34,6 +73,9 @@ pub struct RuntimeConfig {
     /// Core gRPC endpoint used by collector mode.
     #[serde(default = "default_core_ingest_endpoint")]
     pub core_ingest_endpoint: String,
+    /// Optional TLS/mTLS settings for the distributed collector-core channel.
+    #[serde(default)]
+    pub tls: RuntimeTlsConfig,
 }
 
 impl Default for RuntimeConfig {
@@ -42,8 +84,24 @@ impl Default for RuntimeConfig {
             mode: default_runtime_mode(),
             collector_id: default_collector_id(),
             core_ingest_endpoint: default_core_ingest_endpoint(),
+            tls: RuntimeTlsConfig::default(),
         }
     }
+}
+
+#[derive(Deserialize, Clone, Default)]
+pub struct RuntimeTlsConfig {
+    /// Enables TLS on the core listener and mTLS on collector connections.
+    #[serde(default)]
+    pub enabled: bool,
+    /// CA certificate used by collectors to verify the core and by cores to verify collectors.
+    pub ca_cert: Option<String>,
+    /// Local certificate chain presented by this process.
+    pub cert: Option<String>,
+    /// Local private key presented by this process.
+    pub key: Option<String>,
+    /// Server name collectors use when verifying the core certificate.
+    pub server_name: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -191,6 +249,26 @@ fn default_credentials_passphrase_env() -> String {
     "BONSAI_VAULT_PASSPHRASE".to_string()
 }
 
+fn default_collector_queue_path() -> String {
+    "runtime/collector-queue".to_string()
+}
+
+fn default_collector_queue_max_bytes() -> u64 {
+    1_073_741_824
+}
+
+fn default_collector_queue_max_age_hours() -> u64 {
+    24
+}
+
+fn default_collector_queue_drain_batch_size() -> usize {
+    1_000
+}
+
+fn default_collector_queue_log_interval_seconds() -> u64 {
+    30
+}
+
 fn default_runtime_mode() -> String {
     "all".to_string()
 }
@@ -292,7 +370,7 @@ pub async fn load(path: &str) -> Result<Config> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RuntimeConfig, RuntimeMode};
+    use super::{Config, RuntimeConfig, RuntimeMode};
 
     #[test]
     fn runtime_mode_accepts_the_three_supported_modes() {
@@ -316,5 +394,35 @@ mod tests {
             ..Default::default()
         };
         assert!(cfg.parsed_mode().is_err());
+    }
+
+    #[test]
+    fn runtime_tls_config_deserializes_under_runtime() {
+        let cfg: Config = toml::from_str(
+            r#"
+graph_path = "bonsai.db"
+
+[runtime]
+mode = "collector"
+core_ingest_endpoint = "https://127.0.0.1:50051"
+
+[runtime.tls]
+enabled = true
+ca_cert = "config/tls/ca.pem"
+cert = "config/tls/collector.pem"
+key = "config/tls/collector-key.pem"
+server_name = "bonsai-core.local"
+
+[[target]]
+address = "127.0.0.1:57400"
+"#,
+        )
+        .unwrap();
+
+        assert!(cfg.runtime.tls.enabled);
+        assert_eq!(
+            cfg.runtime.tls.server_name.as_deref(),
+            Some("bonsai-core.local")
+        );
     }
 }

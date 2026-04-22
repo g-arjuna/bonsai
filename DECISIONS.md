@@ -1233,3 +1233,149 @@ subscriber control plane that would be lost on restart.
 - Removal confirmation reports subscription and remediation-trust impact, but
   it does not physically delete graph history. Bonsai's graph remains
   operational history; the registry only controls active management.
+
+---
+
+## 2026-04-22 - Tonic zstd uses shared Ladybug on Windows
+
+**Decision**: Collector-to-core `TelemetryIngest` uses tonic's native zstd
+compression. On Windows/MSVC, Bonsai builds LadybugDB as `lbug_shared.dll` by
+setting `LBUG_SHARED=1` in `.cargo/config.toml`. The root build script copies
+that DLL into `target/release` so standalone release binaries can run without
+manual PATH changes.
+
+**Alternatives considered**: use gzip, implement a Bonsai-specific compressed
+protobuf envelope, pin older zstd crate versions, or build Ladybug against a
+system zstd with `BUNDLE_ZSTD=OFF`.
+
+**Rationale**:
+- Gzip was rejected because the ingest stream is hot-path telemetry; zstd gives
+  better compression/CPU tradeoffs for the long-term collector/core seam.
+- Tonic zstd is preferable to a custom envelope because it keeps compression at
+  the transport layer and avoids a protocol compatibility fork before the disk
+  queue and batching work.
+- The static Ladybug build bundles `zstd.lib`; enabling tonic zstd also pulls
+  `zstd-sys`, producing duplicate zstd symbols in the Windows executable link.
+  Shared Ladybug keeps those Ladybug-bundled native symbols outside Bonsai's
+  executable link unit.
+- `BUNDLE_ZSTD=OFF`/system zstd is not the current path because this machine
+  does not have a stable pkg-config/vcpkg zstd setup, and adding one would make
+  local onboarding more fragile than the shared-Ladybug switch.
+- Copying `lbug_shared.dll` during the Bonsai build preserves the normal
+  `target/release/bonsai.exe` workflow after `cargo build --release`.
+
+---
+
+## 2026-04-22 - Collector ingest uses an append-only disk queue
+
+**Decision**: Collector mode persists decoded telemetry to an append-only local
+queue before forwarding it to the core. The queue stores records in
+`queue.dat` as little-endian `u32 payload_len`, little-endian `i64
+enqueued_unix_ns`, then a prost-encoded `TelemetryIngestUpdate`; `queue.ack`
+stores the byte offset of the last core-accepted record. Reconnect replay sends
+FIFO batches through tonic zstd and advances `queue.ack` only after the core
+returns an accepted ingest response.
+
+**Alternatives considered**: keep the in-memory mpsc stream and accept loss
+during outages, use sled/RocksDB, or wait for a broader batching protocol.
+
+**Rationale**:
+- The collector must keep subscribing while the core is unavailable; placing
+  the bus-to-disk writer outside the gRPC connection loop prevents outage-time
+  telemetry loss.
+- A simple append-only file is easier to inspect and recover than an embedded KV
+  database, and it is enough for the single-host/lab-scale v1 constraint.
+- Acking only after the core response favors at-least-once delivery over silent
+  loss. If a stream fails before response, records remain queued and may replay.
+- Retention is explicit and local: `[collector.queue]` controls path,
+  `max_bytes`, `max_age_hours`, `drain_batch_size`, and
+  `log_interval_seconds`. Expired or over-budget records are dropped only during
+  queue compaction and are logged loudly.
+- T2-4 remains responsible for the long live two-process outage run; this slice
+  provides the durable mechanism and focused restart/retention tests.
+
+---
+
+## 2026-04-22 - Distributed ingest mTLS is optional but strict when enabled
+
+**Decision**: The collector-to-core `TelemetryIngest` channel supports optional
+mutual TLS through `[runtime.tls]`. Core mode uses `cert`/`key` as the server
+identity and `ca_cert` as the required client trust root. Collector mode uses
+`ca_cert` to verify the core and presents `cert`/`key` as its client identity;
+`server_name` overrides endpoint-host verification when the lab connects by IP.
+
+**Alternatives considered**: leave distributed ingest unauthenticated until a
+later production hardening pass, use server-only TLS, or add token-based
+collector authentication.
+
+**Rationale**:
+- The distributed seam accepts graph-writing telemetry; unauthenticated ingest
+  is too easy to spoof even in a lab.
+- mTLS matches the network-control-plane shape better than bearer tokens:
+  collectors prove identity during handshake, before any telemetry stream is
+  accepted.
+- TLS remains optional so single-process `mode = "all"` and local development do
+  not need certificates.
+- One lab CA is enough for v1. It signs the core server certificate and all
+  collector client certificates; richer per-site CA hierarchy is intentionally
+  deferred.
+- Live valid-cert and no-cert handshake proof is grouped with T2-4 so the final
+  two-process validation exercises mTLS, zstd compression, and queue replay
+  together against the lab.
+
+---
+
+## 2026-04-22 - Distributed transport validation is a separate milestone from healing/archive validation
+
+**Decision**: T2-4 closes when the distributed collector/core transport is
+proven against the live lab: Windows collector, Windows core, WSL-hosted lab
+targets, disk-backed outage queue, replay, zstd compression, mTLS, and graph
+ingest. Remediation/healing-loop validation and archive parity remain separate
+backlog validations because they exercise different subsystems.
+
+**Alternatives considered**: block T2-4 until archive parity and the full
+detect-heal loop are exercised in the same run, or mark only unit tests as
+sufficient for the distributed seam.
+
+**Rationale**:
+- The distributed seam has its own failure modes: Windows-to-WSL reachability,
+  core outage buffering, reconnect replay, TLS identity, compression, and graph
+  ingestion. These are now proven together with real lab telemetry.
+- Combining transport, archive parity, and closed-loop healing in one gate would
+  make failures ambiguous and slow the backlog. Keeping transport as its own
+  milestone gives us a clean regression point.
+- The 2026-04-22 run reached all four lab gNMI targets, queued 1,474 records
+  while the core was offline, replayed 3,314 records through zstd+mTLS, and
+  produced graph writes for SR Linux and IOS-XRd.
+- The wrong-CA collector smoke forced a real ingest RPC and delivered zero
+  records, with zero core accept events for the bad collector identity, so mTLS
+  protects the graph-writing ingest stream.
+
+---
+
+## 2026-04-22 - Archive writes one Parquet file per target per hour
+
+**Decision**: The telemetry archive uses an append-to-current-hour layout. Each
+collector process keeps one open Parquet `ArrowWriter` per `(target, hour)`
+partition and appends each flush as another row group. Writers close when the
+stream advances into a later hour, when the event bus closes, or when Bonsai
+receives its graceful shutdown signal.
+
+**Alternatives considered**: keep one Parquet file per flush and add a later
+compaction job, or close/reopen the same hourly path on every flush.
+
+**Rationale**:
+- Keeping open hourly writers fixes the small-file explosion at the source:
+  five flushes across four targets in the same hour now produce four files, not
+  twenty.
+- A compaction job would be simpler to bolt on but doubles I/O and leaves the
+  archive inefficient until compaction catches up.
+- Parquet files cannot be safely appended after their footer is closed. On
+  process restart within the same hour, Bonsai creates a `__part-NN` file
+  instead of overwriting or corrupting the existing closed file.
+- Active-hour files become fully readable when closed at hour rollover or
+  graceful shutdown. An unclean process kill can still leave the current open
+  file without a footer; that is acceptable for this lab-scale archive and is
+  consistent with the project's explicit no-production-WAL scope for v1.
+- Close logs report final file size, total raw bytes, rows, and compression
+  ratio so archive efficiency is visible without adding another metrics slice.
