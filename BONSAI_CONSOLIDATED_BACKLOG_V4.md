@@ -152,7 +152,7 @@ This is a new strategic tier. The distributed collector-core work is done at the
 
 **Non-negotiable: we do NOT introduce Kubernetes.** Guardrail from v1 stands. Docker + Docker Compose for v4. Operators can pick Kubernetes later; our demo and dev experience does not require it.
 
-### T1-1 — Dockerfiles for core, collector, and combined (all) — foundation started
+### T1-1 — Dockerfiles for core, collector, and combined (all) — Docker validation closed
 
 **What**: three production-grade Dockerfiles — multi-stage build, minimal runtime image, non-root user, explicit healthcheck.
 
@@ -199,9 +199,20 @@ Dockerfile uses a cargo-chef Rust builder, Node UI builder, Debian slim runtime,
 non-root UID/GID 10001, `/etc/bonsai/bonsai.toml` config convention, Bonsai
 state directories under `/var/lib/bonsai`, and an HTTP readiness healthcheck for
 core/all roles. Added an ADR documenting the one-image/many-roles decision.
-Validation is still pending because Docker is not installed in the current
-Windows environment; image size, runtime smoke, multi-arch build, and hadolint
-remain open before marking T1-1 done.
+**Execution update - 2026-04-22 (Docker validation closed)**: Docker Desktop
+29.4.0 is now installed and the previous "Docker not installed" blocker is
+closed. `docker build -f docker/Dockerfile.bonsai -t bonsai:docker-validation .`
+now succeeds on the Windows Docker Desktop Linux engine. The image uses Rust
+1.91 + Debian trixie for the LadybugDB C++20 `<format>` requirement, copies the
+dynamic `liblbug.so.0` into the runtime layer, runs as UID/GID 10001, and uses
+BusyBox `wget` for the HTTP readiness healthcheck. Final local image size is
+189 MB by `docker images`, under the 200 MB target. Runtime smokes passed for
+`runtime.mode = "core"` and `"all"` with `/api/readiness = 200` plus the
+container healthcheck command returning 0; collector-only mode stayed running
+with healthcheck disabled as expected. Hadolint passes with no warnings after
+pinning apt package versions. Arm64-capable base manifests were verified for
+the trixie builder/runtime images; a native Apple Silicon runtime smoke should
+be done on macOS or CI before publishing multi-arch release images.
 
 ### T1-2 — Docker Compose for local dev and lab
 
@@ -817,7 +828,7 @@ v3 T5 items that remain.
 3. T0-3 archive format doc
 4. T0-4 CLI device commands
 5. T0-5 site depth guard
-6. T1-1 Dockerfiles (foundation)
+6. T1-1 Dockerfiles (Docker validation closed)
 
 ### Sprint 2 — Containerised dev experience (1-2 weeks)
 7. T1-2 Docker Compose profiles

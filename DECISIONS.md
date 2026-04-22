@@ -1433,3 +1433,29 @@ defer containerization until Compose is designed.
   override or disable it for collector-only roles, which do not serve the UI.
 - Docker is a v0.x deployment plane for Bonsai; Kubernetes manifests remain
   explicitly out of scope.
+
+---
+
+## 2026-04-22 - Container runtime uses trixie and ships LadybugDB's shared library
+
+**Decision**: The Bonsai Docker image builds on the Rust 1.91 Debian trixie
+cargo-chef image and runs on Debian trixie slim. The runtime image explicitly
+copies `liblbug.so.0` alongside the stripped Bonsai binary and sets
+`LD_LIBRARY_PATH=/usr/local/lib`. The healthcheck uses BusyBox `wget` instead
+of `curl`.
+
+**Alternatives considered**: stay on bookworm, statically link LadybugDB inside
+the container, install `curl` for the healthcheck, or disable the image
+healthcheck until Compose exists.
+
+**Rationale**:
+- LadybugDB's Linux C++ build includes `<format>`, which requires a newer
+  libstdc++ than Debian bookworm's default toolchain provides. Trixie gives the
+  container a toolchain that matches the current dependency graph.
+- The repo-local `LBUG_SHARED=1` avoids the zstd symbol conflict but means the
+  runtime layer must carry `liblbug.so.0`; copying it from the builder makes the
+  container self-contained.
+- BuildKit cache mounts keep the expensive native C++/Rust build practical
+  without committing the target directory into image layers.
+- BusyBox keeps the readiness healthcheck available while bringing the Docker
+  image below the 200 MB target in Docker's normal image listing.

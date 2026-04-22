@@ -1,17 +1,20 @@
 # syntax=docker/dockerfile:1.7
 
-FROM lukemathwalker/cargo-chef:latest-rust-1.86-bookworm AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.91-trixie AS chef
 WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        clang \
-        cmake \
-        g++ \
-        make \
-        pkg-config \
+        ca-certificates=20250419 \
+        clang=1:19.0-63 \
+        cmake=3.31.6-2 \
+        g++=4:14.2.0-1 \
+        make=4.4.1-2 \
+        pkg-config=1.8.1-4 \
     && rm -rf /var/lib/apt/lists/*
+
+ENV CMAKE=/usr/bin/cmake \
+    CMAKE_MAKE_PROGRAM=/usr/bin/make
 
 FROM chef AS rust-planner
 COPY . .
@@ -19,9 +22,19 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS rust-builder
 COPY --from=rust-planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo chef cook --release --recipe-path recipe.json
 COPY . .
-RUN cargo build --release --bin bonsai
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --bin bonsai \
+    && cp /app/target/release/bonsai /app/bonsai \
+    && find /app/target/release/build -name 'liblbug.so.0' -exec cp -L {} /app/liblbug.so.0 \; \
+    && test -f /app/liblbug.so.0 \
+    && strip /app/bonsai
 
 FROM node:20-alpine AS ui-builder
 WORKDIR /ui
@@ -30,10 +43,10 @@ RUN npm ci
 COPY ui/ ./
 RUN npm run build
 
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates=20250419 busybox=1:1.37.0-6+b7 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 bonsai \
     && useradd --system --uid 10001 --gid bonsai --home-dir /var/lib/bonsai --shell /usr/sbin/nologin bonsai \
@@ -48,16 +61,18 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY --from=rust-builder /app/target/release/bonsai /usr/local/bin/bonsai
+COPY --from=rust-builder /app/bonsai /usr/local/bin/bonsai
+COPY --from=rust-builder /app/liblbug.so.0 /usr/local/lib/liblbug.so.0
 COPY --from=ui-builder /ui/dist /app/ui/dist
 
 ENV BONSAI_CONFIG=/etc/bonsai/bonsai.toml
+ENV LD_LIBRARY_PATH=/usr/local/lib
 
 USER 10001:10001
 
 EXPOSE 3000 50051 9090
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:3000/api/readiness || exit 1
+    CMD busybox wget -q -O /dev/null http://127.0.0.1:3000/api/readiness || exit 1
 
 ENTRYPOINT ["/usr/local/bin/bonsai"]
