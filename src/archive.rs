@@ -3,7 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
@@ -71,12 +71,14 @@ pub async fn run_archiver(
         max_batch_rows,
         "archive consumer started"
     );
+    record_archive_lag(&buffer);
 
     loop {
         tokio::select! {
             _ = shutdown.changed() => {
                 if !buffer.is_empty() {
                     flush_buffer(std::mem::take(&mut buffer), Arc::clone(&writer)).await?;
+                    record_archive_lag(&buffer);
                 }
                 close_archive_writers(Arc::clone(&writer)).await?;
                 info!("archive consumer stopping: shutdown signal received");
@@ -85,8 +87,10 @@ pub async fn run_archiver(
             recv = rx.recv() => match recv {
                 Ok(update) => {
                     buffer.push(update);
+                    record_archive_lag(&buffer);
                     if buffer.len() >= max_batch_rows {
                         flush_buffer(std::mem::take(&mut buffer), Arc::clone(&writer)).await?;
+                        record_archive_lag(&buffer);
                     }
                 }
                 Err(RecvError::Lagged(n)) => {
@@ -95,6 +99,7 @@ pub async fn run_archiver(
                 Err(RecvError::Closed) => {
                     if !buffer.is_empty() {
                         flush_buffer(std::mem::take(&mut buffer), Arc::clone(&writer)).await?;
+                        record_archive_lag(&buffer);
                     }
                     close_archive_writers(Arc::clone(&writer)).await?;
                     info!("archive consumer stopping: event bus closed");
@@ -104,12 +109,32 @@ pub async fn run_archiver(
             _ = flush_timer.tick() => {
                 if !buffer.is_empty() {
                     flush_buffer(std::mem::take(&mut buffer), Arc::clone(&writer)).await?;
+                    record_archive_lag(&buffer);
                 }
             }
         }
     }
 
     Ok(())
+}
+
+fn record_archive_lag(buffer: &[TelemetryUpdate]) {
+    let oldest_timestamp_ns = buffer
+        .iter()
+        .filter_map(|update| (update.timestamp_ns > 0).then_some(update.timestamp_ns))
+        .min();
+    let lag_seconds = oldest_timestamp_ns
+        .map(|timestamp_ns| (now_ns().saturating_sub(timestamp_ns) as f64) / 1_000_000_000.0)
+        .unwrap_or(0.0);
+    metrics::gauge!("bonsai_archive_lag_seconds").set(lag_seconds);
+    metrics::gauge!("bonsai_archive_buffer_rows").set(buffer.len() as f64);
+}
+
+fn now_ns() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or_default()
 }
 
 async fn flush_buffer(

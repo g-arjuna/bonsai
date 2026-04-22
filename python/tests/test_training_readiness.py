@@ -75,6 +75,76 @@ def test_validate_remediation_dataframe_filters_by_cutoff():
     assert any("50 successful remediations" in problem for problem in check.problems)
 
 
+def test_validate_anomaly_dataframe_reports_null_rate_and_feature_ranges():
+    from bonsai_sdk.training_readiness import validate_anomaly_dataframe
+
+    rows = []
+    for i in range(50):
+        rows.append({
+            "label": 1,
+            "rule_id": "bgp_session_down",
+            "event_type": "bgp_session_change",
+            "oper_status": "",
+            "occurred_at_ns": 1000 + i,
+            "peer_count_total": 2,
+            "peer_count_established": 1,
+            "recent_flap_count": 0,
+        })
+    for i in range(200):
+        rows.append({
+            "label": 0,
+            "rule_id": "",
+            "event_type": "interface_stats",
+            "oper_status": "up",
+            "occurred_at_ns": 2000 + i,
+            "peer_count_total": 1,
+            "peer_count_established": 0,
+            "recent_flap_count": 0,
+        })
+    rows[0]["peer_count_established"] = 5
+    rows[1]["oper_status"] = None
+
+    check = validate_anomaly_dataframe(pd.DataFrame(rows))
+
+    assert not check.ready
+    assert check.stats["null_rate_required"] > 0
+    assert check.stats["label_distribution"] == {"0": 200, "1": 50}
+    assert "peer_count_total" in check.stats["numeric_ranges"]
+    assert any("null rate" in problem for problem in check.problems)
+    assert any("peer_count_established exceeds peer_count_total" in problem for problem in check.problems)
+
+
+def test_validate_remediation_dataframe_reports_class_balance_and_time_order():
+    from bonsai_sdk.training_readiness import (
+        TRAINING_HYGIENE_CUTOFF_NS,
+        validate_remediation_dataframe,
+    )
+
+    rows = []
+    for i in range(50):
+        rows.append({
+            "action": "bounce" if i < 49 else "alert_only",
+            "status": "success" if i < 48 else "failed",
+            "attempted_at_ns": TRAINING_HYGIENE_CUTOFF_NS + 1000 + i,
+            "event_type": "bgp_session_change",
+            "oper_status": "",
+            "occurred_at_ns": TRAINING_HYGIENE_CUTOFF_NS + 900 + i,
+            "peer_count_total": 2,
+            "peer_count_established": 1,
+            "recent_flap_count": 0,
+        })
+    rows[0]["attempted_at_ns"] = TRAINING_HYGIENE_CUTOFF_NS + 1
+    rows[0]["occurred_at_ns"] = TRAINING_HYGIENE_CUTOFF_NS + 100
+
+    check = validate_remediation_dataframe(pd.DataFrame(rows))
+
+    assert not check.ready
+    assert check.stats["action_distribution"]["alert_only"] == 1
+    assert check.stats["status_distribution"]["failed"] == 2
+    assert any("action class 'alert_only' has 1 row" in problem for problem in check.problems)
+    assert any("attempted_at_ns is earlier" in problem for problem in check.problems)
+
+
 def test_export_remediation_training_set_includes_attempted_at_and_filters_since():
     from bonsai_sdk.training import export_remediation_training_set
 

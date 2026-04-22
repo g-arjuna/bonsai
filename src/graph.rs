@@ -437,6 +437,8 @@ impl GraphStore {
             let conn = Connection::new(&db).context("detection write connection")?;
             let id = Uuid::new_v4().to_string();
             let now = ts(fired_at_ns);
+            let metric_rule_id = rule_id.clone();
+            let metric_severity = severity.clone();
             let mut stmt = conn
                 .prepare(
                     "MERGE (e:DetectionEvent {id: $id}) \
@@ -489,6 +491,12 @@ impl GraphStore {
                 )
                 .context("execute TRIGGERED_BY edge")?;
             }
+            metrics::counter!(
+                "bonsai_rule_firings_total",
+                "rule_id" => metric_rule_id,
+                "severity" => metric_severity
+            )
+            .increment(1);
             Ok::<String, anyhow::Error>(id)
         })
         .await

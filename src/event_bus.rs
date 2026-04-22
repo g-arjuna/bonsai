@@ -32,6 +32,8 @@ impl InProcessBus {
     /// Publish one update. Silently drops if no subscribers or channel is full.
     pub fn publish(&self, update: TelemetryUpdate) {
         let _ = self.tx.send(update);
+        metrics::gauge!("bonsai_event_bus_depth").set(self.tx.len() as f64);
+        metrics::gauge!("bonsai_event_bus_receivers").set(self.tx.receiver_count() as f64);
     }
 
     /// Return a new receiver that sees all messages published after this call.

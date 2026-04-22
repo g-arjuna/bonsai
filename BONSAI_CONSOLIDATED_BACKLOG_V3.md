@@ -754,17 +754,33 @@ Items from v2 that still stand. Brief entries — see v2 document for full conte
 
 Bundle models as `{"model": ..., "feature_schema_version": N, "feature_names": [...]}`. Assert match at load. Still outstanding.
 
-### T5-3 — Training script validity checks remainder (was T2-3 in v2)
+### T5-3 — Training script validity checks remainder (was T2-3 in v2) — ✅ Done
 
 Partially landed (shared readiness module exists). Remaining: row count, class balance, null rate, value range checks integrated into both training scripts with clear error messages.
+
+**Execution update - 2026-04-22**: Completed the shared training-data hygiene
+gate used by both `python/train_anomaly.py` and `python/train_remediation.py`.
+`training_readiness.py` now reports row counts, class distributions, required
+column null rates, numeric ranges, non-numeric/non-finite/negative values,
+impossible peer-count relationships, Model C per-action/per-status class
+balance, and remediation timestamp ordering. Focused WSL pytest coverage added
+for null-rate/range diagnostics and Model C class-balance/time-order failures.
 
 ### T5-4 — Bitemporal schema (was T4-3 in v2)
 
 Defer until NL query (T5-1) produces a question about historical state that today's schema can't answer. That's the forcing function.
 
-### T5-5 — Metrics expansion (was T4-4 in v2)
+### T5-5 — Metrics expansion (was T4-4 in v2) — ✅ Current subsystem slice done
 
 Event-bus depth gauge, archive lag gauge (oldest unarchived event age), subscriber reconnect frequency, rule firing rate per rule_id, investigation agent success rate.
+
+**Execution update - 2026-04-22**: Added the metrics that map to subsystems
+already present in the codebase: `bonsai_event_bus_depth`,
+`bonsai_event_bus_receivers`, `bonsai_archive_lag_seconds`,
+`bonsai_archive_buffer_rows`, and `bonsai_rule_firings_total{rule_id,severity}`.
+`bonsai_subscriber_reconnects_total{target}` already existed. Investigation
+agent success-rate metrics remain deferred to T4 because the agent lifecycle and
+proposal statuses do not exist yet.
 
 ### T5-6 — Schema migration path (was T4-5 in v2)
 
