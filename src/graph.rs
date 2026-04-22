@@ -17,6 +17,7 @@ pub const REMEDIATION_TRUST_CUTOFF_ISO: &str = "2026-04-20T09:32:50+00:00";
 pub const REMEDIATION_TRUST_CUTOFF_NS: i64 = 1_776_677_570_000_000_000;
 const REMEDIATION_TRUST_REASON_PRE_CUTOFF: &str = "pre_t0_2_verify_cutoff";
 const REMEDIATION_TRUST_REASON_POST_CUTOFF: &str = "post_t0_2_verify_cutoff";
+const MAX_SITE_HIERARCHY_DEPTH: usize = 10;
 
 /// A state-change event broadcast to all API streaming subscribers.
 #[derive(Clone, Debug)]
@@ -1671,6 +1672,8 @@ fn site_id_from_name(name: &str) -> String {
 }
 
 fn upsert_site_record(conn: &Connection<'_>, site: &SiteRecord, now: Value) -> Result<()> {
+    validate_site_hierarchy(conn, site)?;
+
     let mut stmt = conn
         .prepare(
             "MERGE (s:Site {id: $id}) \
@@ -1724,6 +1727,47 @@ fn upsert_site_record(conn: &Connection<'_>, site: &SiteRecord, now: Value) -> R
     }
 
     Ok(())
+}
+
+fn validate_site_hierarchy(conn: &Connection<'_>, site: &SiteRecord) -> Result<()> {
+    if site.parent_id.is_empty() {
+        return Ok(());
+    }
+    if site.parent_id == site.id {
+        anyhow::bail!("site parent_id cannot reference itself");
+    }
+
+    let mut seen = HashSet::from([site.id.clone()]);
+    let mut current = site.parent_id.clone();
+    let mut depth = 0usize;
+
+    while !current.is_empty() {
+        if !seen.insert(current.clone()) {
+            anyhow::bail!("site hierarchy contains a cycle at '{current}'");
+        }
+        depth += 1;
+        if depth > MAX_SITE_HIERARCHY_DEPTH {
+            anyhow::bail!("site hierarchy depth exceeds {MAX_SITE_HIERARCHY_DEPTH}");
+        }
+
+        let Some(parent_id) = read_site_parent_id(conn, &current)? else {
+            break;
+        };
+        current = parent_id;
+    }
+
+    Ok(())
+}
+
+fn read_site_parent_id(conn: &Connection<'_>, site_id: &str) -> Result<Option<String>> {
+    let mut stmt = conn
+        .prepare("MATCH (s:Site {id: $id}) RETURN s.parent_id")
+        .context("prepare Site parent lookup")?;
+    let rows = conn
+        .execute(&mut stmt, vec![("id", Value::String(site_id.to_string()))])
+        .context("execute Site parent lookup")?
+        .collect::<Vec<_>>();
+    Ok(rows.first().map(|row| read_str(&row[0])))
 }
 
 fn link_device_to_site(conn: &Connection<'_>, device_address: &str, site_id: &str) -> Result<()> {
@@ -2015,5 +2059,75 @@ mod tests {
         assert_eq!(read_str(&rows[0][1]), "lab-london");
         assert_eq!(read_str(&rows[0][2]), "lab-london");
         assert_eq!(read_str(&rows[0][3]), "unknown");
+    }
+
+    #[tokio::test]
+    async fn site_upsert_rejects_self_parent_and_cycles() {
+        let path = temp_graph_path("site-cycle");
+        let store = GraphStore::open(&path).expect("open graph store");
+
+        let self_parent = store.upsert_site(test_site("lab", "lab")).await;
+        assert!(
+            self_parent
+                .expect_err("self parent should fail")
+                .to_string()
+                .contains("parent_id cannot reference itself")
+        );
+
+        store
+            .upsert_site(test_site("region", ""))
+            .await
+            .expect("insert region");
+        store
+            .upsert_site(test_site("dc", "region"))
+            .await
+            .expect("insert dc");
+        let cycle = store.upsert_site(test_site("region", "dc")).await;
+        assert!(
+            cycle
+                .expect_err("cycle should fail")
+                .to_string()
+                .contains("site hierarchy contains a cycle")
+        );
+    }
+
+    #[tokio::test]
+    async fn site_upsert_rejects_parent_chain_deeper_than_ten() {
+        let path = temp_graph_path("site-depth");
+        let store = GraphStore::open(&path).expect("open graph store");
+
+        store
+            .upsert_site(test_site("site-0", ""))
+            .await
+            .expect("insert root");
+        for index in 1..=10 {
+            store
+                .upsert_site(test_site(
+                    &format!("site-{index}"),
+                    &format!("site-{}", index - 1),
+                ))
+                .await
+                .expect("insert allowed depth");
+        }
+
+        let too_deep = store.upsert_site(test_site("site-11", "site-10")).await;
+        assert!(
+            too_deep
+                .expect_err("deep chain should fail")
+                .to_string()
+                .contains("site hierarchy depth exceeds 10")
+        );
+    }
+
+    fn test_site(id: &str, parent_id: &str) -> SiteRecord {
+        SiteRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            parent_id: parent_id.to_string(),
+            kind: "dc".to_string(),
+            lat: 0.0,
+            lon: 0.0,
+            metadata_json: "{}".to_string(),
+        }
     }
 }

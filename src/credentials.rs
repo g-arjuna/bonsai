@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 const VAULT_FILE: &str = "vault.age";
 const METADATA_FILE: &str = "metadata.json";
+const LAST_USED_WRITE_WINDOW_NS: i64 = 5 * 60 * 1_000_000_000;
 
 #[derive(Clone)]
 pub struct CredentialVault {
@@ -205,8 +206,11 @@ impl CredentialVault {
             .cloned()
             .with_context(|| format!("credential alias '{alias}' not found"))?;
         if let Some(metadata) = state.metadata.get_mut(&alias) {
-            metadata.last_used_at_ns = now_ns();
-            write_metadata(&self.root, &state.metadata)?;
+            let now = now_ns();
+            if should_persist_last_used(metadata.last_used_at_ns, now) {
+                metadata.last_used_at_ns = now;
+                write_metadata(&self.root, &state.metadata)?;
+            }
         }
 
         Ok(ResolvedCredential {
@@ -224,6 +228,10 @@ impl CredentialVault {
         write_metadata(&self.root, &state.metadata)?;
         Ok(())
     }
+}
+
+fn should_persist_last_used(last_used_at_ns: i64, now_ns: i64) -> bool {
+    last_used_at_ns <= 0 || now_ns.saturating_sub(last_used_at_ns) >= LAST_USED_WRITE_WINDOW_NS
 }
 
 fn ensure_unlocked(state: &VaultState) -> Result<()> {
@@ -407,5 +415,47 @@ mod tests {
 
         unsafe { std::env::remove_var("BONSAI_TEST_VAULT_PASSPHRASE") };
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resolve_debounces_last_used_metadata_writes() {
+        let _guard = env_lock().lock().expect("credential env test lock");
+        let dir = temp_vault_dir("vault-last-used-debounce");
+        unsafe { std::env::set_var("BONSAI_TEST_VAULT_PASSPHRASE", "right") };
+        let vault = CredentialVault::open(&dir, "BONSAI_TEST_VAULT_PASSPHRASE").unwrap();
+        vault.add("lab", "admin", "secret").unwrap();
+
+        for _ in 0..50 {
+            let resolved = vault.resolve("lab").unwrap();
+            assert_eq!(resolved.username, "admin");
+        }
+        let after_burst = std::fs::read_to_string(metadata_path(&dir)).unwrap();
+
+        for _ in 0..50 {
+            vault.resolve("lab").unwrap();
+        }
+        let after_second_burst = std::fs::read_to_string(metadata_path(&dir)).unwrap();
+        assert_eq!(after_burst, after_second_burst);
+
+        let summaries = vault.list().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert!(summaries[0].last_used_at_ns > 0);
+
+        unsafe { std::env::remove_var("BONSAI_TEST_VAULT_PASSPHRASE") };
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn last_used_write_window_skips_recent_updates() {
+        let now = 10 * LAST_USED_WRITE_WINDOW_NS;
+        assert!(should_persist_last_used(0, now));
+        assert!(should_persist_last_used(
+            now - LAST_USED_WRITE_WINDOW_NS,
+            now
+        ));
+        assert!(!should_persist_last_used(
+            now - LAST_USED_WRITE_WINDOW_NS + 1,
+            now
+        ));
     }
 }

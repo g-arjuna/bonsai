@@ -1,0 +1,63 @@
+# syntax=docker/dockerfile:1.7
+
+FROM lukemathwalker/cargo-chef:latest-rust-1.86-bookworm AS chef
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        clang \
+        cmake \
+        g++ \
+        make \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM chef AS rust-planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS rust-builder
+COPY --from=rust-planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+COPY . .
+RUN cargo build --release --bin bonsai
+
+FROM node:20-alpine AS ui-builder
+WORKDIR /ui
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci
+COPY ui/ ./
+RUN npm run build
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 bonsai \
+    && useradd --system --uid 10001 --gid bonsai --home-dir /var/lib/bonsai --shell /usr/sbin/nologin bonsai \
+    && mkdir -p \
+        /app/ui/dist \
+        /etc/bonsai \
+        /var/lib/bonsai/archive \
+        /var/lib/bonsai/credentials \
+        /var/lib/bonsai/graph \
+        /var/lib/bonsai/queue \
+    && chown -R bonsai:bonsai /app /etc/bonsai /var/lib/bonsai
+
+WORKDIR /app
+
+COPY --from=rust-builder /app/target/release/bonsai /usr/local/bin/bonsai
+COPY --from=ui-builder /ui/dist /app/ui/dist
+
+ENV BONSAI_CONFIG=/etc/bonsai/bonsai.toml
+
+USER 10001:10001
+
+EXPOSE 3000 50051 9090
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:3000/api/readiness || exit 1
+
+ENTRYPOINT ["/usr/local/bin/bonsai"]

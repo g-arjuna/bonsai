@@ -6,7 +6,13 @@ use anyhow::{Context, Result};
 use tracing::{info, warn};
 
 use bonsai::{
-    api::{BonsaiGraphServer, BonsaiService},
+    api::{
+        BonsaiGraphServer, BonsaiService,
+        pb::{
+            AddDeviceRequest, ListManagedDevicesRequest, ManagedDevice, RemoveDeviceRequest,
+            UpdateDeviceRequest, bonsai_graph_client::BonsaiGraphClient,
+        },
+    },
     archive, config,
     config::TargetConfig,
     credentials::{CredentialVault, ResolvedCredential},
@@ -433,6 +439,7 @@ fn required_tls_path<'a>(value: Option<&'a str>, field: &str) -> Result<&'a str>
 }
 
 enum DeviceCliCommand {
+    Help,
     List,
     Add(Box<DeviceCliAdd>),
     Remove { address: String },
@@ -462,8 +469,7 @@ impl DeviceCliCommand {
         }
         args.remove(0);
         let Some(action) = args.first().cloned() else {
-            print_device_cli_usage();
-            return Ok(Some(Self::List));
+            return Ok(Some(Self::Help));
         };
         args.remove(0);
 
@@ -484,10 +490,7 @@ impl DeviceCliCommand {
             "restart" => Ok(Some(Self::Restart {
                 address: parse_address_arg(args)?,
             })),
-            "help" | "--help" | "-h" => {
-                print_device_cli_usage();
-                Ok(Some(Self::List))
-            }
+            "help" | "--help" | "-h" => Ok(Some(Self::Help)),
             other => anyhow::bail!("unknown device command '{other}'"),
         }
     }
@@ -548,28 +551,203 @@ impl DeviceCliAdd {
 }
 
 async fn run_device_cli(command: DeviceCliCommand) -> Result<()> {
+    if matches!(command, DeviceCliCommand::Help) {
+        print_device_cli_usage();
+        return Ok(());
+    }
+
     let config_path = config_path();
     let cfg = config::load(&config_path).await?;
+    match run_device_cli_api(&command, &cfg.api_addr).await {
+        Ok(()) => return Ok(()),
+        Err(error) => {
+            eprintln!(
+                "warning: gRPC device API unavailable ({error:#}); falling back to local registry file"
+            );
+        }
+    }
+    run_device_cli_local(command, cfg).await
+}
+
+async fn run_device_cli_api(command: &DeviceCliCommand, api_addr: &str) -> Result<()> {
+    let endpoint = device_cli_endpoint(api_addr);
+    let channel = tonic::transport::Channel::from_shared(endpoint.clone())
+        .with_context(|| format!("invalid device API endpoint '{endpoint}'"))?
+        .timeout(Duration::from_secs(5))
+        .connect()
+        .await
+        .with_context(|| format!("failed to connect to device API at {endpoint}"))?;
+    let mut client = BonsaiGraphClient::new(channel);
+
+    match command {
+        DeviceCliCommand::Help => print_device_cli_usage(),
+        DeviceCliCommand::List => {
+            let response = client
+                .list_managed_devices(ListManagedDevicesRequest {})
+                .await?
+                .into_inner();
+            print_managed_devices(response.devices);
+        }
+        DeviceCliCommand::Add(add) => {
+            let response = client
+                .add_device(AddDeviceRequest {
+                    device: Some(managed_device_from_cli_add(add)),
+                })
+                .await?
+                .into_inner();
+            ensure_device_cli_success(response.success, response.error)?;
+            let address = response
+                .device
+                .map(|device| device.address)
+                .unwrap_or_else(|| add.address.clone());
+            println!("added {address}");
+        }
+        DeviceCliCommand::Remove { address } => {
+            let response = client
+                .remove_device(RemoveDeviceRequest {
+                    address: address.clone(),
+                })
+                .await?
+                .into_inner();
+            ensure_device_cli_success(response.success, response.error)?;
+            println!("removed {address}");
+        }
+        DeviceCliCommand::SetEnabled { address, enabled } => {
+            let mut device = find_managed_device(&mut client, address).await?;
+            device.enabled = Some(*enabled);
+            let response = client
+                .update_device(UpdateDeviceRequest {
+                    device: Some(device),
+                })
+                .await?
+                .into_inner();
+            ensure_device_cli_success(response.success, response.error)?;
+            println!(
+                "{} {address}",
+                if *enabled {
+                    "started/enabled"
+                } else {
+                    "stopped/disabled"
+                }
+            );
+        }
+        DeviceCliCommand::Restart { address } => {
+            let mut device = find_managed_device(&mut client, address).await?;
+            device.enabled = Some(true);
+            let response = client
+                .update_device(UpdateDeviceRequest {
+                    device: Some(device),
+                })
+                .await?
+                .into_inner();
+            ensure_device_cli_success(response.success, response.error)?;
+            println!("restart requested for {address}");
+        }
+    }
+
+    Ok(())
+}
+
+async fn find_managed_device(
+    client: &mut BonsaiGraphClient<tonic::transport::Channel>,
+    address: &str,
+) -> Result<ManagedDevice> {
+    client
+        .list_managed_devices(ListManagedDevicesRequest {})
+        .await?
+        .into_inner()
+        .devices
+        .into_iter()
+        .find(|device| device.address == address)
+        .ok_or_else(|| anyhow::anyhow!("device {address} not found"))
+}
+
+fn device_cli_endpoint(api_addr: &str) -> String {
+    let trimmed = api_addr.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{trimmed}")
+    }
+}
+
+fn ensure_device_cli_success(success: bool, error: String) -> Result<()> {
+    if success {
+        Ok(())
+    } else {
+        anyhow::bail!("{}", error.trim())
+    }
+}
+
+fn managed_device_from_cli_add(add: &DeviceCliAdd) -> ManagedDevice {
+    ManagedDevice {
+        address: add.address.clone(),
+        enabled: Some(add.enabled),
+        tls_domain: add.tls_domain.clone().unwrap_or_default(),
+        ca_cert: add.ca_cert.clone().unwrap_or_default(),
+        vendor: add.vendor.clone().unwrap_or_default(),
+        credential_alias: add.credential_alias.clone().unwrap_or_default(),
+        username_env: add.username_env.clone().unwrap_or_default(),
+        password_env: add.password_env.clone().unwrap_or_default(),
+        hostname: add.hostname.clone().unwrap_or_default(),
+        role: add.role.clone().unwrap_or_default(),
+        site: add.site.clone().unwrap_or_default(),
+        selected_paths: Vec::new(),
+    }
+}
+
+fn managed_device_from_target(target: TargetConfig) -> ManagedDevice {
+    ManagedDevice {
+        address: target.address,
+        enabled: Some(target.enabled),
+        tls_domain: target.tls_domain.unwrap_or_default(),
+        ca_cert: target.ca_cert.unwrap_or_default(),
+        vendor: target.vendor.unwrap_or_default(),
+        credential_alias: target.credential_alias.unwrap_or_default(),
+        username_env: target.username_env.unwrap_or_default(),
+        password_env: target.password_env.unwrap_or_default(),
+        hostname: target.hostname.unwrap_or_default(),
+        role: target.role.unwrap_or_default(),
+        site: target.site.unwrap_or_default(),
+        selected_paths: Vec::new(),
+    }
+}
+
+fn print_managed_devices(devices: Vec<ManagedDevice>) {
+    println!(
+        "{:<24} {:<8} {:<16} {:<12} {:<12} credential",
+        "address", "state", "hostname", "vendor", "site"
+    );
+    for device in devices {
+        println!(
+            "{:<24} {:<8} {:<16} {:<12} {:<12} {}",
+            device.address,
+            if device.enabled.unwrap_or(true) {
+                "enabled"
+            } else {
+                "stopped"
+            },
+            device.hostname,
+            device.vendor,
+            device.site,
+            device.credential_alias,
+        );
+    }
+}
+
+async fn run_device_cli_local(command: DeviceCliCommand, cfg: config::Config) -> Result<()> {
     let registry = ApiRegistry::open(REGISTRY_PATH, cfg.target.clone())?;
 
     match command {
+        DeviceCliCommand::Help => print_device_cli_usage(),
         DeviceCliCommand::List => {
             let devices = registry.list_active()?;
-            println!(
-                "{:<24} {:<8} {:<16} {:<12} {:<12} credential",
-                "address", "state", "hostname", "vendor", "site"
+            print_managed_devices(
+                devices
+                    .into_iter()
+                    .map(managed_device_from_target)
+                    .collect(),
             );
-            for device in devices {
-                println!(
-                    "{:<24} {:<8} {:<16} {:<12} {:<12} {}",
-                    device.address,
-                    if device.enabled { "enabled" } else { "stopped" },
-                    device.hostname.unwrap_or_default(),
-                    device.vendor.unwrap_or_default(),
-                    device.site.unwrap_or_default(),
-                    device.credential_alias.unwrap_or_default(),
-                );
-            }
         }
         DeviceCliCommand::Add(add) => {
             let device = registry.add_device(TargetConfig {

@@ -1379,3 +1379,57 @@ compaction job, or close/reopen the same hourly path on every flush.
   consistent with the project's explicit no-production-WAL scope for v1.
 - Close logs report final file size, total raw bytes, rows, and compression
   ratio so archive efficiency is visible without adding another metrics slice.
+
+---
+
+## 2026-04-22 - Credential vault passphrase rotation is manual in v1
+
+**Decision**: Bonsai's local credential vault does not support in-place
+passphrase rotation in v1. Rotating `BONSAI_VAULT_PASSPHRASE` requires the
+operator to unlock with the old passphrase, re-add or export/re-import the
+credential aliases under a vault opened with the new passphrase, and restart
+Bonsai with the new environment.
+
+**Alternatives considered**: add a `RotateCredentialVaultPassphrase` RPC now,
+write a one-off migration command, or defer rotation until a broader secret
+management abstraction exists.
+
+**Rationale**:
+- The vault is a local lab-scale store protecting secrets at rest, not a remote
+  enterprise KMS. In-place rotation is useful, but it is not required for the
+  current onboarding and collector validation milestones.
+- Rotation touches the whole encrypted payload and needs careful operator UX so
+  a failed rotation does not strand credentials or write secrets to logs.
+- The manual workaround is acceptable for v0.x: start Bonsai with the old
+  passphrase, add aliases into a fresh vault directory using the new passphrase,
+  update `credentials.path` if needed, and restart.
+- Deferring a rotation RPC keeps the current API smaller and leaves room for a
+  future `CredentialStore` abstraction that can also cover remote secret stores.
+
+---
+
+## 2026-04-22 - Bonsai uses one container image for all runtime roles
+
+**Decision**: Bonsai's container packaging starts with a single multi-stage
+image built by `docker/Dockerfile.bonsai`. The image contains the release Rust
+binary and built Svelte UI assets; runtime role remains a configuration choice
+through `runtime.mode = "all" | "core" | "collector"` rather than a separate
+image per role.
+
+**Alternatives considered**: build separate `bonsai-core` and
+`bonsai-collector` images, copy host-built binaries into a runtime image, or
+defer containerization until Compose is designed.
+
+**Rationale**:
+- One image keeps core/collector version skew impossible during local
+  distributed validation. Operators deploy the same artifact with different
+  config and volume mounts.
+- Multi-stage builds preserve reproducibility: Rust and Node toolchains stay in
+  builder stages, while the runtime image is Debian slim plus `curl` for the
+  healthcheck.
+- The image runs as UID/GID 10001 and writes only to mounted Bonsai state
+  directories under `/var/lib/bonsai`.
+- The healthcheck targets the core/all HTTP readiness endpoint. Compose can
+  override or disable it for collector-only roles, which do not serve the UI.
+- Docker is a v0.x deployment plane for Bonsai; Kubernetes manifests remain
+  explicitly out of scope.
