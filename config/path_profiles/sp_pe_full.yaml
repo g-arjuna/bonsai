@@ -1,7 +1,9 @@
 name: sp_pe_full
-roles: ["pe", "rr"]
-description: "Service-provider PE/RR profile: base telemetry plus MPLS, IS-IS, and segment-routing when advertised."
-rationale: "PE and route-reflector devices need base control-plane health plus SP transport/control-plane model coverage."
+environment: ["service_provider"]
+vendor_scope: []
+roles: ["pe", "rr", "peering"]
+description: "Service-provider PE/RR/peering profile: base telemetry plus MPLS, IS-IS, and segment-routing when advertised."
+rationale: "PE, route-reflector, and peering devices need base control-plane health plus SP transport/control-plane model coverage."
 paths:
   - path: "interfaces"
     origin: openconfig

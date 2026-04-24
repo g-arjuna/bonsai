@@ -1,6 +1,8 @@
 pub mod api;
+pub mod audit;
 pub mod archive;
 pub mod assignment;
+pub mod catalogue;
 pub mod collector;
 pub mod config;
 pub mod counter_summarizer;

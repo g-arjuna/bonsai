@@ -6,6 +6,8 @@ use anyhow::{Context, Result};
 use tracing::{info, warn};
 
 use bonsai::{
+    audit,
+    catalogue,
     api::{
         BonsaiGraphServer, CoreService, CollectorService,
         pb::{
@@ -15,7 +17,7 @@ use bonsai::{
     },
     archive, config,
     config::TargetConfig,
-    credentials::{CredentialVault, ResolvedCredential},
+    credentials::{CredentialVault, ResolvePurpose, ResolvedCredential},
     event_bus::InProcessBus,
     graph, ingest,
     registry::{ApiRegistry, DeviceRegistry, RegistryChange},
@@ -36,6 +38,9 @@ const REGISTRY_PATH: &str = "bonsai-registry.json";
 async fn main() -> Result<()> {
     install_rustls_crypto_provider();
 
+    if let Some(command) = AuditCliCommand::parse()? {
+        return run_audit_cli(command).await;
+    }
     if let Some(command) = DeviceCliCommand::parse()? {
         return run_device_cli(command).await;
     }
@@ -353,6 +358,14 @@ async fn main() -> Result<()> {
         }
     }
 
+    if let Some(Store::Core(ref core_store)) = store {
+        match core_store.migrate_sites_to_default_environment() {
+            Ok(count) if count > 0 => info!(count, "environment migration complete"),
+            Ok(_) => {}
+            Err(error) => warn!(%error, "environment migration failed (non-fatal)"),
+        }
+    }
+
     // Seed the collector manager's site cache and keep it refreshed so that
     // hierarchy-aware assignment rules reflect current graph state.
     if let (Some(store), Some(manager)) = (&store, &collector_manager) {
@@ -588,7 +601,7 @@ async fn main() -> Result<()> {
 
         if run_core {
             let http_store = if let Store::Core(s) = store {
-                std::sync::Arc::clone(&s)
+                std::sync::Arc::clone(s)
             } else {
                 unreachable!()
             };
@@ -597,6 +610,9 @@ async fn main() -> Result<()> {
             let registry_for_http = std::sync::Arc::clone(&registry);
             let credentials_for_http = std::sync::Arc::clone(&credentials);
             let collector_manager_for_http = collector_manager.clone();
+            let catalogue = std::sync::Arc::new(catalogue::load_catalogue(
+                std::path::Path::new("config/path_profiles"),
+            ));
             tokio::spawn(async move {
                 let listener = tokio::net::TcpListener::bind(http_addr)
                     .await
@@ -608,6 +624,7 @@ async fn main() -> Result<()> {
                         registry_for_http,
                         credentials_for_http,
                         collector_manager_for_http,
+                        catalogue,
                     ),
                 )
                 .await
@@ -617,7 +634,7 @@ async fn main() -> Result<()> {
 
         if run_core && cfg.retention.enabled {
             let store_for_retention = if let Store::Core(s) = store {
-                std::sync::Arc::clone(&s)
+                std::sync::Arc::clone(s)
             } else {
                 unreachable!()
             };
@@ -693,6 +710,15 @@ enum DeviceCliCommand {
     Restart { address: String },
 }
 
+enum AuditCliCommand {
+    Help,
+    Export {
+        since: String,
+        until: String,
+        output: Option<String>,
+    },
+}
+
 struct DeviceCliAdd {
     address: String,
     hostname: Option<String>,
@@ -738,6 +764,47 @@ impl DeviceCliCommand {
             })),
             "help" | "--help" | "-h" => Ok(Some(Self::Help)),
             other => anyhow::bail!("unknown device command '{other}'"),
+        }
+    }
+}
+
+impl AuditCliCommand {
+    fn parse() -> Result<Option<Self>> {
+        let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+        if args.first().map(String::as_str) != Some("audit") {
+            return Ok(None);
+        }
+        args.remove(0);
+        let Some(action) = args.first().cloned() else {
+            return Ok(Some(Self::Help));
+        };
+        args.remove(0);
+
+        match action.as_str() {
+            "export" => {
+                let mut since = None;
+                let mut until = None;
+                let mut output = None;
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--since" => since = Some(require_flag_value("--since", iter.next())?),
+                        "--until" => until = Some(require_flag_value("--until", iter.next())?),
+                        "--output" => output = Some(require_flag_value("--output", iter.next())?),
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other => anyhow::bail!("unknown audit export argument '{other}'"),
+                    }
+                }
+                let since = since.ok_or_else(|| anyhow::anyhow!("audit export requires --since"))?;
+                let until = until.ok_or_else(|| anyhow::anyhow!("audit export requires --until"))?;
+                Ok(Some(Self::Export {
+                    since,
+                    until,
+                    output,
+                }))
+            }
+            "help" | "--help" | "-h" => Ok(Some(Self::Help)),
+            other => anyhow::bail!("unknown audit command '{other}'"),
         }
     }
 }
@@ -1088,6 +1155,46 @@ fn print_device_cli_usage() {
     );
 }
 
+async fn run_audit_cli(command: AuditCliCommand) -> Result<()> {
+    if matches!(command, AuditCliCommand::Help) {
+        print_audit_cli_usage();
+        return Ok(());
+    }
+
+    let config_path = config_path();
+    let cfg = config::load(&config_path).await?;
+    let root = std::path::Path::new(&cfg.credentials.path);
+
+    match command {
+        AuditCliCommand::Help => {
+            print_audit_cli_usage();
+            Ok(())
+        }
+        AuditCliCommand::Export {
+            since,
+            until,
+            output,
+        } => {
+            let output_path = output
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from("bonsai-audit-export.tar"));
+            let result = audit::export_tarball(root, &since, &until, &output_path)?;
+            println!(
+                "exported {} audit events to {}",
+                result.entry_count,
+                result.output_path.display()
+            );
+            Ok(())
+        }
+    }
+}
+
+fn print_audit_cli_usage() {
+    println!(
+        "usage:\n  bonsai audit export --since <RFC3339> --until <RFC3339> [--output path.tar]"
+    );
+}
+
 async fn spawn_subscriber(
     target: TargetConfig,
     credentials: &std::sync::Arc<CredentialVault>,
@@ -1159,7 +1266,7 @@ fn resolve_target_credentials(
     credentials: &CredentialVault,
 ) -> Result<Option<ResolvedCredential>> {
     if let Some(alias) = target.credential_alias.as_deref() {
-        return credentials.resolve(alias).map(Some);
+        return credentials.resolve(alias, ResolvePurpose::Subscribe).map(Some);
     }
 
     Ok(

@@ -4,6 +4,7 @@
   import { relativeTime, absoluteTime } from '$lib/timeutil.js';
 
   let sites = $state([]);
+  let environments = $state([]);
   let siteSummary = $state(null);
   let loading = $state(true);
   let selected = $state(null);
@@ -12,6 +13,7 @@
   let newName = $state('');
   let newParent = $state('');
   let newKind = $state('dc');
+  let newEnvironmentId = $state('');
   let saving = $state(false);
 
   let editName = $state('');
@@ -19,15 +21,22 @@
   let editKind = $state('');
   let editLat = $state('');
   let editLon = $state('');
+  let editEnvironmentId = $state('');
   let editing = $state(false);
   let removing = $state(false);
+  let assigningEnv = $state(false);
 
   const nameInputId = 'site-name';
   const kindInputId = 'site-kind';
   const parentInputId = 'site-parent';
   const KIND_OPTIONS = ['region', 'dc', 'pod', 'rack', 'other'];
 
-  onMount(loadSites);
+  const ARCHETYPE_LABEL = {
+    data_center: 'DC', campus_wired: 'Campus', campus_wireless: 'Wireless',
+    service_provider: 'SP', home_lab: 'Lab',
+  };
+
+  onMount(() => { loadSites(); loadEnvironments(); });
 
   $effect(() => {
     if (selected) {
@@ -36,6 +45,7 @@
       editKind = selected.kind || 'other';
       editLat = selected.lat ? String(selected.lat) : '';
       editLon = selected.lon ? String(selected.lon) : '';
+      editEnvironmentId = selected.environment_id ?? '';
       loadSiteSummary(selected.id);
     } else {
       siteSummary = null;
@@ -57,6 +67,38 @@
       sites = [];
     } finally {
       loading = false;
+    }
+  }
+
+  async function loadEnvironments() {
+    try {
+      const r = await fetch('/api/environments');
+      if (!r.ok) throw new Error(await r.text());
+      const data = await r.json();
+      environments = data.environments ?? [];
+    } catch (e) {
+      environments = [];
+    }
+  }
+
+  async function assignEnvironment() {
+    if (!selected) return;
+    assigningEnv = true;
+    try {
+      const r = await fetch('/api/environments/assign-site', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ site_id: selected.id, environment_id: editEnvironmentId }),
+      });
+      const data = await r.json();
+      if (!data.success) throw new Error(data.error);
+      toast(`Environment assigned for "${selected.name}".`, 'success');
+      await loadSites();
+      selected = sites.find(s => s.id === selected.id) ?? null;
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      assigningEnv = false;
     }
   }
 
@@ -87,7 +129,8 @@
           kind: newKind,
           lat: 0,
           lon: 0,
-          metadata_json: '{}'
+          metadata_json: '{}',
+          environment_id: newEnvironmentId,
         }),
       });
       const data = await r.json();
@@ -96,6 +139,7 @@
       newName = '';
       newParent = '';
       newKind = 'dc';
+      newEnvironmentId = '';
       await loadSites();
       selected = data.site ?? null;
     } catch (e) {
@@ -119,7 +163,8 @@
           kind: editKind || 'other',
           lat: editLat ? Number(editLat) : 0,
           lon: editLon ? Number(editLon) : 0,
-          metadata_json: selected.metadata_json || '{}'
+          metadata_json: selected.metadata_json || '{}',
+          environment_id: editEnvironmentId,
         }),
       });
       const data = await r.json();
@@ -226,6 +271,15 @@
               {/each}
             </select>
           </div>
+          <div class="form-row">
+            <label for="site-env">Environment</label>
+            <select id="site-env" bind:value={newEnvironmentId}>
+              <option value="">None</option>
+              {#each environments as env}
+                <option value={env.id}>{env.name} ({ARCHETYPE_LABEL[env.archetype] ?? env.archetype})</option>
+              {/each}
+            </select>
+          </div>
           <button onclick={addSite} disabled={saving || !newName.trim()}>
             {saving ? 'Saving…' : 'Add site'}
           </button>
@@ -272,6 +326,23 @@
 
             <span class="muted">Longitude</span>
             <input bind:value={editLon} placeholder="optional" autocomplete="off" />
+
+            <span class="muted">Environment</span>
+            <div class="env-assign-row">
+              <select bind:value={editEnvironmentId}>
+                <option value="">None</option>
+                {#each environments as env}
+                  <option value={env.id}>{env.name} ({ARCHETYPE_LABEL[env.archetype] ?? env.archetype})</option>
+                {/each}
+              </select>
+              <button
+                class="btn-small"
+                onclick={assignEnvironment}
+                disabled={assigningEnv || editEnvironmentId === (selected?.environment_id ?? '')}
+              >
+                {assigningEnv ? '…' : 'Assign'}
+              </button>
+            </div>
           </div>
 
           <button style="margin-top: 12px;" onclick={saveSelectedSite} disabled={editing || !editName.trim()}>
@@ -363,6 +434,10 @@
       <span class="kind-dot kind-{node.kind || 'other'}"></span>
       <span class="site-name">{node.name}</span>
       {#if node.kind}<span class="site-kind">{node.kind}</span>{/if}
+      {#if node.environment_id}
+        {@const envName = environments.find(e => e.id === node.environment_id)?.name}
+        {#if envName}<span class="env-tag">{envName}</span>{/if}
+      {/if}
     </button>
     {#if node.children?.length}
       {#each node.children as child}
@@ -399,9 +474,13 @@
   .kind-dot.kind-pod { background: var(--yellow); }
   .site-name { flex: 1; }
   .site-kind { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .env-tag { font-size: 10px; background: rgba(88,166,255,0.15); color: var(--blue, #58a6ff); border-radius: 3px; padding: 1px 5px; }
   .add-form { display: grid; gap: 10px; }
   .detail-header { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
   .detail-grid { display: grid; grid-template-columns: 90px 1fr; gap: 8px 12px; font-size: 13px; }
+  .env-assign-row { display: flex; gap: 6px; align-items: center; }
+  .env-assign-row select { flex: 1; }
+  .btn-small { padding: 4px 10px; font-size: 12px; white-space: nowrap; }
   .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
   .small { font-size: 12px; }
   .event-list { display: grid; gap: 10px; }

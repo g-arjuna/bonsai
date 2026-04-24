@@ -113,15 +113,15 @@ async fn status_handler(
     headers: HeaderMap,
 ) -> Result<Json<CollectorStatusResponse>, StatusCode> {
     // Optional basic auth — check BONSAI_COLLECTOR_DIAG_PASSWORD if set.
-    if let Ok(required) = std::env::var("BONSAI_COLLECTOR_DIAG_PASSWORD") {
-        if !required.is_empty() {
-            let provided = headers
-                .get("x-diag-password")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-            if provided != required {
-                return Err(StatusCode::UNAUTHORIZED);
-            }
+    if let Ok(required) = std::env::var("BONSAI_COLLECTOR_DIAG_PASSWORD")
+        && !required.is_empty()
+    {
+        let provided = headers
+            .get("x-diag-password")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if provided != required {
+            return Err(StatusCode::UNAUTHORIZED);
         }
     }
 

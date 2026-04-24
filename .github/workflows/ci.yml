@@ -107,30 +107,16 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up QEMU (arm64 emulation)
-        if: github.ref == 'refs/heads/main'
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build (PR — amd64 only)
-        if: github.event_name == 'pull_request'
+      - name: Build (amd64 + arm64)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile.bonsai
-          platforms: linux/amd64
-          push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build (main — multi-arch)
-        if: github.ref == 'refs/heads/main'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.bonsai
-          # arm64 is best-effort — lbug arm64 support not yet confirmed (T3-2)
           platforms: linux/amd64,linux/arm64
           push: false
           cache-from: type=gha

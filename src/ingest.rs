@@ -380,10 +380,10 @@ async fn queue_bus_updates_debounced(
                     if let TelemetryEvent::InterfaceStats { if_name } = classified {
                         let key = format!("{}:{}", update.target, if_name);
                         let now = Instant::now();
-                        if let Some(last) = last_forward.get(&key) {
-                            if now.duration_since(*last) < debounce_window {
-                                continue;
-                            }
+                        if let Some(last) = last_forward.get(&key)
+                            && now.duration_since(*last) < debounce_window
+                        {
+                            continue;
                         }
                         last_forward.insert(key, now);
                     }
@@ -1297,8 +1297,6 @@ pub async fn run_collector_manager(
             }
         }
     }
-
-    Ok(())
 }
 
 async fn handle_assignment_update(

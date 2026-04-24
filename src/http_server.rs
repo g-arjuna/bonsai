@@ -29,11 +29,15 @@ use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use tower_http::{cors::CorsLayer, services::ServeDir};
 
 use crate::assignment::{CollectorManager, CollectorStatus};
-use crate::graph::{DetectionRow, GraphStore, REMEDIATION_TRUST_CUTOFF_ISO, SiteRecord, TraceStep};
+use crate::catalogue::CatalogueState;
+use crate::graph::{
+    DetectionRow, EnvironmentRecord, GraphStore, REMEDIATION_TRUST_CUTOFF_ISO, SiteRecord,
+    TraceStep,
+};
 use crate::{
     archive,
     config::{AssignmentRule, SelectedSubscriptionPath, TargetConfig},
-    credentials::{CredentialSummary, CredentialVault, ResolvedCredential},
+    credentials::{CredentialSummary, CredentialVault, ResolvePurpose, ResolvedCredential},
     discovery::{self, DiscoveryInput},
     event_bus,
     registry::{ApiRegistry, DeviceRegistry, RegistryChange},
@@ -54,6 +58,8 @@ struct DeviceJson {
     vendor: String,
     role: String,
     site: String,
+    site_id: String,
+    site_path: String,
     health: String, // "healthy" | "warn" | "critical"
     bgp: Vec<BgpJson>,
 }
@@ -286,6 +292,68 @@ struct SiteJson {
     lon: f64,
     #[serde(default)]
     metadata_json: String,
+    #[serde(default)]
+    environment_id: String,
+}
+
+#[derive(Serialize)]
+struct EnvironmentsResponse {
+    environments: Vec<EnvironmentJson>,
+}
+
+#[derive(Serialize)]
+struct EnvironmentJson {
+    id: String,
+    name: String,
+    archetype: String,
+    created_at_ns: i64,
+    metadata_json: String,
+    site_count: i64,
+    device_count: i64,
+}
+
+#[derive(Deserialize)]
+struct CreateEnvironmentRequest {
+    #[serde(default)]
+    id: String,
+    name: String,
+    archetype: String,
+    #[serde(default)]
+    metadata_json: String,
+}
+
+#[derive(Deserialize)]
+struct UpdateEnvironmentRequest {
+    id: String,
+    name: String,
+    archetype: String,
+    #[serde(default)]
+    metadata_json: String,
+}
+
+#[derive(Deserialize)]
+struct RemoveEnvironmentRequest {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct AssignSiteEnvironmentRequest {
+    site_id: String,
+    environment_id: String,
+}
+
+#[derive(Serialize)]
+struct EnvironmentMutationResponse {
+    success: bool,
+    error: String,
+}
+
+#[derive(Serialize)]
+struct SetupStatusResponse {
+    is_first_run: bool,
+    has_environments: bool,
+    has_credentials: bool,
+    has_devices: bool,
 }
 
 #[derive(Serialize)]
@@ -421,6 +489,7 @@ pub struct AppState {
     pub registry: Arc<ApiRegistry>,
     pub credentials: Arc<CredentialVault>,
     pub collector_manager: Option<Arc<CollectorManager>>,
+    pub catalogue: Arc<CatalogueState>,
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -430,12 +499,14 @@ pub fn router(
     registry: Arc<ApiRegistry>,
     credentials: Arc<CredentialVault>,
     collector_manager: Option<Arc<CollectorManager>>,
+    catalogue: Arc<CatalogueState>,
 ) -> Router {
     let state = AppState {
         store,
         registry,
         credentials,
         collector_manager,
+        catalogue,
     };
 
     // Serve the Svelte SPA from ui/dist/. Fall back to index.html so
@@ -471,6 +542,15 @@ pub fn router(
         .route("/api/sites", get(sites_handler).post(upsert_site_handler))
         .route("/api/sites/{id}", get(site_summary_handler))
         .route("/api/sites/remove", post(remove_site_handler))
+        .route(
+            "/api/environments",
+            get(environments_handler).post(create_environment_handler),
+        )
+        .route("/api/environments/update", post(update_environment_handler))
+        .route("/api/environments/remove", post(remove_environment_handler))
+        .route("/api/environments/assign-site", post(assign_site_environment_handler))
+        .route("/api/setup/status", get(setup_status_handler))
+        .route("/api/profiles", get(profiles_handler))
         .route(
             "/api/credentials",
             get(credentials_handler).post(add_credential_handler),
@@ -559,13 +639,24 @@ async fn topology_handler(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
+    let all_sites = state.store.list_sites().await.unwrap_or_else(|error| {
+        tracing::warn!(%error, "failed to list sites for topology metadata");
+        Vec::new()
+    });
+    let site_id_by_name: HashMap<String, String> =
+        all_sites.iter().map(|site| (site.name.clone(), site.id.clone())).collect();
+    let site_path_by_id = build_site_path_by_id(&all_sites);
+
     // Build role + site map from registry
-    let mut role_site: HashMap<String, (String, String)> = HashMap::new();
+    let mut role_site: HashMap<String, (String, String, String, String)> = HashMap::new();
     if let Ok(targets) = state.registry.list_all_targets() {
         for t in targets {
+            let site = t.site.unwrap_or_default();
+            let (site_id, site_path) =
+                resolve_site_metadata(&site, &site_id_by_name, &site_path_by_id);
             role_site.insert(
                 t.address.clone(),
-                (t.role.unwrap_or_default(), t.site.unwrap_or_default()),
+                (t.role.unwrap_or_default(), site, site_id, site_path),
             );
         }
     }
@@ -586,13 +677,15 @@ async fn topology_handler(
         .map(|(address, vendor, hostname)| {
             let bgp = bgp_by_device.remove(&address).unwrap_or_default();
             let health = compute_health(&bgp);
-            let (role, site) = role_site.remove(&address).unwrap_or_default();
+            let (role, site, site_id, site_path) = role_site.remove(&address).unwrap_or_default();
             DeviceJson {
                 address,
                 hostname,
                 vendor,
                 role,
                 site,
+                site_id,
+                site_path,
                 health,
                 bgp,
             }
@@ -866,7 +959,7 @@ async fn test_credential_handler(
 ) -> Result<Json<discovery::DiscoveryReport>, (StatusCode, String)> {
     let credentials = state
         .credentials
-        .resolve(&req.alias)
+        .resolve(&req.alias, ResolvePurpose::Test)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
 
     let report = discovery::discover_device(DiscoveryInput {
@@ -1706,6 +1799,7 @@ fn site_json(site: SiteRecord) -> SiteJson {
         lat: site.lat,
         lon: site.lon,
         metadata_json: site.metadata_json,
+        environment_id: site.environment_id,
     }
 }
 
@@ -1718,6 +1812,7 @@ fn site_record(site: SiteJson) -> SiteRecord {
         lat: site.lat,
         lon: site.lon,
         metadata_json: site.metadata_json,
+        environment_id: site.environment_id,
     }
 }
 
@@ -1751,7 +1846,7 @@ fn resolve_request_credentials(
     password_env: Option<String>,
 ) -> anyhow::Result<Option<ResolvedCredential>> {
     if let Some(alias) = credential_alias {
-        return credentials.resolve(&alias).map(Some);
+        return credentials.resolve(&alias, ResolvePurpose::Discover).map(Some);
     }
 
     let username = username_env
@@ -1787,6 +1882,58 @@ fn site_subtree_ids(sites: &[SiteRecord], root_id: &str) -> std::collections::Ha
         }
     }
     ids
+}
+
+fn build_site_path_by_id(sites: &[SiteRecord]) -> HashMap<String, String> {
+    let by_id: HashMap<&str, &SiteRecord> = sites.iter().map(|site| (site.id.as_str(), site)).collect();
+    let mut path_by_id = HashMap::new();
+
+    for site in sites {
+        let mut names = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut current_id = site.id.as_str();
+        let mut depth = 0;
+
+        while depth < 16 && seen.insert(current_id.to_string()) {
+            let Some(current) = by_id.get(current_id) else {
+                break;
+            };
+            names.push(current.name.clone());
+            if current.parent_id.is_empty() {
+                break;
+            }
+            current_id = current.parent_id.as_str();
+            depth += 1;
+        }
+
+        names.reverse();
+        path_by_id.insert(site.id.clone(), names.join(" / "));
+    }
+
+    path_by_id
+}
+
+fn resolve_site_metadata(
+    site: &str,
+    site_id_by_name: &HashMap<String, String>,
+    site_path_by_id: &HashMap<String, String>,
+) -> (String, String) {
+    let site = site.trim();
+    if site.is_empty() {
+        return (String::new(), String::new());
+    }
+
+    let site_id = if site_path_by_id.contains_key(site) {
+        site.to_string()
+    } else {
+        site_id_by_name.get(site).cloned().unwrap_or_default()
+    };
+    if site_id.is_empty() {
+        return (String::new(), String::new());
+    }
+
+    let site_path = site_path_by_id.get(&site_id).cloned().unwrap_or_default();
+    (site_id, site_path)
 }
 
 fn read_str(v: &Value) -> String {
@@ -2088,7 +2235,7 @@ fn group_into_incidents(
         })
         .collect();
 
-    incidents.sort_by(|a, b| b.started_at_ns.cmp(&a.started_at_ns));
+    incidents.sort_by_key(|incident| std::cmp::Reverse(incident.started_at_ns));
     incidents
 }
 
@@ -2318,4 +2465,203 @@ async fn assignment_override_handler(
         Ok(_) => Ok(Json(AssignmentOverrideResponse { success: true, error: String::new() })),
         Err(e) => Ok(Json(AssignmentOverrideResponse { success: false, error: format!("{e:#}") })),
     }
+}
+
+// ── Environment handlers ──────────────────────────────────────────────────────
+
+async fn environments_handler(
+    State(state): State<AppState>,
+) -> Result<Json<EnvironmentsResponse>, (StatusCode, String)> {
+    let envs = state
+        .store
+        .list_environments()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(Json(EnvironmentsResponse {
+        environments: envs
+            .into_iter()
+            .map(|e| EnvironmentJson {
+                id: e.id,
+                name: e.name,
+                archetype: e.archetype,
+                created_at_ns: e.created_at_ns,
+                metadata_json: e.metadata_json,
+                site_count: e.site_count,
+                device_count: e.device_count,
+            })
+            .collect(),
+    }))
+}
+
+async fn create_environment_handler(
+    State(state): State<AppState>,
+    Json(req): Json<CreateEnvironmentRequest>,
+) -> Result<Json<EnvironmentMutationResponse>, (StatusCode, String)> {
+    let record = EnvironmentRecord {
+        id: req.id,
+        name: req.name,
+        archetype: req.archetype,
+        created_at_ns: 0,
+        metadata_json: req.metadata_json,
+    };
+    match state.store.create_environment(record).await {
+        Ok(_) => Ok(Json(EnvironmentMutationResponse { success: true, error: String::new() })),
+        Err(e) => Ok(Json(EnvironmentMutationResponse { success: false, error: format!("{e:#}") })),
+    }
+}
+
+async fn update_environment_handler(
+    State(state): State<AppState>,
+    Json(req): Json<UpdateEnvironmentRequest>,
+) -> Result<Json<EnvironmentMutationResponse>, (StatusCode, String)> {
+    let record = EnvironmentRecord {
+        id: req.id,
+        name: req.name,
+        archetype: req.archetype,
+        created_at_ns: 0,
+        metadata_json: req.metadata_json,
+    };
+    match state.store.update_environment(record).await {
+        Ok(_) => Ok(Json(EnvironmentMutationResponse { success: true, error: String::new() })),
+        Err(e) => Ok(Json(EnvironmentMutationResponse { success: false, error: format!("{e:#}") })),
+    }
+}
+
+async fn remove_environment_handler(
+    State(state): State<AppState>,
+    Json(req): Json<RemoveEnvironmentRequest>,
+) -> Result<Json<EnvironmentMutationResponse>, (StatusCode, String)> {
+    match state.store.delete_environment(req.id).await {
+        Ok(Ok(())) => {
+            Ok(Json(EnvironmentMutationResponse { success: true, error: String::new() }))
+        }
+        Ok(Err(msg)) => {
+            Ok(Json(EnvironmentMutationResponse { success: false, error: msg }))
+        }
+        Err(e) => {
+            Ok(Json(EnvironmentMutationResponse { success: false, error: format!("{e:#}") }))
+        }
+    }
+}
+
+async fn assign_site_environment_handler(
+    State(state): State<AppState>,
+    Json(req): Json<AssignSiteEnvironmentRequest>,
+) -> Result<Json<EnvironmentMutationResponse>, (StatusCode, String)> {
+    match state.store.assign_site_to_environment(req.site_id, req.environment_id).await {
+        Ok(()) => Ok(Json(EnvironmentMutationResponse { success: true, error: String::new() })),
+        Err(e) => Ok(Json(EnvironmentMutationResponse { success: false, error: format!("{e:#}") })),
+    }
+}
+
+/// Returns first-run state so the UI can decide whether to route to /setup.
+async fn setup_status_handler(
+    State(state): State<AppState>,
+) -> Result<Json<SetupStatusResponse>, (StatusCode, String)> {
+    let envs = state
+        .store
+        .list_environments()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    let non_default_envs = envs.iter().any(|e| e.id != crate::graph::DEFAULT_ENVIRONMENT_ID);
+    let has_credentials = state
+        .credentials
+        .list()
+        .map(|creds| !creds.is_empty())
+        .unwrap_or(false);
+    let has_devices = state
+        .registry
+        .list_active()
+        .map(|devices| !devices.is_empty())
+        .unwrap_or(false);
+
+    let is_first_run = !non_default_envs && !has_credentials && !has_devices;
+
+    Ok(Json(SetupStatusResponse {
+        is_first_run,
+        has_environments: non_default_envs,
+        has_credentials,
+        has_devices,
+    }))
+}
+
+// ── Profiles ──────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct ProfilesResponse {
+    profiles: Vec<ProfileJson>,
+    plugins: Vec<PluginJson>,
+    load_errors: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ProfileJson {
+    name: String,
+    environment: Vec<String>,
+    vendor_scope: Vec<String>,
+    roles: Vec<String>,
+    description: String,
+    rationale: String,
+    path_count: usize,
+    source: String,
+}
+
+#[derive(Serialize)]
+struct PluginJson {
+    name: String,
+    version: String,
+    author: String,
+    profile_count: usize,
+    conflicts: Vec<String>,
+}
+
+async fn profiles_handler(
+    State(state): State<AppState>,
+) -> Json<ProfilesResponse> {
+    let cat = &state.catalogue;
+
+    let profiles: Vec<ProfileJson> = cat
+        .profiles
+        .iter()
+        .map(|p| ProfileJson {
+            name: p.name.clone(),
+            environment: p.environment.clone(),
+            vendor_scope: p.vendor_scope.clone(),
+            roles: p.roles.clone(),
+            description: p.description.clone(),
+            rationale: p.rationale.clone(),
+            path_count: p.paths.len(),
+            source: "built-in".to_string(),
+        })
+        .chain(cat.plugins.iter().flat_map(|plugin| {
+            plugin.profiles.iter().map(move |p| ProfileJson {
+                name: p.name.clone(),
+                environment: p.environment.clone(),
+                vendor_scope: p.vendor_scope.clone(),
+                roles: p.roles.clone(),
+                description: p.description.clone(),
+                rationale: p.rationale.clone(),
+                path_count: p.paths.len(),
+                source: format!("plugin:{}", plugin.manifest.name),
+            })
+        }))
+        .collect();
+
+    let plugins: Vec<PluginJson> = cat
+        .plugins
+        .iter()
+        .map(|p| PluginJson {
+            name: p.manifest.name.clone(),
+            version: p.manifest.version.clone(),
+            author: p.manifest.author.clone(),
+            profile_count: p.profiles.len(),
+            conflicts: p.conflicts.clone(),
+        })
+        .collect();
+
+    Json(ProfilesResponse {
+        profiles,
+        plugins,
+        load_errors: cat.load_errors.clone(),
+    })
 }

@@ -11,16 +11,41 @@
   import TraceRoute from './routes/TraceRoute.svelte';
   import Onboarding from '$lib/Onboarding.svelte';
   import CommandPalette from '$lib/CommandPalette.svelte';
+  import Environments from './routes/Environments.svelte';
+  import Setup from './routes/Setup.svelte';
+  import Profiles from './routes/Profiles.svelte';
 
   const NAV = [
-    { href: '/',            label: 'Live',        icon: '◉' },
-    { href: '/incidents',   label: 'Incidents',   icon: '⚠' },
-    { href: '/devices',     label: 'Devices',     icon: '⊡' },
-    { href: '/collectors',  label: 'Collectors',  icon: '⇄' },
-    { href: '/sites',       label: 'Sites',       icon: '◎' },
-    { href: '/credentials', label: 'Credentials', icon: '⚿' },
-    { href: '/operations',  label: 'Operations',  icon: '♡' },
+    { href: '/',              label: 'Live',         icon: '◉' },
+    { href: '/incidents',     label: 'Incidents',    icon: '⚠' },
+    { href: '/devices',       label: 'Devices',      icon: '⊡' },
+    { href: '/collectors',    label: 'Collectors',   icon: '⇄' },
+    { href: '/environments',  label: 'Environments', icon: '⬡' },
+    { href: '/profiles',      label: 'Profiles',     icon: '📋' },
+    { href: '/sites',         label: 'Sites',        icon: '◎' },
+    { href: '/credentials',   label: 'Credentials',  icon: '⚿' },
+    { href: '/operations',    label: 'Operations',   icon: '♡' },
   ];
+
+  let setupChecked = $state(false);
+  let showSetup    = $state(false);
+
+  import { onMount } from 'svelte';
+  onMount(async () => {
+    try {
+      const r = await fetch('/api/setup/status');
+      if (r.ok) {
+        const data = await r.json();
+        if (data.is_first_run) {
+          showSetup = true;
+        }
+      }
+    } catch (_) {
+      // non-fatal
+    } finally {
+      setupChecked = true;
+    }
+  });
 
   function isActive(href) {
     const p = path();
@@ -52,8 +77,14 @@
   </aside>
 
   <main class="main-content">
-    {#if traceParams}
+    {#if !setupChecked}
+      <!-- wait for first-run check before rendering anything -->
+    {:else if showSetup && path() !== '/setup'}
+      <Setup onComplete={() => { showSetup = false; }} />
+    {:else if traceParams}
       <TraceRoute id={traceParams.id} />
+    {:else if path() === '/setup'}
+      <Setup onComplete={() => { showSetup = false; }} />
     {:else if path() === '/' || path() === ''}
       <Live />
     {:else if path() === '/incidents'}
@@ -66,6 +97,10 @@
       <Devices />
     {:else if path() === '/collectors'}
       <Collectors />
+    {:else if path() === '/environments'}
+      <Environments />
+    {:else if path() === '/profiles'}
+      <Profiles />
     {:else if path() === '/sites'}
       <Sites />
     {:else if path() === '/credentials'}

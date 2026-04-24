@@ -1603,3 +1603,18 @@ healthcheck until Compose exists.
 3. **`liblbug.so.0` is stripped with `--strip-debug`**. The C++ shared library retains the symbol table needed for dynamic linking but drops debug symbols, reducing its size.
 
 **Rationale**: The reported clean Docker build time was 40 minutes. The primary driver was the cargo-chef cook step re-running on every source change. With the manifest-only planner, incremental source-only builds skip the full dep compilation and land in the ~4s range (only the final `cargo build` step runs). Image size reduction (curl removal + library strip) is a secondary benefit contributing to the <100 MB target.
+
+
+## 2026-04-24 — Sprint 2: Environment model as a first-class graph entity (T1-1, T1-6)
+
+**Decision**: introduce `Environment` as a first-class node in the graph with an archetype enum (`data_center`, `campus_wired`, `campus_wireless`, `service_provider`, `home_lab`). Sites bind to exactly one Environment via a `BELONGS_TO_ENVIRONMENT` edge. The `Site.environment_id` field tracks the binding on the Rust struct for convenience. Onboarding, path-profile selection, enrichment applicability, and future GNN features all key off the archetype rather than free strings.
+
+**Migration**: on first startup after upgrade, existing sites without an Environment binding are automatically assigned to a default environment (`id: "migrated-default"`, `archetype: home_lab`, `name: "Default (Migrated)"`) via `GraphStore::migrate_sites_to_default_environment()`. The migration is idempotent — subsequent startups are a no-op. Operators review and reassign via the `/environments` UI workspace.
+
+**Why enum not free string**: forcing a small archetype enum surfaces coverage gaps explicitly. Any network archetype that doesn't fit the five is marked `home_lab` as an escape hatch and triggers a conversation about whether the enum should be extended (requiring a new ADR).
+
+**Why five archetypes**: DC / campus-wired / campus-wireless / SP / home-lab covers the primary audience (controller-less DC fabrics, SP backbones, campus wired/wireless deployments, home labs). Per v8 backlog: extensions require an explicit ADR entry.
+
+**API surface**: `GET /api/environments`, `POST /api/environments` (create), `POST /api/environments/update`, `POST /api/environments/remove`, `POST /api/environments/assign-site`. Setup detection: `GET /api/setup/status`.
+
+**First-run detection**: `setup_status_handler` returns `is_first_run: true` when no non-default environments exist, no credential aliases are configured, and no devices are onboarded. The UI routes to `/setup` on this signal.

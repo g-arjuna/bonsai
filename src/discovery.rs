@@ -1,18 +1,19 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tonic::Request;
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig};
 
+use crate::catalogue::{
+    CataloguePath, CatalogueProfile, canonical_role, is_sp_role, load_catalogue,
+};
 use crate::proto::gnmi::g_nmi_client::GNmiClient;
 use crate::proto::gnmi::{CapabilityRequest, Encoding, ModelData};
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(20);
 const PATH_PROFILE_DIR: &str = "config/path_profiles";
-const SAMPLE_INTERVAL_10S: u64 = 10_000_000_000;
-const SAMPLE_INTERVAL_60S: u64 = 60_000_000_000;
 
 #[derive(Clone, Debug)]
 pub struct DiscoveryInput {
@@ -58,46 +59,10 @@ struct CapabilitySummary {
     vendor_label: String,
     encoding: String,
     model_names: Vec<String>,
-    has_oc_interfaces: bool,
-    has_oc_bfd: bool,
-    has_oc_bgp: bool,
-    has_oc_lldp: bool,
-    has_oc_mpls: bool,
-    has_oc_segment_routing: bool,
-    has_oc_isis: bool,
-    has_srl_native: bool,
-    has_srl_native_bfd: bool,
-    has_xr_native: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-struct PathProfileTemplate {
-    name: String,
-    #[serde(default)]
-    roles: Vec<String>,
-    #[serde(default)]
-    description: String,
-    rationale: String,
-    #[serde(default)]
-    paths: Vec<PathTemplate>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct PathTemplate {
-    path: String,
-    #[serde(default)]
-    origin: String,
-    mode: String,
-    #[serde(default)]
-    sample_interval_ns: u64,
-    #[serde(default)]
-    required_models: Vec<String>,
-    #[serde(default)]
-    required_any_models: Vec<String>,
-    #[serde(default)]
-    optional: bool,
-    rationale: String,
-}
+type PathProfileTemplate = CatalogueProfile;
+type PathTemplate = CataloguePath;
 
 pub async fn discover_device(input: DiscoveryInput) -> Result<DiscoveryReport> {
     let address = normalize_required("address", input.address)?;
@@ -148,22 +113,7 @@ impl CapabilitySummary {
     }
 
     fn from_model_names(model_names: Vec<String>, encodings: &[i32]) -> Self {
-        let has_oc_interfaces = model_names.iter().any(|m| m == "openconfig-interfaces");
-        let has_oc_bfd = model_names.iter().any(|m| m == "openconfig-bfd");
-        let has_oc_bgp = model_names
-            .iter()
-            .any(|m| m == "openconfig-bgp" || m == "openconfig-network-instance");
-        let has_oc_lldp = model_names.iter().any(|m| m == "openconfig-lldp");
-        let has_oc_mpls = model_names.iter().any(|m| m == "openconfig-mpls");
-        let has_oc_segment_routing = model_names
-            .iter()
-            .any(|m| m == "openconfig-segment-routing");
-        let has_oc_isis = model_names.iter().any(|m| m == "openconfig-isis");
         let has_srl_native = model_names.iter().any(|m| m.contains("srl_nokia"));
-        let has_srl_native_bfd = model_names.iter().any(|m| m.contains("srl_nokia-bfd"));
-        let has_xr_native = model_names
-            .iter()
-            .any(|m| m.contains("Cisco-IOS-XR-infra-statsd-oper"));
 
         let vendor_label = if has_srl_native {
             "nokia_srl"
@@ -188,17 +138,13 @@ impl CapabilitySummary {
             vendor_label,
             encoding: preferred_encoding(encodings),
             model_names,
-            has_oc_interfaces,
-            has_oc_bfd,
-            has_oc_bgp,
-            has_oc_lldp,
-            has_oc_mpls,
-            has_oc_segment_routing,
-            has_oc_isis,
-            has_srl_native,
-            has_srl_native_bfd,
-            has_xr_native,
         }
+    }
+
+    fn has_model(&self, required: &str) -> bool {
+        self.model_names
+            .iter()
+            .any(|model| model == required || model.contains(required))
     }
 }
 
@@ -206,96 +152,32 @@ fn recommend_profiles(
     summary: &CapabilitySummary,
     role_hint: Option<&str>,
 ) -> (Vec<PathProfileMatch>, Vec<String>) {
-    match load_path_profiles(PATH_PROFILE_DIR)
-        .and_then(|profiles| recommend_profiles_from_templates(summary, role_hint, &profiles))
+    match load_templates_with_resolution(PATH_PROFILE_DIR)
+        .and_then(|(profiles, mut warnings)| {
+            let (matches, mut selection_warnings) =
+                recommend_profiles_from_templates(summary, role_hint, &profiles)?;
+            warnings.append(&mut selection_warnings);
+            Ok((matches, warnings))
+        })
     {
         Ok(result) => result,
         Err(error) => {
-            let mut warnings = vec![format!(
-                "failed to load path profile templates from {PATH_PROFILE_DIR}: {error:#}; using built-in fallback"
+            let warnings = vec![format!(
+                "failed to load path profile templates from {PATH_PROFILE_DIR}: {error:#}"
             )];
-            let profiles = recommend_profiles_builtin(summary, role_hint);
-            if profiles.iter().all(|profile| profile.paths.is_empty()) {
-                warnings.push("built-in fallback produced no subscribable paths".to_string());
-            }
-            (profiles, warnings)
+            (Vec::new(), warnings)
         }
     }
 }
 
-fn recommend_profiles_builtin(
-    summary: &CapabilitySummary,
-    role_hint: Option<&str>,
-) -> Vec<PathProfileMatch> {
-    let profile_name = profile_name_for_role(role_hint);
-    let mut paths = base_paths(summary);
-    let mut expected = vec![
-        summary.has_srl_native || summary.has_xr_native || summary.has_oc_interfaces,
-        summary.has_srl_native || summary.has_oc_bgp,
-        summary.has_srl_native || summary.has_xr_native || summary.has_oc_lldp,
-    ];
-
-    if profile_name.starts_with("sp_") {
-        add_if_supported(
-            &mut paths,
-            summary.has_oc_mpls,
-            SubscriptionPath {
-                path: "mpls".to_string(),
-                origin: "openconfig".to_string(),
-                mode: "ON_CHANGE".to_string(),
-                sample_interval_ns: 0,
-                rationale: "SP profile requested and openconfig-mpls is advertised".to_string(),
-                optional: false,
-            },
-        );
-        add_if_supported(
-            &mut paths,
-            summary.has_oc_segment_routing,
-            SubscriptionPath {
-                path: "segment-routing".to_string(),
-                origin: "openconfig".to_string(),
-                mode: "ON_CHANGE".to_string(),
-                sample_interval_ns: 0,
-                rationale: "SP profile requested and openconfig-segment-routing is advertised"
-                    .to_string(),
-                optional: false,
-            },
-        );
-        add_if_supported(
-            &mut paths,
-            summary.has_oc_isis,
-            SubscriptionPath {
-                path: "network-instances/network-instance/protocols/protocol/isis".to_string(),
-                origin: "openconfig".to_string(),
-                mode: "ON_CHANGE".to_string(),
-                sample_interval_ns: 0,
-                rationale: "SP profile requested and openconfig-isis is advertised".to_string(),
-                optional: false,
-            },
-        );
-        expected.extend([
-            summary.has_oc_mpls,
-            summary.has_oc_segment_routing,
-            summary.has_oc_isis,
-        ]);
+fn load_templates_with_resolution(base_dir: &str) -> Result<(Vec<CatalogueProfile>, Vec<String>)> {
+    let state = load_catalogue(std::path::Path::new(base_dir));
+    let profiles = state.all_profiles().cloned().collect();
+    let mut warnings = state.load_errors.clone();
+    for plugin in &state.plugins {
+        warnings.extend(plugin.conflicts.clone());
     }
-
-    let supported = expected.iter().filter(|supported| **supported).count() as f32;
-    let confidence = if expected.is_empty() {
-        0.0
-    } else {
-        supported / expected.len() as f32
-    };
-
-    vec![PathProfileMatch {
-        profile_name: profile_name.to_string(),
-        paths,
-        rationale: format!(
-            "matched role '{}' against advertised gNMI models and current built-in path rules",
-            role_hint.unwrap_or("leaf")
-        ),
-        confidence,
-    }]
+    Ok((profiles, warnings))
 }
 
 fn recommend_profiles_from_templates(
@@ -304,24 +186,30 @@ fn recommend_profiles_from_templates(
     templates: &[PathProfileTemplate],
 ) -> Result<(Vec<PathProfileMatch>, Vec<String>)> {
     let role = canonical_role(role_hint);
+    let environment = inferred_environment_for_role(&role);
+    let vendor = summary.vendor_label.as_str();
     let selected: Vec<&PathProfileTemplate> = templates
         .iter()
         .filter(|template| {
-            template
-                .roles
-                .iter()
-                .any(|profile_role| profile_role.eq_ignore_ascii_case(&role))
+            profile_matches_environment(template, environment)
+                && profile_matches_vendor_scope(template, vendor).is_some()
+                && template
+                    .roles
+                    .iter()
+                    .any(|profile_role| profile_role.eq_ignore_ascii_case(&role))
         })
         .collect();
 
     if selected.is_empty() {
-        bail!("no path profile template matched role '{role}'");
+        bail!(
+            "no path profile template matched role '{role}', environment '{environment}', vendor '{vendor}'"
+        );
     }
 
     let mut warnings = Vec::new();
-    let mut matches = Vec::new();
+    let mut scored_matches = Vec::new();
     for template in selected {
-        let (paths, dropped, total) = supported_template_paths(summary, template);
+        let (paths, dropped, total) = supported_template_paths(summary, vendor, template);
         for dropped_path in dropped {
             warnings.push(format!(
                 "profile '{}' dropped path '{}': {}",
@@ -333,19 +221,74 @@ fn recommend_profiles_from_templates(
         } else {
             paths.len() as f32 / total as f32
         };
-        matches.push(PathProfileMatch {
-            profile_name: template.name.clone(),
-            paths,
-            rationale: if template.description.is_empty() {
-                template.rationale.clone()
-            } else {
-                format!("{} {}", template.description, template.rationale)
+        let vendor_exact = profile_matches_vendor_scope(template, vendor).unwrap_or(false);
+        scored_matches.push((
+            vendor_exact,
+            PathProfileMatch {
+                profile_name: template.name.clone(),
+                paths,
+                rationale: if template.description.is_empty() {
+                    template.rationale.clone()
+                } else {
+                    format!("{} {}", template.description, template.rationale)
+                },
+                confidence,
             },
-            confidence,
-        });
+        ));
     }
 
-    Ok((matches, warnings))
+    scored_matches.sort_by(|(a_exact, a_profile), (b_exact, b_profile)| {
+        b_exact
+            .cmp(a_exact)
+            .then_with(|| b_profile.confidence.total_cmp(&a_profile.confidence))
+            .then_with(|| b_profile.paths.len().cmp(&a_profile.paths.len()))
+            .then_with(|| a_profile.profile_name.cmp(&b_profile.profile_name))
+    });
+
+    Ok((
+        scored_matches
+            .into_iter()
+            .map(|(_, profile)| profile)
+            .collect(),
+        warnings,
+    ))
+}
+
+fn profile_matches_environment(template: &PathProfileTemplate, environment: &str) -> bool {
+    template.environment.is_empty()
+        || template
+            .environment
+            .iter()
+            .any(|env| env.eq_ignore_ascii_case(environment) || env.eq_ignore_ascii_case("any"))
+}
+
+fn profile_matches_vendor_scope(template: &PathProfileTemplate, vendor: &str) -> Option<bool> {
+    if template.vendor_scope.is_empty() {
+        return Some(false);
+    }
+    let has_exact = template
+        .vendor_scope
+        .iter()
+        .any(|item| item.eq_ignore_ascii_case(vendor));
+    let has_any = template
+        .vendor_scope
+        .iter()
+        .any(|item| item.eq_ignore_ascii_case("any"));
+    if has_exact {
+        Some(true)
+    } else if has_any {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn inferred_environment_for_role(role: &str) -> &'static str {
+    if is_sp_role(role) {
+        "service_provider"
+    } else {
+        "data_center"
+    }
 }
 
 struct DroppedPath {
@@ -355,21 +298,32 @@ struct DroppedPath {
 
 fn supported_template_paths(
     summary: &CapabilitySummary,
+    vendor: &str,
     template: &PathProfileTemplate,
 ) -> (Vec<SubscriptionPath>, Vec<DroppedPath>, usize) {
-    let mut supported = Vec::new();
     let mut dropped = Vec::new();
+    let mut immediate_paths = Vec::new();
+    let mut fallback_candidates = Vec::new();
+    let mut eligible_paths = std::collections::HashSet::new();
 
     for path in &template.paths {
-        match missing_requirements(summary, path) {
-            None => supported.push(SubscriptionPath {
-                path: path.path.clone(),
-                origin: path.origin.clone(),
-                mode: path.mode.clone(),
-                sample_interval_ns: path.sample_interval_ns,
-                rationale: path.rationale.clone(),
-                optional: path.optional,
-            }),
+        match missing_requirements(summary, vendor, path) {
+            None => {
+                eligible_paths.insert(path.path.clone());
+                let subscription = SubscriptionPath {
+                    path: path.path.clone(),
+                    origin: path.origin.clone(),
+                    mode: path.mode.clone(),
+                    sample_interval_ns: path.sample_interval_ns,
+                    rationale: path.rationale.clone(),
+                    optional: path.optional,
+                };
+                if path.fallback_for.is_some() {
+                    fallback_candidates.push((subscription, path.fallback_for.clone(), path.optional));
+                } else {
+                    immediate_paths.push(subscription);
+                }
+            }
             Some(reason) => {
                 let kind = if path.optional {
                     "optional"
@@ -384,10 +338,34 @@ fn supported_template_paths(
         }
     }
 
-    (supported, dropped, template.paths.len())
+    let mut selected_paths: std::collections::HashSet<String> =
+        immediate_paths.iter().map(|path| path.path.clone()).collect();
+    for (fallback_path, fallback_for, optional) in fallback_candidates {
+        if let Some(primary_path) = fallback_for
+            && (eligible_paths.contains(&primary_path) || selected_paths.contains(&primary_path))
+        {
+            dropped.push(DroppedPath {
+                path: fallback_path.path,
+                reason: format!(
+                    "{} fallback not selected because primary path '{}' is available",
+                    if optional { "optional" } else { "required" },
+                    primary_path
+                ),
+            });
+            continue;
+        }
+        selected_paths.insert(fallback_path.path.clone());
+        immediate_paths.push(fallback_path);
+    }
+
+    (immediate_paths, dropped, template.paths.len())
 }
 
-fn missing_requirements(summary: &CapabilitySummary, path: &PathTemplate) -> Option<String> {
+fn missing_requirements(summary: &CapabilitySummary, vendor: &str, path: &PathTemplate) -> Option<String> {
+    if !path.vendor_only.is_empty() && !path.vendor_only.iter().any(|v| v.eq_ignore_ascii_case(vendor)) {
+        return Some(format!("path is restricted to vendors {:?}", path.vendor_only));
+    }
+
     let missing_required: Vec<String> = path
         .required_models
         .iter()
@@ -413,206 +391,27 @@ fn missing_requirements(summary: &CapabilitySummary, path: &PathTemplate) -> Opt
     None
 }
 
-impl CapabilitySummary {
-    fn has_model(&self, required: &str) -> bool {
-        self.model_names
-            .iter()
-            .any(|model| model == required || model.contains(required))
-    }
-}
-
-fn load_path_profiles(path: impl AsRef<std::path::Path>) -> Result<Vec<PathProfileTemplate>> {
-    let path = path.as_ref();
-    let mut profiles = Vec::new();
-    for entry in std::fs::read_dir(path)
-        .with_context(|| format!("could not read path profile directory '{}'", path.display()))?
-    {
-        let entry = entry?;
-        let file_path = entry.path();
-        let is_yaml = file_path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml"));
-        if !is_yaml {
-            continue;
-        }
-        let raw = std::fs::read_to_string(&file_path)
-            .with_context(|| format!("could not read path profile '{}'", file_path.display()))?;
-        let profile: PathProfileTemplate = serde_yaml::from_str(&raw)
-            .with_context(|| format!("could not parse path profile '{}'", file_path.display()))?;
-        profiles.push(profile);
-    }
-
-    profiles.sort_by(|a, b| a.name.cmp(&b.name));
-    if profiles.is_empty() {
-        bail!("no .yaml path profiles found in '{}'", path.display());
-    }
-    Ok(profiles)
-}
-
-fn base_paths(summary: &CapabilitySummary) -> Vec<SubscriptionPath> {
-    let mut paths = Vec::new();
-
-    if summary.has_srl_native {
-        paths.push(sample(
-            "interface[name=*]/statistics",
-            "",
-            SAMPLE_INTERVAL_10S,
-            "SR Linux native interface counters advertised",
-        ));
-        paths.push(on_change(
-            "interface[name=*]/oper-state",
-            "",
-            "SR Linux native interface oper-state advertised",
-        ));
-        paths.push(on_change(
-            "network-instance[name=default]/protocols/bgp/neighbor[peer-address=*]",
-            "",
-            "SR Linux native BGP model advertised",
-        ));
-        paths.push(on_change(
-            "system/lldp/interface[name=*]/neighbor[id=*]",
-            "",
-            "SR Linux native LLDP model advertised",
-        ));
-        if summary.has_srl_native_bfd {
-            paths.push(on_change(
-                "bfd/network-instance[name=default]",
-                "",
-                "SR Linux native BFD model advertised",
-            ));
-        }
-    } else {
-        if summary.has_xr_native {
-            paths.push(sample(
-                "Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface[interface-name=*]/generic-counters",
-                "",
-                SAMPLE_INTERVAL_10S,
-                "IOS-XR native interface counters advertised",
-            ));
-            paths.push(sample(
-                "Cisco-IOS-XR-ethernet-lldp-oper:lldp/nodes/node/neighbors/details/detail",
-                "",
-                SAMPLE_INTERVAL_60S,
-                "IOS-XR native LLDP path is sampled so existing neighbors are observed",
-            ));
-        }
-        if summary.has_oc_interfaces {
-            paths.push(sample(
-                "interfaces",
-                "openconfig",
-                SAMPLE_INTERVAL_10S,
-                "openconfig-interfaces is advertised",
-            ));
-            paths.push(on_change(
-                "interfaces",
-                "openconfig",
-                "openconfig-interfaces carries oper status updates",
-            ));
-        }
-        if summary.has_oc_bgp {
-            paths.push(on_change(
-                "network-instances",
-                "openconfig",
-                "openconfig-bgp or openconfig-network-instance is advertised",
-            ));
-        }
-        if summary.has_oc_bfd {
-            paths.push(on_change(
-                "bfd",
-                "openconfig",
-                "openconfig-bfd is advertised",
-            ));
-        }
-        if summary.has_oc_lldp {
-            paths.push(on_change(
-                "lldp",
-                "openconfig",
-                "openconfig-lldp is advertised",
-            ));
-        }
-    }
-
-    paths
-}
+const KNOWN_ROLES: &[&str] = &[
+    "leaf", "access", "spine", "superspine", "distribution", "border", "ce-facing",
+    "pe", "p", "rr", "peering", "core", "edge", "router", "switch",
+];
 
 fn discovery_warnings(summary: &CapabilitySummary, role_hint: Option<&str>) -> Vec<String> {
     let mut warnings = Vec::new();
     let raw_role = role_hint.unwrap_or("leaf").trim();
     let normalized_role = raw_role.to_lowercase();
-    if !matches!(
-        normalized_role.as_str(),
-        "" | "leaf" | "spine" | "pe" | "p" | "rr"
-    ) {
+    if !normalized_role.is_empty()
+        && !KNOWN_ROLES.contains(&normalized_role.as_str())
+    {
         warnings.push(format!(
-            "unknown role_hint '{}'; using dc_leaf_minimal recommendations",
+            "unknown role_hint '{}'",
             raw_role
         ));
     }
     if summary.model_names.is_empty() {
         warnings.push("device returned no advertised models".to_string());
     }
-    if !summary.has_srl_native && !summary.has_xr_native && !summary.has_oc_interfaces {
-        warnings.push(
-            "no interface model was advertised; interface telemetry may be unavailable".to_string(),
-        );
-    }
-    if !summary.has_srl_native && !summary.has_oc_bgp {
-        warnings.push("no BGP model was advertised; BGP telemetry may be unavailable".to_string());
-    }
-    if !summary.has_srl_native && !summary.has_xr_native && !summary.has_oc_lldp {
-        warnings
-            .push("no LLDP model was advertised; topology discovery may be incomplete".to_string());
-    }
     warnings
-}
-
-fn profile_name_for_role(role_hint: Option<&str>) -> &'static str {
-    match canonical_role(role_hint).as_str() {
-        "spine" => "dc_spine_standard",
-        "pe" | "rr" => "sp_pe_full",
-        "p" => "sp_p_core",
-        _ => "dc_leaf_minimal",
-    }
-}
-
-fn canonical_role(role_hint: Option<&str>) -> String {
-    match role_hint.unwrap_or("leaf").trim().to_lowercase().as_str() {
-        "" | "leaf" => "leaf".to_string(),
-        "spine" => "spine".to_string(),
-        "pe" => "pe".to_string(),
-        "p" => "p".to_string(),
-        "rr" => "rr".to_string(),
-        _ => "leaf".to_string(),
-    }
-}
-
-fn add_if_supported(paths: &mut Vec<SubscriptionPath>, supported: bool, path: SubscriptionPath) {
-    if supported {
-        paths.push(path);
-    }
-}
-
-fn sample(path: &str, origin: &str, interval: u64, rationale: &str) -> SubscriptionPath {
-    SubscriptionPath {
-        path: path.to_string(),
-        origin: origin.to_string(),
-        mode: "SAMPLE".to_string(),
-        sample_interval_ns: interval,
-        rationale: rationale.to_string(),
-        optional: false,
-    }
-}
-
-fn on_change(path: &str, origin: &str, rationale: &str) -> SubscriptionPath {
-    SubscriptionPath {
-        path: path.to_string(),
-        origin: origin.to_string(),
-        mode: "ON_CHANGE".to_string(),
-        sample_interval_ns: 0,
-        rationale: rationale.to_string(),
-        optional: false,
-    }
 }
 
 async fn connect(
@@ -704,88 +503,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn srl_leaf_recommendation_uses_native_paths() {
+    fn capability_summary_detects_vendor() {
         let summary = CapabilitySummary::from_model_names(
             vec![
                 "urn:nokia.com:srlinux:chassis:srl_nokia-interfaces".to_string(),
-                "urn:nokia.com:srlinux:network-instance:srl_nokia-bgp".to_string(),
-                "urn:nokia.com:srlinux:system:srl_nokia-lldp".to_string(),
-                "urn:nokia.com:srlinux:bfd:srl_nokia-bfd".to_string(),
             ],
             &[Encoding::JsonIetf as i32],
         );
-
-        let profiles = recommend_profiles_builtin(&summary, Some("leaf"));
-        assert_eq!(profiles[0].profile_name, "dc_leaf_minimal");
-        assert!(profiles[0].confidence > 0.9);
-        assert!(
-            profiles[0]
-                .paths
-                .iter()
-                .any(|path| path.path == "interface[name=*]/statistics")
-        );
-        assert!(
-            !profiles[0]
-                .paths
-                .iter()
-                .any(|path| path.path.contains("srl_nokia"))
-        );
-    }
-
-    #[test]
-    fn sp_profile_includes_only_advertised_sp_paths() {
-        let summary = CapabilitySummary::from_model_names(
-            vec![
-                "openconfig-interfaces".to_string(),
-                "openconfig-network-instance".to_string(),
-                "openconfig-lldp".to_string(),
-                "openconfig-mpls".to_string(),
-            ],
-            &[Encoding::JsonIetf as i32],
-        );
-
-        let profiles = recommend_profiles_builtin(&summary, Some("pe"));
-        assert_eq!(profiles[0].profile_name, "sp_pe_full");
-        assert!(profiles[0].paths.iter().any(|path| path.path == "mpls"));
-        assert!(
-            !profiles[0]
-                .paths
-                .iter()
-                .any(|path| path.path == "segment-routing")
-        );
-        assert!(profiles[0].confidence > 0.4 && profiles[0].confidence < 0.8);
-    }
-
-    #[test]
-    fn template_recommendation_filters_unsupported_paths() {
-        let summary = CapabilitySummary::from_model_names(
-            vec![
-                "openconfig-interfaces".to_string(),
-                "openconfig-network-instance".to_string(),
-                "openconfig-lldp".to_string(),
-                "openconfig-mpls".to_string(),
-            ],
-            &[Encoding::JsonIetf as i32],
-        );
-        let templates = load_path_profiles("config/path_profiles").expect("load path profiles");
-
-        let (profiles, warnings) =
-            recommend_profiles_from_templates(&summary, Some("pe"), &templates)
-                .expect("recommend from templates");
-
-        assert_eq!(profiles.len(), 1);
-        assert_eq!(profiles[0].profile_name, "sp_pe_full");
-        assert!(profiles[0].paths.iter().any(|path| path.path == "mpls"));
-        assert!(
-            !profiles[0]
-                .paths
-                .iter()
-                .any(|path| path.path == "segment-routing")
-        );
-        assert!(
-            warnings
-                .iter()
-                .any(|warning| warning.contains("segment-routing"))
-        );
+        assert_eq!(summary.vendor_label, "nokia_srl");
     }
 }

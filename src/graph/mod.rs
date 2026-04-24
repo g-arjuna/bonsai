@@ -85,6 +85,37 @@ pub struct SiteRecord {
     pub lat: f64,
     pub lon: f64,
     pub metadata_json: String,
+    pub environment_id: String,
+}
+
+/// Archetype values for an Environment node.
+pub const ARCHETYPE_DATA_CENTER: &str = "data_center";
+pub const ARCHETYPE_CAMPUS_WIRED: &str = "campus_wired";
+pub const ARCHETYPE_CAMPUS_WIRELESS: &str = "campus_wireless";
+pub const ARCHETYPE_SERVICE_PROVIDER: &str = "service_provider";
+pub const ARCHETYPE_HOME_LAB: &str = "home_lab";
+
+pub const DEFAULT_ENVIRONMENT_ID: &str = "migrated-default";
+pub const DEFAULT_ENVIRONMENT_NAME: &str = "Default (Migrated)";
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EnvironmentRecord {
+    pub id: String,
+    pub name: String,
+    pub archetype: String,
+    pub created_at_ns: i64,
+    pub metadata_json: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EnvironmentWithCounts {
+    pub id: String,
+    pub name: String,
+    pub archetype: String,
+    pub created_at_ns: i64,
+    pub metadata_json: String,
+    pub site_count: i64,
+    pub device_count: i64,
 }
 
 pub struct GraphStore {
@@ -392,6 +423,22 @@ impl GraphStore {
         )
         .context("create HAS_SUBSCRIPTION_STATUS rel")?;
 
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS Environment(\
+                id            STRING,\
+                name          STRING,\
+                archetype     STRING,\
+                created_at    TIMESTAMP_NS,\
+                metadata_json STRING,\
+                PRIMARY KEY (id))",
+        )
+        .context("create Environment table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS BELONGS_TO_ENVIRONMENT(FROM Site TO Environment)",
+        )
+        .context("create BELONGS_TO_ENVIRONMENT rel")?;
+
         info!("graph schema initialised");
         Ok(())
     }
@@ -407,7 +454,8 @@ impl GraphStore {
             let rows = conn
                 .query(
                     "MATCH (s:Site) \
-                     RETURN s.id, s.name, s.parent_id, s.kind, s.lat, s.lon, s.metadata_json \
+                     OPTIONAL MATCH (s)-[:BELONGS_TO_ENVIRONMENT]->(e:Environment) \
+                     RETURN s.id, s.name, s.parent_id, s.kind, s.lat, s.lon, s.metadata_json, e.id \
                      ORDER BY s.name",
                 )
                 .context("list sites query")?;
@@ -429,6 +477,180 @@ impl GraphStore {
         })
         .await
         .context("spawn_blocking panicked")?
+    }
+
+    pub async fn list_environments(&self) -> Result<Vec<EnvironmentWithCounts>> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("list environments connection")?;
+            let env_rows = conn
+                .query(
+                    "MATCH (e:Environment) \
+                     RETURN e.id, e.name, e.archetype, e.created_at, e.metadata_json \
+                     ORDER BY e.name",
+                )
+                .context("list environments query")?
+                .map(environment_from_row)
+                .collect::<Vec<_>>();
+
+            let mut out = Vec::with_capacity(env_rows.len());
+            for env in env_rows {
+                let mut site_stmt = conn
+                    .prepare(
+                        "MATCH (s:Site)-[:BELONGS_TO_ENVIRONMENT]->(e:Environment {id: $id}) \
+                         RETURN count(s)",
+                    )
+                    .context("prepare site count")?;
+                let site_count = conn
+                    .execute(&mut site_stmt, vec![("id", Value::String(env.id.clone()))])
+                    .context("execute site count")?
+                    .next()
+                    .map(|r| match &r[0] { Value::Int64(n) => *n, _ => 0 })
+                    .unwrap_or(0);
+
+                let mut dev_stmt = conn
+                    .prepare(
+                        "MATCH (s:Site)-[:BELONGS_TO_ENVIRONMENT]->(e:Environment {id: $id}) \
+                         MATCH (d:Device)-[:LOCATED_AT]->(s) \
+                         RETURN count(d)",
+                    )
+                    .context("prepare device count")?;
+                let device_count = conn
+                    .execute(&mut dev_stmt, vec![("id", Value::String(env.id.clone()))])
+                    .context("execute device count")?
+                    .next()
+                    .map(|r| match &r[0] { Value::Int64(n) => *n, _ => 0 })
+                    .unwrap_or(0);
+
+                out.push(EnvironmentWithCounts {
+                    id: env.id,
+                    name: env.name,
+                    archetype: env.archetype,
+                    created_at_ns: env.created_at_ns,
+                    metadata_json: env.metadata_json,
+                    site_count,
+                    device_count,
+                });
+            }
+            Ok::<_, anyhow::Error>(out)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn create_environment(&self, env: EnvironmentRecord) -> Result<EnvironmentRecord> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("create environment connection")?;
+            let env = normalize_environment(env)?;
+            upsert_environment_record(&conn, &env)?;
+            Ok::<_, anyhow::Error>(env)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn update_environment(&self, env: EnvironmentRecord) -> Result<EnvironmentRecord> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("update environment connection")?;
+            let env = normalize_environment(env)?;
+            upsert_environment_record(&conn, &env)?;
+            Ok::<_, anyhow::Error>(env)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn delete_environment(&self, id: String) -> Result<Result<(), String>> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("delete environment connection")?;
+
+            let mut count_stmt = conn
+                .prepare(
+                    "MATCH (s:Site)-[:BELONGS_TO_ENVIRONMENT]->(e:Environment {id: $id}) \
+                     RETURN count(s)",
+                )
+                .context("prepare site count for delete")?;
+            let site_count = conn
+                .execute(&mut count_stmt, vec![("id", Value::String(id.clone()))])
+                .context("execute site count for delete")?
+                .next()
+                .map(|r| match &r[0] { Value::Int64(n) => *n, _ => 0 })
+                .unwrap_or(0);
+
+            if site_count > 0 {
+                return Ok(Err(format!(
+                    "environment '{id}' has {site_count} site(s) assigned — reassign them before deleting"
+                )));
+            }
+
+            let mut del_stmt = conn
+                .prepare("MATCH (e:Environment {id: $id}) DELETE e")
+                .context("prepare environment delete")?;
+            conn.execute(&mut del_stmt, vec![("id", Value::String(id))])
+                .context("execute environment delete")?;
+
+            Ok(Ok(()))
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn assign_site_to_environment(&self, site_id: String, env_id: String) -> Result<()> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("assign site environment connection")?;
+            link_site_to_environment(&conn, &site_id, &env_id)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    /// Idempotent startup migration: sites without an environment binding get
+    /// assigned to the default "migrated" home-lab environment. Returns count of
+    /// sites migrated (0 on subsequent calls).
+    pub fn migrate_sites_to_default_environment(&self) -> Result<usize> {
+        let conn = Connection::new(&self.db).context("migrate environments connection")?;
+        let _guard = self.write_lock.lock().expect("write lock poisoned");
+
+        let default_env = EnvironmentRecord {
+            id: DEFAULT_ENVIRONMENT_ID.to_string(),
+            name: DEFAULT_ENVIRONMENT_NAME.to_string(),
+            archetype: ARCHETYPE_HOME_LAB.to_string(),
+            created_at_ns: now_ns(),
+            metadata_json: "{}".to_string(),
+        };
+        upsert_environment_record(&conn, &default_env)?;
+
+        let unbound_rows = conn
+            .query(
+                "MATCH (s:Site) \
+                 WHERE NOT (s)-[:BELONGS_TO_ENVIRONMENT]->() \
+                 RETURN s.id",
+            )
+            .context("query unbound sites")?
+            .map(|r| read_str(&r[0]))
+            .collect::<Vec<_>>();
+
+        let count = unbound_rows.len();
+        for site_id in unbound_rows {
+            link_site_to_environment(&conn, &site_id, DEFAULT_ENVIRONMENT_ID)?;
+        }
+
+        if count > 0 {
+            info!(count, "migrated sites to default environment");
+        }
+        Ok(count)
     }
 
     pub async fn sync_sites_from_targets(&self, targets: Vec<TargetConfig>) -> Result<()> {
@@ -455,6 +677,7 @@ impl GraphStore {
                     lat: 0.0,
                     lon: 0.0,
                     metadata_json: "{}".to_string(),
+                    environment_id: String::new(),
                 };
                 upsert_device(
                     &conn,
@@ -897,10 +1120,10 @@ fn write_interface_summary(
 
     let get_max = |aliases: &[&str]| -> i64 {
         for &alias in aliases {
-            if let Some(c) = counters.get(alias) {
-                if let Some(max) = c.get("max").and_then(|v| v.as_i64()) {
-                    return max;
-                }
+            if let Some(c) = counters.get(alias)
+                && let Some(max) = c.get("max").and_then(|v| v.as_i64())
+            {
+                return max;
             }
         }
         0
@@ -1765,6 +1988,90 @@ fn try_connect_interfaces(
     Ok(())
 }
 
+const VALID_ARCHETYPES: &[&str] = &[
+    ARCHETYPE_DATA_CENTER,
+    ARCHETYPE_CAMPUS_WIRED,
+    ARCHETYPE_CAMPUS_WIRELESS,
+    ARCHETYPE_SERVICE_PROVIDER,
+    ARCHETYPE_HOME_LAB,
+];
+
+fn normalize_environment(mut env: EnvironmentRecord) -> Result<EnvironmentRecord> {
+    env.name = env.name.trim().to_string();
+    if env.name.is_empty() {
+        anyhow::bail!("environment name is required");
+    }
+    env.id = env.id.trim().to_string();
+    if env.id.is_empty() {
+        env.id = site_id_from_name(&env.name);
+    }
+    env.archetype = env.archetype.trim().to_ascii_lowercase();
+    if !VALID_ARCHETYPES.contains(&env.archetype.as_str()) {
+        anyhow::bail!(
+            "invalid archetype '{}'; valid values: {}",
+            env.archetype,
+            VALID_ARCHETYPES.join(", ")
+        );
+    }
+    if env.metadata_json.trim().is_empty() {
+        env.metadata_json = "{}".to_string();
+    }
+    if env.created_at_ns == 0 {
+        env.created_at_ns = now_ns();
+    }
+    Ok(env)
+}
+
+fn upsert_environment_record(conn: &Connection<'_>, env: &EnvironmentRecord) -> Result<()> {
+    let mut stmt = conn
+        .prepare(
+            "MERGE (e:Environment {id: $id}) \
+             ON CREATE SET \
+               e.name = $name, e.archetype = $archetype, \
+               e.created_at = $ts, e.metadata_json = $metadata_json \
+             ON MATCH SET \
+               e.name = $name, e.archetype = $archetype, \
+               e.metadata_json = $metadata_json",
+        )
+        .context("prepare Environment upsert")?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(env.id.clone())),
+            ("name", Value::String(env.name.clone())),
+            ("archetype", Value::String(env.archetype.clone())),
+            ("ts", ts(env.created_at_ns)),
+            ("metadata_json", Value::String(env.metadata_json.clone())),
+        ],
+    )
+    .context("execute Environment upsert")?;
+    Ok(())
+}
+
+fn link_site_to_environment(conn: &Connection<'_>, site_id: &str, env_id: &str) -> Result<()> {
+    let mut clear = conn
+        .prepare("MATCH (s:Site {id: $sid})-[r:BELONGS_TO_ENVIRONMENT]->(:Environment) DELETE r")
+        .context("prepare BELONGS_TO_ENVIRONMENT clear")?;
+    conn.execute(&mut clear, vec![("sid", Value::String(site_id.to_string()))])
+        .context("execute BELONGS_TO_ENVIRONMENT clear")?;
+
+    let mut link = conn
+        .prepare(
+            "MATCH (s:Site {id: $sid}), (e:Environment {id: $eid}) \
+             MERGE (s)-[:BELONGS_TO_ENVIRONMENT]->(e)",
+        )
+        .context("prepare BELONGS_TO_ENVIRONMENT edge")?;
+    conn.execute(
+        &mut link,
+        vec![
+            ("sid", Value::String(site_id.to_string())),
+            ("eid", Value::String(env_id.to_string())),
+        ],
+    )
+    .context("execute BELONGS_TO_ENVIRONMENT edge")?;
+    Ok(())
+}
+
 fn normalize_site(mut site: SiteRecord) -> Result<SiteRecord> {
     site.name = site.name.trim().to_string();
     if site.name.is_empty() {
@@ -1782,6 +2089,7 @@ fn normalize_site(mut site: SiteRecord) -> Result<SiteRecord> {
     if site.metadata_json.trim().is_empty() {
         site.metadata_json = "{}".to_string();
     }
+    site.environment_id = site.environment_id.trim().to_string();
     Ok(site)
 }
 
@@ -1858,6 +2166,10 @@ fn upsert_site_record(conn: &Connection<'_>, site: &SiteRecord, now: Value) -> R
             ],
         )
         .context("execute PARENT_OF edge")?;
+    }
+
+    if !site.environment_id.is_empty() {
+        link_site_to_environment(conn, &site.id, &site.environment_id)?;
     }
 
     Ok(())
@@ -1940,6 +2252,17 @@ fn site_from_row(row: Vec<Value>) -> SiteRecord {
         lat: read_f64(&row[4]),
         lon: read_f64(&row[5]),
         metadata_json: read_str(&row[6]),
+        environment_id: if row.len() > 7 { read_str(&row[7]) } else { String::new() },
+    }
+}
+
+fn environment_from_row(row: Vec<Value>) -> EnvironmentRecord {
+    EnvironmentRecord {
+        id: read_str(&row[0]),
+        name: read_str(&row[1]),
+        archetype: read_str(&row[2]),
+        created_at_ns: read_ts_ns(&row[3]),
+        metadata_json: read_str(&row[4]),
     }
 }
 
@@ -2261,6 +2584,7 @@ mod tests {
             lat: 0.0,
             lon: 0.0,
             metadata_json: "{}".to_string(),
+            environment_id: String::new(),
         }
     }
 }

@@ -7,7 +7,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::config::{SelectedSubscriptionPath, TargetConfig};
-use crate::credentials::{CredentialSummary, CredentialVault, ResolvedCredential};
+use crate::credentials::{CredentialSummary, CredentialVault, ResolvePurpose, ResolvedCredential};
 use crate::discovery;
 use crate::event_bus::InProcessBus;
 use crate::gnmi_set::gnmi_set;
@@ -16,7 +16,8 @@ use crate::ingest;
 use crate::registry::{ApiRegistry, DeviceRegistry};
 use crate::store::BonsaiStore;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION_CURRENT: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_CURRENT;
 
 /// Version compatibility result. Major skew (>= 10 apart) is a hard error;
 /// any other mismatch is a warning; matching versions are compatible.
@@ -663,16 +664,27 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             .map_err(|e| Status::unavailable(e.to_string()))?
         {
             if accepted == 0 {
-                if let VersionCompat::MinorSkew { client, server }
-                | VersionCompat::MajorSkew { client, server } =
-                    check_protocol_compat(update.protocol_version, PROTOCOL_VERSION)
-                {
-                    tracing::warn!(
-                        collector_id = %update.collector_id,
-                        collector_version = client,
-                        server_version = server,
-                        "telemetry stream protocol version skew"
-                    );
+                match check_protocol_compat(update.protocol_version, PROTOCOL_VERSION_CURRENT) {
+                    VersionCompat::Compatible => {}
+                    VersionCompat::MinorSkew { client, server } => {
+                        tracing::warn!(
+                            collector_id = %update.collector_id,
+                            collector_version = client,
+                            server_version = server,
+                            "telemetry stream protocol version skew"
+                        );
+                    }
+                    VersionCompat::MajorSkew { client, server } => {
+                        tracing::warn!(
+                            collector_id = %update.collector_id,
+                            collector_version = client,
+                            server_version = server,
+                            "telemetry stream protocol version skew"
+                        );
+                        return Err(Status::failed_precondition(format!(
+                            "protocol version major skew: collector={client} server={server}; upgrade required"
+                        )));
+                    }
                 }
             }
 
@@ -690,7 +702,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         Ok(Response::new(pb::TelemetryIngestResponse {
             accepted,
             error: String::new(),
-            protocol_version: PROTOCOL_VERSION,
+            protocol_version: PROTOCOL_VERSION_CURRENT,
         }))
     }
 
@@ -933,6 +945,7 @@ fn site_from_proto(site: Option<Site>) -> anyhow::Result<SiteRecord> {
         lat: site.lat,
         lon: site.lon,
         metadata_json: site.metadata_json,
+        environment_id: String::new(),
     })
 }
 
@@ -1008,7 +1021,7 @@ fn resolve_target_credentials(
     credentials: &CredentialVault,
 ) -> anyhow::Result<Option<ResolvedCredential>> {
     if let Some(alias) = target.credential_alias.as_deref() {
-        return credentials.resolve(alias).map(Some);
+        return credentials.resolve(alias, ResolvePurpose::Remediate).map(Some);
     }
 
     Ok(
@@ -1026,7 +1039,7 @@ fn resolve_request_credentials(
     password_env: Option<String>,
 ) -> anyhow::Result<Option<ResolvedCredential>> {
     if let Some(alias) = credential_alias {
-        return credentials.resolve(&alias).map(Some);
+        return credentials.resolve(&alias, ResolvePurpose::Discover).map(Some);
     }
 
     let username = username_env

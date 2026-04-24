@@ -1,7 +1,9 @@
 name: sp_p_core
-roles: ["p"]
-description: "Service-provider P-core profile: interface, IS-IS, MPLS/LDP, and segment-routing telemetry; no BGP by default."
-rationale: "P-core devices usually carry transport and IGP state; BGP is intentionally omitted unless another profile is selected."
+environment: ["service_provider"]
+vendor_scope: []
+roles: ["p", "core", "edge"]
+description: "Service-provider P-core and edge profile: interface, IS-IS, MPLS/LDP, and segment-routing telemetry; no BGP by default."
+rationale: "P-core and edge transport devices carry IGP and transport state; BGP is intentionally omitted unless another profile is selected."
 paths:
   - path: "interfaces"
     origin: openconfig

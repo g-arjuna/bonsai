@@ -1,33 +1,40 @@
 name: dc_leaf_minimal
-roles: ["leaf"]
+environment: ["data_center", "home_lab"]
+vendor_scope: []
+roles: ["leaf", "access"]
 description: "Minimal data-center leaf telemetry: interfaces, BGP, LLDP, and BFD when available."
-rationale: "Leaf devices need interface health, BGP adjacency state, and LLDP topology evidence."
+rationale: "Leaf and access devices need interface health, BGP adjacency state, and LLDP topology evidence."
 paths:
   - path: "interface[name=*]/statistics"
     origin: ""
     mode: SAMPLE
     sample_interval_ns: 10000000000
     required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
     rationale: "SR Linux native interface counters."
   - path: "interface[name=*]/oper-state"
     origin: ""
     mode: ON_CHANGE
     required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
     rationale: "SR Linux native interface state transitions."
   - path: "network-instance[name=default]/protocols/bgp/neighbor[peer-address=*]"
     origin: ""
     mode: ON_CHANGE
     required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
     rationale: "SR Linux native BGP neighbor state."
   - path: "system/lldp/interface[name=*]/neighbor[id=*]"
     origin: ""
     mode: ON_CHANGE
     required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
     rationale: "SR Linux native LLDP topology evidence."
   - path: "bfd/network-instance[name=default]"
     origin: ""
     mode: ON_CHANGE
     required_any_models: ["srl_nokia-bfd"]
+    vendor_only: ["nokia_srl"]
     optional: true
     rationale: "SR Linux native BFD state when the BFD model is advertised."
   - path: "Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface[interface-name=*]/generic-counters"
@@ -35,12 +42,14 @@ paths:
     mode: SAMPLE
     sample_interval_ns: 10000000000
     required_any_models: ["Cisco-IOS-XR-infra-statsd-oper"]
+    vendor_only: ["cisco_xrd"]
     rationale: "IOS-XR native interface counters."
   - path: "Cisco-IOS-XR-ethernet-lldp-oper:lldp/nodes/node/neighbors/details/detail"
     origin: ""
     mode: SAMPLE
     sample_interval_ns: 60000000000
     required_any_models: ["Cisco-IOS-XR-ethernet-lldp-oper"]
+    vendor_only: ["cisco_xrd"]
     optional: true
     rationale: "IOS-XR native LLDP neighbors; sampled so existing neighbors are observed."
   - path: "interfaces"

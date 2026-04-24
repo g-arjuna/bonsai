@@ -69,6 +69,7 @@ uuid = { version = "1", features = ["v4"] }
 # Internal observability — exposes /metrics in Prometheus text format
 metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
+tar = "0.4"
 
 # HTTP API server for the Phase 6 UI (Axum + tower-http for CORS + static files)
 axum = "0.8"

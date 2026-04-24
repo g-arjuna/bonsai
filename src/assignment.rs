@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::cmp::Reverse;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
@@ -7,7 +8,7 @@ use tracing::{info, warn};
 
 use crate::api::pb::{AssignmentUpdate, DeviceAssignment};
 use crate::config::{AssignmentRule, TargetConfig};
-use crate::credentials::CredentialVault;
+use crate::credentials::{CredentialVault, ResolvePurpose};
 use crate::graph::SiteRecord;
 use crate::registry::{ApiRegistry, DeviceRegistry, RegistryChange};
 
@@ -38,7 +39,7 @@ impl CollectorManager {
         initial_rules: Vec<AssignmentRule>,
     ) -> Self {
         let mut rules = initial_rules;
-        rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        rules.sort_by_key(|rule| Reverse(rule.priority));
         let manager = Self {
             registry,
             credentials,
@@ -65,7 +66,7 @@ impl CollectorManager {
     /// Replaces all routing rules and re-evaluates unassigned devices.
     pub fn set_rules(&self, new_rules: Vec<AssignmentRule>) {
         let mut sorted = new_rules;
-        sorted.sort_by(|a, b| b.priority.cmp(&a.priority));
+        sorted.sort_by_key(|rule| Reverse(rule.priority));
         *self.rules.lock().expect("rules lock poisoned") = sorted;
         info!("assignment rules updated; re-evaluating unassigned devices");
         self.reassign_unassigned();
@@ -84,10 +85,10 @@ impl CollectorManager {
             if !ancestor_set.iter().any(|s| s == &rule.match_site) {
                 continue;
             }
-            if let Some(ref required_role) = rule.match_role {
-                if required_role != device_role {
-                    continue;
-                }
+            if let Some(ref required_role) = rule.match_role
+                && required_role != device_role
+            {
+                continue;
             }
             return Some(rule.collector_id.clone());
         }
@@ -138,21 +139,24 @@ impl CollectorManager {
                 match change {
                     RegistryChange::Added(mut target) | RegistryChange::Updated(mut target) => {
                         // Auto-assign if no explicit collector_id and rules match.
-                        if target.collector_id.is_none() {
-                            if let Some(collector_id) = find_collector_by_rules(&target, &rules, &sites_cache) {
-                                info!(
-                                    address = %target.address,
-                                    %collector_id,
-                                    "auto-assigning device via routing rule"
-                                );
-                                match registry.assign_device_with_audit(
-                                    &target.address,
-                                    Some(collector_id.clone()),
-                                    "system",
-                                    "assignment_rule_auto_assign",
-                                ) {
-                                    Ok(updated) => target = updated,
-                                    Err(e) => warn!(address = %target.address, %e, "failed to auto-assign device"),
+                        if target.collector_id.is_none()
+                            && let Some(collector_id) =
+                                find_collector_by_rules(&target, &rules, &sites_cache)
+                        {
+                            info!(
+                                address = %target.address,
+                                %collector_id,
+                                "auto-assigning device via routing rule"
+                            );
+                            match registry.assign_device_with_audit(
+                                &target.address,
+                                Some(collector_id.clone()),
+                                "system",
+                                "assignment_rule_auto_assign",
+                            ) {
+                                Ok(updated) => target = updated,
+                                Err(e) => {
+                                    warn!(address = %target.address, %e, "failed to auto-assign device")
                                 }
                             }
                         }
@@ -394,10 +398,10 @@ fn find_collector_by_rules(
         if !ancestor_set.iter().any(|s| s == &rule.match_site) {
             continue;
         }
-        if let Some(ref required_role) = rule.match_role {
-            if required_role != device_role {
-                continue;
-            }
+        if let Some(ref required_role) = rule.match_role
+            && required_role != device_role
+        {
+            continue;
         }
         return Some(rule.collector_id.clone());
     }
@@ -417,6 +421,7 @@ mod tests {
             lat: 0.0,
             lon: 0.0,
             metadata_json: "{}".to_string(),
+            environment_id: String::new(),
         }
     }
 
@@ -475,7 +480,7 @@ fn create_assignment(target: &TargetConfig, vault: &CredentialVault) -> DeviceAs
     let mut password = String::new();
 
     if let Some(alias) = &target.credential_alias {
-        if let Ok(creds) = vault.resolve(alias) {
+        if let Ok(creds) = vault.resolve(alias, ResolvePurpose::Subscribe) {
             username = creds.username;
             password = creds.password;
         }

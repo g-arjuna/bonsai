@@ -18,6 +18,8 @@
   let devices = $state([]);
   let credentials = $state([]);
   let sites = $state([]);
+  let environments = $state([]);
+  let selectedEnvironmentId = $state('');
   let vaultUnlocked = $state(false);
   let discovery = $state(null);
   let selectedProfileName = $state('');
@@ -144,6 +146,36 @@
       error = e.message;
     }
   }
+
+  async function loadEnvironments() {
+    try {
+      const response = await fetch('/api/environments');
+      if (!response.ok) return;
+      const body = await response.json();
+      environments = body.environments || [];
+    } catch (_) {}
+  }
+
+  const ROLES_BY_ARCHETYPE = {
+    data_center:       ['leaf', 'spine', 'superspine', 'border', 'edge'],
+    service_provider:  ['pe', 'p', 'rr', 'ce-facing', 'peering'],
+    campus_wired:      ['access', 'distribution', 'core', 'border'],
+    campus_wireless:   ['ap', 'wlc', 'edge-wlc'],
+    home_lab:          ['leaf', 'spine', 'pe', 'p', 'rr', 'router', 'switch'],
+  };
+
+  const ALL_ROLES = ['leaf', 'spine', 'superspine', 'border', 'edge', 'pe', 'p', 'rr', 'ce-facing', 'peering', 'access', 'distribution', 'core', 'ap', 'wlc', 'edge-wlc', 'router', 'switch'];
+
+  let activeRoles = $derived(() => {
+    if (!selectedEnvironmentId) return ALL_ROLES;
+    const env = environments.find(e => e.id === selectedEnvironmentId);
+    return ROLES_BY_ARCHETYPE[env?.archetype] ?? ALL_ROLES;
+  });
+
+  let filteredSites = $derived(() => {
+    if (!selectedEnvironmentId) return sites;
+    return sites.filter(s => s.environment_id === selectedEnvironmentId);
+  });
 
   async function addSite() {
     message = '';
@@ -491,6 +523,7 @@
     loadDevices();
     loadCredentials();
     loadSites();
+    loadEnvironments();
     connectEvents();
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => {
@@ -561,13 +594,20 @@
               <input id="onboard-hostname" bind:value={form.hostname} placeholder="srl-leaf1" />
             </div>
             <div class="form-row">
+              <label for="onboard-environment">Environment</label>
+              <select id="onboard-environment" bind:value={selectedEnvironmentId}>
+                <option value="">Any / unassigned</option>
+                {#each environments as env}
+                  <option value={env.id}>{env.name}</option>
+                {/each}
+              </select>
+            </div>
+            <div class="form-row">
               <label for="onboard-role">Role</label>
               <select id="onboard-role" bind:value={form.role} onchange={invalidateDiscovery}>
-                <option value="leaf">leaf</option>
-                <option value="spine">spine</option>
-                <option value="pe">pe</option>
-                <option value="p">p</option>
-                <option value="rr">rr</option>
+                {#each activeRoles() as role}
+                  <option value={role}>{role}</option>
+                {/each}
               </select>
             </div>
             <div class="form-row">
@@ -583,10 +623,10 @@
               <label for="onboard-site">Site</label>
               <select id="onboard-site" bind:value={form.site}>
                 <option value="">No site</option>
-                {#each sites as site}
+                {#each filteredSites() as site}
                   <option value={site.name}>{site.name} ({site.kind || 'unknown'})</option>
                 {/each}
-                {#if form.site && !sites.some((site) => site.name === form.site)}
+                {#if form.site && !filteredSites().some((site) => site.name === form.site)}
                   <option value={form.site}>{form.site}</option>
                 {/if}
               </select>

@@ -49,11 +49,11 @@ impl CounterSummarizer {
 
         let mut expired_summary = None;
 
-        if let Some(window) = self.windows.get(&key) {
-            if window.window_start_ts != window_start {
-                expired_summary = Some(emit_summary(window, self.window_duration_secs));
-                self.windows.remove(&key);
-            }
+        if let Some(window) = self.windows.get(&key)
+            && window.window_start_ts != window_start
+        {
+            expired_summary = Some(emit_summary(window, self.window_duration_secs));
+            self.windows.remove(&key);
         }
 
         let window = self.windows.entry(key).or_insert_with(|| InterfaceWindow {

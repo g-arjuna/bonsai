@@ -41,6 +41,36 @@ pub struct ResolvedCredential {
     pub password: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResolvePurpose {
+    Subscribe,
+    Remediate,
+    Discover,
+    Enrich,
+    Test,
+    Other(String),
+}
+
+impl ResolvePurpose {
+    fn as_audit_value(&self) -> String {
+        match self {
+            Self::Subscribe => "subscribe".to_string(),
+            Self::Remediate => "remediate".to_string(),
+            Self::Discover => "discover".to_string(),
+            Self::Enrich => "enrich".to_string(),
+            Self::Test => "test".to_string(),
+            Self::Other(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    "other".to_string()
+                } else {
+                    format!("other:{trimmed}")
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct StoredCredential {
     username: String,
@@ -251,31 +281,56 @@ impl CredentialVault {
         Ok(entry.username.clone())
     }
 
-    pub fn resolve(&self, alias: &str) -> Result<ResolvedCredential> {
-        let alias = normalize_alias(alias)?;
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow!("credential vault lock poisoned"))?;
-        ensure_unlocked(&state)?;
-
-        let entry = state
-            .entries
-            .get(&alias)
-            .cloned()
-            .with_context(|| format!("credential alias '{alias}' not found"))?;
-        if let Some(metadata) = state.metadata.get_mut(&alias) {
-            let now = now_ns();
-            if should_persist_last_used(metadata.last_used_at_ns, now) {
-                metadata.last_used_at_ns = now;
-                write_metadata(&self.root, &state.metadata)?;
+    pub fn resolve(&self, alias: &str, purpose: ResolvePurpose) -> Result<ResolvedCredential> {
+        let alias = match normalize_alias(alias) {
+            Ok(alias) => alias,
+            Err(error) => {
+                log_resolve_audit(
+                    &self.root,
+                    alias.trim(),
+                    &purpose,
+                    "error",
+                    Some(&format!("{error:#}")),
+                );
+                return Err(error);
             }
-        }
+        };
+        let result = (|| -> Result<ResolvedCredential> {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow!("credential vault lock poisoned"))?;
+            ensure_unlocked(&state)?;
 
-        Ok(ResolvedCredential {
-            username: entry.username,
-            password: entry.password,
-        })
+            let entry = state
+                .entries
+                .get(&alias)
+                .cloned()
+                .with_context(|| format!("credential alias '{alias}' not found"))?;
+            if let Some(metadata) = state.metadata.get_mut(&alias) {
+                let now = now_ns();
+                if should_persist_last_used(metadata.last_used_at_ns, now) {
+                    metadata.last_used_at_ns = now;
+                    write_metadata(&self.root, &state.metadata)?;
+                }
+            }
+            Ok(ResolvedCredential {
+                username: entry.username,
+                password: entry.password,
+            })
+        })();
+
+        match &result {
+            Ok(_) => log_resolve_audit(&self.root, &alias, &purpose, "success", None),
+            Err(error) => log_resolve_audit(
+                &self.root,
+                &alias,
+                &purpose,
+                "error",
+                Some(&format!("{error:#}")),
+            ),
+        }
+        result
     }
 
     fn persist_locked(&self, state: &VaultState) -> Result<()> {
@@ -397,6 +452,42 @@ fn normalize_required(field: &str, value: &str) -> Result<String> {
     Ok(value.to_string())
 }
 
+fn log_resolve_audit(
+    root: &Path,
+    alias: &str,
+    purpose: &ResolvePurpose,
+    outcome: &str,
+    error: Option<&str>,
+) {
+    let timestamp_ns = now_ns();
+    let purpose_text = purpose.as_audit_value();
+    let mut payload = serde_json::json!({
+        "timestamp_ns": timestamp_ns,
+        "alias": alias,
+        "purpose": purpose_text,
+        "outcome": outcome,
+    });
+    if let Some(error) = error {
+        payload["error"] = serde_json::Value::String(error.to_string());
+    }
+    tracing::info!(target: "bonsai.audit.credentials", "{}", payload);
+    if let Err(append_error) = crate::audit::append_credential_resolve(
+        root,
+        timestamp_ns,
+        alias,
+        &purpose_text,
+        outcome,
+        error,
+    ) {
+        tracing::warn!(
+            target: "bonsai.audit.credentials",
+            error = %append_error,
+            alias,
+            "failed to append credential audit log on disk"
+        );
+    }
+}
+
 fn now_ns() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -440,12 +531,16 @@ mod tests {
         assert_eq!(added.alias, "srl-lab-admin");
         assert_eq!(vault.list().unwrap().len(), 1);
 
-        let resolved = vault.resolve("srl-lab-admin").unwrap();
+        let resolved = vault
+            .resolve("srl-lab-admin", ResolvePurpose::Test)
+            .unwrap();
         assert_eq!(resolved.username, "admin");
         assert_eq!(resolved.password, "NokiaSrl1!");
 
         let reopened = CredentialVault::open(&dir, "BONSAI_TEST_VAULT_PASSPHRASE").unwrap();
-        let resolved = reopened.resolve("srl-lab-admin").unwrap();
+        let resolved = reopened
+            .resolve("srl-lab-admin", ResolvePurpose::Test)
+            .unwrap();
         assert_eq!(resolved.username, "admin");
         assert_eq!(resolved.password, "NokiaSrl1!");
 
@@ -485,13 +580,13 @@ mod tests {
         vault.add("lab", "admin", "secret").unwrap();
 
         for _ in 0..50 {
-            let resolved = vault.resolve("lab").unwrap();
+            let resolved = vault.resolve("lab", ResolvePurpose::Test).unwrap();
             assert_eq!(resolved.username, "admin");
         }
         let after_burst = std::fs::read_to_string(metadata_path(&dir)).unwrap();
 
         for _ in 0..50 {
-            vault.resolve("lab").unwrap();
+            vault.resolve("lab", ResolvePurpose::Test).unwrap();
         }
         let after_second_burst = std::fs::read_to_string(metadata_path(&dir)).unwrap();
         assert_eq!(after_burst, after_second_burst);
