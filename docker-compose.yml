@@ -43,7 +43,7 @@ services:
     networks:
       - bonsai-p4-mgmt
     healthcheck:
-      test: ["/usr/local/bin/healthcheck"]
+      test: ["CMD", "/usr/local/bin/healthcheck"]
       interval: 10s
       timeout: 5s
       start_period: 15s
@@ -89,8 +89,11 @@ services:
       re2:^bonsai-collector
 
 networks:
+  # The ContainerLab management network. Override CLAB_NETWORK to match your
+  # topology. Defaults to the bonsai-p4 fast-iteration lab network.
   bonsai-p4-mgmt:
     external: true
+    name: ${CLAB_NETWORK:-bonsai-p4-mgmt}
 
 volumes:
   bonsai_graph_dev:

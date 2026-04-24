@@ -265,6 +265,9 @@ async fn drain_queue_to_core(
             .ack(ack_offset, collector_id)
             .context("failed to ack collector queue records")?;
 
+        metrics::counter!("bonsai_queue_drained_total", "collector_id" => collector_id.to_string())
+            .increment(accepted as u64);
+
         info!(
             accepted = response.accepted,
             queued_remaining = queue
@@ -416,6 +419,7 @@ async fn queue_bus_updates_summary(
                 for summary in summarizer.flush_stale(flush_idle_secs) {
                     let proto = summary_to_ingest_update(collector_id, None, summary)?;
                     queue.append(proto, collector_id)?;
+                    metrics::counter!("bonsai_summaries_emitted_total", "collector_id" => collector_id.to_string()).increment(1);
                 }
             }
             received = rx.recv() => {
@@ -427,6 +431,7 @@ async fn queue_bus_updates_summary(
                             if let Some(summary) = summarizer.observe(&update) {
                                 let proto = summary_to_ingest_update(collector_id, Some(&update), summary)?;
                                 queue.append(proto, collector_id)?;
+                                metrics::counter!("bonsai_summaries_emitted_total", "collector_id" => collector_id.to_string()).increment(1);
                             }
                             // Raw counter update is intentionally dropped — the summary carries the data.
                         } else {
@@ -844,6 +849,9 @@ fn retained_size(records: &[RawQueuedRecord]) -> u64 {
 }
 
 fn log_queue_stats(collector_id: &str, stats: &QueueStats) {
+    metrics::gauge!("bonsai_collector_queue_depth", "collector_id" => collector_id.to_string())
+        .set(stats.pending_records as f64);
+
     let utilization = if stats.max_bytes > 0 {
         stats.data_file_bytes as f64 / stats.max_bytes as f64
     } else {
@@ -1202,71 +1210,89 @@ pub async fn run_collector_manager(
     subscription_plan_tx: Option<mpsc::Sender<SubscriptionPlan>>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
-    let mut client = create_ingest_client(&cfg).await?;
     let collector_id = cfg.collector_id.clone();
     let hostname = hostname::get()
         .ok()
         .and_then(|h| h.into_string().ok())
         .unwrap_or_else(|| "unknown".to_string());
 
-    info!(
-        %collector_id,
-        %hostname,
-        protocol_version = crate::api::PROTOCOL_VERSION,
-        "collector registering with core"
-    );
-
-    let req = CollectorIdentity {
-        collector_id: collector_id.clone(),
-        hostname,
-        protocol_version: crate::api::PROTOCOL_VERSION,
-    };
-
-    let mut stream = client
-        .register_collector(req)
-        .await
-        .context("failed to register collector")?
-        .into_inner();
-
     let mut subscribers: crate::subscriber::SubscriberHandleMap = HashMap::new();
-    let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
 
     loop {
-        tokio::select! {
-            _ = shutdown.changed() => {
-                info!("collector manager shutting down");
-                crate::subscriber::stop_all_subscribers(&mut subscribers).await;
-                break;
-            }
-            msg = stream.message() => {
-                match msg {
-                    Ok(Some(update)) => {
-                        handle_assignment_update(
-                            update,
-                            &bus,
-                            &subscription_plan_tx,
-                            &mut subscribers,
-                        ).await;
-                    }
-                    Ok(None) => {
-                        warn!("assignment stream closed by core");
-                        break;
-                    }
-                    Err(error) => {
-                        warn!(%error, "assignment stream error");
-                        break;
-                    }
+        let mut client = match create_ingest_client(&cfg).await {
+            Ok(c) => c,
+            Err(error) => {
+                warn!(%error, %collector_id, "failed to connect to core for assignments; retrying in 5s");
+                tokio::select! {
+                    _ = shutdown.changed() => return Ok(()),
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
                 }
             }
-            _ = heartbeat_interval.tick() => {
-                let stats = CollectorStats {
-                    collector_id: collector_id.clone(),
-                    queue_depth_updates: 0, 
-                    subscription_count: subscribers.len() as u32,
-                    uptime_secs: 0,
-                };
-                if let Err(error) = client.heartbeat(stats).await {
-                    warn!(%error, "failed to send heartbeat");
+        };
+
+        info!(
+            %collector_id,
+            %hostname,
+            protocol_version = crate::api::PROTOCOL_VERSION,
+            "collector registering with core"
+        );
+
+        let req = CollectorIdentity {
+            collector_id: collector_id.clone(),
+            hostname: hostname.clone(),
+            protocol_version: crate::api::PROTOCOL_VERSION,
+        };
+
+        let mut stream = match client.register_collector(req).await {
+            Ok(s) => s.into_inner(),
+            Err(error) => {
+                warn!(%error, %collector_id, "failed to register collector; retrying in 5s");
+                tokio::select! {
+                    _ = shutdown.changed() => return Ok(()),
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
+                }
+            }
+        };
+
+        let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+
+        loop {
+            tokio::select! {
+                _ = shutdown.changed() => {
+                    info!("collector manager shutting down");
+                    crate::subscriber::stop_all_subscribers(&mut subscribers).await;
+                    return Ok(());
+                }
+                msg = stream.message() => {
+                    match msg {
+                        Ok(Some(update)) => {
+                            handle_assignment_update(
+                                update,
+                                &bus,
+                                &subscription_plan_tx,
+                                &mut subscribers,
+                            ).await;
+                        }
+                        Ok(None) => {
+                            warn!("assignment stream closed by core; reconnecting");
+                            break;
+                        }
+                        Err(error) => {
+                            warn!(%error, "assignment stream error; reconnecting");
+                            break;
+                        }
+                    }
+                }
+                _ = heartbeat_interval.tick() => {
+                    let stats = CollectorStats {
+                        collector_id: collector_id.clone(),
+                        queue_depth_updates: 0, 
+                        subscription_count: subscribers.len() as u32,
+                        uptime_secs: 0,
+                    };
+                    if let Err(error) = client.heartbeat(stats).await {
+                        warn!(%error, "failed to send heartbeat");
+                    }
                 }
             }
         }

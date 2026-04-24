@@ -8,6 +8,7 @@ use tracing::{info, warn};
 use crate::api::pb::{AssignmentUpdate, DeviceAssignment};
 use crate::config::{AssignmentRule, TargetConfig};
 use crate::credentials::CredentialVault;
+use crate::graph::SiteRecord;
 use crate::registry::{ApiRegistry, DeviceRegistry, RegistryChange};
 
 pub struct CollectorManager {
@@ -17,6 +18,8 @@ pub struct CollectorManager {
     runtime_state: Arc<Mutex<HashMap<String, CollectorRuntimeState>>>,
     /// Routing rules sorted descending by priority (highest first).
     rules: Arc<Mutex<Vec<AssignmentRule>>>,
+    /// Cached site records for hierarchy-aware assignment. Updated externally via `set_sites`.
+    sites_cache: Arc<Mutex<Vec<SiteRecord>>>,
 }
 
 #[derive(Clone, Default)]
@@ -42,6 +45,7 @@ impl CollectorManager {
             active_collectors: Arc::new(Mutex::new(HashMap::new())),
             runtime_state: Arc::new(Mutex::new(HashMap::new())),
             rules: Arc::new(Mutex::new(rules)),
+            sites_cache: Arc::new(Mutex::new(Vec::new())),
         };
         manager.start_registry_watcher();
         manager
@@ -50,6 +54,12 @@ impl CollectorManager {
     /// Returns the current routing rules (sorted by priority descending).
     pub fn get_rules(&self) -> Vec<AssignmentRule> {
         self.rules.lock().expect("rules lock poisoned").clone()
+    }
+
+    /// Updates the cached site list used for hierarchy-aware assignment.
+    /// Call this on startup and whenever the site graph changes.
+    pub fn set_sites(&self, sites: Vec<SiteRecord>) {
+        *self.sites_cache.lock().expect("sites lock poisoned") = sites;
     }
 
     /// Replaces all routing rules and re-evaluates unassigned devices.
@@ -62,12 +72,16 @@ impl CollectorManager {
     }
 
     /// Evaluates routing rules against a target. Returns the matched collector_id or None.
+    /// `match_site` on a rule matches the device's own site or any ancestor site (by name or id),
+    /// up to a depth of 10. Falls back to exact match when the sites cache is empty.
     pub fn assign_by_rules(&self, target: &TargetConfig) -> Option<String> {
         let rules = self.rules.lock().expect("rules lock poisoned");
+        let sites = self.sites_cache.lock().expect("sites lock poisoned");
         let device_site = target.site.as_deref().unwrap_or("");
+        let ancestor_set = site_ancestor_set(device_site, &sites);
         let device_role = target.role.as_deref().unwrap_or("");
         for rule in rules.iter() {
-            if rule.match_site != device_site {
+            if !ancestor_set.iter().any(|s| s == &rule.match_site) {
                 continue;
             }
             if let Some(ref required_role) = rule.match_role {
@@ -116,6 +130,7 @@ impl CollectorManager {
         let credentials = self.credentials.clone();
         let active_collectors = self.active_collectors.clone();
         let rules = self.rules.clone();
+        let sites_cache = self.sites_cache.clone();
 
         tokio::spawn(async move {
             let mut changes = registry.subscribe_changes();
@@ -124,7 +139,7 @@ impl CollectorManager {
                     RegistryChange::Added(mut target) | RegistryChange::Updated(mut target) => {
                         // Auto-assign if no explicit collector_id and rules match.
                         if target.collector_id.is_none() {
-                            if let Some(collector_id) = find_collector_by_rules(&target, &rules) {
+                            if let Some(collector_id) = find_collector_by_rules(&target, &rules, &sites_cache) {
                                 info!(
                                     address = %target.address,
                                     %collector_id,
@@ -339,15 +354,44 @@ pub struct CollectorStatusSummary {
     pub unassigned_devices: Vec<String>,
 }
 
+/// Returns the set of site identifiers (name and id) reachable by walking `device_site`
+/// up through the parent chain, capped at depth 10. The device's own site string is
+/// always included as the first element (exact-match fallback when the cache is empty).
+fn site_ancestor_set(device_site: &str, sites: &[SiteRecord]) -> Vec<String> {
+    let mut result = vec![device_site.to_string()];
+    if device_site.is_empty() || sites.is_empty() {
+        return result;
+    }
+    let mut current_key = device_site.to_string();
+    for _ in 0..10 {
+        let Some(rec) = sites.iter().find(|s| s.name == current_key || s.id == current_key) else {
+            break;
+        };
+        for val in [&rec.name, &rec.id] {
+            if !val.is_empty() && !result.contains(val) {
+                result.push(val.clone());
+            }
+        }
+        if rec.parent_id.is_empty() || result.contains(&rec.parent_id) {
+            break;
+        }
+        current_key = rec.parent_id.clone();
+    }
+    result
+}
+
 fn find_collector_by_rules(
     target: &TargetConfig,
     rules: &Mutex<Vec<AssignmentRule>>,
+    sites_cache: &Mutex<Vec<SiteRecord>>,
 ) -> Option<String> {
     let rules = rules.lock().expect("rules lock poisoned");
+    let sites = sites_cache.lock().expect("sites lock poisoned");
     let device_site = target.site.as_deref().unwrap_or("");
+    let ancestor_set = site_ancestor_set(device_site, &sites);
     let device_role = target.role.as_deref().unwrap_or("");
     for rule in rules.iter() {
-        if rule.match_site != device_site {
+        if !ancestor_set.iter().any(|s| s == &rule.match_site) {
             continue;
         }
         if let Some(ref required_role) = rule.match_role {
@@ -358,6 +402,72 @@ fn find_collector_by_rules(
         return Some(rule.collector_id.clone());
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_site(id: &str, name: &str, parent_id: &str) -> SiteRecord {
+        SiteRecord {
+            id: id.to_string(),
+            name: name.to_string(),
+            parent_id: parent_id.to_string(),
+            kind: "dc".to_string(),
+            lat: 0.0,
+            lon: 0.0,
+            metadata_json: "{}".to_string(),
+        }
+    }
+
+    #[test]
+    fn exact_match_without_hierarchy() {
+        let sites = vec![make_site("s1", "dc-london", "")];
+        let result = site_ancestor_set("dc-london", &sites);
+        assert!(result.contains(&"dc-london".to_string()));
+        assert!(result.contains(&"s1".to_string()));
+    }
+
+    #[test]
+    fn child_site_matches_parent_rule() {
+        let sites = vec![
+            make_site("parent", "dc-london", ""),
+            make_site("child", "rack-london-a1", "parent"),
+        ];
+        let result = site_ancestor_set("rack-london-a1", &sites);
+        assert!(result.contains(&"rack-london-a1".to_string()));
+        assert!(result.contains(&"dc-london".to_string()));
+        assert!(result.contains(&"parent".to_string()));
+    }
+
+    #[test]
+    fn three_level_hierarchy() {
+        let sites = vec![
+            make_site("root", "region-eu", ""),
+            make_site("mid", "dc-london", "root"),
+            make_site("leaf", "rack-london-a1", "mid"),
+        ];
+        let result = site_ancestor_set("rack-london-a1", &sites);
+        assert!(result.contains(&"rack-london-a1".to_string()));
+        assert!(result.contains(&"dc-london".to_string()));
+        assert!(result.contains(&"region-eu".to_string()));
+    }
+
+    #[test]
+    fn cycle_does_not_loop_forever() {
+        let sites = vec![
+            make_site("a", "site-a", "b"),
+            make_site("b", "site-b", "a"),
+        ];
+        let result = site_ancestor_set("site-a", &sites);
+        assert!(result.len() <= 12); // bounded by depth cap + seed
+    }
+
+    #[test]
+    fn empty_cache_falls_back_to_exact_match() {
+        let result = site_ancestor_set("dc-london", &[]);
+        assert_eq!(result, vec!["dc-london".to_string()]);
+    }
 }
 
 fn create_assignment(target: &TargetConfig, vault: &CredentialVault) -> DeviceAssignment {

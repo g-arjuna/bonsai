@@ -39,6 +39,43 @@ Run `scripts/install_sccache.sh` or `cargo install sccache`.
 
 BuildKit logs confirm that the `ui-builder` stage and the `chef`/`rust-builder` stages execute in parallel. The UI build starts immediately and finishes long before the Rust build, ensuring it does not gate the total build time.
 
+## Tier 3 Optimisations (T3-1, Sprint 4)
+
+### cargo-chef planner: manifest-only COPY
+
+Previously the `rust-planner` stage used `COPY . .`, causing the cargo-chef
+cook step (all external dependencies, ~35 min) to re-run whenever *any* file
+changed — including Svelte sources, docs, proto files, and shell scripts.
+
+**Fix**: the planner stage now copies only `Cargo.toml` and `Cargo.lock`.
+The cook step re-runs only when dependency versions change. Source-only edits
+result in a cache hit on the cook layer and only the final `cargo build` step
+runs (~4s incremental).
+
+**Expected impact on Docker build time**:
+
+| Scenario | Before | After (estimated) |
+|---|---|---|
+| Clean build (cold cache) | 40 min | ~40 min (unchanged — first build always full) |
+| Source-only change | ~40 min (cook re-ran) | ~5 min (only final build step) |
+| `Cargo.lock` change | ~40 min | ~40 min (cook must re-run) |
+
+### curl replaced with compiled healthcheck binary
+
+`curl` has been removed from the runtime image. A stdlib-only Rust binary
+(`src/bin/healthcheck.rs`, 337 KB stripped) makes a raw TCP probe to
+`/api/readiness`. This also fixes a latent bug: `docker-compose.yml` used
+`/usr/local/bin/healthcheck` as the healthcheck command, but the image only
+contained `curl`.
+
+**Estimated size savings**: ~4–5 MB (curl + libcurl shared library).
+
+### liblbug.so.0 stripped with --strip-debug
+
+The C++ graph DB shared library now has debug symbols removed while retaining
+the symbol table required for dynamic linking. This reduces the library's
+on-disk size in the image.
+
 ## Analysis
 
 The clean build times (23m for Rust, 40m for Docker) are excessive and confirm that Build Optimisation (Tier 1) is a high-priority requirement. The incremental build time (20s) is acceptable but likely to creep up as the codebase grows.
@@ -414,3 +451,5 @@ unic-langid-impl v0.9.6
 unic-langid-impl v0.9.6 (*)
 ```
 
+
+<!-- CI_BASELINE_SECONDS=0 last_updated=2026-04-24 -->

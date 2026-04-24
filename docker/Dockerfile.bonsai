@@ -15,33 +15,40 @@ RUN apt-get update \
 
 ENV CMAKE=/usr/bin/cmake \
     CMAKE_MAKE_PROGRAM=/usr/bin/make \
-    # .cargo/config.toml sets rustc-wrapper = "sccache" for local dev builds.
-    # sccache is not installed in the build container — explicitly unset the
-    # wrapper so cargo does not try (and fail) to call a missing binary.
+    # sccache is not installed in the build container — explicitly unset so
+    # cargo does not try to call a missing binary.
     RUSTC_WRAPPER=
 
+# ── Planner: only manifest files so source changes do not bust the cook cache ──
 FROM chef AS rust-planner
-COPY . .
+COPY Cargo.toml Cargo.lock ./
 RUN cargo chef prepare --recipe-path recipe.json
 
+# ── Builder: cook deps (cache-stable), then compile the binaries ──────────────
 FROM chef AS rust-builder
 COPY --from=rust-planner /app/recipe.json recipe.json
-# sccache not available in container — keep the wrapper cleared.
 ENV RUSTC_WRAPPER=
+# Cook all dependencies. This layer only re-runs when Cargo.toml/Cargo.lock
+# changes — not on source or UI changes.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo chef cook --release --all-targets --recipe-path recipe.json
+    cargo chef cook --release --recipe-path recipe.json
+# Now copy the full source tree and build the production binaries.
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo build --release --bin bonsai \
+    cargo build --release --bin bonsai --bin healthcheck \
     && cp /app/target/release/bonsai /app/bonsai \
+    && cp /app/target/release/healthcheck /app/healthcheck \
     && find /app/target/release/build -name 'liblbug.so.0' -exec cp -L {} /app/liblbug.so.0 \; \
     && test -f /app/liblbug.so.0 \
-    && strip /app/bonsai
+    && strip /app/bonsai \
+    && strip /app/healthcheck \
+    && strip --strip-debug /app/liblbug.so.0
 
+# ── UI builder ────────────────────────────────────────────────────────────────
 FROM node:20-alpine AS ui-builder
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
@@ -49,9 +56,7 @@ RUN npm ci
 COPY ui/ ./
 RUN npm run build
 
-# Runtime: Debian trixie-slim with an explicit named user.
-# curl is used for the HEALTHCHECK; it is the only runtime dependency beyond
-# the bonsai binary and liblbug.so.0.
+# ── Runtime: slim Debian with no curl dep — healthcheck is a compiled binary ──
 FROM debian:trixie-slim AS runtime
 
 WORKDIR /app
@@ -59,7 +64,6 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
-        curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --gid 10001 bonsai \
@@ -67,9 +71,10 @@ RUN groupadd --gid 10001 bonsai \
     && mkdir -p /app/runtime /app/bonsai-credentials \
     && chown -R bonsai:bonsai /app
 
-COPY --from=rust-builder /app/bonsai /usr/local/bin/bonsai
-COPY --from=rust-builder /app/liblbug.so.0 /usr/local/lib/liblbug.so.0
-COPY --from=ui-builder /ui/dist /app/ui/dist
+COPY --from=rust-builder /app/bonsai        /usr/local/bin/bonsai
+COPY --from=rust-builder /app/healthcheck   /usr/local/bin/healthcheck
+COPY --from=rust-builder /app/liblbug.so.0  /usr/local/lib/liblbug.so.0
+COPY --from=ui-builder   /ui/dist           /app/ui/dist
 
 ENV BONSAI_CONFIG=/etc/bonsai/bonsai.toml
 ENV LD_LIBRARY_PATH=/usr/local/lib
@@ -79,6 +84,6 @@ USER bonsai:bonsai
 EXPOSE 3000 50051 9090
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD ["curl", "-sf", "http://127.0.0.1:3000/api/readiness"]
+    CMD ["/usr/local/bin/healthcheck"]
 
 ENTRYPOINT ["/usr/local/bin/bonsai"]

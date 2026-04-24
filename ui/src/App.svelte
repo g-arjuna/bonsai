@@ -9,6 +9,8 @@
   import Credentials from './routes/Credentials.svelte';
   import Operations from './routes/Operations.svelte';
   import TraceRoute from './routes/TraceRoute.svelte';
+  import Onboarding from '$lib/Onboarding.svelte';
+  import CommandPalette from '$lib/CommandPalette.svelte';
 
   const NAV = [
     { href: '/',            label: 'Live',        icon: '◉' },
@@ -42,6 +44,11 @@
         </a>
       {/each}
     </nav>
+    <div class="sidebar-footer">
+      <button class="palette-trigger" onclick={() => document.dispatchEvent(new KeyboardEvent('keydown', { ctrlKey: true, key: 'k', bubbles: true }))}>
+        <span>⌨</span> Search <kbd>Ctrl+K</kbd>
+      </button>
+    </div>
   </aside>
 
   <main class="main-content">
@@ -51,6 +58,8 @@
       <Live />
     {:else if path() === '/incidents'}
       <Incidents />
+    {:else if path() === '/devices/new'}
+      <Onboarding />
     {:else if deviceParams}
       <Devices selectedAddress={deviceParams.address} />
     {:else if path() === '/devices'}
@@ -68,6 +77,8 @@
     {/if}
   </main>
 </div>
+
+<CommandPalette />
 
 <div class="toast-container" aria-live="polite">
   {#each getToasts() as t (t.id)}

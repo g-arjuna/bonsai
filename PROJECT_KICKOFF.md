@@ -347,6 +347,9 @@ Items I genuinely don't know the answer to. Investigate in Phase 1, document dec
 - Comparing myself to Forward Networks or Selector — they have teams, I'm one person learning
 - Giving up at month 10 because it "isn't famous" — that was never the goal
 - Chasing more vendors before the current four work vendor-neutrally — breadth before depth of normalization is a trap
+- **Framing bonsai as a DNAC/NDI/Meraki replacement** — that is a losing position against funded incumbents in their own fabrics. Bonsai's primary audience is controller-less environments. (ADR 2026-04-24)
+- **Adding controller adapters speculatively** — implement only when a specific multi-controller operator requirement drives it
+- **Skipping enrichment to jump to GNN** — the GNN needs NetBox/ServiceNow context to be more than tabular ML with topology features
 
 ---
 

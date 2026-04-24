@@ -25,8 +25,20 @@ class BonsaiClient:
                 print(dev.hostname, dev.vendor)
     """
 
-    def __init__(self, address: str = "[::1]:50051"):
+    def __init__(
+        self,
+        address: str = "[::1]:50051",
+        *,
+        ca_cert: str | None = None,
+        cert: str | None = None,
+        key: str | None = None,
+        server_name: str | None = None,
+    ):
         self._address = address
+        self._ca_cert = ca_cert
+        self._cert = cert
+        self._key = key
+        self._server_name = server_name
         self._channel: grpc.Channel | None = None
         self._stub: pb_grpc.BonsaiGraphStub | None = None
 
@@ -47,7 +59,26 @@ class BonsaiClient:
             ("grpc.keepalive_permit_without_calls",      1),
             ("grpc.http2.max_pings_without_data",        0),
         ]
-        self._channel = grpc.insecure_channel(self._address, options=options)
+        if self._server_name:
+            options.append(("grpc.ssl_target_name_override", self._server_name))
+
+        if self._ca_cert and self._cert and self._key:
+            with open(self._ca_cert, "rb") as f:
+                root_certs = f.read()
+            with open(self._cert, "rb") as f:
+                cert_chain = f.read()
+            with open(self._key, "rb") as f:
+                private_key = f.read()
+            
+            creds = grpc.ssl_channel_credentials(
+                root_certificates=root_certs,
+                private_key=private_key,
+                certificate_chain=cert_chain,
+            )
+            self._channel = grpc.secure_channel(self._address, creds, options=options)
+        else:
+            self._channel = grpc.insecure_channel(self._address, options=options)
+        
         self._stub = pb_grpc.BonsaiGraphStub(self._channel)
 
     def close(self) -> None:

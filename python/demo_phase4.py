@@ -72,13 +72,18 @@ def on_remediation(action: str, status: str, detail: dict) -> None:
 def main():
     dry_run = os.environ.get("BONSAI_DRY_RUN", "0") == "1"
     addr    = os.environ.get("BONSAI_ADDR", "[::1]:50051")
+    ca      = os.environ.get("BONSAI_CA")
+    cert    = os.environ.get("BONSAI_CERT")
+    key     = os.environ.get("BONSAI_KEY")
 
     print(f"Bonsai Phase 4 demo — connecting to {addr}")
+    if ca and cert and key:
+        print(f"  mTLS enabled (CA={ca})")
     if dry_run:
         print("DRY-RUN mode: detections will be logged but no gNMI Set will be sent")
     print("Waiting for events... (Ctrl-C to stop)\n")
 
-    with BonsaiClient(addr) as client:
+    with BonsaiClient(addr, ca_cert=ca, cert=cert, key=key, server_name="bonsai-core") as client:
         executor = RemediationExecutor(
             client=client,
             on_remediation=on_remediation,

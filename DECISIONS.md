@@ -1523,6 +1523,63 @@ healthcheck until Compose exists.
 
 ---
 
+## 2026-04-24 — Per-collector mTLS certificates instead of shared collector cert
+
+**Decision**: `scripts/generate_compose_tls.sh` now generates one client cert per collector ID (`collector-1-cert.pem`, `collector-2-cert.pem`, etc.) with CN=`bonsai-<collector-id>`. Each collector config references its own cert/key pair. The previous shared `collector-cert.pem` is no longer generated.
+
+**Rationale**: A single shared collector cert means losing one collector's private key compromises the mTLS channel for all collectors. With per-collector certs, revoking a compromised collector is a matter of removing its cert from the CA trust bundle on the core; other collectors continue operating unaffected. The CN encodes the collector ID, so the core can log which collector authenticated on each connection. The cost is minimal: one extra `openssl req` + `x509` invocation per collector at setup time.
+
+**Adding new collectors**: Add the collector ID to `COLLECTOR_IDS` in `generate_compose_tls.sh` and re-run with `--force`, or generate the cert manually. The collector's config must reference its own `<id>-cert.pem` / `<id>-key.pem`.
+
+**Done when**: Each collector in `docker/configs/` references its own cert; the script documents the revocation procedure in its output.
+
+---
+
+## 2026-04-24 — Counter forward mode: summary as default in distributed compose profiles
+
+**Decision**: The source-level default for `counter_forward_mode` remains `"debounced"` (in `src/config.rs`). The distributed and two-collector compose profiles (`docker/configs/collector-1.toml`, `docker/configs/collector-2.toml`) explicitly set `counter_forward_mode = "summary"` under `[collector.filter]`.
+
+**Rationale**:
+- `"debounced"` is the right conservative default for stand-alone operators: it forwards individual counter updates after a quiet period, giving full per-update fidelity without flooding the core.
+- In distributed compose profiles, the bandwidth win from `"summary"` matters: collectors aggregate delta counters over a 60-second window and forward a single summary message instead of every raw update. This reduces the collector-to-core gRPC ingest volume significantly for high-rate counter paths.
+- Keeping the source-level default as `"debounced"` means new operator deployments get conservative behavior automatically; the explicit per-profile override makes the distributed profile's intent self-documenting.
+
+**Done**: `collector-1.toml` and `collector-2.toml` already carry `counter_forward_mode = "summary"` and `counter_window_secs = 60`.
+
+---
+
+## 2026-04-24 — Audience framing: controller-less networks as the primary target
+
+**Decision**: Bonsai's primary target audience is controller-less network environments. Controller-integrated environments are a secondary audience with a narrower, specific integration story.
+
+**Primary audience** — environments where devices stream gNMI directly to operator-owned infrastructure with no aggregating controller layer:
+- Modern SP backbones (Arista/Nokia/Juniper/Cisco with streaming telemetry)
+- DC fabrics built device-direct (not ACI/NDI)
+- Hyperscale and research networks — the original ANO paper audience
+- Telco core networks where controllers are absent or used only for config
+- Multi-vendor environments where no single controller can claim the fabric
+- Home labs, learning environments, and the open-source networking community
+
+**Why**: For this audience, bonsai is not replicating what a controller provides — it is providing what operators currently assemble by hand from Telegraf + InfluxDB + Grafana + their own rule scripts. The graph, detect-heal loop, ML pipeline, and investigation agent are differentiated because nothing in open source assembles them coherently.
+
+**Secondary audience** — controller-integrated environments. Operators running DNAC, NDI, or Meraki Dashboard already have a graph, already have ML-driven analytics, already have detect-heal for their fabric. Competing against those incumbents inside their own fabrics with an open-source tool is not a defensible position. The one niche where bonsai is genuinely additive is **cross-controller correlation** — a unified graph spanning multiple controllers is something no single vendor provides.
+
+**Architectural consequences**:
+- The gNMI-only hot-path rule is correct and binding. It is specifically what makes bonsai valuable to the primary audience.
+- Graph enrichment (NetBox, ServiceNow) is the primary mechanism for bringing business context, because the primary audience does not have a controller already doing this.
+- Individual controller adapters are optional integrations, not core workload. Implemented only when a specific multi-controller operator requirement drives them.
+- The investigation agent's toolset is designed around the gNMI-direct graph; controller adapter tools are added only in the multi-controller correlation case.
+
+**Anti-positions to reject**:
+- "Bonsai is a DNAC replacement" — no, wrong audience, losing position.
+- "Bonsai should work for every network everywhere" — no, focus matters.
+- "Let's add a controller adapter speculatively" — no, demand-driven only.
+- "Controller integration is the primary enrichment story" — no, NetBox/ServiceNow for the primary audience.
+
+**Version note**: Captures the v7 backlog reframing. Supersedes any prior implicit framing that treated controller adapters as a core tier.
+
+---
+
 ## 2026-04-23 — Detection Ingest RPC (Collector → Core)
 
 **Decision**: Add a client-streaming `DetectionIngest` RPC to the core gRPC API. Collectors push locally-evaluated `DetectionEvent` records to the core for centralized monitoring and graph persistence.
@@ -1532,3 +1589,17 @@ healthcheck until Compose exists.
 - Allows the core to maintain a global view of all detections across the fleet.
 - Enables cross-site rule correlation on the core by treating incoming detections as triggers for global rules.
 - `DetectionEvent` metadata includes features, reason, and severity for consistent UI rendering on the core.
+
+---
+
+## 2026-04-24 — Dockerfile build-speed and image-size optimisations (T3-1)
+
+**Decision**: Three targeted changes to `docker/Dockerfile.bonsai`:
+
+1. **Planner stage copies only Cargo manifests** (`Cargo.toml` + `Cargo.lock`). Previously `COPY . .` was used, causing the cargo-chef cook step to re-run whenever any file changed (Svelte sources, docs, proto files). Now only `Cargo.toml`/`Cargo.lock` changes bust the dependency cook cache.
+
+2. **Compiled healthcheck binary replaces curl**. A `src/bin/healthcheck.rs` binary (stdlib only, 337 KB stripped) makes a raw HTTP/1.0 TCP probe to `/api/readiness`. `curl` (~4 MB + shared libs) is removed from the runtime image. This also fixes a latent bug where `docker-compose.yml` referenced `/usr/local/bin/healthcheck` but the image only contained curl.
+
+3. **`liblbug.so.0` is stripped with `--strip-debug`**. The C++ shared library retains the symbol table needed for dynamic linking but drops debug symbols, reducing its size.
+
+**Rationale**: The reported clean Docker build time was 40 minutes. The primary driver was the cargo-chef cook step re-running on every source change. With the manifest-only planner, incremental source-only builds skip the full dep compilation and land in the ~4s range (only the final `cargo build` step runs). Image size reduction (curl removal + library strip) is a secondary benefit contributing to the <100 MB target.

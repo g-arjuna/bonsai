@@ -52,6 +52,8 @@ struct DeviceJson {
     address: String,
     hostname: String,
     vendor: String,
+    role: String,
+    site: String,
     health: String, // "healthy" | "warn" | "critical"
     bgp: Vec<BgpJson>,
 }
@@ -69,6 +71,17 @@ struct LinkJson {
     src_iface: String,
     dst_device: String,
     dst_iface: String,
+    /// Combined bytes on this link (sum of both interface in_octets + out_octets) — used for
+    /// link utilisation heatmap. Zero when counter data is unavailable.
+    bytes_total: i64,
+}
+
+#[derive(Serialize)]
+struct PathResponse {
+    /// Device addresses in hop order, source first.
+    hops: Vec<String>,
+    /// (src_device, src_iface, dst_device, dst_iface) for each hop's link.
+    links: Vec<(String, String, String, String)>,
 }
 
 #[derive(Serialize)]
@@ -432,6 +445,8 @@ pub fn router(
 
     Router::new()
         .route("/api/topology", get(topology_handler))
+        .route("/api/path", get(path_handler))
+        .route("/api/incidents/grouped", get(incidents_handler))
         .route(
             "/api/onboarding/devices",
             get(managed_devices_handler).post(add_managed_device_handler),
@@ -500,20 +515,22 @@ async fn topology_handler(
             .map(|row| (read_str(&row[0]), read_str(&row[1]), read_str(&row[2])))
             .collect();
 
-        // LLDP links (dedup by sorting both sides)
+        // LLDP links with interface counter totals for heatmap
         let link_rows = conn
             .query(
                 "MATCH (a:Interface)-[:CONNECTED_TO]->(b:Interface) \
-                 RETURN a.device_address, a.name, b.device_address, b.name",
+                 RETURN a.device_address, a.name, b.device_address, b.name, \
+                        a.in_octets + a.out_octets + b.in_octets + b.out_octets",
             )
             .map_err(|e| e.to_string())?;
-        let links_raw: Vec<(String, String, String, String)> = link_rows
+        let links_raw: Vec<(String, String, String, String, i64)> = link_rows
             .map(|row| {
                 (
                     read_str(&row[0]),
                     read_str(&row[1]),
                     read_str(&row[2]),
                     read_str(&row[3]),
+                    read_i64(&row[4]),
                 )
             })
             .collect();
@@ -542,26 +559,40 @@ async fn topology_handler(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
+    // Build role + site map from registry
+    let mut role_site: HashMap<String, (String, String)> = HashMap::new();
+    if let Ok(targets) = state.registry.list_all_targets() {
+        for t in targets {
+            role_site.insert(
+                t.address.clone(),
+                (t.role.unwrap_or_default(), t.site.unwrap_or_default()),
+            );
+        }
+    }
+
     // Group BGP by device
     let mut bgp_by_device: HashMap<String, Vec<BgpJson>> = HashMap::new();
-    for (dev, peer, state, peer_as) in bgp_raw {
+    for (dev, peer, st, peer_as) in bgp_raw {
         bgp_by_device.entry(dev).or_default().push(BgpJson {
             peer,
-            state,
+            state: st,
             peer_as,
         });
     }
 
-    // Build device list with computed health
+    // Build device list with computed health + registry metadata
     let devices: Vec<DeviceJson> = devices_raw
         .into_iter()
         .map(|(address, vendor, hostname)| {
             let bgp = bgp_by_device.remove(&address).unwrap_or_default();
             let health = compute_health(&bgp);
+            let (role, site) = role_site.remove(&address).unwrap_or_default();
             DeviceJson {
                 address,
                 hostname,
                 vendor,
+                role,
+                site,
                 health,
                 bgp,
             }
@@ -570,15 +601,98 @@ async fn topology_handler(
 
     let links = links_raw
         .into_iter()
-        .map(|(src_device, src_iface, dst_device, dst_iface)| LinkJson {
+        .map(|(src_device, src_iface, dst_device, dst_iface, bytes_total)| LinkJson {
             src_device,
             src_iface,
             dst_device,
             dst_iface,
+            bytes_total,
         })
         .collect();
 
     Ok(Json(TopologyResponse { devices, links }))
+}
+
+#[derive(Deserialize)]
+struct PathParams {
+    src: String,
+    dst: String,
+}
+
+/// BFS shortest-path between two devices over LLDP links.
+/// Returns the device-address hop list and the link segments traversed.
+async fn path_handler(
+    State(state): State<AppState>,
+    Query(params): Query<PathParams>,
+) -> Result<Json<PathResponse>, (StatusCode, String)> {
+    let db = state.store.db();
+    let (src, dst) = (params.src.clone(), params.dst.clone());
+
+    let all_links = tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        let rows = conn
+            .query(
+                "MATCH (a:Interface)-[:CONNECTED_TO]->(b:Interface) \
+                 RETURN a.device_address, a.name, b.device_address, b.name",
+            )
+            .map_err(|e| e.to_string())?;
+        Ok::<Vec<(String, String, String, String)>, String>(
+            rows.map(|row| {
+                (read_str(&row[0]), read_str(&row[1]), read_str(&row[2]), read_str(&row[3]))
+            })
+            .collect(),
+        )
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    // Build undirected adjacency: device → Vec<(neighbour, src_iface, dst_iface)>
+    let mut adj: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
+    for (a_dev, a_if, b_dev, b_if) in &all_links {
+        adj.entry(a_dev.clone()).or_default().push((b_dev.clone(), a_if.clone(), b_if.clone()));
+        adj.entry(b_dev.clone()).or_default().push((a_dev.clone(), b_if.clone(), a_if.clone()));
+    }
+
+    if src == dst {
+        return Ok(Json(PathResponse { hops: vec![src], links: vec![] }));
+    }
+
+    // BFS
+    use std::collections::VecDeque;
+    let mut visited: HashMap<String, Option<(String, String, String)>> = HashMap::new(); // device → (via_device, via_src_if, via_dst_if)
+    visited.insert(src.clone(), None);
+    let mut queue: VecDeque<String> = VecDeque::new();
+    queue.push_back(src.clone());
+
+    'bfs: while let Some(current) = queue.pop_front() {
+        if let Some(neighbours) = adj.get(&current) {
+            for (nb, src_if, dst_if) in neighbours {
+                if visited.contains_key(nb.as_str()) { continue; }
+                visited.insert(nb.clone(), Some((current.clone(), src_if.clone(), dst_if.clone())));
+                if nb == &dst { break 'bfs; }
+                queue.push_back(nb.clone());
+            }
+        }
+    }
+
+    if !visited.contains_key(dst.as_str()) {
+        return Ok(Json(PathResponse { hops: vec![], links: vec![] }));
+    }
+
+    // Reconstruct path backwards
+    let mut hops = vec![dst.clone()];
+    let mut link_segs: Vec<(String, String, String, String)> = Vec::new();
+    let mut cur = dst.clone();
+    while let Some(Some((prev, src_if, dst_if))) = visited.get(&cur) {
+        link_segs.push((prev.clone(), src_if.clone(), cur.clone(), dst_if.clone()));
+        hops.push(prev.clone());
+        cur = prev.clone();
+    }
+    hops.reverse();
+    link_segs.reverse();
+
+    Ok(Json(PathResponse { hops, links: link_segs }))
 }
 
 async fn managed_devices_handler(
@@ -1870,21 +1984,45 @@ async fn incidents_handler(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let incidents = group_into_incidents(detections, params.window_secs);
+    // Build a device-degree map from LLDP topology. Higher-degree devices are treated as
+    // more "upstream" when selecting the root detection within a grouped incident.
+    let db = state.store.db();
+    let degree_map: HashMap<String, usize> = tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        let rows = conn
+            .query(
+                "MATCH (a:Interface)-[:CONNECTED_TO]->(:Interface) \
+                 RETURN a.device_address",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut map: HashMap<String, usize> = HashMap::new();
+        for row in rows {
+            *map.entry(read_str(&row[0])).or_insert(0) += 1;
+        }
+        Ok::<_, String>(map)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .unwrap_or_default();
+
+    let incidents = group_into_incidents(detections, params.window_secs, &degree_map);
     Ok(Json(IncidentsResponse { incidents }))
 }
 
-/// Groups a list of detections (sorted ascending by fired_at_ns) into incidents.
-/// Detections are in the same incident when they fall within `window_secs` of the
-/// earliest detection in the open group. Incidents are returned newest-first.
-fn group_into_incidents(mut detections: Vec<DetectionRow>, window_secs: u64) -> Vec<IncidentJson> {
+/// Groups a list of detections into incidents by time window.
+/// Root = highest-degree device (most upstream in topology) among the group;
+/// tie-breaks by earliest fired_at_ns. Incidents are returned newest-first.
+fn group_into_incidents(
+    mut detections: Vec<DetectionRow>,
+    window_secs: u64,
+    degree_map: &HashMap<String, usize>,
+) -> Vec<IncidentJson> {
     detections.sort_by_key(|d| d.fired_at_ns);
     let window_ns = (window_secs as i64).saturating_mul(1_000_000_000);
 
     let mut groups: Vec<Vec<DetectionRow>> = Vec::new();
 
     for det in detections {
-        // Try to find an open group whose start is within the window.
         let joined = groups.iter_mut().rev().find(|g| {
             det.fired_at_ns - g[0].fired_at_ns <= window_ns
         });
@@ -1908,28 +2046,39 @@ fn group_into_incidents(mut detections: Vec<DetectionRow>, window_secs: u64) -> 
             group.sort_by_key(|d| d.fired_at_ns);
             let started_at_ns = group[0].fired_at_ns;
             let ended_at_ns = group.last().map_or(started_at_ns, |d| d.fired_at_ns);
-            let id = group[0].id.clone();
-            let severity = group
+
+            // Pick root: highest topology degree (most upstream), then earliest time.
+            let root_idx = group
                 .iter()
+                .enumerate()
+                .max_by_key(|(_, d)| {
+                    (*degree_map.get(&d.device_address).unwrap_or(&0), -(d.fired_at_ns))
+                })
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            let root = group.remove(root_idx);
+            let id = root.id.clone();
+
+            let severity = std::iter::once(&root)
+                .chain(group.iter())
                 .max_by_key(|d| severity_rank(&d.severity))
                 .map_or("info".to_string(), |d| d.severity.clone());
-            let remediation_status = group
-                .iter()
+            let remediation_status = std::iter::once(&root)
+                .chain(group.iter())
                 .find(|d| !d.remediation_status.is_empty())
                 .map_or("none".to_string(), |d| d.remediation_status.clone());
-            let mut affected_devices: Vec<String> = group
-                .iter()
+            let mut affected_devices: Vec<String> = std::iter::once(&root)
+                .chain(group.iter())
                 .map(|d| d.device_address.clone())
                 .collect::<std::collections::HashSet<_>>()
                 .into_iter()
                 .collect();
             affected_devices.sort();
-            let mut rest = group;
-            let root = rest.remove(0);
+
             IncidentJson {
                 id,
                 root,
-                cascading: rest,
+                cascading: group,
                 affected_devices,
                 severity,
                 started_at_ns,

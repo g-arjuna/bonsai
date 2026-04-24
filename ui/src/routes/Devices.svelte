@@ -4,6 +4,10 @@
   import { navigate } from '$lib/router.svelte.js';
   import { toast } from '$lib/toast.svelte.js';
 
+  function addDevice() {
+    navigate('/devices/new');
+  }
+
   let { selectedAddress = null } = $props();
 
   let devices = $state([]);
@@ -48,6 +52,7 @@
       <p class="eyebrow">Inventory</p>
       <h2>Devices</h2>
     </div>
+    <button class="primary" onclick={addDevice}>+ Add Device</button>
   </div>
 
   {#if loading}

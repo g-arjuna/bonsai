@@ -353,6 +353,33 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Seed the collector manager's site cache and keep it refreshed so that
+    // hierarchy-aware assignment rules reflect current graph state.
+    if let (Some(store), Some(manager)) = (&store, &collector_manager) {
+        match store.list_sites().await {
+            Ok(sites) => manager.set_sites(sites),
+            Err(e) => warn!(%e, "failed to seed assignment site cache"),
+        }
+        let manager_for_refresh = std::sync::Arc::clone(manager);
+        let store_for_refresh = store.clone();
+        let mut refresh_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        match store_for_refresh.list_sites().await {
+                            Ok(sites) => manager_for_refresh.set_sites(sites),
+                            Err(e) => warn!(%e, "site cache refresh failed"),
+                        }
+                    }
+                    _ = refresh_shutdown.changed() => break,
+                }
+            }
+        });
+    }
+
     let subscription_plan_tx = if let Some(ref store) = store {
         let (subscription_plan_tx, subscription_plan_rx) =
             tokio::sync::mpsc::channel::<SubscriptionPlan>(128);

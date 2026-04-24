@@ -77,6 +77,43 @@ body { background: var(--bg); min-height: 100vh; }
 
 .nav-icon { width: 20px; text-align: center; flex-shrink: 0; }
 
+.sidebar-footer {
+  margin-top: auto;
+  padding: 10px 8px;
+  border-top: 1px solid var(--border);
+}
+
+.palette-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+
+.palette-trigger:hover {
+  filter: none;
+  color: var(--text);
+  background: rgba(255,255,255,0.04);
+  border-color: var(--blue);
+}
+
+.palette-trigger kbd {
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
 .main-content {
   flex: 1;
   min-width: 0;

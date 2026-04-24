@@ -8,6 +8,25 @@ a detect-predict-heal loop. MIT licensed, open source, personal
 learning project. Goal: replicate Google's ANO framework architecture
 at lab scale using only open source primitives.
 
+## Audience and Positioning (ADR 2026-04-24)
+**Primary target**: controller-less network environments — SP backbones, DC fabrics
+built device-direct, hyperscale/research networks, telco core, multi-vendor environments
+where no single controller owns the fabric. For these operators, bonsai replaces the
+ad-hoc Telegraf+InfluxDB+Grafana+scripts stack with a coherent graph, detect-heal loop,
+and ML pipeline.
+
+**Secondary target (narrow)**: multi-controller correlation — environments with multiple
+controller domains where no single controller spans the fabric. Bonsai's unified graph is
+additive here. Individual controller adapters are **demand-driven only**, not core workload.
+
+**Anti-position**: bonsai is NOT a DNAC/NDI/Meraki Dashboard replacement inside their
+own fabrics. That is a losing position. Reject any feature work framed as "replacing" a
+controller in an environment that already has one.
+
+**Graph enrichment is the primary business-context mechanism** for the primary audience
+(no controller to do it for them). NetBox and ServiceNow enrichment is Tier 4, before
+controller adapters.
+
 ## Current Phase
 Phase: 6 — UI (in progress)
 Last completed:
@@ -72,6 +91,10 @@ OUT: SNMP, NETCONF, campus/wireless, optical transport, Kubernetes/HA/clustering
 - Chasing more vendors before the current four work vendor-neutrally
 - Rewriting from Rust to Go because it's easier
 - Accepting scope expansions that add breadth before depth of normalization
+- Building a DNAC/NDI replacement — wrong audience, losing position
+- Adding controller adapters speculatively — demand-driven only
+- Skipping enrichment to jump to GNN — GNN without enriched graph has no business context
+- Letting "bonsai should work for every network everywhere" creep in — focus matters
 
 ## File Structure
 - /src — Rust core

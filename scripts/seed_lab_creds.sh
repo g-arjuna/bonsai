@@ -7,19 +7,32 @@
 #   scripts/seed_lab_creds.sh
 #
 # The script prompts interactively so credentials never appear in shell history.
+# Works whether you have a local build or only docker compose.
 set -euo pipefail
-
-BINARY="./target/release/bonsai"
-if [ ! -x "$BINARY" ]; then
-    echo "ERROR: $BINARY not found. Run 'cargo build --release' first."
-    exit 1
-fi
 
 if [ -z "${BONSAI_VAULT_PASSPHRASE:-}" ]; then
     echo "ERROR: BONSAI_VAULT_PASSPHRASE is not set. Source your .env file first."
     exit 1
 fi
 
+# Resolve how to run the bonsai CLI.
+LOCAL_BINARY="./target/release/bonsai"
+if [ -x "$LOCAL_BINARY" ]; then
+    run_bonsai() { "$LOCAL_BINARY" "$@"; }
+    echo "Using local binary: $LOCAL_BINARY"
+else
+    # Fall back to running inside the already-built container image.
+    # Requires that docker compose has been pulled/built at least once.
+    run_bonsai() {
+        docker compose run --rm \
+            -e BONSAI_VAULT_PASSPHRASE \
+            bonsai-core "$@"
+    }
+    echo "Local binary not found — using container image via docker compose run."
+    echo "(Run 'cargo build --release' if you prefer the local path.)"
+fi
+
+echo ""
 echo "Seeding lab credentials into bonsai vault ..."
 echo "These are stored encrypted in the vault and never written to config files."
 echo ""
@@ -31,7 +44,7 @@ prompt_cred() {
     read -rp "Username for '$alias' ($hint): " username
     read -rsp "Password for '$alias': " password
     echo ""
-    "$BINARY" credentials add --alias "$alias" --username "$username" --password "$password"
+    run_bonsai credentials add --alias "$alias" --username "$username" --password "$password"
     echo "  -> Added alias '$alias'"
 }
 
