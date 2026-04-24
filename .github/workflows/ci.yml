@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Rust: build + test + clippy ────────────────────────────────────────────
+  rust:
+    name: Rust build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build (timed)
+        id: build
+        run: |
+          START=$(date +%s)
+          cargo build --release
+          END=$(date +%s)
+          ELAPSED=$((END - START))
+          echo "build_seconds=${ELAPSED}" >> "$GITHUB_OUTPUT"
+          echo "Build took ${ELAPSED}s"
+
+      - name: Test
+        run: cargo test --release
+
+      - name: Clippy
+        run: cargo clippy --release -- -D warnings
+
+      - name: Report build time
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const buildSecs = parseInt('${{ steps.build.outputs.build_seconds }}');
+            const fs = require('fs');
+            let baseline = null;
+            try {
+              const content = fs.readFileSync('docs/build_performance.md', 'utf8');
+              const match = content.match(/CI_BASELINE_SECONDS=(\d+)/);
+              if (match) baseline = parseInt(match[1]);
+            } catch {}
+
+            const summary = baseline
+              ? `Build time: **${buildSecs}s** (baseline: ${baseline}s, Δ ${buildSecs - baseline}s / ${(((buildSecs - baseline) / baseline) * 100).toFixed(1)}%)`
+              : `Build time: **${buildSecs}s** (no baseline yet — merging to main sets one)`;
+
+            await core.summary.addRaw(`## Build Performance\n${summary}\n`).write();
+
+            if (baseline && buildSecs > baseline * 1.10) {
+              core.warning(
+                `Build time regressed >10%: ${buildSecs}s vs baseline ${baseline}s`,
+                { title: 'Build time regression' }
+              );
+            }
+
+  # ── UI: build ─────────────────────────────────────────────────────────────
+  ui:
+    name: UI build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Build
+        working-directory: ui
+        run: npm run build
+
+  # ── Docker: amd64 on PRs, multi-arch on main ──────────────────────────────
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU (arm64 emulation)
+        if: github.ref == 'refs/heads/main'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build (PR — amd64 only)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.bonsai
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build (main — multi-arch)
+        if: github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.bonsai
+          # arm64 is best-effort — lbug arm64 support not yet confirmed (T3-2)
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

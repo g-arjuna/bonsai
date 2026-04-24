@@ -1,0 +1,58 @@
+name: Weekly build baseline
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Monday 06:00 UTC
+  workflow_dispatch:      # allow manual re-baseline
+
+jobs:
+  baseline:
+    name: Re-baseline build time
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-baseline-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Measure build time
+        id: measure
+        run: |
+          START=$(date +%s)
+          cargo build --release
+          END=$(date +%s)
+          echo "seconds=$((END - START))" >> "$GITHUB_OUTPUT"
+
+      - name: Update baseline in docs/build_performance.md
+        run: |
+          SECS=${{ steps.measure.outputs.seconds }}
+          DATE=$(date -u +%Y-%m-%d)
+          if grep -q 'CI_BASELINE_SECONDS=' docs/build_performance.md; then
+            sed -i \
+              -e "s/CI_BASELINE_SECONDS=[0-9]*/CI_BASELINE_SECONDS=${SECS}/" \
+              -e "s/last_updated=[0-9-]*/last_updated=${DATE}/" \
+              docs/build_performance.md
+          else
+            printf '\n<!-- CI_BASELINE_SECONDS=%s last_updated=%s -->\n' "${SECS}" "${DATE}" \
+              >> docs/build_performance.md
+          fi
+
+      - name: Commit baseline update
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/build_performance.md
+          git diff --staged --quiet \
+            || git commit -m "ci: update build time baseline [skip ci]"
+          git push
