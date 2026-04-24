@@ -45,6 +45,11 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 
 # Stream combinators used by API event streaming
 futures = "0.3"
+async-stream = "0.3"
+async-trait = "0.1"
+
+# Hostname detection for collector identification
+hostname = "0.4"
 
 # Error handling
 anyhow = "1"
@@ -75,3 +80,9 @@ protoc-bin-vendored = "3"
 
 [dev-dependencies]
 tempfile = "3"
+
+[profile.release]
+lto = "thin"           # thin LTO: ~80% of full-LTO benefit at ~30% of build time cost
+codegen-units = 1      # slower build, smaller + faster binary
+strip = "symbols"      # smaller binary for production
+incremental = false    # release builds don't benefit from incremental

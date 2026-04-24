@@ -7,7 +7,7 @@ use tracing::{info, warn};
 
 use bonsai::{
     api::{
-        BonsaiGraphServer, BonsaiService,
+        BonsaiGraphServer, BonsaiService, CoreService, CollectorService,
         pb::{
             AddDeviceRequest, ListManagedDevicesRequest, ManagedDevice, RemoveDeviceRequest,
             UpdateDeviceRequest, bonsai_graph_client::BonsaiGraphClient,
@@ -19,7 +19,8 @@ use bonsai::{
     event_bus::InProcessBus,
     graph, ingest,
     registry::{ApiRegistry, DeviceRegistry, RegistryChange},
-    retention, subscriber,
+    retention, store::BonsaiStore,
+    subscriber::{self, SubscriberHandleMap, stop_subscriber, stop_all_subscribers},
     subscription_status::{self, SubscriptionPlan},
     telemetry::TelemetryEvent,
 };
@@ -30,14 +31,6 @@ use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 const CONFIG_PATH: &str = "bonsai.toml";
 const GRAPH_PATH_DEFAULT: &str = "bonsai.db";
 const REGISTRY_PATH: &str = "bonsai-registry.json";
-
-type SubscriberHandleMap = HashMap<
-    String,
-    (
-        tokio::sync::watch::Sender<bool>,
-        tokio::task::JoinHandle<()>,
-    ),
->;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -83,29 +76,167 @@ async fn main() -> Result<()> {
     let bus = InProcessBus::new(cfg.event_bus.capacity);
     let debounce_secs = cfg.event_bus.counter_debounce_secs;
 
-    let graph = if run_core {
+    #[derive(Clone)]
+    enum Store {
+        Core(std::sync::Arc<graph::GraphStore>),
+        Collector(std::sync::Arc<bonsai::collector::graph::CollectorGraphStore>),
+    }
+
+    #[tonic::async_trait]
+    impl BonsaiStore for Store {
+        fn db(&self) -> std::sync::Arc<lbug::Database> {
+            match self {
+                Store::Core(s) => s.db(),
+                Store::Collector(s) => s.db(),
+            }
+        }
+        fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<graph::BonsaiEvent> {
+            match self {
+                Store::Core(s) => s.subscribe_events(),
+                Store::Collector(s) => s.subscribe_events(),
+            }
+        }
+        async fn write(&self, update: bonsai::telemetry::TelemetryUpdate) -> Result<()> {
+            match self {
+                Store::Core(s) => s.write(update).await,
+                Store::Collector(s) => s.write(update).await,
+            }
+        }
+        async fn write_detection(
+            &self,
+            device_address: String,
+            rule_id: String,
+            severity: String,
+            features_json: String,
+            fired_at_ns: i64,
+            state_change_event_id: String,
+        ) -> Result<String> {
+            match self {
+                Store::Core(s) => {
+                    s.write_detection(
+                        device_address,
+                        rule_id,
+                        severity,
+                        features_json,
+                        fired_at_ns,
+                        state_change_event_id,
+                    )
+                    .await
+                }
+                Store::Collector(s) => {
+                    s.write_detection(
+                        device_address,
+                        rule_id,
+                        severity,
+                        features_json,
+                        fired_at_ns,
+                        state_change_event_id,
+                    )
+                    .await
+                }
+            }
+        }
+        async fn write_remediation(
+            &self,
+            detection_id: String,
+            action: String,
+            status: String,
+            detail_json: String,
+            attempted_at_ns: i64,
+            completed_at_ns: i64,
+        ) -> Result<String> {
+            match self {
+                Store::Core(s) => {
+                    s.write_remediation(
+                        detection_id,
+                        action,
+                        status,
+                        detail_json,
+                        attempted_at_ns,
+                        completed_at_ns,
+                    )
+                    .await
+                }
+                Store::Collector(s) => {
+                    s.write_remediation(
+                        detection_id,
+                        action,
+                        status,
+                        detail_json,
+                        attempted_at_ns,
+                        completed_at_ns,
+                    )
+                    .await
+                }
+            }
+        }
+        async fn sync_sites_from_targets(&self, targets: Vec<TargetConfig>) -> Result<()> {
+            match self {
+                Store::Core(s) => s.sync_sites_from_targets(targets).await,
+                Store::Collector(s) => s.sync_sites_from_targets(targets).await,
+            }
+        }
+        async fn list_sites(&self) -> Result<Vec<graph::SiteRecord>> {
+            match self {
+                Store::Core(s) => s.list_sites().await,
+                Store::Collector(s) => s.list_sites().await,
+            }
+        }
+        async fn upsert_site(&self, site: graph::SiteRecord) -> Result<graph::SiteRecord> {
+            match self {
+                Store::Core(s) => s.upsert_site(site).await,
+                Store::Collector(s) => s.upsert_site(site).await,
+            }
+        }
+        async fn write_subscription_status(&self, status: graph::SubscriptionStatusWrite) -> Result<()> {
+            match self {
+                Store::Core(s) => s.write_subscription_status(status).await,
+                Store::Collector(s) => s.write_subscription_status(status).await,
+            }
+        }
+        fn publish_event(&self, event: graph::BonsaiEvent) {
+            match self {
+                Store::Core(s) => s.publish_event(event),
+                Store::Collector(s) => s.publish_event(event),
+            }
+        }
+    }
+
+    let store = if run_core {
         let graph_path = if cfg.graph_path.is_empty() {
             GRAPH_PATH_DEFAULT
         } else {
             cfg.graph_path.as_str()
         };
 
-        Some(std::sync::Arc::new(
-            tokio::task::spawn_blocking({
-                let p = graph_path.to_string();
-                move || graph::GraphStore::open(&p)
-            })
-            .await
-            .context("graph open panicked")?
-            .context("graph open failed")?,
-        ))
+        let s = tokio::task::spawn_blocking({
+            let p = graph_path.to_string();
+            move || graph::GraphStore::open(&p)
+        })
+        .await
+        .context("graph open panicked")?
+        .context("graph open failed")?;
+        Some(Store::Core(std::sync::Arc::new(s)))
+    } else if run_collector {
+        let graph_path = if cfg.collector.graph_path.is_empty() {
+            "runtime/collector.db"
+        } else {
+            cfg.collector.graph_path.as_str()
+        };
+        let s = tokio::task::spawn_blocking({
+            let p = graph_path.to_string();
+            move || bonsai::collector::graph::CollectorGraphStore::open(&p)
+        })
+        .await
+        .context("collector graph open panicked")?
+        .context("collector graph open failed")?;
+        Some(Store::Collector(std::sync::Arc::new(s)))
     } else {
-        info!("collector-only mode selected; graph store and local API are disabled");
         None
     };
 
-    if let Some(graph) = &graph {
-        let graph_writer = std::sync::Arc::clone(graph);
+    if let Some(ref store) = store {
+        let store_writer = store.clone();
         let mut rx = bus.subscribe();
         tokio::spawn(async move {
             let mut last_counter_write: HashMap<String, Instant> = HashMap::new();
@@ -138,7 +269,7 @@ async fn main() -> Result<()> {
                             last_counter_write.insert(key, now);
                         }
 
-                        if let Err(error) = graph_writer.write(update).await {
+                        if let Err(error) = store_writer.write(update).await {
                             warn!(%error, "graph write failed");
                         }
                     }
@@ -186,6 +317,16 @@ async fn main() -> Result<()> {
         &cfg.credentials.path,
         &cfg.credentials.passphrase_env,
     )?);
+
+    let collector_manager = if run_core {
+        Some(std::sync::Arc::new(bonsai::assignment::CollectorManager::new(
+            std::sync::Arc::clone(&registry),
+            std::sync::Arc::clone(&credentials),
+        )))
+    } else {
+        None
+    };
+
     if credentials.is_unlocked()? {
         info!(
             path = %cfg.credentials.path,
@@ -198,10 +339,10 @@ async fn main() -> Result<()> {
             "credential vault locked; alias-based credentials are unavailable until restart with passphrase"
         );
     }
-    if let Some(graph) = &graph {
+    if let Some(ref store) = store {
         match registry.list_active() {
             Ok(targets) => {
-                graph
+                store
                     .sync_sites_from_targets(targets)
                     .await
                     .context("failed to sync registry sites into graph")?;
@@ -211,10 +352,10 @@ async fn main() -> Result<()> {
         }
     }
 
-    let subscription_plan_tx = if let Some(graph) = &graph {
+    let subscription_plan_tx = if let Some(ref store) = store {
         let (subscription_plan_tx, subscription_plan_rx) =
             tokio::sync::mpsc::channel::<SubscriptionPlan>(128);
-        let verifier_store = std::sync::Arc::clone(graph);
+        let verifier_store = store.clone();
         let verifier_bus = std::sync::Arc::clone(&bus);
         let verifier_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
@@ -231,7 +372,7 @@ async fn main() -> Result<()> {
         None
     };
 
-    let subscriber_manager = if run_collector {
+    let subscriber_manager = if runtime_mode == bonsai::config::RuntimeMode::All {
         let registry = std::sync::Arc::clone(&registry);
         let credentials = std::sync::Arc::clone(&credentials);
         let bus = std::sync::Arc::clone(&bus);
@@ -309,34 +450,55 @@ async fn main() -> Result<()> {
         let forwarder_bus = std::sync::Arc::clone(&bus);
         let core_endpoint = cfg.runtime.core_ingest_endpoint.clone();
         let collector_id = cfg.runtime.collector_id.clone();
-        let queue_config = cfg.collector.queue.clone();
+        let collector_config = cfg.collector.clone();
         let tls_config = cfg.runtime.tls.clone();
         let forwarder_shutdown = shutdown_rx.clone();
+
         tokio::spawn(async move {
             ingest::run_core_forwarder(
                 forwarder_bus,
                 core_endpoint,
                 collector_id,
-                queue_config,
+                collector_config,
                 tls_config,
                 forwarder_shutdown,
             )
             .await;
         });
+
+        let collector_cfg = std::sync::Arc::new(cfg.collector.clone());
+        let runtime_cfg = std::sync::Arc::new(cfg.runtime.clone());
+        let collector_bus = std::sync::Arc::clone(&bus);
+        let collector_plan_tx = subscription_plan_tx.clone();
+        let collector_shutdown = shutdown_rx.clone();
+
+        tokio::spawn(async move {
+            if let Err(error) = ingest::run_collector_manager(
+                runtime_cfg,
+                collector_cfg,
+                collector_bus,
+                collector_plan_tx,
+                collector_shutdown,
+            )
+            .await
+            {
+                warn!(%error, "collector manager failed");
+            }
+        });
     }
 
-    if let Some(graph) = &graph {
+    if let Some(ref store) = store {
         let api_addr = cfg
             .api_addr
             .parse()
             .with_context(|| format!("invalid api_addr '{}'", cfg.api_addr))?;
-        let svc = BonsaiGraphServer::new(BonsaiService::new(
-            std::sync::Arc::clone(graph),
-            std::sync::Arc::clone(&registry),
-            std::sync::Arc::clone(&credentials),
-            std::sync::Arc::clone(&bus),
-        ))
-        .accept_compressed(CompressionEncoding::Zstd);
+
+        let registry_for_api = std::sync::Arc::clone(&registry);
+        let credentials_for_api = std::sync::Arc::clone(&credentials);
+        let bus_for_api = std::sync::Arc::clone(&bus);
+        let store_for_api = store.clone();
+        let collector_manager_for_api = collector_manager.clone();
+
         let mut server = tonic::transport::Server::builder();
         if cfg.runtime.tls.enabled {
             server = server
@@ -351,33 +513,67 @@ async fn main() -> Result<()> {
         } else {
             info!(%api_addr, ingest_compression = "zstd", mtls = false, "gRPC API and telemetry ingest server listening");
         }
+
         tokio::spawn(async move {
-            if let Err(error) = server.add_service(svc).serve(api_addr).await {
-                warn!(%error, "gRPC server error");
+            match store_for_api {
+                Store::Core(s) => {
+                    let svc = BonsaiGraphServer::new(CoreService::new(
+                        s,
+                        registry_for_api,
+                        credentials_for_api,
+                        bus_for_api,
+                        collector_manager_for_api,
+                    ))
+                    .accept_compressed(CompressionEncoding::Zstd);
+                    if let Err(error) = server.add_service(svc).serve(api_addr).await {
+                        warn!(%error, "gRPC core server error");
+                    }
+                }
+                Store::Collector(s) => {
+                    let svc = BonsaiGraphServer::new(CollectorService::new(
+                        s,
+                        registry_for_api,
+                        credentials_for_api,
+                        bus_for_api,
+                        None,
+                    ))
+                    .accept_compressed(CompressionEncoding::Zstd);
+                    if let Err(error) = server.add_service(svc).serve(api_addr).await {
+                        warn!(%error, "gRPC collector server error");
+                    }
+                }
             }
         });
 
-        let http_store = std::sync::Arc::clone(graph);
-        let http_addr: std::net::SocketAddr = "0.0.0.0:3000".parse().unwrap();
-        info!(%http_addr, "HTTP UI server listening");
-        tokio::spawn(async move {
-            let listener = tokio::net::TcpListener::bind(http_addr)
+        if run_core {
+            let http_store = if let Store::Core(s) = store {
+                std::sync::Arc::clone(&s)
+            } else {
+                unreachable!()
+            };
+            let http_addr: std::net::SocketAddr = "0.0.0.0:3000".parse().unwrap();
+            info!(%http_addr, "HTTP UI server listening");
+            let registry_for_http = std::sync::Arc::clone(&registry);
+            let credentials_for_http = std::sync::Arc::clone(&credentials);
+            tokio::spawn(async move {
+                let listener = tokio::net::TcpListener::bind(http_addr)
+                    .await
+                    .expect("failed to bind HTTP port 3000");
+                axum::serve(
+                    listener,
+                    bonsai::http_server::router(http_store, registry_for_http, credentials_for_http),
+                )
                 .await
-                .expect("failed to bind HTTP port 3000");
-            axum::serve(
-                listener,
-                bonsai::http_server::router(
-                    http_store,
-                    std::sync::Arc::clone(&registry),
-                    std::sync::Arc::clone(&credentials),
-                ),
-            )
-            .await
-            .expect("HTTP server error");
-        });
+                .expect("HTTP server error");
+            });
+        }
 
-        if cfg.retention.enabled {
-            let store = std::sync::Arc::clone(graph);
+        if run_core && cfg.retention.enabled {
+            let store_for_retention = if let Store::Core(s) = store {
+                std::sync::Arc::clone(&s)
+            } else {
+                unreachable!()
+            };
             let max_age_h = cfg.retention.max_age_hours;
             let max_count = cfg.retention.max_state_change_events;
             tokio::spawn(async move {
@@ -387,13 +583,16 @@ async fn main() -> Result<()> {
                     let cutoff =
                         time::OffsetDateTime::now_utc() - time::Duration::hours(max_age_h as i64);
                     if let Err(error) =
-                        retention::prune_events(std::sync::Arc::clone(&store), cutoff).await
+                        retention::prune_events(std::sync::Arc::clone(&store_for_retention), cutoff)
+                            .await
                     {
                         warn!(%error, "retention age-prune failed");
                     }
-                    if let Err(error) =
-                        retention::prune_events_by_count(std::sync::Arc::clone(&store), max_count)
-                            .await
+                    if let Err(error) = retention::prune_events_by_count(
+                        std::sync::Arc::clone(&store_for_retention),
+                        max_count,
+                    )
+                    .await
                     {
                         warn!(%error, "retention count-prune failed");
                     }
@@ -409,8 +608,8 @@ async fn main() -> Result<()> {
         let _ = subscriber_manager.await;
     }
 
-    if let Some(graph) = &graph {
-        graph::log_graph_summary(graph.db().as_ref());
+    if let Some(ref store) = store {
+        graph::log_graph_summary(store.db().as_ref());
     }
     info!("bonsai stopped");
     Ok(())
@@ -693,6 +892,7 @@ fn managed_device_from_cli_add(add: &DeviceCliAdd) -> ManagedDevice {
         role: add.role.clone().unwrap_or_default(),
         site: add.site.clone().unwrap_or_default(),
         selected_paths: Vec::new(),
+        collector_id: String::new(),
     }
 }
 
@@ -710,6 +910,7 @@ fn managed_device_from_target(target: TargetConfig) -> ManagedDevice {
         role: target.role.unwrap_or_default(),
         site: target.site.unwrap_or_default(),
         selected_paths: Vec::new(),
+        collector_id: target.collector_id.unwrap_or_default(),
     }
 }
 
@@ -764,6 +965,7 @@ async fn run_device_cli_local(command: DeviceCliCommand, cfg: config::Config) ->
                 hostname: add.hostname,
                 role: add.role,
                 site: add.site,
+                collector_id: None,
                 selected_paths: Vec::new(),
             })?;
             println!("added {}", device.address);
@@ -886,21 +1088,6 @@ async fn restart_subscriber(
     let address = target.address.clone();
     stop_subscriber(&address, subscribers).await;
     spawn_subscriber(target, credentials, bus, subscription_plan_tx, subscribers).await
-}
-
-async fn stop_subscriber(address: &str, subscribers: &mut SubscriberHandleMap) {
-    if let Some((shutdown_tx, handle)) = subscribers.remove(address) {
-        let _ = shutdown_tx.send(true);
-        let _ = handle.await;
-        info!(address = %address, "subscriber stopped");
-    }
-}
-
-async fn stop_all_subscribers(subscribers: &mut SubscriberHandleMap) {
-    let addresses: Vec<String> = subscribers.keys().cloned().collect();
-    for address in addresses {
-        stop_subscriber(&address, subscribers).await;
-    }
 }
 
 async fn load_ca_cert_pem(target: &TargetConfig) -> Result<Option<Vec<u8>>> {

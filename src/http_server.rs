@@ -345,6 +345,7 @@ pub fn router(
             "/api/credentials",
             get(credentials_handler).post(add_credential_handler),
         )
+        .route("/api/credentials/update", post(update_credential_handler))
         .route("/api/credentials/remove", post(remove_credential_handler))
         .route("/api/detections", get(detections_handler))
         .route("/api/readiness", get(readiness_handler))
@@ -530,6 +531,27 @@ async fn add_credential_handler(
     match state
         .credentials
         .add(&req.alias, &req.username, &req.password)
+    {
+        Ok(credential) => Ok(Json(CredentialMutationResponse {
+            success: true,
+            error: String::new(),
+            credential: Some(credential_json(credential)),
+        })),
+        Err(error) => Ok(Json(CredentialMutationResponse {
+            success: false,
+            error: format!("{error:#}"),
+            credential: None,
+        })),
+    }
+}
+
+async fn update_credential_handler(
+    State(state): State<AppState>,
+    Json(req): Json<AddCredentialRequest>,
+) -> Result<Json<CredentialMutationResponse>, (StatusCode, String)> {
+    match state
+        .credentials
+        .update(&req.alias, &req.username, &req.password)
     {
         Ok(credential) => Ok(Json(CredentialMutationResponse {
             success: true,
@@ -1096,6 +1118,7 @@ fn target_from_request(req: ManagedDeviceRequest) -> Result<TargetConfig, (Statu
         hostname: option_string(req.hostname),
         role: option_string(req.role),
         site: option_string(req.site),
+        collector_id: None,
         selected_paths: req
             .selected_paths
             .into_iter()

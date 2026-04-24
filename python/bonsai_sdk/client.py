@@ -197,6 +197,10 @@ class BonsaiClient:
         )
         return self.stub.PushRemediation(req)
 
+    def detection_ingest(self, events: Generator[pb.DetectionEventIngest, None, None]):
+        """Client-streaming: push locally-evaluated detections to core."""
+        return self.stub.DetectionIngest(events)
+
     def stream_events(
         self,
         event_types: list[str] | None = None,

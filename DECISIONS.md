@@ -1459,3 +1459,76 @@ healthcheck until Compose exists.
   without committing the target directory into image layers.
 - BusyBox keeps the readiness healthcheck available while bringing the Docker
   image below the 200 MB target in Docker's normal image listing.
+
+---
+
+## 2026-04-23 — Unpinned apt versions in Dockerfile for maintenance
+
+**Decision**: Drop specific version pins for `apt` packages in `docker/Dockerfile.bonsai`.
+
+**Rationale**:
+- Debian trixie (testing) rotates package versions frequently. Pinned versions (e.g., `cmake=3.31.6-2`) often disappear from mirrors within months, causing builds to fail on unchanged source code.
+- Reproducibility is better managed by pinning the base image digest rather than individual system packages.
+- Maintenance overhead of updating pins every few months outweighs the marginal reproducibility benefit in a development-heavy phase.
+
+**Done when**: `docker build` succeeds without version-not-found errors; base image digest fixes the repository state in effect.
+
+---
+
+## 2026-04-23 — cargo-chef --all-targets for cache stability
+
+**Decision**: Use `cargo chef cook --all-targets` in the Docker build pipeline.
+
+**Rationale**:
+- The current build only warms the cache for the main `bonsai` binary. Adding additional binaries (e.g., `bonsai-device-cli`) would invalidate the cache and force a full rebuild.
+- `--all-targets` ensures that the dependency cache includes all binaries, tests, and examples defined in `Cargo.toml`.
+- This keeps the dev-loop and CI builds fast (under 30s for no-source-change rebuilds) even as the workspace grows.
+
+---
+
+## 2026-04-23 — Protocol version negotiation stub
+
+**Decision**: Introduce a `protocol_version: uint32` field in the collector-core gRPC messages (`TelemetryIngestUpdate` and `TelemetryIngestResponse`).
+
+**Rationale**:
+- Collectors and core will inevitably version-skew in production.
+- A version stub allows the core to detect and log warnings (or reject) incompatible connections early, before processing malformed telemetry.
+- Starting with version 1 now provides the necessary hook for Tier 2/3 data-exchange contracts without a breaking change later.
+
+**Versioning Policy**: Semantic versioning on protocol. Major bumps indicate incompatibility; minor bumps indicate backward-compatible additions.
+
+---
+
+## 2026-04-23 — Generic Graph Store Abstraction (BonsaiStore trait)
+
+**Decision**: Implement a `BonsaiStore` trait to unify `GraphStore` (core) and `CollectorGraphStore` (collector). The trait is `#[tonic::async_trait]` compatible and used by the gRPC `BonsaiService` and background tasks (subscription verifier, site sync).
+
+**Rationale**:
+- Eliminates code duplication between core and collector graph handlers.
+- Allows the same gRPC service implementation to run in both modes, enabling collectors to expose a local query/mutation API.
+- Enables background tasks like the subscription verifier to operate seamlessly regardless of whether they are running on a core or a collector.
+- Uses `tonic::async_trait` to handle the `dyn BonsaiStore` compatibility requirements for shared tasks.
+
+---
+
+## 2026-04-23 — Collector-Side Local Rule Execution Architecture
+
+**Decision**: Run the rule engine as a standalone Python sidecar (`python/collector_engine.py`) alongside the Rust collector. The sidecar connects to the local collector's gRPC API to stream events and query the local graph.
+
+**Rationale**:
+- Moves detection logic closer to the data source, reducing core load.
+- Preserves the Python-based rule ecosystem while leveraging Rust for high-performance telemetry ingestion.
+- Enables "disconnected-ops" where detection continues even if the core is unreachable.
+- Collector-local graph contains only the nodes/edges needed for detection (Device, Interface, BGP, etc.).
+
+---
+
+## 2026-04-23 — Detection Ingest RPC (Collector → Core)
+
+**Decision**: Add a client-streaming `DetectionIngest` RPC to the core gRPC API. Collectors push locally-evaluated `DetectionEvent` records to the core for centralized monitoring and graph persistence.
+
+**Rationale**:
+- Provides a formal path for collectors to escalate anomalies to the core.
+- Allows the core to maintain a global view of all detections across the fleet.
+- Enables cross-site rule correlation on the core by treating incoming detections as triggers for global rules.
+- `DetectionEvent` metadata includes features, reason, and severity for consistent UI rendering on the core.

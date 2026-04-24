@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 use crate::event_bus::InProcessBus;
-use crate::graph::{BonsaiEvent, GraphStore, SubscriptionStatusWrite};
+use crate::graph::{BonsaiEvent, SubscriptionStatusWrite};
+use crate::store::BonsaiStore;
 use crate::telemetry::{TelemetryEvent, TelemetryUpdate};
 
 pub const VERIFICATION_WINDOW: Duration = Duration::from_secs(30);
@@ -33,8 +34,8 @@ struct TrackedPath {
     deadline: Instant,
 }
 
-pub async fn run_subscription_verifier(
-    store: Arc<GraphStore>,
+pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
+    store: S,
     bus: Arc<InProcessBus>,
     mut plan_rx: tokio::sync::mpsc::Receiver<SubscriptionPlan>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
@@ -72,8 +73,8 @@ pub async fn run_subscription_verifier(
     }
 }
 
-async fn register_plan(
-    store: &Arc<GraphStore>,
+async fn register_plan<S: BonsaiStore>(
+    store: &S,
     tracked: &mut HashMap<(String, String), TrackedPath>,
     plan: SubscriptionPlan,
 ) {
@@ -113,8 +114,8 @@ async fn register_plan(
     }
 }
 
-async fn observe_update(
-    store: &Arc<GraphStore>,
+async fn observe_update<S: BonsaiStore>(
+    store: &S,
     tracked: &mut HashMap<(String, String), TrackedPath>,
     update: TelemetryUpdate,
 ) {
@@ -160,8 +161,8 @@ async fn observe_update(
     }
 }
 
-async fn mark_silent_paths(
-    store: &Arc<GraphStore>,
+async fn mark_silent_paths<S: BonsaiStore>(
+    store: &S,
     tracked: &mut HashMap<(String, String), TrackedPath>,
 ) {
     let now_instant = Instant::now();
@@ -225,13 +226,14 @@ fn path_matches_update(
     let expected = expectation.path.to_lowercase();
     let actual = update.path.to_lowercase();
     match event {
-        TelemetryEvent::InterfaceStats { .. } => {
+        TelemetryEvent::InterfaceStats { .. } | TelemetryEvent::InterfaceSummary { .. } => {
             expected.contains("statistics")
                 || expected.contains("generic-counters")
                 || (expected.contains("interfaces")
                     && expectation.mode.eq_ignore_ascii_case("SAMPLE"))
                 || actual.contains("statistics")
                 || actual.contains("generic-counters")
+                || actual.contains("summary")
         }
         TelemetryEvent::InterfaceOperStatus { .. } => {
             expected.contains("oper-state")

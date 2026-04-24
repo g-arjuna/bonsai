@@ -2,12 +2,18 @@
 
 # Runtime config — contains credentials, never commit
 bonsai.toml
+bonsai-core.toml
+bonsai-collector.toml
 
 # LadybugDB graph database files
 bonsai.db
 bonsai.db.wal
 bonsai-mv.db
 bonsai-mv.db.wal
+bonsai-core.db
+bonsai-core.db.wal
+bonsai-collector.db
+bonsai-collector.db.wal
 bonsai-registry.json
 bonsai-credentials/
 

@@ -1,16 +1,19 @@
+pub mod common;
+
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use lbug::{Connection, Database, SystemConfig, Value};
 use serde::Serialize;
-use time::OffsetDateTime;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use self::common::{now_ns, read_str, read_ts_ns, ts, upsert_device};
 use crate::config::TargetConfig;
+use crate::store::BonsaiStore;
 use crate::telemetry::{TelemetryEvent, TelemetryUpdate, json_i64, json_i64_multi, json_str};
 
 pub const REMEDIATION_TRUST_CUTOFF_ISO: &str = "2026-04-20T09:32:50+00:00";
@@ -112,7 +115,84 @@ impl GraphStore {
     pub fn subscribe_events(&self) -> broadcast::Receiver<BonsaiEvent> {
         self.event_tx.subscribe()
     }
+}
 
+#[tonic::async_trait]
+impl BonsaiStore for GraphStore {
+    fn db(&self) -> Arc<Database> {
+        Arc::clone(&self.db)
+    }
+
+    fn subscribe_events(&self) -> broadcast::Receiver<BonsaiEvent> {
+        self.event_tx.subscribe()
+    }
+
+    async fn write(&self, update: TelemetryUpdate) -> Result<()> {
+        self.write(update).await
+    }
+
+    async fn write_detection(
+        &self,
+        device_address: String,
+        rule_id: String,
+        severity: String,
+        features_json: String,
+        fired_at_ns: i64,
+        state_change_event_id: String,
+    ) -> Result<String> {
+        self.write_detection(
+            device_address,
+            rule_id,
+            severity,
+            features_json,
+            fired_at_ns,
+            state_change_event_id,
+        )
+        .await
+    }
+
+    async fn write_remediation(
+        &self,
+        detection_id: String,
+        action: String,
+        status: String,
+        detail_json: String,
+        attempted_at_ns: i64,
+        completed_at_ns: i64,
+    ) -> Result<String> {
+        self.write_remediation(
+            detection_id,
+            action,
+            status,
+            detail_json,
+            attempted_at_ns,
+            completed_at_ns,
+        )
+        .await
+    }
+
+    async fn sync_sites_from_targets(&self, targets: Vec<crate::config::TargetConfig>) -> Result<()> {
+        self.sync_sites_from_targets(targets).await
+    }
+
+    async fn list_sites(&self) -> Result<Vec<SiteRecord>> {
+        self.list_sites().await
+    }
+
+    async fn upsert_site(&self, site: SiteRecord) -> Result<SiteRecord> {
+        self.upsert_site(site).await
+    }
+
+    async fn write_subscription_status(&self, status: SubscriptionStatusWrite) -> Result<()> {
+        self.write_subscription_status(status).await
+    }
+
+    fn publish_event(&self, event: BonsaiEvent) {
+        self.publish_event(event)
+    }
+}
+
+impl GraphStore {
     /// Publish a best-effort event to HTTP/SSE subscribers.
     pub fn publish_event(&self, event: BonsaiEvent) {
         if self.event_tx.send(event).is_err() {
@@ -753,6 +833,9 @@ fn write_blocking(
             }
             write_interface(&conn, update, &if_name)
         }
+        TelemetryEvent::InterfaceSummary { if_name } => {
+            write_interface_summary(&conn, update, &if_name)
+        }
         TelemetryEvent::BgpNeighborState {
             peer_address,
             state_value,
@@ -792,6 +875,108 @@ fn write_blocking(
         } => emit_oper_status_event(&conn, update, &if_name, &oper_status, event_tx),
         TelemetryEvent::Ignored => Ok(()),
     }
+}
+
+fn write_interface_summary(
+    conn: &Connection<'_>,
+    u: &TelemetryUpdate,
+    if_name: &str,
+) -> Result<()> {
+    let id = format!("{}:{}", u.target, if_name);
+    let now = ts(u.timestamp_ns);
+
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, now.clone())?;
+
+    let summary = u
+        .value
+        .get("interface_summary")
+        .context("missing interface_summary")?;
+    let counters = summary
+        .get("counters")
+        .context("missing counters in summary")?;
+
+    let get_max = |aliases: &[&str]| -> i64 {
+        for &alias in aliases {
+            if let Some(c) = counters.get(alias) {
+                if let Some(max) = c.get("max").and_then(|v| v.as_i64()) {
+                    return max;
+                }
+            }
+        }
+        0
+    };
+
+    let in_pkts = get_max(&["in-packets", "input-packets", "in-pkts"]);
+    let out_pkts = get_max(&["out-packets", "packets-sent", "output-packets", "out-pkts"]);
+    let in_octets = get_max(&["in-octets", "bytes-received", "input-bytes"]);
+    let out_octets = get_max(&["out-octets", "bytes-sent", "output-bytes"]);
+    let in_errors = get_max(&[
+        "in-error-packets",
+        "input-total-errors",
+        "input-errors",
+        "in-errors",
+    ]);
+    let out_errors = get_max(&[
+        "out-error-packets",
+        "output-total-errors",
+        "output-errors",
+        "out-errors",
+    ]);
+    let carrier = get_max(&["carrier-transitions"]);
+
+    let mut stmt = conn.prepare(
+        "MERGE (n:Interface {id: $id}) \
+         ON CREATE SET \
+           n.device_address = $addr, n.name = $name, \
+           n.in_pkts = $in_p, n.out_pkts = $out_p, \
+           n.in_octets = $in_o, n.out_octets = $out_o, \
+           n.in_errors = $in_e, n.out_errors = $out_e, \
+           n.carrier_transitions = $carrier, \
+           n.updated_at = $ts \
+         ON MATCH SET \
+           n.in_pkts = $in_p, n.out_pkts = $out_p, \
+           n.in_octets = $in_o, n.out_octets = $out_o, \
+           n.in_errors = $in_e, n.out_errors = $out_e, \
+           n.carrier_transitions = $carrier, \
+           n.updated_at = $ts",
+    )?;
+
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(id.clone())),
+            ("addr", Value::String(u.target.clone())),
+            ("name", Value::String(if_name.to_string())),
+            ("in_p", Value::Int64(in_pkts)),
+            ("out_p", Value::Int64(out_pkts)),
+            ("in_o", Value::Int64(in_octets)),
+            ("out_o", Value::Int64(out_octets)),
+            ("in_e", Value::Int64(in_errors)),
+            ("out_e", Value::Int64(out_errors)),
+            ("carrier", Value::Int64(carrier)),
+            ("ts", now),
+        ],
+    )
+    .context("execute interface summary upsert")?;
+
+    // Ensure the Device→Interface edge exists
+    let mut edge_stmt = conn
+        .prepare(
+            "MATCH (d:Device {address: $addr}), (i:Interface {id: $id}) \
+         MERGE (d)-[:HAS_INTERFACE]->(i)",
+        )
+        .context("prepare HAS_INTERFACE merge for summary")?;
+
+    conn.execute(
+        &mut edge_stmt,
+        vec![
+            ("addr", Value::String(u.target.clone())),
+            ("id", Value::String(id)),
+        ],
+    )
+    .context("execute HAS_INTERFACE merge for summary")?;
+
+    Ok(())
 }
 
 fn write_subscription_status_blocking(
@@ -871,13 +1056,6 @@ fn subscription_status_id(
 }
 
 /// Read helpers for query result rows — used by the read_* methods above.
-fn read_str(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        _ => String::new(),
-    }
-}
-
 fn read_f64(v: &Value) -> f64 {
     match v {
         Value::Double(n) => *n,
@@ -890,13 +1068,6 @@ fn read_f64(v: &Value) -> f64 {
 fn read_i64(v: &Value) -> i64 {
     match v {
         Value::Int64(n) => *n,
-        _ => 0,
-    }
-}
-
-fn read_ts_ns(v: &Value) -> i64 {
-    match v {
-        Value::TimestampNs(dt) => dt.unix_timestamp_nanos() as i64,
         _ => 0,
     }
 }
@@ -953,11 +1124,6 @@ fn write_remediation_trust_mark(
     .context("execute TRUST_MARKS edge")?;
 
     Ok(())
-}
-
-fn ts(ns: i64) -> Value {
-    let dt = OffsetDateTime::UNIX_EPOCH + time::Duration::nanoseconds(ns);
-    Value::TimestampNs(dt)
 }
 
 fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) -> Result<()> {
@@ -1599,38 +1765,6 @@ fn try_connect_interfaces(
     Ok(())
 }
 
-fn upsert_device(
-    conn: &Connection<'_>,
-    address: &str,
-    vendor: &str,
-    hostname: &str,
-    now: Value,
-) -> Result<()> {
-    let mut stmt = conn
-        .prepare(
-            "MERGE (d:Device {address: $addr}) \
-         ON CREATE SET d.vendor = $vendor, d.hostname = $hn, d.updated_at = $ts \
-         ON MATCH SET \
-           d.vendor = CASE WHEN $vendor <> '' THEN $vendor ELSE d.vendor END, \
-           d.hostname = CASE WHEN $hn <> '' THEN $hn ELSE d.hostname END, \
-           d.updated_at = $ts",
-        )
-        .context("prepare Device upsert")?;
-
-    conn.execute(
-        &mut stmt,
-        vec![
-            ("addr", Value::String(address.to_string())),
-            ("vendor", Value::String(vendor.to_string())),
-            ("hn", Value::String(hostname.to_string())),
-            ("ts", now),
-        ],
-    )
-    .context("execute Device upsert")?;
-
-    Ok(())
-}
-
 fn normalize_site(mut site: SiteRecord) -> Result<SiteRecord> {
     site.name = site.name.trim().to_string();
     if site.name.is_empty() {
@@ -1807,13 +1941,6 @@ fn site_from_row(row: Vec<Value>) -> SiteRecord {
         lon: read_f64(&row[5]),
         metadata_json: read_str(&row[6]),
     }
-}
-
-fn now_ns() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
-        .unwrap_or_default()
 }
 
 fn emit_oper_status_event(

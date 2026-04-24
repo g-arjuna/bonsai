@@ -133,16 +133,60 @@ impl CredentialVault {
             .map_err(|_| anyhow!("credential vault lock poisoned"))?;
         ensure_unlocked(&state)?;
 
-        let created_at_ns = state
+        if state.entries.contains_key(&alias) {
+            bail!("credential alias '{}' already exists; use update() to change it", alias);
+        }
+
+        state.entries.insert(
+            alias.clone(),
+            StoredCredential {
+                username,
+                password,
+                created_at_ns: now,
+                updated_at_ns: now,
+            },
+        );
+        state.metadata.insert(
+            alias.clone(),
+            CredentialMetadata {
+                created_at_ns: now,
+                updated_at_ns: now,
+                last_used_at_ns: 0,
+            },
+        );
+        self.persist_locked(&state)?;
+
+        Ok(CredentialSummary {
+            alias,
+            created_at_ns: now,
+            updated_at_ns: now,
+            last_used_at_ns: 0,
+        })
+    }
+
+    pub fn update(&self, alias: &str, username: &str, password: &str) -> Result<CredentialSummary> {
+        let alias = normalize_alias(alias)?;
+        let username = normalize_required("username", username)?;
+        let password = normalize_required("password", password)?;
+        let now = now_ns();
+
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("credential vault lock poisoned"))?;
+        ensure_unlocked(&state)?;
+
+        let entry = state
             .entries
             .get(&alias)
-            .map(|entry| entry.created_at_ns)
-            .unwrap_or(now);
+            .ok_or_else(|| anyhow!("credential alias '{}' not found", alias))?;
+        let created_at_ns = entry.created_at_ns;
         let last_used_at_ns = state
             .metadata
             .get(&alias)
-            .map(|metadata| metadata.last_used_at_ns)
+            .map(|m| m.last_used_at_ns)
             .unwrap_or_default();
+
         state.entries.insert(
             alias.clone(),
             StoredCredential {

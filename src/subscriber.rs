@@ -1,4 +1,7 @@
 use std::{collections::HashMap, time::Duration};
+use std::sync::Arc;
+use tokio::sync::{watch, mpsc};
+use tokio::task::JoinHandle;
 
 use anyhow::{Context, Result};
 use tonic::Request;
@@ -15,9 +18,9 @@ use crate::proto::gnmi::{
     CapabilityRequest, Path, PathElem, SubscribeRequest, Subscription, SubscriptionList,
     SubscriptionMode, subscribe_request, subscription_list,
 };
-use std::sync::Arc;
 
 use crate::config::SelectedSubscriptionPath;
+use crate::config::TargetConfig;
 use crate::event_bus::InProcessBus;
 use crate::subscription_status::{SubscriptionPathExpectation, SubscriptionPlan};
 use crate::telemetry::TelemetryUpdate;
@@ -326,6 +329,76 @@ impl GnmiSubscriber {
         info!(target = %self.target, tls = %use_tls, "connected");
         Ok(channel)
     }
+}
+
+pub type SubscriberHandleMap = HashMap<
+    String,
+    (
+        watch::Sender<bool>,
+        JoinHandle<()>,
+    ),
+>;
+
+pub async fn stop_subscriber(address: &str, subscribers: &mut SubscriberHandleMap) {
+    if let Some((shutdown_tx, handle)) = subscribers.remove(address) {
+        let _ = shutdown_tx.send(true);
+        let _ = handle.await;
+        info!(address = %address, "subscriber stopped");
+    }
+}
+
+pub async fn stop_all_subscribers(subscribers: &mut SubscriberHandleMap) {
+    let addresses: Vec<String> = subscribers.keys().cloned().collect();
+    for address in addresses {
+        stop_subscriber(&address, subscribers).await;
+    }
+}
+
+pub async fn load_ca_cert_pem(target: &TargetConfig) -> Result<Option<Vec<u8>>> {
+    match &target.ca_cert {
+        Some(path) => {
+            let bytes = tokio::fs::read(path).await?;
+            Ok(Some(bytes))
+        }
+        None => Ok(None),
+    }
+}
+
+pub async fn spawn_subscriber_with_creds(
+    target: TargetConfig,
+    bus: &std::sync::Arc<InProcessBus>,
+    subscription_plan_tx: Option<&mpsc::Sender<SubscriptionPlan>>,
+    subscribers: &mut SubscriberHandleMap,
+) -> Result<()> {
+    let address = target.address.clone();
+    if !target.enabled {
+        info!(address = %address, "subscriber start skipped because target is disabled");
+        return Ok(());
+    }
+    if subscribers.contains_key(&address) {
+        info!(address = %address, "subscriber already running");
+        return Ok(());
+    }
+
+    let ca_cert_pem = load_ca_cert_pem(&target).await?;
+
+    let subscriber = GnmiSubscriber::new(
+        target.address.clone(),
+        target.username.clone(),
+        target.password.clone(),
+        target.vendor.clone(),
+        target.hostname.clone(),
+        target.tls_domain.clone().unwrap_or_default(),
+        ca_cert_pem,
+        std::sync::Arc::clone(bus),
+        subscription_plan_tx.cloned(),
+        target.selected_paths.clone(),
+    );
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let handle = tokio::spawn(async move { subscriber.run_forever(shutdown_rx).await });
+    subscribers.insert(address.clone(), (shutdown_tx, handle));
+    info!(address = %address, "subscriber started");
+    Ok(())
 }
 
 // ── capabilities ──────────────────────────────────────────────────────────────

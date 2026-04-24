@@ -38,6 +38,7 @@ message ManagedDevice {
   string credential_alias = 10;
   repeated SubscriptionPath selected_paths = 11;
   optional bool enabled = 12;
+  string collector_id = 13;
 }
 
 message AddDeviceRequest        { ManagedDevice device = 1; }
@@ -198,9 +199,43 @@ message TelemetryIngestUpdate {
   int64  timestamp_ns = 5;
   string path         = 6;
   bytes  value_msgpack = 7;
+  uint32 protocol_version = 8; // Stub for version negotiation
+  InterfaceSummary interface_summary = 9;
+}
+
+message InterfaceCounterSummary {
+  string counter_name = 1;
+  int64  min          = 2;
+  int64  max          = 3;
+  double mean         = 4;
+  int64  delta        = 5;
+}
+
+message InterfaceSummary {
+  repeated InterfaceCounterSummary counters = 1;
+  uint32 window_secs = 2;
 }
 
 message TelemetryIngestResponse {
+  uint64 accepted = 1;
+  string error    = 2;
+  uint32 protocol_version = 3; // Stub for version negotiation
+}
+
+message DetectionEventIngest {
+  string collector_id          = 1;
+  string device_address        = 2;
+  string rule_id               = 3;
+  string severity              = 4;
+  string reason                = 5;
+  string features_json         = 6;
+  int64  fired_at_ns           = 7;
+  string state_change_event_id = 8;
+  bool   auto_remediate        = 9;
+  string remediation_action    = 10;
+}
+
+message DetectionIngestResponse {
   uint64 accepted = 1;
   string error    = 2;
 }
@@ -245,9 +280,46 @@ message PushRemediationResponse {
   string error   = 2;
 }
 
+// Distributed collector registration and assignment.
+message CollectorIdentity {
+  string collector_id     = 1;
+  string hostname         = 2;
+  uint32 protocol_version = 3;
+}
+
+message DeviceAssignment {
+  ManagedDevice device   = 1;
+  string        username = 2; // Resolved on core
+  string        password = 3; // Resolved on core
+}
+
+message AssignmentUpdate {
+  repeated DeviceAssignment assignments = 1;
+  bool                      is_full_sync = 2; // If true, collector should drop other devices
+}
+
+message CollectorStats {
+  string collector_id        = 1;
+  uint64 queue_depth_updates = 2;
+  uint32 subscription_count  = 3;
+  int64  uptime_secs         = 4;
+}
+
+message HeartbeatAck {
+  string error = 1;
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 service BonsaiGraph {
+  // ... existing rpcs ...
+
+  // Bidirectional streaming: collector registers and receives device assignments.
+  rpc RegisterCollector(CollectorIdentity) returns (stream AssignmentUpdate);
+
+  // Unary: periodic heartbeat from collector to core.
+  rpc Heartbeat(CollectorStats) returns (HeartbeatAck);
+
   // Execute a read-only Cypher query.
   rpc Query(QueryRequest) returns (QueryResponse);
 
@@ -275,6 +347,9 @@ service BonsaiGraph {
 
   // Client-streaming: collectors push decoded telemetry updates into a core.
   rpc TelemetryIngest(stream TelemetryIngestUpdate) returns (TelemetryIngestResponse);
+
+  // Client-streaming: collectors push locally-evaluated detections to core.
+  rpc DetectionIngest(stream DetectionEventIngest) returns (DetectionIngestResponse);
 
   // Phase 4: write detections and remediations into the graph.
   rpc CreateDetection(CreateDetectionRequest)   returns (CreateDetectionResponse);

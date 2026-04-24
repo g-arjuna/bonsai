@@ -1,0 +1,43 @@
+graph_path   = "runtime/bonsai.db"
+api_addr     = "0.0.0.0:50051"
+
+[runtime]
+mode = "core"
+
+[credentials]
+path = "bonsai-credentials"
+passphrase_env = "BONSAI_VAULT_PASSPHRASE"
+
+[[target]]
+address    = "172.100.102.11:57400"
+hostname   = "srl-spine1"
+tls_domain = "clab-bonsai-p4-srl-spine1"
+ca_cert    = "lab/fast-iteration/p4-ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+collector_id = "collector-1"
+
+[[target]]
+address    = "172.100.102.12:57400"
+hostname   = "srl-leaf1"
+tls_domain = "clab-bonsai-p4-srl-leaf1"
+ca_cert    = "lab/fast-iteration/p4-ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+collector_id = "collector-1"
+
+[[target]]
+address    = "172.100.102.13:57400"
+hostname   = "srl-leaf2"
+tls_domain = "clab-bonsai-p4-srl-leaf2"
+ca_cert    = "lab/fast-iteration/p4-ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+collector_id = "collector-2"
+
+[[target]]
+address  = "172.100.102.21:57400"
+hostname = "xrd-pe1"
+username = "cisco"
+password = "cisco123!"
+collector_id = "collector-2"

@@ -176,6 +176,40 @@ impl ApiRegistry {
         Ok(removed)
     }
 
+    pub fn list_assigned_to(&self, collector_id: &str) -> Result<Vec<TargetConfig>> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("registry lock poisoned"))?;
+        Ok(state
+            .targets
+            .values()
+            .filter(|t| t.collector_id.as_deref() == Some(collector_id))
+            .cloned()
+            .collect())
+    }
+
+    pub fn assign_device(&self, address: &str, collector_id: Option<String>) -> Result<TargetConfig> {
+        let address = normalize_address(address)?;
+        let target = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow!("registry lock poisoned"))?;
+            let target = state
+                .targets
+                .get_mut(&address)
+                .ok_or_else(|| anyhow!("device '{address}' does not exist"))?;
+            target.collector_id = collector_id;
+            let updated = target.clone();
+            Self::persist_state(&self.path, &state)?;
+            updated
+        };
+
+        let _ = self.change_tx.send(RegistryChange::Updated(target.clone()));
+        Ok(target)
+    }
+
     fn load_state(path: &Path, seed_targets: Vec<TargetConfig>) -> Result<RegistryState> {
         let mut state = if path.exists() {
             let raw = std::fs::read_to_string(path)
@@ -351,6 +385,7 @@ mod tests {
             hostname: Some(format!("{vendor}-host")),
             role: Some("leaf".to_string()),
             site: Some("lab".to_string()),
+            collector_id: None,
             selected_paths: Vec::new(),
         }
     }

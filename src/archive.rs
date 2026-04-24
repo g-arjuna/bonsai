@@ -443,6 +443,7 @@ fn build_record_batch(updates: Vec<TelemetryUpdate>) -> Result<(RecordBatch, usi
 fn classified_event_type(update: &TelemetryUpdate) -> &'static str {
     match update.classify() {
         TelemetryEvent::InterfaceStats { .. } => "interface_stats",
+        TelemetryEvent::InterfaceSummary { .. } => "interface_summary",
         TelemetryEvent::BfdSessionState { .. } => "bfd_session_state",
         TelemetryEvent::BgpNeighborState { .. } => "bgp_neighbor_state",
         TelemetryEvent::LldpNeighbor { .. } => "lldp_neighbor",

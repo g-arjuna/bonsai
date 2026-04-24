@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -6,18 +7,23 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use prost::Message;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc, watch};
+use tokio::time::Instant;
 use tonic::Request;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tracing::{info, warn};
 
 use crate::api::pb::{
-    TelemetryIngestUpdate as ProtoTelemetryIngestUpdate, bonsai_graph_client::BonsaiGraphClient,
+    bonsai_graph_client::BonsaiGraphClient, AssignmentUpdate, CollectorIdentity, CollectorStats,
+    InterfaceSummary, TelemetryIngestUpdate as ProtoTelemetryIngestUpdate,
 };
-use crate::config::{CollectorQueueConfig, RuntimeTlsConfig};
+use crate::config::{
+    CollectorConfig, CollectorFilterConfig, CollectorQueueConfig, RuntimeConfig, RuntimeTlsConfig,
+};
 use crate::event_bus::InProcessBus;
-use crate::telemetry::TelemetryUpdate;
+use crate::subscription_status::SubscriptionPlan;
+use crate::telemetry::{TelemetryEvent, TelemetryUpdate};
 
 const FORWARDER_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 const COMPRESSION_STATS_INTERVAL: u64 = 1_000;
@@ -38,10 +44,41 @@ pub fn telemetry_to_ingest_update(
         path: update.path.clone(),
         value_msgpack: rmp_serde::to_vec(&update.value)
             .context("failed to serialize telemetry value as MessagePack")?,
+        protocol_version: crate::api::PROTOCOL_VERSION,
+        interface_summary: None,
+    })
+}
+
+pub fn summary_to_ingest_update(
+    collector_id: &str,
+    template: &TelemetryUpdate,
+    summary: InterfaceSummary,
+) -> Result<ProtoTelemetryIngestUpdate> {
+    Ok(ProtoTelemetryIngestUpdate {
+        collector_id: collector_id.to_string(),
+        target: template.target.clone(),
+        vendor: template.vendor.clone(),
+        hostname: template.hostname.clone(),
+        timestamp_ns: template.timestamp_ns,
+        path: template.path.clone(),
+        value_msgpack: Vec::new(),
+        protocol_version: crate::api::PROTOCOL_VERSION,
+        interface_summary: Some(summary),
     })
 }
 
 pub fn ingest_update_to_telemetry(update: ProtoTelemetryIngestUpdate) -> Result<TelemetryUpdate> {
+    if let Some(summary) = update.interface_summary {
+        return Ok(TelemetryUpdate {
+            target: update.target,
+            vendor: update.vendor,
+            hostname: update.hostname,
+            timestamp_ns: update.timestamp_ns,
+            path: format!("{}/summary", update.path),
+            value: interface_summary_to_json(summary),
+        });
+    }
+
     let value = rmp_serde::from_slice(&update.value_msgpack)
         .with_context(|| format!("invalid telemetry value_msgpack for path '{}'", update.path))?;
 
@@ -55,15 +92,36 @@ pub fn ingest_update_to_telemetry(update: ProtoTelemetryIngestUpdate) -> Result<
     })
 }
 
+fn interface_summary_to_json(summary: InterfaceSummary) -> serde_json::Value {
+    let mut counters = serde_json::Map::new();
+    for c in summary.counters {
+        counters.insert(
+            c.counter_name,
+            serde_json::json!({
+                "min": c.min,
+                "max": c.max,
+                "mean": c.mean,
+                "delta": c.delta,
+            }),
+        );
+    }
+    serde_json::json!({
+        "interface_summary": {
+            "window_secs": summary.window_secs,
+            "counters": counters,
+        }
+    })
+}
+
 pub async fn run_core_forwarder(
     bus: Arc<InProcessBus>,
     core_endpoint: String,
     collector_id: String,
-    queue_config: CollectorQueueConfig,
+    collector_config: CollectorConfig,
     tls_config: RuntimeTlsConfig,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
-    let queue = match CollectorQueue::open(queue_config) {
+    let queue = match CollectorQueue::open(collector_config.queue.clone()) {
         Ok(queue) => Arc::new(queue),
         Err(error) => {
             warn!(%collector_id, %error, "failed to open collector disk queue; forwarder disabled");
@@ -73,11 +131,13 @@ pub async fn run_core_forwarder(
     let writer_collector_id = collector_id.clone();
     let writer_queue = Arc::clone(&queue);
     let writer_shutdown = shutdown.clone();
+    let filter_config = collector_config.filter.clone();
     let queue_writer = tokio::spawn(async move {
         if let Err(error) = queue_bus_updates(
             bus,
             writer_collector_id.clone(),
             writer_queue,
+            filter_config,
             writer_shutdown,
         )
         .await
@@ -270,9 +330,14 @@ async fn queue_bus_updates(
     bus: Arc<InProcessBus>,
     collector_id: String,
     queue: Arc<CollectorQueue>,
+    filter_config: CollectorFilterConfig,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
     let mut rx = bus.subscribe();
+    let mut last_forward: HashMap<String, Instant> = HashMap::new();
+    let debounce_window = Duration::from_secs(filter_config.counter_debounce_secs);
+    let mode = filter_config.counter_forward_mode.to_lowercase();
+
     loop {
         let update = tokio::select! {
             _ = shutdown.changed() => return Ok(()),
@@ -281,6 +346,20 @@ async fn queue_bus_updates(
 
         match update {
             Ok(update) => {
+                if mode != "raw" {
+                    let classified = update.classify();
+                    if let TelemetryEvent::InterfaceStats { if_name } = classified {
+                        let key = format!("{}:{}", update.target, if_name);
+                        let now = Instant::now();
+                        if let Some(last) = last_forward.get(&key) {
+                            if now.duration_since(*last) < debounce_window {
+                                continue;
+                            }
+                        }
+                        last_forward.insert(key, now);
+                    }
+                }
+
                 let proto = telemetry_to_ingest_update(&collector_id, &update)?;
                 queue.append(proto, &collector_id)?;
             }
@@ -1040,4 +1119,144 @@ mod tests {
             next_offset: 0,
         }
     }
+}
+
+pub async fn run_collector_manager(
+    cfg: Arc<RuntimeConfig>,
+    _collector_cfg: Arc<CollectorConfig>,
+    bus: Arc<InProcessBus>,
+    subscription_plan_tx: Option<mpsc::Sender<SubscriptionPlan>>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<()> {
+    let mut client = create_ingest_client(&cfg).await?;
+    let collector_id = cfg.collector_id.clone();
+    let hostname = hostname::get()
+        .ok()
+        .and_then(|h| h.into_string().ok())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    info!(%collector_id, %hostname, "collector registering with core");
+
+    let req = CollectorIdentity {
+        collector_id: collector_id.clone(),
+        hostname,
+        protocol_version: crate::api::PROTOCOL_VERSION,
+    };
+
+    let mut stream = client
+        .register_collector(req)
+        .await
+        .context("failed to register collector")?
+        .into_inner();
+
+    let mut subscribers: crate::subscriber::SubscriberHandleMap = HashMap::new();
+    let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => {
+                info!("collector manager shutting down");
+                crate::subscriber::stop_all_subscribers(&mut subscribers).await;
+                break;
+            }
+            msg = stream.message() => {
+                match msg {
+                    Ok(Some(update)) => {
+                        handle_assignment_update(
+                            update,
+                            &bus,
+                            &subscription_plan_tx,
+                            &mut subscribers,
+                        ).await;
+                    }
+                    Ok(None) => {
+                        warn!("assignment stream closed by core");
+                        break;
+                    }
+                    Err(error) => {
+                        warn!(%error, "assignment stream error");
+                        break;
+                    }
+                }
+            }
+            _ = heartbeat_interval.tick() => {
+                let stats = CollectorStats {
+                    collector_id: collector_id.clone(),
+                    queue_depth_updates: 0, 
+                    subscription_count: subscribers.len() as u32,
+                    uptime_secs: 0,
+                };
+                if let Err(error) = client.heartbeat(stats).await {
+                    warn!(%error, "failed to send heartbeat");
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_assignment_update(
+    update: AssignmentUpdate,
+    bus: &Arc<InProcessBus>,
+    subscription_plan_tx: &Option<mpsc::Sender<SubscriptionPlan>>,
+    subscribers: &mut crate::subscriber::SubscriberHandleMap,
+) {
+    if update.is_full_sync {
+        info!("full assignment sync received, stopping unassigned subscribers");
+        let assigned_addresses: std::collections::HashSet<String> = update
+            .assignments
+            .iter()
+            .filter_map(|a| a.device.as_ref().map(|d| d.address.clone()))
+            .collect();
+
+        let current_addresses: Vec<String> = subscribers.keys().cloned().collect();
+        for addr in current_addresses {
+            if !assigned_addresses.contains(&addr) {
+                crate::subscriber::stop_subscriber(&addr, subscribers).await;
+            }
+        }
+    }
+
+    for assignment in update.assignments {
+        let Some(device) = assignment.device else {
+            continue;
+        };
+        let mut target = match crate::api::target_from_managed_device(Some(device)) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(error = %e, "invalid device in assignment");
+                continue;
+            }
+        };
+
+        // Core sends resolved credentials
+        target.username = Some(assignment.username);
+        target.password = Some(assignment.password);
+
+        // In collector mode, we don't have a vault, so we pass a dummy/empty vault or update spawn_subscriber
+        // For now, we'll pass the Arc<InProcessBus> and Option<mpsc::Sender<SubscriptionPlan>> correctly.
+        if let Err(error) = crate::subscriber::spawn_subscriber_with_creds(
+            target,
+            bus,
+            subscription_plan_tx.as_ref(),
+            subscribers,
+        )
+        .await
+        {
+            warn!(%error, "failed to start assigned subscriber");
+        }
+    }
+}
+
+async fn create_ingest_client(cfg: &RuntimeConfig) -> Result<BonsaiGraphClient<tonic::transport::Channel>> {
+    let mut endpoint = tonic::transport::Endpoint::from_shared(cfg.core_ingest_endpoint.clone())?;
+    
+    if cfg.tls.enabled {
+        let tls = client_tls_config(&cfg.tls)?;
+        endpoint = endpoint.tls_config(tls)?;
+    }
+
+    let channel = endpoint.connect().await?;
+    Ok(BonsaiGraphClient::new(channel))
 }

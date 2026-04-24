@@ -11,9 +11,12 @@ use crate::credentials::{CredentialSummary, CredentialVault, ResolvedCredential}
 use crate::discovery;
 use crate::event_bus::InProcessBus;
 use crate::gnmi_set::gnmi_set;
-use crate::graph::{BonsaiEvent, GraphStore, SiteRecord};
+use crate::graph::{GraphStore, SiteRecord};
 use crate::ingest;
 use crate::registry::{ApiRegistry, DeviceRegistry};
+use crate::store::BonsaiStore;
+
+pub const PROTOCOL_VERSION: u32 = 1;
 
 pub mod pb {
     #![allow(clippy::all)]
@@ -33,33 +36,90 @@ pub struct TargetConnInfo {
     pub tls_domain: String,
 }
 
-pub struct BonsaiService {
-    store: Arc<GraphStore>,
+pub struct BonsaiService<S: BonsaiStore> {
+    store: Arc<S>,
     registry: Arc<ApiRegistry>,
     credentials: Arc<CredentialVault>,
     bus: Arc<InProcessBus>,
+    collector_manager: Option<Arc<crate::assignment::CollectorManager>>,
 }
 
-impl BonsaiService {
+impl<S: BonsaiStore> BonsaiService<S> {
     pub fn new(
-        store: Arc<GraphStore>,
+        store: Arc<S>,
         registry: Arc<ApiRegistry>,
         credentials: Arc<CredentialVault>,
         bus: Arc<InProcessBus>,
+        collector_manager: Option<Arc<crate::assignment::CollectorManager>>,
     ) -> Self {
         Self {
             store,
             registry,
             credentials,
             bus,
+            collector_manager,
         }
     }
 }
 
-type EventStream = Pin<Box<dyn Stream<Item = Result<StateEvent, Status>> + Send>>;
+pub type CollectorService = BonsaiService<crate::collector::graph::CollectorGraphStore>;
+pub type CoreService = BonsaiService<GraphStore>;
+
+type EventStream = Pin<Box<dyn Stream<Item = Result<pb::StateEvent, Status>> + Send>>;
+type RegisterCollectorStream = Pin<Box<dyn Stream<Item = Result<pb::AssignmentUpdate, Status>> + Send>>;
 
 #[tonic::async_trait]
-impl BonsaiGraph for BonsaiService {
+impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
+    type StreamEventsStream = EventStream;
+    type RegisterCollectorStream = RegisterCollectorStream;
+
+    async fn register_collector(
+        &self,
+        req: Request<CollectorIdentity>,
+    ) -> Result<Response<Self::RegisterCollectorStream>, Status> {
+        let identity = req.into_inner();
+        let collector_id = identity.collector_id;
+        let manager = self
+            .collector_manager
+            .as_ref()
+            .ok_or_else(|| Status::unimplemented("collector manager not enabled on this node"))?;
+
+        let mut rx = manager
+            .register_collector(collector_id.clone())
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let manager_for_stream = manager.clone();
+        let collector_id_for_stream = collector_id.clone();
+
+        let stream = async_stream::stream! {
+            while let Some(update) = rx.recv().await {
+                yield Ok(update);
+            }
+            // Cleanup on stream close
+            manager_for_stream.unregister_collector(&collector_id_for_stream);
+        };
+
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn heartbeat(
+        &self,
+        req: Request<pb::CollectorStats>,
+    ) -> Result<Response<pb::HeartbeatAck>, Status> {
+        let stats = req.into_inner();
+        tracing::debug!(
+            collector_id = %stats.collector_id,
+            queue_depth = stats.queue_depth_updates,
+            subs = stats.subscription_count,
+            uptime = stats.uptime_secs,
+            "collector heartbeat received"
+        );
+        Ok(Response::new(pb::HeartbeatAck {
+            error: String::new(),
+        }))
+    }
+
     async fn query(&self, req: Request<QueryRequest>) -> Result<Response<QueryResponse>, Status> {
         let cypher = req.into_inner().cypher;
         let db = self.store.db();
@@ -118,8 +178,8 @@ impl BonsaiGraph for BonsaiService {
 
     async fn list_managed_devices(
         &self,
-        _req: Request<ListManagedDevicesRequest>,
-    ) -> Result<Response<ListManagedDevicesResponse>, Status> {
+        _req: Request<pb::ListManagedDevicesRequest>,
+    ) -> Result<Response<pb::ListManagedDevicesResponse>, Status> {
         let devices = self
             .registry
             .list_active()
@@ -128,13 +188,13 @@ impl BonsaiGraph for BonsaiService {
             .map(|target| managed_device_from_target(&target))
             .collect();
 
-        Ok(Response::new(ListManagedDevicesResponse { devices }))
+        Ok(Response::new(pb::ListManagedDevicesResponse { devices }))
     }
 
     async fn add_device(
         &self,
-        req: Request<AddDeviceRequest>,
-    ) -> Result<Response<DeviceMutationResponse>, Status> {
+        req: Request<pb::AddDeviceRequest>,
+    ) -> Result<Response<pb::DeviceMutationResponse>, Status> {
         let target = target_from_managed_device(req.into_inner().device)
             .map_err(Status::invalid_argument)?;
         match self.registry.add_device(target) {
@@ -144,19 +204,19 @@ impl BonsaiGraph for BonsaiService {
                     .sync_sites_from_targets(vec![target.clone()])
                     .await
                 {
-                    return Ok(Response::new(DeviceMutationResponse {
+                    return Ok(Response::new(pb::DeviceMutationResponse {
                         success: false,
                         error: format!("device saved but site graph sync failed: {error:#}"),
                         device: Some(managed_device_from_target(&target)),
                     }));
                 }
-                Ok(Response::new(DeviceMutationResponse {
+                Ok(Response::new(pb::DeviceMutationResponse {
                     success: true,
                     error: String::new(),
                     device: Some(managed_device_from_target(&target)),
                 }))
             }
-            Err(e) => Ok(Response::new(DeviceMutationResponse {
+            Err(e) => Ok(Response::new(pb::DeviceMutationResponse {
                 success: false,
                 error: e.to_string(),
                 device: None,
@@ -166,8 +226,8 @@ impl BonsaiGraph for BonsaiService {
 
     async fn update_device(
         &self,
-        req: Request<UpdateDeviceRequest>,
-    ) -> Result<Response<DeviceMutationResponse>, Status> {
+        req: Request<pb::UpdateDeviceRequest>,
+    ) -> Result<Response<pb::DeviceMutationResponse>, Status> {
         let target = target_from_managed_device(req.into_inner().device)
             .map_err(Status::invalid_argument)?;
         match self.registry.update_device(target) {
@@ -177,19 +237,19 @@ impl BonsaiGraph for BonsaiService {
                     .sync_sites_from_targets(vec![target.clone()])
                     .await
                 {
-                    return Ok(Response::new(DeviceMutationResponse {
+                    return Ok(Response::new(pb::DeviceMutationResponse {
                         success: false,
                         error: format!("device saved but site graph sync failed: {error:#}"),
                         device: Some(managed_device_from_target(&target)),
                     }));
                 }
-                Ok(Response::new(DeviceMutationResponse {
+                Ok(Response::new(pb::DeviceMutationResponse {
                     success: true,
                     error: String::new(),
                     device: Some(managed_device_from_target(&target)),
                 }))
             }
-            Err(e) => Ok(Response::new(DeviceMutationResponse {
+            Err(e) => Ok(Response::new(pb::DeviceMutationResponse {
                 success: false,
                 error: e.to_string(),
                 device: None,
@@ -203,11 +263,15 @@ impl BonsaiGraph for BonsaiService {
     ) -> Result<Response<DeviceMutationResponse>, Status> {
         let address = req.into_inner().address;
         match self.registry.remove_device(&address) {
-            Ok(Some(target)) => Ok(Response::new(DeviceMutationResponse {
-                success: true,
-                error: String::new(),
-                device: Some(managed_device_from_target(&target)),
-            })),
+            Ok(Some(target)) => {
+                // If the device was assigned to a collector, we should ideally notify it.
+                // For now, we rely on full sync or future explicit 'Remove' command.
+                Ok(Response::new(DeviceMutationResponse {
+                    success: true,
+                    error: String::new(),
+                    device: Some(managed_device_from_target(&target)),
+                }))
+            }
             Ok(None) => Ok(Response::new(DeviceMutationResponse {
                 success: false,
                 error: format!("device '{address}' not found"),
@@ -223,8 +287,8 @@ impl BonsaiGraph for BonsaiService {
 
     async fn discover_device(
         &self,
-        req: Request<DiscoverRequest>,
-    ) -> Result<Response<DiscoveryReport>, Status> {
+        req: Request<pb::DiscoverRequest>,
+    ) -> Result<Response<pb::DiscoveryReport>, Status> {
         let request = req.into_inner();
         let credentials = resolve_request_credentials(
             &self.credentials,
@@ -257,8 +321,8 @@ impl BonsaiGraph for BonsaiService {
 
     async fn list_sites(
         &self,
-        _req: Request<ListSitesRequest>,
-    ) -> Result<Response<ListSitesResponse>, Status> {
+        _req: Request<pb::ListSitesRequest>,
+    ) -> Result<Response<pb::ListSitesResponse>, Status> {
         let sites = self
             .store
             .list_sites()
@@ -267,22 +331,22 @@ impl BonsaiGraph for BonsaiService {
             .into_iter()
             .map(site_to_proto)
             .collect();
-        Ok(Response::new(ListSitesResponse { sites }))
+        Ok(Response::new(pb::ListSitesResponse { sites }))
     }
 
     async fn add_site(
         &self,
-        req: Request<AddSiteRequest>,
-    ) -> Result<Response<SiteMutationResponse>, Status> {
+        req: Request<pb::AddSiteRequest>,
+    ) -> Result<Response<pb::SiteMutationResponse>, Status> {
         let site = site_from_proto(req.into_inner().site)
             .map_err(|e| Status::invalid_argument(format!("{e:#}")))?;
         match self.store.upsert_site(site).await {
-            Ok(site) => Ok(Response::new(SiteMutationResponse {
+            Ok(site) => Ok(Response::new(pb::SiteMutationResponse {
                 success: true,
                 error: String::new(),
                 site: Some(site_to_proto(site)),
             })),
-            Err(error) => Ok(Response::new(SiteMutationResponse {
+            Err(error) => Ok(Response::new(pb::SiteMutationResponse {
                 success: false,
                 error: format!("{error:#}"),
                 site: None,
@@ -292,17 +356,17 @@ impl BonsaiGraph for BonsaiService {
 
     async fn update_site(
         &self,
-        req: Request<UpdateSiteRequest>,
-    ) -> Result<Response<SiteMutationResponse>, Status> {
+        req: Request<pb::UpdateSiteRequest>,
+    ) -> Result<Response<pb::SiteMutationResponse>, Status> {
         let site = site_from_proto(req.into_inner().site)
             .map_err(|e| Status::invalid_argument(format!("{e:#}")))?;
         match self.store.upsert_site(site).await {
-            Ok(site) => Ok(Response::new(SiteMutationResponse {
+            Ok(site) => Ok(Response::new(pb::SiteMutationResponse {
                 success: true,
                 error: String::new(),
                 site: Some(site_to_proto(site)),
             })),
-            Err(error) => Ok(Response::new(SiteMutationResponse {
+            Err(error) => Ok(Response::new(pb::SiteMutationResponse {
                 success: false,
                 error: format!("{error:#}"),
                 site: None,
@@ -312,8 +376,8 @@ impl BonsaiGraph for BonsaiService {
 
     async fn list_credentials(
         &self,
-        _req: Request<ListCredentialsRequest>,
-    ) -> Result<Response<ListCredentialsResponse>, Status> {
+        _req: Request<pb::ListCredentialsRequest>,
+    ) -> Result<Response<pb::ListCredentialsResponse>, Status> {
         let credentials = self
             .credentials
             .list()
@@ -321,24 +385,24 @@ impl BonsaiGraph for BonsaiService {
             .into_iter()
             .map(credential_to_proto)
             .collect();
-        Ok(Response::new(ListCredentialsResponse { credentials }))
+        Ok(Response::new(pb::ListCredentialsResponse { credentials }))
     }
 
     async fn add_credential(
         &self,
-        req: Request<AddCredentialRequest>,
-    ) -> Result<Response<CredentialMutationResponse>, Status> {
+        req: Request<pb::AddCredentialRequest>,
+    ) -> Result<Response<pb::CredentialMutationResponse>, Status> {
         let req = req.into_inner();
         match self
             .credentials
             .add(&req.alias, &req.username, &req.password)
         {
-            Ok(credential) => Ok(Response::new(CredentialMutationResponse {
+            Ok(credential) => Ok(Response::new(pb::CredentialMutationResponse {
                 success: true,
                 error: String::new(),
                 credential: Some(credential_to_proto(credential)),
             })),
-            Err(error) => Ok(Response::new(CredentialMutationResponse {
+            Err(error) => Ok(Response::new(pb::CredentialMutationResponse {
                 success: false,
                 error: format!("{error:#}"),
                 credential: None,
@@ -348,21 +412,21 @@ impl BonsaiGraph for BonsaiService {
 
     async fn remove_credential(
         &self,
-        req: Request<RemoveCredentialRequest>,
-    ) -> Result<Response<CredentialMutationResponse>, Status> {
+        req: Request<pb::RemoveCredentialRequest>,
+    ) -> Result<Response<pb::CredentialMutationResponse>, Status> {
         let alias = req.into_inner().alias;
         match self.credentials.remove(&alias) {
-            Ok(Some(credential)) => Ok(Response::new(CredentialMutationResponse {
+            Ok(Some(credential)) => Ok(Response::new(pb::CredentialMutationResponse {
                 success: true,
                 error: String::new(),
                 credential: Some(credential_to_proto(credential)),
             })),
-            Ok(None) => Ok(Response::new(CredentialMutationResponse {
+            Ok(None) => Ok(Response::new(pb::CredentialMutationResponse {
                 success: false,
                 error: format!("credential alias '{alias}' not found"),
                 credential: None,
             })),
-            Err(error) => Ok(Response::new(CredentialMutationResponse {
+            Err(error) => Ok(Response::new(pb::CredentialMutationResponse {
                 success: false,
                 error: format!("{error:#}"),
                 credential: None,
@@ -484,8 +548,6 @@ impl BonsaiGraph for BonsaiService {
         Ok(Response::new(GetTopologyResponse { edges }))
     }
 
-    type StreamEventsStream = EventStream;
-
     async fn stream_events(
         &self,
         req: Request<StreamEventsRequest>,
@@ -499,20 +561,24 @@ impl BonsaiGraph for BonsaiService {
             let filter_types = filter_types.clone();
             let filter_device = filter_device.clone();
             async move {
-                let ev: BonsaiEvent = item.ok()?;
-                if !filter_device.is_empty() && ev.device_address != filter_device {
-                    return None;
+                match item {
+                    Ok(ev) => {
+                        if !filter_device.is_empty() && ev.device_address != filter_device {
+                            return None;
+                        }
+                        if !filter_types.is_empty() && !filter_types.contains(&ev.event_type) {
+                            return None;
+                        }
+                        Some(Ok(pb::StateEvent {
+                            device_address: ev.device_address,
+                            event_type: ev.event_type,
+                            detail_json: ev.detail_json,
+                            occurred_at_ns: ev.occurred_at_ns,
+                            state_change_event_id: ev.state_change_event_id,
+                        }))
+                    }
+                    Err(_) => Some(Err(Status::internal("broadcast stream error"))),
                 }
-                if !filter_types.is_empty() && !filter_types.contains(&ev.event_type) {
-                    return None;
-                }
-                Some(Ok(StateEvent {
-                    device_address: ev.device_address,
-                    event_type: ev.event_type,
-                    detail_json: ev.detail_json,
-                    occurred_at_ns: ev.occurred_at_ns,
-                    state_change_event_id: ev.state_change_event_id,
-                }))
             }
         });
 
@@ -521,8 +587,8 @@ impl BonsaiGraph for BonsaiService {
 
     async fn telemetry_ingest(
         &self,
-        req: Request<Streaming<TelemetryIngestUpdate>>,
-    ) -> Result<Response<TelemetryIngestResponse>, Status> {
+        req: Request<Streaming<pb::TelemetryIngestUpdate>>,
+    ) -> Result<Response<pb::TelemetryIngestResponse>, Status> {
         let mut stream = req.into_inner();
         let mut accepted = 0_u64;
 
@@ -531,6 +597,15 @@ impl BonsaiGraph for BonsaiService {
             .await
             .map_err(|e| Status::unavailable(e.to_string()))?
         {
+            if accepted == 0 && update.protocol_version != PROTOCOL_VERSION {
+                tracing::warn!(
+                    collector_id = %update.collector_id,
+                    client_version = update.protocol_version,
+                    server_version = PROTOCOL_VERSION,
+                    "protocol version skew detected"
+                );
+            }
+
             let collector_id = update.collector_id.clone();
             let telemetry = ingest::ingest_update_to_telemetry(update)
                 .map_err(|e| Status::invalid_argument(format!("{e:#}")))?;
@@ -542,7 +617,48 @@ impl BonsaiGraph for BonsaiService {
             }
         }
 
-        Ok(Response::new(TelemetryIngestResponse {
+        Ok(Response::new(pb::TelemetryIngestResponse {
+            accepted,
+            error: String::new(),
+            protocol_version: PROTOCOL_VERSION,
+        }))
+    }
+
+    async fn detection_ingest(
+        &self,
+        req: Request<Streaming<pb::DetectionEventIngest>>,
+    ) -> Result<Response<pb::DetectionIngestResponse>, Status> {
+        let mut stream = req.into_inner();
+        let mut accepted = 0_u64;
+
+        while let Some(d) = stream
+            .message()
+            .await
+            .map_err(|e| Status::unavailable(e.to_string()))?
+        {
+            let collector_id = d.collector_id.clone();
+            match self
+                .store
+                .write_detection(
+                    d.device_address,
+                    d.rule_id,
+                    d.severity,
+                    d.features_json,
+                    d.fired_at_ns,
+                    d.state_change_event_id,
+                )
+                .await
+            {
+                Ok(_) => {
+                    accepted += 1;
+                }
+                Err(error) => {
+                    tracing::warn!(%collector_id, %error, "failed to write ingested detection to graph");
+                }
+            }
+        }
+
+        Ok(Response::new(pb::DetectionIngestResponse {
             accepted,
             error: String::new(),
         }))
@@ -644,7 +760,7 @@ impl BonsaiGraph for BonsaiService {
     }
 }
 
-fn managed_device_from_target(target: &TargetConfig) -> ManagedDevice {
+pub fn managed_device_from_target(target: &TargetConfig) -> ManagedDevice {
     ManagedDevice {
         address: target.address.clone(),
         enabled: Some(target.enabled),
@@ -657,6 +773,7 @@ fn managed_device_from_target(target: &TargetConfig) -> ManagedDevice {
         hostname: target.hostname.clone().unwrap_or_default(),
         role: target.role.clone().unwrap_or_default(),
         site: target.site.clone().unwrap_or_default(),
+        collector_id: target.collector_id.clone().unwrap_or_default(),
         selected_paths: target
             .selected_paths
             .iter()
@@ -666,7 +783,9 @@ fn managed_device_from_target(target: &TargetConfig) -> ManagedDevice {
     }
 }
 
-fn target_from_managed_device(device: Option<ManagedDevice>) -> Result<TargetConfig, &'static str> {
+pub fn target_from_managed_device(
+    device: Option<ManagedDevice>,
+) -> Result<TargetConfig, &'static str> {
     let device = device.ok_or("device is required")?;
     if device.address.trim().is_empty() {
         return Err("device.address is required");
@@ -686,6 +805,7 @@ fn target_from_managed_device(device: Option<ManagedDevice>) -> Result<TargetCon
         hostname: option_string(device.hostname),
         role: option_string(device.role),
         site: option_string(device.site),
+        collector_id: option_string(device.collector_id),
         selected_paths: device
             .selected_paths
             .into_iter()
@@ -910,3 +1030,4 @@ fn ts_val(v: &Value) -> i64 {
         _ => 0,
     }
 }
+

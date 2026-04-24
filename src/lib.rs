@@ -1,6 +1,9 @@
 pub mod api;
 pub mod archive;
+pub mod assignment;
+pub mod collector;
 pub mod config;
+pub mod counter_summarizer;
 pub mod credentials;
 pub mod discovery;
 pub mod event_bus;
@@ -10,9 +13,14 @@ pub mod http_server;
 pub mod ingest;
 pub mod registry;
 pub mod retention;
+pub mod store;
 pub mod subscriber;
 pub mod subscription_status;
 pub mod telemetry;
+
+pub use async_trait;
+pub use async_stream;
+
 
 pub mod proto {
     pub mod gnmi {

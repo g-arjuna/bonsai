@@ -17,6 +17,9 @@ pub enum TelemetryEvent {
     InterfaceStats {
         if_name: String,
     },
+    InterfaceSummary {
+        if_name: String,
+    },
     BfdSessionState {
         if_name: String,
         local_discriminator: String,
@@ -48,6 +51,16 @@ pub enum TelemetryEvent {
 
 impl TelemetryUpdate {
     pub fn classify(&self) -> TelemetryEvent {
+        // ── Summarized paths (Collector summary mode) ───────────────────────
+        if self.path.ends_with("/summary") {
+            if let Some(name) = extract_bracketed(&self.path, "interface[name=") {
+                return TelemetryEvent::InterfaceSummary { if_name: name };
+            }
+            if let Some(name) = extract_bracketed(&self.path, "interfaces/interface[name=") {
+                return TelemetryEvent::InterfaceSummary { if_name: name };
+            }
+        }
+
         // ── SR Linux native paths ──────────────────────────────────────────────
         // interface[name=X]/statistics
         if self.path.contains("interface[name=")

@@ -77,6 +77,8 @@ class Detector(ABC):
     severity: str
     auto_remediate: bool = False
     remediation_action: str = ""
+    # scope: 'local' (eval on collector), 'core' (eval on core), 'hybrid' (both)
+    scope: str = "local"
 
     @abstractmethod
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:

@@ -1,0 +1,9 @@
+api_addr     = "0.0.0.0:50052"
+
+[collector]
+graph_path = "runtime/bonsai-collector.db"
+
+[runtime]
+mode = "collector"
+collector_id = "collector-1"
+core_ingest_endpoint = "http://bonsai-core:50051"

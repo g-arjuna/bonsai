@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-import bonsai_service_pb2 as bonsai__service__pb2
+from . import bonsai_service_pb2 as bonsai__service__pb2
 
 GRPC_GENERATED_VERSION = '1.80.0'
 GRPC_VERSION = grpc.__version__
@@ -125,6 +125,11 @@ class BonsaiGraphStub(object):
                 '/bonsai.v1.BonsaiGraph/TelemetryIngest',
                 request_serializer=bonsai__service__pb2.TelemetryIngestUpdate.SerializeToString,
                 response_deserializer=bonsai__service__pb2.TelemetryIngestResponse.FromString,
+                _registered_method=True)
+        self.DetectionIngest = channel.stream_unary(
+                '/bonsai.v1.BonsaiGraph/DetectionIngest',
+                request_serializer=bonsai__service__pb2.DetectionEventIngest.SerializeToString,
+                response_deserializer=bonsai__service__pb2.DetectionIngestResponse.FromString,
                 _registered_method=True)
         self.CreateDetection = channel.unary_unary(
                 '/bonsai.v1.BonsaiGraph/CreateDetection',
@@ -261,6 +266,13 @@ class BonsaiGraphServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def DetectionIngest(self, request_iterator, context):
+        """Client-streaming: collectors push locally-evaluated detections to core.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def CreateDetection(self, request, context):
         """Phase 4: write detections and remediations into the graph.
         """
@@ -373,6 +385,11 @@ def add_BonsaiGraphServicer_to_server(servicer, server):
                     servicer.TelemetryIngest,
                     request_deserializer=bonsai__service__pb2.TelemetryIngestUpdate.FromString,
                     response_serializer=bonsai__service__pb2.TelemetryIngestResponse.SerializeToString,
+            ),
+            'DetectionIngest': grpc.stream_unary_rpc_method_handler(
+                    servicer.DetectionIngest,
+                    request_deserializer=bonsai__service__pb2.DetectionEventIngest.FromString,
+                    response_serializer=bonsai__service__pb2.DetectionIngestResponse.SerializeToString,
             ),
             'CreateDetection': grpc.unary_unary_rpc_method_handler(
                     servicer.CreateDetection,
@@ -878,6 +895,33 @@ class BonsaiGraph(object):
             '/bonsai.v1.BonsaiGraph/TelemetryIngest',
             bonsai__service__pb2.TelemetryIngestUpdate.SerializeToString,
             bonsai__service__pb2.TelemetryIngestResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DetectionIngest(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_unary(
+            request_iterator,
+            target,
+            '/bonsai.v1.BonsaiGraph/DetectionIngest',
+            bonsai__service__pb2.DetectionEventIngest.SerializeToString,
+            bonsai__service__pb2.DetectionIngestResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -22,13 +22,46 @@ pub struct Config {
     pub archive: ArchiveConfig,
     #[serde(default)]
     pub credentials: CredentialsConfig,
+    #[serde(default)]
     pub target: Vec<TargetConfig>,
 }
 
 #[derive(Deserialize, Clone, Default)]
 pub struct CollectorConfig {
+    #[serde(default = "default_collector_graph_path")]
+    pub graph_path: String,
     #[serde(default)]
     pub queue: CollectorQueueConfig,
+    #[serde(default)]
+    pub filter: CollectorFilterConfig,
+}
+
+impl CollectorConfig {
+    pub fn default_with_paths() -> Self {
+        Self {
+            graph_path: default_collector_graph_path(),
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(Deserialize, Clone)]
+pub struct CollectorFilterConfig {
+    /// Minimum interval between counter forwards per (device, interface). Default: 10s.
+    #[serde(default = "default_debounce_secs")]
+    pub counter_debounce_secs: u64,
+    /// Forwarding mode: "raw" (no filtering), "debounced" (drops updates within window).
+    #[serde(default = "default_counter_forward_mode")]
+    pub counter_forward_mode: String,
+}
+
+impl Default for CollectorFilterConfig {
+    fn default() -> Self {
+        Self {
+            counter_debounce_secs: default_debounce_secs(),
+            counter_forward_mode: default_counter_forward_mode(),
+        }
+    }
 }
 
 #[derive(Deserialize, Clone)]
@@ -249,8 +282,16 @@ fn default_credentials_passphrase_env() -> String {
     "BONSAI_VAULT_PASSPHRASE".to_string()
 }
 
+fn default_counter_forward_mode() -> String {
+    "debounced".to_string()
+}
+
 fn default_collector_queue_path() -> String {
     "runtime/collector-queue".to_string()
+}
+
+fn default_collector_graph_path() -> String {
+    "runtime/collector.db".to_string()
 }
 
 fn default_collector_queue_max_bytes() -> u64 {
@@ -322,6 +363,8 @@ pub struct TargetConfig {
     pub role: Option<String>,
     /// Site label for future topology grouping and TSDB/graph enrichment.
     pub site: Option<String>,
+    /// The stable ID of the collector responsible for this device.
+    pub collector_id: Option<String>,
     /// Operator-selected subscription paths from onboarding discovery.
     #[serde(default)]
     pub selected_paths: Vec<SelectedSubscriptionPath>,

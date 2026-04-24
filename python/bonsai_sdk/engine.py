@@ -38,11 +38,16 @@ class RuleEngine:
         on_detection: Callable[[Detection], None],
         dry_run: bool = False,
         model_dir: str = "models",
+        run_scope: str = "local",
     ):
         self._client       = client
         self._on_detection = on_detection
         self._dry_run      = dry_run or os.environ.get("BONSAI_DRY_RUN", "0") == "1"
-        self._rules: list[Detector] = BFD_RULES + BGP_RULES + INTERFACE_RULES
+        self._run_scope    = run_scope
+        self._rules: list[Detector] = [
+            r for r in (BFD_RULES + BGP_RULES + INTERFACE_RULES)
+            if r.scope == "hybrid" or r.scope == run_scope
+        ]
         self._stop = threading.Event()
         self._load_ml_detectors(model_dir)
 
@@ -52,13 +57,15 @@ class RuleEngine:
             path = os.path.join(model_dir, filename)
             if os.path.exists(path):
                 try:
-                    self._rules.append(MLDetector(rule_id, path, threshold, severity))
-                    print(f"[engine] ML detector loaded: {rule_id} from {path}")
-                    loaded += 1
+                    detector = MLDetector(rule_id, path, threshold, severity)
+                    if detector.scope == "hybrid" or detector.scope == self._run_scope:
+                        self._rules.append(detector)
+                        print(f"[engine] ML detector loaded: {rule_id} from {path} (scope: {detector.scope})")
+                        loaded += 1
                 except Exception as exc:
                     print(f"[engine] WARNING: failed to load {path}: {exc}")
         if loaded == 0:
-            print(f"[engine] no ML models found in '{model_dir}' — running rules-only mode")
+            print(f"[engine] no ML models found for scope '{self._run_scope}' in '{model_dir}' — running rules-only mode")
 
     def start(self) -> None:
         threading.Thread(target=self._event_loop, daemon=True, name="bonsai-event-loop").start()
