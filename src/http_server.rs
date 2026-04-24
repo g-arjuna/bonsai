@@ -28,11 +28,14 @@ use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use tower_http::{cors::CorsLayer, services::ServeDir};
 
+use crate::assignment::{CollectorManager, CollectorStatus};
 use crate::graph::{DetectionRow, GraphStore, REMEDIATION_TRUST_CUTOFF_ISO, SiteRecord, TraceStep};
 use crate::{
-    config::{SelectedSubscriptionPath, TargetConfig},
+    archive,
+    config::{AssignmentRule, SelectedSubscriptionPath, TargetConfig},
     credentials::{CredentialSummary, CredentialVault, ResolvedCredential},
     discovery::{self, DiscoveryInput},
+    event_bus,
     registry::{ApiRegistry, DeviceRegistry, RegistryChange},
 };
 
@@ -79,6 +82,34 @@ struct TraceResponse {
 }
 
 #[derive(Serialize)]
+struct IncidentJson {
+    id: String,
+    root: DetectionRow,
+    cascading: Vec<DetectionRow>,
+    affected_devices: Vec<String>,
+    severity: String,
+    started_at_ns: i64,
+    ended_at_ns: i64,
+    remediation_status: String,
+}
+
+#[derive(Serialize)]
+struct IncidentsResponse {
+    incidents: Vec<IncidentJson>,
+}
+
+#[derive(Deserialize, Default)]
+struct IncidentsParams {
+    #[serde(default = "default_incident_window")]
+    window_secs: u64,
+    #[serde(default = "default_incident_limit")]
+    limit: u32,
+}
+
+fn default_incident_window() -> u64 { 30 }
+fn default_incident_limit() -> u32 { 200 }
+
+#[derive(Serialize)]
 struct ReadinessResponse {
     detection_events: usize,
     state_change_events: usize,
@@ -87,6 +118,31 @@ struct ReadinessResponse {
     remediation_rows_post_cutoff: usize,
     action_distribution_post_cutoff: HashMap<String, usize>,
     status_distribution_post_cutoff: HashMap<String, usize>,
+}
+
+#[derive(Serialize)]
+struct OperationsResponse {
+    detection_events: usize,
+    state_change_events: usize,
+    remediation_rows_post_cutoff: usize,
+    rule_distribution: HashMap<String, usize>,
+    action_distribution_post_cutoff: HashMap<String, usize>,
+    status_distribution_post_cutoff: HashMap<String, usize>,
+    device_count: usize,
+    enabled_device_count: usize,
+    observed_subscriptions: usize,
+    pending_subscriptions: usize,
+    silent_subscriptions: usize,
+    collectors_connected: usize,
+    collectors_total: usize,
+    unassigned_devices: usize,
+    event_bus_depth: u64,
+    event_bus_receivers: u64,
+    archive_lag_millis: i64,
+    archive_buffer_rows: u64,
+    archive_last_flush_millis: u64,
+    archive_last_compression_ppm: u64,
+    cutoff_iso: String,
 }
 
 /// Outbound SSE payload — mirrors BonsaiEvent but serialised as JSON.
@@ -99,6 +155,7 @@ struct ManagedDevicesResponse {
 struct ManagedDeviceJson {
     address: String,
     enabled: bool,
+    collector_id: String,
     tls_domain: String,
     ca_cert: String,
     vendor: String,
@@ -225,6 +282,46 @@ struct SiteMutationResponse {
     site: Option<SiteJson>,
 }
 
+#[derive(Deserialize)]
+struct RemoveSiteRequest {
+    id: String,
+}
+
+#[derive(Serialize)]
+struct SiteSummaryResponse {
+    site: SiteJson,
+    child_site_count: usize,
+    device_count: usize,
+    health: SiteHealthJson,
+    subscription_summary: SiteSubscriptionSummaryJson,
+    devices: Vec<SiteDeviceJson>,
+    recent_detections: Vec<DetectionRow>,
+}
+
+#[derive(Serialize, Default)]
+struct SiteHealthJson {
+    healthy: usize,
+    warn: usize,
+    critical: usize,
+}
+
+#[derive(Serialize, Default)]
+struct SiteSubscriptionSummaryJson {
+    observed: usize,
+    pending: usize,
+    silent: usize,
+}
+
+#[derive(Serialize)]
+struct SiteDeviceJson {
+    address: String,
+    hostname: String,
+    vendor: String,
+    role: String,
+    collector_id: String,
+    health: String,
+}
+
 #[derive(Serialize)]
 struct CredentialsResponse {
     credentials: Vec<CredentialJson>,
@@ -237,6 +334,7 @@ struct CredentialJson {
     created_at_ns: i64,
     updated_at_ns: i64,
     last_used_at_ns: i64,
+    device_count: usize,
 }
 
 #[derive(Deserialize)]
@@ -249,6 +347,18 @@ struct AddCredentialRequest {
 #[derive(Deserialize)]
 struct RemoveCredentialRequest {
     alias: String,
+}
+
+#[derive(Deserialize)]
+struct TestCredentialRequest {
+    alias: String,
+    address: String,
+    #[serde(default)]
+    tls_domain: String,
+    #[serde(default)]
+    ca_cert_path: String,
+    #[serde(default)]
+    role_hint: String,
 }
 
 #[derive(Serialize)]
@@ -297,6 +407,7 @@ pub struct AppState {
     pub store: Arc<GraphStore>,
     pub registry: Arc<ApiRegistry>,
     pub credentials: Arc<CredentialVault>,
+    pub collector_manager: Option<Arc<CollectorManager>>,
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -305,11 +416,13 @@ pub fn router(
     store: Arc<GraphStore>,
     registry: Arc<ApiRegistry>,
     credentials: Arc<CredentialVault>,
+    collector_manager: Option<Arc<CollectorManager>>,
 ) -> Router {
     let state = AppState {
         store,
         registry,
         credentials,
+        collector_manager,
     };
 
     // Serve the Svelte SPA from ui/dist/. Fall back to index.html so
@@ -341,16 +454,29 @@ pub fn router(
         )
         .route("/api/onboarding/discover", post(discover_handler))
         .route("/api/sites", get(sites_handler).post(upsert_site_handler))
+        .route("/api/sites/{id}", get(site_summary_handler))
+        .route("/api/sites/remove", post(remove_site_handler))
         .route(
             "/api/credentials",
             get(credentials_handler).post(add_credential_handler),
         )
         .route("/api/credentials/update", post(update_credential_handler))
         .route("/api/credentials/remove", post(remove_credential_handler))
+        .route("/api/credentials/test", post(test_credential_handler))
         .route("/api/detections", get(detections_handler))
+        .route("/api/incidents", get(incidents_handler))
         .route("/api/readiness", get(readiness_handler))
+        .route("/api/operations", get(operations_handler))
         .route("/api/trace/{id}", get(trace_handler))
         .route("/api/events", get(events_handler))
+        .route("/api/devices/{address}", get(device_detail_handler))
+        .route("/api/collectors", get(collectors_handler))
+        .route(
+            "/api/assignment/rules",
+            get(assignment_rules_handler).post(set_assignment_rules_handler),
+        )
+        .route("/api/assignment/status", get(assignment_status_handler))
+        .route("/api/assignment/override", post(assignment_override_handler))
         .fallback_service(spa)
         .with_state(state)
         .layer(CorsLayer::permissive())
@@ -507,12 +633,14 @@ async fn discover_handler(
 async fn credentials_handler(
     State(state): State<AppState>,
 ) -> Result<Json<CredentialsResponse>, (StatusCode, String)> {
+    let device_counts = credential_device_counts(&state.registry)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
     let credentials = state
         .credentials
         .list()
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?
         .into_iter()
-        .map(credential_json)
+        .map(|credential| credential_json(credential, &device_counts))
         .collect();
     let unlocked = state
         .credentials
@@ -532,11 +660,15 @@ async fn add_credential_handler(
         .credentials
         .add(&req.alias, &req.username, &req.password)
     {
-        Ok(credential) => Ok(Json(CredentialMutationResponse {
-            success: true,
-            error: String::new(),
-            credential: Some(credential_json(credential)),
-        })),
+        Ok(credential) => {
+            let device_counts = credential_device_counts(&state.registry)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            Ok(Json(CredentialMutationResponse {
+                success: true,
+                error: String::new(),
+                credential: Some(credential_json(credential, &device_counts)),
+            }))
+        }
         Err(error) => Ok(Json(CredentialMutationResponse {
             success: false,
             error: format!("{error:#}"),
@@ -549,15 +681,27 @@ async fn update_credential_handler(
     State(state): State<AppState>,
     Json(req): Json<AddCredentialRequest>,
 ) -> Result<Json<CredentialMutationResponse>, (StatusCode, String)> {
+    let username = if req.username.trim().is_empty() {
+        state
+            .credentials
+            .username_for_alias(&req.alias)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?
+    } else {
+        req.username.clone()
+    };
     match state
         .credentials
-        .update(&req.alias, &req.username, &req.password)
+        .update(&req.alias, &username, &req.password)
     {
-        Ok(credential) => Ok(Json(CredentialMutationResponse {
-            success: true,
-            error: String::new(),
-            credential: Some(credential_json(credential)),
-        })),
+        Ok(credential) => {
+            let device_counts = credential_device_counts(&state.registry)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            Ok(Json(CredentialMutationResponse {
+                success: true,
+                error: String::new(),
+                credential: Some(credential_json(credential, &device_counts)),
+            }))
+        }
         Err(error) => Ok(Json(CredentialMutationResponse {
             success: false,
             error: format!("{error:#}"),
@@ -570,11 +714,24 @@ async fn remove_credential_handler(
     State(state): State<AppState>,
     Json(req): Json<RemoveCredentialRequest>,
 ) -> Result<Json<CredentialMutationResponse>, (StatusCode, String)> {
+    let device_counts = credential_device_counts(&state.registry)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    if device_counts.get(req.alias.trim()).copied().unwrap_or_default() > 0 {
+        return Ok(Json(CredentialMutationResponse {
+            success: false,
+            error: format!(
+                "credential alias '{}' is still referenced by {} device(s)",
+                req.alias.trim(),
+                device_counts.get(req.alias.trim()).copied().unwrap_or_default()
+            ),
+            credential: None,
+        }));
+    }
     match state.credentials.remove(&req.alias) {
         Ok(Some(credential)) => Ok(Json(CredentialMutationResponse {
             success: true,
             error: String::new(),
-            credential: Some(credential_json(credential)),
+            credential: Some(credential_json(credential, &device_counts)),
         })),
         Ok(None) => Ok(Json(CredentialMutationResponse {
             success: false,
@@ -587,6 +744,31 @@ async fn remove_credential_handler(
             credential: None,
         })),
     }
+}
+
+async fn test_credential_handler(
+    State(state): State<AppState>,
+    Json(req): Json<TestCredentialRequest>,
+) -> Result<Json<discovery::DiscoveryReport>, (StatusCode, String)> {
+    let credentials = state
+        .credentials
+        .resolve(&req.alias)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+
+    let report = discovery::discover_device(DiscoveryInput {
+        address: req.address,
+        username: Some(credentials.username),
+        password: Some(credentials.password),
+        username_env: None,
+        password_env: None,
+        ca_cert_path: option_string(req.ca_cert_path),
+        tls_domain: option_string(req.tls_domain),
+        role_hint: option_string(req.role_hint),
+    })
+    .await
+    .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+
+    Ok(Json(report))
 }
 
 async fn add_managed_device_handler(
@@ -636,12 +818,15 @@ async fn save_managed_device(
         }
     }
     let address = target.address.clone();
-    let result = match state.registry.add_device(target.clone()) {
+    let result = match state
+        .registry
+        .add_device_with_audit(target.clone(), "api", "api_add_device")
+    {
         Ok(device) => Ok(device),
         Err(add_error) => match state.registry.get_device(&address) {
             Ok(Some(_)) => state
                 .registry
-                .update_device(target)
+                .update_device_with_audit(target, "api", "api_update_device")
                 .map_err(|update_error| {
                     format!("add failed: {add_error:#}; update failed: {update_error:#}")
                 }),
@@ -709,6 +894,205 @@ async fn upsert_site_handler(
     }
 }
 
+async fn site_summary_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<SiteSummaryResponse>, (StatusCode, String)> {
+    let all_sites = state
+        .store
+        .list_sites()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    let site = all_sites
+        .iter()
+        .find(|site| site.id == id)
+        .cloned()
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("site '{id}' not found")))?;
+
+    let subtree_ids = site_subtree_ids(&all_sites, &site.id);
+    let subtree_names: std::collections::HashSet<String> = all_sites
+        .iter()
+        .filter(|candidate| subtree_ids.contains(&candidate.id))
+        .map(|candidate| candidate.name.clone())
+        .collect();
+
+    let targets = state
+        .registry
+        .list_all_targets()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    let site_targets: Vec<TargetConfig> = targets
+        .into_iter()
+        .filter(|target| {
+            target
+                .site
+                .as_ref()
+                .map(|site_name| subtree_names.contains(site_name))
+                .unwrap_or(false)
+        })
+        .collect();
+    let device_addresses: std::collections::HashSet<String> = site_targets
+        .iter()
+        .map(|target| target.address.clone())
+        .collect();
+
+    let db = state.store.db();
+    let bgp_rows = tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        let rows = conn
+            .query(
+                "MATCH (n:BgpNeighbor) \
+                 RETURN n.device_address, n.session_state",
+            )
+            .map_err(|e| e.to_string())?;
+        Ok::<_, String>(
+            rows.map(|row| (read_str(&row[0]), read_str(&row[1])))
+                .collect::<Vec<_>>(),
+        )
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let mut bgp_by_device: HashMap<String, Vec<BgpJson>> = HashMap::new();
+    for (address, session_state) in bgp_rows {
+        if !device_addresses.contains(&address) {
+            continue;
+        }
+        bgp_by_device.entry(address).or_default().push(BgpJson {
+            peer: String::new(),
+            state: session_state,
+            peer_as: 0,
+        });
+    }
+
+    let mut health = SiteHealthJson::default();
+    let devices = site_targets
+        .iter()
+        .map(|target| {
+            let device_health = compute_health(
+                bgp_by_device
+                    .get(&target.address)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            );
+            match device_health.as_str() {
+                "healthy" => health.healthy += 1,
+                "warn" => health.warn += 1,
+                _ => health.critical += 1,
+            }
+            SiteDeviceJson {
+                address: target.address.clone(),
+                hostname: target.hostname.clone().unwrap_or_default(),
+                vendor: target.vendor.clone().unwrap_or_default(),
+                role: target.role.clone().unwrap_or_default(),
+                collector_id: target.collector_id.clone().unwrap_or_default(),
+                health: device_health,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let all_statuses = read_subscription_statuses(state.store.db()).await?;
+    let mut subscription_summary = SiteSubscriptionSummaryJson::default();
+    for address in &device_addresses {
+        for status in all_statuses.get(address).cloned().unwrap_or_default() {
+            match status.status.as_str() {
+                "observed" => subscription_summary.observed += 1,
+                "pending" => subscription_summary.pending += 1,
+                _ => subscription_summary.silent += 1,
+            }
+        }
+    }
+
+    let recent_detections = state
+        .store
+        .read_detections(100)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .into_iter()
+        .filter(|row| device_addresses.contains(&row.device_address))
+        .take(10)
+        .collect();
+
+    let child_site_count = all_sites
+        .iter()
+        .filter(|candidate| candidate.parent_id == site.id)
+        .count();
+
+    Ok(Json(SiteSummaryResponse {
+        site: site_json(site),
+        child_site_count,
+        device_count: devices.len(),
+        health,
+        subscription_summary,
+        devices,
+        recent_detections,
+    }))
+}
+
+async fn remove_site_handler(
+    State(state): State<AppState>,
+    Json(req): Json<RemoveSiteRequest>,
+) -> Result<Json<SiteMutationResponse>, (StatusCode, String)> {
+    let all_sites = state
+        .store
+        .list_sites()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    let site = match all_sites.iter().find(|site| site.id == req.id).cloned() {
+        Some(site) => site,
+        None => {
+            return Ok(Json(SiteMutationResponse {
+                success: false,
+                error: format!("site '{}' not found", req.id),
+                site: None,
+            }));
+        }
+    };
+    if all_sites.iter().any(|candidate| candidate.parent_id == site.id) {
+        return Ok(Json(SiteMutationResponse {
+            success: false,
+            error: "cannot delete a site that still has child sites".to_string(),
+            site: None,
+        }));
+    }
+
+    let in_use = state
+        .registry
+        .list_all_targets()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
+        .into_iter()
+        .filter(|target| target.site.as_deref() == Some(site.name.as_str()))
+        .count();
+    if in_use > 0 {
+        return Ok(Json(SiteMutationResponse {
+            success: false,
+            error: format!("cannot delete site '{}' while {} device(s) still reference it", site.name, in_use),
+            site: None,
+        }));
+    }
+
+    let db = state.store.db();
+    let site_id = site.id.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("MATCH (s:Site {id: $id}) DETACH DELETE s")
+            .map_err(|e| e.to_string())?;
+        conn.execute(&mut stmt, vec![("id", Value::String(site_id))])
+            .map_err(|e| e.to_string())?;
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(SiteMutationResponse {
+        success: true,
+        error: String::new(),
+        site: Some(site_json(site)),
+    }))
+}
+
 async fn remove_managed_device_handler(
     State(state): State<AppState>,
     Json(req): Json<RemoveManagedDeviceRequest>,
@@ -760,7 +1144,10 @@ async fn bulk_managed_device_action_handler(
         match state.registry.get_device(&address) {
             Ok(Some(mut target)) => {
                 target.enabled = action != "stop";
-                match state.registry.update_device(target) {
+                match state
+                    .registry
+                    .update_device_with_audit(target, "api", &format!("api_bulk_{action}"))
+                {
                     Ok(device) => devices.push(managed_device_json(device, &statuses)),
                     Err(error) => errors.push(format!("{address}: {error:#}")),
                 }
@@ -900,6 +1287,69 @@ async fn readiness_handler(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     Ok(Json(readiness))
+}
+
+async fn operations_handler(
+    State(state): State<AppState>,
+) -> Result<Json<OperationsResponse>, (StatusCode, String)> {
+    let readiness = readiness_handler(State(state.clone())).await?.0;
+    let targets = state
+        .registry
+        .list_all_targets()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    let statuses = read_subscription_statuses(state.store.db()).await?;
+
+    let mut observed_subscriptions = 0usize;
+    let mut pending_subscriptions = 0usize;
+    let mut silent_subscriptions = 0usize;
+    for rows in statuses.values() {
+        for status in rows {
+            match status.status.as_str() {
+                "observed" => observed_subscriptions += 1,
+                "pending" => pending_subscriptions += 1,
+                _ => silent_subscriptions += 1,
+            }
+        }
+    }
+
+    let collector_summary = state
+        .collector_manager
+        .as_ref()
+        .map(|manager| manager.collector_status_summary())
+        .unwrap_or_else(|| crate::assignment::CollectorStatusSummary {
+            collectors: Vec::new(),
+            unassigned_devices: Vec::new(),
+        });
+    let bus_snapshot = event_bus::InProcessBus::snapshot();
+    let archive_snapshot = archive::snapshot();
+
+    Ok(Json(OperationsResponse {
+        detection_events: readiness.detection_events,
+        state_change_events: readiness.state_change_events,
+        remediation_rows_post_cutoff: readiness.remediation_rows_post_cutoff,
+        rule_distribution: readiness.rule_distribution,
+        action_distribution_post_cutoff: readiness.action_distribution_post_cutoff,
+        status_distribution_post_cutoff: readiness.status_distribution_post_cutoff,
+        device_count: targets.len(),
+        enabled_device_count: targets.iter().filter(|target| target.enabled).count(),
+        observed_subscriptions,
+        pending_subscriptions,
+        silent_subscriptions,
+        collectors_connected: collector_summary
+            .collectors
+            .iter()
+            .filter(|collector| collector.connected)
+            .count(),
+        collectors_total: collector_summary.collectors.len(),
+        unassigned_devices: collector_summary.unassigned_devices.len(),
+        event_bus_depth: bus_snapshot.depth,
+        event_bus_receivers: bus_snapshot.receivers,
+        archive_lag_millis: archive_snapshot.lag_millis,
+        archive_buffer_rows: archive_snapshot.buffer_rows,
+        archive_last_flush_millis: archive_snapshot.last_flush_millis,
+        archive_last_compression_ppm: archive_snapshot.last_compression_ppm,
+        cutoff_iso: readiness.cutoff_iso,
+    }))
 }
 
 async fn events_handler(
@@ -1069,6 +1519,7 @@ fn managed_device_json(
     let address = target.address;
     ManagedDeviceJson {
         enabled: target.enabled,
+        collector_id: target.collector_id.unwrap_or_default(),
         tls_domain: target.tls_domain.unwrap_or_default(),
         ca_cert: target.ca_cert.unwrap_or_default(),
         vendor: target.vendor.unwrap_or_default(),
@@ -1124,6 +1575,11 @@ fn target_from_request(req: ManagedDeviceRequest) -> Result<TargetConfig, (Statu
             .into_iter()
             .filter(|path| !path.path.trim().is_empty())
             .collect(),
+        created_at_ns: 0,
+        updated_at_ns: 0,
+        created_by: String::new(),
+        updated_by: String::new(),
+        last_operator_action: String::new(),
     })
 }
 
@@ -1151,13 +1607,27 @@ fn site_record(site: SiteJson) -> SiteRecord {
     }
 }
 
-fn credential_json(credential: CredentialSummary) -> CredentialJson {
+fn credential_json(
+    credential: CredentialSummary,
+    device_counts: &HashMap<String, usize>,
+) -> CredentialJson {
     CredentialJson {
+        device_count: device_counts.get(&credential.alias).copied().unwrap_or_default(),
         alias: credential.alias,
         created_at_ns: credential.created_at_ns,
         updated_at_ns: credential.updated_at_ns,
         last_used_at_ns: credential.last_used_at_ns,
     }
+}
+
+fn credential_device_counts(registry: &ApiRegistry) -> anyhow::Result<HashMap<String, usize>> {
+    let mut counts = HashMap::new();
+    for target in registry.list_all_targets()? {
+        if let Some(alias) = target.credential_alias {
+            *counts.entry(alias).or_insert(0) += 1;
+        }
+    }
+    Ok(counts)
 }
 
 fn resolve_request_credentials(
@@ -1191,6 +1661,20 @@ fn option_string(value: String) -> Option<String> {
     }
 }
 
+fn site_subtree_ids(sites: &[SiteRecord], root_id: &str) -> std::collections::HashSet<String> {
+    let mut ids = std::collections::HashSet::from([root_id.to_string()]);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for site in sites {
+            if !site.parent_id.is_empty() && ids.contains(&site.parent_id) && ids.insert(site.id.clone()) {
+                changed = true;
+            }
+        }
+    }
+    ids
+}
+
 fn read_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -1209,5 +1693,480 @@ fn read_ts_ns(v: &Value) -> i64 {
     match v {
         Value::TimestampNs(dt) => dt.unix_timestamp_nanos() as i64,
         _ => 0,
+    }
+}
+
+// ── Device detail endpoint ────────────────────────────────────────────────────
+
+async fn device_detail_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<Json<DeviceDetailResponse>, (StatusCode, String)> {
+    let target = state
+        .registry
+        .get_device(&address)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("device '{address}' not found")))?;
+
+    let db = state.store.db();
+    let addr_clone = address.clone();
+
+    let (ifaces, bgp, lldp, state_changes, detections) =
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+
+            let mut stmt = conn
+                .prepare(
+                    "MATCH (i:Interface) WHERE i.device_address = $addr \
+                     RETURN i.name, i.in_errors, i.out_errors, i.in_octets, i.out_octets, \
+                            i.carrier_transitions, i.updated_at \
+                     ORDER BY i.name",
+                )
+                .map_err(|e| e.to_string())?;
+            let iface_rows = conn
+                .execute(&mut stmt, vec![("addr", Value::String(addr_clone.clone()))])
+                .map_err(|e| e.to_string())?;
+            let ifaces: Vec<InterfaceDetailJson> = iface_rows
+                .map(|row| InterfaceDetailJson {
+                    name: read_str(&row[0]),
+                    in_errors: read_i64(&row[1]),
+                    out_errors: read_i64(&row[2]),
+                    in_octets: read_i64(&row[3]),
+                    out_octets: read_i64(&row[4]),
+                    carrier_transitions: read_i64(&row[5]),
+                    updated_at_ns: read_ts_ns(&row[6]),
+                })
+                .collect();
+
+            let mut stmt = conn
+                .prepare(
+                    "MATCH (n:BgpNeighbor) WHERE n.device_address = $addr \
+                     RETURN n.peer_address, n.session_state, n.peer_as \
+                     ORDER BY n.peer_address",
+                )
+                .map_err(|e| e.to_string())?;
+            let bgp_rows = conn
+                .execute(&mut stmt, vec![("addr", Value::String(addr_clone.clone()))])
+                .map_err(|e| e.to_string())?;
+            let bgp: Vec<BgpJson> = bgp_rows
+                .map(|row| BgpJson {
+                    peer: read_str(&row[0]),
+                    state: read_str(&row[1]),
+                    peer_as: read_i64(&row[2]),
+                })
+                .collect();
+
+            let mut stmt = conn
+                .prepare(
+                    "MATCH (n:LldpNeighbor) WHERE n.device_address = $addr \
+                     RETURN n.local_if, n.system_name, n.port_id, n.chassis_id \
+                     ORDER BY n.local_if",
+                )
+                .map_err(|e| e.to_string())?;
+            let lldp_rows = conn
+                .execute(&mut stmt, vec![("addr", Value::String(addr_clone.clone()))])
+                .map_err(|e| e.to_string())?;
+            let lldp: Vec<LldpNeighborJson> = lldp_rows
+                .map(|row| LldpNeighborJson {
+                    local_if: read_str(&row[0]),
+                    system_name: read_str(&row[1]),
+                    port_id: read_str(&row[2]),
+                    chassis_id: read_str(&row[3]),
+                })
+                .collect();
+
+            let mut stmt = conn
+                .prepare(
+                    "MATCH (e:StateChangeEvent) WHERE e.device_address = $addr \
+                     RETURN e.event_type, e.detail, e.occurred_at \
+                     ORDER BY e.occurred_at DESC LIMIT 20",
+                )
+                .map_err(|e| e.to_string())?;
+            let sc_rows = conn
+                .execute(&mut stmt, vec![("addr", Value::String(addr_clone.clone()))])
+                .map_err(|e| e.to_string())?;
+            let state_changes: Vec<StateChangeJson> = sc_rows
+                .map(|row| StateChangeJson {
+                    event_type: read_str(&row[0]),
+                    detail: read_str(&row[1]),
+                    occurred_at_ns: read_ts_ns(&row[2]),
+                })
+                .collect();
+
+            let mut stmt = conn
+                .prepare(
+                    "MATCH (e:DetectionEvent) WHERE e.device_address = $addr \
+                     OPTIONAL MATCH (r:Remediation)-[:RESOLVES]->(e) \
+                     RETURN e.id, e.device_address, e.rule_id, e.severity, \
+                            e.features_json, e.fired_at, r.id, r.action, r.status \
+                     ORDER BY e.fired_at DESC LIMIT 10",
+                )
+                .map_err(|e| e.to_string())?;
+            let det_rows = conn
+                .execute(&mut stmt, vec![("addr", Value::String(addr_clone.clone()))])
+                .map_err(|e| e.to_string())?;
+            let mut detections: Vec<DetectionRow> = Vec::new();
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for row in det_rows {
+                let id = read_str(&row[0]);
+                if seen.insert(id.clone()) {
+                    detections.push(crate::graph::DetectionRow {
+                        id,
+                        device_address: read_str(&row[1]),
+                        rule_id: read_str(&row[2]),
+                        severity: read_str(&row[3]),
+                        features_json: read_str(&row[4]),
+                        fired_at_ns: read_ts_ns(&row[5]),
+                        remediation_id: read_str(&row[6]),
+                        remediation_action: read_str(&row[7]),
+                        remediation_status: read_str(&row[8]),
+                    });
+                }
+            }
+
+            Ok::<_, String>((ifaces, bgp, lldp, state_changes, detections))
+        })
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let all_statuses = read_subscription_statuses(state.store.db()).await?;
+    let subscription_statuses = all_statuses.get(&address).cloned().unwrap_or_default();
+    let health = compute_health(&bgp);
+
+    Ok(Json(DeviceDetailResponse {
+        address: address.clone(),
+        hostname: target.hostname.unwrap_or_default(),
+        vendor: target.vendor.unwrap_or_default(),
+        role: target.role.unwrap_or_default(),
+        site: target.site.unwrap_or_default(),
+        enabled: target.enabled,
+        collector_id: target.collector_id.unwrap_or_default(),
+        credential_alias: target.credential_alias.unwrap_or_default(),
+        health,
+        interfaces: ifaces,
+        bgp_neighbors: bgp,
+        lldp_neighbors: lldp,
+        recent_state_changes: state_changes,
+        recent_detections: detections,
+        subscription_statuses,
+        created_at_ns: target.created_at_ns,
+        updated_at_ns: target.updated_at_ns,
+        created_by: target.created_by,
+        updated_by: target.updated_by,
+        last_operator_action: target.last_operator_action,
+    }))
+}
+
+// ── Incidents endpoint ────────────────────────────────────────────────────────
+
+async fn incidents_handler(
+    State(state): State<AppState>,
+    Query(params): Query<IncidentsParams>,
+) -> Result<Json<IncidentsResponse>, (StatusCode, String)> {
+    let detections = state
+        .store
+        .read_detections(params.limit)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let incidents = group_into_incidents(detections, params.window_secs);
+    Ok(Json(IncidentsResponse { incidents }))
+}
+
+/// Groups a list of detections (sorted ascending by fired_at_ns) into incidents.
+/// Detections are in the same incident when they fall within `window_secs` of the
+/// earliest detection in the open group. Incidents are returned newest-first.
+fn group_into_incidents(mut detections: Vec<DetectionRow>, window_secs: u64) -> Vec<IncidentJson> {
+    detections.sort_by_key(|d| d.fired_at_ns);
+    let window_ns = (window_secs as i64).saturating_mul(1_000_000_000);
+
+    let mut groups: Vec<Vec<DetectionRow>> = Vec::new();
+
+    for det in detections {
+        // Try to find an open group whose start is within the window.
+        let joined = groups.iter_mut().rev().find(|g| {
+            det.fired_at_ns - g[0].fired_at_ns <= window_ns
+        });
+        if let Some(group) = joined {
+            group.push(det);
+        } else {
+            groups.push(vec![det]);
+        }
+    }
+
+    let severity_rank = |s: &str| match s {
+        "critical" => 3,
+        "high" => 2,
+        "warn" | "warning" => 1,
+        _ => 0,
+    };
+
+    let mut incidents: Vec<IncidentJson> = groups
+        .into_iter()
+        .map(|mut group| {
+            group.sort_by_key(|d| d.fired_at_ns);
+            let started_at_ns = group[0].fired_at_ns;
+            let ended_at_ns = group.last().map_or(started_at_ns, |d| d.fired_at_ns);
+            let id = group[0].id.clone();
+            let severity = group
+                .iter()
+                .max_by_key(|d| severity_rank(&d.severity))
+                .map_or("info".to_string(), |d| d.severity.clone());
+            let remediation_status = group
+                .iter()
+                .find(|d| !d.remediation_status.is_empty())
+                .map_or("none".to_string(), |d| d.remediation_status.clone());
+            let mut affected_devices: Vec<String> = group
+                .iter()
+                .map(|d| d.device_address.clone())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+            affected_devices.sort();
+            let mut rest = group;
+            let root = rest.remove(0);
+            IncidentJson {
+                id,
+                root,
+                cascading: rest,
+                affected_devices,
+                severity,
+                started_at_ns,
+                ended_at_ns,
+                remediation_status,
+            }
+        })
+        .collect();
+
+    incidents.sort_by(|a, b| b.started_at_ns.cmp(&a.started_at_ns));
+    incidents
+}
+
+// ── Assignment rule endpoints ─────────────────────────────────────────────────
+
+// ── Device detail types ───────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct DeviceDetailResponse {
+    address: String,
+    hostname: String,
+    vendor: String,
+    role: String,
+    site: String,
+    enabled: bool,
+    collector_id: String,
+    credential_alias: String,
+    health: String,
+    interfaces: Vec<InterfaceDetailJson>,
+    bgp_neighbors: Vec<BgpJson>,
+    lldp_neighbors: Vec<LldpNeighborJson>,
+    recent_state_changes: Vec<StateChangeJson>,
+    recent_detections: Vec<DetectionRow>,
+    subscription_statuses: Vec<SubscriptionStatusJson>,
+    created_at_ns: i64,
+    updated_at_ns: i64,
+    created_by: String,
+    updated_by: String,
+    last_operator_action: String,
+}
+
+#[derive(Serialize)]
+struct InterfaceDetailJson {
+    name: String,
+    in_errors: i64,
+    out_errors: i64,
+    in_octets: i64,
+    out_octets: i64,
+    carrier_transitions: i64,
+    updated_at_ns: i64,
+}
+
+#[derive(Serialize)]
+struct LldpNeighborJson {
+    local_if: String,
+    system_name: String,
+    port_id: String,
+    chassis_id: String,
+}
+
+#[derive(Serialize)]
+struct StateChangeJson {
+    event_type: String,
+    detail: String,
+    occurred_at_ns: i64,
+}
+
+// ── Assignment types ──────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct AssignmentRulesResponse {
+    rules: Vec<AssignmentRule>,
+}
+
+#[derive(Deserialize)]
+struct SetAssignmentRulesRequest {
+    rules: Vec<AssignmentRule>,
+}
+
+#[derive(Serialize)]
+struct CollectorStatusJson {
+    id: String,
+    connected: bool,
+    assigned_device_count: usize,
+    assigned_targets: Vec<String>,
+    queue_depth_updates: u64,
+    subscription_count: u32,
+    uptime_secs: i64,
+    last_heartbeat_ns: i64,
+    observed_subscriptions: usize,
+    pending_subscriptions: usize,
+    silent_subscriptions: usize,
+}
+
+#[derive(Serialize)]
+struct AssignmentStatusResponse {
+    collectors: Vec<CollectorStatusJson>,
+    unassigned_count: usize,
+    unassigned_devices: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct AssignmentOverrideRequest {
+    device_address: String,
+    collector_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AssignmentOverrideResponse {
+    success: bool,
+    error: String,
+}
+
+#[derive(Serialize)]
+struct CollectorsResponse {
+    collectors: Vec<CollectorStatusJson>,
+    unassigned_count: usize,
+    unassigned_devices: Vec<String>,
+}
+
+async fn assignment_rules_handler(
+    State(state): State<AppState>,
+) -> Result<Json<AssignmentRulesResponse>, (StatusCode, String)> {
+    let rules = state
+        .collector_manager
+        .as_ref()
+        .map(|m| m.get_rules())
+        .unwrap_or_default();
+    Ok(Json(AssignmentRulesResponse { rules }))
+}
+
+async fn collectors_handler(
+    State(state): State<AppState>,
+) -> Result<Json<CollectorsResponse>, (StatusCode, String)> {
+    let summary = state
+        .collector_manager
+        .as_ref()
+        .map(|manager| manager.collector_status_summary())
+        .unwrap_or_else(|| crate::assignment::CollectorStatusSummary {
+            collectors: Vec::new(),
+            unassigned_devices: Vec::new(),
+        });
+    let statuses = read_subscription_statuses(state.store.db()).await?;
+    let collectors = summary
+        .collectors
+        .into_iter()
+        .map(|collector| collector_status_with_subscription_json(collector, &statuses))
+        .collect();
+    Ok(Json(CollectorsResponse {
+        unassigned_count: summary.unassigned_devices.len(),
+        unassigned_devices: summary.unassigned_devices,
+        collectors,
+    }))
+}
+
+async fn set_assignment_rules_handler(
+    State(state): State<AppState>,
+    Json(body): Json<SetAssignmentRulesRequest>,
+) -> Result<Json<AssignmentRulesResponse>, (StatusCode, String)> {
+    let manager = state
+        .collector_manager
+        .as_ref()
+        .ok_or_else(|| (StatusCode::NOT_IMPLEMENTED, "assignment not enabled on this node".to_string()))?;
+    manager.set_rules(body.rules);
+    let rules = manager.get_rules();
+    Ok(Json(AssignmentRulesResponse { rules }))
+}
+
+async fn assignment_status_handler(
+    State(state): State<AppState>,
+) -> Result<Json<AssignmentStatusResponse>, (StatusCode, String)> {
+    let summary = state
+        .collector_manager
+        .as_ref()
+        .map(|m| m.collector_status_summary())
+        .unwrap_or_else(|| crate::assignment::CollectorStatusSummary {
+            collectors: vec![],
+            unassigned_devices: vec![],
+        });
+    let statuses = read_subscription_statuses(state.store.db()).await?;
+    let unassigned_count = summary.unassigned_devices.len();
+    let collectors = summary
+        .collectors
+        .into_iter()
+        .map(|collector| collector_status_with_subscription_json(collector, &statuses))
+        .collect();
+    Ok(Json(AssignmentStatusResponse {
+        collectors,
+        unassigned_count,
+        unassigned_devices: summary.unassigned_devices,
+    }))
+}
+
+fn collector_status_json(s: CollectorStatus) -> CollectorStatusJson {
+    CollectorStatusJson {
+        id: s.id,
+        connected: s.connected,
+        assigned_device_count: s.assigned_device_count,
+        assigned_targets: s.assigned_targets,
+        queue_depth_updates: s.queue_depth_updates,
+        subscription_count: s.subscription_count,
+        uptime_secs: s.uptime_secs,
+        last_heartbeat_ns: s.last_heartbeat_ns,
+        observed_subscriptions: 0,
+        pending_subscriptions: 0,
+        silent_subscriptions: 0,
+    }
+}
+
+fn collector_status_with_subscription_json(
+    collector: CollectorStatus,
+    statuses: &HashMap<String, Vec<SubscriptionStatusJson>>,
+) -> CollectorStatusJson {
+    let mut json = collector_status_json(collector);
+    for address in &json.assigned_targets {
+        for status in statuses.get(address).cloned().unwrap_or_default() {
+            match status.status.as_str() {
+                "observed" => json.observed_subscriptions += 1,
+                "pending" => json.pending_subscriptions += 1,
+                _ => json.silent_subscriptions += 1,
+            }
+        }
+    }
+    json
+}
+
+async fn assignment_override_handler(
+    State(state): State<AppState>,
+    Json(req): Json<AssignmentOverrideRequest>,
+) -> Result<Json<AssignmentOverrideResponse>, (StatusCode, String)> {
+    match state.registry.assign_device_with_audit(
+        &req.device_address,
+        req.collector_id,
+        "api",
+        "api_assignment_override",
+    ) {
+        Ok(_) => Ok(Json(AssignmentOverrideResponse { success: true, error: String::new() })),
+        Err(e) => Ok(Json(AssignmentOverrideResponse { success: false, error: format!("{e:#}") })),
     }
 }

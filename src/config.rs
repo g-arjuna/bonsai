@@ -23,7 +23,31 @@ pub struct Config {
     #[serde(default)]
     pub credentials: CredentialsConfig,
     #[serde(default)]
+    pub assignment: AssignmentConfig,
+    #[serde(default)]
     pub target: Vec<TargetConfig>,
+}
+
+/// Auto-assignment rules: when a device has no explicit collector_id, these
+/// rules are evaluated in descending priority order to select a collector.
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+pub struct AssignmentConfig {
+    #[serde(default)]
+    pub rules: Vec<AssignmentRule>,
+}
+
+/// A single routing rule. Higher `priority` wins when multiple rules match.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct AssignmentRule {
+    /// Site name the device must belong to. Required.
+    pub match_site: String,
+    /// Optional device role filter (e.g. "leaf", "spine"). Omit to match any role.
+    pub match_role: Option<String>,
+    /// Collector ID to assign when this rule matches.
+    pub collector_id: String,
+    /// Tiebreak when multiple rules match the same device. Higher wins. Default: 0.
+    #[serde(default)]
+    pub priority: i32,
 }
 
 #[derive(Deserialize, Clone, Default)]
@@ -34,6 +58,11 @@ pub struct CollectorConfig {
     pub queue: CollectorQueueConfig,
     #[serde(default)]
     pub filter: CollectorFilterConfig,
+    /// TCP port for the collector diagnostic HTTP server. Disabled when 0 (default).
+    /// Endpoints: /health, /api/readiness, /api/collector/status
+    /// Optional auth via BONSAI_COLLECTOR_DIAG_PASSWORD env var.
+    #[serde(default)]
+    pub diagnostic_port: u16,
 }
 
 impl CollectorConfig {
@@ -50,9 +79,16 @@ pub struct CollectorFilterConfig {
     /// Minimum interval between counter forwards per (device, interface). Default: 10s.
     #[serde(default = "default_debounce_secs")]
     pub counter_debounce_secs: u64,
-    /// Forwarding mode: "raw" (no filtering), "debounced" (drops updates within window).
+    /// Forwarding mode: "raw" (no filtering), "debounced" (drops updates within window),
+    /// "summary" (aggregate into time-windowed summaries, recommended for distributed mode).
     #[serde(default = "default_counter_forward_mode")]
     pub counter_forward_mode: String,
+    /// Summary window duration in seconds. Only used when counter_forward_mode = "summary".
+    #[serde(default = "default_counter_window_secs")]
+    pub counter_window_secs: u64,
+    /// Seconds of silence after which a partial summary window is flushed. Default: window + 10.
+    #[serde(default = "default_counter_flush_idle_secs")]
+    pub counter_flush_idle_secs: u64,
 }
 
 impl Default for CollectorFilterConfig {
@@ -60,6 +96,8 @@ impl Default for CollectorFilterConfig {
         Self {
             counter_debounce_secs: default_debounce_secs(),
             counter_forward_mode: default_counter_forward_mode(),
+            counter_window_secs: default_counter_window_secs(),
+            counter_flush_idle_secs: default_counter_flush_idle_secs(),
         }
     }
 }
@@ -286,6 +324,14 @@ fn default_counter_forward_mode() -> String {
     "debounced".to_string()
 }
 
+fn default_counter_window_secs() -> u64 {
+    60
+}
+
+fn default_counter_flush_idle_secs() -> u64 {
+    70
+}
+
 fn default_collector_queue_path() -> String {
     "runtime/collector-queue".to_string()
 }
@@ -368,6 +414,17 @@ pub struct TargetConfig {
     /// Operator-selected subscription paths from onboarding discovery.
     #[serde(default)]
     pub selected_paths: Vec<SelectedSubscriptionPath>,
+    /// Audit metadata for runtime-managed devices. Seed/config-driven targets may leave these unset.
+    #[serde(default)]
+    pub created_at_ns: i64,
+    #[serde(default)]
+    pub updated_at_ns: i64,
+    #[serde(default)]
+    pub created_by: String,
+    #[serde(default)]
+    pub updated_by: String,
+    #[serde(default)]
+    pub last_operator_action: String,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]

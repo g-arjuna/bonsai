@@ -7,7 +7,7 @@ use tracing::{info, warn};
 
 use bonsai::{
     api::{
-        BonsaiGraphServer, BonsaiService, CoreService, CollectorService,
+        BonsaiGraphServer, CoreService, CollectorService,
         pb::{
             AddDeviceRequest, ListManagedDevicesRequest, ManagedDevice, RemoveDeviceRequest,
             UpdateDeviceRequest, bonsai_graph_client::BonsaiGraphClient,
@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    info!("bonsai starting - distributed runtime capable");
+    info!(protocol_version = bonsai::api::PROTOCOL_VERSION, "bonsai starting");
 
     let config_path = config_path();
     let cfg = config::load(&config_path).await?;
@@ -322,6 +322,7 @@ async fn main() -> Result<()> {
         Some(std::sync::Arc::new(bonsai::assignment::CollectorManager::new(
             std::sync::Arc::clone(&registry),
             std::sync::Arc::clone(&credentials),
+            cfg.assignment.rules.clone(),
         )))
     } else {
         None
@@ -485,6 +486,19 @@ async fn main() -> Result<()> {
                 warn!(%error, "collector manager failed");
             }
         });
+
+        let diag_port = cfg.collector.diagnostic_port;
+        if diag_port > 0 {
+            let diag_state = bonsai::collector::diagnostic_server::DiagnosticState::new(
+                &cfg.runtime.collector_id,
+            );
+            let diag_shutdown = shutdown_rx.clone();
+            tokio::spawn(bonsai::collector::diagnostic_server::start(
+                diag_port,
+                diag_state,
+                diag_shutdown,
+            ));
+        }
     }
 
     if let Some(ref store) = store {
@@ -555,13 +569,19 @@ async fn main() -> Result<()> {
             info!(%http_addr, "HTTP UI server listening");
             let registry_for_http = std::sync::Arc::clone(&registry);
             let credentials_for_http = std::sync::Arc::clone(&credentials);
+            let collector_manager_for_http = collector_manager.clone();
             tokio::spawn(async move {
                 let listener = tokio::net::TcpListener::bind(http_addr)
                     .await
                     .expect("failed to bind HTTP port 3000");
                 axum::serve(
                     listener,
-                    bonsai::http_server::router(http_store, registry_for_http, credentials_for_http),
+                    bonsai::http_server::router(
+                        http_store,
+                        registry_for_http,
+                        credentials_for_http,
+                        collector_manager_for_http,
+                    ),
                 )
                 .await
                 .expect("HTTP server error");
@@ -951,7 +971,7 @@ async fn run_device_cli_local(command: DeviceCliCommand, cfg: config::Config) ->
             );
         }
         DeviceCliCommand::Add(add) => {
-            let device = registry.add_device(TargetConfig {
+            let device = registry.add_device_with_audit(TargetConfig {
                 address: add.address,
                 enabled: add.enabled,
                 tls_domain: add.tls_domain,
@@ -967,7 +987,12 @@ async fn run_device_cli_local(command: DeviceCliCommand, cfg: config::Config) ->
                 site: add.site,
                 collector_id: None,
                 selected_paths: Vec::new(),
-            })?;
+                created_at_ns: 0,
+                updated_at_ns: 0,
+                created_by: String::new(),
+                updated_by: String::new(),
+                last_operator_action: String::new(),
+            }, "cli", "cli_add_device")?;
             println!("added {}", device.address);
         }
         DeviceCliCommand::Remove { address } => match registry.remove_device(&address)? {
@@ -979,7 +1004,7 @@ async fn run_device_cli_local(command: DeviceCliCommand, cfg: config::Config) ->
                 .get_device(&address)?
                 .ok_or_else(|| anyhow::anyhow!("device {address} not found"))?;
             device.enabled = enabled;
-            registry.update_device(device)?;
+            registry.update_device_with_audit(device, "cli", "cli_set_enabled_device")?;
             println!(
                 "{} {address}",
                 if enabled {
@@ -994,7 +1019,7 @@ async fn run_device_cli_local(command: DeviceCliCommand, cfg: config::Config) ->
                 .get_device(&address)?
                 .ok_or_else(|| anyhow::anyhow!("device {address} not found"))?;
             device.enabled = true;
-            registry.update_device(device)?;
+            registry.update_device_with_audit(device, "cli", "cli_restart_device")?;
             println!("restart requested for {address}");
         }
     }

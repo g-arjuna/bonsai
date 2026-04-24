@@ -18,6 +18,25 @@ use crate::store::BonsaiStore;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// Version compatibility result. Major skew (>= 10 apart) is a hard error;
+/// any other mismatch is a warning; matching versions are compatible.
+#[derive(Debug, PartialEq, Eq)]
+pub enum VersionCompat {
+    Compatible,
+    MinorSkew { client: u32, server: u32 },
+    MajorSkew { client: u32, server: u32 },
+}
+
+pub fn check_protocol_compat(client_version: u32, server_version: u32) -> VersionCompat {
+    if client_version == server_version {
+        VersionCompat::Compatible
+    } else if client_version.abs_diff(server_version) >= 10 || client_version == 0 {
+        VersionCompat::MajorSkew { client: client_version, server: server_version }
+    } else {
+        VersionCompat::MinorSkew { client: client_version, server: server_version }
+    }
+}
+
 pub mod pb {
     #![allow(clippy::all)]
     tonic::include_proto!("bonsai.v1");
@@ -79,6 +98,38 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
     ) -> Result<Response<Self::RegisterCollectorStream>, Status> {
         let identity = req.into_inner();
         let collector_id = identity.collector_id;
+        let collector_version = identity.protocol_version;
+
+        match check_protocol_compat(collector_version, PROTOCOL_VERSION) {
+            VersionCompat::Compatible => {
+                tracing::info!(
+                    %collector_id,
+                    collector_version,
+                    server_version = PROTOCOL_VERSION,
+                    "collector registered"
+                );
+            }
+            VersionCompat::MinorSkew { client, server } => {
+                tracing::warn!(
+                    %collector_id,
+                    collector_version = client,
+                    server_version = server,
+                    "collector protocol version mismatch — minor skew, continuing"
+                );
+            }
+            VersionCompat::MajorSkew { client, server } => {
+                tracing::error!(
+                    %collector_id,
+                    collector_version = client,
+                    server_version = server,
+                    "collector protocol version major skew — rejecting registration"
+                );
+                return Err(Status::failed_precondition(format!(
+                    "protocol version major skew: collector={client} server={server}; upgrade required"
+                )));
+            }
+        }
+
         let manager = self
             .collector_manager
             .as_ref()
@@ -108,6 +159,14 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         req: Request<pb::CollectorStats>,
     ) -> Result<Response<pb::HeartbeatAck>, Status> {
         let stats = req.into_inner();
+        if let Some(manager) = &self.collector_manager {
+            manager.record_heartbeat(
+                &stats.collector_id,
+                stats.queue_depth_updates,
+                stats.subscription_count,
+                stats.uptime_secs,
+            );
+        }
         tracing::debug!(
             collector_id = %stats.collector_id,
             queue_depth = stats.queue_depth_updates,
@@ -197,7 +256,10 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
     ) -> Result<Response<pb::DeviceMutationResponse>, Status> {
         let target = target_from_managed_device(req.into_inner().device)
             .map_err(Status::invalid_argument)?;
-        match self.registry.add_device(target) {
+        match self
+            .registry
+            .add_device_with_audit(target, "grpc", "grpc_add_device")
+        {
             Ok(target) => {
                 if let Err(error) = self
                     .store
@@ -230,7 +292,10 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
     ) -> Result<Response<pb::DeviceMutationResponse>, Status> {
         let target = target_from_managed_device(req.into_inner().device)
             .map_err(Status::invalid_argument)?;
-        match self.registry.update_device(target) {
+        match self
+            .registry
+            .update_device_with_audit(target, "grpc", "grpc_update_device")
+        {
             Ok(target) => {
                 if let Err(error) = self
                     .store
@@ -597,13 +662,18 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             .await
             .map_err(|e| Status::unavailable(e.to_string()))?
         {
-            if accepted == 0 && update.protocol_version != PROTOCOL_VERSION {
-                tracing::warn!(
-                    collector_id = %update.collector_id,
-                    client_version = update.protocol_version,
-                    server_version = PROTOCOL_VERSION,
-                    "protocol version skew detected"
-                );
+            if accepted == 0 {
+                if let VersionCompat::MinorSkew { client, server }
+                | VersionCompat::MajorSkew { client, server } =
+                    check_protocol_compat(update.protocol_version, PROTOCOL_VERSION)
+                {
+                    tracing::warn!(
+                        collector_id = %update.collector_id,
+                        collector_version = client,
+                        server_version = server,
+                        "telemetry stream protocol version skew"
+                    );
+                }
             }
 
             let collector_id = update.collector_id.clone();
@@ -811,6 +881,11 @@ pub fn target_from_managed_device(
             .into_iter()
             .map(selected_path_from_proto)
             .collect(),
+        created_at_ns: 0,
+        updated_at_ns: 0,
+        created_by: String::new(),
+        updated_by: String::new(),
+        last_operator_action: String::new(),
     })
 }
 
@@ -1030,4 +1105,3 @@ fn ts_val(v: &Value) -> i64 {
         _ => 0,
     }
 }
-

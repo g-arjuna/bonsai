@@ -111,7 +111,7 @@
       `${d.hostname} — ${d.address}\nHealth: ${d.health}\nBGP peers: ${d.bgp.length}`
     );
 
-    node.on('click', (_, d) => dispatch('trace', d.address));
+    node.on('click', (_, d) => dispatch('select', d.address));
 
     sim.on('tick', () => {
       link

@@ -1,8 +1,18 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::broadcast;
 
 use crate::telemetry::TelemetryUpdate;
+
+static EVENT_BUS_DEPTH: AtomicU64 = AtomicU64::new(0);
+static EVENT_BUS_RECEIVERS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EventBusSnapshot {
+    pub depth: u64,
+    pub receivers: u64,
+}
 
 /// Publish/subscribe bus for telemetry updates.
 ///
@@ -32,13 +42,27 @@ impl InProcessBus {
     /// Publish one update. Silently drops if no subscribers or channel is full.
     pub fn publish(&self, update: TelemetryUpdate) {
         let _ = self.tx.send(update);
-        metrics::gauge!("bonsai_event_bus_depth").set(self.tx.len() as f64);
-        metrics::gauge!("bonsai_event_bus_receivers").set(self.tx.receiver_count() as f64);
+        let depth = self.tx.len() as u64;
+        let receivers = self.tx.receiver_count() as u64;
+        EVENT_BUS_DEPTH.store(depth, Ordering::Relaxed);
+        EVENT_BUS_RECEIVERS.store(receivers, Ordering::Relaxed);
+        metrics::gauge!("bonsai_event_bus_depth").set(depth as f64);
+        metrics::gauge!("bonsai_event_bus_receivers").set(receivers as f64);
     }
 
     /// Return a new receiver that sees all messages published after this call.
     pub fn subscribe(&self) -> broadcast::Receiver<TelemetryUpdate> {
-        self.tx.subscribe()
+        let rx = self.tx.subscribe();
+        EVENT_BUS_DEPTH.store(self.tx.len() as u64, Ordering::Relaxed);
+        EVENT_BUS_RECEIVERS.store(self.tx.receiver_count() as u64, Ordering::Relaxed);
+        rx
+    }
+
+    pub fn snapshot() -> EventBusSnapshot {
+        EventBusSnapshot {
+            depth: EVENT_BUS_DEPTH.load(Ordering::Relaxed),
+            receivers: EVENT_BUS_RECEIVERS.load(Ordering::Relaxed),
+        }
     }
 }
 

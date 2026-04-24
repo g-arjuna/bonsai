@@ -1,5 +1,3 @@
-version: '3.8'
-
 x-bonsai-base: &bonsai-base
   build:
     context: .
@@ -8,8 +6,10 @@ x-bonsai-base: &bonsai-base
   restart: unless-stopped
   environment:
     - RUST_LOG=info,bonsai=debug
-    - BONSAI_VAULT_PASSPHRASE=${BONSAI_VAULT_PASSPHRASE:-changeme}
-    # Mount the Containerlab TLS certs to the same path so that ca_cert paths match
+    # BONSAI_VAULT_PASSPHRASE must be set in the environment or an .env file.
+    # The compose will refuse to start if it is missing. Never use a shared default.
+    # See .env.example for setup instructions.
+    - BONSAI_VAULT_PASSPHRASE=${BONSAI_VAULT_PASSPHRASE:?BONSAI_VAULT_PASSPHRASE is required — see .env.example}
   volumes:
     - ./lab/fast-iteration/p4-ca.pem:/app/lab/fast-iteration/p4-ca.pem:ro
 
@@ -17,7 +17,6 @@ services:
   bonsai-all:
     <<: *bonsai-base
     profiles: ["dev"]
-    container_name: bonsai-dev
     volumes:
       - bonsai_graph_dev:/app/runtime
       - bonsai_creds_dev:/app/bonsai-credentials
@@ -32,51 +31,62 @@ services:
   bonsai-core:
     <<: *bonsai-base
     profiles: ["distributed", "two-collector"]
-    container_name: bonsai-core
     volumes:
       - bonsai_graph:/app/runtime
       - bonsai_creds:/app/bonsai-credentials
       - ./docker/configs/core.toml:/etc/bonsai/bonsai.toml:ro
       - ./lab/fast-iteration/p4-ca.pem:/app/lab/fast-iteration/p4-ca.pem:ro
+      - ./docker/tls:/app/tls:ro
     ports:
       - "3000:3000"
       - "50051:50051"
     networks:
       - bonsai-p4-mgmt
+    healthcheck:
+      test: ["/usr/local/bin/healthcheck"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
 
   bonsai-collector-1:
     <<: *bonsai-base
     profiles: ["distributed", "two-collector"]
-    container_name: bonsai-collector-1
     depends_on:
-      - bonsai-core
+      bonsai-core:
+        condition: service_healthy
     volumes:
       - collector_1_queue:/app/runtime
       - ./docker/configs/collector-1.toml:/etc/bonsai/bonsai.toml:ro
       - ./lab/fast-iteration/p4-ca.pem:/app/lab/fast-iteration/p4-ca.pem:ro
+      - ./docker/tls:/app/tls:ro
     networks:
       - bonsai-p4-mgmt
 
   bonsai-collector-2:
     <<: *bonsai-base
     profiles: ["two-collector"]
-    container_name: bonsai-collector-2
     depends_on:
-      - bonsai-core
+      bonsai-core:
+        condition: service_healthy
     volumes:
       - collector_2_queue:/app/runtime
       - ./docker/configs/collector-2.toml:/etc/bonsai/bonsai.toml:ro
       - ./lab/fast-iteration/p4-ca.pem:/app/lab/fast-iteration/p4-ca.pem:ro
+      - ./docker/tls:/app/tls:ro
     networks:
       - bonsai-p4-mgmt
 
   chaos:
     image: gaiaadm/pumba
     profiles: ["chaos"]
-    container_name: bonsai-chaos
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    command: netem --duration 5m delay --time 500 re2:^bonsai-collector
+    # Parameterise via env vars; override with CHAOS_DELAY_MS and CHAOS_DURATION_MS.
+    command: >
+      netem --duration ${CHAOS_DURATION:-5m}
+      delay --time ${CHAOS_DELAY_MS:-500}
+      re2:^bonsai-collector
 
 networks:
   bonsai-p4-mgmt:

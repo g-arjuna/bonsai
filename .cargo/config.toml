@@ -1,6 +1,13 @@
 [env]
-# Required for shared Ladybug build on Linux/Ubuntu.
+# Enables the shared (.so) LadybugDB build on Linux. Set unconditionally here
+# because this file is primarily used on Linux dev machines and in Docker.
+# Windows developers: LBUG_SHARED is ignored on Windows (static lib is used).
+# If you see a build failure about lbug_shared on Windows, check build.rs and
+# ensure the lbug static lib path is correct for your environment.
 LBUG_SHARED = "1"
 
 [build]
+# sccache wraps rustc to cache compilation artefacts across clean builds.
+# Run `scripts/install_sccache.sh` to install it. If sccache is not installed,
+# cargo will print an error; remove this line to build without caching.
 rustc-wrapper = "sccache"

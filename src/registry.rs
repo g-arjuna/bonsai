@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use tokio::sync::{broadcast, mpsc};
@@ -114,9 +115,19 @@ impl ApiRegistry {
     }
 
     pub fn add_device(&self, target: TargetConfig) -> Result<TargetConfig> {
+        self.add_device_with_audit(target, &default_audit_actor(), "registry_add_device")
+    }
+
+    pub fn add_device_with_audit(
+        &self,
+        target: TargetConfig,
+        actor: &str,
+        action: &str,
+    ) -> Result<TargetConfig> {
         let address = normalize_address(&target.address)?;
         let mut target = target;
         target.address = address.clone();
+        stamp_new_target_audit(&mut target, actor, action);
 
         {
             let mut state = self
@@ -135,6 +146,15 @@ impl ApiRegistry {
     }
 
     pub fn update_device(&self, target: TargetConfig) -> Result<TargetConfig> {
+        self.update_device_with_audit(target, &default_audit_actor(), "registry_update_device")
+    }
+
+    pub fn update_device_with_audit(
+        &self,
+        target: TargetConfig,
+        actor: &str,
+        action: &str,
+    ) -> Result<TargetConfig> {
         let address = normalize_address(&target.address)?;
         let mut target = target;
         target.address = address.clone();
@@ -144,8 +164,12 @@ impl ApiRegistry {
                 .state
                 .lock()
                 .map_err(|_| anyhow!("registry lock poisoned"))?;
-            if !state.targets.contains_key(&address) {
+            let existing = state.targets.get(&address).cloned();
+            if existing.is_none() {
                 bail!("device '{address}' does not exist");
+            }
+            if let Some(existing) = existing {
+                stamp_existing_target_audit(&mut target, &existing, actor, action);
             }
             state.targets.insert(address.clone(), target.clone());
             Self::persist_state(&self.path, &state)?;
@@ -176,6 +200,14 @@ impl ApiRegistry {
         Ok(removed)
     }
 
+    pub fn list_all_targets(&self) -> Result<Vec<TargetConfig>> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("registry lock poisoned"))?;
+        Ok(state.targets.values().cloned().collect())
+    }
+
     pub fn list_assigned_to(&self, collector_id: &str) -> Result<Vec<TargetConfig>> {
         let state = self
             .state
@@ -190,20 +222,38 @@ impl ApiRegistry {
     }
 
     pub fn assign_device(&self, address: &str, collector_id: Option<String>) -> Result<TargetConfig> {
+        self.assign_device_with_audit(
+            address,
+            collector_id,
+            &default_audit_actor(),
+            "registry_assign_device",
+        )
+    }
+
+    pub fn assign_device_with_audit(
+        &self,
+        address: &str,
+        collector_id: Option<String>,
+        actor: &str,
+        action: &str,
+    ) -> Result<TargetConfig> {
         let address = normalize_address(address)?;
         let target = {
             let mut state = self
                 .state
                 .lock()
                 .map_err(|_| anyhow!("registry lock poisoned"))?;
-            let target = state
-                .targets
-                .get_mut(&address)
-                .ok_or_else(|| anyhow!("device '{address}' does not exist"))?;
-            target.collector_id = collector_id;
-            let updated = target.clone();
-            Self::persist_state(&self.path, &state)?;
-            updated
+                let target = state
+                    .targets
+                    .get_mut(&address)
+                    .ok_or_else(|| anyhow!("device '{address}' does not exist"))?;
+                target.collector_id = collector_id;
+                target.updated_at_ns = now_ns();
+                target.updated_by = actor.to_string();
+                target.last_operator_action = action.to_string();
+                let updated = target.clone();
+                Self::persist_state(&self.path, &state)?;
+                updated
         };
 
         let _ = self.change_tx.send(RegistryChange::Updated(target.clone()));
@@ -243,6 +293,56 @@ impl ApiRegistry {
             .with_context(|| format!("failed to write registry '{}'", path.display()))?;
         Ok(())
     }
+}
+
+fn default_audit_actor() -> String {
+    std::env::var("BONSAI_OPERATOR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| std::env::var("USER").ok())
+        .or_else(|| std::env::var("USERNAME").ok())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn stamp_new_target_audit(target: &mut TargetConfig, actor: &str, action: &str) {
+    let now = now_ns();
+    if target.created_at_ns <= 0 {
+        target.created_at_ns = now;
+    }
+    target.updated_at_ns = now;
+    if target.created_by.trim().is_empty() {
+        target.created_by = actor.to_string();
+    }
+    target.updated_by = actor.to_string();
+    target.last_operator_action = action.to_string();
+}
+
+fn stamp_existing_target_audit(
+    target: &mut TargetConfig,
+    existing: &TargetConfig,
+    actor: &str,
+    action: &str,
+) {
+    target.created_at_ns = if existing.created_at_ns > 0 {
+        existing.created_at_ns
+    } else {
+        now_ns()
+    };
+    target.created_by = if existing.created_by.trim().is_empty() {
+        actor.to_string()
+    } else {
+        existing.created_by.clone()
+    };
+    target.updated_at_ns = now_ns();
+    target.updated_by = actor.to_string();
+    target.last_operator_action = action.to_string();
+}
+
+fn now_ns() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or_default()
 }
 
 impl DeviceRegistry for ApiRegistry {
@@ -387,6 +487,11 @@ mod tests {
             site: Some("lab".to_string()),
             collector_id: None,
             selected_paths: Vec::new(),
+            created_at_ns: 0,
+            updated_at_ns: 0,
+            created_by: String::new(),
+            updated_by: String::new(),
+            last_operator_action: String::new(),
         }
     }
 

@@ -21,6 +21,7 @@ use crate::api::pb::{
 use crate::config::{
     CollectorConfig, CollectorFilterConfig, CollectorQueueConfig, RuntimeConfig, RuntimeTlsConfig,
 };
+use crate::counter_summarizer::CounterSummarizer;
 use crate::event_bus::InProcessBus;
 use crate::subscription_status::SubscriptionPlan;
 use crate::telemetry::{TelemetryEvent, TelemetryUpdate};
@@ -51,16 +52,17 @@ pub fn telemetry_to_ingest_update(
 
 pub fn summary_to_ingest_update(
     collector_id: &str,
-    template: &TelemetryUpdate,
+    template: Option<&TelemetryUpdate>,
     summary: InterfaceSummary,
 ) -> Result<ProtoTelemetryIngestUpdate> {
+    // target and if_name are already on the summary; use template metadata when available.
     Ok(ProtoTelemetryIngestUpdate {
         collector_id: collector_id.to_string(),
-        target: template.target.clone(),
-        vendor: template.vendor.clone(),
-        hostname: template.hostname.clone(),
-        timestamp_ns: template.timestamp_ns,
-        path: template.path.clone(),
+        target: template.map_or_else(|| summary.target.clone(), |t| t.target.clone()),
+        vendor: template.map_or_else(String::new, |t| t.vendor.clone()),
+        hostname: template.map_or_else(String::new, |t| t.hostname.clone()),
+        timestamp_ns: template.map_or(0, |t| t.timestamp_ns),
+        path: template.map_or_else(String::new, |t| t.path.clone()),
         value_msgpack: Vec::new(),
         protocol_version: crate::api::PROTOCOL_VERSION,
         interface_summary: Some(summary),
@@ -334,6 +336,30 @@ async fn queue_bus_updates(
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
     let mut rx = bus.subscribe();
+    let mode = filter_config.counter_forward_mode.to_lowercase();
+
+    if mode == "summary" {
+        queue_bus_updates_summary(
+            &mut rx,
+            &collector_id,
+            queue,
+            filter_config,
+            &mut shutdown,
+        )
+        .await
+    } else {
+        queue_bus_updates_debounced(&mut rx, &collector_id, queue, filter_config, &mut shutdown)
+            .await
+    }
+}
+
+async fn queue_bus_updates_debounced(
+    rx: &mut broadcast::Receiver<TelemetryUpdate>,
+    collector_id: &str,
+    queue: Arc<CollectorQueue>,
+    filter_config: CollectorFilterConfig,
+    shutdown: &mut tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
     let mut last_forward: HashMap<String, Instant> = HashMap::new();
     let debounce_window = Duration::from_secs(filter_config.counter_debounce_secs);
     let mode = filter_config.counter_forward_mode.to_lowercase();
@@ -359,14 +385,62 @@ async fn queue_bus_updates(
                         last_forward.insert(key, now);
                     }
                 }
-
-                let proto = telemetry_to_ingest_update(&collector_id, &update)?;
-                queue.append(proto, &collector_id)?;
+                let proto = telemetry_to_ingest_update(collector_id, &update)?;
+                queue.append(proto, collector_id)?;
             }
             Err(broadcast::error::RecvError::Lagged(dropped)) => {
                 warn!(dropped, "collector forwarder lagged on local event bus");
             }
             Err(broadcast::error::RecvError::Closed) => return Ok(()),
+        }
+    }
+}
+
+async fn queue_bus_updates_summary(
+    rx: &mut broadcast::Receiver<TelemetryUpdate>,
+    collector_id: &str,
+    queue: Arc<CollectorQueue>,
+    filter_config: CollectorFilterConfig,
+    shutdown: &mut tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
+    let mut summarizer = CounterSummarizer::new(filter_config.counter_window_secs);
+    let flush_idle_secs = filter_config.counter_flush_idle_secs;
+    // Timer fires slightly more often than the idle threshold to catch stale windows promptly.
+    let flush_check_interval = Duration::from_secs(flush_idle_secs.max(10) / 2);
+    let mut flush_timer = tokio::time::interval(flush_check_interval);
+
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => return Ok(()),
+            _ = flush_timer.tick() => {
+                for summary in summarizer.flush_stale(flush_idle_secs) {
+                    let proto = summary_to_ingest_update(collector_id, None, summary)?;
+                    queue.append(proto, collector_id)?;
+                }
+            }
+            received = rx.recv() => {
+                match received {
+                    Ok(update) => {
+                        let classified = update.classify();
+                        if let TelemetryEvent::InterfaceStats { .. } = classified {
+                            // Counter update: feed the summarizer.
+                            if let Some(summary) = summarizer.observe(&update) {
+                                let proto = summary_to_ingest_update(collector_id, Some(&update), summary)?;
+                                queue.append(proto, collector_id)?;
+                            }
+                            // Raw counter update is intentionally dropped — the summary carries the data.
+                        } else {
+                            // Non-counter event (state change, BGP, etc.): forward raw.
+                            let proto = telemetry_to_ingest_update(collector_id, &update)?;
+                            queue.append(proto, collector_id)?;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(dropped)) => {
+                        warn!(dropped, "collector forwarder lagged on local event bus");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return Ok(()),
+                }
+            }
         }
     }
 }
@@ -1135,7 +1209,12 @@ pub async fn run_collector_manager(
         .and_then(|h| h.into_string().ok())
         .unwrap_or_else(|| "unknown".to_string());
 
-    info!(%collector_id, %hostname, "collector registering with core");
+    info!(
+        %collector_id,
+        %hostname,
+        protocol_version = crate::api::PROTOCOL_VERSION,
+        "collector registering with core"
+    );
 
     let req = CollectorIdentity {
         collector_id: collector_id.clone(),

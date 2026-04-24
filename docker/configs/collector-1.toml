@@ -1,9 +1,20 @@
-api_addr     = "0.0.0.0:50052"
+api_addr = "0.0.0.0:50052"
 
 [collector]
 graph_path = "runtime/bonsai-collector.db"
 
+[collector.filter]
+counter_forward_mode = "summary"
+counter_window_secs  = 60
+
 [runtime]
-mode = "collector"
-collector_id = "collector-1"
-core_ingest_endpoint = "http://bonsai-core:50051"
+mode                 = "collector"
+collector_id         = "collector-1"
+core_ingest_endpoint = "https://bonsai-core:50051"
+
+[runtime.tls]
+enabled     = true
+ca_cert     = "tls/ca.pem"
+cert        = "tls/collector-cert.pem"
+key         = "tls/collector-key.pem"
+server_name = "bonsai-core"

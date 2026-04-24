@@ -1,45 +1,79 @@
 <script>
-  import { onMount } from 'svelte';
-  import Topology from './lib/Topology.svelte';
-  import Events from './lib/Events.svelte';
-  import Trace from './lib/Trace.svelte';
-  import Onboarding from './lib/Onboarding.svelte';
+  import { path, navigate, matchRoute } from '$lib/router.svelte.js';
+  import { getToasts, dismissToast } from '$lib/toast.svelte.js';
+  import Live from './routes/Live.svelte';
+  import Incidents from './routes/Incidents.svelte';
+  import Devices from './routes/Devices.svelte';
+  import Collectors from './routes/Collectors.svelte';
+  import Sites from './routes/Sites.svelte';
+  import Credentials from './routes/Credentials.svelte';
+  import Operations from './routes/Operations.svelte';
+  import TraceRoute from './routes/TraceRoute.svelte';
 
-  let view = $state('topology');
-  let traceId = $state(null);
+  const NAV = [
+    { href: '/',            label: 'Live',        icon: '◉' },
+    { href: '/incidents',   label: 'Incidents',   icon: '⚠' },
+    { href: '/devices',     label: 'Devices',     icon: '⊡' },
+    { href: '/collectors',  label: 'Collectors',  icon: '⇄' },
+    { href: '/sites',       label: 'Sites',       icon: '◎' },
+    { href: '/credentials', label: 'Credentials', icon: '⚿' },
+    { href: '/operations',  label: 'Operations',  icon: '♡' },
+  ];
 
-  function openTrace(id) {
-    traceId = id;
-    view = 'trace';
+  function isActive(href) {
+    const p = path();
+    return href === '/' ? (p === '/' || p === '') : (p === href || p.startsWith(href + '/'));
   }
 
-  onMount(() => {
-    const hash = location.hash.replace('#', '') || 'topology';
-    if (['topology','onboarding','events','trace'].includes(hash)) view = hash;
-  });
-
-  function nav(v) {
-    view = v;
-    location.hash = v;
-  }
+  let traceParams = $derived(matchRoute('/trace/:id', path()));
+  let deviceParams = $derived(matchRoute('/devices/:address', path()));
 </script>
 
-<nav>
-  <span class="brand">🌿 bonsai</span>
-  <a class:active={view==='topology'} onclick={() => nav('topology')} href="#topology">Topology</a>
-  <a class:active={view==='onboarding'} onclick={() => nav('onboarding')} href="#onboarding">Onboarding</a>
-  <a class:active={view==='events'}   onclick={() => nav('events')}   href="#events">Events</a>
-  {#if view === 'trace'}
-    <a class:active={true} href="#trace">Trace</a>
-  {/if}
-</nav>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-brand">bonsai</div>
+    <nav>
+      {#each NAV as item}
+        <a href={'#' + item.href}
+           class:active={isActive(item.href)}
+           onclick={(e) => { e.preventDefault(); navigate(item.href); }}>
+          <span class="nav-icon">{item.icon}</span>
+          {item.label}
+        </a>
+      {/each}
+    </nav>
+  </aside>
 
-{#if view === 'topology'}
-  <Topology on:trace={(e) => openTrace(e.detail)} />
-{:else if view === 'onboarding'}
-  <Onboarding />
-{:else if view === 'events'}
-  <Events on:trace={(e) => openTrace(e.detail)} />
-{:else if view === 'trace'}
-  <Trace id={traceId} />
-{/if}
+  <main class="main-content">
+    {#if traceParams}
+      <TraceRoute id={traceParams.id} />
+    {:else if path() === '/' || path() === ''}
+      <Live />
+    {:else if path() === '/incidents'}
+      <Incidents />
+    {:else if deviceParams}
+      <Devices selectedAddress={deviceParams.address} />
+    {:else if path() === '/devices'}
+      <Devices />
+    {:else if path() === '/collectors'}
+      <Collectors />
+    {:else if path() === '/sites'}
+      <Sites />
+    {:else if path() === '/credentials'}
+      <Credentials />
+    {:else if path() === '/operations'}
+      <Operations />
+    {:else}
+      <div class="empty">Page not found.</div>
+    {/if}
+  </main>
+</div>
+
+<div class="toast-container" aria-live="polite">
+  {#each getToasts() as t (t.id)}
+    <div class="toast toast-{t.kind}" role="alert">
+      <span class="toast-msg">{t.message}</span>
+      <button class="toast-close" onclick={() => dismissToast(t.id)} aria-label="Dismiss">×</button>
+    </div>
+  {/each}
+</div>

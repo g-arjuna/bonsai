@@ -2162,6 +2162,12 @@ mod tests {
                 role: Some("leaf".to_string()),
                 site: Some("lab-london".to_string()),
                 selected_paths: Vec::new(),
+                collector_id: None,
+                created_at_ns: 0,
+                updated_at_ns: 0,
+                created_by: String::new(),
+                updated_by: String::new(),
+                last_operator_action: String::new(),
             }])
             .await
             .expect("sync sites");

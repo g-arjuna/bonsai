@@ -112,3 +112,126 @@ disk-backed outage queue, replay, zstd compression, mTLS, and graph ingestion.
 
 It does not validate the remediation/healing loop or archive parity. Those are
 separate backlog validations because they exercise different subsystems.
+
+---
+
+# Sprint 2 Multi-Collector Validation Scenarios
+
+Five scenarios to validate the integrated collector-core architecture (T1-3 v6).
+Each scenario describes the setup, reproduction steps, expected outcome, and
+status. Failures become specific follow-up items.
+
+## Prerequisites
+
+- Two-collector compose profile running with mTLS (after T0-2 is done):
+  ```bash
+  scripts/generate_compose_tls.sh
+  cp .env.example .env  # fill in BONSAI_VAULT_PASSPHRASE
+  scripts/seed_lab_creds.sh
+  docker compose --profile two-collector up -d
+  ```
+- At least three lab devices added across two sites, e.g.:
+  - `srl-spine1` and `srl-leaf1` → site `dc-lab`, role `spine`/`leaf`
+  - `srl-leaf2` and `xrd-pe1` → site `dc-london`, role `leaf`/`pe`
+- Assignment rules configured:
+  ```
+  POST /api/assignment/rules
+  { "rules": [
+      {"match_site": "dc-lab",    "collector_id": "collector-1", "priority": 10},
+      {"match_site": "dc-london", "collector_id": "collector-2", "priority": 10}
+  ]}
+  ```
+
+---
+
+## Scenario 1 — Route-driven automatic assignment
+
+**What**: Devices added with no `collector_id` are automatically assigned by routing rules.
+
+**Steps**:
+1. Remove any explicit `collector_id` from all devices via `PATCH /api/onboarding/devices`.
+2. `GET /api/assignment/status` — all devices should appear under `unassigned_devices`.
+3. `POST /api/assignment/rules` with the site-to-collector mapping above.
+4. `GET /api/assignment/status` — unassigned list should now be empty.
+5. `GET /api/onboarding/devices` — verify each device has the expected `collector_id`.
+6. SSH into `bonsai-collector-1` container logs — confirm subscriptions for dc-lab devices only.
+7. SSH into `bonsai-collector-2` container logs — confirm subscriptions for dc-london devices only.
+
+**Expected**: Devices land on the correct collector based purely on their `site` field. No manual `collector_id` assignment needed.
+
+**Status**: Not yet run. Pending lab availability.
+
+---
+
+## Scenario 2 — Collector crash → device transition to unassigned → recovery
+
+**What**: When a collector disconnects, its devices become unassigned (or re-evaluated via rules). When the collector restarts, devices are re-assigned via the registration full-sync.
+
+**Steps**:
+1. Start with Scenario 1 in a healthy state.
+2. `docker compose --profile two-collector stop bonsai-collector-1`
+3. Within 30 seconds, `GET /api/assignment/status` — `collector-1` should no longer appear in `active_collectors`.
+4. `GET /api/onboarding/devices` — dc-lab devices should have `collector_id = null` OR have been re-assigned to `collector-2` if a rule matches.
+5. Check `bonsai-collector-2` logs — confirm no spurious subscriptions for dc-lab devices (collector-2 only takes them if rules assign them there).
+6. `docker compose --profile two-collector start bonsai-collector-1`
+7. After reconnection, `GET /api/assignment/status` — `collector-1` reappears in `active_collectors`.
+8. `GET /api/onboarding/devices` — dc-lab devices re-assigned to `collector-1`.
+9. Verify telemetry from dc-lab devices resumes in core graph.
+
+**Expected**: Collector crash produces a clean unassign/re-assign cycle with no lost devices. Telemetry gap is bounded by the reconnect delay.
+
+**Status**: Not yet run.
+
+---
+
+## Scenario 3 — Core unreachable → collector queues → drain on reconnect
+
+**What**: Collector accumulates telemetry in its disk queue when core is unreachable, then drains on reconnect with no data loss.
+
+**Steps**:
+1. `docker compose --profile two-collector stop bonsai-core`
+2. Wait 60 seconds — collector logs should show repeated `collector forwarder disconnected` + queue growth.
+3. `docker exec bonsai-collector-1 cat /app/runtime/collector-queue/queue.ack` — note the growing file.
+4. `docker compose --profile two-collector start bonsai-core`
+5. Watch collector logs — expect `collector forwarder connected to core` then `collector queue batch delivered`.
+6. `GET /api/readiness` on core — verify graph events are present and timestamps span the outage window.
+7. `docker exec bonsai-collector-1 /app/tls/...` (or hit the diagnostic endpoint if T1-2 enabled): `GET http://bonsai-collector-1:9091/api/collector/status` — queue depth should be 0.
+
+**Expected**: No telemetry lost. Queue depth returns to 0. Core event timestamps show the full outage window covered.
+
+**Status**: Partially covered by the 2026-04-22 run above (single collector). Needs re-run with two-collector compose.
+
+---
+
+## Scenario 4 — Credential rotation
+
+**What**: Operator rotates the `lab-admin` vault alias; new credentials are delivered to the collector on the next assignment update without service interruption.
+
+**Steps**:
+1. `scripts/seed_lab_creds.sh` — update `lab-admin` with new password (use a test device with a known-good new password).
+2. `GET /api/credentials` — confirm `lab-admin` shows a new `updated_at` timestamp.
+3. Trigger a re-assignment by modifying and re-saving one dc-lab device (e.g. toggle `enabled` twice).
+4. Check `bonsai-collector-1` logs — expect `assignment update received` with the new credentials.
+5. Verify the collector continues receiving telemetry from the affected device (no subscription drop).
+
+**Expected**: Credential rotation is non-disruptive. gNMI connection re-establishes automatically with new credentials within one assignment cycle.
+
+**Status**: Not yet run. Requires credential rotation to be wired through `CollectorManager.unregister_collector` re-evaluation path.
+
+---
+
+## Scenario 5 — Site reassignment (device moves between collectors)
+
+**What**: Moving a device from one site to another triggers a collector switch: the old collector unsubscribes, the new collector subscribes, data continuity is verifiable.
+
+**Steps**:
+1. Start with Scenario 1 in a healthy state. `srl-leaf2` is in `dc-london`, assigned to `collector-2`.
+2. `PATCH /api/onboarding/devices` — change `srl-leaf2` site to `dc-lab`.
+3. `GET /api/assignment/status` — `srl-leaf2` should now show under `collector-1`.
+4. Check `bonsai-collector-2` logs — `subscriber stopped` for `srl-leaf2`'s address.
+5. Check `bonsai-collector-1` logs — `subscriber started` for `srl-leaf2`'s address.
+6. `GET /api/topology` — `srl-leaf2` still visible in graph; interface state not stale.
+
+**Expected**: Automatic reassignment fires within seconds of the site change. Data continuity maintained — no duplicate events, no gap wider than the assignment propagation delay.
+
+**Status**: Not yet run. Depends on T1-1 site-change re-evaluation path.

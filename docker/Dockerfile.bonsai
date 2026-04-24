@@ -15,6 +15,9 @@ RUN apt-get update \
 
 ENV CMAKE=/usr/bin/cmake \
     CMAKE_MAKE_PROGRAM=/usr/bin/make \
+    # .cargo/config.toml sets rustc-wrapper = "sccache" for local dev builds.
+    # sccache is not installed in the build container — explicitly unset the
+    # wrapper so cargo does not try (and fail) to call a missing binary.
     RUSTC_WRAPPER=
 
 FROM chef AS rust-planner
@@ -23,6 +26,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS rust-builder
 COPY --from=rust-planner /app/recipe.json recipe.json
+# sccache not available in container — keep the wrapper cleared.
 ENV RUSTC_WRAPPER=
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
@@ -38,10 +42,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && test -f /app/liblbug.so.0 \
     && strip /app/bonsai
 
-# Minimal Rust healthcheck binary to avoid BusyBox dependency in runtime
-RUN echo 'fn main() { let res = std::process::Command::new("curl").arg("-f").arg("http://127.0.0.1:3000/api/readiness").status(); std::process::exit(if res.is_ok() && res.unwrap().success() { 0 } else { 1 }); }' > healthcheck.rs \
-    && rustc --crate-type bin -C opt-level=z -C panic=abort healthcheck.rs -o /app/healthcheck
-
 FROM node:20-alpine AS ui-builder
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
@@ -49,6 +49,9 @@ RUN npm ci
 COPY ui/ ./
 RUN npm run build
 
+# Runtime: Debian trixie-slim with an explicit named user.
+# curl is used for the HEALTHCHECK; it is the only runtime dependency beyond
+# the bonsai binary and liblbug.so.0.
 FROM debian:trixie-slim AS runtime
 
 WORKDIR /app
@@ -59,23 +62,23 @@ RUN apt-get update \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /app/runtime /app/bonsai-credentials \
-    && chown -R 65532:65532 /app
+RUN groupadd --gid 10001 bonsai \
+    && useradd --uid 10001 --gid 10001 --no-create-home bonsai \
+    && mkdir -p /app/runtime /app/bonsai-credentials \
+    && chown -R bonsai:bonsai /app
 
 COPY --from=rust-builder /app/bonsai /usr/local/bin/bonsai
 COPY --from=rust-builder /app/liblbug.so.0 /usr/local/lib/liblbug.so.0
-COPY --from=rust-builder /app/healthcheck /usr/local/bin/healthcheck
 COPY --from=ui-builder /ui/dist /app/ui/dist
 
 ENV BONSAI_CONFIG=/etc/bonsai/bonsai.toml
 ENV LD_LIBRARY_PATH=/usr/local/lib
 
-# Distroless 'nonroot' is 65532:65532
-USER 65532:65532
+USER bonsai:bonsai
 
 EXPOSE 3000 50051 9090
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD ["/usr/local/bin/healthcheck"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD ["curl", "-sf", "http://127.0.0.1:3000/api/readiness"]
 
 ENTRYPOINT ["/usr/local/bin/bonsai"]

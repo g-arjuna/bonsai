@@ -236,6 +236,21 @@ impl CredentialVault {
         }))
     }
 
+    pub fn username_for_alias(&self, alias: &str) -> Result<String> {
+        let alias = normalize_alias(alias)?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("credential vault lock poisoned"))?;
+        ensure_unlocked(&state)?;
+
+        let entry = state
+            .entries
+            .get(&alias)
+            .with_context(|| format!("credential alias '{alias}' not found"))?;
+        Ok(entry.username.clone())
+    }
+
     pub fn resolve(&self, alias: &str) -> Result<ResolvedCredential> {
         let alias = normalize_alias(alias)?;
         let mut state = self

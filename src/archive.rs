@@ -3,6 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -17,6 +18,19 @@ use tracing::{info, warn};
 
 use crate::event_bus::InProcessBus;
 use crate::telemetry::{TelemetryEvent, TelemetryUpdate};
+
+static ARCHIVE_LAG_MILLIS: AtomicI64 = AtomicI64::new(0);
+static ARCHIVE_BUFFER_ROWS: AtomicU64 = AtomicU64::new(0);
+static ARCHIVE_LAST_FLUSH_MILLIS: AtomicU64 = AtomicU64::new(0);
+static ARCHIVE_LAST_COMPRESSION_PPM: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ArchiveSnapshot {
+    pub lag_millis: i64,
+    pub buffer_rows: u64,
+    pub last_flush_millis: u64,
+    pub last_compression_ppm: u64,
+}
 
 #[derive(Debug)]
 struct FlushStats {
@@ -126,6 +140,8 @@ fn record_archive_lag(buffer: &[TelemetryUpdate]) {
     let lag_seconds = oldest_timestamp_ns
         .map(|timestamp_ns| (now_ns().saturating_sub(timestamp_ns) as f64) / 1_000_000_000.0)
         .unwrap_or(0.0);
+    ARCHIVE_LAG_MILLIS.store((lag_seconds * 1000.0).round() as i64, Ordering::Relaxed);
+    ARCHIVE_BUFFER_ROWS.store(buffer.len() as u64, Ordering::Relaxed);
     metrics::gauge!("bonsai_archive_lag_seconds").set(lag_seconds);
     metrics::gauge!("bonsai_archive_buffer_rows").set(buffer.len() as f64);
 }
@@ -145,6 +161,7 @@ async fn flush_buffer(
         return Ok(());
     }
 
+    let flush_started = std::time::Instant::now();
     let stats = tokio::task::spawn_blocking(move || {
         let mut writer = writer
             .lock()
@@ -153,6 +170,7 @@ async fn flush_buffer(
     })
     .await
     .context("archive flush panicked")??;
+    ARCHIVE_LAST_FLUSH_MILLIS.store(flush_started.elapsed().as_millis() as u64, Ordering::Relaxed);
 
     for stat in stats.flushes {
         let compression_ratio = if stat.file_bytes > 0 {
@@ -160,6 +178,7 @@ async fn flush_buffer(
         } else {
             0.0
         };
+        ARCHIVE_LAST_COMPRESSION_PPM.store((compression_ratio * 1_000_000.0).round() as u64, Ordering::Relaxed);
         info!(
             path = %stat.path.display(),
             rows = stat.rows,
@@ -174,6 +193,15 @@ async fn flush_buffer(
     log_close_stats(stats.closes);
 
     Ok(())
+}
+
+pub fn snapshot() -> ArchiveSnapshot {
+    ArchiveSnapshot {
+        lag_millis: ARCHIVE_LAG_MILLIS.load(Ordering::Relaxed),
+        buffer_rows: ARCHIVE_BUFFER_ROWS.load(Ordering::Relaxed),
+        last_flush_millis: ARCHIVE_LAST_FLUSH_MILLIS.load(Ordering::Relaxed),
+        last_compression_ppm: ARCHIVE_LAST_COMPRESSION_PPM.load(Ordering::Relaxed),
+    }
 }
 
 async fn close_archive_writers(writer: Arc<Mutex<HourlyArchiveWriter>>) -> Result<()> {
