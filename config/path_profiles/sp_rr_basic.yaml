@@ -1,0 +1,46 @@
+name: sp_rr_basic
+environment: ["service_provider"]
+vendor_scope: []
+roles: ["rr", "route-reflector"]
+description: "Service-provider route-reflector profile: BGP session health, reflected prefix counts, no data-plane paths."
+rationale: "Route reflectors carry only control-plane state. The signal is entirely BGP: session count, prefix counts per client, and RR client group health. No MPLS or interface counters are required."
+paths:
+  - path: "Cisco-IOS-XR-ipv4-bgp-oper:bgp/instances/instance/instance-active/default-vrf/neighbors/neighbor"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["Cisco-IOS-XR-ipv4-bgp-oper"]
+    vendor_only: ["cisco_xrd"]
+    fallback_for: "network-instances"
+    rationale: "IOS-XR native BGP neighbor state for RR client sessions."
+  - path: "Cisco-IOS-XR-ipv4-bgp-oper:bgp/instances/instance/instance-active/default-vrf/afs/af"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 60000000000
+    required_any_models: ["Cisco-IOS-XR-ipv4-bgp-oper"]
+    vendor_only: ["cisco_xrd"]
+    optional: true
+    rationale: "IOS-XR native BGP AFI summary — prefix counts per address family."
+  - path: "network-instances"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-bgp", "openconfig-network-instance"]
+    rationale: "OpenConfig BGP session and prefix state for all RR client sessions."
+  - path: "network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/afi-safis/afi-safi"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 60000000000
+    required_any_models: ["openconfig-bgp"]
+    optional: true
+    rationale: "OpenConfig per-AFI prefix count per session — key RR health indicator."
+  - path: "interfaces"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    optional: true
+    rationale: "OpenConfig interface state — loopback health for RR reachability."
+  - path: "bfd"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-bfd"]
+    optional: true
+    rationale: "OpenConfig BFD when RR uses BFD to accelerate client failure detection."

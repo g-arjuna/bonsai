@@ -1,0 +1,87 @@
+name: sp_pe_evpn
+environment: ["service_provider"]
+vendor_scope: []
+roles: ["pe", "peering"]
+description: "Service-provider PE with BGP EVPN: base PE telemetry plus EVPN AFI-SAFI session health, type-2/3/5 route counts, VxLAN or MPLS-based EVI state."
+rationale: "SP EVPN PEs carry MAC-VPN and IP-VPN state; BGP EVPN session health per EVI, route type counts, and encap-layer state are the primary signals for DCI and metro-Ethernet services."
+paths:
+  - path: "Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface[interface-name=*]/generic-counters"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_any_models: ["Cisco-IOS-XR-infra-statsd-oper"]
+    vendor_only: ["cisco_xrd"]
+    rationale: "IOS-XR native interface counters."
+  - path: "Cisco-IOS-XR-evpn-oper:evpn/active/evi-detail/evi-children/neighbors"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["Cisco-IOS-XR-evpn-oper"]
+    vendor_only: ["cisco_xrd"]
+    optional: true
+    fallback_for: "network-instances"
+    rationale: "IOS-XR native EVPN EVI neighbor state when openconfig-evpn not advertised."
+  - path: "Cisco-IOS-XR-evpn-oper:evpn/active/summary"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 60000000000
+    required_any_models: ["Cisco-IOS-XR-evpn-oper"]
+    vendor_only: ["cisco_xrd"]
+    optional: true
+    rationale: "IOS-XR native EVPN summary — EVI counts and MAC/IP table sizes."
+  - path: "network-instance[name=*]/protocols/bgp/neighbor[peer-address=*]"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    rationale: "SR Linux native BGP across all network instances (default + EVPN VRFs)."
+  - path: "tunnel-interface[name=*]/vxlan-interface[index=*]/bridge-table/unicast-destinations/destination"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    optional: true
+    rationale: "SR Linux native VxLAN bridge-table state for EVPN-VxLAN DCI."
+  - path: "interfaces"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface counters."
+  - path: "interfaces"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface oper-state."
+  - path: "network-instances"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-bgp", "openconfig-network-instance"]
+    rationale: "OpenConfig BGP and network-instance state across all EVIs."
+  - path: "network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/afi-safis/afi-safi[afi-safi-name=L2VPN_EVPN]"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-bgp"]
+    rationale: "OpenConfig L2VPN-EVPN AFI-SAFI per session — route type counts and session state."
+  - path: "mpls"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-mpls"]
+    optional: true
+    rationale: "OpenConfig MPLS when EVPN uses MPLS encapsulation."
+  - path: "network-instances/network-instance/protocols/protocol/isis"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-isis"]
+    rationale: "OpenConfig IS-IS underlay state."
+  - path: "lldp"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-lldp"]
+    optional: true
+    rationale: "OpenConfig LLDP."
+  - path: "bfd"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-bfd"]
+    optional: true
+    rationale: "OpenConfig BFD."

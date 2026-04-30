@@ -1,0 +1,44 @@
+name: homelab_switch
+environment: ["home_lab"]
+vendor_scope: []
+roles: ["switch", "leaf", "access", "spine"]
+description: "Home-lab switch: OpenConfig interfaces, LLDP, and VLAN — all optional for maximum compatibility with lab images."
+rationale: "Lab switches (Arista cEOS, Nokia SR Linux in L2 mode, generic VMs) have inconsistent gNMI model coverage. All paths are marked optional; discovery selects what the device actually advertises."
+paths:
+  - path: "interfaces"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 30000000000
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface counters."
+  - path: "interfaces"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface oper-state."
+  - path: "lldp"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-lldp"]
+    optional: true
+    rationale: "OpenConfig LLDP for lab topology discovery."
+  - path: "vlans"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-vlan"]
+    optional: true
+    rationale: "OpenConfig VLAN when the device advertises the VLAN model."
+  - path: "stp"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-spanning-tree"]
+    optional: true
+    rationale: "OpenConfig spanning-tree when available."
+  - path: "interface[name=*]/statistics"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 30000000000
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    optional: true
+    rationale: "SR Linux native interface counters for cEOS/SRL lab images."

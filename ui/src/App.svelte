@@ -14,6 +14,7 @@
   import Environments from './routes/Environments.svelte';
   import Setup from './routes/Setup.svelte';
   import Profiles from './routes/Profiles.svelte';
+  import Enrichment from './routes/Enrichment.svelte';
 
   const NAV = [
     { href: '/',              label: 'Live',         icon: '◉' },
@@ -22,6 +23,7 @@
     { href: '/collectors',    label: 'Collectors',   icon: '⇄' },
     { href: '/environments',  label: 'Environments', icon: '⬡' },
     { href: '/profiles',      label: 'Profiles',     icon: '📋' },
+    { href: '/enrichment',    label: 'Enrichment',   icon: '⟳' },
     { href: '/sites',         label: 'Sites',        icon: '◎' },
     { href: '/credentials',   label: 'Credentials',  icon: '⚿' },
     { href: '/operations',    label: 'Operations',   icon: '♡' },
@@ -107,6 +109,8 @@
       <Credentials />
     {:else if path() === '/operations'}
       <Operations />
+    {:else if path() === '/enrichment'}
+      <Enrichment />
     {:else}
       <div class="empty">Page not found.</div>
     {/if}

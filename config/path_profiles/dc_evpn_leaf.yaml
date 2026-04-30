@@ -1,0 +1,87 @@
+name: dc_evpn_leaf
+environment: ["data_center"]
+vendor_scope: []
+roles: ["leaf", "access", "border-leaf"]
+description: "Data-center leaf with BGP EVPN: interfaces, EVPN route types (type-2 MAC/IP, type-3 IMET, type-5 prefix), VxLAN tunnel state, and LLDP."
+rationale: "EVPN leaves carry MAC/IP bindings and VxLAN tunnels; BGP EVPN session health and tunnel state drive incident detection. Adds EVPN-specific paths on top of the baseline leaf profile."
+paths:
+  - path: "interface[name=*]/statistics"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    rationale: "SR Linux native interface counters."
+  - path: "interface[name=*]/oper-state"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    rationale: "SR Linux native interface state."
+  - path: "network-instance[name=*]/protocols/bgp/neighbor[peer-address=*]"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    rationale: "SR Linux native BGP across all network instances (default + EVPN VRFs)."
+  - path: "tunnel-interface[name=*]/vxlan-interface[index=*]/bridge-table/unicast-destinations/destination"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    optional: true
+    rationale: "SR Linux native VxLAN unicast MAC/IP table — key signal for EVPN convergence."
+  - path: "system/lldp/interface[name=*]/neighbor[id=*]"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    rationale: "SR Linux native LLDP topology."
+  - path: "Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface[interface-name=*]/generic-counters"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_any_models: ["Cisco-IOS-XR-infra-statsd-oper"]
+    vendor_only: ["cisco_xrd"]
+    rationale: "IOS-XR native interface counters."
+  - path: "Cisco-IOS-XR-evpn-oper:evpn/active/evi-detail/evi-children/neighbors"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["Cisco-IOS-XR-evpn-oper"]
+    vendor_only: ["cisco_xrd"]
+    optional: true
+    fallback_for: "network-instances"
+    rationale: "IOS-XR native EVPN neighbor table when openconfig-evpn not advertised."
+  - path: "interfaces"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface counters."
+  - path: "interfaces"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface oper-state."
+  - path: "network-instances"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-bgp", "openconfig-network-instance"]
+    rationale: "OpenConfig BGP sessions and network-instance state including VRF."
+  - path: "network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/afi-safis/afi-safi[afi-safi-name=L2VPN_EVPN]"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-bgp"]
+    optional: true
+    rationale: "OpenConfig EVPN AFI-SAFI per BGP session — tracks EVPN-specific prefix counts and session state."
+  - path: "lldp"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-lldp"]
+    rationale: "OpenConfig LLDP physical topology."
+  - path: "bfd"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-bfd"]
+    optional: true
+    rationale: "OpenConfig BFD for fast failure detection on underlay."

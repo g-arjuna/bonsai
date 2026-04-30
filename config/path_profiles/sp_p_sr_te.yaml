@@ -1,0 +1,76 @@
+name: sp_p_sr_te
+environment: ["service_provider"]
+vendor_scope: []
+roles: ["p", "core", "edge"]
+description: "Service-provider P-core with SR-TE: IS-IS, SR adjacency and prefix SIDs, SR-TE policy state, MPLS forwarding, and interfaces."
+rationale: "SR-TE P-core nodes carry segment-routing policy paths and SR adjacencies; IS-IS SR extensions, SR-TE policy state, and RSVP-TE (if present) are the primary signals beyond base transport."
+paths:
+  - path: "Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface[interface-name=*]/generic-counters"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_any_models: ["Cisco-IOS-XR-infra-statsd-oper"]
+    vendor_only: ["cisco_xrd"]
+    rationale: "IOS-XR native interface counters."
+  - path: "Cisco-IOS-XR-mpls-te-oper:mpls-te/tunnels/summary"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 30000000000
+    required_any_models: ["Cisco-IOS-XR-mpls-te-oper"]
+    vendor_only: ["cisco_xrd"]
+    optional: true
+    fallback_for: "mpls"
+    rationale: "IOS-XR native MPLS-TE tunnel summary when openconfig-mpls not advertised."
+  - path: "Cisco-IOS-XR-segment-routing-ms-oper:srms/policy/policy-ipv4-backup"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["Cisco-IOS-XR-segment-routing-ms-oper"]
+    vendor_only: ["cisco_xrd"]
+    optional: true
+    fallback_for: "segment-routing"
+    rationale: "IOS-XR native SR mapping server policy state."
+  - path: "network-instance[name=default]/segment-routing/mpls/adjacency-sid-mapping"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    optional: true
+    rationale: "SR Linux native adjacency-SID mapping for SR label verification."
+  - path: "interfaces"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface counters."
+  - path: "interfaces"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface oper-state."
+  - path: "lldp"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-lldp"]
+    optional: true
+    rationale: "OpenConfig LLDP when enabled on core interfaces."
+  - path: "mpls"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-mpls"]
+    rationale: "OpenConfig MPLS state — LSP health and label stack."
+  - path: "network-instances/network-instance/protocols/protocol/isis"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-isis"]
+    rationale: "OpenConfig IS-IS state including SR extensions (adj-SID, prefix-SID)."
+  - path: "segment-routing"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-segment-routing"]
+    rationale: "OpenConfig SR state — active policy paths and binding SID state."
+  - path: "bfd"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-bfd"]
+    optional: true
+    rationale: "OpenConfig BFD for microsecond failure detection on SR paths."

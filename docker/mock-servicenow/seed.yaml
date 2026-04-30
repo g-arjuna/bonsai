@@ -1,0 +1,73 @@
+# ServiceNow CMDB mock seed data.
+# Mirrors the lab/seed/topology.yaml topology so enricher integration tests
+# can validate graph edges against known values without a real SN instance.
+
+cmdb_ci_netgear:
+  - sys_id: ci-srl-spine1
+    name: srl-spine1
+    ip_address: "172.100.102.11"
+    operational_status: "1"   # 1 = Operational
+    environment: lab
+    u_owner_group: Network-Operations
+    u_vendor: Nokia
+
+  - sys_id: ci-srl-leaf1
+    name: srl-leaf1
+    ip_address: "172.100.102.12"
+    operational_status: "1"
+    environment: lab
+    u_owner_group: Network-Operations
+    u_vendor: Nokia
+
+  - sys_id: ci-srl-leaf2
+    name: srl-leaf2
+    ip_address: "172.100.102.13"
+    operational_status: "1"
+    environment: lab
+    u_owner_group: Network-Operations
+    u_vendor: Nokia
+
+  - sys_id: ci-xrd-pe1
+    name: xrd-pe1
+    ip_address: "172.100.102.14"
+    operational_status: "1"
+    environment: lab
+    u_owner_group: SP-Engineering
+    u_vendor: Cisco
+
+cmdb_ci_business_service:
+  - sys_id: svc-bgp-underlay
+    name: "BGP Underlay"
+    operational_status: "1"
+    u_criticality: high
+    u_owner_group: Network-Operations
+
+  - sys_id: svc-lab-l3vpn
+    name: "Lab L3VPN"
+    operational_status: "1"
+    u_criticality: medium
+    u_owner_group: SP-Engineering
+
+cmdb_rel_ci:
+  # Devices running the BGP Underlay service
+  - sys_id: rel-001
+    parent: svc-bgp-underlay
+    child: ci-srl-spine1
+    type: "Runs on::Runs"
+  - sys_id: rel-002
+    parent: svc-bgp-underlay
+    child: ci-srl-leaf1
+    type: "Runs on::Runs"
+  - sys_id: rel-003
+    parent: svc-bgp-underlay
+    child: ci-srl-leaf2
+    type: "Runs on::Runs"
+  - sys_id: rel-004
+    parent: svc-bgp-underlay
+    child: ci-xrd-pe1
+    type: "Runs on::Runs"
+  # Devices running the L3VPN service
+  - sys_id: rel-005
+    parent: svc-lab-l3vpn
+    child: ci-xrd-pe1
+    type: "Runs on::Runs"

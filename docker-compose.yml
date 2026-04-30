@@ -88,6 +88,22 @@ services:
       delay --time ${CHAOS_DELAY_MS:-500}
       re2:^bonsai-collector
 
+  # ServiceNow CMDB mock — for enricher development and CI testing.
+  # Emulates the SN REST API surface that bonsai uses. No account needed.
+  # Usage: docker compose --profile servicenow-mock up -d servicenow-mock
+  servicenow-mock:
+    build:
+      context: docker/mock-servicenow
+      dockerfile: Dockerfile
+    profiles: ["servicenow-mock", "enrichment-test"]
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 networks:
   # The ContainerLab management network. Override CLAB_NETWORK to match your
   # topology. Defaults to the bonsai-p4 fast-iteration lab network.

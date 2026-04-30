@@ -2,6 +2,7 @@ pub mod api;
 pub mod audit;
 pub mod archive;
 pub mod assignment;
+pub mod enrichment;
 pub mod catalogue;
 pub mod collector;
 pub mod config;

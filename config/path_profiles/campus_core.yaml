@@ -1,0 +1,47 @@
+name: campus_core
+environment: ["campus_wired"]
+vendor_scope: []
+roles: ["core", "distribution", "border"]
+description: "Campus core router/switch: interfaces, BGP/OSPF/IS-IS routing state, LLDP, and BFD."
+rationale: "Campus core devices carry inter-site routing and WAN hand-off; routing protocol health, interface utilisation, and BFD are the primary signals. This profile mirrors a light SP-P profile for campus scale."
+paths:
+  - path: "interfaces"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface counters — uplink throughput and error rates."
+  - path: "interfaces"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface oper-state."
+  - path: "lldp"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-lldp"]
+    rationale: "OpenConfig LLDP for physical topology between core nodes."
+  - path: "network-instances"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-bgp", "openconfig-network-instance"]
+    optional: true
+    rationale: "OpenConfig BGP for WAN peering or inter-campus BGP."
+  - path: "network-instances/network-instance/protocols/protocol/ospf"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-ospfv2"]
+    optional: true
+    rationale: "OpenConfig OSPF state — core adjacency health."
+  - path: "network-instances/network-instance/protocols/protocol/isis"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-isis"]
+    optional: true
+    rationale: "OpenConfig IS-IS state when campus core uses IS-IS."
+  - path: "bfd"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-bfd"]
+    optional: true
+    rationale: "OpenConfig BFD for fast core link failure detection."

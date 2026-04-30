@@ -1,0 +1,93 @@
+name: sp_pe_l3vpn
+environment: ["service_provider"]
+vendor_scope: []
+roles: ["pe", "peering"]
+description: "Service-provider PE with L3VPN: base PE telemetry plus per-VRF BGP, L3VPN route counts, VPN label state, and interface health."
+rationale: "L3VPN PE devices carry per-customer VRF state; BGP VPNv4/VPNv6 session health, per-VRF prefix counts, and label binding state are the key signals for customer SLA detection."
+paths:
+  - path: "Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface[interface-name=*]/generic-counters"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_any_models: ["Cisco-IOS-XR-infra-statsd-oper"]
+    vendor_only: ["cisco_xrd"]
+    rationale: "IOS-XR native interface counters."
+  - path: "Cisco-IOS-XR-ipv4-bgp-oper:bgp/instances/instance/instance-active/default-vrf/neighbors/neighbor"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["Cisco-IOS-XR-ipv4-bgp-oper"]
+    vendor_only: ["cisco_xrd"]
+    fallback_for: "network-instances"
+    rationale: "IOS-XR native BGP neighbor state (default VRF and VPNv4/VPNv6 sessions)."
+  - path: "Cisco-IOS-XR-ip-rib-ipv4-oper:rib/vrfs/vrf/afs/af/safs/saf/ip-rib-route-table-names/ip-rib-route-table-name/routes/route"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 60000000000
+    required_any_models: ["Cisco-IOS-XR-ip-rib-ipv4-oper"]
+    vendor_only: ["cisco_xrd"]
+    optional: true
+    rationale: "IOS-XR native per-VRF RIB — customer route table counts."
+  - path: "network-instance[name=*]/protocols/bgp/neighbor[peer-address=*]"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    rationale: "SR Linux native BGP across all VRF network instances."
+  - path: "interfaces"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface counters."
+  - path: "interfaces"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface oper-state and subinterface (CE-facing) events."
+  - path: "network-instances"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-bgp", "openconfig-network-instance"]
+    rationale: "OpenConfig BGP and VRF state — all network instances including L3VPN VRFs."
+  - path: "network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/afi-safis/afi-safi[afi-safi-name=L3VPN_IPV4_UNICAST]"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 60000000000
+    required_any_models: ["openconfig-bgp"]
+    optional: true
+    rationale: "OpenConfig VPNv4 AFI-SAFI prefix counts per session — customer prefix visibility."
+  - path: "network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/afi-safis/afi-safi[afi-safi-name=L3VPN_IPV6_UNICAST]"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 60000000000
+    required_any_models: ["openconfig-bgp"]
+    optional: true
+    rationale: "OpenConfig VPNv6 AFI-SAFI prefix counts per session."
+  - path: "mpls"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-mpls"]
+    rationale: "OpenConfig MPLS state — VPN label binding and LSP health."
+  - path: "network-instances/network-instance/protocols/protocol/isis"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-isis"]
+    rationale: "OpenConfig IS-IS underlay state."
+  - path: "segment-routing"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-segment-routing"]
+    optional: true
+    rationale: "OpenConfig SR state when SR-based VPN transport is in use."
+  - path: "lldp"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-lldp"]
+    optional: true
+    rationale: "OpenConfig LLDP for CE-facing topology evidence."
+  - path: "bfd"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-bfd"]
+    optional: true
+    rationale: "OpenConfig BFD for fast CE-link failure detection."

@@ -1,0 +1,60 @@
+name: homelab_router
+environment: ["home_lab"]
+vendor_scope: []
+roles: ["router", "pe", "p", "rr", "leaf", "spine", "edge"]
+description: "Home-lab and FRR-based router: broad OpenConfig coverage, permissive optional flags. Designed for FRR and generic Linux-based routers."
+rationale: "Home-lab routers run FRR or similar OSS stacks; OpenConfig support is variable. This profile subscribes to all useful paths as optional so partial coverage is acceptable. Not appropriate for production — use environment-specific profiles instead."
+paths:
+  - path: "interfaces"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 30000000000
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface counters."
+  - path: "interfaces"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface oper-state."
+  - path: "lldp"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-lldp"]
+    optional: true
+    rationale: "OpenConfig LLDP — optional because FRR lldpd integration varies."
+  - path: "network-instances"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-bgp", "openconfig-network-instance"]
+    optional: true
+    rationale: "OpenConfig BGP and routing when FRR advertises openconfig-bgp."
+  - path: "network-instances/network-instance/protocols/protocol/ospf"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-ospfv2"]
+    optional: true
+    rationale: "OpenConfig OSPF when in use."
+  - path: "network-instances/network-instance/protocols/protocol/isis"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-isis"]
+    optional: true
+    rationale: "OpenConfig IS-IS when in use."
+  - path: "mpls"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-mpls"]
+    optional: true
+    rationale: "OpenConfig MPLS when FRR LDP/SR is configured."
+  - path: "segment-routing"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-segment-routing"]
+    optional: true
+    rationale: "OpenConfig SR when FRR SR is configured."
+  - path: "bfd"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-bfd"]
+    optional: true
+    rationale: "OpenConfig BFD when FRR bfdd is running."

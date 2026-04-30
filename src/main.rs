@@ -610,9 +610,14 @@ async fn main() -> Result<()> {
             let registry_for_http = std::sync::Arc::clone(&registry);
             let credentials_for_http = std::sync::Arc::clone(&credentials);
             let collector_manager_for_http = collector_manager.clone();
-            let catalogue = std::sync::Arc::new(catalogue::load_catalogue(
-                std::path::Path::new("config/path_profiles"),
+            let catalogue_dir = "config/path_profiles".to_string();
+            let catalogue = std::sync::Arc::new(tokio::sync::RwLock::new(
+                catalogue::load_catalogue(std::path::Path::new(&catalogue_dir)),
             ));
+            let runtime_dir = "runtime".to_string();
+            let enricher_registry = bonsai::enrichment::new_registry(
+                std::path::Path::new(&runtime_dir),
+            );
             tokio::spawn(async move {
                 let listener = tokio::net::TcpListener::bind(http_addr)
                     .await
@@ -625,6 +630,9 @@ async fn main() -> Result<()> {
                         credentials_for_http,
                         collector_manager_for_http,
                         catalogue,
+                        catalogue_dir,
+                        enricher_registry,
+                        runtime_dir,
                     ),
                 )
                 .await

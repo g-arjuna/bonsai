@@ -1,0 +1,53 @@
+name: campus_distribution
+environment: ["campus_wired"]
+vendor_scope: []
+roles: ["distribution", "core", "border"]
+description: "Campus wired distribution switch: interfaces, LLDP, VLAN, STP, and OSPF/IS-IS where in use."
+rationale: "Distribution devices aggregate access switches and route between VLANs; L3 convergence events and STP topology changes at this tier have wide blast radius. OSPF state is the primary L3 signal."
+paths:
+  - path: "interfaces"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 30000000000
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface counters — uplink utilisation to core."
+  - path: "interfaces"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface oper-state — uplink flaps affect all downstream access switches."
+  - path: "lldp"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-lldp"]
+    rationale: "OpenConfig LLDP for topology discovery to both access (downstream) and core (upstream)."
+  - path: "vlans"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-vlan"]
+    optional: true
+    rationale: "OpenConfig VLAN state — trunk port VLAN pruning issues appear here."
+  - path: "stp"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-spanning-tree"]
+    optional: true
+    rationale: "OpenConfig spanning-tree — distribution is often STP root; topology changes here cascade."
+  - path: "network-instances/network-instance/protocols/protocol/ospf"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-ospfv2"]
+    optional: true
+    rationale: "OpenConfig OSPF state — inter-VLAN routing adjacency health."
+  - path: "network-instances/network-instance/protocols/protocol/isis"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-isis"]
+    optional: true
+    rationale: "OpenConfig IS-IS state when campus uses IS-IS instead of OSPF."
+  - path: "bfd"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-bfd"]
+    optional: true
+    rationale: "OpenConfig BFD for fast uplink failure detection."

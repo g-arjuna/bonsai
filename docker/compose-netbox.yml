@@ -1,0 +1,89 @@
+# NetBox test instance for bonsai enrichment development.
+#
+# Brings up NetBox + Postgres + Redis pre-seeded with the lab topology from
+# lab/seed/topology.yaml. Use this for developing and CI-testing the NetBox
+# enricher (T4-1) without a real NetBox instance.
+#
+# Usage:
+#   docker compose -f docker/compose-netbox.yml up -d
+#   scripts/seed_netbox.py
+#   curl http://localhost:8000/api/dcim/devices/ -H "Authorization: Token bonsai-dev-token"
+#
+# Default credentials: admin / bonsai-dev (dev only — never production).
+
+services:
+  netbox-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: netbox
+      POSTGRES_USER: netbox
+      POSTGRES_PASSWORD: bonsai-netbox-dev
+    volumes:
+      - netbox_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "netbox"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  netbox-redis:
+    image: redis:7-alpine
+    command: redis-server --save "" --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  netbox:
+    image: netboxcommunity/netbox:v4.1
+    depends_on:
+      netbox-postgres:
+        condition: service_healthy
+      netbox-redis:
+        condition: service_healthy
+    environment:
+      DB_HOST: netbox-postgres
+      DB_NAME: netbox
+      DB_USER: netbox
+      DB_PASSWORD: bonsai-netbox-dev
+      REDIS_HOST: netbox-redis
+      REDIS_PORT: "6379"
+      SECRET_KEY: bonsai-dev-secret-key-do-not-use-in-production
+      SUPERUSER_NAME: admin
+      SUPERUSER_EMAIL: admin@bonsai.local
+      SUPERUSER_PASSWORD: bonsai-dev
+      SUPERUSER_API_TOKEN: bonsai-dev-token
+      ALLOWED_HOSTS: "localhost 127.0.0.1 netbox"
+      METRICS_ENABLED: "true"
+    ports:
+      - "8000:8080"
+    volumes:
+      - netbox_media:/opt/netbox/netbox/media
+      - netbox_static:/opt/netbox/netbox/static
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 10
+
+  netbox-worker:
+    image: netboxcommunity/netbox:v4.1
+    depends_on:
+      netbox:
+        condition: service_healthy
+    environment:
+      DB_HOST: netbox-postgres
+      DB_NAME: netbox
+      DB_USER: netbox
+      DB_PASSWORD: bonsai-netbox-dev
+      REDIS_HOST: netbox-redis
+      REDIS_PORT: "6379"
+      SECRET_KEY: bonsai-dev-secret-key-do-not-use-in-production
+    command: /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py rqworker
+
+volumes:
+  netbox_pg_data:
+  netbox_media:
+  netbox_static:

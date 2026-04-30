@@ -1,0 +1,31 @@
+name: campus_wlc
+environment: ["campus_wireless"]
+vendor_scope: ["cisco_xrd", "arista_eos", "any"]
+roles: ["wlc", "edge-wlc"]
+description: "Campus wireless LAN controller: management interface health and LLDP. Wireless-specific state (SSID, client, RF) requires vendor-native models not yet in OpenConfig."
+rationale: "OpenConfig has limited wireless controller model coverage as of 2026. This profile captures what is available via standard models (interface health, LLDP). Vendor-native streaming for RF and client telemetry is expected via vendor plugin catalogues. This profile documents the gap explicitly."
+paths:
+  - path: "interfaces"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 30000000000
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface counters — management and uplink interface health."
+  - path: "interfaces"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface oper-state."
+  - path: "lldp"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-lldp"]
+    optional: true
+    rationale: "OpenConfig LLDP when WLC advertises it on management interfaces."
+  - path: "system"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 60000000000
+    required_any_models: ["openconfig-system"]
+    optional: true
+    rationale: "OpenConfig system state — CPU/memory health on WLC control plane."

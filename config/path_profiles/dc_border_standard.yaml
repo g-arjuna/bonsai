@@ -1,0 +1,81 @@
+name: dc_border_standard
+environment: ["data_center"]
+vendor_scope: []
+roles: ["border", "edge", "border-leaf"]
+description: "Data-center border leaf/router telemetry: interfaces, external BGP peering, BFD, and VLAN state."
+rationale: "Border devices peer with external fabrics or WAN; external BGP sessions, route leaking, and interface health are the primary signals. VLAN membership adds L2 visibility."
+paths:
+  - path: "interface[name=*]/statistics"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    rationale: "SR Linux native interface counters — uplink throughput to WAN or external fabric."
+  - path: "interface[name=*]/oper-state"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    rationale: "SR Linux native interface state."
+  - path: "network-instance[name=*]/protocols/bgp/neighbor[peer-address=*]"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    rationale: "SR Linux native BGP across all network instances (default + VRFs for route leaking)."
+  - path: "bfd/network-instance[name=default]"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia-bfd"]
+    vendor_only: ["nokia_srl"]
+    optional: true
+    rationale: "SR Linux native BFD for fast WAN link failure detection."
+  - path: "Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface[interface-name=*]/generic-counters"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_any_models: ["Cisco-IOS-XR-infra-statsd-oper"]
+    vendor_only: ["cisco_xrd"]
+    rationale: "IOS-XR native interface counters."
+  - path: "Cisco-IOS-XR-ipv4-bgp-oper:bgp/instances/instance/instance-active/default-vrf/neighbors/neighbor"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["Cisco-IOS-XR-ipv4-bgp-oper"]
+    vendor_only: ["cisco_xrd"]
+    fallback_for: "network-instances"
+    rationale: "IOS-XR native BGP neighbor state."
+  - path: "interfaces"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface counters."
+  - path: "interfaces"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface oper-state and VLAN subinterface events."
+  - path: "network-instances"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-bgp", "openconfig-network-instance"]
+    rationale: "OpenConfig BGP for external peering sessions and VRF route leaking."
+  - path: "bfd"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-bfd"]
+    optional: true
+    rationale: "OpenConfig BFD."
+  - path: "lldp"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-lldp"]
+    optional: true
+    rationale: "OpenConfig LLDP — may not be running on WAN-facing ports."
+  - path: "vlans"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-vlan"]
+    optional: true
+    rationale: "OpenConfig VLAN membership for L2 visibility on trunk ports."

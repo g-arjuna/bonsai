@@ -1,0 +1,49 @@
+name: campus_access
+environment: ["campus_wired"]
+vendor_scope: []
+roles: ["access", "edge"]
+description: "Campus wired access switch: interfaces, LLDP, VLAN membership, and spanning-tree state."
+rationale: "Access switches connect end hosts; port state changes, VLAN membership errors, and STP topology changes are the primary incident signals. 802.1x state is optional where OpenConfig support exists."
+paths:
+  - path: "Cisco-IOS-XR-ethernet-lldp-oper:lldp/nodes/node/neighbors/details/detail"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 60000000000
+    required_any_models: ["Cisco-IOS-XR-ethernet-lldp-oper"]
+    vendor_only: ["cisco_xrd"]
+    optional: true
+    rationale: "IOS-XR native LLDP neighbor detail — sampled so existing neighbors are observable."
+  - path: "interfaces"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 30000000000
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface counters — error rates and utilisation on access ports."
+  - path: "interfaces"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    rationale: "OpenConfig interface oper-state — port up/down events on access ports are high-value signals."
+  - path: "lldp"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-lldp"]
+    rationale: "OpenConfig LLDP — discovers which end devices are plugged into which access port."
+  - path: "vlans"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-vlan"]
+    optional: true
+    rationale: "OpenConfig VLAN membership — detects VLAN misconfigurations on access ports."
+  - path: "stp"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-spanning-tree"]
+    optional: true
+    rationale: "OpenConfig spanning-tree state — TCN storms and topology changes are incident precursors."
+  - path: "system/aaa/authentication/users/user"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-system"]
+    optional: true
+    rationale: "OpenConfig system authentication — 802.1x radius failures surface here on supported platforms."

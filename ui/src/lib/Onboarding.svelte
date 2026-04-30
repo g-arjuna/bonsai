@@ -30,6 +30,17 @@
   let events = null;
   let refreshTimer = null;
 
+  // ── Custom path customisation (T2-6) ─────────────────────────────────────
+  let extraPaths = $state([]);        // manually added or browsed-from-catalogue paths
+  let allProfiles = $state([]);       // full catalogue, loaded for browsing
+  let showCatalogueBrowser = $state(false);
+  let showManualPathForm = $state(false);
+  let showSaveCustomModal = $state(false);
+  let browsedProfile = $state(null);  // profile being inspected in the catalogue browser
+  let savingCustom = $state(false);
+  let manualPath = $state({ path: '', origin: '', mode: 'ON_CHANGE', sample_interval_ns: 0, rationale: '' });
+  let customProfileName = $state('');
+
   let form = $state(emptyForm());
 
   let credentialForm = $state({
@@ -376,6 +387,7 @@
       discovery = null;
       selectedProfileName = '';
       selectedPathIds = [];
+      extraPaths = [];
       if (step > 1) step = 1;
       message = 'Discovery was cleared because the connection inputs changed.';
     }
@@ -418,6 +430,7 @@
           .map(pathId)
       )
     ];
+    extraPaths = [];
   }
 
   function togglePath(path) {
@@ -483,12 +496,129 @@
 
   function selectedPaths() {
     const profile = currentProfile();
-    if (!profile) return [];
-    return profile.paths.filter((path) => selectedPathIds.includes(pathId(path)) || !path.optional);
+    const profilePaths = profile
+      ? profile.paths.filter((path) => selectedPathIds.includes(pathId(path)) || !path.optional)
+      : [];
+    // De-duplicate: skip extra paths already in the profile selection
+    const profileIds = new Set(profilePaths.map(pathId));
+    const uniqueExtras = extraPaths.filter((p) => !profileIds.has(pathId(p)));
+    return [...profilePaths, ...uniqueExtras];
   }
 
   function pathId(path) {
     return `${path.origin || ''}|${path.mode}|${path.sample_interval_ns || 0}|${path.path}`;
+  }
+
+  async function loadAllProfiles() {
+    try {
+      const res = await fetch('/api/profiles');
+      if (!res.ok) return;
+      const body = await res.json();
+      allProfiles = body.profiles || [];
+    } catch (_) {}
+  }
+
+  function profilesForBrowser() {
+    // Exclude the currently selected profile — operator is adding from other profiles
+    return allProfiles.filter((p) => p.name !== selectedProfileName);
+  }
+
+  function pathsForBrowsedProfile() {
+    if (!browsedProfile) return [];
+    // We only have path_count in the index; need full paths. Use discovery recommended_profiles
+    // if browsedProfile matches, else we show paths from allProfiles detail (not available without
+    // an extra API call). Simplification: use discovery recommended_profiles for the selected
+    // device; for catalogue browser show paths from recommended_profiles if present.
+    const inDiscovery = discovery?.recommended_profiles?.find((p) => p.profile_name === browsedProfile.name);
+    if (inDiscovery) return inDiscovery.paths;
+    return [];
+  }
+
+  async function fetchProfilePaths(profileName) {
+    // Try to get full paths from discovery recommended profiles first (already in memory).
+    const inDiscovery = discovery?.recommended_profiles?.find((p) => p.profile_name === profileName);
+    if (inDiscovery) return inDiscovery.paths;
+    // Fallback: fetch via a discover call is not appropriate here; signal that paths aren't available.
+    return null;
+  }
+
+  async function openCatalogueBrowser() {
+    await loadAllProfiles();
+    browsedProfile = null;
+    showCatalogueBrowser = true;
+  }
+
+  async function selectBrowsedProfile(profile) {
+    const paths = await fetchProfilePaths(profile.name);
+    browsedProfile = { ...profile, loadedPaths: paths };
+  }
+
+  function addExtraPath(path) {
+    const id = pathId(path);
+    const alreadyExtra = extraPaths.some((p) => pathId(p) === id);
+    const inProfile = currentProfile()?.paths.some((p) => pathId(p) === id);
+    if (!alreadyExtra && !inProfile) {
+      extraPaths = [...extraPaths, { ...path, _extra: true }];
+    }
+  }
+
+  function removeExtraPath(path) {
+    const id = pathId(path);
+    extraPaths = extraPaths.filter((p) => pathId(p) !== id);
+  }
+
+  function addManualPath() {
+    if (!manualPath.path.trim()) return;
+    addExtraPath({
+      path: manualPath.path.trim(),
+      origin: manualPath.origin.trim(),
+      mode: manualPath.mode || 'ON_CHANGE',
+      sample_interval_ns: Number(manualPath.sample_interval_ns) || 0,
+      rationale: manualPath.rationale.trim() || 'Manually added',
+      optional: true,
+    });
+    manualPath = { path: '', origin: '', mode: 'ON_CHANGE', sample_interval_ns: 0, rationale: '' };
+    showManualPathForm = false;
+  }
+
+  async function saveAsCustomProfile() {
+    if (!customProfileName.trim()) return;
+    savingCustom = true;
+    error = '';
+    try {
+      const paths = selectedPaths().map((p) => ({
+        path: p.path,
+        origin: p.origin || '',
+        mode: p.mode,
+        sample_interval_ns: p.sample_interval_ns || 0,
+        rationale: p.rationale || '',
+        optional: !!p.optional,
+        vendor_only: p.vendor_only || [],
+      }));
+      const env = environments.find((e) => e.id === selectedEnvironmentId);
+      const res = await fetch('/api/profiles/save-custom', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: customProfileName.trim(),
+          description: `Custom profile based on ${selectedProfileName || 'manual selection'}`,
+          rationale: `Saved from device onboarding wizard for ${form.address || 'unknown device'}`,
+          environment: env ? [env.archetype] : [],
+          vendor_scope: [],
+          roles: form.role ? [form.role] : [],
+          paths,
+        })
+      });
+      const body = await res.json();
+      if (!body.success) throw new Error(body.error || 'save failed');
+      message = `Custom profile "${customProfileName.trim()}" saved to catalogue.`;
+      customProfileName = '';
+      showSaveCustomModal = false;
+    } catch (e) {
+      error = e.message;
+    } finally {
+      savingCustom = false;
+    }
   }
 
   function nextStep() {
@@ -772,7 +902,152 @@
                   </label>
                 {/each}
               </div>
+
+              {#if extraPaths.length}
+                <div class="extra-paths-section">
+                  <p class="eyebrow">Added paths</p>
+                  <div class="path-checklist">
+                    {#each extraPaths as path}
+                      <label class="optional extra-path">
+                        <input type="checkbox" checked disabled />
+                        <span>
+                          <strong>{path.mode} added</strong>
+                          <code>{path.origin ? `${path.origin}:` : ''}{path.path}</code>
+                          <small>{path.rationale}</small>
+                        </span>
+                        <button class="ghost small" onclick={() => removeExtraPath(path)} title="Remove this path">×</button>
+                      </label>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
+
+              <div class="path-customise-toolbar">
+                <button class="ghost" onclick={openCatalogueBrowser}>Browse catalogue</button>
+                <button class="ghost" onclick={() => showManualPathForm = !showManualPathForm}>
+                  {showManualPathForm ? 'Cancel' : '+ Manual path'}
+                </button>
+                {#if selectedPaths().length}
+                  <button class="ghost" onclick={() => { customProfileName = ''; showSaveCustomModal = true; }}>Save as profile</button>
+                {/if}
+              </div>
+
+              {#if showManualPathForm}
+                <div class="manual-path-form">
+                  <p class="eyebrow">Add a path manually</p>
+                  <div class="form-row">
+                    <label>
+                      Path
+                      <input type="text" bind:value={manualPath.path} placeholder="interfaces or Cisco-IOS-XR-..." />
+                    </label>
+                    <label>
+                      Origin
+                      <input type="text" bind:value={manualPath.origin} placeholder="openconfig (or blank)" />
+                    </label>
+                  </div>
+                  <div class="form-row">
+                    <label>
+                      Mode
+                      <select bind:value={manualPath.mode}>
+                        <option>ON_CHANGE</option>
+                        <option>SAMPLE</option>
+                      </select>
+                    </label>
+                    {#if manualPath.mode === 'SAMPLE'}
+                      <label>
+                        Sample interval (ns)
+                        <input type="number" bind:value={manualPath.sample_interval_ns} placeholder="10000000000" />
+                      </label>
+                    {/if}
+                  </div>
+                  <label>
+                    Rationale
+                    <input type="text" bind:value={manualPath.rationale} placeholder="Why this path?" />
+                  </label>
+                  <button onclick={addManualPath} disabled={!manualPath.path.trim()}>Add path</button>
+                </div>
+              {/if}
             {/if}
+
+            {#if showCatalogueBrowser}
+              <div class="catalogue-browser-overlay" role="dialog" aria-modal="true">
+                <div class="catalogue-browser">
+                  <div class="browser-header">
+                    <h4>Browse catalogue profiles</h4>
+                    <button class="ghost" onclick={() => { showCatalogueBrowser = false; browsedProfile = null; }}>Close</button>
+                  </div>
+                  <div class="browser-body">
+                    <div class="browser-list">
+                      {#each profilesForBrowser() as profile}
+                        <button
+                          class="browser-profile-item"
+                          class:active={browsedProfile?.name === profile.name}
+                          onclick={() => selectBrowsedProfile(profile)}
+                        >
+                          <strong>{profile.name}</strong>
+                          <small>{profile.path_count} paths · {profile.environment?.join(', ') || 'any'}</small>
+                        </button>
+                      {/each}
+                      {#if !profilesForBrowser().length}
+                        <p class="empty">No other profiles available.</p>
+                      {/if}
+                    </div>
+                    <div class="browser-paths">
+                      {#if browsedProfile}
+                        <p class="eyebrow">{browsedProfile.name}</p>
+                        {#if browsedProfile.loadedPaths}
+                          {#each browsedProfile.loadedPaths as path}
+                            {@const alreadySelected = selectedPaths().some((p) => pathId(p) === pathId(path))}
+                            <div class="browser-path-row" class:already-selected={alreadySelected}>
+                              <span>
+                                <code>{path.origin ? `${path.origin}:` : ''}{path.path}</code>
+                                <small>{path.mode} — {path.rationale}</small>
+                              </span>
+                              <button
+                                class="ghost small"
+                                disabled={alreadySelected}
+                                onclick={() => addExtraPath(path)}
+                              >{alreadySelected ? 'Added' : '+ Add'}</button>
+                            </div>
+                          {/each}
+                        {:else}
+                          <p class="empty">Profile paths are only available for devices that included this profile in their discovery result. Run discovery against this device first.</p>
+                        {/if}
+                      {:else}
+                        <p class="empty">Select a profile on the left to browse its paths.</p>
+                      {/if}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            {/if}
+
+            {#if showSaveCustomModal}
+              <div class="catalogue-browser-overlay" role="dialog" aria-modal="true">
+                <div class="save-custom-modal">
+                  <h4>Save as custom profile</h4>
+                  <p class="muted">Saves the current {selectedPaths().length} selected paths as a reusable profile in the user catalogue. The profile will appear in future discovery results for devices with matching environment and role.</p>
+                  <label>
+                    Profile name
+                    <input
+                      type="text"
+                      bind:value={customProfileName}
+                      placeholder="my_custom_dc_leaf"
+                      pattern="[a-zA-Z0-9_-]+"
+                    />
+                    <small>Letters, digits, underscores, hyphens only.</small>
+                  </label>
+                  <div class="modal-actions">
+                    <button class="ghost" onclick={() => showSaveCustomModal = false}>Cancel</button>
+                    <button
+                      onclick={saveAsCustomProfile}
+                      disabled={savingCustom || !customProfileName.trim()}
+                    >{savingCustom ? 'Saving...' : 'Save profile'}</button>
+                  </div>
+                </div>
+              </div>
+            {/if}
+
           {:else}
             <p class="empty">Run discovery first; path profiles are produced from the Capabilities response.</p>
           {/if}

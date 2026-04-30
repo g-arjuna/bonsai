@@ -124,7 +124,8 @@ pub fn load_catalogue(base_dir: &Path) -> CatalogueState {
 
     // 2. Load plugins and resolve conflicts
     // name -> (PluginState, Profile)
-    let mut plugin_profiles: HashMap<String, (usize, CatalogueProfile)> = HashMap::new();
+    // winners is the authoritative map; plugin_profiles is unused after refactor
+    let _plugin_profiles: HashMap<String, (usize, CatalogueProfile)> = HashMap::new();
     let mut plugins: Vec<PluginState> = Vec::new();
 
     let plugins_dir = base_dir.join("plugins");
@@ -211,11 +212,13 @@ pub fn load_catalogue(base_dir: &Path) -> CatalogueState {
         }
     }
 
-    // Assign winners to state and record conflicts
+    // Assign winners to state and record conflicts.
+    // Pre-compute idx -> plugin name so the mutable loop doesn't borrow the slice immutably.
     let mut final_plugins = plugins;
     for plugin in &mut final_plugins {
         plugin.conflicts.clear();
     }
+    let plugin_names: Vec<String> = final_plugins.iter().map(|p| p.manifest.name.clone()).collect();
 
     for (idx, plugin) in final_plugins.iter_mut().enumerate() {
         let mut actual_profiles = Vec::new();
@@ -239,7 +242,8 @@ pub fn load_catalogue(base_dir: &Path) -> CatalogueState {
                 if winner_idx == idx {
                     actual_profiles.push(profile);
                 } else {
-                    plugin.conflicts.push(format!("profile '{}' superseded by plugin '{}'", profile.name, final_plugins[winner_idx].manifest.name));
+                    let winner_name = plugin_names.get(winner_idx).map(|s| s.as_str()).unwrap_or("unknown");
+                    plugin.conflicts.push(format!("profile '{}' superseded by plugin '{}'", profile.name, winner_name));
                 }
             }
         }
