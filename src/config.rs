@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Deserialize)]
 pub struct Config {
@@ -25,7 +26,134 @@ pub struct Config {
     #[serde(default)]
     pub assignment: AssignmentConfig,
     #[serde(default)]
+    pub integrations: IntegrationsConfig,
+    #[serde(default)]
+    pub remediation: RemediationConfig,
+    #[serde(default)]
     pub target: Vec<TargetConfig>,
+}
+
+// ── Remediation ───────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct RemediationConfig {
+    /// Seconds an AutoWithNotification execution stays eligible for rollback. Default: 60.
+    #[serde(default = "default_rollback_window_secs")]
+    pub rollback_window_secs: u64,
+    #[serde(default)]
+    pub graduation: GraduationConfig,
+    #[serde(default)]
+    pub defaults: RemediationDefaultsConfig,
+    #[serde(default)]
+    pub rule_defaults: HashMap<String, RemediationDefaultsConfig>,
+}
+
+impl Default for RemediationConfig {
+    fn default() -> Self {
+        Self {
+            rollback_window_secs: default_rollback_window_secs(),
+            graduation: GraduationConfig::default(),
+            defaults: RemediationDefaultsConfig::default(),
+            rule_defaults: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct GraduationConfig {
+    /// Consecutive operator approvals required before a graduation hint is surfaced. Default: 10.
+    #[serde(default = "default_graduation_approvals")]
+    pub consecutive_approvals_required: u32,
+}
+
+impl Default for GraduationConfig {
+    fn default() -> Self {
+        Self {
+            consecutive_approvals_required: default_graduation_approvals(),
+        }
+    }
+}
+
+/// Per-archetype default TrustState for new (rule, env, site, playbook) tuples.
+/// Values: "suggest_only" | "approve_each" | "auto_with_notification" | "auto_silent".
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct RemediationDefaultsConfig {
+    #[serde(default)]
+    pub home_lab: String,
+    #[serde(default)]
+    pub data_center: String,
+    #[serde(default)]
+    pub service_provider: String,
+    #[serde(default)]
+    pub campus_wired: String,
+    #[serde(default)]
+    pub campus_wireless: String,
+}
+
+fn default_rollback_window_secs() -> u64 {
+    60
+}
+fn default_graduation_approvals() -> u32 {
+    10
+}
+
+// ── Integrations ──────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct IntegrationsConfig {
+    #[serde(default)]
+    pub servicenow: ServiceNowConfig,
+}
+
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct ServiceNowConfig {
+    /// Enable ServiceNow integration. Requires `instance_url` + `credential_alias`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// PDI or production instance URL, e.g. "https://dev12345.service-now.com".
+    #[serde(default)]
+    pub instance_url: String,
+    /// Vault alias for ServiceNow credentials (username + password).
+    #[serde(default)]
+    pub credential_alias: String,
+    /// Enable periodic push of detection events to ServiceNow Event Management.
+    #[serde(default)]
+    pub em_push_enabled: bool,
+    #[serde(default)]
+    pub event_filter: ServiceNowEventFilterConfig,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct ServiceNowEventFilterConfig {
+    /// Minimum severity to push: "critical" | "warning" | "info". Default: "warning".
+    #[serde(default = "default_snow_min_severity")]
+    pub min_severity: String,
+    /// Detection must be at least this old (seconds) before it is pushed. Default: 60.
+    #[serde(default = "default_snow_min_age_secs")]
+    pub min_age_secs: u64,
+    /// Suppress a (device, rule_id) pair if it was already pushed within this window (seconds). Default: 300.
+    #[serde(default = "default_snow_dedup_window_secs")]
+    pub dedup_window_secs: u64,
+}
+
+impl Default for ServiceNowEventFilterConfig {
+    fn default() -> Self {
+        Self {
+            min_severity: default_snow_min_severity(),
+            min_age_secs: default_snow_min_age_secs(),
+            dedup_window_secs: default_snow_dedup_window_secs(),
+        }
+    }
+}
+
+fn default_snow_min_severity() -> String {
+    "warning".to_string()
+}
+fn default_snow_min_age_secs() -> u64 {
+    60
+}
+fn default_snow_dedup_window_secs() -> u64 {
+    300
 }
 
 /// Auto-assignment rules: when a device has no explicit collector_id, these

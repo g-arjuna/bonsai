@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use lbug::{Connection, Database, SystemConfig, Value};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -46,6 +46,23 @@ pub struct DetectionRow {
     pub remediation_id: String,
     pub remediation_action: String,
     pub remediation_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemediationProposalRow {
+    pub id: String,
+    pub detection_id: String,
+    pub device_address: String,
+    pub rule_id: String,
+    pub severity: String,
+    pub playbook_id: String,
+    pub trust_key: String,
+    pub status: String,
+    pub operator_note: String,
+    pub steps_json: String,
+    pub rollback_steps_json: String,
+    pub proposed_at_ns: i64,
+    pub decided_at_ns: i64,
 }
 
 /// One step in a closed-loop trace: trigger → detection → remediation.
@@ -202,7 +219,10 @@ impl BonsaiStore for GraphStore {
         .await
     }
 
-    async fn sync_sites_from_targets(&self, targets: Vec<crate::config::TargetConfig>) -> Result<()> {
+    async fn sync_sites_from_targets(
+        &self,
+        targets: Vec<crate::config::TargetConfig>,
+    ) -> Result<()> {
         self.sync_sites_from_targets(targets).await
     }
 
@@ -439,6 +459,114 @@ impl GraphStore {
         )
         .context("create BELONGS_TO_ENVIRONMENT rel")?;
 
+        // ── Enrichment schema ─────────────────────────────────────────────────
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS EnrichmentProperty(\
+                id           STRING,\
+                device_address STRING,\
+                key          STRING,\
+                value        STRING,\
+                source_name  STRING,\
+                updated_at   TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create EnrichmentProperty table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_ENRICHMENT_PROPERTY(FROM Device TO EnrichmentProperty)",
+        )
+        .context("create HAS_ENRICHMENT_PROPERTY rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS VLAN(\
+                id           STRING,\
+                vid          INT64,\
+                name         STRING,\
+                source_name  STRING,\
+                updated_at   TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create VLAN table")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS ACCESS_VLAN(FROM Interface TO VLAN)")
+            .context("create ACCESS_VLAN rel")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS TRUNK_VLAN(FROM Interface TO VLAN)")
+            .context("create TRUNK_VLAN rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS Prefix(\
+                id           STRING,\
+                cidr         STRING,\
+                role         STRING,\
+                description  STRING,\
+                source_name  STRING,\
+                updated_at   TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create Prefix table")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS HAS_PREFIX(FROM Device TO Prefix)")
+            .context("create HAS_PREFIX rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS Application(\
+                id           STRING,\
+                name         STRING,\
+                criticality  STRING,\
+                owner_group  STRING,\
+                source_name  STRING,\
+                updated_at   TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create Application table")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS RUNS_SERVICE(FROM Device TO Application)")
+            .context("create RUNS_SERVICE rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS CARRIES_APPLICATION(FROM Device TO Application)",
+        )
+        .context("create CARRIES_APPLICATION rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS Incident(\
+                id               STRING,\
+                snow_sys_id      STRING,\
+                state            STRING,\
+                assignment_group STRING,\
+                opened_at_ns     INT64,\
+                detection_id     STRING,\
+                updated_at       TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create Incident table")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS HAS_INCIDENT(FROM DetectionEvent TO Incident)")
+            .context("create HAS_INCIDENT rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS RemediationProposal(\
+                id                  STRING,\
+                detection_id        STRING,\
+                playbook_id         STRING,\
+                trust_key           STRING,\
+                status              STRING,\
+                operator_note       STRING,\
+                steps_json          STRING,\
+                rollback_steps_json STRING,\
+                proposed_at         TIMESTAMP_NS,\
+                decided_at          TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create RemediationProposal table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_PROPOSAL(FROM DetectionEvent TO RemediationProposal)",
+        )
+        .context("create HAS_PROPOSAL rel")?;
+
         info!("graph schema initialised");
         Ok(())
     }
@@ -505,7 +633,10 @@ impl GraphStore {
                     .execute(&mut site_stmt, vec![("id", Value::String(env.id.clone()))])
                     .context("execute site count")?
                     .next()
-                    .map(|r| match &r[0] { Value::Int64(n) => *n, _ => 0 })
+                    .map(|r| match &r[0] {
+                        Value::Int64(n) => *n,
+                        _ => 0,
+                    })
                     .unwrap_or(0);
 
                 let mut dev_stmt = conn
@@ -519,7 +650,10 @@ impl GraphStore {
                     .execute(&mut dev_stmt, vec![("id", Value::String(env.id.clone()))])
                     .context("execute device count")?
                     .next()
-                    .map(|r| match &r[0] { Value::Int64(n) => *n, _ => 0 })
+                    .map(|r| match &r[0] {
+                        Value::Int64(n) => *n,
+                        _ => 0,
+                    })
                     .unwrap_or(0);
 
                 out.push(EnvironmentWithCounts {
@@ -868,6 +1002,156 @@ impl GraphStore {
             .context("execute RESOLVES edge")?;
             write_remediation_trust_mark(&conn, &id, attempted_at_ns)?;
             Ok::<String, anyhow::Error>(id)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn write_remediation_proposal(
+        &self,
+        detection_id: String,
+        playbook_id: String,
+        trust_key: String,
+        steps_json: String,
+        rollback_steps_json: String,
+        proposed_at_ns: i64,
+    ) -> Result<String> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("proposal write connection")?;
+            let id = Uuid::new_v4().to_string();
+            let proposed_at = ts(proposed_at_ns);
+            let mut stmt = conn
+                .prepare(
+                    "MERGE (p:RemediationProposal {id: $id}) \
+                     ON CREATE SET \
+                       p.detection_id = $did, p.playbook_id = $playbook, \
+                       p.trust_key = $trust_key, p.status = 'pending', \
+                       p.operator_note = '', p.steps_json = $steps, \
+                       p.rollback_steps_json = $rollback_steps, \
+                       p.proposed_at = $proposed_at, p.decided_at = $decided_at",
+                )
+                .context("prepare RemediationProposal insert")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("did", Value::String(detection_id.clone())),
+                    ("playbook", Value::String(playbook_id)),
+                    ("trust_key", Value::String(trust_key)),
+                    ("steps", Value::String(steps_json)),
+                    ("rollback_steps", Value::String(rollback_steps_json)),
+                    ("proposed_at", proposed_at),
+                    ("decided_at", ts(0)),
+                ],
+            )
+            .context("execute RemediationProposal insert")?;
+
+            let mut edge = conn
+                .prepare(
+                    "MATCH (e:DetectionEvent {id: $did}), (p:RemediationProposal {id: $id}) \
+                     CREATE (e)-[:HAS_PROPOSAL]->(p)",
+                )
+                .context("prepare HAS_PROPOSAL edge")?;
+            conn.execute(
+                &mut edge,
+                vec![
+                    ("did", Value::String(detection_id)),
+                    ("id", Value::String(id.clone())),
+                ],
+            )
+            .context("execute HAS_PROPOSAL edge")?;
+            Ok::<String, anyhow::Error>(id)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn decide_remediation_proposal(
+        &self,
+        proposal_id: String,
+        status: String,
+        operator_note: String,
+        decided_at_ns: i64,
+    ) -> Result<()> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("proposal decision connection")?;
+            let mut stmt = conn
+                .prepare(
+                    "MATCH (p:RemediationProposal {id: $id}) \
+                     SET p.status = $status, p.operator_note = $note, p.decided_at = $decided_at",
+                )
+                .context("prepare RemediationProposal decision")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(proposal_id)),
+                    ("status", Value::String(status)),
+                    ("note", Value::String(operator_note)),
+                    ("decided_at", ts(decided_at_ns)),
+                ],
+            )
+            .context("execute RemediationProposal decision")?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn read_remediation_proposals(
+        &self,
+        status_filter: Option<String>,
+        limit: u32,
+    ) -> Result<Vec<RemediationProposalRow>> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("proposal read connection")?;
+            let where_clause = status_filter
+                .as_ref()
+                .filter(|s| !s.is_empty() && *s != "all")
+                .map(|_| "WHERE p.status = $status ")
+                .unwrap_or("");
+            let cypher = format!(
+                "MATCH (p:RemediationProposal) \
+                 OPTIONAL MATCH (e:DetectionEvent {{id: p.detection_id}}) \
+                 {where_clause}\
+                 RETURN p.id, p.detection_id, e.device_address, e.rule_id, e.severity, \
+                        p.playbook_id, p.trust_key, p.status, p.operator_note, \
+                        p.steps_json, p.rollback_steps_json, p.proposed_at, p.decided_at \
+                 ORDER BY p.proposed_at DESC LIMIT {limit}"
+            );
+            let mut stmt = conn.prepare(&cypher).context("prepare proposal read")?;
+            let params = status_filter
+                .filter(|s| !s.is_empty() && s != "all")
+                .map(|status| vec![("status", Value::String(status))])
+                .unwrap_or_default();
+            let rows = conn
+                .execute(&mut stmt, params)
+                .context("execute proposal read")?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(RemediationProposalRow {
+                    id: read_str(&row[0]),
+                    detection_id: read_str(&row[1]),
+                    device_address: read_str(&row[2]),
+                    rule_id: read_str(&row[3]),
+                    severity: read_str(&row[4]),
+                    playbook_id: read_str(&row[5]),
+                    trust_key: read_str(&row[6]),
+                    status: read_str(&row[7]),
+                    operator_note: read_str(&row[8]),
+                    steps_json: read_str(&row[9]),
+                    rollback_steps_json: read_str(&row[10]),
+                    proposed_at_ns: read_ts_ns(&row[11]),
+                    decided_at_ns: read_ts_ns(&row[12]),
+                });
+            }
+            Ok::<_, anyhow::Error>(out)
         })
         .await
         .context("spawn_blocking panicked")?
@@ -2052,8 +2336,11 @@ fn link_site_to_environment(conn: &Connection<'_>, site_id: &str, env_id: &str) 
     let mut clear = conn
         .prepare("MATCH (s:Site {id: $sid})-[r:BELONGS_TO_ENVIRONMENT]->(:Environment) DELETE r")
         .context("prepare BELONGS_TO_ENVIRONMENT clear")?;
-    conn.execute(&mut clear, vec![("sid", Value::String(site_id.to_string()))])
-        .context("execute BELONGS_TO_ENVIRONMENT clear")?;
+    conn.execute(
+        &mut clear,
+        vec![("sid", Value::String(site_id.to_string()))],
+    )
+    .context("execute BELONGS_TO_ENVIRONMENT clear")?;
 
     let mut link = conn
         .prepare(
@@ -2252,7 +2539,11 @@ fn site_from_row(row: Vec<Value>) -> SiteRecord {
         lat: read_f64(&row[4]),
         lon: read_f64(&row[5]),
         metadata_json: read_str(&row[6]),
-        environment_id: if row.len() > 7 { read_str(&row[7]) } else { String::new() },
+        environment_id: if row.len() > 7 {
+            read_str(&row[7])
+        } else {
+            String::new()
+        },
     }
 }
 

@@ -167,7 +167,7 @@ impl CollectorManager {
                                 collectors.get(collector_id.as_str()).cloned()
                             };
                             if let Some(tx) = tx {
-                                let assignment = create_assignment(&target, &credentials);
+                                let assignment = create_assignment(&target, &credentials, &registry);
                                 let update = AssignmentUpdate {
                                     assignments: vec![assignment],
                                     is_full_sync: false,
@@ -194,7 +194,7 @@ impl CollectorManager {
         let targets = self.registry.list_assigned_to(&collector_id)?;
         let mut assignments = Vec::new();
         for target in targets {
-            assignments.push(create_assignment(&target, &self.credentials));
+            assignments.push(create_assignment(&target, &self.credentials, &self.registry));
         }
 
         tx.send(AssignmentUpdate {
@@ -475,7 +475,7 @@ mod tests {
     }
 }
 
-fn create_assignment(target: &TargetConfig, vault: &CredentialVault) -> DeviceAssignment {
+fn create_assignment(target: &TargetConfig, vault: &CredentialVault, registry: &ApiRegistry) -> DeviceAssignment {
     let mut username = String::new();
     let mut password = String::new();
 
@@ -489,8 +489,13 @@ fn create_assignment(target: &TargetConfig, vault: &CredentialVault) -> DeviceAs
         password = target.resolved_password().unwrap_or_default();
     }
 
+    let mut target_clone = target.clone();
+    let overrides = registry.list_overrides().unwrap_or_default();
+    let (resolved_paths, _) = crate::discovery::resolve_subscription_paths(&target_clone, &overrides);
+    target_clone.selected_paths = resolved_paths;
+
     DeviceAssignment {
-        device: Some(crate::api::managed_device_from_target(target)),
+        device: Some(crate::api::managed_device_from_target(&target_clone)),
         username,
         password,
     }

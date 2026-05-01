@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Generator, Iterator
 
@@ -33,12 +35,14 @@ class BonsaiClient:
         cert: str | None = None,
         key: str | None = None,
         server_name: str | None = None,
+        http_base_url: str = "http://127.0.0.1:3000",
     ):
         self._address = address
         self._ca_cert = ca_cert
         self._cert = cert
         self._key = key
         self._server_name = server_name
+        self._http_base_url = http_base_url.rstrip("/")
         self._channel: grpc.Channel | None = None
         self._stub: pb_grpc.BonsaiGraphStub | None = None
 
@@ -227,6 +231,61 @@ class BonsaiClient:
             json_value=json_value,
         )
         return self.stub.PushRemediation(req)
+
+    def create_remediation_proposal(
+        self,
+        *,
+        detection_id: str,
+        playbook_id: str,
+        rule_id: str,
+        environment_archetype: str,
+        site_id: str,
+        steps_json: str,
+        rollback_steps_json: str = "[]",
+    ) -> dict:
+        return self._http_json(
+            "POST",
+            "/api/approvals",
+            {
+                "detection_id": detection_id,
+                "playbook_id": playbook_id,
+                "rule_id": rule_id,
+                "environment_archetype": environment_archetype,
+                "site_id": site_id,
+                "steps_json": steps_json,
+                "rollback_steps_json": rollback_steps_json,
+            },
+        )
+
+    def approve_remediation_proposal(self, proposal_id: str, operator_note: str = "") -> dict:
+        return self._http_json(
+            "POST",
+            f"/api/approvals/{proposal_id}/approve",
+            {"operator_note": operator_note},
+        )
+
+    def reject_remediation_proposal(self, proposal_id: str, operator_note: str = "") -> dict:
+        return self._http_json(
+            "POST",
+            f"/api/approvals/{proposal_id}/reject",
+            {"operator_note": operator_note},
+        )
+
+    def _http_json(self, method: str, path: str, payload: dict | None = None) -> dict:
+        data = None if payload is None else json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self._http_base_url}{path}",
+            data=data,
+            method=method,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = resp.read().decode("utf-8")
+                return json.loads(body) if body else {}
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"HTTP {exc.code} {path}: {body}") from exc
 
     def detection_ingest(self, events: Generator[pb.DetectionEventIngest, None, None]):
         """Client-streaming: push locally-evaluated detections to core."""

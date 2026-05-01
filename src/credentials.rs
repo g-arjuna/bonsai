@@ -48,6 +48,12 @@ pub enum ResolvePurpose {
     Discover,
     Enrich,
     Test,
+    /// Credentials for ServiceNow PDI / production instance admin operations.
+    ServiceNowAdmin,
+    /// Credentials used when pushing events to an AIOps platform (SNOW EM, Splunk, etc).
+    AiopsEvent,
+    /// A trust-state-affecting operator decision (approve / reject / graduate / rollback).
+    TrustOperation,
     Other(String),
 }
 
@@ -59,6 +65,9 @@ impl ResolvePurpose {
             Self::Discover => "discover".to_string(),
             Self::Enrich => "enrich".to_string(),
             Self::Test => "test".to_string(),
+            Self::ServiceNowAdmin => "servicenow_admin".to_string(),
+            Self::AiopsEvent => "aiops_event".to_string(),
+            Self::TrustOperation => "trust_op".to_string(),
             Self::Other(value) => {
                 let trimmed = value.trim();
                 if trimmed.is_empty() {

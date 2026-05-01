@@ -1,9 +1,12 @@
 pub mod api;
 pub mod audit;
+pub mod output;
+pub mod remediation;
 pub mod archive;
 pub mod assignment;
 pub mod enrichment;
 pub mod catalogue;
+pub mod mcp_client;
 pub mod collector;
 pub mod config;
 pub mod counter_summarizer;

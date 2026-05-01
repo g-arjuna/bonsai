@@ -10,19 +10,42 @@
   let error = $state(null);
   let activeTab = $state('interfaces');
 
-  const TABS = ['interfaces', 'peers', 'paths', 'events', 'detections', 'audit'];
+  let enrichmentProps = $state([]);
+  let enrichmentLoading = $state(false);
+
+  const TABS = ['interfaces', 'peers', 'paths', 'events', 'detections', 'enrichment', 'audit'];
 
   $effect(() => {
     if (address) {
       loading = true;
       error = null;
       device = null;
+      enrichmentProps = [];
       fetch('/api/devices/' + encodeURIComponent(address))
         .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(t); }))
         .then(d => { device = d; loading = false; })
         .catch(e => { error = e.message; loading = false; });
     }
   });
+
+  $effect(() => {
+    if (activeTab === 'enrichment' && address && !enrichmentLoading && enrichmentProps.length === 0) {
+      enrichmentLoading = true;
+      fetch('/api/devices/' + encodeURIComponent(address) + '/enrichment')
+        .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(t); }))
+        .then(d => { enrichmentProps = d.properties || []; enrichmentLoading = false; })
+        .catch(() => { enrichmentLoading = false; });
+    }
+  });
+
+  // Group enrichment properties by source_name
+  function groupedEnrichment() {
+    const groups = {};
+    for (const p of enrichmentProps) {
+      (groups[p.source_name] ||= []).push(p);
+    }
+    return Object.entries(groups);
+  }
 
   function healthClass(h) {
     if (h === 'healthy') return 'healthy';
@@ -156,6 +179,16 @@
         {/if}
 
       {:else if activeTab === 'paths'}
+        {#if device.resolution_audit && device.resolution_audit.length > 0}
+          <div class="section">
+            <h4 class="section-head">Subscription Resolution Audit</h4>
+            <ul style="list-style: none; padding: 0; margin-bottom: 20px;">
+              {#each device.resolution_audit as auditLine}
+                <li style="font-size:12px; font-family:monospace; margin-bottom:4px; color:var(--fg-muted, #888);">&gt; {auditLine}</li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
         {#if device.subscription_statuses.length === 0}
           <div class="empty">No subscription paths.</div>
         {:else}
@@ -209,6 +242,31 @@
               </button>
             {/each}
           </div>
+        {/if}
+
+      {:else if activeTab === 'enrichment'}
+        {#if enrichmentLoading}
+          <div class="drawer-loading">
+            {#each [1, 2] as _}<div class="skeleton-line"></div>{/each}
+          </div>
+        {:else if enrichmentProps.length === 0}
+          <div class="empty">No enrichment data for this device. Run an enricher from the Enrichment workspace.</div>
+        {:else}
+          {#each groupedEnrichment() as [source, props]}
+            <h4 class="section-head">{source}</h4>
+            <table>
+              <thead><tr><th>Property</th><th>Value</th><th>Updated</th></tr></thead>
+              <tbody>
+                {#each props as p}
+                  <tr>
+                    <td><code style="font-size:12px;">{p.key}</code></td>
+                    <td style="max-width:180px; overflow-wrap:anywhere;">{p.value}</td>
+                    <td title={absoluteTime(p.updated_at_ns)} style="white-space:nowrap;">{relativeTime(p.updated_at_ns)}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/each}
         {/if}
 
       {:else if activeTab === 'audit'}

@@ -4,6 +4,16 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+fn semver_gt(a: &str, b: &str) -> bool {
+    match (semver::Version::parse(a), semver::Version::parse(b)) {
+        (Ok(va), Ok(vb)) => va > vb,
+        _ => {
+            warn!(a, b, "non-semver plugin versions; falling back to string compare");
+            a > b
+        }
+    }
+}
+
 /// v2 path profile — extends the v1 schema with `environment` and `vendor_scope`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CatalogueProfile {
@@ -198,7 +208,7 @@ pub fn load_catalogue(base_dir: &Path) -> CatalogueState {
             if let Some(&(existing_idx, ref existing_version)) = winners.get(&profile.name) {
                 // Plugin vs Plugin
                 let current_version = &plugin.manifest.version;
-                if current_version > existing_version {
+                if semver_gt(current_version, existing_version) {
                     winners.insert(profile.name.clone(), (idx, current_version.clone()));
                 } else if current_version == existing_version {
                     // Alphabetical tie-break on plugin name
@@ -288,4 +298,17 @@ pub fn canonical_role(role_hint: Option<&str>) -> String {
 /// the built-in fallback generator.
 pub fn is_sp_role(role: &str) -> bool {
     matches!(role, "pe" | "p" | "rr" | "peering")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn semver_gt_handles_double_digit_patch() {
+        assert!(semver_gt("0.10.0", "0.2.0"), "0.10.0 must outrank 0.2.0");
+        assert!(semver_gt("1.0.0", "0.99.9"), "1.0.0 must outrank 0.99.9");
+        assert!(!semver_gt("0.2.0", "0.10.0"), "0.2.0 must not outrank 0.10.0");
+        assert!(!semver_gt("0.1.0", "0.1.0"), "equal versions must not outrank each other");
+    }
 }

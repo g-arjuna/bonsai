@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::config::TargetConfig;
@@ -29,9 +30,42 @@ pub trait DeviceRegistry: Send + Sync {
     fn subscribe_changes(&self) -> mpsc::Receiver<RegistryChange>;
 }
 
-#[derive(Default)]
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum OverrideScope {
+    Site(String),
+    RoleEnv { role: String, environment: String },
+    Device(String),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum OverrideAction {
+    Add,
+    Drop,
+    Modify,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PathOverride {
+    pub scope: OverrideScope,
+    pub path: String,
+    pub action: OverrideAction,
+    pub sample_interval_s: Option<u64>,
+    pub optional: Option<bool>,
+    #[serde(default)]
+    pub created_at_ns: i64,
+    #[serde(default)]
+    pub created_by: String,
+}
+
+#[derive(Default, Serialize, Deserialize)]
 struct RegistryState {
+    #[serde(default)]
     targets: BTreeMap<String, TargetConfig>,
+    #[serde(default)]
+    overrides: Vec<PathOverride>,
 }
 
 impl RegistryState {
@@ -42,6 +76,7 @@ impl RegistryState {
         }
         Self {
             targets: by_address,
+            overrides: Vec::new(),
         }
     }
 
@@ -200,6 +235,39 @@ impl ApiRegistry {
         Ok(removed)
     }
 
+
+    pub fn list_overrides(&self) -> Result<Vec<PathOverride>> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("registry lock poisoned"))?;
+        Ok(state.overrides.clone())
+    }
+
+    pub fn add_override(&self, ovr: PathOverride) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("registry lock poisoned"))?;
+        state.overrides.push(ovr);
+        Self::persist_state(&self.path, &state)?;
+        Ok(())
+    }
+
+    pub fn remove_override(&self, scope: &OverrideScope, path: &str) -> Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("registry lock poisoned"))?;
+        let len_before = state.overrides.len();
+        state.overrides.retain(|o| !(o.scope == *scope && o.path == path));
+        let changed = state.overrides.len() != len_before;
+        if changed {
+            Self::persist_state(&self.path, &state)?;
+        }
+        Ok(changed)
+    }
+
     pub fn list_all_targets(&self) -> Result<Vec<TargetConfig>> {
         let state = self
             .state
@@ -264,9 +332,15 @@ impl ApiRegistry {
         let mut state = if path.exists() {
             let raw = std::fs::read_to_string(path)
                 .with_context(|| format!("failed to read registry '{}'", path.display()))?;
-            let targets: Vec<TargetConfig> = serde_json::from_str(&raw)
-                .with_context(|| format!("failed to parse registry '{}'", path.display()))?;
-            RegistryState::from_targets(targets)
+            let raw = raw.trim_start();
+            if raw.starts_with('[') {
+                let targets: Vec<TargetConfig> = serde_json::from_str(raw)
+                    .with_context(|| format!("failed to parse legacy registry '{}'", path.display()))?;
+                RegistryState::from_targets(targets)
+            } else {
+                serde_json::from_str(raw)
+                    .with_context(|| format!("failed to parse registry '{}'", path.display()))?
+            }
         } else {
             RegistryState::default()
         };
@@ -287,7 +361,7 @@ impl ApiRegistry {
             format!("failed to create registry directory '{}'", parent.display())
         })?;
 
-        let serialized = serde_json::to_string_pretty(&state.to_vec())
+        let serialized = serde_json::to_string_pretty(&state)
             .context("failed to serialize registry state")?;
         std::fs::write(path, serialized)
             .with_context(|| format!("failed to write registry '{}'", path.display()))?;

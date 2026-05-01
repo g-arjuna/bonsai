@@ -1,3 +1,4 @@
+use axum::response::IntoResponse;
 /// Phase 6 HTTP API + SSE server (Axum).
 ///
 /// Runs on port 3000 alongside the Tonic gRPC server (port 50051).
@@ -13,8 +14,8 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::RwLock;
 
 use axum::{
     Json, Router,
@@ -32,17 +33,21 @@ use tower_http::{cors::CorsLayer, services::ServeDir};
 use crate::assignment::{CollectorManager, CollectorStatus};
 use crate::catalogue::CatalogueState;
 use crate::enrichment::{EnricherConfig, SharedEnricherRegistry};
+use crate::gnmi_set::gnmi_set;
 use crate::graph::{
-    DetectionRow, EnvironmentRecord, GraphStore, REMEDIATION_TRUST_CUTOFF_ISO, SiteRecord,
-    TraceStep,
+    DetectionRow, EnvironmentRecord, GraphStore, REMEDIATION_TRUST_CUTOFF_ISO,
+    RemediationProposalRow, SiteRecord, TraceStep,
 };
 use crate::{
-    archive,
-    config::{AssignmentRule, SelectedSubscriptionPath, TargetConfig},
+    archive, audit,
+    config::{AssignmentRule, RemediationConfig, SelectedSubscriptionPath, TargetConfig},
     credentials::{CredentialSummary, CredentialVault, ResolvePurpose, ResolvedCredential},
     discovery::{self, DiscoveryInput},
     event_bus,
     registry::{ApiRegistry, DeviceRegistry, RegistryChange},
+    remediation::{
+        SharedRollbackRegistry, SharedTrustStore, TrustKey, TrustState, check_graduation,
+    },
 };
 
 // ── JSON response types ───────────────────────────────────────────────────────
@@ -127,8 +132,12 @@ struct IncidentsParams {
     limit: u32,
 }
 
-fn default_incident_window() -> u64 { 30 }
-fn default_incident_limit() -> u32 { 200 }
+fn default_incident_window() -> u64 {
+    30
+}
+fn default_incident_limit() -> u32 {
+    200
+}
 
 #[derive(Serialize)]
 struct ReadinessResponse {
@@ -188,6 +197,7 @@ struct ManagedDeviceJson {
     site: String,
     selected_paths: Vec<SelectedSubscriptionPath>,
     subscription_statuses: Vec<SubscriptionStatusJson>,
+    resolution_audit: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -217,6 +227,8 @@ struct OnboardingDiscoveryRequest {
     tls_domain: String,
     #[serde(default)]
     role_hint: String,
+    #[serde(default)]
+    environment_archetype: String,
 }
 
 #[derive(Deserialize)]
@@ -494,6 +506,9 @@ pub struct AppState {
     pub catalogue: Arc<RwLock<CatalogueState>>,
     pub catalogue_dir: String,
     pub enricher_registry: SharedEnricherRegistry,
+    pub trust_store: SharedTrustStore,
+    pub rollback_registry: SharedRollbackRegistry,
+    pub remediation_config: RemediationConfig,
     pub runtime_dir: String,
 }
 
@@ -508,6 +523,9 @@ pub fn router(
     catalogue: Arc<RwLock<CatalogueState>>,
     catalogue_dir: String,
     enricher_registry: SharedEnricherRegistry,
+    trust_store: SharedTrustStore,
+    rollback_registry: SharedRollbackRegistry,
+    remediation_config: RemediationConfig,
     runtime_dir: String,
 ) -> Router {
     let state = AppState {
@@ -518,6 +536,9 @@ pub fn router(
         catalogue,
         catalogue_dir,
         enricher_registry,
+        trust_store,
+        rollback_registry,
+        remediation_config,
         runtime_dir,
     };
 
@@ -528,6 +549,9 @@ pub fn router(
 
     Router::new()
         .route("/api/topology", get(topology_handler))
+        .route("/api/overrides", get(list_overrides).post(add_override))
+        .route("/api/overrides/remove", post(remove_override))
+
         .route("/api/path", get(path_handler))
         .route("/api/incidents/grouped", get(incidents_handler))
         .route(
@@ -560,10 +584,16 @@ pub fn router(
         )
         .route("/api/environments/update", post(update_environment_handler))
         .route("/api/environments/remove", post(remove_environment_handler))
-        .route("/api/environments/assign-site", post(assign_site_environment_handler))
+        .route(
+            "/api/environments/assign-site",
+            post(assign_site_environment_handler),
+        )
         .route("/api/setup/status", get(setup_status_handler))
         .route("/api/profiles", get(profiles_handler))
-        .route("/api/profiles/save-custom", post(save_custom_profile_handler))
+        .route(
+            "/api/profiles/save-custom",
+            post(save_custom_profile_handler),
+        )
         .route(
             "/api/enrichment",
             get(enrichment_list_handler).post(enrichment_upsert_handler),
@@ -572,6 +602,25 @@ pub fn router(
         .route("/api/enrichment/test", post(enrichment_test_handler))
         .route("/api/enrichment/run", post(enrichment_run_handler))
         .route("/api/enrichment/audit", get(enrichment_audit_handler))
+        .route(
+            "/api/approvals",
+            get(approvals_list_handler).post(approvals_create_handler),
+        )
+        .route(
+            "/api/approvals/{id}/approve",
+            post(approvals_approve_handler),
+        )
+        .route("/api/approvals/{id}/reject", post(approvals_reject_handler))
+        .route(
+            "/api/approvals/{id}/rollback",
+            post(approvals_rollback_handler),
+        )
+        .route("/api/trust", get(trust_list_handler))
+        .route("/api/trust/graduate", post(trust_graduate_handler))
+        .route(
+            "/api/integrations/servicenow/test",
+            post(snow_integration_test_handler),
+        )
         .route(
             "/api/credentials",
             get(credentials_handler).post(add_credential_handler),
@@ -586,13 +635,20 @@ pub fn router(
         .route("/api/trace/{id}", get(trace_handler))
         .route("/api/events", get(events_handler))
         .route("/api/devices/{address}", get(device_detail_handler))
+        .route(
+            "/api/devices/{address}/enrichment",
+            get(device_enrichment_handler),
+        )
         .route("/api/collectors", get(collectors_handler))
         .route(
             "/api/assignment/rules",
             get(assignment_rules_handler).post(set_assignment_rules_handler),
         )
         .route("/api/assignment/status", get(assignment_status_handler))
-        .route("/api/assignment/override", post(assignment_override_handler))
+        .route(
+            "/api/assignment/override",
+            post(assignment_override_handler),
+        )
         .fallback_service(spa)
         .with_state(state)
         .layer(CorsLayer::permissive())
@@ -664,8 +720,10 @@ async fn topology_handler(
         tracing::warn!(%error, "failed to list sites for topology metadata");
         Vec::new()
     });
-    let site_id_by_name: HashMap<String, String> =
-        all_sites.iter().map(|site| (site.name.clone(), site.id.clone())).collect();
+    let site_id_by_name: HashMap<String, String> = all_sites
+        .iter()
+        .map(|site| (site.name.clone(), site.id.clone()))
+        .collect();
     let site_path_by_id = build_site_path_by_id(&all_sites);
 
     // Build role + site map from registry
@@ -715,13 +773,15 @@ async fn topology_handler(
 
     let links = links_raw
         .into_iter()
-        .map(|(src_device, src_iface, dst_device, dst_iface, bytes_total)| LinkJson {
-            src_device,
-            src_iface,
-            dst_device,
-            dst_iface,
-            bytes_total,
-        })
+        .map(
+            |(src_device, src_iface, dst_device, dst_iface, bytes_total)| LinkJson {
+                src_device,
+                src_iface,
+                dst_device,
+                dst_iface,
+                bytes_total,
+            },
+        )
         .collect();
 
     Ok(Json(TopologyResponse { devices, links }))
@@ -752,7 +812,12 @@ async fn path_handler(
             .map_err(|e| e.to_string())?;
         Ok::<Vec<(String, String, String, String)>, String>(
             rows.map(|row| {
-                (read_str(&row[0]), read_str(&row[1]), read_str(&row[2]), read_str(&row[3]))
+                (
+                    read_str(&row[0]),
+                    read_str(&row[1]),
+                    read_str(&row[2]),
+                    read_str(&row[3]),
+                )
             })
             .collect(),
         )
@@ -764,12 +829,19 @@ async fn path_handler(
     // Build undirected adjacency: device → Vec<(neighbour, src_iface, dst_iface)>
     let mut adj: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
     for (a_dev, a_if, b_dev, b_if) in &all_links {
-        adj.entry(a_dev.clone()).or_default().push((b_dev.clone(), a_if.clone(), b_if.clone()));
-        adj.entry(b_dev.clone()).or_default().push((a_dev.clone(), b_if.clone(), a_if.clone()));
+        adj.entry(a_dev.clone())
+            .or_default()
+            .push((b_dev.clone(), a_if.clone(), b_if.clone()));
+        adj.entry(b_dev.clone())
+            .or_default()
+            .push((a_dev.clone(), b_if.clone(), a_if.clone()));
     }
 
     if src == dst {
-        return Ok(Json(PathResponse { hops: vec![src], links: vec![] }));
+        return Ok(Json(PathResponse {
+            hops: vec![src],
+            links: vec![],
+        }));
     }
 
     // BFS
@@ -782,16 +854,26 @@ async fn path_handler(
     'bfs: while let Some(current) = queue.pop_front() {
         if let Some(neighbours) = adj.get(&current) {
             for (nb, src_if, dst_if) in neighbours {
-                if visited.contains_key(nb.as_str()) { continue; }
-                visited.insert(nb.clone(), Some((current.clone(), src_if.clone(), dst_if.clone())));
-                if nb == &dst { break 'bfs; }
+                if visited.contains_key(nb.as_str()) {
+                    continue;
+                }
+                visited.insert(
+                    nb.clone(),
+                    Some((current.clone(), src_if.clone(), dst_if.clone())),
+                );
+                if nb == &dst {
+                    break 'bfs;
+                }
                 queue.push_back(nb.clone());
             }
         }
     }
 
     if !visited.contains_key(dst.as_str()) {
-        return Ok(Json(PathResponse { hops: vec![], links: vec![] }));
+        return Ok(Json(PathResponse {
+            hops: vec![],
+            links: vec![],
+        }));
     }
 
     // Reconstruct path backwards
@@ -806,7 +888,10 @@ async fn path_handler(
     hops.reverse();
     link_segs.reverse();
 
-    Ok(Json(PathResponse { hops, links: link_segs }))
+    Ok(Json(PathResponse {
+        hops,
+        links: link_segs,
+    }))
 }
 
 async fn managed_devices_handler(
@@ -818,9 +903,10 @@ async fn managed_devices_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let statuses = read_subscription_statuses(state.store.db()).await?;
 
+    let overrides = state.registry.list_overrides().unwrap_or_default();
     let devices = targets
         .into_iter()
-        .map(|target| managed_device_json(target, &statuses))
+        .map(|target| managed_device_json(target, &statuses, &overrides))
         .collect();
 
     Ok(Json(ManagedDevicesResponse { devices }))
@@ -851,6 +937,7 @@ async fn discover_handler(
         ca_cert_path: option_string(req.ca_cert_path),
         tls_domain: option_string(req.tls_domain),
         role_hint: option_string(req.role_hint),
+        environment_archetype: option_string(req.environment_archetype),
     })
     .await
     .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
@@ -944,13 +1031,21 @@ async fn remove_credential_handler(
 ) -> Result<Json<CredentialMutationResponse>, (StatusCode, String)> {
     let device_counts = credential_device_counts(&state.registry)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-    if device_counts.get(req.alias.trim()).copied().unwrap_or_default() > 0 {
+    if device_counts
+        .get(req.alias.trim())
+        .copied()
+        .unwrap_or_default()
+        > 0
+    {
         return Ok(Json(CredentialMutationResponse {
             success: false,
             error: format!(
                 "credential alias '{}' is still referenced by {} device(s)",
                 req.alias.trim(),
-                device_counts.get(req.alias.trim()).copied().unwrap_or_default()
+                device_counts
+                    .get(req.alias.trim())
+                    .copied()
+                    .unwrap_or_default()
             ),
             credential: None,
         }));
@@ -992,6 +1087,7 @@ async fn test_credential_handler(
         ca_cert_path: option_string(req.ca_cert_path),
         tls_domain: option_string(req.tls_domain),
         role_hint: option_string(req.role_hint),
+        environment_archetype: None,
     })
     .await
     .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
@@ -1072,14 +1168,14 @@ async fn save_managed_device(
                 return Ok(Json(MutationResponse {
                     success: false,
                     error: format!("device saved but site graph sync failed: {error:#}"),
-                    device: Some(managed_device_json(device, &HashMap::new())),
+                    device: Some(managed_device_json(device, &HashMap::new(), &state.registry.list_overrides().unwrap_or_default())),
                 }));
             }
             let statuses = read_subscription_statuses(state.store.db()).await?;
             Ok(Json(MutationResponse {
                 success: true,
                 error: String::new(),
-                device: Some(managed_device_json(device, &statuses)),
+                device: Some(managed_device_json(device, &statuses, &state.registry.list_overrides().unwrap_or_default())),
             }))
         }
         Err(error) => Ok(Json(MutationResponse {
@@ -1276,7 +1372,10 @@ async fn remove_site_handler(
             }));
         }
     };
-    if all_sites.iter().any(|candidate| candidate.parent_id == site.id) {
+    if all_sites
+        .iter()
+        .any(|candidate| candidate.parent_id == site.id)
+    {
         return Ok(Json(SiteMutationResponse {
             success: false,
             error: "cannot delete a site that still has child sites".to_string(),
@@ -1294,7 +1393,10 @@ async fn remove_site_handler(
     if in_use > 0 {
         return Ok(Json(SiteMutationResponse {
             success: false,
-            error: format!("cannot delete site '{}' while {} device(s) still reference it", site.name, in_use),
+            error: format!(
+                "cannot delete site '{}' while {} device(s) still reference it",
+                site.name, in_use
+            ),
             site: None,
         }));
     }
@@ -1329,7 +1431,7 @@ async fn remove_managed_device_handler(
         Ok(Some(device)) => Ok(Json(MutationResponse {
             success: true,
             error: String::new(),
-            device: Some(managed_device_json(device, &HashMap::new())),
+            device: Some(managed_device_json(device, &HashMap::new(), &state.registry.list_overrides().unwrap_or_default())),
         })),
         Ok(None) => Ok(Json(MutationResponse {
             success: false,
@@ -1372,11 +1474,12 @@ async fn bulk_managed_device_action_handler(
         match state.registry.get_device(&address) {
             Ok(Some(mut target)) => {
                 target.enabled = action != "stop";
-                match state
-                    .registry
-                    .update_device_with_audit(target, "api", &format!("api_bulk_{action}"))
-                {
-                    Ok(device) => devices.push(managed_device_json(device, &statuses)),
+                match state.registry.update_device_with_audit(
+                    target,
+                    "api",
+                    &format!("api_bulk_{action}"),
+                ) {
+                    Ok(device) => devices.push(managed_device_json(device, &statuses, &state.registry.list_overrides().unwrap_or_default())),
                     Err(error) => errors.push(format!("{address}: {error:#}")),
                 }
             }
@@ -1743,7 +1846,9 @@ async fn read_trust_mark_impact(
 fn managed_device_json(
     target: TargetConfig,
     statuses: &HashMap<String, Vec<SubscriptionStatusJson>>,
+    overrides: &[crate::registry::PathOverride],
 ) -> ManagedDeviceJson {
+    let (_, audit) = crate::discovery::resolve_subscription_paths(&target, overrides);
     let address = target.address;
     ManagedDeviceJson {
         enabled: target.enabled,
@@ -1760,6 +1865,7 @@ fn managed_device_json(
         selected_paths: target.selected_paths,
         subscription_statuses: statuses.get(&address).cloned().unwrap_or_default(),
         address,
+        resolution_audit: audit,
     }
 }
 
@@ -1842,7 +1948,10 @@ fn credential_json(
     device_counts: &HashMap<String, usize>,
 ) -> CredentialJson {
     CredentialJson {
-        device_count: device_counts.get(&credential.alias).copied().unwrap_or_default(),
+        device_count: device_counts
+            .get(&credential.alias)
+            .copied()
+            .unwrap_or_default(),
         alias: credential.alias,
         created_at_ns: credential.created_at_ns,
         updated_at_ns: credential.updated_at_ns,
@@ -1867,7 +1976,9 @@ fn resolve_request_credentials(
     password_env: Option<String>,
 ) -> anyhow::Result<Option<ResolvedCredential>> {
     if let Some(alias) = credential_alias {
-        return credentials.resolve(&alias, ResolvePurpose::Discover).map(Some);
+        return credentials
+            .resolve(&alias, ResolvePurpose::Discover)
+            .map(Some);
     }
 
     let username = username_env
@@ -1897,7 +2008,10 @@ fn site_subtree_ids(sites: &[SiteRecord], root_id: &str) -> std::collections::Ha
     while changed {
         changed = false;
         for site in sites {
-            if !site.parent_id.is_empty() && ids.contains(&site.parent_id) && ids.insert(site.id.clone()) {
+            if !site.parent_id.is_empty()
+                && ids.contains(&site.parent_id)
+                && ids.insert(site.id.clone())
+            {
                 changed = true;
             }
         }
@@ -1906,7 +2020,8 @@ fn site_subtree_ids(sites: &[SiteRecord], root_id: &str) -> std::collections::Ha
 }
 
 fn build_site_path_by_id(sites: &[SiteRecord]) -> HashMap<String, String> {
-    let by_id: HashMap<&str, &SiteRecord> = sites.iter().map(|site| (site.id.as_str(), site)).collect();
+    let by_id: HashMap<&str, &SiteRecord> =
+        sites.iter().map(|site| (site.id.as_str(), site)).collect();
     let mut path_by_id = HashMap::new();
 
     for site in sites {
@@ -1988,134 +2103,141 @@ async fn device_detail_handler(
         .registry
         .get_device(&address)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("device '{address}' not found")))?;
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("device '{address}' not found"),
+            )
+        })?;
 
     let db = state.store.db();
     let addr_clone = address.clone();
 
-    let (ifaces, bgp, lldp, state_changes, detections) =
-        tokio::task::spawn_blocking(move || {
-            let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+    let (ifaces, bgp, lldp, state_changes, detections) = tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
 
-            let mut stmt = conn
-                .prepare(
-                    "MATCH (i:Interface) WHERE i.device_address = $addr \
+        let mut stmt = conn
+            .prepare(
+                "MATCH (i:Interface) WHERE i.device_address = $addr \
                      RETURN i.name, i.in_errors, i.out_errors, i.in_octets, i.out_octets, \
                             i.carrier_transitions, i.updated_at \
                      ORDER BY i.name",
-                )
-                .map_err(|e| e.to_string())?;
-            let iface_rows = conn
-                .execute(&mut stmt, vec![("addr", Value::String(addr_clone.clone()))])
-                .map_err(|e| e.to_string())?;
-            let ifaces: Vec<InterfaceDetailJson> = iface_rows
-                .map(|row| InterfaceDetailJson {
-                    name: read_str(&row[0]),
-                    in_errors: read_i64(&row[1]),
-                    out_errors: read_i64(&row[2]),
-                    in_octets: read_i64(&row[3]),
-                    out_octets: read_i64(&row[4]),
-                    carrier_transitions: read_i64(&row[5]),
-                    updated_at_ns: read_ts_ns(&row[6]),
-                })
-                .collect();
+            )
+            .map_err(|e| e.to_string())?;
+        let iface_rows = conn
+            .execute(&mut stmt, vec![("addr", Value::String(addr_clone.clone()))])
+            .map_err(|e| e.to_string())?;
+        let ifaces: Vec<InterfaceDetailJson> = iface_rows
+            .map(|row| InterfaceDetailJson {
+                name: read_str(&row[0]),
+                in_errors: read_i64(&row[1]),
+                out_errors: read_i64(&row[2]),
+                in_octets: read_i64(&row[3]),
+                out_octets: read_i64(&row[4]),
+                carrier_transitions: read_i64(&row[5]),
+                updated_at_ns: read_ts_ns(&row[6]),
+            })
+            .collect();
 
-            let mut stmt = conn
-                .prepare(
-                    "MATCH (n:BgpNeighbor) WHERE n.device_address = $addr \
+        let mut stmt = conn
+            .prepare(
+                "MATCH (n:BgpNeighbor) WHERE n.device_address = $addr \
                      RETURN n.peer_address, n.session_state, n.peer_as \
                      ORDER BY n.peer_address",
-                )
-                .map_err(|e| e.to_string())?;
-            let bgp_rows = conn
-                .execute(&mut stmt, vec![("addr", Value::String(addr_clone.clone()))])
-                .map_err(|e| e.to_string())?;
-            let bgp: Vec<BgpJson> = bgp_rows
-                .map(|row| BgpJson {
-                    peer: read_str(&row[0]),
-                    state: read_str(&row[1]),
-                    peer_as: read_i64(&row[2]),
-                })
-                .collect();
+            )
+            .map_err(|e| e.to_string())?;
+        let bgp_rows = conn
+            .execute(&mut stmt, vec![("addr", Value::String(addr_clone.clone()))])
+            .map_err(|e| e.to_string())?;
+        let bgp: Vec<BgpJson> = bgp_rows
+            .map(|row| BgpJson {
+                peer: read_str(&row[0]),
+                state: read_str(&row[1]),
+                peer_as: read_i64(&row[2]),
+            })
+            .collect();
 
-            let mut stmt = conn
-                .prepare(
-                    "MATCH (n:LldpNeighbor) WHERE n.device_address = $addr \
+        let mut stmt = conn
+            .prepare(
+                "MATCH (n:LldpNeighbor) WHERE n.device_address = $addr \
                      RETURN n.local_if, n.system_name, n.port_id, n.chassis_id \
                      ORDER BY n.local_if",
-                )
-                .map_err(|e| e.to_string())?;
-            let lldp_rows = conn
-                .execute(&mut stmt, vec![("addr", Value::String(addr_clone.clone()))])
-                .map_err(|e| e.to_string())?;
-            let lldp: Vec<LldpNeighborJson> = lldp_rows
-                .map(|row| LldpNeighborJson {
-                    local_if: read_str(&row[0]),
-                    system_name: read_str(&row[1]),
-                    port_id: read_str(&row[2]),
-                    chassis_id: read_str(&row[3]),
-                })
-                .collect();
+            )
+            .map_err(|e| e.to_string())?;
+        let lldp_rows = conn
+            .execute(&mut stmt, vec![("addr", Value::String(addr_clone.clone()))])
+            .map_err(|e| e.to_string())?;
+        let lldp: Vec<LldpNeighborJson> = lldp_rows
+            .map(|row| LldpNeighborJson {
+                local_if: read_str(&row[0]),
+                system_name: read_str(&row[1]),
+                port_id: read_str(&row[2]),
+                chassis_id: read_str(&row[3]),
+            })
+            .collect();
 
-            let mut stmt = conn
-                .prepare(
-                    "MATCH (e:StateChangeEvent) WHERE e.device_address = $addr \
+        let mut stmt = conn
+            .prepare(
+                "MATCH (e:StateChangeEvent) WHERE e.device_address = $addr \
                      RETURN e.event_type, e.detail, e.occurred_at \
                      ORDER BY e.occurred_at DESC LIMIT 20",
-                )
-                .map_err(|e| e.to_string())?;
-            let sc_rows = conn
-                .execute(&mut stmt, vec![("addr", Value::String(addr_clone.clone()))])
-                .map_err(|e| e.to_string())?;
-            let state_changes: Vec<StateChangeJson> = sc_rows
-                .map(|row| StateChangeJson {
-                    event_type: read_str(&row[0]),
-                    detail: read_str(&row[1]),
-                    occurred_at_ns: read_ts_ns(&row[2]),
-                })
-                .collect();
+            )
+            .map_err(|e| e.to_string())?;
+        let sc_rows = conn
+            .execute(&mut stmt, vec![("addr", Value::String(addr_clone.clone()))])
+            .map_err(|e| e.to_string())?;
+        let state_changes: Vec<StateChangeJson> = sc_rows
+            .map(|row| StateChangeJson {
+                event_type: read_str(&row[0]),
+                detail: read_str(&row[1]),
+                occurred_at_ns: read_ts_ns(&row[2]),
+            })
+            .collect();
 
-            let mut stmt = conn
-                .prepare(
-                    "MATCH (e:DetectionEvent) WHERE e.device_address = $addr \
+        let mut stmt = conn
+            .prepare(
+                "MATCH (e:DetectionEvent) WHERE e.device_address = $addr \
                      OPTIONAL MATCH (r:Remediation)-[:RESOLVES]->(e) \
                      RETURN e.id, e.device_address, e.rule_id, e.severity, \
                             e.features_json, e.fired_at, r.id, r.action, r.status \
                      ORDER BY e.fired_at DESC LIMIT 10",
-                )
-                .map_err(|e| e.to_string())?;
-            let det_rows = conn
-                .execute(&mut stmt, vec![("addr", Value::String(addr_clone.clone()))])
-                .map_err(|e| e.to_string())?;
-            let mut detections: Vec<DetectionRow> = Vec::new();
-            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-            for row in det_rows {
-                let id = read_str(&row[0]);
-                if seen.insert(id.clone()) {
-                    detections.push(crate::graph::DetectionRow {
-                        id,
-                        device_address: read_str(&row[1]),
-                        rule_id: read_str(&row[2]),
-                        severity: read_str(&row[3]),
-                        features_json: read_str(&row[4]),
-                        fired_at_ns: read_ts_ns(&row[5]),
-                        remediation_id: read_str(&row[6]),
-                        remediation_action: read_str(&row[7]),
-                        remediation_status: read_str(&row[8]),
-                    });
-                }
+            )
+            .map_err(|e| e.to_string())?;
+        let det_rows = conn
+            .execute(&mut stmt, vec![("addr", Value::String(addr_clone.clone()))])
+            .map_err(|e| e.to_string())?;
+        let mut detections: Vec<DetectionRow> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for row in det_rows {
+            let id = read_str(&row[0]);
+            if seen.insert(id.clone()) {
+                detections.push(crate::graph::DetectionRow {
+                    id,
+                    device_address: read_str(&row[1]),
+                    rule_id: read_str(&row[2]),
+                    severity: read_str(&row[3]),
+                    features_json: read_str(&row[4]),
+                    fired_at_ns: read_ts_ns(&row[5]),
+                    remediation_id: read_str(&row[6]),
+                    remediation_action: read_str(&row[7]),
+                    remediation_status: read_str(&row[8]),
+                });
             }
+        }
 
-            Ok::<_, String>((ifaces, bgp, lldp, state_changes, detections))
-        })
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        Ok::<_, String>((ifaces, bgp, lldp, state_changes, detections))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     let all_statuses = read_subscription_statuses(state.store.db()).await?;
     let subscription_statuses = all_statuses.get(&address).cloned().unwrap_or_default();
     let health = compute_health(&bgp);
 
+    
+    let overrides = state.registry.list_overrides().unwrap_or_default();
+    let (_, audit) = crate::discovery::resolve_subscription_paths(&target, &overrides);
     Ok(Json(DeviceDetailResponse {
         address: address.clone(),
         hostname: target.hostname.unwrap_or_default(),
@@ -2132,11 +2254,68 @@ async fn device_detail_handler(
         recent_state_changes: state_changes,
         recent_detections: detections,
         subscription_statuses,
+        resolution_audit: audit,
         created_at_ns: target.created_at_ns,
         updated_at_ns: target.updated_at_ns,
         created_by: target.created_by,
         updated_by: target.updated_by,
         last_operator_action: target.last_operator_action,
+    }))
+}
+
+// ── Device enrichment endpoint ────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct EnrichmentPropertyJson {
+    key: String,
+    value: String,
+    source_name: String,
+    updated_at_ns: i64,
+}
+
+#[derive(Serialize)]
+struct DeviceEnrichmentResponse {
+    address: String,
+    /// Properties grouped by source_name for display.
+    properties: Vec<EnrichmentPropertyJson>,
+}
+
+async fn device_enrichment_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<Json<DeviceEnrichmentResponse>, (StatusCode, String)> {
+    let db = state.store.db();
+    let addr_clone = address.clone();
+
+    let props = tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "MATCH (d:Device {address: $addr})-[:HAS_ENRICHMENT_PROPERTY]->(p:EnrichmentProperty) \
+                 RETURN p.key, p.value, p.source_name, p.updated_at \
+                 ORDER BY p.source_name, p.key",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = conn
+            .execute(&mut stmt, vec![("addr", Value::String(addr_clone))])
+            .map_err(|e| e.to_string())?;
+        let props: Vec<EnrichmentPropertyJson> = rows
+            .map(|row| EnrichmentPropertyJson {
+                key: read_str(&row[0]),
+                value: read_str(&row[1]),
+                source_name: read_str(&row[2]),
+                updated_at_ns: read_ts_ns(&row[3]),
+            })
+            .collect();
+        Ok::<_, String>(props)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(DeviceEnrichmentResponse {
+        address,
+        properties: props,
     }))
 }
 
@@ -2191,9 +2370,10 @@ fn group_into_incidents(
     let mut groups: Vec<Vec<DetectionRow>> = Vec::new();
 
     for det in detections {
-        let joined = groups.iter_mut().rev().find(|g| {
-            det.fired_at_ns - g[0].fired_at_ns <= window_ns
-        });
+        let joined = groups
+            .iter_mut()
+            .rev()
+            .find(|g| det.fired_at_ns - g[0].fired_at_ns <= window_ns);
         if let Some(group) = joined {
             group.push(det);
         } else {
@@ -2220,7 +2400,10 @@ fn group_into_incidents(
                 .iter()
                 .enumerate()
                 .max_by_key(|(_, d)| {
-                    (*degree_map.get(&d.device_address).unwrap_or(&0), -(d.fired_at_ns))
+                    (
+                        *degree_map.get(&d.device_address).unwrap_or(&0),
+                        -(d.fired_at_ns),
+                    )
                 })
                 .map(|(i, _)| i)
                 .unwrap_or(0);
@@ -2281,6 +2464,7 @@ struct DeviceDetailResponse {
     recent_state_changes: Vec<StateChangeJson>,
     recent_detections: Vec<DetectionRow>,
     subscription_statuses: Vec<SubscriptionStatusJson>,
+    resolution_audit: Vec<String>,
     created_at_ns: i64,
     updated_at_ns: i64,
     created_by: String,
@@ -2406,10 +2590,12 @@ async fn set_assignment_rules_handler(
     State(state): State<AppState>,
     Json(body): Json<SetAssignmentRulesRequest>,
 ) -> Result<Json<AssignmentRulesResponse>, (StatusCode, String)> {
-    let manager = state
-        .collector_manager
-        .as_ref()
-        .ok_or_else(|| (StatusCode::NOT_IMPLEMENTED, "assignment not enabled on this node".to_string()))?;
+    let manager = state.collector_manager.as_ref().ok_or_else(|| {
+        (
+            StatusCode::NOT_IMPLEMENTED,
+            "assignment not enabled on this node".to_string(),
+        )
+    })?;
     manager.set_rules(body.rules);
     let rules = manager.get_rules();
     Ok(Json(AssignmentRulesResponse { rules }))
@@ -2483,8 +2669,14 @@ async fn assignment_override_handler(
         "api",
         "api_assignment_override",
     ) {
-        Ok(_) => Ok(Json(AssignmentOverrideResponse { success: true, error: String::new() })),
-        Err(e) => Ok(Json(AssignmentOverrideResponse { success: false, error: format!("{e:#}") })),
+        Ok(_) => Ok(Json(AssignmentOverrideResponse {
+            success: true,
+            error: String::new(),
+        })),
+        Err(e) => Ok(Json(AssignmentOverrideResponse {
+            success: false,
+            error: format!("{e:#}"),
+        })),
     }
 }
 
@@ -2526,8 +2718,14 @@ async fn create_environment_handler(
         metadata_json: req.metadata_json,
     };
     match state.store.create_environment(record).await {
-        Ok(_) => Ok(Json(EnvironmentMutationResponse { success: true, error: String::new() })),
-        Err(e) => Ok(Json(EnvironmentMutationResponse { success: false, error: format!("{e:#}") })),
+        Ok(_) => Ok(Json(EnvironmentMutationResponse {
+            success: true,
+            error: String::new(),
+        })),
+        Err(e) => Ok(Json(EnvironmentMutationResponse {
+            success: false,
+            error: format!("{e:#}"),
+        })),
     }
 }
 
@@ -2543,8 +2741,14 @@ async fn update_environment_handler(
         metadata_json: req.metadata_json,
     };
     match state.store.update_environment(record).await {
-        Ok(_) => Ok(Json(EnvironmentMutationResponse { success: true, error: String::new() })),
-        Err(e) => Ok(Json(EnvironmentMutationResponse { success: false, error: format!("{e:#}") })),
+        Ok(_) => Ok(Json(EnvironmentMutationResponse {
+            success: true,
+            error: String::new(),
+        })),
+        Err(e) => Ok(Json(EnvironmentMutationResponse {
+            success: false,
+            error: format!("{e:#}"),
+        })),
     }
 }
 
@@ -2553,15 +2757,18 @@ async fn remove_environment_handler(
     Json(req): Json<RemoveEnvironmentRequest>,
 ) -> Result<Json<EnvironmentMutationResponse>, (StatusCode, String)> {
     match state.store.delete_environment(req.id).await {
-        Ok(Ok(())) => {
-            Ok(Json(EnvironmentMutationResponse { success: true, error: String::new() }))
-        }
-        Ok(Err(msg)) => {
-            Ok(Json(EnvironmentMutationResponse { success: false, error: msg }))
-        }
-        Err(e) => {
-            Ok(Json(EnvironmentMutationResponse { success: false, error: format!("{e:#}") }))
-        }
+        Ok(Ok(())) => Ok(Json(EnvironmentMutationResponse {
+            success: true,
+            error: String::new(),
+        })),
+        Ok(Err(msg)) => Ok(Json(EnvironmentMutationResponse {
+            success: false,
+            error: msg,
+        })),
+        Err(e) => Ok(Json(EnvironmentMutationResponse {
+            success: false,
+            error: format!("{e:#}"),
+        })),
     }
 }
 
@@ -2569,9 +2776,19 @@ async fn assign_site_environment_handler(
     State(state): State<AppState>,
     Json(req): Json<AssignSiteEnvironmentRequest>,
 ) -> Result<Json<EnvironmentMutationResponse>, (StatusCode, String)> {
-    match state.store.assign_site_to_environment(req.site_id, req.environment_id).await {
-        Ok(()) => Ok(Json(EnvironmentMutationResponse { success: true, error: String::new() })),
-        Err(e) => Ok(Json(EnvironmentMutationResponse { success: false, error: format!("{e:#}") })),
+    match state
+        .store
+        .assign_site_to_environment(req.site_id, req.environment_id)
+        .await
+    {
+        Ok(()) => Ok(Json(EnvironmentMutationResponse {
+            success: true,
+            error: String::new(),
+        })),
+        Err(e) => Ok(Json(EnvironmentMutationResponse {
+            success: false,
+            error: format!("{e:#}"),
+        })),
     }
 }
 
@@ -2584,7 +2801,9 @@ async fn setup_status_handler(
         .list_environments()
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-    let non_default_envs = envs.iter().any(|e| e.id != crate::graph::DEFAULT_ENVIRONMENT_ID);
+    let non_default_envs = envs
+        .iter()
+        .any(|e| e.id != crate::graph::DEFAULT_ENVIRONMENT_ID);
     let has_credentials = state
         .credentials
         .list()
@@ -2636,9 +2855,7 @@ struct PluginJson {
     conflicts: Vec<String>,
 }
 
-async fn profiles_handler(
-    State(state): State<AppState>,
-) -> Json<ProfilesResponse> {
+async fn profiles_handler(State(state): State<AppState>) -> Json<ProfilesResponse> {
     let cat = state.catalogue.read().await;
 
     let profiles: Vec<ProfileJson> = cat
@@ -2717,10 +2934,16 @@ async fn save_custom_profile_handler(
         });
     }
     // Sanitise: only alphanumeric, underscore, hyphen
-    if !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
         return Json(SaveCustomProfileResponse {
             success: false,
-            error: Some("profile name may only contain letters, digits, underscores, and hyphens".to_string()),
+            error: Some(
+                "profile name may only contain letters, digits, underscores, and hyphens"
+                    .to_string(),
+            ),
         });
     }
 
@@ -2751,7 +2974,7 @@ async fn save_custom_profile_handler(
             return Json(SaveCustomProfileResponse {
                 success: false,
                 error: Some(format!("yaml serialisation error: {e}")),
-            })
+            });
         }
     };
 
@@ -2774,7 +2997,9 @@ async fn save_custom_profile_handler(
             if p.extension().and_then(|x| x.to_str()) == Some("yaml")
                 && p.file_name().and_then(|x| x.to_str()) != Some("MANIFEST.yaml")
             {
-                p.file_name().and_then(|x| x.to_str()).map(|s| s.to_string())
+                p.file_name()
+                    .and_then(|x| x.to_str())
+                    .map(|s| s.to_string())
             } else {
                 None
             }
@@ -2794,7 +3019,7 @@ async fn save_custom_profile_handler(
             return Json(SaveCustomProfileResponse {
                 success: false,
                 error: Some(format!("manifest serialisation error: {e}")),
-            })
+            });
         }
     };
     if let Err(e) = std::fs::write(user_plugin_dir.join("MANIFEST.yaml"), manifest_str) {
@@ -2805,10 +3030,14 @@ async fn save_custom_profile_handler(
     }
 
     // Reload catalogue and swap in
-    let new_catalogue = crate::catalogue::load_catalogue(std::path::Path::new(&state.catalogue_dir));
+    let new_catalogue =
+        crate::catalogue::load_catalogue(std::path::Path::new(&state.catalogue_dir));
     *state.catalogue.write().await = new_catalogue;
 
-    Json(SaveCustomProfileResponse { success: true, error: None })
+    Json(SaveCustomProfileResponse {
+        success: true,
+        error: None,
+    })
 }
 
 // ── Enrichment handlers ───────────────────────────────────────────────────────
@@ -2851,7 +3080,10 @@ async fn enrichment_upsert_handler(
     Json(req): Json<EnrichmentUpsertRequest>,
 ) -> Json<EnrichmentMutationResponse> {
     state.enricher_registry.write().await.upsert(req.config);
-    Json(EnrichmentMutationResponse { success: true, error: None })
+    Json(EnrichmentMutationResponse {
+        success: true,
+        error: None,
+    })
 }
 
 #[derive(Deserialize)]
@@ -2865,7 +3097,10 @@ async fn enrichment_remove_handler(
 ) -> Json<EnrichmentMutationResponse> {
     let removed = state.enricher_registry.write().await.remove(&req.name);
     if removed {
-        Json(EnrichmentMutationResponse { success: true, error: None })
+        Json(EnrichmentMutationResponse {
+            success: true,
+            error: None,
+        })
     } else {
         Json(EnrichmentMutationResponse {
             success: false,
@@ -2895,44 +3130,26 @@ async fn enrichment_test_handler(
         });
     };
 
-    // Parse host:port from the base_url and attempt a TCP connect.
-    let addr = url_to_host_port(&config.base_url);
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        tokio::net::TcpStream::connect(&addr),
-    )
-    .await
-    {
-        Ok(Ok(_)) => Json(EnrichmentTestResponse {
-            success: true,
-            message: format!("TCP reachable at {addr}"),
-        }),
-        Ok(Err(e)) => Json(EnrichmentTestResponse {
-            success: false,
-            message: format!("connection refused at {addr}: {e}"),
-        }),
-        Err(_) => Json(EnrichmentTestResponse {
-            success: false,
-            message: format!("connection to {addr} timed out after 5 s"),
-        }),
-    }
-}
+    let audit = crate::enrichment::EnricherAuditLog::new(
+        std::path::Path::new(&state.runtime_dir),
+        &config.name,
+    );
 
-fn url_to_host_port(url: &str) -> String {
-    // Best-effort: strip scheme, extract host:port
-    let stripped = url
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .split('/')
-        .next()
-        .unwrap_or(url);
-    // If no port, add default based on scheme
-    if stripped.contains(':') {
-        stripped.to_string()
-    } else if url.starts_with("https://") {
-        format!("{stripped}:443")
-    } else {
-        format!("{stripped}:80")
+    match crate::enrichment::factory::build_enricher(&config) {
+        Err(e) => Json(EnrichmentTestResponse {
+            success: false,
+            message: format!("cannot build enricher: {e:#}"),
+        }),
+        Ok(enricher) => match enricher.test_connection(&state.credentials, &audit).await {
+            Ok(()) => Json(EnrichmentTestResponse {
+                success: true,
+                message: "connection successful".to_string(),
+            }),
+            Err(e) => Json(EnrichmentTestResponse {
+                success: false,
+                message: format!("{e:#}"),
+            }),
+        },
     }
 }
 
@@ -2950,36 +3167,46 @@ async fn enrichment_run_handler(
         let reg = state.enricher_registry.read().await;
         reg.get(&req.name).cloned()
     };
-    let Some(_config) = config else {
+    let Some(config) = config else {
         return Json(EnrichmentRunResponse {
             success: false,
             message: format!("enricher '{}' not found", req.name),
         });
     };
 
-    // Mark as running in registry; actual enricher implementations land in Sprint 6.
-    state.enricher_registry.write().await.set_running(&req.name, true);
+    let enricher = match crate::enrichment::factory::build_enricher(&config) {
+        Ok(e) => e,
+        Err(e) => {
+            return Json(EnrichmentRunResponse {
+                success: false,
+                message: format!("cannot build enricher: {e:#}"),
+            });
+        }
+    };
+
+    state
+        .enricher_registry
+        .write()
+        .await
+        .set_running(&req.name, true);
 
     let registry_clone = Arc::clone(&state.enricher_registry);
     let name = req.name.clone();
     let runtime_dir = state.runtime_dir.clone();
+    let store = Arc::clone(&state.store);
+    let creds = Arc::clone(&state.credentials);
 
     tokio::spawn(async move {
-        // Stub: immediately record a no-op run.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let report = crate::enrichment::EnrichmentReport {
-            enricher_name: name.clone(),
-            duration_ms: 100,
-            nodes_touched: 0,
-            warnings: vec!["Stub enricher — Sprint 6 implementation pending".to_string()],
-            error: None,
-            ..Default::default()
+        let audit =
+            crate::enrichment::EnricherAuditLog::new(std::path::Path::new(&runtime_dir), &name);
+        let report = match enricher.enrich(store.as_ref(), &creds, &audit).await {
+            Ok(r) => r,
+            Err(e) => crate::enrichment::EnrichmentReport {
+                enricher_name: name.clone(),
+                error: Some(format!("{e:#}")),
+                ..Default::default()
+            },
         };
-        let audit = crate::enrichment::EnricherAuditLog::new(
-            std::path::Path::new(&runtime_dir),
-            &name,
-        );
-        audit.log_run("stub_success", 0, None);
         registry_clone.write().await.record_run(&name, &report);
     });
 
@@ -2994,16 +3221,17 @@ struct EnrichmentAuditResponse {
     entries: Vec<serde_json::Value>,
 }
 
-async fn enrichment_audit_handler(
-    State(state): State<AppState>,
-) -> Json<EnrichmentAuditResponse> {
+async fn enrichment_audit_handler(State(state): State<AppState>) -> Json<EnrichmentAuditResponse> {
     // Read audit log files and return the last 100 enrichment_run entries.
     let audit_dir = std::path::Path::new(&state.runtime_dir).join("audit");
     let entries = read_recent_enrichment_audit(&audit_dir, 100);
     Json(EnrichmentAuditResponse { entries })
 }
 
-fn read_recent_enrichment_audit(audit_dir: &std::path::Path, limit: usize) -> Vec<serde_json::Value> {
+fn read_recent_enrichment_audit(
+    audit_dir: &std::path::Path,
+    limit: usize,
+) -> Vec<serde_json::Value> {
     let mut files: Vec<_> = std::fs::read_dir(audit_dir)
         .into_iter()
         .flatten()
@@ -3035,4 +3263,928 @@ fn read_recent_enrichment_audit(audit_dir: &std::path::Path, limit: usize) -> Ve
         }
     }
     entries
+}
+
+// ── Human-in-the-loop remediation approvals (Sprint 4) ───────────────────────
+
+#[derive(Deserialize)]
+struct ApprovalsParams {
+    #[serde(default = "default_proposal_status")]
+    status: String,
+    #[serde(default = "default_limit")]
+    limit: u32,
+}
+
+fn default_proposal_status() -> String {
+    "pending".to_string()
+}
+
+#[derive(Serialize)]
+struct TrustEntry {
+    trust_key: String,
+    record: crate::remediation::TrustRecord,
+}
+
+#[derive(Serialize)]
+struct ApprovalsListResponse {
+    proposals: Vec<RemediationProposalRow>,
+    trust: Vec<TrustEntry>,
+    graduation_hints: Vec<crate::remediation::GraduationHint>,
+    active_rollbacks: Vec<crate::remediation::RollbackState>,
+}
+
+async fn approvals_list_handler(
+    State(state): State<AppState>,
+    Query(params): Query<ApprovalsParams>,
+) -> Result<Json<ApprovalsListResponse>, (StatusCode, String)> {
+    let proposals = state
+        .store
+        .read_remediation_proposals(Some(params.status), params.limit)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+
+    let (trust, graduation_hints) = {
+        let store = state.trust_store.read().await;
+        let records = store.list();
+        let trust = records
+            .iter()
+            .map(|(trust_key, record)| TrustEntry {
+                trust_key: trust_key.clone(),
+                record: record.clone(),
+            })
+            .collect();
+        let graduation_hints = records
+            .iter()
+            .filter_map(|(trust_key, record)| {
+                check_graduation(
+                    trust_key,
+                    record,
+                    state
+                        .remediation_config
+                        .graduation
+                        .consecutive_approvals_required,
+                )
+            })
+            .collect();
+        (trust, graduation_hints)
+    };
+
+    let active_rollbacks = {
+        let mut registry = state.rollback_registry.write().await;
+        let now = now_ns();
+        registry.prune(now);
+        registry.active_windows(now).into_iter().cloned().collect()
+    };
+
+    Ok(Json(ApprovalsListResponse {
+        proposals,
+        trust,
+        graduation_hints,
+        active_rollbacks,
+    }))
+}
+
+#[derive(Deserialize)]
+struct CreateApprovalRequest {
+    detection_id: String,
+    playbook_id: String,
+    #[serde(default)]
+    rule_id: String,
+    #[serde(default)]
+    environment_archetype: String,
+    #[serde(default)]
+    site_id: String,
+    #[serde(default)]
+    trust_key: String,
+    #[serde(default)]
+    steps_json: String,
+    #[serde(default)]
+    rollback_steps_json: String,
+}
+
+#[derive(Serialize)]
+struct CreateApprovalResponse {
+    success: bool,
+    error: String,
+    proposal_id: String,
+    trust_state: String,
+}
+
+async fn approvals_create_handler(
+    State(state): State<AppState>,
+    Json(req): Json<CreateApprovalRequest>,
+) -> Json<CreateApprovalResponse> {
+    let trust_key = if req.trust_key.trim().is_empty() {
+        TrustKey::new(
+            &req.rule_id,
+            &req.environment_archetype,
+            &req.site_id,
+            &req.playbook_id,
+        )
+        .to_storage_key()
+    } else {
+        req.trust_key.clone()
+    };
+
+    let trust_state = {
+        let mut store = state.trust_store.write().await;
+        let key = trust_key_from_storage(&trust_key);
+        store.get_or_default(&key).state.as_str().to_string()
+    };
+
+    match state
+        .store
+        .write_remediation_proposal(
+            req.detection_id,
+            req.playbook_id,
+            trust_key,
+            req.steps_json,
+            req.rollback_steps_json,
+            now_ns(),
+        )
+        .await
+    {
+        Ok(proposal_id) => Json(CreateApprovalResponse {
+            success: true,
+            error: String::new(),
+            proposal_id,
+            trust_state,
+        }),
+        Err(e) => Json(CreateApprovalResponse {
+            success: false,
+            error: format!("{e:#}"),
+            proposal_id: String::new(),
+            trust_state,
+        }),
+    }
+}
+
+#[derive(Deserialize)]
+struct ApprovalDecisionRequest {
+    #[serde(default)]
+    operator_note: String,
+}
+
+#[derive(Serialize)]
+struct ApprovalDecisionResponse {
+    success: bool,
+    error: String,
+    remediation_id: String,
+}
+
+async fn approvals_approve_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ApprovalDecisionRequest>,
+) -> Json<ApprovalDecisionResponse> {
+    let proposal = match find_proposal(&state, &id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return Json(ApprovalDecisionResponse {
+                success: false,
+                error: format!("proposal '{id}' not found"),
+                remediation_id: String::new(),
+            });
+        }
+        Err(e) => {
+            return Json(ApprovalDecisionResponse {
+                success: false,
+                error: e,
+                remediation_id: String::new(),
+            });
+        }
+    };
+
+    let now = now_ns();
+    let execution =
+        execute_proposal_steps(&state, &proposal.device_address, &proposal.steps_json).await;
+    let (proposal_status, remediation_status, detail_json) = match execution {
+        Ok(report) => (
+            "approved".to_string(),
+            "success".to_string(),
+            serde_json::json!({
+                "proposal_id": proposal.id,
+                "operator_note": req.operator_note,
+                "steps_executed": report.steps_executed,
+                "steps": proposal.steps_json,
+            })
+            .to_string(),
+        ),
+        Err(e) => (
+            "failed".to_string(),
+            "failed".to_string(),
+            serde_json::json!({
+                "proposal_id": proposal.id,
+                "operator_note": req.operator_note,
+                "error": e,
+                "steps": proposal.steps_json,
+            })
+            .to_string(),
+        ),
+    };
+
+    if let Err(e) = state
+        .store
+        .decide_remediation_proposal(
+            id.clone(),
+            proposal_status.clone(),
+            req.operator_note.clone(),
+            now,
+        )
+        .await
+    {
+        return Json(ApprovalDecisionResponse {
+            success: false,
+            error: format!("{e:#}"),
+            remediation_id: String::new(),
+        });
+    }
+
+    let remediation_id = match state
+        .store
+        .write_remediation(
+            proposal.detection_id.clone(),
+            proposal.playbook_id.clone(),
+            remediation_status.clone(),
+            detail_json,
+            now,
+            now,
+        )
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            return Json(ApprovalDecisionResponse {
+                success: false,
+                error: format!("{e:#}"),
+                remediation_id: String::new(),
+            });
+        }
+    };
+
+    let trust_key = trust_key_from_storage(&proposal.trust_key);
+    if remediation_status == "success" {
+        state
+            .trust_store
+            .write()
+            .await
+            .record_approval(&trust_key, now);
+    } else {
+        state
+            .trust_store
+            .write()
+            .await
+            .record_failure(&trust_key, now);
+    }
+    let _ = audit::append_trust_operation(
+        std::path::Path::new(&state.runtime_dir),
+        now,
+        &proposal.trust_key,
+        if remediation_status == "success" {
+            "approve"
+        } else {
+            "approve_failed"
+        },
+        &id,
+        Some(&req.operator_note),
+    );
+
+    if remediation_status == "success" && !proposal.rollback_steps_json.trim().is_empty() {
+        state
+            .rollback_registry
+            .write()
+            .await
+            .register(crate::remediation::RollbackState {
+                proposal_id: id,
+                remediation_id: remediation_id.clone(),
+                executed_at_ns: now,
+                window_secs: state.remediation_config.rollback_window_secs,
+                snapshot_json: proposal.rollback_steps_json,
+                rolled_back: false,
+            });
+    }
+
+    Json(ApprovalDecisionResponse {
+        success: remediation_status == "success",
+        error: if remediation_status == "success" {
+            String::new()
+        } else {
+            "proposal execution failed".to_string()
+        },
+        remediation_id,
+    })
+}
+
+async fn approvals_reject_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ApprovalDecisionRequest>,
+) -> Json<ApprovalDecisionResponse> {
+    let proposal = match find_proposal(&state, &id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return Json(ApprovalDecisionResponse {
+                success: false,
+                error: format!("proposal '{id}' not found"),
+                remediation_id: String::new(),
+            });
+        }
+        Err(e) => {
+            return Json(ApprovalDecisionResponse {
+                success: false,
+                error: e,
+                remediation_id: String::new(),
+            });
+        }
+    };
+
+    let now = now_ns();
+    if let Err(e) = state
+        .store
+        .decide_remediation_proposal(
+            id.clone(),
+            "rejected".to_string(),
+            req.operator_note.clone(),
+            now,
+        )
+        .await
+    {
+        return Json(ApprovalDecisionResponse {
+            success: false,
+            error: format!("{e:#}"),
+            remediation_id: String::new(),
+        });
+    }
+    let trust_key = trust_key_from_storage(&proposal.trust_key);
+    state
+        .trust_store
+        .write()
+        .await
+        .record_rejection(&trust_key, now);
+    let _ = audit::append_trust_operation(
+        std::path::Path::new(&state.runtime_dir),
+        now,
+        &proposal.trust_key,
+        "reject",
+        &id,
+        Some(&req.operator_note),
+    );
+
+    Json(ApprovalDecisionResponse {
+        success: true,
+        error: String::new(),
+        remediation_id: String::new(),
+    })
+}
+
+async fn approvals_rollback_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ApprovalDecisionRequest>,
+) -> Json<ApprovalDecisionResponse> {
+    let proposal = match find_proposal(&state, &id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return Json(ApprovalDecisionResponse {
+                success: false,
+                error: format!("proposal '{id}' not found"),
+                remediation_id: String::new(),
+            });
+        }
+        Err(e) => {
+            return Json(ApprovalDecisionResponse {
+                success: false,
+                error: e,
+                remediation_id: String::new(),
+            });
+        }
+    };
+
+    let now = now_ns();
+    let rollback_state = {
+        let registry = state.rollback_registry.read().await;
+        registry.get(&id).cloned()
+    };
+    let Some(rollback_state) = rollback_state else {
+        return Json(ApprovalDecisionResponse {
+            success: false,
+            error: "rollback window is not active".to_string(),
+            remediation_id: String::new(),
+        });
+    };
+    if rollback_state.is_expired(now) {
+        return Json(ApprovalDecisionResponse {
+            success: false,
+            error: "rollback window expired".to_string(),
+            remediation_id: String::new(),
+        });
+    }
+
+    if let Err(e) = execute_proposal_steps(
+        &state,
+        &proposal.device_address,
+        &rollback_state.snapshot_json,
+    )
+    .await
+    {
+        let trust_key = trust_key_from_storage(&proposal.trust_key);
+        {
+            let mut trust = state.trust_store.write().await;
+            trust.record_failure(&trust_key, now);
+            trust.set_state(&trust_key, TrustState::ApproveEach, now);
+        }
+        let _ = audit::append_trust_operation(
+            std::path::Path::new(&state.runtime_dir),
+            now,
+            &proposal.trust_key,
+            "rollback_failed",
+            &id,
+            Some(&format!("{}; error={e}", req.operator_note)),
+        );
+        return Json(ApprovalDecisionResponse {
+            success: false,
+            error: e,
+            remediation_id: rollback_state.remediation_id,
+        });
+    }
+
+    if let Err(e) = state
+        .store
+        .decide_remediation_proposal(
+            id.clone(),
+            "rolled_back".to_string(),
+            req.operator_note.clone(),
+            now,
+        )
+        .await
+    {
+        return Json(ApprovalDecisionResponse {
+            success: false,
+            error: format!("{e:#}"),
+            remediation_id: String::new(),
+        });
+    }
+    state.rollback_registry.write().await.mark_rolled_back(&id);
+    let trust_key = trust_key_from_storage(&proposal.trust_key);
+    {
+        let mut trust = state.trust_store.write().await;
+        trust.record_failure(&trust_key, now);
+        trust.set_state(&trust_key, TrustState::ApproveEach, now);
+    }
+    let _ = audit::append_trust_operation(
+        std::path::Path::new(&state.runtime_dir),
+        now,
+        &proposal.trust_key,
+        "rollback",
+        &id,
+        Some(&req.operator_note),
+    );
+
+    Json(ApprovalDecisionResponse {
+        success: true,
+        error: String::new(),
+        remediation_id: rollback_state.remediation_id,
+    })
+}
+
+async fn trust_list_handler(State(state): State<AppState>) -> Json<ApprovalsListResponse> {
+    let (trust, graduation_hints) = {
+        let store = state.trust_store.read().await;
+        let records = store.list();
+        let trust = records
+            .iter()
+            .map(|(trust_key, record)| TrustEntry {
+                trust_key: trust_key.clone(),
+                record: record.clone(),
+            })
+            .collect();
+        let graduation_hints = records
+            .iter()
+            .filter_map(|(trust_key, record)| {
+                check_graduation(
+                    trust_key,
+                    record,
+                    state
+                        .remediation_config
+                        .graduation
+                        .consecutive_approvals_required,
+                )
+            })
+            .collect();
+        (trust, graduation_hints)
+    };
+    let active_rollbacks = {
+        let registry = state.rollback_registry.read().await;
+        registry
+            .active_windows(now_ns())
+            .into_iter()
+            .cloned()
+            .collect()
+    };
+    Json(ApprovalsListResponse {
+        proposals: Vec::new(),
+        trust,
+        graduation_hints,
+        active_rollbacks,
+    })
+}
+
+#[derive(Deserialize)]
+struct TrustGraduateRequest {
+    trust_key: String,
+    to_state: String,
+    #[serde(default)]
+    operator_note: String,
+}
+
+async fn trust_graduate_handler(
+    State(state): State<AppState>,
+    Json(req): Json<TrustGraduateRequest>,
+) -> Json<ApprovalDecisionResponse> {
+    let now = now_ns();
+    let key = trust_key_from_storage(&req.trust_key);
+    let state_to = TrustState::parse_state(&req.to_state);
+    state
+        .trust_store
+        .write()
+        .await
+        .set_state(&key, state_to, now);
+    let _ = audit::append_trust_operation(
+        std::path::Path::new(&state.runtime_dir),
+        now,
+        &req.trust_key,
+        "graduate",
+        "",
+        Some(&req.operator_note),
+    );
+    Json(ApprovalDecisionResponse {
+        success: true,
+        error: String::new(),
+        remediation_id: String::new(),
+    })
+}
+
+async fn find_proposal(
+    state: &AppState,
+    id: &str,
+) -> Result<Option<RemediationProposalRow>, String> {
+    state
+        .store
+        .read_remediation_proposals(Some("all".to_string()), 500)
+        .await
+        .map_err(|e| format!("{e:#}"))
+        .map(|rows| rows.into_iter().find(|p| p.id == id))
+}
+
+fn trust_key_from_storage(key: &str) -> TrustKey {
+    let mut parts = key.splitn(4, ':');
+    TrustKey::new(
+        parts.next().unwrap_or_default(),
+        parts.next().unwrap_or_default(),
+        parts.next().unwrap_or_default(),
+        parts.next().unwrap_or_default(),
+    )
+}
+
+#[derive(Deserialize)]
+struct ProposalGnmiSet {
+    path: String,
+    value: String,
+}
+
+#[derive(Deserialize)]
+struct ProposalVerifyGraph {
+    expected_graph_state: String,
+    #[serde(default = "default_verify_wait_secs")]
+    wait_seconds: u64,
+}
+
+fn default_verify_wait_secs() -> u64 {
+    30
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ProposalStep {
+    GnmiSet { gnmi_set: ProposalGnmiSet },
+    Sleep { sleep: serde_json::Value },
+    VerifyGraph { verify_graph: ProposalVerifyGraph },
+}
+
+struct ProposalExecutionReport {
+    steps_executed: usize,
+}
+
+async fn execute_proposal_steps(
+    state: &AppState,
+    device_address: &str,
+    steps_json: &str,
+) -> Result<ProposalExecutionReport, String> {
+    let steps: Vec<ProposalStep> = if steps_json.trim().is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_str(steps_json).map_err(|e| format!("invalid proposal steps_json: {e}"))?
+    };
+
+    if steps.is_empty() {
+        return Ok(ProposalExecutionReport { steps_executed: 0 });
+    }
+    if device_address.trim().is_empty() {
+        return Err("proposal is not linked to a device address".to_string());
+    }
+
+    let mut executed = 0usize;
+    for step in steps {
+        match step {
+            ProposalStep::GnmiSet { gnmi_set: op } => {
+                let conn = target_conn_info_for_http(state, device_address).await?;
+                gnmi_set(
+                    &conn.address,
+                    conn.username.as_deref(),
+                    conn.password.as_deref(),
+                    conn.ca_cert_pem.as_deref(),
+                    &conn.tls_domain,
+                    &op.path,
+                    &op.value,
+                )
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+                executed += 1;
+            }
+            ProposalStep::Sleep { sleep } => {
+                let secs = sleep
+                    .as_f64()
+                    .or_else(|| sleep.as_str().and_then(|s| s.parse::<f64>().ok()))
+                    .unwrap_or(0.0)
+                    .clamp(0.0, 300.0);
+                if secs > 0.0 {
+                    tokio::time::sleep(std::time::Duration::from_secs_f64(secs)).await;
+                }
+                executed += 1;
+            }
+            ProposalStep::VerifyGraph { verify_graph } => {
+                verify_graph_state(
+                    state,
+                    &verify_graph.expected_graph_state,
+                    verify_graph.wait_seconds,
+                )
+                .await?;
+                executed += 1;
+            }
+        }
+    }
+
+    Ok(ProposalExecutionReport {
+        steps_executed: executed,
+    })
+}
+
+async fn verify_graph_state(
+    state: &AppState,
+    cypher: &str,
+    wait_seconds: u64,
+) -> Result<(), String> {
+    if cypher.trim().is_empty() {
+        return Ok(());
+    }
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(wait_seconds.clamp(1, 300));
+    loop {
+        let db = state.store.db();
+        let query = cypher.to_string();
+        let verified = tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+            let mut rows = conn.query(&query).map_err(|e| e.to_string())?;
+            let Some(row) = rows.next() else {
+                return Ok::<bool, String>(false);
+            };
+            Ok(row.first().map(value_truthy).unwrap_or(false))
+        })
+        .await
+        .map_err(|e| format!("verification task failed: {e}"))??;
+        if verified {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("graph verification timed out".to_string());
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+}
+
+fn value_truthy(value: &Value) -> bool {
+    match value {
+        Value::Bool(b) => *b,
+        Value::Int64(n) => *n > 0,
+        Value::String(s) => s == "true" || s == "1",
+        _ => false,
+    }
+}
+
+struct HttpTargetConnInfo {
+    address: String,
+    username: Option<String>,
+    password: Option<String>,
+    ca_cert_pem: Option<Vec<u8>>,
+    tls_domain: String,
+}
+
+async fn target_conn_info_for_http(
+    state: &AppState,
+    device_address: &str,
+) -> Result<HttpTargetConnInfo, String> {
+    let target = state
+        .registry
+        .get_device(device_address)
+        .map_err(|e| format!("{e:#}"))?
+        .ok_or_else(|| format!("unknown target '{device_address}'"))?;
+
+    let ca_cert_pem = match &target.ca_cert {
+        Some(path) if !path.is_empty() => Some(
+            tokio::fs::read(path)
+                .await
+                .map_err(|e| format!("could not read CA cert from '{path}': {e}"))?,
+        ),
+        _ => None,
+    };
+
+    let resolved_credentials = resolve_http_target_credentials(&target, &state.credentials)
+        .map_err(|e| format!("{e:#}"))?;
+    let (username, password) = match resolved_credentials {
+        Some(credentials) => (Some(credentials.username), Some(credentials.password)),
+        None => (None, None),
+    };
+
+    Ok(HttpTargetConnInfo {
+        address: target.address,
+        username,
+        password,
+        ca_cert_pem,
+        tls_domain: target.tls_domain.unwrap_or_default(),
+    })
+}
+
+fn resolve_http_target_credentials(
+    target: &TargetConfig,
+    credentials: &CredentialVault,
+) -> anyhow::Result<Option<ResolvedCredential>> {
+    if let Some(alias) = target.credential_alias.as_deref()
+        && !alias.is_empty()
+    {
+        return credentials
+            .resolve(alias, ResolvePurpose::Remediate)
+            .map(Some);
+    }
+
+    Ok(match (&target.username, &target.password) {
+        (Some(username), Some(password)) if !username.is_empty() || !password.is_empty() => {
+            Some(ResolvedCredential {
+                username: username.clone(),
+                password: password.clone(),
+            })
+        }
+        _ => None,
+    })
+}
+
+// ── ServiceNow integration test endpoint (T2-1) ───────────────────────────────
+
+#[derive(Deserialize)]
+struct SnowTestRequest {
+    instance_url: String,
+    credential_alias: String,
+}
+
+#[derive(Serialize)]
+struct SnowTestResponse {
+    success: bool,
+    message: String,
+}
+
+async fn snow_integration_test_handler(
+    State(state): State<AppState>,
+    Json(req): Json<SnowTestRequest>,
+) -> Json<SnowTestResponse> {
+    let instance_url = req.instance_url.trim_end_matches('/').to_string();
+
+    let cred = match state.credentials.resolve(
+        &req.credential_alias,
+        crate::credentials::ResolvePurpose::ServiceNowAdmin,
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(SnowTestResponse {
+                success: false,
+                message: format!("credential resolve failed: {e:#}"),
+            });
+        }
+    };
+
+    let url = format!("{instance_url}/api/now/table/sys_properties?sysparm_limit=1");
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(SnowTestResponse {
+                success: false,
+                message: e.to_string(),
+            });
+        }
+    };
+
+    match client
+        .get(&url)
+        .basic_auth(&cred.username, Some(&cred.password))
+        .send()
+        .await
+    {
+        Err(e) => Json(SnowTestResponse {
+            success: false,
+            message: format!("{e:#}"),
+        }),
+        Ok(resp) if resp.status().is_success() => Json(SnowTestResponse {
+            success: true,
+            message: "ServiceNow connection successful".to_string(),
+        }),
+        Ok(resp) => Json(SnowTestResponse {
+            success: false,
+            message: format!("ServiceNow returned {}", resp.status()),
+        }),
+    }
+}
+
+
+#[derive(serde::Deserialize)]
+pub struct RemoveOverrideReq {
+    pub scope: crate::registry::OverrideScope,
+    pub path: String,
+}
+
+async fn list_overrides(
+    State(state): State<AppState>,
+) -> impl axum::response::IntoResponse {
+    match state.registry.list_overrides() {
+        Ok(overrides) => Json(overrides).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to list overrides: {}", e),
+        )
+            .into_response(),
+    }
+}
+
+async fn add_override(
+    State(state): State<AppState>,
+    Json(mut req): Json<crate::registry::PathOverride>,
+) -> impl axum::response::IntoResponse {
+    let actor = std::env::var("BONSAI_OPERATOR")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or_default();
+    
+    req.created_at_ns = now;
+    req.created_by = actor.clone();
+
+    match state.registry.add_override(req.clone()) {
+        Ok(_) => {
+            
+            Json(req).into_response()
+        },
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to add override: {}", e),
+        )
+            .into_response(),
+    }
+}
+
+async fn remove_override(
+    State(state): State<AppState>,
+    Json(req): Json<RemoveOverrideReq>,
+) -> impl axum::response::IntoResponse {
+    let actor = std::env::var("BONSAI_OPERATOR")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    
+    match state.registry.remove_override(&req.scope, &req.path) {
+        Ok(removed) => {
+            if removed {
+                
+            }
+            Json(serde_json::json!({ "removed": removed })).into_response()
+        },
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to remove override: {}", e),
+        )
+            .into_response(),
+    }
 }

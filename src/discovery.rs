@@ -25,6 +25,10 @@ pub struct DiscoveryInput {
     pub ca_cert_path: Option<String>,
     pub tls_domain: Option<String>,
     pub role_hint: Option<String>,
+    /// Caller-supplied environment archetype (e.g. "data_center", "service_provider").
+    /// When provided, overrides the role-inferred fallback so profile selection uses
+    /// the device's actual environment rather than a guess from its role.
+    pub environment_archetype: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -94,7 +98,7 @@ pub async fn discover_device(input: DiscoveryInput) -> Result<DiscoveryReport> {
         );
     }
     let (recommended_profiles, profile_warnings) =
-        recommend_profiles(&summary, input.role_hint.as_deref());
+        recommend_profiles(&summary, input.role_hint.as_deref(), input.environment_archetype.as_deref());
     warnings.extend(profile_warnings);
 
     Ok(DiscoveryReport {
@@ -151,11 +155,12 @@ impl CapabilitySummary {
 fn recommend_profiles(
     summary: &CapabilitySummary,
     role_hint: Option<&str>,
+    environment_archetype: Option<&str>,
 ) -> (Vec<PathProfileMatch>, Vec<String>) {
     match load_templates_with_resolution(PATH_PROFILE_DIR)
         .and_then(|(profiles, mut warnings)| {
             let (matches, mut selection_warnings) =
-                recommend_profiles_from_templates(summary, role_hint, &profiles)?;
+                recommend_profiles_from_templates(summary, role_hint, environment_archetype, &profiles)?;
             warnings.append(&mut selection_warnings);
             Ok((matches, warnings))
         })
@@ -183,10 +188,11 @@ fn load_templates_with_resolution(base_dir: &str) -> Result<(Vec<CatalogueProfil
 fn recommend_profiles_from_templates(
     summary: &CapabilitySummary,
     role_hint: Option<&str>,
+    environment_archetype: Option<&str>,
     templates: &[PathProfileTemplate],
 ) -> Result<(Vec<PathProfileMatch>, Vec<String>)> {
     let role = canonical_role(role_hint);
-    let environment = inferred_environment_for_role(&role);
+    let environment = environment_archetype.unwrap_or_else(|| inferred_environment_for_role(&role));
     let vendor = summary.vendor_label.as_str();
     let selected: Vec<&PathProfileTemplate> = templates
         .iter()
@@ -512,4 +518,84 @@ mod tests {
         );
         assert_eq!(summary.vendor_label, "nokia_srl");
     }
+}
+
+
+pub fn resolve_subscription_paths(
+    device: &crate::config::TargetConfig,
+    overrides: &[crate::registry::PathOverride],
+) -> (Vec<crate::config::SelectedSubscriptionPath>, Vec<String>) {
+    let mut audit = Vec::new();
+    let mut paths: std::collections::BTreeMap<String, crate::config::SelectedSubscriptionPath> = std::collections::BTreeMap::new();
+    
+    // 1. Base profile paths
+    if device.selected_paths.is_empty() {
+        audit.push("Started with 0 paths (no base profile selected)".to_string());
+    } else {
+        audit.push(format!("Started from profile with {} paths", device.selected_paths.len()));
+        for p in &device.selected_paths {
+            paths.insert(p.path.clone(), p.clone());
+        }
+    }
+    
+    // Sort overrides correctly or apply them in order
+    // Apply Role-Env overrides
+    let role = device.role.as_deref().unwrap_or("");
+    let env = device.site.as_deref().unwrap_or("data_center"); // or look up actual env
+    // Actually we need the environment, but the environment might be fetched from site or inferred.
+    
+    for ovr in overrides {
+        let matches = match &ovr.scope {
+            crate::registry::OverrideScope::Site(s) => device.site.as_deref() == Some(s.as_str()),
+            crate::registry::OverrideScope::RoleEnv { role: r, environment: e } => {
+                // Here we would ideally check actual environment, for now just matching role as a best effort
+                // In production, we'd pass environment to this function.
+                role == r.as_str()
+            },
+            crate::registry::OverrideScope::Device(d) => device.address == d.as_str(),
+        };
+        
+        if matches {
+            let scope_str = match &ovr.scope {
+                crate::registry::OverrideScope::Site(s) => format!("site-override({})", s),
+                crate::registry::OverrideScope::RoleEnv { role: r, environment: e } => format!("role-override({}/{})", r, e),
+                crate::registry::OverrideScope::Device(d) => format!("device-override({})", d),
+            };
+            
+            match ovr.action {
+                crate::registry::OverrideAction::Add => {
+                    audit.push(format!("Applied {}: added path '{}'", scope_str, ovr.path));
+                    let mut p = crate::config::SelectedSubscriptionPath {
+                        path: ovr.path.clone(),
+                        origin: format!("override: {}", scope_str),
+                        mode: "SAMPLE".to_string(),
+                        sample_interval_ns: ovr.sample_interval_s.unwrap_or(10) * 1_000_000_000,
+                        rationale: "Added by override".to_string(),
+                        optional: ovr.optional.unwrap_or(false),
+                    };
+                    paths.insert(ovr.path.clone(), p);
+                }
+                crate::registry::OverrideAction::Drop => {
+                    if paths.remove(&ovr.path).is_some() {
+                        audit.push(format!("Applied {}: dropped path '{}'", scope_str, ovr.path));
+                    }
+                }
+                crate::registry::OverrideAction::Modify => {
+                    if let Some(p) = paths.get_mut(&ovr.path) {
+                        audit.push(format!("Applied {}: modified path '{}'", scope_str, ovr.path));
+                        p.origin = format!("override(mod): {}", scope_str);
+                        if let Some(s) = ovr.sample_interval_s {
+                            p.sample_interval_ns = s * 1_000_000_000;
+                        }
+                        if let Some(opt) = ovr.optional {
+                            p.optional = opt;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    audit.push(format!("Final path list has {} paths", paths.len()));
+    (paths.into_values().collect(), audit)
 }

@@ -55,6 +55,41 @@ graph_path   = "bonsai.db"
 # max_age_hours            = 72      # delete events older than this
 # max_state_change_events  = 50000   # hard cap; 0 = unlimited
 
+# ── ServiceNow integration (T2-1) ─────────────────────────────────────────────
+# Primary dev/test target: your reserved PDI (https://devXXXXXX.service-now.com).
+# Production deployments: use scoped roles (itil + event_creator), NOT admin creds.
+# Credential is stored in the vault under `credential_alias` — NEVER inline here.
+#
+# [integrations.servicenow]
+# enabled           = false
+# instance_url      = "https://devXXXXXX.service-now.com"
+# credential_alias  = "servicenow-pdi"   # set with: bonsai credentials set servicenow-pdi
+# em_push_enabled   = false              # push DetectionEvents to Event Management
+#
+# [integrations.servicenow.event_filter]
+# min_severity       = "warning"   # "critical" | "warning" | "info"
+# min_age_secs       = 60          # only push detections older than N seconds (debounce transients)
+# dedup_window_secs  = 300         # suppress same (device, rule) re-push within N seconds
+
+# ── Human-in-the-loop remediation trust (Sprint 4) ────────────────────────────
+# [remediation]
+# rollback_window_secs = 60
+#
+# [remediation.graduation]
+# consecutive_approvals_required = 10
+#
+# [remediation.defaults]
+# home_lab         = "auto_silent"
+# data_center      = "auto_with_notification"
+# service_provider = "approve_each"
+# campus_wired     = "auto_with_notification"
+# campus_wireless  = "approve_each"
+#
+# Optional per-rule overrides. Unspecified archetypes inherit the global default.
+# [remediation.rule_defaults.bgp_session_down]
+# data_center      = "approve_each"
+# service_provider = "approve_each"
+
 # ── Nokia SR Linux — spine (TLS) ─────────────────────────────────────────────
 [[target]]
 address    = "172.100.102.11:57400"

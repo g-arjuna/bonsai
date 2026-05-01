@@ -9,6 +9,7 @@ import json
 import os
 import time
 import threading
+import dataclasses
 from collections import defaultdict, deque
 from typing import Callable, Optional
 
@@ -27,9 +28,10 @@ class RemediationExecutor:
     writes the Remediation node to the graph, and calls on_remediation callback.
 
     Safety layers (in order):
-      1. BONSAI_DRY_RUN=1 — log only, no Set sent
-      2. auto_remediate=True must be set on the rule (whitelist)
-      3. Circuit breaker — ≥5 remediations for same device in 10 min → halt
+      1. TrustState decides whether to propose or execute.
+      2. BONSAI_DRY_RUN=1 forces proposal-only behavior.
+      3. auto_remediate=True is required before any automatic approval.
+      4. Circuit breaker halts automatic approvals for noisy devices.
     """
 
     def __init__(
@@ -57,22 +59,6 @@ class RemediationExecutor:
         device = detection.features.device_address
         now    = time.time()
 
-        if not detection.auto_remediate:
-            self._write_remediation(detection_id, "log_only", "skipped",
-                                    {"reason": "rule not whitelisted for auto-remediation"}, now)
-            return
-
-        if self._dry_run:
-            self._write_remediation(detection_id, "log_only", "skipped",
-                                    {"reason": "dry-run mode (BONSAI_DRY_RUN=1)"}, now)
-            return
-
-        if self._circuit_breaker_tripped(device, now):
-            self._write_remediation(detection_id, "log_only", "skipped",
-                                    {"reason": f"circuit breaker: >{CIRCUIT_BREAKER_MAX} remediations "
-                                               f"for {device} in last {CIRCUIT_BREAKER_WINDOW_S}s"}, now)
-            return
-
         # Look up the device vendor for playbook selection.
         vendor = self._get_vendor(device)
 
@@ -99,11 +85,63 @@ class RemediationExecutor:
             return
 
         action = playbook.get("name", "unknown_playbook")
-        success, error = self._pb_executor.execute(playbook, detection)
-        status  = "success" if success else "failed"
-        detail  = {} if success else {"error": error}
-        self._record_breaker(device, now)
-        self._write_remediation(detection_id, action, status, detail, now)
+        environment_archetype, site_id = self._trust_context(device)
+        rendered_steps = _render_steps(playbook.get("steps", []), detection.features)
+        verification = _render_verification(playbook.get("verification"), detection.features)
+        if verification:
+            rendered_steps.append({"verify_graph": verification})
+        steps_json = json.dumps(rendered_steps)
+        rollback_steps_json = json.dumps(_render_steps(playbook.get("rollback_steps", []), detection.features))
+
+        try:
+            proposal = self._client.create_remediation_proposal(
+                detection_id=detection_id,
+                playbook_id=action,
+                rule_id=detection.rule_id,
+                environment_archetype=environment_archetype,
+                site_id=site_id,
+                steps_json=steps_json,
+                rollback_steps_json=rollback_steps_json,
+            )
+        except Exception as exc:
+            self._write_remediation(detection_id, action, "failed",
+                                    {"reason": f"failed to create remediation proposal: {exc}"}, now)
+            return
+
+        trust_state = proposal.get("trust_state", "approve_each")
+        proposal_id = proposal.get("proposal_id", "")
+        if trust_state in ("suggest_only", "approve_each") or self._dry_run:
+            reason = f"proposal queued under trust_state={trust_state}"
+            if self._dry_run:
+                reason += " (dry-run forces approval)"
+            self._write_remediation(detection_id, action, "pending_approval",
+                                    {"proposal_id": proposal_id, "reason": reason}, now)
+            return
+
+        if not detection.auto_remediate:
+            self._write_remediation(detection_id, action, "pending_approval",
+                                    {"proposal_id": proposal_id,
+                                     "reason": "rule not whitelisted for automatic approval"}, now)
+            return
+
+        if self._circuit_breaker_tripped(device, now):
+            self._write_remediation(detection_id, action, "pending_approval",
+                                    {"proposal_id": proposal_id,
+                                     "reason": f"circuit breaker: >{CIRCUIT_BREAKER_MAX} remediations "
+                                               f"for {device} in last {CIRCUIT_BREAKER_WINDOW_S}s"}, now)
+            return
+
+        try:
+            result = self._client.approve_remediation_proposal(
+                proposal_id,
+                operator_note=f"auto-approved under trust_state={trust_state}",
+            )
+            if not result.get("success", False):
+                raise RuntimeError(result.get("error") or "automatic proposal approval failed")
+            self._record_breaker(device, now)
+        except Exception as exc:
+            self._write_remediation(detection_id, action, "failed",
+                                    {"proposal_id": proposal_id, "error": str(exc)}, now)
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -116,6 +154,23 @@ class RemediationExecutor:
         except Exception:
             pass
         return ""
+
+    def _trust_context(self, device_address: str) -> tuple[str, str]:
+        escaped = device_address.replace("\\", "\\\\").replace('"', '\\"')
+        try:
+            rows = self._client.query(
+                f'MATCH (d:Device {{address: "{escaped}"}}) '
+                'OPTIONAL MATCH (d)-[:LOCATED_AT]->(s:Site) '
+                'OPTIONAL MATCH (s)-[:BELONGS_TO_ENVIRONMENT]->(env:Environment) '
+                'RETURN s.id, env.archetype LIMIT 1'
+            )
+            if rows:
+                site_id = rows[0][0] or ""
+                archetype = rows[0][1] or ""
+                return archetype, site_id
+        except Exception:
+            pass
+        return "", ""
 
     def _write_remediation(
         self, detection_id: str, action: str, status: str,
@@ -148,3 +203,44 @@ class RemediationExecutor:
     def _record_breaker(self, device: str, now: float) -> None:
         with self._lock:
             self._breaker[device].append(now)
+
+
+def _render_steps(steps: list[dict], features) -> list[dict]:
+    rendered: list[dict] = []
+    feature_dict = dataclasses.asdict(features)
+    for step in steps:
+        if "gnmi_set" in step:
+            op = step["gnmi_set"]
+            rendered.append({
+                "gnmi_set": {
+                    "path": _format_template(op.get("path", ""), feature_dict),
+                    "value": _format_template(op.get("value", ""), feature_dict),
+                }
+            })
+        elif "sleep" in step:
+            rendered.append({"sleep": step["sleep"]})
+    return rendered
+
+
+def _format_template(template: str, values: dict) -> str:
+    try:
+        return template.format(**values)
+    except KeyError:
+        return template
+
+
+def _render_verification(verification: dict | None, features) -> dict | None:
+    if not verification:
+        return None
+    cypher = verification.get("expected_graph_state") or verification.get("cypher")
+    if not cypher:
+        return None
+    values = dataclasses.asdict(features)
+    filled = (cypher
+              .replace("$device_address", json.dumps(values.get("device_address", "")))
+              .replace("$peer_address", json.dumps(values.get("peer_address", "")))
+              .replace("$if_name", json.dumps(values.get("if_name", ""))))
+    return {
+        "expected_graph_state": filled,
+        "wait_seconds": int(verification.get("wait_seconds", 30)),
+    }

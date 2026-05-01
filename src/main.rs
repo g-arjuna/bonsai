@@ -6,23 +6,22 @@ use anyhow::{Context, Result};
 use tracing::{info, warn};
 
 use bonsai::{
-    audit,
-    catalogue,
     api::{
-        BonsaiGraphServer, CoreService, CollectorService,
+        BonsaiGraphServer, CollectorService, CoreService,
         pb::{
             AddDeviceRequest, ListManagedDevicesRequest, ManagedDevice, RemoveDeviceRequest,
             UpdateDeviceRequest, bonsai_graph_client::BonsaiGraphClient,
         },
     },
-    archive, config,
+    archive, audit, catalogue, config,
     config::TargetConfig,
     credentials::{CredentialVault, ResolvePurpose, ResolvedCredential},
     event_bus::InProcessBus,
     graph, ingest,
     registry::{ApiRegistry, DeviceRegistry, RegistryChange},
-    retention, store::BonsaiStore,
-    subscriber::{self, SubscriberHandleMap, stop_subscriber, stop_all_subscribers},
+    retention,
+    store::BonsaiStore,
+    subscriber::{self, SubscriberHandleMap, stop_all_subscribers, stop_subscriber},
     subscription_status::{self, SubscriptionPlan},
     telemetry::TelemetryEvent,
 };
@@ -52,7 +51,10 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    info!(protocol_version = bonsai::api::PROTOCOL_VERSION, "bonsai starting");
+    info!(
+        protocol_version = bonsai::api::PROTOCOL_VERSION,
+        "bonsai starting"
+    );
 
     let config_path = config_path();
     let cfg = config::load(&config_path).await?;
@@ -193,7 +195,10 @@ async fn main() -> Result<()> {
                 Store::Collector(s) => s.upsert_site(site).await,
             }
         }
-        async fn write_subscription_status(&self, status: graph::SubscriptionStatusWrite) -> Result<()> {
+        async fn write_subscription_status(
+            &self,
+            status: graph::SubscriptionStatusWrite,
+        ) -> Result<()> {
             match self {
                 Store::Core(s) => s.write_subscription_status(status).await,
                 Store::Collector(s) => s.write_subscription_status(status).await,
@@ -324,11 +329,13 @@ async fn main() -> Result<()> {
     )?);
 
     let collector_manager = if run_core {
-        Some(std::sync::Arc::new(bonsai::assignment::CollectorManager::new(
-            std::sync::Arc::clone(&registry),
-            std::sync::Arc::clone(&credentials),
-            cfg.assignment.rules.clone(),
-        )))
+        Some(std::sync::Arc::new(
+            bonsai::assignment::CollectorManager::new(
+                std::sync::Arc::clone(&registry),
+                std::sync::Arc::clone(&credentials),
+                cfg.assignment.rules.clone(),
+            ),
+        ))
     } else {
         None
     };
@@ -615,9 +622,14 @@ async fn main() -> Result<()> {
                 catalogue::load_catalogue(std::path::Path::new(&catalogue_dir)),
             ));
             let runtime_dir = "runtime".to_string();
-            let enricher_registry = bonsai::enrichment::new_registry(
+            let enricher_registry =
+                bonsai::enrichment::new_registry(std::path::Path::new(&runtime_dir));
+            let trust_store = bonsai::remediation::trust::new_trust_store(
                 std::path::Path::new(&runtime_dir),
+                cfg.remediation.clone(),
             );
+            let rollback_registry = bonsai::remediation::rollback::new_rollback_registry();
+            let remediation_config = cfg.remediation.clone();
             tokio::spawn(async move {
                 let listener = tokio::net::TcpListener::bind(http_addr)
                     .await
@@ -632,12 +644,33 @@ async fn main() -> Result<()> {
                         catalogue,
                         catalogue_dir,
                         enricher_registry,
+                        trust_store,
+                        rollback_registry,
+                        remediation_config,
                         runtime_dir,
                     ),
                 )
                 .await
                 .expect("HTTP server error");
             });
+        }
+
+        // T2-4: ServiceNow EM push task — start if enabled in [integrations.servicenow]
+        if run_core
+            && cfg.integrations.servicenow.enabled
+            && cfg.integrations.servicenow.em_push_enabled
+        {
+            let snow_cfg = cfg.integrations.servicenow.clone();
+            let creds_for_snow = std::sync::Arc::clone(&credentials);
+            let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+            let db_for_snow = store.db();
+            bonsai::output::servicenow_em::maybe_start(
+                &snow_cfg,
+                db_for_snow,
+                creds_for_snow,
+                std::path::PathBuf::from("runtime"),
+                shutdown_rx,
+            );
         }
 
         if run_core && cfg.retention.enabled {
@@ -803,8 +836,10 @@ impl AuditCliCommand {
                         other => anyhow::bail!("unknown audit export argument '{other}'"),
                     }
                 }
-                let since = since.ok_or_else(|| anyhow::anyhow!("audit export requires --since"))?;
-                let until = until.ok_or_else(|| anyhow::anyhow!("audit export requires --until"))?;
+                let since =
+                    since.ok_or_else(|| anyhow::anyhow!("audit export requires --since"))?;
+                let until =
+                    until.ok_or_else(|| anyhow::anyhow!("audit export requires --until"))?;
                 Ok(Some(Self::Export {
                     since,
                     until,
@@ -1073,28 +1108,32 @@ async fn run_device_cli_local(command: DeviceCliCommand, cfg: config::Config) ->
             );
         }
         DeviceCliCommand::Add(add) => {
-            let device = registry.add_device_with_audit(TargetConfig {
-                address: add.address,
-                enabled: add.enabled,
-                tls_domain: add.tls_domain,
-                ca_cert: add.ca_cert,
-                vendor: add.vendor,
-                credential_alias: add.credential_alias,
-                username_env: add.username_env,
-                password_env: add.password_env,
-                username: None,
-                password: None,
-                hostname: add.hostname,
-                role: add.role,
-                site: add.site,
-                collector_id: None,
-                selected_paths: Vec::new(),
-                created_at_ns: 0,
-                updated_at_ns: 0,
-                created_by: String::new(),
-                updated_by: String::new(),
-                last_operator_action: String::new(),
-            }, "cli", "cli_add_device")?;
+            let device = registry.add_device_with_audit(
+                TargetConfig {
+                    address: add.address,
+                    enabled: add.enabled,
+                    tls_domain: add.tls_domain,
+                    ca_cert: add.ca_cert,
+                    vendor: add.vendor,
+                    credential_alias: add.credential_alias,
+                    username_env: add.username_env,
+                    password_env: add.password_env,
+                    username: None,
+                    password: None,
+                    hostname: add.hostname,
+                    role: add.role,
+                    site: add.site,
+                    collector_id: None,
+                    selected_paths: Vec::new(),
+                    created_at_ns: 0,
+                    updated_at_ns: 0,
+                    created_by: String::new(),
+                    updated_by: String::new(),
+                    last_operator_action: String::new(),
+                },
+                "cli",
+                "cli_add_device",
+            )?;
             println!("added {}", device.address);
         }
         DeviceCliCommand::Remove { address } => match registry.remove_device(&address)? {
@@ -1274,7 +1313,9 @@ fn resolve_target_credentials(
     credentials: &CredentialVault,
 ) -> Result<Option<ResolvedCredential>> {
     if let Some(alias) = target.credential_alias.as_deref() {
-        return credentials.resolve(alias, ResolvePurpose::Subscribe).map(Some);
+        return credentials
+            .resolve(alias, ResolvePurpose::Subscribe)
+            .map(Some);
     }
 
     Ok(

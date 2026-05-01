@@ -17,7 +17,8 @@
     { id: 2, label: 'Environment' },
     { id: 3, label: 'Sites' },
     { id: 4, label: 'Credentials' },
-    { id: 5, label: 'Ready' },
+    { id: 5, label: 'Integrations' },
+    { id: 6, label: 'Ready' },
   ];
 
   let step = $state(1);
@@ -40,6 +41,14 @@
   let credPassword = $state('');
   let credSaving   = $state(false);
   let credCreated  = $state(null);
+
+  // Step 5 — ServiceNow integration (optional)
+  let snowInstanceUrl     = $state('');
+  let snowCredAlias       = $state('servicenow-pdi');
+  let snowUsername        = $state('');
+  let snowPassword        = $state('');
+  let snowSaving          = $state(false);
+  let snowTestResult      = $state(null);  // null | { success, message }
 
   async function createEnvironment() {
     if (!envName.trim()) return;
@@ -112,9 +121,38 @@
     }
   }
 
-  function skipToDevices() {
-    onComplete();
-    navigate('/devices/new');
+  async function testSnowConnection() {
+    if (!snowInstanceUrl.trim() || !snowCredAlias.trim()) return;
+    snowSaving = true;
+    snowTestResult = null;
+    // First, store the credential so the test endpoint can resolve it
+    try {
+      if (snowUsername.trim() && snowPassword) {
+        await fetch('/api/credentials', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            alias: snowCredAlias.trim(),
+            username: snowUsername.trim(),
+            password: snowPassword,
+          }),
+        });
+      }
+      const r = await fetch('/api/integrations/servicenow/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          instance_url: snowInstanceUrl.trim(),
+          credential_alias: snowCredAlias.trim(),
+        }),
+      });
+      const data = await r.json();
+      snowTestResult = { success: data.success, message: data.message };
+    } catch (e) {
+      snowTestResult = { success: false, message: e.message };
+    } finally {
+      snowSaving = false;
+    }
   }
 
   function goToDevices() {
@@ -122,7 +160,21 @@
     navigate('/devices/new');
   }
 
-  function skipSetup() {
+  async function skipSetup() {
+    try {
+      await fetch('/api/environments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Home Lab', archetype: 'home_lab' }),
+      });
+      await fetch('/api/sites', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'default-site', kind: 'other', parent_id: '', lat: 0, lon: 0, metadata_json: '{}' }),
+      });
+    } catch (_) {
+      // non-fatal — baseline state creation is best-effort
+    }
     onComplete();
     navigate('/');
   }
@@ -317,6 +369,73 @@
 
     {:else if step === 5}
       <div class="setup-body">
+        <h2>ServiceNow integration</h2>
+        <p class="muted">
+          Optional — connect bonsai to a ServiceNow PDI or production instance to enrich your
+          graph with CMDB business context and push detection events to Event Management.
+          You can configure this later from the Enrichment and Integrations workspaces.
+        </p>
+
+        <div class="form-stack">
+          <div class="form-row">
+            <label for="setup-snow-url">Instance URL</label>
+            <input
+              id="setup-snow-url"
+              bind:value={snowInstanceUrl}
+              placeholder="https://devXXXXXX.service-now.com"
+              autocomplete="off"
+            />
+          </div>
+          <div class="form-row">
+            <label for="setup-snow-alias">Cred alias</label>
+            <input
+              id="setup-snow-alias"
+              bind:value={snowCredAlias}
+              placeholder="servicenow-pdi"
+              autocomplete="off"
+            />
+          </div>
+          <div class="form-row">
+            <label for="setup-snow-user">Username</label>
+            <input
+              id="setup-snow-user"
+              bind:value={snowUsername}
+              placeholder="admin"
+              autocomplete="off"
+            />
+          </div>
+          <div class="form-row">
+            <label for="setup-snow-pass">Password</label>
+            <input
+              id="setup-snow-pass"
+              type="password"
+              bind:value={snowPassword}
+              placeholder="••••••••"
+              autocomplete="new-password"
+            />
+          </div>
+        </div>
+
+        {#if snowTestResult}
+          <div class="notice {snowTestResult.success ? 'ok' : 'error'}" style="margin-bottom:16px;">
+            {snowTestResult.message}
+          </div>
+        {/if}
+
+        <div class="btn-row">
+          <button
+            class="primary"
+            onclick={testSnowConnection}
+            disabled={snowSaving || !snowInstanceUrl.trim() || !snowCredAlias.trim()}
+          >
+            {snowSaving ? 'Testing…' : 'Save & test connection'}
+          </button>
+          <button class="ghost" onclick={() => step = 6}>Skip this step</button>
+        </div>
+      </div>
+
+    {:else if step === 6}
+      <div class="setup-body">
         <h2>You're ready</h2>
         {#if credCreated}
           <p class="muted">
@@ -332,6 +451,7 @@
           {#if envCreated}<li>Environment: <strong>{envCreated.name}</strong></li>{/if}
           {#if siteCreated}<li>Site: <strong>{siteCreated.name}</strong></li>{/if}
           {#if credCreated}<li>Credential alias: <strong>{credCreated.alias}</strong></li>{/if}
+          {#if snowTestResult?.success}<li>ServiceNow: <strong>{snowInstanceUrl}</strong></li>{/if}
         </ul>
 
         <div class="btn-row">

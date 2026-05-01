@@ -9,6 +9,10 @@
 //!   - Are environment-aware (can declare which archetypes they apply to)
 //!   - Are idempotent — re-running is always safe
 
+pub mod factory;
+pub mod netbox;
+pub mod servicenow;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -127,7 +131,7 @@ pub trait GraphEnricher: Send + Sync {
     /// Credentials accessed only through `creds` vault with purpose = Enrich.
     async fn enrich(
         &self,
-        graph: &crate::graph::GraphStore,
+        store: &dyn crate::store::BonsaiStore,
         creds: &crate::credentials::CredentialVault,
         audit: &EnricherAuditLog,
     ) -> Result<EnrichmentReport>;
@@ -183,6 +187,7 @@ pub struct EnricherRegistry {
     configs: Vec<EnricherConfig>,
     states: std::collections::HashMap<String, EnricherRunState>,
     configs_path: PathBuf,
+    audit_root: PathBuf,
 }
 
 impl EnricherRegistry {
@@ -198,6 +203,7 @@ impl EnricherRegistry {
             configs,
             states: std::collections::HashMap::new(),
             configs_path,
+            audit_root: runtime_dir.to_path_buf(),
         }
     }
 
@@ -252,6 +258,17 @@ impl EnricherRegistry {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as i64)
             .unwrap_or(0);
+        let outcome = if report.error.is_some() { "error" } else { "success" };
+        if let Err(e) = crate::audit::append_enrichment_run(
+            &self.audit_root,
+            ts,
+            name,
+            outcome,
+            report.nodes_touched,
+            report.error.as_deref(),
+        ) {
+            warn!(enricher = name, "failed to write enrichment run audit entry: {e}");
+        }
         let state = self.states.entry(name.to_string()).or_default();
         state.last_run_at_ns = Some(ts);
         state.last_run_duration_ms = Some(report.duration_ms);
@@ -289,7 +306,7 @@ impl GraphEnricher for StubEnricher {
 
     async fn enrich(
         &self,
-        _graph: &crate::graph::GraphStore,
+        _store: &dyn crate::store::BonsaiStore,
         _creds: &crate::credentials::CredentialVault,
         audit: &EnricherAuditLog,
     ) -> Result<EnrichmentReport> {

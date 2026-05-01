@@ -15,8 +15,56 @@
   let loading     = $state(true);
   let selected    = $state(null);
   let filter      = $state('');
+  let activeTab   = $state('profiles');
+  let overrides   = $state([]);
+  let newOverride = $state({ type: 'site', site: '', role: '', environment: 'data_center', path: '', action: 'add', sample_interval_s: 10, optional: false });
 
   onMount(loadProfiles);
+
+  async function loadOverrides() {
+    try {
+      const r = await fetch('/api/overrides');
+      if (r.ok) overrides = await r.json();
+    } catch (e) {}
+  }
+  onMount(loadOverrides);
+
+  async function createOverride() {
+    let scope = {};
+    if (newOverride.type === 'site') scope = { site: newOverride.site };
+    else if (newOverride.type === 'role_env') scope = { role_env: { role: newOverride.role, environment: newOverride.environment } };
+    else scope = { device: newOverride.device };
+
+    const payload = {
+      scope,
+      path: newOverride.path,
+      action: newOverride.action,
+      sample_interval_s: newOverride.sample_interval_s || null,
+      optional: newOverride.optional ? true : null
+    };
+
+    const r = await fetch('/api/overrides', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (r.ok) {
+      await loadOverrides();
+      newOverride.path = '';
+    } else {
+      alert(await r.text());
+    }
+  }
+
+  async function removeOverride(o) {
+    const r = await fetch('/api/overrides/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope: o.scope, path: o.path })
+    });
+    if (r.ok) await loadOverrides();
+  }
+
 
   async function loadProfiles() {
     loading = true;
@@ -62,6 +110,13 @@
     </div>
   {/if}
 
+  
+  <div class="tabs">
+    <button class="tab" class:active={activeTab === 'profiles'} onclick={() => activeTab = 'profiles'}>Catalogue Profiles</button>
+    <button class="tab" class:active={activeTab === 'overrides'} onclick={() => activeTab = 'overrides'}>Path Overrides</button>
+  </div>
+
+  {#if activeTab === "profiles"}
   <div class="split">
     <!-- Left: profile list -->
     <div class="list-col">
@@ -193,9 +248,102 @@
       {/if}
     </div>
   </div>
+  {/if}
+
+  {#if activeTab === "overrides"}
+    <div class="overrides-view">
+      <div class="list-col">
+        <div class="section-header">Existing Overrides</div>
+        {#if overrides.length === 0}
+          <div class="empty-state">No path overrides configured.</div>
+        {:else}
+          <ul class="profile-list">
+            {#each overrides as o}
+              <li class="profile-row" style="display:flex; justify-content:space-between;">
+                <div>
+                  <div class="profile-name">{o.path} <span class="badge" style="background:#444;color:#eee;">{o.action}</span></div>
+                  <div class="profile-meta muted">
+                    Scope: {o.scope.site ? `Site(${o.scope.site})` : o.scope.role_env ? `Role(${o.scope.role_env.role}) Env(${o.scope.role_env.environment})` : `Device(${o.scope.device})`}
+                    {#if o.sample_interval_s} | {o.sample_interval_s}s{/if}
+                  </div>
+                </div>
+                <button onclick={() => removeOverride(o)} style="background:transparent; border:1px solid #555; border-radius:4px; color:#fff; cursor:pointer;">Remove</button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+      <div class="detail-col">
+        <div class="detail-card">
+          <h3>Create Override</h3>
+          <div class="form-group">
+            <label>Scope Type</label>
+            <select bind:value={newOverride.type} class="search-input">
+              <option value="site">Site</option>
+              <option value="role_env">Role + Environment</option>
+              <option value="device">Device</option>
+            </select>
+          </div>
+          {#if newOverride.type === "site"}
+            <div class="form-group">
+              <label>Site ID</label>
+              <input bind:value={newOverride.site} class="search-input" placeholder="e.g. lab" />
+            </div>
+          {:else if newOverride.type === "role_env"}
+            <div class="form-group">
+              <label>Environment</label>
+              <select bind:value={newOverride.environment} class="search-input">
+                <option value="data_center">Data Center</option>
+                <option value="campus_wired">Campus Wired</option>
+                <option value="campus_wireless">Campus Wireless</option>
+                <option value="service_provider">Service Provider</option>
+                <option value="home_lab">Home Lab</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Role</label>
+              <input bind:value={newOverride.role} class="search-input" placeholder="e.g. leaf" />
+            </div>
+          {:else}
+            <div class="form-group">
+              <label>Device Address</label>
+              <input bind:value={newOverride.device} class="search-input" placeholder="e.g. 10.0.0.1:57400" />
+            </div>
+          {/if}
+          <div class="form-group">
+            <label>Action</label>
+            <select bind:value={newOverride.action} class="search-input">
+              <option value="add">Add Path</option>
+              <option value="drop">Drop Path</option>
+              <option value="modify">Modify Path</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Path</label>
+            <input bind:value={newOverride.path} class="search-input" placeholder="/interfaces/interface[name=*]/state/counters" />
+          </div>
+          <div class="form-group">
+            <label>Sample Interval (s)</label>
+            <input type="number" bind:value={newOverride.sample_interval_s} class="search-input" />
+          </div>
+          <button class="primary-btn" style="margin-top:10px" onclick={createOverride}>Create</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
+
+  .tabs { display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+  .tab { background: transparent; border: none; color: var(--fg-muted, #888); font-size: 16px; cursor: pointer; padding: 4px 8px; border-radius: 4px; }
+  .tab:hover { background: rgba(255,255,255,0.05); }
+  .tab.active { color: var(--fg); font-weight: 600; background: rgba(255,255,255,0.1); }
+  .overrides-view { display: grid; grid-template-columns: 1fr 320px; gap: 20px; }
+  .form-group { margin-bottom: 12px; }
+  .form-group label { display: block; font-size: 12px; color: var(--fg-muted); margin-bottom: 4px; }
+  .primary-btn { background: var(--accent, #58a6ff); color: #000; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; }
+
   .workspace { padding: 24px; max-width: 1100px; }
   .workspace-header { margin-bottom: 20px; }
   .workspace-header h1 { margin: 0 0 6px; font-size: 22px; font-weight: 600; }

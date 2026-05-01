@@ -376,6 +376,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             ca_cert_path: option_string(request.ca_cert_path),
             tls_domain: option_string(request.tls_domain),
             role_hint: option_string(request.role_hint),
+            environment_archetype: None,
         };
 
         let report = discovery::discover_device(input)

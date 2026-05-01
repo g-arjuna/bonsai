@@ -15,6 +15,7 @@
   import Setup from './routes/Setup.svelte';
   import Profiles from './routes/Profiles.svelte';
   import Enrichment from './routes/Enrichment.svelte';
+  import Approvals from './routes/Approvals.svelte';
 
   const NAV = [
     { href: '/',              label: 'Live',         icon: '◉' },
@@ -24,6 +25,7 @@
     { href: '/environments',  label: 'Environments', icon: '⬡' },
     { href: '/profiles',      label: 'Profiles',     icon: '📋' },
     { href: '/enrichment',    label: 'Enrichment',   icon: '⟳' },
+    { href: '/approvals',     label: 'Approvals',    icon: '✓' },
     { href: '/sites',         label: 'Sites',        icon: '◎' },
     { href: '/credentials',   label: 'Credentials',  icon: '⚿' },
     { href: '/operations',    label: 'Operations',   icon: '♡' },
@@ -111,6 +113,8 @@
       <Operations />
     {:else if path() === '/enrichment'}
       <Enrichment />
+    {:else if path() === '/approvals'}
+      <Approvals />
     {:else}
       <div class="empty">Page not found.</div>
     {/if}
