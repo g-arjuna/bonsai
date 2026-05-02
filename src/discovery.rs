@@ -541,13 +541,13 @@ pub fn resolve_subscription_paths(
     // Sort overrides correctly or apply them in order
     // Apply Role-Env overrides
     let role = device.role.as_deref().unwrap_or("");
-    let env = device.site.as_deref().unwrap_or("data_center"); // or look up actual env
+    let _env = device.site.as_deref().unwrap_or("data_center"); // or look up actual env
     // Actually we need the environment, but the environment might be fetched from site or inferred.
     
     for ovr in overrides {
         let matches = match &ovr.scope {
             crate::registry::OverrideScope::Site(s) => device.site.as_deref() == Some(s.as_str()),
-            crate::registry::OverrideScope::RoleEnv { role: r, environment: e } => {
+            crate::registry::OverrideScope::RoleEnv { role: r, environment: _e } => {
                 // Here we would ideally check actual environment, for now just matching role as a best effort
                 // In production, we'd pass environment to this function.
                 role == r.as_str()
@@ -565,7 +565,7 @@ pub fn resolve_subscription_paths(
             match ovr.action {
                 crate::registry::OverrideAction::Add => {
                     audit.push(format!("Applied {}: added path '{}'", scope_str, ovr.path));
-                    let mut p = crate::config::SelectedSubscriptionPath {
+                    let p = crate::config::SelectedSubscriptionPath {
                         path: ovr.path.clone(),
                         origin: format!("override: {}", scope_str),
                         mode: "SAMPLE".to_string(),

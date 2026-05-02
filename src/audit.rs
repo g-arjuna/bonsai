@@ -135,6 +135,46 @@ pub fn append_trust_operation(
     Ok(())
 }
 
+/// Append an output-adapter push event to the audit log.
+pub fn append_adapter_push(
+    root: &Path,
+    timestamp_ns: i64,
+    adapter_name: &str,
+    outcome: &str,
+    events_pushed: usize,
+    bytes_sent: u64,
+    error: Option<&str>,
+) -> Result<()> {
+    let dir = audit_dir(root);
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create audit directory '{}'", dir.display()))?;
+    let file_path = dir.join(format!("{FILE_PREFIX}{}{FILE_SUFFIX}", epoch_day(timestamp_ns)));
+
+    let mut event = json!({
+        "timestamp_ns": timestamp_ns,
+        "event": "adapter_push",
+        "adapter": adapter_name,
+        "outcome": outcome,
+        "events_pushed": events_pushed,
+        "bytes_sent": bytes_sent,
+    });
+    if let Some(error) = error {
+        event["error"] = serde_json::Value::String(error.to_string());
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file_path)
+        .with_context(|| format!("failed to open audit log '{}'", file_path.display()))?;
+    writeln!(file, "{event}").with_context(|| {
+        format!("failed to append adapter push audit event to '{}'", file_path.display())
+    })?;
+
+    enforce_retention(root, RETENTION_DAYS_DEFAULT)?;
+    Ok(())
+}
+
 pub fn enforce_retention(root: &Path, retention_days: i64) -> Result<usize> {
     let dir = audit_dir(root);
     if !dir.exists() {

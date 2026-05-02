@@ -1,13 +1,30 @@
 //! Output adapters — bus subscribers that push data to external systems.
 //!
-//! Each adapter is a background task that:
-//!   - Reads from the bonsai graph or broadcast channel (read-only)
-//!   - Transforms data to vendor format
-//!   - Pushes via configured transport (HTTP, gRPC, etc.)
-//!   - Credentials via vault, audit-logged, environment-scoped
+//! Each adapter implements `OutputAdapter` and runs as an independent background
+//! task. Adapters are:
+//!   - **Read-only on the bus** — they subscribe but never publish.
+//!   - **Credential-safe** — credentials resolved via vault, audit-logged.
+//!   - **Environment-scoped** — an adapter can limit itself to specific archetypes.
+//!   - **Failure-isolated** — one adapter failing does not affect others or the bus.
 //!
-//! This module currently holds one-off adapters. The full `OutputAdapter` trait
-//! (T6-1) will be layered on top when Sprint 7 lands; these implementations will
-//! be refactored to implement it at that point.
+//! Adapters that consume raw telemetry counters run collector-side.
+//! Adapters that consume detections and remediations run core-side.
+//!
+//! # Architecture
+//!
+//! ```text
+//! InProcessBus ──broadcast──► PrometheusRemoteWriteAdapter (collector-side)
+//!              └──broadcast──► SplunkHecAdapter            (core-side, Sprint 8)
+//!              └──broadcast──► ElasticAdapter              (core-side, Sprint 8)
+//!              └──broadcast──► ServiceNowEmAdapter         (core-side, refactored Sprint 9)
+//! ```
 
+pub mod prometheus;
 pub mod servicenow_em;
+pub mod traits;
+
+pub use traits::{
+    new_adapter_registry, OutputAdapter, OutputAdapterAuditLog, OutputAdapterConfig,
+    OutputAdapterRegistry, OutputAdapterRunState, OutputReport, OutputTopic,
+    SharedAdapterRegistry, StubAdapter,
+};

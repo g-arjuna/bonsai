@@ -33,6 +33,7 @@ use tower_http::{cors::CorsLayer, services::ServeDir};
 use crate::assignment::{CollectorManager, CollectorStatus};
 use crate::catalogue::CatalogueState;
 use crate::enrichment::{EnricherConfig, SharedEnricherRegistry};
+use crate::output::traits::{OutputAdapter, OutputAdapterConfig, OutputAdapterRunState, SharedAdapterRegistry};
 use crate::gnmi_set::gnmi_set;
 use crate::graph::{
     DetectionRow, EnvironmentRecord, GraphStore, REMEDIATION_TRUST_CUTOFF_ISO,
@@ -506,6 +507,7 @@ pub struct AppState {
     pub catalogue: Arc<RwLock<CatalogueState>>,
     pub catalogue_dir: String,
     pub enricher_registry: SharedEnricherRegistry,
+    pub adapter_registry: SharedAdapterRegistry,
     pub trust_store: SharedTrustStore,
     pub rollback_registry: SharedRollbackRegistry,
     pub remediation_config: RemediationConfig,
@@ -523,6 +525,7 @@ pub fn router(
     catalogue: Arc<RwLock<CatalogueState>>,
     catalogue_dir: String,
     enricher_registry: SharedEnricherRegistry,
+    adapter_registry: SharedAdapterRegistry,
     trust_store: SharedTrustStore,
     rollback_registry: SharedRollbackRegistry,
     remediation_config: RemediationConfig,
@@ -536,6 +539,7 @@ pub fn router(
         catalogue,
         catalogue_dir,
         enricher_registry,
+        adapter_registry,
         trust_store,
         rollback_registry,
         remediation_config,
@@ -602,6 +606,13 @@ pub fn router(
         .route("/api/enrichment/test", post(enrichment_test_handler))
         .route("/api/enrichment/run", post(enrichment_run_handler))
         .route("/api/enrichment/audit", get(enrichment_audit_handler))
+        .route(
+            "/api/adapters",
+            get(adapter_list_handler).post(adapter_upsert_handler),
+        )
+        .route("/api/adapters/remove", post(adapter_remove_handler))
+        .route("/api/adapters/test", post(adapter_test_handler))
+        .route("/api/adapters/audit", get(adapter_audit_handler))
         .route(
             "/api/approvals",
             get(approvals_list_handler).post(approvals_create_handler),
@@ -4169,16 +4180,8 @@ async fn remove_override(
     State(state): State<AppState>,
     Json(req): Json<RemoveOverrideReq>,
 ) -> impl axum::response::IntoResponse {
-    let actor = std::env::var("BONSAI_OPERATOR")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "unknown".to_string());
-    
     match state.registry.remove_override(&req.scope, &req.path) {
         Ok(removed) => {
-            if removed {
-                
-            }
             Json(serde_json::json!({ "removed": removed })).into_response()
         },
         Err(e) => (
@@ -4187,4 +4190,172 @@ async fn remove_override(
         )
             .into_response(),
     }
+}
+
+// ── Output adapter management API (T6-6) ─────────────────────────────────────
+
+#[derive(Serialize)]
+struct AdapterEntry {
+    config: OutputAdapterConfig,
+    state: OutputAdapterRunState,
+}
+
+#[derive(Serialize)]
+struct AdapterListResponse {
+    adapters: Vec<AdapterEntry>,
+}
+
+async fn adapter_list_handler(
+    State(state): State<AppState>,
+) -> Json<AdapterListResponse> {
+    let reg = state.adapter_registry.read().await;
+    let adapters = reg
+        .list()
+        .into_iter()
+        .map(|(config, st)| AdapterEntry { config, state: st })
+        .collect();
+    Json(AdapterListResponse { adapters })
+}
+
+#[derive(Deserialize)]
+struct AdapterUpsertRequest {
+    config: OutputAdapterConfig,
+}
+
+#[derive(Serialize)]
+struct AdapterMutationResponse {
+    success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+async fn adapter_upsert_handler(
+    State(state): State<AppState>,
+    Json(req): Json<AdapterUpsertRequest>,
+) -> Json<AdapterMutationResponse> {
+    state.adapter_registry.write().await.upsert(req.config);
+    Json(AdapterMutationResponse { success: true, error: None })
+}
+
+#[derive(Deserialize)]
+struct AdapterNameRequest {
+    name: String,
+}
+
+async fn adapter_remove_handler(
+    State(state): State<AppState>,
+    Json(req): Json<AdapterNameRequest>,
+) -> Json<AdapterMutationResponse> {
+    let removed = state.adapter_registry.write().await.remove(&req.name);
+    if removed {
+        Json(AdapterMutationResponse { success: true, error: None })
+    } else {
+        Json(AdapterMutationResponse {
+            success: false,
+            error: Some(format!("adapter '{}' not found", req.name)),
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct AdapterTestResponse {
+    success: bool,
+    message: String,
+}
+
+async fn adapter_test_handler(
+    State(state): State<AppState>,
+    Json(req): Json<AdapterNameRequest>,
+) -> Json<AdapterTestResponse> {
+    let config = {
+        let reg = state.adapter_registry.read().await;
+        reg.get(&req.name).cloned()
+    };
+    let Some(config) = config else {
+        return Json(AdapterTestResponse {
+            success: false,
+            message: format!("adapter '{}' not found", req.name),
+        });
+    };
+
+    let audit = crate::output::traits::OutputAdapterAuditLog::new(
+        std::path::Path::new(&state.runtime_dir),
+        &config.name,
+    );
+
+    let result = match config.adapter_type.as_str() {
+        "prometheus_remote_write" => {
+            match crate::output::prometheus::build(&config) {
+                Some(adapter) => {
+                    adapter
+                        .test_connection(Arc::clone(&state.credentials), &audit)
+                        .await
+                }
+                None => Err(anyhow::anyhow!("failed to build prometheus adapter")),
+            }
+        }
+        other => Err(anyhow::anyhow!("unknown adapter type '{other}'")),
+    };
+
+    match result {
+        Ok(()) => Json(AdapterTestResponse {
+            success: true,
+            message: "connection ok".to_string(),
+        }),
+        Err(e) => Json(AdapterTestResponse {
+            success: false,
+            message: format!("{e:#}"),
+        }),
+    }
+}
+
+#[derive(Serialize)]
+struct AdapterAuditResponse {
+    entries: Vec<serde_json::Value>,
+}
+
+async fn adapter_audit_handler(
+    State(state): State<AppState>,
+) -> Json<AdapterAuditResponse> {
+    let audit_dir = std::path::Path::new(&state.runtime_dir).join("audit");
+    let entries = read_recent_adapter_audit(&audit_dir, 100);
+    Json(AdapterAuditResponse { entries })
+}
+
+fn read_recent_adapter_audit(
+    audit_dir: &std::path::Path,
+    limit: usize,
+) -> Vec<serde_json::Value> {
+    if !audit_dir.exists() {
+        return vec![];
+    }
+    let mut files: Vec<_> = std::fs::read_dir(audit_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e == "jsonl")
+        })
+        .collect();
+    files.sort();
+
+    let mut entries = Vec::new();
+    for file in files.iter().rev() {
+        if let Ok(content) = std::fs::read_to_string(file) {
+            for line in content.lines().rev() {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(line)
+                    && val.get("event").and_then(|v| v.as_str()) == Some("adapter_push")
+                {
+                    entries.push(val);
+                    if entries.len() >= limit {
+                        return entries;
+                    }
+                }
+            }
+        }
+    }
+    entries
 }

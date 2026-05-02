@@ -67,3 +67,7 @@ runtime/
 # Claude Code session memory (local tooling state, not project content)
 .claude/
 ui/.vscode/
+
+# YANG discovery — generated artefacts (large, gitignored by discipline)
+.yang-cache/
+discovered_paths/

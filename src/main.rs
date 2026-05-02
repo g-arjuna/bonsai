@@ -14,6 +14,7 @@ use bonsai::{
         },
     },
     archive, audit, catalogue, config,
+    output::OutputAdapter,
     config::TargetConfig,
     credentials::{CredentialVault, ResolvePurpose, ResolvedCredential},
     event_bus::InProcessBus,
@@ -42,6 +43,9 @@ async fn main() -> Result<()> {
     }
     if let Some(command) = DeviceCliCommand::parse()? {
         return run_device_cli(command).await;
+    }
+    if let Some(command) = CatalogueCliCommand::parse()? {
+        return run_catalogue_cli(command).await;
     }
 
     tracing_subscriber::fmt()
@@ -624,6 +628,9 @@ async fn main() -> Result<()> {
             let runtime_dir = "runtime".to_string();
             let enricher_registry =
                 bonsai::enrichment::new_registry(std::path::Path::new(&runtime_dir));
+            let adapter_registry =
+                bonsai::output::traits::new_adapter_registry(std::path::Path::new(&runtime_dir));
+            let adapter_registry_for_startup = std::sync::Arc::clone(&adapter_registry);
             let trust_store = bonsai::remediation::trust::new_trust_store(
                 std::path::Path::new(&runtime_dir),
                 cfg.remediation.clone(),
@@ -644,6 +651,7 @@ async fn main() -> Result<()> {
                         catalogue,
                         catalogue_dir,
                         enricher_registry,
+                        adapter_registry,
                         trust_store,
                         rollback_registry,
                         remediation_config,
@@ -653,6 +661,40 @@ async fn main() -> Result<()> {
                 .await
                 .expect("HTTP server error");
             });
+
+            // Start enabled output adapters as background tasks.
+            {
+                let configs: Vec<_> = {
+                    let reg = adapter_registry_for_startup.read().await;
+                    reg.list()
+                        .into_iter()
+                        .filter(|(c, _)| c.enabled)
+                        .map(|(c, _)| c)
+                        .collect()
+                };
+                for config in configs {
+                    if let Some(adapter) =
+                        bonsai::output::prometheus::build(&config)
+                    {
+                        let bus_for_adapter = std::sync::Arc::clone(&bus);
+                        let creds_for_adapter = std::sync::Arc::clone(&credentials);
+                        let audit = bonsai::output::traits::OutputAdapterAuditLog::new(
+                            std::path::Path::new("runtime"),
+                            &config.name,
+                        );
+                        let adapter_shutdown = shutdown_rx.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = adapter
+                                .run(bus_for_adapter, creds_for_adapter, audit, adapter_shutdown)
+                                .await
+                            {
+                                warn!(adapter = %adapter.name(), error = %e, "output adapter exited with error");
+                            }
+                        });
+                        info!(adapter = %config.name, "output adapter started");
+                    }
+                }
+            }
         }
 
         // T2-4: ServiceNow EM push task — start if enabled in [integrations.servicenow]
@@ -760,6 +802,13 @@ enum AuditCliCommand {
     },
 }
 
+enum CatalogueCliCommand {
+    Help,
+    List,
+    Install { url: String, name: Option<String> },
+    Uninstall { name: String },
+}
+
 struct DeviceCliAdd {
     address: String,
     hostname: Option<String>,
@@ -848,6 +897,50 @@ impl AuditCliCommand {
             }
             "help" | "--help" | "-h" => Ok(Some(Self::Help)),
             other => anyhow::bail!("unknown audit command '{other}'"),
+        }
+    }
+}
+
+impl CatalogueCliCommand {
+    fn parse() -> Result<Option<Self>> {
+        let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+        if args.first().map(String::as_str) != Some("catalogue") {
+            return Ok(None);
+        }
+        args.remove(0);
+        let Some(action) = args.first().cloned() else {
+            return Ok(Some(Self::Help));
+        };
+        args.remove(0);
+
+        match action.as_str() {
+            "list" => Ok(Some(Self::List)),
+            "install" => {
+                let mut url = None;
+                let mut name = None;
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--name" => name = Some(require_flag_value("--name", iter.next())?),
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other if url.is_none() && !other.starts_with("--") => {
+                            url = Some(other.to_string());
+                        }
+                        other => anyhow::bail!("unknown catalogue install argument '{other}'"),
+                    }
+                }
+                let url = url.ok_or_else(|| anyhow::anyhow!("catalogue install requires a URL"))?;
+                Ok(Some(Self::Install { url, name }))
+            }
+            "uninstall" | "remove" => {
+                let name = args
+                    .into_iter()
+                    .find(|a| !a.starts_with("--"))
+                    .ok_or_else(|| anyhow::anyhow!("catalogue uninstall requires a plugin name"))?;
+                Ok(Some(Self::Uninstall { name }))
+            }
+            "help" | "--help" | "-h" => Ok(Some(Self::Help)),
+            other => anyhow::bail!("unknown catalogue command '{other}'"),
         }
     }
 }
@@ -1239,6 +1332,179 @@ async fn run_audit_cli(command: AuditCliCommand) -> Result<()> {
 fn print_audit_cli_usage() {
     println!(
         "usage:\n  bonsai audit export --since <RFC3339> --until <RFC3339> [--output path.tar]"
+    );
+}
+
+fn catalogue_plugins_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("config/path_profiles/plugins")
+}
+
+async fn run_catalogue_cli(command: CatalogueCliCommand) -> Result<()> {
+    match command {
+        CatalogueCliCommand::Help => {
+            print_catalogue_cli_usage();
+            Ok(())
+        }
+        CatalogueCliCommand::List => {
+            let catalogue_dir = "config/path_profiles";
+            let state = catalogue::load_catalogue(std::path::Path::new(catalogue_dir));
+
+            if !state.load_errors.is_empty() {
+                for e in &state.load_errors {
+                    eprintln!("warning: {e}");
+                }
+            }
+
+            println!("Built-in profiles ({}):", state.profiles.len());
+            for p in &state.profiles {
+                let env = if p.environment.is_empty() {
+                    "all".to_string()
+                } else {
+                    p.environment.join(", ")
+                };
+                let roles = if p.roles.is_empty() {
+                    "all".to_string()
+                } else {
+                    p.roles.join(", ")
+                };
+                println!(
+                    "  {:<30} env={:<20} roles={}",
+                    p.name, env, roles
+                );
+            }
+
+            if state.plugins.is_empty() {
+                println!("\nNo plugins installed.");
+            } else {
+                println!("\nInstalled plugins ({}):", state.plugins.len());
+                for plugin in &state.plugins {
+                    let m = &plugin.manifest;
+                    println!(
+                        "  {:<24} v{:<10} by {}",
+                        m.name, m.version, m.author
+                    );
+                    for p in &plugin.profiles {
+                        println!("    profile: {}", p.name);
+                    }
+                    for conflict in &plugin.conflicts {
+                        println!("    conflict: {conflict}");
+                    }
+                }
+            }
+            Ok(())
+        }
+        CatalogueCliCommand::Install { url, name } => {
+            // Derive plugin name from --name flag or URL basename
+            let plugin_name = name.unwrap_or_else(|| {
+                url.trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("plugin")
+                    .trim_end_matches(".git")
+                    .to_string()
+            });
+
+            if plugin_name.is_empty() || plugin_name.contains(['/', '\\', '.']) {
+                anyhow::bail!(
+                    "plugin name '{plugin_name}' is invalid. Use --name to override."
+                );
+            }
+
+            let plugins_dir = catalogue_plugins_dir();
+            let dest = plugins_dir.join(&plugin_name);
+
+            if dest.exists() {
+                anyhow::bail!(
+                    "plugin directory '{}' already exists. Uninstall first with: bonsai catalogue uninstall {plugin_name}",
+                    dest.display()
+                );
+            }
+
+            std::fs::create_dir_all(&plugins_dir)
+                .with_context(|| format!("cannot create plugins dir '{}'", plugins_dir.display()))?;
+
+            println!("cloning {url} → {}", dest.display());
+            let status = std::process::Command::new("git")
+                .args(["clone", "--depth=1", "--quiet", &url, &dest.to_string_lossy()])
+                .status()
+                .with_context(|| "git not found — install git and retry")?;
+
+            if !status.success() {
+                anyhow::bail!("git clone failed (exit code {:?})", status.code());
+            }
+
+            let manifest_path = dest.join("MANIFEST.yaml");
+            if !manifest_path.exists() {
+                // Clean up
+                let _ = std::fs::remove_dir_all(&dest);
+                anyhow::bail!(
+                    "no MANIFEST.yaml found in the cloned repository. \
+                     Bonsai plugins must have a MANIFEST.yaml at the repo root."
+                );
+            }
+
+            let manifest_bytes = std::fs::read(&manifest_path)
+                .with_context(|| "cannot read MANIFEST.yaml")?;
+            let manifest: catalogue::PluginManifest = serde_yaml::from_slice(&manifest_bytes)
+                .with_context(|| "MANIFEST.yaml is not valid YAML or missing required fields")?;
+
+            // SHA256 fingerprint of the manifest for operator audit records
+            use sha2::Digest;
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(&manifest_bytes);
+            let fingerprint = hex::encode(hasher.finalize());
+
+            println!("installed plugin: {}", manifest.name);
+            println!("  version : {}", manifest.version);
+            if !manifest.author.is_empty() {
+                println!("  author  : {}", manifest.author);
+            }
+            println!("  profiles: {}", manifest.profiles.len());
+            for p in &manifest.profiles {
+                println!("    {p}");
+            }
+            println!("  manifest SHA256: {fingerprint}");
+            println!(
+                "\nPlugin will be active on next bonsai start (or server reload).\n\
+                 To list installed plugins: bonsai catalogue list"
+            );
+            Ok(())
+        }
+        CatalogueCliCommand::Uninstall { name } => {
+            let plugins_dir = catalogue_plugins_dir();
+            let target = plugins_dir.join(&name);
+            if !target.exists() {
+                anyhow::bail!("plugin '{name}' not found in {}", plugins_dir.display());
+            }
+            // Require MANIFEST.yaml to avoid accidentally removing arbitrary directories
+            if !target.join("MANIFEST.yaml").exists() {
+                anyhow::bail!(
+                    "'{name}' does not look like a bonsai plugin (no MANIFEST.yaml). \
+                     Remove manually if intended."
+                );
+            }
+            std::fs::remove_dir_all(&target)
+                .with_context(|| format!("cannot remove '{}'", target.display()))?;
+            println!("uninstalled plugin: {name}");
+            Ok(())
+        }
+    }
+}
+
+fn print_catalogue_cli_usage() {
+    println!(
+        "usage:\n\
+         \x20 bonsai catalogue list\n\
+         \x20 bonsai catalogue install <git-url> [--name <plugin-name>]\n\
+         \x20 bonsai catalogue uninstall <plugin-name>\n\
+         \n\
+         Plugins are cloned into config/path_profiles/plugins/<name>/.\n\
+         Each plugin must have a MANIFEST.yaml at its root.\n\
+         \n\
+         Example:\n\
+         \x20 bonsai catalogue install https://github.com/example/bonsai-plugin-nokia-sr.git\n\
+         \x20 bonsai catalogue list\n\
+         \x20 bonsai catalogue uninstall bonsai-plugin-nokia-sr"
     );
 }
 

@@ -71,6 +71,9 @@ metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
 tar = "0.4"
 semver = "1"
+sha2 = "0.10"
+hex = "0.4"
+snap = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # HTTP API server for the Phase 6 UI (Axum + tower-http for CORS + static files)
