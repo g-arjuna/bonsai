@@ -201,6 +201,8 @@ message TelemetryIngestUpdate {
   bytes  value_msgpack = 7;
   uint32 protocol_version = 8; // Stub for version negotiation
   InterfaceSummary interface_summary = 9;
+  string role         = 10;
+  string site         = 11;
 }
 
 message InterfaceCounterSummary {

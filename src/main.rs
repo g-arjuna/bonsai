@@ -1537,6 +1537,8 @@ async fn spawn_subscriber(
         password,
         target.vendor.clone(),
         target.hostname.clone(),
+        target.role.clone(),
+        target.site.clone(),
         target.tls_domain.clone().unwrap_or_default(),
         ca_cert_pem,
         std::sync::Arc::clone(bus),

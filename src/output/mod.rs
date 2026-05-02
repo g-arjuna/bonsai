@@ -14,13 +14,15 @@
 //!
 //! ```text
 //! InProcessBus ──broadcast──► PrometheusRemoteWriteAdapter (collector-side)
-//!              └──broadcast──► SplunkHecAdapter            (core-side, Sprint 8)
-//!              └──broadcast──► ElasticAdapter              (core-side, Sprint 8)
-//!              └──broadcast──► ServiceNowEmAdapter         (core-side, refactored Sprint 9)
+//! Graph poll   ──timer──────► SplunkHecAdapter            (core-side)
+//!              └──timer──────► ElasticAdapter              (core-side)
+//!              └──timer──────► ServiceNowEmAdapter         (core-side, refactored Sprint 9)
 //! ```
 
+pub mod elastic;
 pub mod prometheus;
 pub mod servicenow_em;
+pub mod splunk_hec;
 pub mod traits;
 
 pub use traits::{

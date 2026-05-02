@@ -137,7 +137,7 @@ impl OutputAdapter for PrometheusRemoteWriteAdapter {
                     match res {
                         Ok(update) => {
                             let ts_ms = update.timestamp_ns / 1_000_000;
-                            let base_labels = base_labels_for(&update.target, &update.hostname, &update.vendor, &job);
+                            let base_labels = base_labels_for(&update.target, &update.hostname, &update.vendor, &job, &update.role, &update.site);
                             extract_metrics(&update.path, &update.value, ts_ms, base_labels, &mut buffer);
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -236,14 +236,21 @@ fn parse_path(path: &str) -> (String, Vec<(String, String)>) {
     (name_parts.join("_").to_lowercase(), labels)
 }
 
-fn base_labels_for(target: &str, hostname: &str, vendor: &str, job: &str) -> Vec<(String, String)> {
+fn base_labels_for(target: &str, hostname: &str, vendor: &str, job: &str, role: &str, site: &str) -> Vec<(String, String)> {
     let instance = if hostname.is_empty() { target } else { hostname };
-    vec![
+    let mut labels = vec![
         ("device".to_string(), target.to_string()),
         ("instance".to_string(), instance.to_string()),
         ("job".to_string(), job.to_string()),
         ("vendor".to_string(), vendor.to_string()),
-    ]
+    ];
+    if !role.is_empty() {
+        labels.push(("role".to_string(), role.to_string()));
+    }
+    if !site.is_empty() {
+        labels.push(("site".to_string(), site.to_string()));
+    }
+    labels
 }
 
 /// Extract numeric metrics from a TelemetryUpdate value. Appends to `out`.

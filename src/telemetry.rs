@@ -7,6 +7,8 @@ pub struct TelemetryUpdate {
     pub vendor: String,
     /// Configured hostname for this device (e.g. "srl1"). Empty when not configured.
     pub hostname: String,
+    pub role: String,
+    pub site: String,
     pub timestamp_ns: i64,
     pub path: String,
     pub value: JsonValue,
