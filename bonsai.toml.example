@@ -48,12 +48,22 @@ graph_path   = "bonsai.db"
 # path                   = "archive"
 # flush_interval_seconds = 10
 # max_batch_rows         = 1000
+# compression_level      = 12        # ZSTD level 1-22 (default 12; level 22 not worth CPU cost)
+# writer_max_idle_secs   = 7200      # force-close partition writers idle for >2h (prevents open-file leaks)
 
-# ── Retention (T1-1e) ────────────────────────────────────────────────────────
+# ── Retention (v11 T4-3) ─────────────────────────────────────────────────────
+# Enabled by default to bound graph memory and WAL size.
 # [retention]
-# enabled                  = false   # enable hourly prune pass
-# max_age_hours            = 72      # delete events older than this
-# max_state_change_events  = 50000   # hard cap; 0 = unlimited
+# enabled                  = true    # enable hourly prune pass (default: true)
+# max_age_hours            = 24      # delete events older than N hours (default: 24)
+# max_state_change_events  = 10000   # hard cap on total events; 0 = unlimited (default: 10000)
+
+# ── Storage caps (v11 T4-5) ──────────────────────────────────────────────────
+# [storage]
+# max_archive_bytes     = 10737418240   # 10 GB archive cap (0 = unlimited)
+# max_graph_bytes       = 5368709120    # 5 GB graph cap (0 = unlimited)
+# check_interval_secs   = 300           # how often to check disk usage
+# warn_threshold_pct    = 80            # warn when usage reaches this % of cap
 
 # ── ServiceNow integration (T2-1) ─────────────────────────────────────────────
 # Primary dev/test target: your reserved PDI (https://devXXXXXX.service-now.com).

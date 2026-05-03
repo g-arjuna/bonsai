@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use parquet::arrow::ArrowWriter;
-use parquet::basic::{Compression, ZstdLevel};
+use parquet::basic::{Compression, Encoding, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use time::OffsetDateTime;
 use tokio::sync::{broadcast::error::RecvError, watch};
@@ -71,18 +71,28 @@ pub async fn run_archiver(
     archive_path: PathBuf,
     flush_interval: Duration,
     max_batch_rows: usize,
+    compression_level: u32,
+    writer_max_idle_secs: u64,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     let mut rx = bus.subscribe();
     let mut buffer: Vec<TelemetryUpdate> = Vec::with_capacity(max_batch_rows);
     let mut flush_timer = tokio::time::interval(flush_interval);
     flush_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let writer = Arc::new(Mutex::new(HourlyArchiveWriter::new(archive_path.clone())));
+    let mut idle_timer = tokio::time::interval(Duration::from_secs(writer_max_idle_secs.max(60)));
+    idle_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let writer = Arc::new(Mutex::new(HourlyArchiveWriter::new(
+        archive_path.clone(),
+        compression_level,
+        writer_max_idle_secs,
+    )));
 
     info!(
         path = %archive_path.display(),
         flush_interval_seconds = flush_interval.as_secs(),
         max_batch_rows,
+        compression_level,
+        writer_max_idle_secs,
         "archive consumer started"
     );
     record_archive_lag(&buffer);
@@ -125,6 +135,9 @@ pub async fn run_archiver(
                     flush_buffer(std::mem::take(&mut buffer), Arc::clone(&writer)).await?;
                     record_archive_lag(&buffer);
                 }
+            }
+            _ = idle_timer.tick() => {
+                close_idle_archive_writers(Arc::clone(&writer)).await?;
             }
         }
     }
@@ -204,6 +217,19 @@ pub fn snapshot() -> ArchiveSnapshot {
     }
 }
 
+async fn close_idle_archive_writers(writer: Arc<Mutex<HourlyArchiveWriter>>) -> Result<()> {
+    let stats = tokio::task::spawn_blocking(move || {
+        let mut writer = writer
+            .lock()
+            .map_err(|_| anyhow::anyhow!("archive writer lock poisoned"))?;
+        writer.close_idle()
+    })
+    .await
+    .context("archive idle-close panicked")??;
+    log_close_stats(stats);
+    Ok(())
+}
+
 async fn close_archive_writers(writer: Arc<Mutex<HourlyArchiveWriter>>) -> Result<()> {
     let stats = tokio::task::spawn_blocking(move || {
         let mut writer = writer
@@ -239,13 +265,17 @@ fn log_close_stats(stats: Vec<CloseStats>) {
 
 struct HourlyArchiveWriter {
     archive_root: PathBuf,
+    compression_level: u32,
+    writer_max_idle_secs: u64,
     open: HashMap<ArchivePartition, OpenPartitionWriter>,
 }
 
 impl HourlyArchiveWriter {
-    fn new(archive_root: PathBuf) -> Self {
+    fn new(archive_root: PathBuf, compression_level: u32, writer_max_idle_secs: u64) -> Self {
         Self {
             archive_root,
+            compression_level,
+            writer_max_idle_secs,
             open: HashMap::new(),
         }
     }
@@ -264,7 +294,7 @@ impl HourlyArchiveWriter {
             closes: Vec::new(),
         };
         for (partition, updates) in grouped {
-            let writer = self.open_partition_writer(partition)?;
+            let writer = self.open_partition_writer(partition, self.compression_level)?;
             stats.flushes.push(writer.append(updates)?);
         }
 
@@ -296,12 +326,41 @@ impl HourlyArchiveWriter {
         Ok(stats)
     }
 
+    /// Close partition writers that have been idle for longer than `writer_max_idle_secs`.
+    fn close_idle(&mut self) -> Result<Vec<CloseStats>> {
+        let threshold_secs = self.writer_max_idle_secs;
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let stale: Vec<_> = self
+            .open
+            .iter()
+            .filter(|(_, w)| now_secs.saturating_sub(w.last_append_secs) >= threshold_secs)
+            .map(|(k, _)| k.clone())
+            .collect();
+        let mut stats = Vec::with_capacity(stale.len());
+        for partition in stale {
+            if let Some(writer) = self.open.remove(&partition) {
+                warn!(
+                    target = %partition.target,
+                    idle_secs = now_secs.saturating_sub(writer.last_append_secs),
+                    "archive closing idle partition writer"
+                );
+                stats.push(writer.close()?);
+            }
+        }
+        Ok(stats)
+    }
+
     fn open_partition_writer(
         &mut self,
         partition: ArchivePartition,
+        compression_level: u32,
     ) -> Result<&mut OpenPartitionWriter> {
         if !self.open.contains_key(&partition) {
-            let writer = OpenPartitionWriter::open(&self.archive_root, &partition)?;
+            let writer =
+                OpenPartitionWriter::open(&self.archive_root, &partition, compression_level)?;
             self.open.insert(partition.clone(), writer);
         }
 
@@ -317,10 +376,11 @@ struct OpenPartitionWriter {
     writer: ArrowWriter<File>,
     total_rows: usize,
     total_raw_bytes: usize,
+    last_append_secs: u64,
 }
 
 impl OpenPartitionWriter {
-    fn open(archive_root: &Path, partition: &ArchivePartition) -> Result<Self> {
+    fn open(archive_root: &Path, partition: &ArchivePartition, compression_level: u32) -> Result<Self> {
         let dir = archive_root
             .join(format!("{:04}", partition.year))
             .join(format!("{:02}", partition.month))
@@ -329,14 +389,21 @@ impl OpenPartitionWriter {
             .with_context(|| format!("failed to create archive directory '{}'", dir.display()))?;
 
         let (path, file) = create_hourly_archive_file(&dir, partition)?;
-        let writer = ArrowWriter::try_new(file, archive_schema(), Some(writer_properties()?))
-            .with_context(|| format!("failed to open parquet writer '{}'", path.display()))?;
+        let writer =
+            ArrowWriter::try_new(file, archive_schema(), Some(writer_properties(compression_level)?))
+                .with_context(|| format!("failed to open parquet writer '{}'", path.display()))?;
+
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
 
         Ok(Self {
             path,
             writer,
             total_rows: 0,
             total_raw_bytes: 0,
+            last_append_secs: now_secs,
         })
     }
 
@@ -348,6 +415,10 @@ impl OpenPartitionWriter {
             .with_context(|| format!("failed to write parquet batch '{}'", self.path.display()))?;
         self.total_rows += rows;
         self.total_raw_bytes += raw_bytes;
+        self.last_append_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
 
         let file_bytes = fs::metadata(&self.path)
             .with_context(|| format!("failed to stat archive file '{}'", self.path.display()))?
@@ -409,11 +480,19 @@ fn archive_schema() -> Arc<Schema> {
     ]))
 }
 
-fn writer_properties() -> Result<WriterProperties> {
+fn writer_properties(compression_level: u32) -> Result<WriterProperties> {
+    let level =
+        i32::try_from(compression_level).unwrap_or(12).clamp(1, 22);
+    let zstd = Compression::ZSTD(ZstdLevel::try_new(level).context("invalid zstd level")?);
+
+    // Enable dictionary encoding globally — parquet uses it for low-cardinality columns
+    // (vendor, hostname, path, event_type) automatically; gives 5-10x size reduction.
+    // Plain encoding is kept as the fallback for timestamp_ns and value columns.
     Ok(WriterProperties::builder()
-        .set_compression(Compression::ZSTD(
-            ZstdLevel::try_new(3).context("invalid zstd level")?,
-        ))
+        .set_compression(zstd)
+        .set_dictionary_enabled(true)
+        .set_column_encoding("timestamp_ns".into(), Encoding::PLAIN)
+        .set_column_encoding("value".into(), Encoding::PLAIN)
         .build())
 }
 
@@ -553,7 +632,7 @@ mod tests {
     #[test]
     fn hourly_writer_reuses_file_across_flushes_for_same_target_hour() {
         let tempdir = tempfile::tempdir().unwrap();
-        let mut writer = HourlyArchiveWriter::new(tempdir.path().to_path_buf());
+        let mut writer = HourlyArchiveWriter::new(tempdir.path().to_path_buf(), 3, 7200);
         let target = "10.1.1.1:57400";
 
         writer
@@ -575,7 +654,7 @@ mod tests {
     #[test]
     fn hourly_writer_rolls_file_at_hour_boundary() {
         let tempdir = tempfile::tempdir().unwrap();
-        let mut writer = HourlyArchiveWriter::new(tempdir.path().to_path_buf());
+        let mut writer = HourlyArchiveWriter::new(tempdir.path().to_path_buf(), 3, 7200);
         let target = "10.1.1.1:57400";
 
         writer
@@ -599,7 +678,7 @@ mod tests {
     #[test]
     fn hourly_writer_limits_one_hour_four_targets_to_four_files() {
         let tempdir = tempfile::tempdir().unwrap();
-        let mut writer = HourlyArchiveWriter::new(tempdir.path().to_path_buf());
+        let mut writer = HourlyArchiveWriter::new(tempdir.path().to_path_buf(), 3, 7200);
         let targets = [
             "10.1.1.1:57400",
             "10.1.1.2:57400",

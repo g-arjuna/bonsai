@@ -305,6 +305,8 @@ async fn main() -> Result<()> {
         let archive_root = std::path::PathBuf::from(&cfg.archive.path);
         let flush_interval = Duration::from_secs(cfg.archive.flush_interval_seconds);
         let max_batch_rows = cfg.archive.max_batch_rows;
+        let compression_level = cfg.archive.compression_level;
+        let writer_max_idle_secs = cfg.archive.writer_max_idle_secs;
         let bus_for_archive = std::sync::Arc::clone(&bus);
         let archive_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
@@ -313,6 +315,8 @@ async fn main() -> Result<()> {
                 archive_root,
                 flush_interval,
                 max_batch_rows,
+                compression_level,
+                writer_max_idle_secs,
                 archive_shutdown,
             )
             .await
@@ -324,6 +328,30 @@ async fn main() -> Result<()> {
         info!(
             "archive enabled but runtime mode has no collector role; skipping collector-local archive"
         );
+    }
+
+    // Memory profiler — always on when run_core, sampling every 60s
+    if run_core {
+        let mem_shutdown = shutdown_rx.clone();
+        tokio::spawn(bonsai::memory_profile::run_memory_profiler(
+            Duration::from_secs(60),
+            None,
+            mem_shutdown,
+        ));
+    }
+
+    // Disk guard
+    if run_core && (cfg.storage.max_archive_bytes > 0 || cfg.storage.max_graph_bytes > 0) {
+        let archive_path = std::path::PathBuf::from(&cfg.archive.path);
+        let graph_path = std::path::PathBuf::from(&cfg.graph_path);
+        let storage_cfg = cfg.storage;
+        let dg_shutdown = shutdown_rx.clone();
+        tokio::spawn(bonsai::disk_guard::run_disk_guard(
+            archive_path,
+            graph_path,
+            storage_cfg,
+            dg_shutdown,
+        ));
     }
 
     let registry = std::sync::Arc::new(ApiRegistry::open(REGISTRY_PATH, cfg.target.clone())?);

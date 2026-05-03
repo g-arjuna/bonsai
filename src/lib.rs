@@ -4,6 +4,8 @@ pub mod output;
 pub mod remediation;
 pub mod archive;
 pub mod assignment;
+pub mod disk_guard;
+pub mod memory_profile;
 pub mod enrichment;
 pub mod catalogue;
 pub mod mcp_client;

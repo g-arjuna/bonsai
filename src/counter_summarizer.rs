@@ -7,6 +7,9 @@ use crate::telemetry::{TelemetryEvent, TelemetryUpdate, json_i64};
 /// Aggregates raw counter updates into time-windowed summaries.
 pub struct CounterSummarizer {
     window_duration_secs: u64,
+    /// Hard cap on the number of concurrent (target, interface) windows.
+    /// When full, the oldest idle window is evicted before inserting a new one.
+    max_entries: usize,
     /// Keyed by "target\x00if_name"
     windows: HashMap<String, InterfaceWindow>,
 }
@@ -30,10 +33,24 @@ struct CounterStats {
 
 impl CounterSummarizer {
     pub fn new(window_duration_secs: u64) -> Self {
+        Self::with_max_entries(window_duration_secs, 1024)
+    }
+
+    pub fn with_max_entries(window_duration_secs: u64, max_entries: usize) -> Self {
         Self {
             window_duration_secs,
+            max_entries: max_entries.max(1),
             windows: HashMap::new(),
         }
+    }
+
+    /// Number of currently open (target, interface) windows.
+    pub fn len(&self) -> usize {
+        self.windows.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.windows.is_empty()
     }
 
     /// Observes a telemetry update. Returns a completed summary when its window rolls over.
@@ -55,6 +72,20 @@ impl CounterSummarizer {
             expired_summary = Some(emit_summary(window, self.window_duration_secs));
             self.windows.remove(&key);
         }
+
+        // Evict the oldest idle entry if we're at capacity to bound memory usage.
+        if !self.windows.contains_key(&key) && self.windows.len() >= self.max_entries {
+            let oldest_key = self
+                .windows
+                .iter()
+                .min_by_key(|(_, w)| w.last_update_ts)
+                .map(|(k, _)| k.clone());
+            if let Some(k) = oldest_key {
+                self.windows.remove(&k);
+                metrics::counter!("bonsai_counter_summarizer_evictions_total").increment(1);
+            }
+        }
+        metrics::gauge!("bonsai_counter_summarizer_entries").set(self.windows.len() as f64);
 
         let window = self.windows.entry(key).or_insert_with(|| InterfaceWindow {
             target: update.target.clone(),

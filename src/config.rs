@@ -24,6 +24,8 @@ pub struct Config {
     #[serde(default)]
     pub credentials: CredentialsConfig,
     #[serde(default)]
+    pub storage: StorageConfig,
+    #[serde(default)]
     pub assignment: AssignmentConfig,
     #[serde(default)]
     pub integrations: IntegrationsConfig,
@@ -333,18 +335,28 @@ impl RuntimeConfig {
     }
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize)]
 pub struct RetentionConfig {
-    /// Enable periodic pruning of old StateChangeEvents. Default: false.
-    #[serde(default)]
+    /// Enable periodic pruning of old StateChangeEvents. Default: true.
+    #[serde(default = "default_retention_enabled")]
     pub enabled: bool,
-    /// Delete StateChangeEvents older than this many hours. Default: 72.
+    /// Delete StateChangeEvents older than this many hours. Default: 24.
     #[serde(default = "default_retention_hours")]
     pub max_age_hours: u64,
-    /// Hard cap on total StateChangeEvents kept. 0 = unlimited. Default: 50000.
+    /// Hard cap on total StateChangeEvents kept. 0 = unlimited. Default: 10000.
     /// When the count exceeds this, oldest events are deleted to get back under the limit.
     #[serde(default = "default_max_state_change_events")]
     pub max_state_change_events: u64,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_retention_enabled(),
+            max_age_hours: default_retention_hours(),
+            max_state_change_events: default_max_state_change_events(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -380,6 +392,12 @@ pub struct ArchiveConfig {
     /// Flush immediately when the in-memory batch reaches this size. Default: 1000.
     #[serde(default = "default_archive_max_batch_rows")]
     pub max_batch_rows: usize,
+    /// ZSTD compression level for Parquet files. 1 = fastest, 22 = best. Default: 12.
+    #[serde(default = "default_archive_compression_level")]
+    pub compression_level: u32,
+    /// Close idle partition writers after this many seconds of inactivity. Default: 7200 (2h).
+    #[serde(default = "default_archive_writer_max_idle_secs")]
+    pub writer_max_idle_secs: u64,
 }
 
 impl Default for ArchiveConfig {
@@ -389,6 +407,38 @@ impl Default for ArchiveConfig {
             path: default_archive_path(),
             flush_interval_seconds: default_archive_flush_interval_seconds(),
             max_batch_rows: default_archive_max_batch_rows(),
+            compression_level: default_archive_compression_level(),
+            writer_max_idle_secs: default_archive_writer_max_idle_secs(),
+        }
+    }
+}
+
+/// Disk-usage guard for the archive and graph database directories.
+#[derive(Deserialize, Clone)]
+pub struct StorageConfig {
+    /// Maximum bytes the archive directory may use before aggressive retention kicks in.
+    /// 0 = unlimited. Default: 10 GB.
+    #[serde(default = "default_max_archive_bytes")]
+    pub max_archive_bytes: u64,
+    /// Maximum bytes the graph database directory may use.
+    /// 0 = unlimited. Default: 5 GB.
+    #[serde(default = "default_max_graph_bytes")]
+    pub max_graph_bytes: u64,
+    /// How often (seconds) to check disk usage. Default: 300 (5 min).
+    #[serde(default = "default_disk_check_interval_secs")]
+    pub check_interval_secs: u64,
+    /// Log a warning when usage exceeds this percentage of the configured max. Default: 80.
+    #[serde(default = "default_warn_threshold_pct")]
+    pub warn_threshold_pct: u8,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            max_archive_bytes: default_max_archive_bytes(),
+            max_graph_bytes: default_max_graph_bytes(),
+            check_interval_secs: default_disk_check_interval_secs(),
+            warn_threshold_pct: default_warn_threshold_pct(),
         }
     }
 }
@@ -412,12 +462,16 @@ impl Default for CredentialsConfig {
     }
 }
 
+fn default_retention_enabled() -> bool {
+    true
+}
+
 fn default_retention_hours() -> u64 {
-    72
+    24
 }
 
 fn default_max_state_change_events() -> u64 {
-    50_000
+    10_000
 }
 
 fn default_bus_capacity() -> usize {
@@ -438,6 +492,30 @@ fn default_archive_flush_interval_seconds() -> u64 {
 
 fn default_archive_max_batch_rows() -> usize {
     1000
+}
+
+fn default_archive_compression_level() -> u32 {
+    12
+}
+
+fn default_archive_writer_max_idle_secs() -> u64 {
+    7200
+}
+
+fn default_max_archive_bytes() -> u64 {
+    10 * 1024 * 1024 * 1024   // 10 GB
+}
+
+fn default_max_graph_bytes() -> u64 {
+    5 * 1024 * 1024 * 1024    // 5 GB
+}
+
+fn default_disk_check_interval_secs() -> u64 {
+    300
+}
+
+fn default_warn_threshold_pct() -> u8 {
+    80
 }
 
 fn default_credentials_path() -> String {
