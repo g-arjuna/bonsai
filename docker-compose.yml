@@ -104,12 +104,80 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── Lab-aware bonsai instances (Sprint 4 v11) ──────────────────────────────
+  #
+  # These profiles connect bonsai to the ContainerLab DC or SP management
+  # networks created by:
+  #   containerlab deploy -t lab/dc/dc-evpn-srv6.clab.yml
+  #   containerlab deploy -t lab/sp/sp-mpls-srte.clab.yml
+  #
+  # Quick start:
+  #   containerlab deploy -t lab/dc/dc-evpn-srv6.clab.yml
+  #   docker compose --profile lab-dc up -d
+  #
+  # Profiles:
+  #   lab-dc    — bonsai monitoring the DC topology only (port 3000)
+  #   lab-sp    — bonsai monitoring the SP topology only (port 3001)
+  #   lab-full  — both instances simultaneously
+
+  bonsai-lab-dc:
+    <<: *bonsai-base
+    profiles: ["lab-dc", "lab-full"]
+    volumes:
+      - bonsai_graph_lab_dc:/app/runtime
+      - bonsai_creds_lab_dc:/app/bonsai-credentials
+      - ./docker/configs/lab-dc.toml:/etc/bonsai/bonsai.toml:ro
+    ports:
+      - "3000:3000"
+      - "50051:50051"
+    networks:
+      - bonsai-dc-mgmt
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+
+  bonsai-lab-sp:
+    <<: *bonsai-base
+    profiles: ["lab-sp", "lab-full"]
+    volumes:
+      - bonsai_graph_lab_sp:/app/runtime
+      - bonsai_creds_lab_sp:/app/bonsai-credentials
+      - ./docker/configs/lab-sp.toml:/etc/bonsai/bonsai.toml:ro
+    ports:
+      # Port 3001 avoids conflict when lab-dc is also running (lab-full profile)
+      - "3001:3000"
+      - "50052:50051"
+    networks:
+      - bonsai-sp-mgmt
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+
 networks:
+  # ── Fast-iteration (phase 4) lab network ─────────────────────────────────
   # The ContainerLab management network. Override CLAB_NETWORK to match your
   # topology. Defaults to the bonsai-p4 fast-iteration lab network.
   bonsai-p4-mgmt:
     external: true
     name: ${CLAB_NETWORK:-bonsai-p4-mgmt}
+
+  # ── DC lab management network (bonsai-dc topology) ────────────────────────
+  # Created automatically by: containerlab deploy -t lab/dc/dc-evpn-srv6.clab.yml
+  bonsai-dc-mgmt:
+    external: true
+    name: ${DC_CLAB_NETWORK:-bonsai-dc-mgmt}
+
+  # ── SP lab management network (bonsai-sp topology) ────────────────────────
+  # Created automatically by: containerlab deploy -t lab/sp/sp-mpls-srte.clab.yml
+  bonsai-sp-mgmt:
+    external: true
+    name: ${SP_CLAB_NETWORK:-bonsai-sp-mgmt}
 
 volumes:
   bonsai_graph_dev:
@@ -118,3 +186,7 @@ volumes:
   bonsai_creds:
   collector_1_queue:
   collector_2_queue:
+  bonsai_graph_lab_dc:
+  bonsai_creds_lab_dc:
+  bonsai_graph_lab_sp:
+  bonsai_creds_lab_sp:

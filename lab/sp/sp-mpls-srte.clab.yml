@@ -1,0 +1,150 @@
+name: bonsai-sp
+
+# SP PE-P-RR topology — SR-MPLS + LDP + L3VPN over IS-IS underlay
+#
+# Topology (logical):
+#
+#   [ce1]──[srl-pe1]══[frr-p1]══[frr-p2]══[srl-pe2]──[ce2]
+#                |      |          |          |
+#             [srl-rr1]─╯          ╰─[srl-rr2]
+#                                   [srl-pe3]─╯
+#
+# Backbone (═══): IS-IS L2 + SR-MPLS + LDP
+# PE↔CE: eBGP, VRF-A and VRF-B
+# RR: iBGP route reflectors for VPN-IPv4 (L3VPN)
+#
+# NOS selection:
+#   srl-pe1/pe2/pe3 : Nokia SR Linux (PE — L3VPN, SR-TE policy)
+#   srl-rr1/rr2     : Nokia SR Linux (route reflectors, iBGP)
+#   frr-p1/p2       : FRR 9.x (P routers — IS-IS SR-MPLS + LDP transit)
+#   frr-ce1/ce2     : FRR 9.x (customer edge — eBGP to PE)
+#
+# Features configured at startup:
+#   - IS-IS Level 2, area 49.0001, p2p on backbone links (all SRL+FRR nodes)
+#   - SR-MPLS with prefix SIDs (SRGB 100–999); each node loopback → index 1..7
+#   - LDP on backbone p2p links (coexisting with SR-MPLS)
+#   - iBGP VPN-IPv4 for L3VPN, reflected by rr1+rr2
+#   - L3VPN: VRF-A (all PEs, CE1+CE2) and VRF-B (pe1+pe3)
+#   - SR-TE policy on pe1: explicit path pe1→p1→p2→pe2 (color 100)
+#   - BFD 1 s on backbone links
+#
+# Addressing:
+#   Mgmt: 172.100.104.0/24
+#   Loopbacks: 10.2.0.x/32  (x=1 pe1 .. x=7 rr2; x=8 ce1, x=9 ce2)
+#   Backbone p2p: 10.2.10.0/27 block (/31 per link)
+#   CE-to-PE: 10.2.10.16/31 (ce1↔pe1), 10.2.10.18/31 (ce2↔pe2)
+#
+# SR-MPLS SIDs (SRGB start 100):
+#   pe1 index 1  → SID 101
+#   pe2 index 2  → SID 102
+#   pe3 index 3  → SID 103
+#   p1  index 4  → SID 104
+#   p2  index 5  → SID 105
+#   rr1 index 6  → SID 106
+#   rr2 index 7  → SID 107
+#
+# Deploy:
+#   containerlab deploy -t lab/sp/sp-mpls-srte.clab.yml
+#
+# Verify:
+#   scripts/check_lab.sh --topology sp
+
+mgmt:
+  network: bonsai-sp-mgmt
+  ipv4-subnet: 172.100.104.0/24
+  ipv4-gw: 172.100.104.1
+
+topology:
+  nodes:
+    # ── Nokia SR Linux PEs ────────────────────────────────────────────────────
+    srl-pe1:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: 172.100.104.11
+      startup-config: configs/srl-pe1.cfg
+
+    srl-pe2:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: 172.100.104.12
+      startup-config: configs/srl-pe2.cfg
+
+    srl-pe3:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: 172.100.104.13
+      startup-config: configs/srl-pe3.cfg
+
+    # ── Nokia SR Linux Route Reflectors ───────────────────────────────────────
+    srl-rr1:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: 172.100.104.14
+      startup-config: configs/srl-rr1.cfg
+
+    srl-rr2:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: 172.100.104.15
+      startup-config: configs/srl-rr2.cfg
+
+    # ── FRR P routers (SR-MPLS + LDP transit) ────────────────────────────────
+    frr-p1:
+      kind: linux
+      image: frrouting/frr:latest
+      mgmt-ipv4: 172.100.104.16
+      binds:
+        - configs/frr-p1/daemons:/etc/frr/daemons
+        - configs/frr-p1/frr.conf:/etc/frr/frr.conf
+
+    frr-p2:
+      kind: linux
+      image: frrouting/frr:latest
+      mgmt-ipv4: 172.100.104.17
+      binds:
+        - configs/frr-p2/daemons:/etc/frr/daemons
+        - configs/frr-p2/frr.conf:/etc/frr/frr.conf
+
+    # ── FRR Customer Edge ─────────────────────────────────────────────────────
+    frr-ce1:
+      kind: linux
+      image: frrouting/frr:latest
+      mgmt-ipv4: 172.100.104.18
+      binds:
+        - configs/frr-ce1/daemons:/etc/frr/daemons
+        - configs/frr-ce1/frr.conf:/etc/frr/frr.conf
+
+    frr-ce2:
+      kind: linux
+      image: frrouting/frr:latest
+      mgmt-ipv4: 172.100.104.19
+      binds:
+        - configs/frr-ce2/daemons:/etc/frr/daemons
+        - configs/frr-ce2/frr.conf:/etc/frr/frr.conf
+
+  links:
+    # ── Backbone ══════════════════════════════════════════════════════════════
+    # pe1 e1-1 ↔ p1 eth1   (10.2.10.0/31)
+    - endpoints: ["srl-pe1:e1-1", "frr-p1:eth1"]
+    # p1 eth2 ↔ p2 eth1    (10.2.10.2/31)
+    - endpoints: ["frr-p1:eth2", "frr-p2:eth1"]
+    # p2 eth2 ↔ pe2 e1-1   (10.2.10.4/31)
+    - endpoints: ["frr-p2:eth2", "srl-pe2:e1-1"]
+    # pe3 e1-1 ↔ p2 eth4   (10.2.10.14/31)
+    - endpoints: ["srl-pe3:e1-1", "frr-p2:eth4"]
+
+    # ── RR connectivity ───────────────────────────────────────────────────────
+    # pe1 e1-2 ↔ rr1 e1-1  (10.2.10.6/31)
+    - endpoints: ["srl-pe1:e1-2", "srl-rr1:e1-1"]
+    # p1 eth3 ↔ rr1 e1-2   (10.2.10.8/31)
+    - endpoints: ["frr-p1:eth3", "srl-rr1:e1-2"]
+    # p2 eth3 ↔ rr2 e1-1   (10.2.10.10/31)
+    - endpoints: ["frr-p2:eth3", "srl-rr2:e1-1"]
+    # pe2 e1-2 ↔ rr2 e1-2  (10.2.10.12/31)
+    - endpoints: ["srl-pe2:e1-2", "srl-rr2:e1-2"]
+
+    # ── CE ↔ PE ───────────────────────────────────────────────────────────────
+    # ce1 eth1 ↔ pe1 e1-3  (10.2.10.16/31)
+    - endpoints: ["frr-ce1:eth1", "srl-pe1:e1-3"]
+    # ce2 eth1 ↔ pe2 e1-3  (10.2.10.18/31)
+    - endpoints: ["frr-ce2:eth1", "srl-pe2:e1-3"]

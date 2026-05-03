@@ -1,0 +1,153 @@
+name: bonsai-dc
+
+# DC 3-tier spine-leaf topology — EVPN + SRv6 over IS-IS underlay
+#
+# Topology (logical):
+#
+#          [srl-super1]────────[srl-super2]    AS 65100 (iBGP EVPN RRs)
+#           |        \         /       |
+#        e1-1        e1-2   e1-1      e1-2
+#           |          ╲   ╱           |
+#        [srl-spine1]──[srl-spine2]    (IS-IS L2 underlay)
+#        /    /  \ \      / /  \ \
+#      e1-3 e1-4 e1-5 e1-6  e1-3..e1-6
+#       |    |    |    |     |    |    |    |
+#    [leaf1][leaf2][leaf3][leaf4]  (same, dual-homed)
+#       |    |    |    |
+#    [host1][host2][host3][host4]  (Alpine traffic generators)
+#
+# Features configured at startup:
+#   - IS-IS Level 2, area 49.0001, p2p links, IPv4+IPv6 unicast
+#   - iBGP EVPN: super-spines as RRs, all others as clients
+#   - SRv6 micro-SID: locator fc00:1:N::/48 per node (N=1..8)
+#   - VXLAN VTEPs on leaves only: VNI 1000/2000 (mac-vrf), VNI 100100/100200 (ip-vrf)
+#   - EVPN type-2 (MAC/IP), type-3 (multicast), type-5 (IP prefix)
+#   - Anycast IRB gateway: 192.168.100.1/24 (Tenant-A), 192.168.200.1/24 (Tenant-B)
+#   - BFD 1s intervals on all p2p uplinks
+#   - L3VPN tenant-A (all leaves) + tenant-B (leaf3, leaf4)
+#
+# Addressing:
+#   Mgmt: 172.100.103.0/24
+#   Loopbacks: 10.1.0.x/32  (x=1 super1 .. x=8 leaf4)
+#   Super↔Spine p2p: 10.1.10.0/29 block (/31 per link)
+#   Spine↔Leaf p2p:  10.1.11.0/28 block (/31 per link)
+#   Tenant-A gateway: 192.168.100.1/24  (anycast on all leaves)
+#   Tenant-B gateway: 192.168.200.1/24  (anycast on leaf3, leaf4)
+#
+# Deploy:
+#   containerlab deploy -t lab/dc/dc-evpn-srv6.clab.yml
+#
+# Verify:
+#   scripts/check_lab.sh --topology dc
+
+mgmt:
+  network: bonsai-dc-mgmt
+  ipv4-subnet: 172.100.103.0/24
+  ipv4-gw: 172.100.103.1
+
+topology:
+  nodes:
+    # ── Super-spines (EVPN route reflectors) ─────────────────────────────────
+    srl-super1:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: 172.100.103.11
+      startup-config: configs/srl-super1.cfg
+
+    srl-super2:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: 172.100.103.12
+      startup-config: configs/srl-super2.cfg
+
+    # ── Spines ────────────────────────────────────────────────────────────────
+    srl-spine1:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: 172.100.103.13
+      startup-config: configs/srl-spine1.cfg
+
+    srl-spine2:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: 172.100.103.14
+      startup-config: configs/srl-spine2.cfg
+
+    # ── Leaves (VTEPs) ────────────────────────────────────────────────────────
+    srl-leaf1:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: 172.100.103.15
+      startup-config: configs/srl-leaf1.cfg
+
+    srl-leaf2:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: 172.100.103.16
+      startup-config: configs/srl-leaf2.cfg
+
+    srl-leaf3:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: 172.100.103.17
+      startup-config: configs/srl-leaf3.cfg
+
+    srl-leaf4:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux:latest
+      mgmt-ipv4: 172.100.103.18
+      startup-config: configs/srl-leaf4.cfg
+
+    # ── Traffic generators (Alpine) ───────────────────────────────────────────
+    host1:
+      kind: linux
+      image: alpine:latest
+      mgmt-ipv4: 172.100.103.21
+      startup-config: configs/host1.sh
+
+    host2:
+      kind: linux
+      image: alpine:latest
+      mgmt-ipv4: 172.100.103.22
+      startup-config: configs/host2.sh
+
+    host3:
+      kind: linux
+      image: alpine:latest
+      mgmt-ipv4: 172.100.103.23
+      startup-config: configs/host3.sh
+
+    host4:
+      kind: linux
+      image: alpine:latest
+      mgmt-ipv4: 172.100.103.24
+      startup-config: configs/host4.sh
+
+  links:
+    # ── Super-spine ↔ Spine tier ──────────────────────────────────────────────
+    # super1 e1-1 ↔ spine1 e1-1  (10.1.10.0/31)
+    - endpoints: ["srl-super1:e1-1", "srl-spine1:e1-1"]
+    # super1 e1-2 ↔ spine2 e1-1  (10.1.10.2/31)
+    - endpoints: ["srl-super1:e1-2", "srl-spine2:e1-1"]
+    # super2 e1-1 ↔ spine1 e1-2  (10.1.10.4/31)
+    - endpoints: ["srl-super2:e1-1", "srl-spine1:e1-2"]
+    # super2 e1-2 ↔ spine2 e1-2  (10.1.10.6/31)
+    - endpoints: ["srl-super2:e1-2", "srl-spine2:e1-2"]
+
+    # ── Spine ↔ Leaf tier ─────────────────────────────────────────────────────
+    # spine1 → leaf1/leaf2/leaf3/leaf4  (10.1.11.0/31 .. 10.1.11.6/31)
+    - endpoints: ["srl-spine1:e1-3", "srl-leaf1:e1-1"]
+    - endpoints: ["srl-spine1:e1-4", "srl-leaf2:e1-1"]
+    - endpoints: ["srl-spine1:e1-5", "srl-leaf3:e1-1"]
+    - endpoints: ["srl-spine1:e1-6", "srl-leaf4:e1-1"]
+    # spine2 → leaf1/leaf2/leaf3/leaf4  (10.1.11.8/31 .. 10.1.11.14/31)
+    - endpoints: ["srl-spine2:e1-3", "srl-leaf1:e1-2"]
+    - endpoints: ["srl-spine2:e1-4", "srl-leaf2:e1-2"]
+    - endpoints: ["srl-spine2:e1-5", "srl-leaf3:e1-2"]
+    - endpoints: ["srl-spine2:e1-6", "srl-leaf4:e1-2"]
+
+    # ── Leaf ↔ Host (access) ──────────────────────────────────────────────────
+    - endpoints: ["srl-leaf1:e1-3", "host1:eth1"]
+    - endpoints: ["srl-leaf2:e1-3", "host2:eth1"]
+    - endpoints: ["srl-leaf3:e1-3", "host3:eth1"]
+    - endpoints: ["srl-leaf4:e1-3", "host4:eth1"]

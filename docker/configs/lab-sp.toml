@@ -1,0 +1,61 @@
+# docker/configs/lab-sp.toml — Bonsai config for SP lab topology.
+#
+# Used by: docker compose --profile lab-sp up -d
+# Requires: containerlab deploy -t lab/sp/sp-mpls-srte.clab.yml
+#
+# FRR nodes (frr-p1, frr-p2, frr-ce1, frr-ce2) do not expose gNMI —
+# they are omitted from targets. Bonsai collects from SRL nodes only;
+# FRR telemetry visible indirectly via SRL neighbor state.
+
+graph_path = "runtime/bonsai.db"
+api_addr   = "0.0.0.0:50051"
+
+[runtime]
+mode         = "all"
+collector_id = "lab-sp"
+
+[credentials]
+path           = "bonsai-credentials"
+passphrase_env = "BONSAI_VAULT_PASSPHRASE"
+
+# ── SP topology SRL targets ───────────────────────────────────────────────────
+
+[[target]]
+address    = "172.100.104.11:57400"
+hostname   = "srl-pe1"
+tls_domain = "clab-bonsai-sp-srl-pe1"
+ca_cert    = "lab/sp/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+
+[[target]]
+address    = "172.100.104.12:57400"
+hostname   = "srl-pe2"
+tls_domain = "clab-bonsai-sp-srl-pe2"
+ca_cert    = "lab/sp/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+
+[[target]]
+address    = "172.100.104.13:57400"
+hostname   = "srl-pe3"
+tls_domain = "clab-bonsai-sp-srl-pe3"
+ca_cert    = "lab/sp/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+
+[[target]]
+address    = "172.100.104.14:57400"
+hostname   = "srl-rr1"
+tls_domain = "clab-bonsai-sp-srl-rr1"
+ca_cert    = "lab/sp/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+
+[[target]]
+address    = "172.100.104.15:57400"
+hostname   = "srl-rr2"
+tls_domain = "clab-bonsai-sp-srl-rr2"
+ca_cert    = "lab/sp/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"

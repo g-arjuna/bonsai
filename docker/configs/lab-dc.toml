@@ -1,0 +1,87 @@
+# docker/configs/lab-dc.toml — Bonsai config for DC lab topology.
+#
+# Used by: docker compose --profile lab-dc up -d
+# Requires: containerlab deploy -t lab/dc/dc-evpn-srv6.clab.yml
+#
+# Run scripts/configure_external.sh to auto-populate [enrichment.*] and
+# [output.*] sections from the running .env and external services.
+
+graph_path = "runtime/bonsai.db"
+api_addr   = "0.0.0.0:50051"
+
+[runtime]
+mode         = "all"
+collector_id = "lab-dc"
+
+[credentials]
+path           = "bonsai-credentials"
+passphrase_env = "BONSAI_VAULT_PASSPHRASE"
+
+# ── DC topology targets ───────────────────────────────────────────────────────
+# ContainerLab exposes gNMI on port 57400 with auto-generated TLS.
+# The CA cert is written to clab-bonsai-dc/<node>/tls/ca.pem after deploy.
+# Update ca_cert paths after first deploy.
+
+[[target]]
+address    = "172.100.103.11:57400"
+hostname   = "srl-super1"
+tls_domain = "clab-bonsai-dc-srl-super1"
+ca_cert    = "lab/dc/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+
+[[target]]
+address    = "172.100.103.12:57400"
+hostname   = "srl-super2"
+tls_domain = "clab-bonsai-dc-srl-super2"
+ca_cert    = "lab/dc/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+
+[[target]]
+address    = "172.100.103.13:57400"
+hostname   = "srl-spine1"
+tls_domain = "clab-bonsai-dc-srl-spine1"
+ca_cert    = "lab/dc/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+
+[[target]]
+address    = "172.100.103.14:57400"
+hostname   = "srl-spine2"
+tls_domain = "clab-bonsai-dc-srl-spine2"
+ca_cert    = "lab/dc/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+
+[[target]]
+address    = "172.100.103.15:57400"
+hostname   = "srl-leaf1"
+tls_domain = "clab-bonsai-dc-srl-leaf1"
+ca_cert    = "lab/dc/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+
+[[target]]
+address    = "172.100.103.16:57400"
+hostname   = "srl-leaf2"
+tls_domain = "clab-bonsai-dc-srl-leaf2"
+ca_cert    = "lab/dc/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+
+[[target]]
+address    = "172.100.103.17:57400"
+hostname   = "srl-leaf3"
+tls_domain = "clab-bonsai-dc-srl-leaf3"
+ca_cert    = "lab/dc/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+
+[[target]]
+address    = "172.100.103.18:57400"
+hostname   = "srl-leaf4"
+tls_domain = "clab-bonsai-dc-srl-leaf4"
+ca_cert    = "lab/dc/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
