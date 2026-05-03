@@ -346,7 +346,6 @@ impl OutputAdapter for StubAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event_bus::InProcessBus;
 
     #[test]
     fn stub_adapter_compiles() {

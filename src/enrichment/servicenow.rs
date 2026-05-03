@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use lbug::{Connection, Value};
-use serde::Deserialize;
+use serde::{de, Deserialize, Deserializer};
+use tracing::warn;
 
 use crate::credentials::{CredentialVault, ResolvePurpose};
 use crate::enrichment::{
@@ -46,9 +47,41 @@ struct SnowBusinessService {
     assignment_group: Option<SnowRef>,
 }
 
-#[derive(Debug, Deserialize)]
+/// ServiceNow returns reference fields as either a plain string OR a
+/// `{display_value, value}` object depending on `sysparm_display_value`.
+/// This custom deserializer handles both shapes (Q-14).
+#[derive(Debug)]
 struct SnowRef {
     display_value: String,
+}
+
+impl<'de> Deserialize<'de> for SnowRef {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Inner {
+            display_value: String,
+        }
+
+        struct Visitor;
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = SnowRef;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "a string or ServiceNow display_value object")
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<SnowRef, E> {
+                Ok(SnowRef { display_value: v.to_string() })
+            }
+            fn visit_string<E: de::Error>(self, v: String) -> Result<SnowRef, E> {
+                Ok(SnowRef { display_value: v })
+            }
+            fn visit_map<A: de::MapAccess<'de>>(self, map: A) -> Result<SnowRef, A::Error> {
+                let inner = Inner::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                Ok(SnowRef { display_value: inner.display_value })
+            }
+        }
+
+        d.deserialize_any(Visitor)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,6 +118,7 @@ struct SnowIncident {
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
+/// GET a ServiceNow table with automatic 429 retry and exponential backoff (Q-13).
 async fn snow_get<T: for<'de> Deserialize<'de>>(
     client: &reqwest::Client,
     instance_url: &str,
@@ -97,23 +131,39 @@ async fn snow_get<T: for<'de> Deserialize<'de>>(
     let url = format!(
         "{instance_url}/api/now/table/{table}?sysparm_query={query}&sysparm_fields={fields}&sysparm_display_value=all&sysparm_limit=500"
     );
-    let resp = client
-        .get(&url)
-        .basic_auth(username, Some(password))
-        .timeout(Duration::from_secs(30))
-        .send()
-        .await
-        .with_context(|| format!("GET {url}"))?;
 
-    if !resp.status().is_success() {
-        anyhow::bail!("ServiceNow {table} returned {}", resp.status());
+    let mut delay_secs = 1u64;
+    for attempt in 0..4 {
+        let resp = client
+            .get(&url)
+            .basic_auth(username, Some(password))
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            if attempt < 3 {
+                warn!(table, attempt, delay_secs, "ServiceNow 429 — backing off");
+                tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+                delay_secs = (delay_secs * 2).min(60);
+                continue;
+            }
+            break; // exhausted retries — fall through to retry limit bail
+        }
+
+        if !resp.status().is_success() {
+            anyhow::bail!("ServiceNow {table} returned {}", resp.status());
+        }
+
+        let list: SnowList<T> = resp
+            .json()
+            .await
+            .with_context(|| format!("parse ServiceNow {table} response"))?;
+        return Ok(list.result);
     }
 
-    let list: SnowList<T> = resp
-        .json()
-        .await
-        .with_context(|| format!("parse ServiceNow {table} response"))?;
-    Ok(list.result)
+    anyhow::bail!("ServiceNow {table}: exceeded retry limit after repeated 429 responses")
 }
 
 // ── Enricher ──────────────────────────────────────────────────────────────────
@@ -248,7 +298,7 @@ impl GraphEnricher for ServiceNowEnricher {
         });
 
         let db = store.db();
-        let (nodes_touched, write_warnings) = tokio::task::spawn_blocking(move || {
+        let (nodes_touched, edges_created, write_warnings) = tokio::task::spawn_blocking(move || {
             write_to_graph(&db, &services, &cis, &rels, &incidents, &source)
         })
         .await
@@ -261,7 +311,7 @@ impl GraphEnricher for ServiceNowEnricher {
             enricher_name: self.config.name.clone(),
             duration_ms: started.elapsed().as_millis() as u64,
             nodes_touched,
-            edges_created: 0,
+            edges_created,
             warnings,
             error: None,
         })
@@ -315,9 +365,10 @@ fn write_to_graph(
     rels: &[SnowRelCi],
     incidents: &[SnowIncident],
     source: &str,
-) -> Result<(usize, Vec<String>)> {
+) -> Result<(usize, usize, Vec<String>)> {
     let conn = Connection::new(db).context("open graph connection")?;
-    let mut count = 0usize;
+    let mut nodes = 0usize;
+    let mut edges = 0usize;
     let mut warnings = Vec::new();
     let now_ns = crate::graph::common::now_ns();
 
@@ -346,14 +397,13 @@ fn write_to_graph(
         ) {
             warnings.push(format!("Application {}: {e:#}", svc.name));
         } else {
-            count += 1;
+            nodes += 1;
             app_by_sys_id.insert(svc.sys_id.clone(), id);
         }
     }
 
     // 2. Write device enrichment properties from CIs
     for ci in cis {
-        // Best-effort: match by CI name (hostname) since we may not have an IP mapping
         let owner_group = ci
             .assignment_group
             .as_ref()
@@ -379,7 +429,8 @@ fn write_to_graph(
             ) {
                 warnings.push(format!("CI {} prop {key}: {e:#}", ci.name));
             } else {
-                count += 1;
+                nodes += 1;
+                edges += 1; // HAS_ENRICHMENT_PROPERTY edge created inside helper
             }
         }
     }
@@ -394,8 +445,9 @@ fn write_to_graph(
             } else {
                 "CARRIES_APPLICATION"
             };
-            if let Err(e) = link_device_application(&conn, device_hostname, app_id, rel_label) {
-                warnings.push(format!("{rel_label} {device_hostname} → {app_id}: {e:#}"));
+            match link_device_application(&conn, device_hostname, app_id, rel_label) {
+                Ok(()) => edges += 1,
+                Err(e) => warnings.push(format!("{rel_label} {device_hostname} → {app_id}: {e:#}")),
             }
         }
     }
@@ -423,19 +475,20 @@ fn write_to_graph(
         ) {
             warnings.push(format!("Incident {}: {e:#}", inc.sys_id));
         } else {
-            count += 1;
-            if !inc.bonsai_detection_id.is_empty()
-                && let Err(e) = link_detection_incident(&conn, &inc.bonsai_detection_id, &id)
-            {
-                warnings.push(format!(
-                    "HAS_INCIDENT {} → {id}: {e:#}",
-                    inc.bonsai_detection_id
-                ));
+            nodes += 1;
+            if !inc.bonsai_detection_id.is_empty() {
+                match link_detection_incident(&conn, &inc.bonsai_detection_id, &id) {
+                    Ok(()) => edges += 1,
+                    Err(e) => warnings.push(format!(
+                        "HAS_INCIDENT {} → {id}: {e:#}",
+                        inc.bonsai_detection_id
+                    )),
+                }
             }
         }
     }
 
-    Ok((count, warnings))
+    Ok((nodes, edges, warnings))
 }
 
 fn operational_status_to_criticality(status: &str) -> &'static str {
@@ -618,4 +671,155 @@ fn link_detection_incident(
     )
     .context("execute HAS_INCIDENT")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::GraphStore;
+    use wiremock::matchers::{method};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn open_test_graph(label: &str) -> GraphStore {
+        let path = std::env::temp_dir()
+            .join(format!("bonsai-snow-test-{label}-{}", uuid::Uuid::new_v4()))
+            .to_string_lossy()
+            .into_owned();
+        GraphStore::open(&path).expect("open test graph")
+    }
+
+    // ── SnowRef polymorphic deserialisation (Q-14) ────────────────────────────
+
+    #[test]
+    fn snow_ref_deserialises_from_object_form() {
+        let json = r#"{"display_value": "Network-Operations", "value": "abc123"}"#;
+        let r: SnowRef = serde_json::from_str(json).unwrap();
+        assert_eq!(r.display_value, "Network-Operations");
+    }
+
+    #[test]
+    fn snow_ref_deserialises_from_plain_string() {
+        let json = r#""Network-Operations""#;
+        let r: SnowRef = serde_json::from_str(json).unwrap();
+        assert_eq!(r.display_value, "Network-Operations");
+    }
+
+    #[test]
+    fn snow_ref_option_handles_null() {
+        let json = r#"{"assignment_group": null, "sys_id": "x", "name": "web-front",
+                       "assigned_to": null}"#;
+        let ci: SnowCi = serde_json::from_str(json).unwrap();
+        assert!(ci.assignment_group.is_none());
+    }
+
+    // ── 429 retry with exponential backoff (Q-13) ─────────────────────────────
+
+    #[tokio::test]
+    async fn snow_get_retries_on_429_and_succeeds() {
+        let server = MockServer::start().await;
+        // First two requests return 429, third returns 200 with data
+        let payload = serde_json::json!({"result": [{"sys_id": "s1", "name": "SVC",
+            "operational_status": "1", "assigned_to": null, "assignment_group": null}]});
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(2)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&payload))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let result: Vec<SnowBusinessService> = snow_get(
+            &client,
+            &server.uri(),
+            "cmdb_ci_business_service",
+            "",
+            "sys_id,name,operational_status",
+            "user",
+            "pass",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "SVC");
+    }
+
+    #[tokio::test]
+    async fn snow_get_fails_after_exhausting_retries() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let result: Result<Vec<SnowBusinessService>> = snow_get(
+            &client,
+            &server.uri(),
+            "cmdb_ci_business_service",
+            "",
+            "sys_id",
+            "u",
+            "p",
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("retry limit"));
+    }
+
+    // ── graph write: Application nodes ───────────────────────────────────────
+
+    #[test]
+    fn write_to_graph_creates_application_nodes() {
+        let store = open_test_graph("apps");
+        let db = store.db();
+
+        let services = vec![SnowBusinessService {
+            sys_id: "svc001".to_string(),
+            name: "payment-frontend".to_string(),
+            short_description: "".to_string(),
+            operational_status: "1".to_string(),
+            assigned_to: None,
+            assignment_group: None,
+        }];
+
+        let (nodes, _edges, warnings) =
+            write_to_graph(&db, &services, &[], &[], &[], "snow-test").unwrap();
+        assert_eq!(nodes, 1, "one Application node expected");
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn write_to_graph_idempotent_application_upsert() {
+        let store = open_test_graph("app-idem");
+        let db = store.db();
+
+        let services = vec![SnowBusinessService {
+            sys_id: "svc001".to_string(),
+            name: "payment-frontend".to_string(),
+            short_description: "".to_string(),
+            operational_status: "1".to_string(),
+            assigned_to: None,
+            assignment_group: None,
+        }];
+
+        let (n1, _, _) = write_to_graph(&db, &services, &[], &[], &[], "snow-test").unwrap();
+        let (n2, _, _) = write_to_graph(&db, &services, &[], &[], &[], "snow-test").unwrap();
+        assert_eq!(n1, n2, "MERGE must be idempotent");
+    }
+
+    // ── operational_status_to_criticality mapping ─────────────────────────────
+
+    #[test]
+    fn criticality_mapping_covers_known_codes() {
+        assert_eq!(operational_status_to_criticality("1"), "operational");
+        assert_eq!(operational_status_to_criticality("2"), "non_operational");
+        assert_eq!(operational_status_to_criticality("6"), "end_of_life");
+        assert_eq!(operational_status_to_criticality("99"), "unknown");
+    }
 }

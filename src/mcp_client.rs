@@ -104,3 +104,98 @@ impl McpClient {
             .with_context(|| format!("MCP tool {tool} returned non-JSON in content.text"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::{method};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // ── EnricherTransport::from_extra ─────────────────────────────────────────
+
+    #[test]
+    fn from_extra_empty_defaults_to_rest() {
+        assert_eq!(
+            EnricherTransport::from_extra(&serde_json::Value::Null),
+            EnricherTransport::Rest
+        );
+    }
+
+    #[test]
+    fn from_extra_explicit_rest() {
+        let extra = serde_json::json!({"transport": "rest"});
+        assert_eq!(EnricherTransport::from_extra(&extra), EnricherTransport::Rest);
+    }
+
+    #[test]
+    fn from_extra_mcp_uses_provided_server_url() {
+        let extra = serde_json::json!({
+            "transport": "mcp",
+            "mcp_server_url": "http://mcp.example.com:8090"
+        });
+        assert_eq!(
+            EnricherTransport::from_extra(&extra),
+            EnricherTransport::Mcp { server_url: "http://mcp.example.com:8090".to_string() }
+        );
+    }
+
+    #[test]
+    fn from_extra_mcp_defaults_server_url_when_missing() {
+        let extra = serde_json::json!({"transport": "mcp"});
+        match EnricherTransport::from_extra(&extra) {
+            EnricherTransport::Mcp { server_url } => {
+                assert!(!server_url.is_empty(), "default server_url must not be empty");
+            }
+            _ => panic!("expected Mcp transport"),
+        }
+    }
+
+    // ── McpClient::call HTTP behaviour ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn call_happy_path_parses_content_text() {
+        let server = MockServer::start().await;
+        let inner_payload = serde_json::json!({"devices": [{"name": "srl-1"}]});
+
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "content": [{"type": "text", "text": serde_json::to_string(&inner_payload).unwrap()}]
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = McpClient::new(server.uri()).unwrap();
+        let result = client.call("netbox:devices_list", serde_json::json!({})).await.unwrap();
+        assert_eq!(result["devices"][0]["name"], "srl-1");
+    }
+
+    #[tokio::test]
+    async fn call_error_status_surfaces_as_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("internal error"))
+            .mount(&server)
+            .await;
+
+        let client = McpClient::new(server.uri()).unwrap();
+        let err = client.call("netbox:devices_list", serde_json::json!({})).await.unwrap_err();
+        assert!(err.to_string().contains("500"), "error must mention status code");
+    }
+
+    #[tokio::test]
+    async fn call_missing_content_text_surfaces_as_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": "ok"})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = McpClient::new(server.uri()).unwrap();
+        let err = client.call("netbox:devices_list", serde_json::json!({})).await.unwrap_err();
+        assert!(err.to_string().contains("content"), "error must mention missing content");
+    }
+}

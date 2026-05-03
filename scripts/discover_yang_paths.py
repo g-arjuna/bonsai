@@ -176,6 +176,35 @@ def check_pyang() -> str | None:
     return None
 
 
+def preflight_check() -> str:
+    """Assert pyang is available; exit 2 with a diagnostic if not. Returns executable path."""
+    exe = check_pyang()
+    if exe is None:
+        print(
+            "error: pyang is required but was not found on PATH.\n"
+            "  Install it with:  pip install pyang\n"
+            "  Or activate the repo .venv which includes it.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return exe
+
+
+@dataclass
+class DiscoveryMeta:
+    """Metadata written alongside each discovered YANG path candidate."""
+    repo: str
+    revision: str
+    needs_lab_verification: bool = True
+
+    def to_dict(self) -> dict:
+        return {
+            "repo": self.repo,
+            "revision": self.revision,
+            "needs_lab_verification": self.needs_lab_verification,
+        }
+
+
 def pyang_tree(yang_file: Path, search_dirs: list[Path], pyang_exe: str) -> str | None:
     """Run pyang -f tree on a YANG file and return the output, or None on error."""
     cmd = [pyang_exe, "-f", "tree", "--tree-line-length=0"]
@@ -621,19 +650,24 @@ def main() -> None:
             sys.exit(1)
         sources = [VENDOR_SOURCE_MAP[args.vendor]]
 
+    # Verify pyang is available BEFORE any git clone operations (Q-15).
+    # Cloning large YANG repos takes minutes; failing after the clone is wasteful.
+    pyang_exe = check_pyang()
+    if not pyang_exe:
+        print(
+            "error: pyang not found.\n"
+            "  Install it with:\n"
+            "    pip install pyang\n"
+            "  or inside the repo venv:\n"
+            "    .venv/bin/pip install pyang",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    print(f"pyang found: {pyang_exe}")
+
     cache_dir = Path(args.cache_dir)
     output_dir = Path(args.output_dir)
     docs_dir = REPO_ROOT / "docs" / "path_profiles"
-
-    pyang_exe = check_pyang()
-    if pyang_exe:
-        print(f"pyang found: {pyang_exe}")
-    else:
-        print(
-            "warning: pyang not found. Using regex-based fallback (less accurate).\n"
-            "         Install with: pip install pyang\n",
-            file=sys.stderr,
-        )
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     docs_dir.mkdir(parents=True, exist_ok=True)

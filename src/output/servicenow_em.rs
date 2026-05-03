@@ -261,6 +261,60 @@ async fn push_em_event(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── severity_passes ───────────────────────────────────────────────────────
+
+    #[test]
+    fn critical_passes_any_min() {
+        for min in ["info", "warning", "high", "critical"] {
+            assert!(severity_passes("critical", min), "critical should pass min={min}");
+        }
+    }
+
+    #[test]
+    fn info_blocked_by_warning_min() {
+        assert!(!severity_passes("info", "warning"));
+        assert!(!severity_passes("info", "high"));
+        assert!(!severity_passes("info", "critical"));
+    }
+
+    #[test]
+    fn warning_passes_warning_and_below() {
+        assert!(severity_passes("warning", "info"));
+        assert!(severity_passes("warning", "warning"));
+        assert!(!severity_passes("warning", "high"));
+    }
+
+    #[test]
+    fn high_passes_high_and_below() {
+        assert!(severity_passes("high", "info"));
+        assert!(severity_passes("high", "warning"));
+        assert!(severity_passes("high", "high"));
+        assert!(!severity_passes("high", "critical"));
+    }
+
+    #[test]
+    fn unknown_severity_treated_as_info() {
+        // Unknown maps to rank 0, same as "info"
+        assert!(severity_passes("unknown_severity", "info"));
+        assert!(!severity_passes("unknown_severity", "warning"));
+    }
+
+    // ── severity_to_snow ──────────────────────────────────────────────────────
+
+    #[test]
+    fn severity_mapping_matches_snow_codes() {
+        assert_eq!(severity_to_snow("critical"), "1");
+        assert_eq!(severity_to_snow("high"), "2");
+        assert_eq!(severity_to_snow("warning"), "3");
+        assert_eq!(severity_to_snow("info"), "5");
+        assert_eq!(severity_to_snow("anything_else"), "5");
+    }
+}
+
 // ── Public constructor used by main.rs ────────────────────────────────────────
 
 /// Start the EM push task if the config has it enabled.

@@ -48,3 +48,68 @@ pub fn check_graduation(
         consecutive_approvals: record.operator_approvals,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record_with(
+        state: TrustState,
+        consecutive: u32,
+        approvals: u32,
+        rejections: u32,
+    ) -> TrustRecord {
+        TrustRecord {
+            state,
+            consecutive_successes: consecutive,
+            operator_approvals: approvals,
+            operator_rejections: rejections,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn threshold_triggers_suggestion_for_approve_each() {
+        let rec = record_with(TrustState::ApproveEach, 10, 10, 0);
+        let hint = check_graduation("rule:env:site:pb", &rec, 10).unwrap();
+        assert_eq!(hint.from_state, "approve_each");
+        assert_eq!(hint.to_state, "auto_with_notification");
+        assert_eq!(hint.consecutive_approvals, 10);
+    }
+
+    #[test]
+    fn threshold_triggers_suggestion_for_suggest_only() {
+        let rec = record_with(TrustState::SuggestOnly, 10, 10, 0);
+        let hint = check_graduation("key", &rec, 10).unwrap();
+        assert_eq!(hint.from_state, "suggest_only");
+        assert_eq!(hint.to_state, "approve_each");
+    }
+
+    #[test]
+    fn blocked_by_any_rejection() {
+        let rec = record_with(TrustState::ApproveEach, 10, 10, 1);
+        assert!(check_graduation("key", &rec, 10).is_none());
+    }
+
+    #[test]
+    fn blocked_by_insufficient_consecutive_successes() {
+        let rec = record_with(TrustState::ApproveEach, 9, 10, 0);
+        assert!(check_graduation("key", &rec, 10).is_none());
+    }
+
+    #[test]
+    fn auto_silent_and_auto_with_notification_never_graduate() {
+        // AutoWithNotification and AutoSilent are terminal — no hint produced
+        for state in [TrustState::AutoWithNotification, TrustState::AutoSilent] {
+            let rec = record_with(state, 100, 100, 0);
+            assert!(check_graduation("key", &rec, 10).is_none());
+        }
+    }
+
+    #[test]
+    fn graduation_key_preserved_in_hint() {
+        let rec = record_with(TrustState::ApproveEach, 10, 10, 0);
+        let hint = check_graduation("bgp-flap:data_center:dc1:restore-bgp", &rec, 10).unwrap();
+        assert_eq!(hint.trust_key, "bgp-flap:data_center:dc1:restore-bgp");
+    }
+}

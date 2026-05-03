@@ -22,7 +22,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLAYBOOK_LIBRARY_DIR = REPO_ROOT / "playbooks" / "library"
-GRAPH_RS_PATH = REPO_ROOT / "src" / "graph.rs"
+GRAPH_RS_PATH = REPO_ROOT / "src" / "graph" / "mod.rs"
 DETECTION_MODULE_PATH = REPO_ROOT / "python" / "bonsai_sdk" / "detection.py"
 
 _NODE_LABEL_PATTERN = re.compile(r"CREATE NODE TABLE IF NOT EXISTS (\w+)\(")

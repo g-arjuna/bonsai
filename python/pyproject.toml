@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio"]
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "requests"]
 ml  = [
     "scikit-learn>=1.4",
     "joblib>=1.3",
@@ -27,3 +27,21 @@ ml  = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["bonsai_sdk"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+testpaths = ["tests"]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: requires live infrastructure (ContainerLab, Docker services, bonsai binary) — skipped in unit CI",
+]
+
+[tool.coverage.run]
+source = ["../scripts"]
+omit = ["*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "if __name__ == .__main__.:",
+    "pragma: no cover",
+]

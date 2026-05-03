@@ -19,6 +19,9 @@ from pathlib import Path
 
 import pytest
 
+# All tests in this module require a live ContainerLab topology and bonsai binary.
+pytestmark = pytest.mark.integration
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from bonsai_sdk import BonsaiClient, RuleEngine, RemediationExecutor
@@ -30,7 +33,11 @@ BONSAI_ADDR     = "[::1]:50051"
 SPINE1_ADDRESS  = "172.100.102.11:57400"   # as stored in the graph
 SPINE1_IP       = "172.100.102.11"
 SPINE1_USER     = "admin"
-BONSAI_BINARY   = str(Path(__file__).parent.parent.parent / "target" / "release" / "bonsai.exe")
+import platform
+import os
+
+BONSAI_EXE_NAME = "bonsai.exe" if platform.system() == "Windows" else "bonsai"
+BONSAI_BINARY   = str(Path(__file__).parent.parent.parent / "target" / "release" / BONSAI_EXE_NAME)
 
 TIMEOUT_STARTUP    = 40   # seconds to wait for bonsai to populate ≥1 device
 TIMEOUT_DETECTION  = 35   # seconds to wait for bgp_session_down to fire
@@ -41,6 +48,8 @@ TIMEOUT_DETECTION  = 35   # seconds to wait for bgp_session_down to fire
 @pytest.fixture(scope="module")
 def bonsai_proc():
     """Start bonsai as a subprocess; stop it after the test module."""
+    if not Path(BONSAI_BINARY).exists():
+        pytest.skip(f"bonsai binary not found at {BONSAI_BINARY} — build with `cargo build --release`")
     proc = subprocess.Popen(
         [BONSAI_BINARY],
         stdout=subprocess.DEVNULL,

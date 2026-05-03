@@ -637,6 +637,8 @@ mod tests {
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: "leaf1".to_string(),
+            role: String::new(),
+            site: String::new(),
             timestamp_ns,
             path: "interfaces/interface[name=ethernet-1/1]/state/counters".to_string(),
             value: json!({"in-octets": value}),

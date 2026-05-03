@@ -284,6 +284,8 @@ mod tests {
             target: "dut:57400".to_string(),
             vendor: "openconfig".to_string(),
             hostname: "dut".to_string(),
+            role: String::new(),
+            site: String::new(),
             timestamp_ns: 1,
             path: "interfaces/interface[name=ethernet-1/1]/state/counters".to_string(),
             value: json!({"in-pkts": 1}),
@@ -308,6 +310,8 @@ mod tests {
             target: "dut:57400".to_string(),
             vendor: "openconfig".to_string(),
             hostname: "dut".to_string(),
+            role: String::new(),
+            site: String::new(),
             timestamp_ns: 1,
             path: "network-instances".to_string(),
             value: json!({

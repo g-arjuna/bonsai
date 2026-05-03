@@ -86,6 +86,7 @@ protoc-bin-vendored = "3"
 
 [dev-dependencies]
 tempfile = "3"
+wiremock = "0.6"
 
 [profile.release]
 lto = "thin"           # thin LTO: ~80% of full-LTO benefit at ~30% of build time cost

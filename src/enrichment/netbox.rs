@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use lbug::{Connection, Value};
 use serde::Deserialize;
+use tokio::sync::Semaphore;
 
 use tracing::{debug, warn};
 
@@ -211,9 +212,10 @@ async fn paginate_rest<T: for<'de> Deserialize<'de>>(
     token: &str,
 ) -> Result<Vec<T>> {
     let mut results = Vec::new();
-    let mut url = format!("{base_url}/api/{endpoint}?limit=200&offset=0");
+    let mut offset: usize = 0;
 
     loop {
+        let url = format!("{base_url}/api/{endpoint}?limit=200&offset={offset}");
         debug!(url = %url, "NetBox REST GET");
         let resp = client
             .get(&url)
@@ -236,16 +238,7 @@ async fn paginate_rest<T: for<'de> Deserialize<'de>>(
         if fetched < 200 {
             break;
         }
-        // Advance offset for next page
-        let offset: usize = url
-            .split("offset=")
-            .last()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        url = format!(
-            "{base_url}/api/{endpoint}?limit=200&offset={}",
-            offset + 200
-        );
+        offset += 200;
     }
 
     Ok(results)
@@ -328,17 +321,26 @@ impl GraphEnricher for NetBoxEnricher {
                 );
             })?;
         audit.log_credential_resolve(&self.config.credential_alias, "ok", None);
-        let token = cred.password;
+        let token = &cred.password; // borrow; no extra copy of the credential
         let base_url = self.config.base_url.trim_end_matches('/').to_string();
+
+        // Read concurrency cap from config.extra; default 2 to avoid hammering NetBox
+        let max_concurrent = self
+            .config
+            .extra
+            .get("max_concurrent_requests")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(2) as usize;
+        let sem = Arc::new(Semaphore::new(max_concurrent));
 
         let transport = self.build_transport()?;
 
-        // Fetch all NetBox data concurrently
+        // Fetch all NetBox data with bounded concurrency (semaphore limits in-flight requests)
         let (devices_res, vlans_res, prefixes_res, ifaces_res) = tokio::join!(
-            transport.get_devices(&base_url, &token),
-            transport.get_vlans(&base_url, &token),
-            transport.get_prefixes(&base_url, &token),
-            transport.get_interfaces(&base_url, &token),
+            async { let _p = sem.acquire().await.expect("sem"); transport.get_devices(&base_url, token).await },
+            async { let _p = sem.acquire().await.expect("sem"); transport.get_vlans(&base_url, token).await },
+            async { let _p = sem.acquire().await.expect("sem"); transport.get_prefixes(&base_url, token).await },
+            async { let _p = sem.acquire().await.expect("sem"); transport.get_interfaces(&base_url, token).await },
         );
 
         let nb_devices = devices_res.unwrap_or_else(|e| {
@@ -361,7 +363,7 @@ impl GraphEnricher for NetBoxEnricher {
         let source = self.config.name.clone();
         let db = store.db();
 
-        let (nodes_touched, write_warnings) = tokio::task::spawn_blocking(move || {
+        let (nodes_touched, edges_created, write_warnings) = tokio::task::spawn_blocking(move || {
             write_to_graph(
                 &db,
                 &nb_devices,
@@ -380,7 +382,7 @@ impl GraphEnricher for NetBoxEnricher {
             enricher_name: self.config.name.clone(),
             duration_ms: started.elapsed().as_millis() as u64,
             nodes_touched,
-            edges_created: 0,
+            edges_created,
             warnings,
             error: None,
         })
@@ -417,57 +419,61 @@ fn write_to_graph(
     prefixes: &[NbPrefix],
     ifaces: &[NbInterface],
     source: &str,
-) -> Result<(usize, Vec<String>)> {
+) -> Result<(usize, usize, Vec<String>)> {
     let conn = Connection::new(db).context("open graph connection")?;
-    let mut count = 0usize;
+    let mut nodes = 0usize;
+    let mut edges = 0usize;
     let mut warnings = Vec::new();
     let now_ns = crate::graph::common::now_ns();
 
-    // 1. Write EnrichmentProperty nodes for each device
-    for dev in devices {
-        let Some(ip) = dev.primary_ip.as_ref() else {
-            continue;
-        };
-        // Strip prefix length from IP address (e.g. "192.168.1.1/32" → "192.168.1.1")
-        let addr = ip
-            .address
-            .split('/')
-            .next()
-            .unwrap_or(&ip.address)
-            .to_string();
+    // 1. Write EnrichmentProperty nodes for each device (chunked for progress visibility)
+    for (chunk_idx, chunk) in devices.chunks(100).enumerate() {
+        for dev in chunk {
+            let Some(ip) = dev.primary_ip.as_ref() else {
+                continue;
+            };
+            // Strip prefix length from IP address (e.g. "192.168.1.1/32" → "192.168.1.1")
+            let addr = ip
+                .address
+                .split('/')
+                .next()
+                .unwrap_or(&ip.address)
+                .to_string();
 
-        // Collect all properties to upsert
-        let mut props: Vec<(&str, String)> = vec![];
-        if !dev.serial.is_empty() {
-            props.push(("netbox_serial", dev.serial.clone()));
-        }
-        if let Some(dt) = &dev.device_type {
-            props.push(("netbox_model", dt.model.clone()));
-            if let Some(mfr) = &dt.manufacturer {
-                props.push(("netbox_manufacturer", mfr.name.clone()));
+            let mut props: Vec<(&str, String)> = vec![];
+            if !dev.serial.is_empty() {
+                props.push(("netbox_serial", dev.serial.clone()));
+            }
+            if let Some(dt) = &dev.device_type {
+                props.push(("netbox_model", dt.model.clone()));
+                if let Some(mfr) = &dt.manufacturer {
+                    props.push(("netbox_manufacturer", mfr.name.clone()));
+                }
+            }
+            if let Some(platform) = &dev.platform {
+                props.push(("netbox_platform", platform.name.clone()));
+            }
+            if let Some(status) = &dev.status {
+                props.push(("netbox_lifecycle_status", status.value.clone()));
+            }
+            if let Some(site) = &dev.site {
+                props.push(("netbox_site", site.name.clone()));
+                props.push(("netbox_site_slug", site.slug.clone()));
+            }
+
+            for (key, value) in props {
+                let id = format!("{addr}:{key}");
+                if let Err(e) =
+                    upsert_enrichment_property(&conn, &id, &addr, key, &value, source, now_ns)
+                {
+                    warnings.push(format!("device {addr} property {key}: {e:#}"));
+                } else {
+                    nodes += 1;
+                    edges += 1; // HAS_ENRICHMENT_PROPERTY created inside upsert_enrichment_property
+                }
             }
         }
-        if let Some(platform) = &dev.platform {
-            props.push(("netbox_platform", platform.name.clone()));
-        }
-        if let Some(status) = &dev.status {
-            props.push(("netbox_lifecycle_status", status.value.clone()));
-        }
-        if let Some(site) = &dev.site {
-            props.push(("netbox_site", site.name.clone()));
-            props.push(("netbox_site_slug", site.slug.clone()));
-        }
-
-        for (key, value) in props {
-            let id = format!("{addr}:{key}");
-            if let Err(e) =
-                upsert_enrichment_property(&conn, &id, &addr, key, &value, source, now_ns)
-            {
-                warnings.push(format!("device {addr} property {key}: {e:#}"));
-            } else {
-                count += 1;
-            }
-        }
+        debug!(chunk = chunk_idx, size = chunk.len(), "wrote device enrichment chunk");
     }
 
     // 2. Write VLAN nodes (site-scope VLANs from NetBox)
@@ -476,7 +482,7 @@ fn write_to_graph(
         if let Err(e) = upsert_vlan(&conn, &id, vlan.vid as i64, &vlan.name, source, now_ns) {
             warnings.push(format!("VLAN {}: {e:#}", vlan.vid));
         } else {
-            count += 1;
+            nodes += 1;
         }
     }
 
@@ -499,16 +505,18 @@ fn write_to_graph(
         ) {
             warnings.push(format!("prefix {}: {e:#}", prefix.prefix));
         } else {
-            count += 1;
+            nodes += 1;
         }
 
         // Link prefix to device if we know which device it belongs to
         if let Some(assigned) = &prefix.assigned_object
             && let Some(dev_ref) = &assigned.device
             && let Some(dev_name) = &dev_ref.name
-            && let Err(e) = link_device_prefix(&conn, dev_name, &id)
         {
-            warnings.push(format!("HAS_PREFIX {dev_name} → {}: {e:#}", prefix.prefix));
+            match link_device_prefix(&conn, dev_name, &id) {
+                Ok(()) => edges += 1,
+                Err(e) => warnings.push(format!("HAS_PREFIX {dev_name} → {}: {e:#}", prefix.prefix)),
+            }
         }
     }
 
@@ -519,12 +527,8 @@ fn write_to_graph(
         };
         let iface_id = format!("{dev_name}:{}", iface.name);
 
-        // Persist interface description as enrichment property (use device address if we had it;
-        // since NetBox gives us device name we use hostname-keyed IDs)
         if !iface.description.is_empty() {
             let prop_id = format!("{iface_id}:netbox_description");
-            // Best-effort: property on a "virtual" interface key. Real lookup by address needs
-            // a name→address mapping — skip if the device isn't in our graph.
             if let Err(e) = upsert_enrichment_property(
                 &conn,
                 &prop_id,
@@ -535,6 +539,9 @@ fn write_to_graph(
                 now_ns,
             ) {
                 warn!("interface {iface_id} description: {e:#}");
+            } else {
+                nodes += 1;
+                edges += 1;
             }
         }
 
@@ -542,8 +549,9 @@ fn write_to_graph(
         if let Some(av) = &iface.untagged_vlan {
             let vlan_id = format!("netbox_vlan_{}", av.vid);
             let if_node_id = format!("{dev_name}:{}:if", iface.name);
-            if let Err(e) = link_interface_vlan(&conn, &if_node_id, &vlan_id, "ACCESS_VLAN") {
-                warnings.push(format!("ACCESS_VLAN {iface_id}: {e:#}"));
+            match link_interface_vlan(&conn, &if_node_id, &vlan_id, "ACCESS_VLAN") {
+                Ok(()) => edges += 1,
+                Err(e) => warnings.push(format!("ACCESS_VLAN {iface_id}: {e:#}")),
             }
         }
 
@@ -551,13 +559,14 @@ fn write_to_graph(
         for tv in &iface.tagged_vlans {
             let vlan_id = format!("netbox_vlan_{}", tv.vid);
             let if_node_id = format!("{dev_name}:{}:if", iface.name);
-            if let Err(e) = link_interface_vlan(&conn, &if_node_id, &vlan_id, "TRUNK_VLAN") {
-                warnings.push(format!("TRUNK_VLAN {iface_id} vlan {}: {e:#}", tv.vid));
+            match link_interface_vlan(&conn, &if_node_id, &vlan_id, "TRUNK_VLAN") {
+                Ok(()) => edges += 1,
+                Err(e) => warnings.push(format!("TRUNK_VLAN {iface_id} vlan {}: {e:#}", tv.vid)),
             }
         }
     }
 
-    Ok((count, warnings))
+    Ok((nodes, edges, warnings))
 }
 
 fn upsert_enrichment_property(
@@ -648,7 +657,7 @@ fn upsert_prefix(
     let mut stmt = conn
         .prepare(
             "MERGE (p:Prefix {id: $id}) \
-         SET p.cidr = $cidr, p.role = $role, p.description = $desc, \
+         SET p.cidr = $cidr, p.prefix_role = $pfx_role, p.descr = $pfx_desc, \
              p.source_name = $src, p.updated_at = $now",
         )
         .context("prepare upsert_prefix")?;
@@ -657,8 +666,8 @@ fn upsert_prefix(
         vec![
             ("id", Value::String(id.to_string())),
             ("cidr", Value::String(cidr.to_string())),
-            ("role", Value::String(role.to_string())),
-            ("desc", Value::String(description.to_string())),
+            ("pfx_role", Value::String(role.to_string())),
+            ("pfx_desc", Value::String(description.to_string())),
             ("src", Value::String(source_name.to_string())),
             ("now", crate::graph::common::ts(now_ns)),
         ],
@@ -709,4 +718,191 @@ fn link_interface_vlan(
     )
     .context("execute link_interface_vlan")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::GraphStore;
+    use wiremock::matchers::{method, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn open_test_graph(label: &str) -> GraphStore {
+        let path = std::env::temp_dir()
+            .join(format!("bonsai-netbox-test-{label}-{}", uuid::Uuid::new_v4()))
+            .to_string_lossy()
+            .into_owned();
+        GraphStore::open(&path).expect("open test graph")
+    }
+
+    fn nb_page(results: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "results": results })
+    }
+
+    // ── pagination offset counter (Q-2 fix) ───────────────────────────────────
+
+    #[tokio::test]
+    async fn pagination_advances_offset_correctly_across_pages() {
+        let server = MockServer::start().await;
+
+        // Page 1: 200 items (triggers next page)
+        let page1: Vec<serde_json::Value> = (0..200)
+            .map(|i| serde_json::json!({"vid": i, "name": format!("vlan-{i}")}))
+            .collect();
+        // Page 2: 50 items (stops pagination)
+        let page2: Vec<serde_json::Value> = (200..250)
+            .map(|i| serde_json::json!({"vid": i, "name": format!("vlan-{i}")}))
+            .collect();
+
+        Mock::given(method("GET"))
+            .and(query_param("offset", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(nb_page(serde_json::json!(page1))))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(query_param("offset", "200"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(nb_page(serde_json::json!(page2))))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let result: Vec<NbVlan> = paginate_rest(&client, &server.uri(), "ipam/vlans/", "tok").await.unwrap();
+        assert_eq!(result.len(), 250);
+        server.verify().await;
+    }
+
+    // ── config.extra: max_concurrent_requests ────────────────────────────────
+
+    #[test]
+    fn max_concurrent_requests_defaults_to_two() {
+        let config = EnricherConfig {
+            name: "nb".to_string(),
+            enricher_type: "netbox".to_string(),
+            enabled: true,
+            base_url: "http://netbox.local".to_string(),
+            credential_alias: "tok".to_string(),
+            poll_interval_secs: 0,
+            environment_scope: vec![],
+            extra: serde_json::Value::Null,
+        };
+        let max: usize = config
+            .extra
+            .get("max_concurrent_requests")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(2) as usize;
+        assert_eq!(max, 2);
+    }
+
+    #[test]
+    fn max_concurrent_requests_reads_from_extra() {
+        let config = EnricherConfig {
+            name: "nb".to_string(),
+            enricher_type: "netbox".to_string(),
+            enabled: true,
+            base_url: "http://netbox.local".to_string(),
+            credential_alias: "tok".to_string(),
+            poll_interval_secs: 0,
+            environment_scope: vec![],
+            extra: serde_json::json!({"max_concurrent_requests": 4}),
+        };
+        let max: usize = config
+            .extra
+            .get("max_concurrent_requests")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(2) as usize;
+        assert_eq!(max, 4);
+    }
+
+    // ── writes_to() namespace declaration ────────────────────────────────────
+
+    #[test]
+    fn writes_to_declares_netbox_namespace() {
+        let config = EnricherConfig {
+            name: "nb".to_string(),
+            enricher_type: "netbox".to_string(),
+            enabled: true,
+            base_url: "http://netbox.local".to_string(),
+            credential_alias: "tok".to_string(),
+            poll_interval_secs: 0,
+            environment_scope: vec![],
+            extra: serde_json::Value::Null,
+        };
+        let enricher = NetBoxEnricher::from_config(config);
+        let surface = enricher.writes_to();
+        assert_eq!(surface.property_namespace, "netbox_");
+        assert!(surface.owned_labels.contains(&"VLAN".to_string()));
+        assert!(surface.owned_labels.contains(&"Prefix".to_string()));
+        assert!(surface.owned_edge_types.contains(&"HAS_PREFIX".to_string()));
+    }
+
+    // ── graph write: VLAN nodes + edge count (Q-1 fix) ───────────────────────
+
+    #[test]
+    fn write_to_graph_counts_vlan_nodes() {
+        let store = open_test_graph("vlans");
+        let db = store.db();
+
+        let vlans = vec![
+            NbVlan { vid: 10, name: "mgmt".to_string(), description: String::new() },
+            NbVlan { vid: 20, name: "data".to_string(), description: String::new() },
+        ];
+
+        let (nodes, edges, warnings) =
+            write_to_graph(&db, &[], &vlans, &[], &[], "test").unwrap();
+
+        assert_eq!(nodes, 2, "two VLAN nodes should be touched");
+        assert_eq!(edges, 0, "VLANs alone create no edges");
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn write_to_graph_counts_prefix_nodes() {
+        let store = open_test_graph("prefixes");
+        let db = store.db();
+
+        let prefixes = vec![NbPrefix {
+            prefix: "10.0.0.0/24".to_string(),
+            role: Some(NbNested { name: "loopback".to_string(), slug: "loopback".to_string() }),
+            description: "test prefix".to_string(),
+            assigned_object: None,
+        }];
+
+        let (nodes, _edges, warnings) =
+            write_to_graph(&db, &[], &[], &prefixes, &[], "test").unwrap();
+
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        assert_eq!(nodes, 1);
+    }
+
+    #[test]
+    fn write_to_graph_idempotent_vlan_upsert() {
+        let store = open_test_graph("idem");
+        let db = store.db();
+
+        let vlans = vec![NbVlan { vid: 100, name: "prod".to_string(), description: String::new() }];
+        let (n1, _, _) = write_to_graph(&db, &[], &vlans, &[], &[], "test").unwrap();
+        let (n2, _, _) = write_to_graph(&db, &[], &vlans, &[], &[], "test").unwrap();
+        // MERGE is idempotent — same number of nodes both times
+        assert_eq!(n1, n2);
+    }
+
+    // ── wiremock: 401 from NetBox surfaces as error ───────────────────────────
+
+    #[tokio::test]
+    async fn pagination_returns_error_on_non_success_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let result: Result<Vec<NbVlan>> =
+            paginate_rest(&client, &server.uri(), "ipam/vlans/", "bad-token").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("401"));
+    }
 }

@@ -207,10 +207,10 @@ async fn push_cycle(
             continue;
         }
         let dedup_key = (det.device_address.clone(), det.rule_id.clone());
-        if let Some(&last_ns) = dedup.get(&dedup_key) {
-            if now - last_ns < dedup_window_ns {
-                continue;
-            }
+        if let Some(&last_ns) = dedup.get(&dedup_key)
+            && now - last_ns < dedup_window_ns
+        {
+            continue;
         }
 
         let doc = build_ecs_doc(det);

@@ -499,8 +499,8 @@ impl GraphStore {
             "CREATE NODE TABLE IF NOT EXISTS Prefix(\
                 id           STRING,\
                 cidr         STRING,\
-                role         STRING,\
-                description  STRING,\
+                prefix_role  STRING,\
+                descr        STRING,\
                 source_name  STRING,\
                 updated_at   TIMESTAMP_NS,\
                 PRIMARY KEY (id))",

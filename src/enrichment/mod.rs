@@ -332,3 +332,129 @@ pub type SharedEnricherRegistry = Arc<RwLock<EnricherRegistry>>;
 pub fn new_registry(runtime_dir: &Path) -> SharedEnricherRegistry {
     Arc::new(RwLock::new(EnricherRegistry::load(runtime_dir)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp() -> tempfile::TempDir {
+        tempfile::tempdir().expect("temp dir")
+    }
+
+    fn base_config(name: &str) -> EnricherConfig {
+        EnricherConfig {
+            name: name.to_string(),
+            enricher_type: "netbox".to_string(),
+            enabled: true,
+            base_url: "http://netbox.local".to_string(),
+            credential_alias: "netbox-token".to_string(),
+            poll_interval_secs: 3600,
+            environment_scope: vec![],
+            extra: serde_json::Value::Null,
+        }
+    }
+
+    // ── load ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn load_returns_empty_registry_when_no_file() {
+        let dir = tmp();
+        let reg = EnricherRegistry::load(dir.path());
+        assert!(reg.list().is_empty());
+    }
+
+    #[test]
+    fn load_returns_empty_and_does_not_panic_on_corrupted_file() {
+        let dir = tmp();
+        let cfg_path = dir.path().join("enrichment_configs.json");
+        std::fs::write(&cfg_path, b"this is not json {{{{").unwrap();
+        let reg = EnricherRegistry::load(dir.path());
+        assert!(reg.list().is_empty(), "corrupted file should yield empty registry");
+    }
+
+    // ── upsert ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn upsert_adds_new_entry() {
+        let dir = tmp();
+        let mut reg = EnricherRegistry::load(dir.path());
+        reg.upsert(base_config("nb1"));
+        assert_eq!(reg.list().len(), 1);
+        assert_eq!(reg.get("nb1").unwrap().name, "nb1");
+    }
+
+    #[test]
+    fn upsert_updates_existing_entry_no_duplicate() {
+        let dir = tmp();
+        let mut reg = EnricherRegistry::load(dir.path());
+        reg.upsert(base_config("nb1"));
+        let mut updated = base_config("nb1");
+        updated.base_url = "http://netbox2.local".to_string();
+        reg.upsert(updated);
+        assert_eq!(reg.list().len(), 1, "upsert must not duplicate");
+        assert_eq!(reg.get("nb1").unwrap().base_url, "http://netbox2.local");
+    }
+
+    // ── remove ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn remove_deletes_entry_and_its_state() {
+        let dir = tmp();
+        let mut reg = EnricherRegistry::load(dir.path());
+        reg.upsert(base_config("nb1"));
+        reg.set_running("nb1", true);
+        let removed = reg.remove("nb1");
+        assert!(removed);
+        assert!(reg.get("nb1").is_none());
+        assert!(reg.list().is_empty());
+    }
+
+    #[test]
+    fn remove_nonexistent_returns_false() {
+        let dir = tmp();
+        let mut reg = EnricherRegistry::load(dir.path());
+        assert!(!reg.remove("does_not_exist"));
+    }
+
+    // ── record_run updates state ──────────────────────────────────────────────
+
+    #[test]
+    fn record_run_updates_state_and_clears_is_running() {
+        let dir = tmp();
+        let mut reg = EnricherRegistry::load(dir.path());
+        reg.upsert(base_config("nb1"));
+        reg.set_running("nb1", true);
+
+        let report = EnrichmentReport {
+            enricher_name: "nb1".to_string(),
+            duration_ms: 250,
+            nodes_touched: 42,
+            edges_created: 7,
+            warnings: vec![],
+            error: None,
+        };
+        reg.record_run("nb1", &report);
+
+        let (_, state) = reg.list().into_iter().next().unwrap();
+        assert!(!state.is_running);
+        assert_eq!(state.last_run_duration_ms, Some(250));
+        assert_eq!(state.last_run_nodes_touched, Some(42));
+        assert!(state.last_run_error.is_none());
+    }
+
+    // ── persistence round-trip ────────────────────────────────────────────────
+
+    #[test]
+    fn configs_persist_and_reload() {
+        let dir = tmp();
+        {
+            let mut reg = EnricherRegistry::load(dir.path());
+            reg.upsert(base_config("nb1"));
+            reg.upsert(base_config("snow1"));
+        }
+        let reg2 = EnricherRegistry::load(dir.path());
+        assert_eq!(reg2.list().len(), 2);
+        assert!(reg2.get("nb1").is_some());
+        assert!(reg2.get("snow1").is_some());
+    }
+}

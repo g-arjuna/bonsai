@@ -7,9 +7,10 @@ Reads lab/seed/topology.yaml (single source of truth) and populates:
   - cmdb_rel_ci relationships (Runs::Provided by) linking devices to services
   - Rack / site CIs from site definitions
 
-Credentials: reads PDI URL and admin credentials from the bonsai credential
-vault. Requires the vault to be unlocked (BONSAI_VAULT_PASSPHRASE set) and
-the `servicenow-pdi` alias to be configured.
+Credentials: reads PDI URL and admin credentials from environment variables
+SNOW_INSTANCE_URL, SNOW_USERNAME, SNOW_PASSWORD.  Vault-backed credential
+resolution (via the bonsai gRPC credential API) is future work tracked in the
+v10 backlog as T0-2 / Q-6; use --use-vault when that is implemented.
 
 Usage:
     export SNOW_INSTANCE_URL=https://devXXXXXX.service-now.com
@@ -43,8 +44,8 @@ class SnowClient:
         self.session.auth = self.auth
         self.session.headers.update({"Content-Type": "application/json", "Accept": "application/json"})
 
-    def get(self, table: str, query: str = "", fields: str = "") -> list[dict]:
-        params = {"sysparm_display_value": "all", "sysparm_limit": "500"}
+    def get(self, table: str, query: str = "", fields: str = "", limit: int = 500) -> list[dict]:
+        params: dict = {"sysparm_display_value": "all", "sysparm_limit": str(limit)}
         if query:
             params["sysparm_query"] = query
         if fields:
@@ -54,18 +55,29 @@ class SnowClient:
         r.raise_for_status()
         return r.json().get("result", [])
 
+    def _lookup_one(self, table: str, match_field: str, match_value: str) -> dict | None:
+        """Return the first record matching match_field=match_value, or None.
+
+        Uses limit=1 so the query is fast and can't miss records past a 500-row page (Q-8).
+        """
+        results = self.get(table, f"{match_field}={match_value}", "sys_id,name", limit=1)
+        return results[0] if results else None
+
     def upsert(self, table: str, match_field: str, match_value: str, payload: dict) -> dict:
-        """Create or update a record matching match_field=match_value."""
-        existing = self.get(table, f"{match_field}={match_value}", "sys_id,name")
+        """Create or update a record matching match_field=match_value.
+
+        After every write, a verification GET confirms the record is readable (Q-7).
+        """
+        existing = self._lookup_one(table, match_field, match_value)
         if existing:
-            sys_id = existing[0]["sys_id"]
+            sys_id = existing["sys_id"]
             if self.dry_run:
                 print(f"  [dry-run] PATCH {table}/{sys_id} {json.dumps(payload)[:80]}")
-                return existing[0]
+                return existing
             url = f"{self.base}/api/now/table/{table}/{sys_id}"
             r = self.session.patch(url, json=payload)
             r.raise_for_status()
-            return r.json().get("result", {})
+            result = r.json().get("result", {})
         else:
             if self.dry_run:
                 print(f"  [dry-run] POST  {table} {json.dumps(payload)[:80]}")
@@ -73,7 +85,17 @@ class SnowClient:
             url = f"{self.base}/api/now/table/{table}"
             r = self.session.post(url, json=payload)
             r.raise_for_status()
-            return r.json().get("result", {})
+            result = r.json().get("result", {})
+
+        # Verify the record is readable after write (Q-7)
+        verified = self._lookup_one(table, match_field, match_value)
+        if not verified:
+            print(
+                f"  WARNING: {table} record '{match_value}' not found after upsert"
+                f" — check PDI configuration or field mapping"
+            )
+
+        return result
 
     def create_rel(self, parent_sys_id: str, child_sys_id: str, rel_type_name: str) -> None:
         """Create a cmdb_rel_ci relationship if it doesn't exist."""
@@ -194,7 +216,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Seed a ServiceNow PDI with bonsai lab topology.")
     parser.add_argument("--topology", default="lab/seed/topology.yaml", help="Path to topology YAML")
     parser.add_argument("--dry-run", action="store_true", help="Print what would be done without making API calls")
+    parser.add_argument(
+        "--use-vault",
+        action="store_true",
+        help="(future) Read credentials from the bonsai credential vault instead of env vars."
+        " Not yet implemented — will exit with an error.",
+    )
     args = parser.parse_args()
+
+    if args.use_vault:
+        print("ERROR: --use-vault is not yet implemented.")
+        print("  Vault-backed credential resolution requires the bonsai gRPC API.")
+        print("  Use env vars SNOW_INSTANCE_URL / SNOW_USERNAME / SNOW_PASSWORD for now.")
+        sys.exit(2)
 
     instance_url = os.environ.get("SNOW_INSTANCE_URL", "").strip()
     username = os.environ.get("SNOW_USERNAME", "").strip()

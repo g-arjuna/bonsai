@@ -71,3 +71,85 @@ impl RollbackRegistry {
 pub fn new_rollback_registry() -> SharedRollbackRegistry {
     Arc::new(RwLock::new(RollbackRegistry::default()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_state(proposal_id: &str, executed_at_ns: i64, window_secs: u64) -> RollbackState {
+        RollbackState {
+            proposal_id: proposal_id.to_string(),
+            remediation_id: format!("rem-{proposal_id}"),
+            executed_at_ns,
+            window_secs,
+            snapshot_json: "[]".to_string(),
+            rolled_back: false,
+        }
+    }
+
+    const WINDOW: u64 = 60; // 60s window for most tests
+    const NS: i64 = 1_000_000_000;
+
+    #[test]
+    fn not_expired_within_window() {
+        let state = make_state("p1", 0, WINDOW);
+        // 30 seconds later — still within 60s window
+        assert!(!state.is_expired(30 * NS));
+    }
+
+    #[test]
+    fn expired_after_window() {
+        let state = make_state("p1", 0, WINDOW);
+        // 61 seconds later — past the 60s window
+        assert!(state.is_expired(61 * NS));
+    }
+
+    #[test]
+    fn rolled_back_flag_causes_immediate_expiry() {
+        let mut state = make_state("p1", 0, WINDOW);
+        state.rolled_back = true;
+        // Even within the window it is "expired" (consumed)
+        assert!(state.is_expired(1 * NS));
+    }
+
+    #[test]
+    fn register_and_get() {
+        let mut reg = RollbackRegistry::default();
+        reg.register(make_state("p1", 0, WINDOW));
+        let s = reg.get("p1").unwrap();
+        assert_eq!(s.proposal_id, "p1");
+        assert!(reg.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn active_windows_excludes_expired() {
+        let mut reg = RollbackRegistry::default();
+        reg.register(make_state("fresh", 100 * NS, WINDOW));   // expires at 160s
+        reg.register(make_state("expired", 0, WINDOW));        // expired at 60s
+
+        let active = reg.active_windows(120 * NS); // now = 120s
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].proposal_id, "fresh");
+    }
+
+    #[test]
+    fn mark_rolled_back_prevents_reuse() {
+        let mut reg = RollbackRegistry::default();
+        reg.register(make_state("p1", 0, WINDOW));
+        reg.mark_rolled_back("p1");
+
+        let active = reg.active_windows(1 * NS);
+        assert!(active.is_empty());
+    }
+
+    #[test]
+    fn prune_removes_expired_entries() {
+        let mut reg = RollbackRegistry::default();
+        reg.register(make_state("old", 0, WINDOW));
+        reg.register(make_state("new", 200 * NS, WINDOW));
+
+        reg.prune(120 * NS); // prune at t=120s: "old" (expired at 60s) is gone
+        assert!(reg.get("old").is_none());
+        assert!(reg.get("new").is_some());
+    }
+}
