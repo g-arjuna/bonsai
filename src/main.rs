@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 use std::fs;
+use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tracing::{info, warn};
+
+use lru::LruCache;
 
 use bonsai::{
     api::{
@@ -14,6 +17,7 @@ use bonsai::{
         },
     },
     archive, audit, catalogue, config,
+    config::{resolve_buffer_pool_collector, resolve_buffer_pool_core},
     output::OutputAdapter,
     config::TargetConfig,
     credentials::{CredentialVault, ResolvePurpose, ResolvedCredential},
@@ -60,8 +64,13 @@ async fn main() -> Result<()> {
         "bonsai starting"
     );
 
+    let startup_start = Instant::now();
+
+    let t = Instant::now();
     let config_path = config_path();
     let cfg = config::load(&config_path).await?;
+    info!(phase = "config_load", elapsed_ms = t.elapsed().as_millis() as u64, "startup");
+
     let runtime_mode = cfg.runtime.parsed_mode()?;
     let run_core = runtime_mode.runs_core();
     let run_collector = runtime_mode.runs_collector();
@@ -222,14 +231,17 @@ async fn main() -> Result<()> {
         } else {
             cfg.graph_path.as_str()
         };
+        let pool_bytes = resolve_buffer_pool_core(cfg.graph.buffer_pool_bytes);
 
+        let t = Instant::now();
         let s = tokio::task::spawn_blocking({
             let p = graph_path.to_string();
-            move || graph::GraphStore::open(&p)
+            move || graph::GraphStore::open(&p, pool_bytes)
         })
         .await
         .context("graph open panicked")?
         .context("graph open failed")?;
+        info!(phase = "graph_open", elapsed_ms = t.elapsed().as_millis() as u64, "startup");
         Some(Store::Core(std::sync::Arc::new(s)))
     } else if run_collector {
         let graph_path = if cfg.collector.graph_path.is_empty() {
@@ -237,13 +249,17 @@ async fn main() -> Result<()> {
         } else {
             cfg.collector.graph_path.as_str()
         };
+        let pool_bytes = resolve_buffer_pool_collector(cfg.graph.buffer_pool_bytes);
+
+        let t = Instant::now();
         let s = tokio::task::spawn_blocking({
             let p = graph_path.to_string();
-            move || bonsai::collector::graph::CollectorGraphStore::open(&p)
+            move || bonsai::collector::graph::CollectorGraphStore::open(&p, pool_bytes)
         })
         .await
         .context("collector graph open panicked")?
         .context("collector graph open failed")?;
+        info!(phase = "graph_open", elapsed_ms = t.elapsed().as_millis() as u64, "startup");
         Some(Store::Collector(std::sync::Arc::new(s)))
     } else {
         None
@@ -253,7 +269,8 @@ async fn main() -> Result<()> {
         let store_writer = store.clone();
         let mut rx = bus.subscribe();
         tokio::spawn(async move {
-            let mut last_counter_write: HashMap<String, Instant> = HashMap::new();
+            let mut last_counter_write: LruCache<String, Instant> =
+                LruCache::new(NonZeroUsize::new(1024).unwrap());
             let debounce = Duration::from_secs(debounce_secs);
 
             loop {
@@ -275,12 +292,12 @@ async fn main() -> Result<()> {
                             );
                             let now = Instant::now();
                             let skip = last_counter_write
-                                .get(&key)
+                                .peek(&key)
                                 .is_some_and(|t| now.duration_since(*t) < debounce);
                             if skip {
                                 continue;
                             }
-                            last_counter_write.insert(key, now);
+                            last_counter_write.put(key, now);
                         }
 
                         if let Err(error) = store_writer.write(update).await {
@@ -779,6 +796,8 @@ async fn main() -> Result<()> {
             });
         }
     }
+
+    info!(phase = "ready", elapsed_ms = startup_start.elapsed().as_millis() as u64, "startup");
 
     tokio::signal::ctrl_c().await?;
     info!("Ctrl+C received - shutting down");

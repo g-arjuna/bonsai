@@ -9,6 +9,8 @@ pub struct Config {
     #[serde(default)]
     pub collector: CollectorConfig,
     pub graph_path: String,
+    #[serde(default)]
+    pub graph: GraphConfig,
     /// gRPC listen address for the Bonsai API server. Default: "[::1]:50051".
     #[serde(default = "default_api_addr")]
     pub api_addr: String,
@@ -462,6 +464,53 @@ impl Default for CredentialsConfig {
     }
 }
 
+// ── Graph database ────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Default)]
+pub struct GraphConfig {
+    /// LadybugDB buffer pool size in bytes.
+    /// Default: min(2 GiB, 25 % of system RAM) for core; min(256 MiB, 10 %) for collector.
+    /// Set explicitly in [graph] to override the auto-detected default.
+    pub buffer_pool_bytes: Option<u64>,
+}
+
+/// Detect physical RAM size by reading /proc/meminfo on Linux; returns 8 GiB fallback elsewhere.
+fn detect_system_ram_bytes() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
+            for line in content.lines() {
+                if let Some(rest) = line.strip_prefix("MemTotal:")
+                    && let Some(kb_str) = rest.split_whitespace().next()
+                    && let Ok(kb) = kb_str.parse::<u64>()
+                    && kb > 0
+                {
+                    return kb * 1024;
+                }
+            }
+        }
+    }
+    8 * 1024 * 1024 * 1024
+}
+
+/// Return the buffer pool size to pass to LadybugDB for the core (graph-writer) process.
+/// Uses the operator-configured value if set; otherwise min(2 GiB, 25 % of RAM).
+pub fn resolve_buffer_pool_core(configured: Option<u64>) -> u64 {
+    configured.unwrap_or_else(|| {
+        const TWO_GIB: u64 = 2 * 1024 * 1024 * 1024;
+        std::cmp::min(TWO_GIB, detect_system_ram_bytes() / 4)
+    })
+}
+
+/// Return the buffer pool size for the collector (smaller graph, much less data).
+/// Uses the operator-configured value if set; otherwise min(256 MiB, 10 % of RAM).
+pub fn resolve_buffer_pool_collector(configured: Option<u64>) -> u64 {
+    configured.unwrap_or_else(|| {
+        const MB_256: u64 = 256 * 1024 * 1024;
+        std::cmp::min(MB_256, detect_system_ram_bytes() / 10)
+    })
+}
+
 fn default_retention_enabled() -> bool {
     true
 }
@@ -475,7 +524,7 @@ fn default_max_state_change_events() -> u64 {
 }
 
 fn default_bus_capacity() -> usize {
-    2048
+    512
 }
 
 fn default_debounce_secs() -> u64 {

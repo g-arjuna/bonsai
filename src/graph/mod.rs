@@ -144,17 +144,29 @@ pub struct GraphStore {
 }
 
 impl GraphStore {
-    pub fn open(path: &str) -> Result<Self> {
-        let db =
-            Database::new(path, SystemConfig::default()).context("failed to open LadybugDB")?;
+    pub fn open(path: &str, buffer_pool_bytes: u64) -> Result<Self> {
+        let sysconfig = SystemConfig::default().buffer_pool_size(buffer_pool_bytes);
+        let db = Database::new(path, sysconfig).context("failed to open LadybugDB")?;
+        info!(
+            path,
+            buffer_pool_mib = buffer_pool_bytes / 1024 / 1024,
+            "LadybugDB opened"
+        );
         let (event_tx, _) = broadcast::channel(1024);
         let store = GraphStore {
             db: Arc::new(db),
             event_tx,
             write_lock: Arc::new(Mutex::new(())),
         };
+
+        let t = Instant::now();
         store.init_schema()?;
+        info!(phase = "schema_init", elapsed_ms = t.elapsed().as_millis() as u64, "startup");
+
+        let t = Instant::now();
         store.backfill_remediation_trust_marks()?;
+        info!(phase = "backfill", elapsed_ms = t.elapsed().as_millis() as u64, "startup");
+
         info!(path, "graph store opened");
         Ok(store)
     }
@@ -2640,7 +2652,7 @@ mod tests {
     #[test]
     fn backfill_remediation_trust_marks_marks_legacy_rows() {
         let path = temp_graph_path("trust-backfill");
-        let store = GraphStore::open(&path).expect("open graph store");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
         let conn = Connection::new(&store.db).expect("graph connection");
 
         let mut old_stmt = conn
@@ -2713,7 +2725,7 @@ mod tests {
     #[tokio::test]
     async fn subscription_status_write_preserves_device_metadata() {
         let path = temp_graph_path("subscription-status");
-        let store = GraphStore::open(&path).expect("open graph store");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
         let conn = Connection::new(&store.db).expect("graph connection");
 
         upsert_device(&conn, "dut:57400", "nokia_srl", "dut1", ts(1_000_000_000))
@@ -2758,7 +2770,7 @@ mod tests {
     #[tokio::test]
     async fn site_sync_creates_site_and_located_at_edge() {
         let path = temp_graph_path("site-sync");
-        let store = GraphStore::open(&path).expect("open graph store");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
 
         store
             .sync_sites_from_targets(vec![TargetConfig {
@@ -2811,7 +2823,7 @@ mod tests {
     #[tokio::test]
     async fn site_upsert_rejects_self_parent_and_cycles() {
         let path = temp_graph_path("site-cycle");
-        let store = GraphStore::open(&path).expect("open graph store");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
 
         let self_parent = store.upsert_site(test_site("lab", "lab")).await;
         assert!(
@@ -2841,7 +2853,7 @@ mod tests {
     #[tokio::test]
     async fn site_upsert_rejects_parent_chain_deeper_than_ten() {
         let path = temp_graph_path("site-depth");
-        let store = GraphStore::open(&path).expect("open graph store");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
 
         store
             .upsert_site(test_site("site-0", ""))

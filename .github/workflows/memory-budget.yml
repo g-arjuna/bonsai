@@ -34,6 +34,9 @@ jobs:
           cat > /tmp/bonsai-memory-test.toml <<'EOF'
           graph_path = "/tmp/bonsai-mem-test.db"
 
+          [graph]
+          buffer_pool_bytes = 536870912   # 512 MiB explicit cap for CI
+
           [retention]
           enabled = true
           max_age_hours = 1
@@ -48,13 +51,22 @@ jobs:
           check_interval_secs = 30
           EOF
 
-      - name: Run bonsai for 3 minutes with no devices (baseline RSS)
+      - name: Bundle liblbug.so.0 next to binary (RPATH=$ORIGIN)
         run: |
           set -euo pipefail
-          LBUG_PATH=$(ls -td target/release/build/lbug-*/out/build/src 2>/dev/null | head -1 || true)
+          SO=$(ls -td target/release/build/lbug-*/out/build/src/liblbug.so.0 2>/dev/null | head -1 || true)
+          if [[ -n "$SO" ]]; then
+            cp "$SO" target/release/liblbug.so.0
+            echo "Bundled: $SO → target/release/liblbug.so.0"
+          else
+            echo "Warning: liblbug.so.0 not found in build output (build.rs auto-copy may have handled it)"
+          fi
 
-          RUST_LOG=warn LD_LIBRARY_PATH="${LBUG_PATH}" \
-            ./target/release/bonsai --config /tmp/bonsai-memory-test.toml \
+      - name: Run bonsai for 10 minutes with no devices (baseline RSS)
+        run: |
+          set -euo pipefail
+
+          RUST_LOG=warn ./target/release/bonsai --config /tmp/bonsai-memory-test.toml \
             > /tmp/bonsai-mem.log 2>&1 &
           BONSAI_PID=$!
 
@@ -66,10 +78,10 @@ jobs:
 
           echo "bonsai started (PID $BONSAI_PID)"
 
-          # Run for 3 minutes, sampling RSS every 15s
+          # Run for 10 minutes, sampling RSS every 30s
           PEAK_RSS=0
-          for i in $(seq 1 12); do
-            sleep 15
+          for i in $(seq 1 20); do
+            sleep 30
             RSS=$(grep VmRSS /proc/${BONSAI_PID}/status 2>/dev/null | awk '{print $2}' || echo 0)
             RSS_BYTES=$((RSS * 1024))
             echo "  sample ${i}: RSS = $((RSS_BYTES / 1024 / 1024)) MB"
@@ -81,13 +93,14 @@ jobs:
           kill $BONSAI_PID 2>/dev/null || true
 
           PEAK_MB=$((PEAK_RSS / 1024 / 1024))
-          BUDGET_MB=1024   # 1 GB budget
+          BUDGET_MB=1536   # 1.5 GB budget (post T0-1 fix; was 1 GB before buffer pool was uncapped)
 
           echo "Peak RSS: ${PEAK_MB} MB  (budget: ${BUDGET_MB} MB)"
           echo "peak_rss_mb=${PEAK_MB}" >> "$GITHUB_ENV"
 
           if [[ $PEAK_MB -gt $BUDGET_MB ]]; then
             echo "FAIL: peak RSS ${PEAK_MB} MB exceeds budget ${BUDGET_MB} MB"
+            cat /tmp/bonsai-mem.log | tail -40
             exit 1
           fi
           echo "PASS: peak RSS ${PEAK_MB} MB is within budget"
@@ -98,14 +111,14 @@ jobs:
         with:
           script: |
             const peakMb = process.env.peak_rss_mb || 'unknown';
-            const budget = 1024;
+            const budget = 1536;
             const status = parseInt(peakMb) > budget ? '❌ OVER BUDGET' : '✅ within budget';
             core.summary
               .addHeading('Memory Budget Results')
               .addTable([
                 [{data: 'Metric', header: true}, {data: 'Value', header: true}],
                 ['Peak RSS', `${peakMb} MB`],
-                ['Budget', `${budget} MB`],
+                ['Budget', `${budget} MB (1.5 GiB; T0-1 v12 fix applied)`],
                 ['Status', status],
               ])
               .write();

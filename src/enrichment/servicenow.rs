@@ -685,7 +685,7 @@ mod tests {
             .join(format!("bonsai-snow-test-{label}-{}", uuid::Uuid::new_v4()))
             .to_string_lossy()
             .into_owned();
-        GraphStore::open(&path).expect("open test graph")
+        GraphStore::open(&path, 256 * 1024 * 1024).expect("open test graph")
     }
 
     // ── SnowRef polymorphic deserialisation (Q-14) ────────────────────────────

@@ -66,6 +66,9 @@ time = { version = "0.3", features = ["parsing"] }
 # UUID generation for StateChangeEvent primary keys
 uuid = { version = "1", features = ["v4"] }
 
+# Bounded LRU cache for the graph-writer debounce map (T0-2)
+lru = "0.12"
+
 # Internal observability — exposes /metrics in Prometheus text format
 metrics = "0.24"
 metrics-exporter-prometheus = "0.16"

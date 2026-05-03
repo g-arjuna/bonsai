@@ -12,17 +12,19 @@ verify them at runtime.
 | 12-device lab (steady state) | < 1.5 GB | Scales with device × path count |
 
 **What bounds memory**:
+- `[graph] buffer_pool_bytes` — **LadybugDB buffer pool (dominant factor)**. Default: `min(2 GiB, 25% of RAM)` for core; `min(256 MiB, 10% of RAM)` for collector. Set explicitly to override. Pre-v12 this defaulted to ~80% of system RAM (the 9 GB bug).
 - `[retention] enabled = true` (default) limits `StateChangeEvent` accumulation in lbug.
 - `[retention] max_age_hours` (default 24) rolls old events out of the graph.
 - `[retention] max_state_change_events` (default 10000) hard-caps total event count.
-- `[event_bus] capacity` (default 2048) caps broadcast channel queue depth.
+- `[event_bus] capacity` (default 512) caps broadcast channel queue depth. Worst-case bound: `capacity × max_message_size × subscriber_count`.
 - `[archive] max_batch_rows` (default 1000) caps in-flight archive buffer.
 - `CounterSummarizer.max_entries` (default 1024) caps summarizer state.
+- Graph-writer debounce map: LruCache, capacity 1024 entries (bounded; pre-v12 was an unbounded HashMap).
 
 **Observable**: `bonsai_memory_rss_bytes` (Prometheus gauge, sampled every 60s).
 
-**CI assertion**: `.github/workflows/memory-budget.yml` — bonsai with synthetic load for
-10 minutes; fails if peak RSS exceeds 1 GB.
+**CI assertion**: `.github/workflows/memory-budget.yml` — bonsai with no devices for
+10 minutes; fails if peak RSS exceeds 1.5 GB.
 
 ---
 
@@ -57,7 +59,7 @@ Observable: `bonsai_archive_last_compression_ppm` (parts-per-million; divide by 
 
 | Config | Default | Notes |
 |--------|---------|-------|
-| `[event_bus] capacity` | 2048 | `tokio::sync::broadcast` channel depth |
+| `[event_bus] capacity` | 512 | `tokio::sync::broadcast` channel depth (reduced from 2048 in v12) |
 
 When any subscriber lags and the channel is >50% full, bonsai logs a warning and increments
 `bonsai_event_bus_slow_subscriber_warnings_total`.

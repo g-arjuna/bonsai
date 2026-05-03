@@ -1761,10 +1761,10 @@ async fn test_status_handler(
     let mut driver_results = serde_json::Map::new();
     for name in &["api", "event", "ui"] {
         let p = driver_dir.join(format!("{name}.json"));
-        if let Ok(s) = tokio::fs::read_to_string(&p).await {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
-                driver_results.insert(name.to_string(), v);
-            }
+        if let Ok(s) = tokio::fs::read_to_string(&p).await
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&s)
+        {
+            driver_results.insert(name.to_string(), v);
         }
     }
 

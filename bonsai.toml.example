@@ -39,9 +39,16 @@ graph_path   = "bonsai.db"
 # path = "bonsai-credentials"
 # passphrase_env = "BONSAI_VAULT_PASSPHRASE"
 
+# ── Graph database (v12 T0-1) ─────────────────────────────────────────────────
+# LadybugDB buffer pool is capped by default to avoid the ~80% RAM grab.
+# Default: min(2 GiB, 25% of RAM) for core; min(256 MiB, 10%) for collector.
+# Override here if you have more RAM to spare or run on a constrained device.
+# [graph]
+# buffer_pool_bytes = 2147483648   # 2 GiB — safe for 16 GB machines with a 4-device lab
+
 # ── Event bus (T1-1) ──────────────────────────────────────────────────────────
 # [event_bus]
-# capacity              = 2048   # broadcast channel depth; increase for high-rate labs
+# capacity              = 512    # broadcast channel depth; default reduced from 2048 in v12
 # counter_debounce_secs = 10     # min interval between interface counter graph writes
 # [archive]
 # enabled                = true     # write telemetry updates to parquet for cold storage

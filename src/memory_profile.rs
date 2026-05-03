@@ -85,16 +85,16 @@ pub async fn run_memory_profiler(
                     "memory profile"
                 );
 
-                if let Some(ref path) = output_path {
-                    if let Ok(json) = serde_json::to_string_pretty(&snap) {
-                        let timestamped = format!(
-                            "{{\"ts\":\"{}\",\"snapshot\":{}}}\n",
-                            chrono_now_iso(),
-                            json
-                        );
-                        if let Err(e) = append_to_file(path, &timestamped) {
-                            warn!(path = %path.display(), error = %e, "memory profiler write failed");
-                        }
+                if let Some(ref path) = output_path
+                    && let Ok(json) = serde_json::to_string_pretty(&snap)
+                {
+                    let timestamped = format!(
+                        "{{\"ts\":\"{}\",\"snapshot\":{}}}\n",
+                        chrono_now_iso(),
+                        json
+                    );
+                    if let Err(e) = append_to_file(path, &timestamped) {
+                        warn!(path = %path.display(), error = %e, "memory profiler write failed");
                     }
                 }
             }

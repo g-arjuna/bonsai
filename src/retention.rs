@@ -131,7 +131,7 @@ mod tests {
             fs::create_dir_all(parent)?;
         }
 
-        let store = Arc::new(GraphStore::open(db_path.to_str().expect("valid db path"))?);
+        let store = Arc::new(GraphStore::open(db_path.to_str().expect("valid db path"), 256 * 1024 * 1024)?);
         seed_state_change_events(Arc::clone(&store), 10)?;
 
         let stats = prune_events_by_count(Arc::clone(&store), 5).await?;

@@ -57,18 +57,17 @@ impl InProcessBus {
         metrics::gauge!("bonsai_event_bus_capacity").set(capacity as f64);
 
         // Warn when a lagging subscriber is causing back-pressure.
-        if capacity > 0 {
-            let fill_pct = depth * 100 / capacity;
-            if fill_pct >= SLOW_SUBSCRIBER_WARN_THRESHOLD_PCT {
-                warn!(
-                    depth,
-                    capacity,
-                    fill_pct,
-                    "event bus channel is {}% full — a subscriber may be lagging",
-                    fill_pct
-                );
-                metrics::counter!("bonsai_event_bus_slow_subscriber_warnings_total").increment(1);
-            }
+        if let Some(fill_pct) = (depth * 100).checked_div(capacity)
+            && fill_pct >= SLOW_SUBSCRIBER_WARN_THRESHOLD_PCT
+        {
+            warn!(
+                depth,
+                capacity,
+                fill_pct,
+                "event bus channel is {}% full — a subscriber may be lagging",
+                fill_pct
+            );
+            metrics::counter!("bonsai_event_bus_slow_subscriber_warnings_total").increment(1);
         }
     }
 

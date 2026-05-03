@@ -17,8 +17,14 @@ pub struct CollectorGraphStore {
 }
 
 impl CollectorGraphStore {
-    pub fn open(path: &str) -> Result<Self> {
-        let db = Database::new(path, SystemConfig::default()).context("failed to open collector LadybugDB")?;
+    pub fn open(path: &str, buffer_pool_bytes: u64) -> Result<Self> {
+        let sysconfig = SystemConfig::default().buffer_pool_size(buffer_pool_bytes);
+        let db = Database::new(path, sysconfig).context("failed to open collector LadybugDB")?;
+        info!(
+            path,
+            buffer_pool_mib = buffer_pool_bytes / 1024 / 1024,
+            "collector LadybugDB opened"
+        );
         let (event_tx, _) = broadcast::channel(1024);
         let store = CollectorGraphStore {
             db: Arc::new(db),
