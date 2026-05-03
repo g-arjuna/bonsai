@@ -341,6 +341,7 @@ async fn main() -> Result<()> {
     }
 
     // Disk guard
+    let storage_config_for_http = cfg.storage.clone();
     if run_core && (cfg.storage.max_archive_bytes > 0 || cfg.storage.max_graph_bytes > 0) {
         let archive_path = std::path::PathBuf::from(&cfg.archive.path);
         let graph_path = std::path::PathBuf::from(&cfg.graph_path);
@@ -684,6 +685,9 @@ async fn main() -> Result<()> {
                         rollback_registry,
                         remediation_config,
                         runtime_dir,
+                        cfg.archive.path.clone(),
+                        cfg.graph_path.clone(),
+                        storage_config_for_http,
                     ),
                 )
                 .await

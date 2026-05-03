@@ -129,6 +129,34 @@
       </div>
     </div>
 
+    <!-- ── Memory and disk ───────────────────────────────────────────── -->
+    <div class="ops-grid" style="margin-top:12px;">
+      <div class="card metric">
+        <span>RSS memory</span>
+        <strong class="{(ops.rss_bytes ?? 0) > 900 * 1024 * 1024 ? 'warn-text' : ''}">
+          {Math.round((ops.rss_bytes ?? 0) / 1024 / 1024)} MB
+        </strong>
+      </div>
+      <div class="card metric">
+        <span>Archive on disk</span>
+        <strong class="{(ops.archive_disk_pct ?? 0) >= 80 ? 'warn-text' : ''}">
+          {Math.round((ops.archive_disk_bytes ?? 0) / 1024 / 1024)} MB
+          {#if (ops.archive_disk_pct ?? 0) > 0}
+            <small>({ops.archive_disk_pct}%)</small>
+          {/if}
+        </strong>
+      </div>
+      <div class="card metric">
+        <span>Graph DB on disk</span>
+        <strong class="{(ops.graph_disk_pct ?? 0) >= 80 ? 'warn-text' : ''}">
+          {Math.round((ops.graph_disk_bytes ?? 0) / 1024 / 1024)} MB
+          {#if (ops.graph_disk_pct ?? 0) > 0}
+            <small>({ops.graph_disk_pct}%)</small>
+          {/if}
+        </strong>
+      </div>
+    </div>
+
     <!-- ── Collector health ────────────────────────────────────────────── -->
     {#if collectors?.collectors?.length}
       <div class="card section">

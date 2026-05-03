@@ -40,8 +40,8 @@ use crate::graph::{
     RemediationProposalRow, SiteRecord, TraceStep,
 };
 use crate::{
-    archive, audit,
-    config::{AssignmentRule, RemediationConfig, SelectedSubscriptionPath, TargetConfig},
+    archive, audit, disk_guard, memory_profile,
+    config::{AssignmentRule, RemediationConfig, SelectedSubscriptionPath, StorageConfig, TargetConfig},
     credentials::{CredentialSummary, CredentialVault, ResolvePurpose, ResolvedCredential},
     discovery::{self, DiscoveryInput},
     event_bus,
@@ -174,6 +174,31 @@ struct OperationsResponse {
     archive_last_flush_millis: u64,
     archive_last_compression_ppm: u64,
     cutoff_iso: String,
+    // Memory + disk (T4-6)
+    rss_bytes: u64,
+    archive_disk_bytes: u64,
+    archive_disk_pct: u8,
+    graph_disk_bytes: u64,
+    graph_disk_pct: u8,
+}
+
+#[derive(Serialize)]
+struct TestStatusResponse {
+    ts_unix: u64,
+    memory: memory_profile::MemorySnapshot,
+    disk: DiskStatusJson,
+    external: serde_json::Value,
+    driver_results: serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct DiskStatusJson {
+    archive_bytes: u64,
+    archive_max_bytes: u64,
+    archive_pct: u8,
+    graph_bytes: u64,
+    graph_max_bytes: u64,
+    graph_pct: u8,
 }
 
 /// Outbound SSE payload — mirrors BonsaiEvent but serialised as JSON.
@@ -512,6 +537,9 @@ pub struct AppState {
     pub rollback_registry: SharedRollbackRegistry,
     pub remediation_config: RemediationConfig,
     pub runtime_dir: String,
+    pub archive_path: String,
+    pub graph_path: String,
+    pub storage_config: StorageConfig,
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -530,6 +558,9 @@ pub fn router(
     rollback_registry: SharedRollbackRegistry,
     remediation_config: RemediationConfig,
     runtime_dir: String,
+    archive_path: String,
+    graph_path: String,
+    storage_config: StorageConfig,
 ) -> Router {
     let state = AppState {
         store,
@@ -544,6 +575,9 @@ pub fn router(
         rollback_registry,
         remediation_config,
         runtime_dir,
+        archive_path,
+        graph_path,
+        storage_config,
     };
 
     // Serve the Svelte SPA from ui/dist/. Fall back to index.html so
@@ -643,6 +677,7 @@ pub fn router(
         .route("/api/incidents", get(incidents_handler))
         .route("/api/readiness", get(readiness_handler))
         .route("/api/operations", get(operations_handler))
+        .route("/api/_test/status", get(test_status_handler))
         .route("/api/trace/{id}", get(trace_handler))
         .route("/api/events", get(events_handler))
         .route("/api/devices/{address}", get(device_detail_handler))
@@ -1664,6 +1699,12 @@ async fn operations_handler(
         });
     let bus_snapshot = event_bus::InProcessBus::snapshot();
     let archive_snapshot = archive::snapshot();
+    let mem_snapshot = memory_profile::snapshot();
+    let disk_snapshot = disk_guard::snapshot(
+        std::path::Path::new(&state.archive_path),
+        std::path::Path::new(&state.graph_path),
+        &state.storage_config,
+    );
 
     Ok(Json(OperationsResponse {
         detection_events: readiness.detection_events,
@@ -1691,6 +1732,60 @@ async fn operations_handler(
         archive_last_flush_millis: archive_snapshot.last_flush_millis,
         archive_last_compression_ppm: archive_snapshot.last_compression_ppm,
         cutoff_iso: readiness.cutoff_iso,
+        rss_bytes: mem_snapshot.rss_bytes,
+        archive_disk_bytes: disk_snapshot.archive_bytes,
+        archive_disk_pct: disk_snapshot.archive_pct,
+        graph_disk_bytes: disk_snapshot.graph_bytes,
+        graph_disk_pct: disk_snapshot.graph_pct,
+    }))
+}
+
+async fn test_status_handler(
+    State(state): State<AppState>,
+) -> Result<Json<TestStatusResponse>, (StatusCode, String)> {
+    let mem = memory_profile::snapshot();
+    let disk = disk_guard::snapshot(
+        std::path::Path::new(&state.archive_path),
+        std::path::Path::new(&state.graph_path),
+        &state.storage_config,
+    );
+
+    let external_path = std::path::Path::new(&state.runtime_dir).join("external_status.json");
+    let external: serde_json::Value = tokio::fs::read_to_string(&external_path)
+        .await
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::Value::Null);
+
+    let driver_dir = std::path::Path::new(&state.runtime_dir).join("driver_results");
+    let mut driver_results = serde_json::Map::new();
+    for name in &["api", "event", "ui"] {
+        let p = driver_dir.join(format!("{name}.json"));
+        if let Ok(s) = tokio::fs::read_to_string(&p).await {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+                driver_results.insert(name.to_string(), v);
+            }
+        }
+    }
+
+    let ts_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    Ok(Json(TestStatusResponse {
+        ts_unix,
+        memory: mem,
+        disk: DiskStatusJson {
+            archive_bytes: disk.archive_bytes,
+            archive_max_bytes: disk.archive_max_bytes,
+            archive_pct: disk.archive_pct,
+            graph_bytes: disk.graph_bytes,
+            graph_max_bytes: disk.graph_max_bytes,
+            graph_pct: disk.graph_pct,
+        },
+        external,
+        driver_results: serde_json::Value::Object(driver_results),
     }))
 }
 
