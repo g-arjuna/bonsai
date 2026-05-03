@@ -1,0 +1,255 @@
+# docker/compose-external.yml — Standardised external service infrastructure.
+#
+# Brings up NetBox, Splunk, Elasticsearch + Kibana, and Prometheus + Grafana
+# under named profiles. All services expose fixed localhost ports so bonsai
+# (running on the host or in docker-compose.yml) can reach them without
+# additional network configuration.
+#
+# Quick start:
+#   cp .env.example .env          # set SPLUNK_PASSWORD, ELASTIC_PASSWORD, SPLUNK_HEC_TOKEN
+#   docker compose -f docker/compose-external.yml --profile all up -d
+#   scripts/seed_external.sh
+#   scripts/check_external.sh
+#
+# Individual profiles:
+#   --profile netbox       NetBox + Postgres + Redis (port 8000)
+#   --profile splunk       Splunk Enterprise (web 8100, HEC 8088)
+#   --profile elastic      Elasticsearch (9200) + Kibana (5601)
+#   --profile prometheus   Prometheus (9093) + Grafana (3001)
+#   --profile all          All of the above
+#
+# Service URLs (for bonsai.toml or configure_external.sh):
+#   NetBox API:      http://localhost:8000/api/
+#   Splunk HEC:      http://localhost:8088/services/collector
+#   Elasticsearch:   http://localhost:9200
+#   Kibana:          http://localhost:5601
+#   Prometheus:      http://localhost:9093
+#   Grafana:         http://localhost:3001
+#
+# Default dev credentials (never use in production):
+#   NetBox:          admin / bonsai-dev  (token: bonsai-dev-token)
+#   Splunk:          admin / ${SPLUNK_PASSWORD}  (HEC token: ${SPLUNK_HEC_TOKEN})
+#   Elasticsearch:   no auth (xpack.security.enabled=false)
+#   Grafana:         admin / admin
+
+# ── Shared network ────────────────────────────────────────────────────────────
+
+networks:
+  bonsai-external:
+    driver: bridge
+    name: bonsai-external
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+
+volumes:
+  netbox_pg_data:
+  netbox_media:
+  netbox_static:
+  splunk_data:
+  elastic_data:
+  prometheus_data:
+  grafana_data:
+
+# ── Services ──────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── NetBox ─────────────────────────────────────────────────────────────────
+
+  netbox-postgres:
+    image: postgres:16-alpine
+    profiles: ["netbox", "all"]
+    environment:
+      POSTGRES_DB: netbox
+      POSTGRES_USER: netbox
+      POSTGRES_PASSWORD: bonsai-netbox-dev
+    volumes:
+      - netbox_pg_data:/var/lib/postgresql/data
+    networks:
+      - bonsai-external
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "netbox"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  netbox-redis:
+    image: redis:7-alpine
+    profiles: ["netbox", "all"]
+    command: redis-server --save "" --appendonly no
+    networks:
+      - bonsai-external
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  netbox:
+    image: netboxcommunity/netbox:v4.1
+    profiles: ["netbox", "all"]
+    depends_on:
+      netbox-postgres:
+        condition: service_healthy
+      netbox-redis:
+        condition: service_healthy
+    environment:
+      DB_HOST: netbox-postgres
+      DB_NAME: netbox
+      DB_USER: netbox
+      DB_PASSWORD: bonsai-netbox-dev
+      REDIS_HOST: netbox-redis
+      REDIS_PORT: "6379"
+      SECRET_KEY: bonsai-dev-secret-key-do-not-use-in-production
+      SUPERUSER_NAME: admin
+      SUPERUSER_EMAIL: admin@bonsai.local
+      SUPERUSER_PASSWORD: bonsai-dev
+      SUPERUSER_API_TOKEN: ${NETBOX_API_TOKEN:-bonsai-dev-token}
+      ALLOWED_HOSTS: "localhost 127.0.0.1 netbox"
+      METRICS_ENABLED: "true"
+    ports:
+      - "8000:8080"
+    volumes:
+      - netbox_media:/opt/netbox/netbox/media
+      - netbox_static:/opt/netbox/netbox/static
+    networks:
+      - bonsai-external
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 10
+
+  netbox-worker:
+    image: netboxcommunity/netbox:v4.1
+    profiles: ["netbox", "all"]
+    depends_on:
+      netbox:
+        condition: service_healthy
+    environment:
+      DB_HOST: netbox-postgres
+      DB_NAME: netbox
+      DB_USER: netbox
+      DB_PASSWORD: bonsai-netbox-dev
+      REDIS_HOST: netbox-redis
+      REDIS_PORT: "6379"
+      SECRET_KEY: bonsai-dev-secret-key-do-not-use-in-production
+    command: /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py rqworker
+    networks:
+      - bonsai-external
+
+  # ── Splunk Enterprise ───────────────────────────────────────────────────────
+
+  splunk:
+    image: splunk/splunk:latest
+    profiles: ["splunk", "all"]
+    environment:
+      SPLUNK_START_ARGS: "--accept-license"
+      SPLUNK_PASSWORD: ${SPLUNK_PASSWORD:?SPLUNK_PASSWORD must be set in .env}
+      SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:?SPLUNK_HEC_TOKEN must be set in .env}
+    ports:
+      - "8100:8000"   # Splunk web UI
+      - "8088:8088"   # HEC endpoint
+    volumes:
+      - splunk_data:/opt/splunk/var
+    networks:
+      - bonsai-external
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8088/services/collector/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 90s
+      retries: 12
+
+  # ── Elasticsearch + Kibana ─────────────────────────────────────────────────
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+    profiles: ["elastic", "all"]
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elastic_data:/usr/share/elasticsearch/data
+    networks:
+      - bonsai-external
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9200/_cluster/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 12
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.12.0
+    profiles: ["elastic", "all"]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
+    ports:
+      - "5601:5601"
+    networks:
+      - bonsai-external
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5601/api/status"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 12
+
+  # ── Prometheus + Grafana ───────────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: ["prometheus", "all"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-remote-write-receiver
+      - --storage.tsdb.retention.time=7d
+    ports:
+      - "9093:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - bonsai-external
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 6
+
+  grafana:
+    image: grafana/grafana:latest
+    profiles: ["prometheus", "all"]
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/bonsai.json
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    networks:
+      - bonsai-external
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 6
