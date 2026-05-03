@@ -42,6 +42,9 @@ const REGISTRY_PATH: &str = "bonsai-registry.json";
 async fn main() -> Result<()> {
     install_rustls_crypto_provider();
 
+    if SelfTestCliCommand::parse() {
+        return run_self_test().await;
+    }
     if let Some(command) = AuditCliCommand::parse()? {
         return run_audit_cli(command).await;
     }
@@ -1557,6 +1560,74 @@ fn print_catalogue_cli_usage() {
          \x20 bonsai catalogue list\n\
          \x20 bonsai catalogue uninstall bonsai-plugin-nokia-sr"
     );
+}
+
+struct SelfTestCliCommand;
+
+impl SelfTestCliCommand {
+    fn parse() -> bool {
+        std::env::args().nth(1).as_deref() == Some("self-test")
+    }
+}
+
+async fn run_self_test() -> Result<()> {
+    let mut passed: u32 = 0;
+    let mut failed: u32 = 0;
+
+    macro_rules! check {
+        ($label:expr, $body:block) => {{
+            let result: Result<()> = async { $body; Ok(()) }.await;
+            match result {
+                Ok(()) => { println!("  [✓] {}", $label); passed += 1; }
+                Err(e) => { println!("  [✗] {} — {e}", $label); failed += 1; }
+            }
+        }};
+    }
+
+    println!("bonsai self-test");
+    println!("================");
+
+    check!("crypto provider (rustls/ring)", {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .or_else(|_| {
+                // Already installed by a prior call — that's fine.
+                Ok::<(), rustls::Error>(())
+            })?;
+    });
+
+    check!("tokio runtime", {
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    });
+
+    check!("config parser (TOML round-trip)", {
+        let _cfg: bonsai::config::Config = toml::from_str(
+            "graph_path = \"/tmp/bonsai-selftest-unused.db\"\n\
+             [runtime]\nmode = \"all\"\n\
+             [event_bus]\ncapacity = 512\n",
+        )?;
+    });
+
+    check!("LadybugDB linkage (open temp database)", {
+        let db_path = std::env::temp_dir()
+            .join(format!("bonsai-self-test-{}", std::process::id()));
+        // Remove any leftover from a previous run so Kuzu creates a fresh DB.
+        let _ = std::fs::remove_dir_all(&db_path);
+        let path = db_path.to_str()
+            .ok_or_else(|| anyhow::anyhow!("non-UTF8 temp path"))?
+            .to_owned();
+        let result = bonsai::graph::GraphStore::open(&path, 64 * 1024 * 1024);
+        let _ = std::fs::remove_dir_all(&db_path);
+        result.map(|_| ())?;
+    });
+
+    println!("================");
+    println!("{passed} passed, {failed} failed");
+
+    if failed > 0 {
+        anyhow::bail!("{failed} check(s) failed");
+    }
+    Ok(())
 }
 
 async fn spawn_subscriber(

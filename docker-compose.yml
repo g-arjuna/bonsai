@@ -96,6 +96,7 @@ services:
       context: docker/mock-servicenow
       dockerfile: Dockerfile
     profiles: ["servicenow-mock", "enrichment-test"]
+    restart: unless-stopped
     ports:
       - "8080:8080"
     healthcheck:

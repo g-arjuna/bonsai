@@ -39,6 +39,15 @@ log()  { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG_FILE"; }
 fail() { log "FAIL: $*"; RESULT="FAIL"; }
 pass() { log "PASS: $*"; }
 
+# ── cleanup (runs on EXIT regardless of success/failure) ──────────────────────
+# Removes the test enricher config so bonsai is not left with a stale enricher.
+
+cleanup() {
+    curl -sf -X DELETE "${BONSAI_HTTP}/api/enrichment/${ENRICHER_NAME}" \
+        >>"$LOG_FILE" 2>&1 || true
+}
+trap cleanup EXIT
+
 wait_for_http() {
     local url="$1" max="$2" elapsed=0
     while ! curl -sf "$url" >/dev/null 2>&1; do

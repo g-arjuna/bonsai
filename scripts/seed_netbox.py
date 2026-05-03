@@ -3,8 +3,11 @@
 
 Usage:
     python scripts/seed_netbox.py [--url http://localhost:8000] [--token bonsai-dev-token]
+    python scripts/seed_netbox.py --reset   # wipe bonsai-managed objects then re-seed
 
 Idempotent: re-running is safe — existing objects are updated, not duplicated.
+--reset deletes bonsai-managed devices, sites, platforms, device-types, and roles
+before re-seeding. NetBox stays up; no data outside bonsai's topology is affected.
 """
 import argparse
 import sys
@@ -23,6 +26,82 @@ MANUFACTURER_NAME = "Lab-Vendor"
 def load_topology() -> dict:
     with open(TOPOLOGY_FILE) as f:
         return yaml.safe_load(f)
+
+
+def delete_if_exists(session: requests.Session, base_url: str, endpoint: str,
+                     lookup_field: str, lookup_value: str) -> bool:
+    """Delete the first object matching lookup, return True if deleted."""
+    url = f"{base_url}/api/{endpoint}/?{lookup_field}={lookup_value}"
+    resp = session.get(url)
+    if resp.status_code != 200:
+        return False
+    results = resp.json().get("results", [])
+    if not results:
+        return False
+    obj_id = results[0]["id"]
+    del_resp = session.delete(f"{base_url}/api/{endpoint}/{obj_id}/")
+    if del_resp.status_code == 204:
+        print(f"  deleted {endpoint} '{lookup_value}'")
+        return True
+    print(f"  WARNING: delete {endpoint} '{lookup_value}' returned {del_resp.status_code}", file=sys.stderr)
+    return False
+
+
+def reset(base_url: str, token: str):
+    """Delete all bonsai-managed NetBox objects derived from topology.yaml."""
+    topo = load_topology()
+
+    session = requests.Session()
+    session.headers.update({
+        "Authorization": f"Token {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    })
+
+    wait_for_netbox(base_url)
+
+    # Devices (and their interfaces/IPs cascade in NetBox)
+    print("Resetting devices ...")
+    for device in topo["devices"]:
+        delete_if_exists(session, base_url, "dcim/devices", "name", device["name"])
+
+    # Sites
+    print("Resetting sites ...")
+    for site in topo["sites"]:
+        delete_if_exists(session, base_url, "dcim/sites", "name", site["name"])
+
+    # Platforms
+    print("Resetting platforms ...")
+    seen_platforms: set[str] = set()
+    for device in topo["devices"]:
+        name = device.get("netbox_platform", device["vendor"])
+        if name not in seen_platforms:
+            seen_platforms.add(name)
+            delete_if_exists(session, base_url, "dcim/platforms", "name", name)
+
+    # Device types
+    print("Resetting device types ...")
+    seen_models: set[str] = set()
+    for device in topo["devices"]:
+        model = device.get("netbox_model", device["vendor"])
+        if model not in seen_models:
+            seen_models.add(model)
+            delete_if_exists(session, base_url, "dcim/device-types", "model", model)
+
+    # Device roles
+    print("Resetting device roles ...")
+    seen_roles: set[str] = set()
+    for device in topo["devices"]:
+        role = device["role"]
+        if role not in seen_roles:
+            seen_roles.add(role)
+            delete_if_exists(session, base_url, "dcim/device-roles", "name", role)
+
+    # Manufacturer
+    print("Resetting manufacturer ...")
+    delete_if_exists(session, base_url, "dcim/manufacturers", "name", MANUFACTURER_NAME)
+
+    print("NetBox reset complete.")
 
 
 def api(session: requests.Session, base_url: str, method: str, path: str, **kwargs):
@@ -189,7 +268,11 @@ def main():
     parser = argparse.ArgumentParser(description="Seed NetBox with bonsai lab topology.")
     parser.add_argument("--url", default="http://localhost:8000")
     parser.add_argument("--token", default="bonsai-dev-token")
+    parser.add_argument("--reset", action="store_true",
+                        help="Delete bonsai-managed objects before re-seeding (NetBox stays up)")
     args = parser.parse_args()
+    if args.reset:
+        reset(args.url, args.token)
     seed(args.url, args.token)
 
 

@@ -3,8 +3,11 @@
 
 Usage:
     python scripts/seed_elastic.py [--url http://localhost:9200]
+    python scripts/seed_elastic.py --reset   # wipe bonsai indexes/templates then re-seed
 
 Idempotent: re-running is safe. Existing templates and indexes are updated.
+--reset deletes bonsai-* indexes and bonsai-*-template index templates before
+re-seeding. Elasticsearch stays up; data outside bonsai's index patterns is untouched.
 
 Creates:
   - Index template  bonsai-template  (ECS-compatible mapping)
@@ -150,6 +153,37 @@ def get_doc_count(base_url: str, index: str) -> int:
         return 0
 
 
+def delete_index(base_url: str, index: str):
+    r = requests.delete(f"{base_url}/{index}", timeout=15)
+    if r.status_code in (200, 404):
+        print(f"  index '{index}' {'deleted' if r.status_code == 200 else 'not found'}")
+    else:
+        print(f"  WARNING: delete index '{index}': {r.status_code} — {r.text[:200]}", file=sys.stderr)
+
+
+def delete_template(base_url: str, name: str):
+    r = requests.delete(f"{base_url}/_index_template/{name}", timeout=15)
+    if r.status_code in (200, 404):
+        print(f"  template '{name}' {'deleted' if r.status_code == 200 else 'not found'}")
+    else:
+        print(f"  WARNING: delete template '{name}': {r.status_code} — {r.text[:200]}", file=sys.stderr)
+
+
+def reset(base_url: str):
+    """Delete bonsai indexes and templates, then seed() will repopulate."""
+    wait_for_es(base_url)
+
+    print("Deleting bonsai indexes ...")
+    delete_index(base_url, "bonsai-detections")
+    delete_index(base_url, "bonsai-metrics")
+
+    print("Deleting bonsai index templates ...")
+    delete_template(base_url, "bonsai-detection-template")
+    delete_template(base_url, "bonsai-metrics-template")
+
+    print("Elasticsearch reset complete.")
+
+
 def seed(base_url: str):
     wait_for_es(base_url)
 
@@ -173,7 +207,11 @@ def seed(base_url: str):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--url", default="http://localhost:9200", help="Elasticsearch URL (default: %(default)s)")
+    ap.add_argument("--reset", action="store_true",
+                    help="Delete bonsai indexes and templates before re-seeding (ES stays up)")
     args = ap.parse_args()
+    if args.reset:
+        reset(args.url)
     seed(args.url)
 
 

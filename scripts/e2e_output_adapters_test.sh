@@ -116,6 +116,18 @@ RESULT_PROMETHEUS="SKIP"
 RESULT_SPLUNK="SKIP"
 RESULT_ELASTIC="SKIP"
 
+# ── cleanup (runs on EXIT regardless of success/failure) ──────────────────────
+# Stops any ephemeral test containers and removes adapter configs from bonsai.
+
+cleanup() {
+    docker stop bonsai-e2e-prom bonsai-e2e-splunk bonsai-e2e-elastic 2>/dev/null || true
+    docker rm   bonsai-e2e-prom bonsai-e2e-splunk bonsai-e2e-elastic 2>/dev/null || true
+    adapter_remove "prom-test"   2>/dev/null || true
+    adapter_remove "splunk-test" 2>/dev/null || true
+    adapter_remove "elastic-test" 2>/dev/null || true
+}
+trap cleanup EXIT
+
 # ── preflight ─────────────────────────────────────────────────────────────────
 
 log "=== Bonsai Output Adapter E2E Tests (adapter=$ADAPTER) ==="

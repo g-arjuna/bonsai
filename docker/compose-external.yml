@@ -59,6 +59,7 @@ services:
   netbox-postgres:
     image: postgres:16-alpine
     profiles: ["netbox", "all"]
+    restart: unless-stopped
     environment:
       POSTGRES_DB: netbox
       POSTGRES_USER: netbox
@@ -76,6 +77,7 @@ services:
   netbox-redis:
     image: redis:7-alpine
     profiles: ["netbox", "all"]
+    restart: unless-stopped
     command: redis-server --save "" --appendonly no
     networks:
       - bonsai-external
@@ -88,6 +90,7 @@ services:
   netbox:
     image: netboxcommunity/netbox:v4.1
     profiles: ["netbox", "all"]
+    restart: unless-stopped
     depends_on:
       netbox-postgres:
         condition: service_healthy
@@ -124,6 +127,7 @@ services:
   netbox-worker:
     image: netboxcommunity/netbox:v4.1
     profiles: ["netbox", "all"]
+    restart: unless-stopped
     depends_on:
       netbox:
         condition: service_healthy
@@ -144,6 +148,7 @@ services:
   splunk:
     image: splunk/splunk:latest
     profiles: ["splunk", "all"]
+    restart: unless-stopped
     environment:
       SPLUNK_START_ARGS: "--accept-license"
       SPLUNK_PASSWORD: ${SPLUNK_PASSWORD:?SPLUNK_PASSWORD must be set in .env}
@@ -167,6 +172,7 @@ services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
     profiles: ["elastic", "all"]
+    restart: unless-stopped
     environment:
       discovery.type: single-node
       xpack.security.enabled: "false"
@@ -187,6 +193,7 @@ services:
   kibana:
     image: docker.elastic.co/kibana/kibana:8.12.0
     profiles: ["elastic", "all"]
+    restart: unless-stopped
     depends_on:
       elasticsearch:
         condition: service_healthy
@@ -208,6 +215,7 @@ services:
   prometheus:
     image: prom/prometheus:latest
     profiles: ["prometheus", "all"]
+    restart: unless-stopped
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -232,6 +240,7 @@ services:
   grafana:
     image: grafana/grafana:latest
     profiles: ["prometheus", "all"]
+    restart: unless-stopped
     depends_on:
       prometheus:
         condition: service_healthy

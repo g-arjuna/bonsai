@@ -17,6 +17,11 @@ Usage:
     export SNOW_USERNAME=admin
     export SNOW_PASSWORD=your_pdi_password
     python scripts/seed_servicenow_pdi.py [--topology lab/seed/topology.yaml] [--dry-run]
+    python scripts/seed_servicenow_pdi.py --reset   # wipe bonsai-managed records then re-seed
+
+--reset deletes cmdb_ci_netgear device CIs, cmdb_ci_rack site CIs,
+cmdb_ci_business_service records, cmdb_rel_ci relationships, and the sample
+incident that match bonsai-managed names. ServiceNow stays up.
 """
 
 import argparse
@@ -126,6 +131,71 @@ class SnowClient:
         r.raise_for_status()
 
 
+def reset_snow(client: SnowClient, topology: dict) -> None:
+    """Delete all bonsai-managed ServiceNow records so re-seeding starts clean."""
+    devices = topology.get("devices", [])
+    sites = topology.get("sites", [])
+    services = topology.get("services", [
+        {"name": "payment-frontend"},
+        {"name": "internal-tools"},
+        {"name": "monitoring-stack"},
+    ])
+
+    def delete_record(table: str, query: str):
+        results = client.get(table, query, "sys_id,name", limit=1)
+        if not results:
+            return
+        sys_id = results[0]["sys_id"]
+        if isinstance(sys_id, dict):
+            sys_id = sys_id.get("value", "")
+        if not sys_id:
+            return
+        if client.dry_run:
+            print(f"  [dry-run] DELETE {table}/{sys_id}")
+            return
+        url = f"{client.base}/api/now/table/{table}/{sys_id}"
+        r = client.session.delete(url)
+        if r.status_code == 204:
+            name_val = results[0].get("name", "")
+            if isinstance(name_val, dict):
+                name_val = name_val.get("display_value", "")
+            print(f"  deleted {table} '{name_val}'")
+        else:
+            print(f"  WARNING: delete {table}/{sys_id}: {r.status_code}", file=sys.stderr)
+
+    print("Resetting cmdb_rel_ci relationships ...")
+    # Delete all relationships involving bonsai devices (parent or child)
+    for dev in devices:
+        results = client.get("cmdb_rel_ci", f"parent.name={dev['name']}^ORchild.name={dev['name']}", "sys_id")
+        for rec in results:
+            sys_id = rec["sys_id"]
+            if isinstance(sys_id, dict):
+                sys_id = sys_id.get("value", "")
+            if not sys_id or client.dry_run:
+                continue
+            url = f"{client.base}/api/now/table/cmdb_rel_ci/{sys_id}"
+            client.session.delete(url)
+    if not client.dry_run:
+        print(f"  relationships for {len(devices)} devices cleared")
+
+    print("Resetting device CIs ...")
+    for dev in devices:
+        delete_record("cmdb_ci_netgear", f"name={dev['name']}")
+
+    print("Resetting business services ...")
+    for svc in services:
+        delete_record("cmdb_ci_business_service", f"name={svc['name']}")
+
+    print("Resetting site CIs ...")
+    for site in sites:
+        delete_record("cmdb_ci_rack", f"name={site['name']}")
+
+    print("Resetting sample incident ...")
+    delete_record("incident", "short_description=bonsai: test connectivity incident")
+
+    print("ServiceNow reset complete.")
+
+
 def seed(client: SnowClient, topology: dict) -> None:
     lab = topology.get("lab", {})
     devices = topology.get("devices", [])
@@ -216,6 +286,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Seed a ServiceNow PDI with bonsai lab topology.")
     parser.add_argument("--topology", default="lab/seed/topology.yaml", help="Path to topology YAML")
     parser.add_argument("--dry-run", action="store_true", help="Print what would be done without making API calls")
+    parser.add_argument("--reset", action="store_true",
+                        help="Delete bonsai-managed records before re-seeding (ServiceNow stays up)")
     parser.add_argument(
         "--use-vault",
         action="store_true",
@@ -262,6 +334,8 @@ def main() -> None:
             print(f"ERROR: cannot connect to ServiceNow: {e}")
             sys.exit(1)
 
+    if args.reset:
+        reset_snow(client, topology)
     seed(client, topology)
 
 

@@ -36,6 +36,15 @@ log()  { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG_FILE"; }
 fail() { log "FAIL: $*"; RESULT="FAIL"; }
 pass() { log "PASS: $*"; }
 
+# ── cleanup (runs on EXIT regardless of success/failure) ──────────────────────
+# Restores any injected interface fault so the lab is not left in a broken state.
+
+cleanup() {
+    srl_interface_admin "clab-bonsai-p4-srl-leaf1" "ethernet-1/1" "enable" \
+        >>"$LOG_FILE" 2>&1 || true
+}
+trap cleanup EXIT
+
 assert_json_contains() {
     local desc="$1" url="$2" jq_expr="$3" expected="$4"
     local actual

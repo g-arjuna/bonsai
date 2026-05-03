@@ -8,8 +8,10 @@ Usage:
         [--username admin] \\
         [--password <SPLUNK_PASSWORD>] \\
         [--hec-token <SPLUNK_HEC_TOKEN>]
+    python scripts/seed_splunk.py --reset ...  # delete bonsai indexes then re-seed
 
 Idempotent: re-running is safe. Existing indexes are not recreated.
+--reset deletes the bonsai-* indexes before re-seeding. Splunk stays up.
 """
 import argparse
 import sys
@@ -131,6 +133,38 @@ def verify_hec(hec_url: str, token: str) -> bool:
         return False
 
 
+def delete_index(api_url: str, auth: HTTPBasicAuth, name: str):
+    if not index_exists(api_url, auth, name):
+        print(f"  index '{name}' not found — skipping")
+        return
+    r = requests.delete(
+        f"{api_url}/services/data/indexes/{name}",
+        auth=auth,
+        params={"output_mode": "json"},
+        timeout=15,
+        verify=False,
+    )
+    if r.status_code in (200, 204):
+        print(f"  index '{name}' deleted")
+    else:
+        print(f"  WARNING: delete index '{name}': {r.status_code} — {r.text[:200]}", file=sys.stderr)
+
+
+def reset(api_url: str, hec_url: str, username: str, password: str, hec_token: str):
+    """Delete bonsai indexes then call seed() to repopulate."""
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    auth = HTTPBasicAuth(username, password)
+    wait_for_splunk(api_url, auth)
+
+    print("Deleting bonsai indexes ...")
+    for idx in INDEXES:
+        delete_index(api_url, auth, idx["name"])
+
+    print("Splunk reset complete.")
+
+
 def seed(api_url: str, hec_url: str, username: str, password: str, hec_token: str):
     import urllib3
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -160,8 +194,12 @@ def main():
     ap.add_argument("--username", default="admin")
     ap.add_argument("--password", required=True)
     ap.add_argument("--hec-token", required=True)
+    ap.add_argument("--reset", action="store_true",
+                    help="Delete bonsai indexes before re-seeding (Splunk stays up)")
     args = ap.parse_args()
 
+    if args.reset:
+        reset(args.url, args.hec_url, args.username, args.password, args.hec_token)
     seed(args.url, args.hec_url, args.username, args.password, args.hec_token)
 
 

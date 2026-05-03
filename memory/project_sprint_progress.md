@@ -1,8 +1,27 @@
 ---
 name: Sprint Progress
-description: Backlog sprint completion status — v8 through v10 sprint progress
+description: Backlog sprint completion status — v8 through v12 sprint progress
 type: project
 ---
+
+## Backlog v12 (current — supersedes v11)
+
+**v12 Sprint 1 — Memory + binary fixes — COMPLETE 2026-05-03 (commit 2421332)**
+- T0-1: LadybugDB buffer pool capped at min(2 GiB, 25% RAM) for core, min(256 MiB, 10%) for collector. Configured via [graph] buffer_pool_bytes in bonsai.toml. Root cause of 9 GB memory bug fixed.
+- T0-2: Debounce HashMap replaced with lru::LruCache(1024) — bounded by config not runtime.
+- T0-3: Default event bus capacity reduced from 2048 to 512.
+- T0-4: Release binary self-contained (RUNPATH=$ORIGIN + auto-copy liblbug.so.0 in build.rs). No LD_LIBRARY_PATH needed.
+- T0-8: Startup phase timing logs added (config_load, graph_open, schema_init, backfill, ready).
+- T1-2/T1-3: Memory-budget CI updated to 10-min run / 1.5 GiB budget; resource_contract.md updated.
+
+**Next: v12 Sprint 2 — Always-on infrastructure**
+- T0-5: restart: unless-stopped in compose-external.yml / docker-compose.yml
+- T0-6: --reset flag on all seed_*.py scripts
+- T3-2: lab/dc and lab/sp Makefiles (up/down/status/reset)
+- T3-3: scripts/reset_for_test.sh wrapper
+- T0-9: trap cleanup EXIT in e2e scripts
+- T2-2: Release artefact GitHub Actions pipeline
+- T2-3: bonsai self-test subcommand
 
 ## Backlog v8 (prior sessions)
 

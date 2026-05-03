@@ -50,6 +50,14 @@ fail() { log "FAIL: $*"; RESULT="FAIL"; }
 pass() { log "PASS: $*"; }
 warn() { log "WARN: $*"; }
 
+# ── cleanup (runs on EXIT regardless of success/failure) ──────────────────────
+# Read-only test — no state to tear down, but trap ensures LOG_FILE is flushed.
+
+cleanup() {
+    : # no teardown needed for read-only test
+}
+trap cleanup EXIT
+
 # ── preflight ─────────────────────────────────────────────────────────────────
 
 log "=== Bonsai Path Profile Validation E2E Test ==="

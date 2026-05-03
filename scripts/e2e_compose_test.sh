@@ -54,6 +54,14 @@ wait_for_http() {
 
 RESULT="PASS"
 
+# ── cleanup (runs on EXIT regardless of success/failure) ──────────────────────
+
+cleanup() {
+    cd "${REPO_ROOT}"
+    docker compose --profile distributed down --remove-orphans --volumes 2>>"$LOG_FILE" || true
+}
+trap cleanup EXIT
+
 # ── preflight ─────────────────────────────────────────────────────────────────
 
 log "=== Bonsai Docker Compose E2E Test ==="
