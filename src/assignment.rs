@@ -3,13 +3,13 @@ use std::cmp::Reverse;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 
 use crate::api::pb::{AssignmentUpdate, DeviceAssignment};
 use crate::config::{AssignmentRule, TargetConfig};
 use crate::credentials::{CredentialVault, ResolvePurpose};
-use crate::graph::SiteRecord;
+use crate::graph::{BonsaiEvent, SiteRecord};
 use crate::registry::{ApiRegistry, DeviceRegistry, RegistryChange};
 
 pub struct CollectorManager {
@@ -21,6 +21,8 @@ pub struct CollectorManager {
     rules: Arc<Mutex<Vec<AssignmentRule>>>,
     /// Cached site records for hierarchy-aware assignment. Updated externally via `set_sites`.
     sites_cache: Arc<Mutex<Vec<SiteRecord>>>,
+    /// Optional event sender — wired after construction from GraphStore::event_sender().
+    event_tx: Mutex<Option<broadcast::Sender<BonsaiEvent>>>,
 }
 
 #[derive(Clone, Default)]
@@ -47,9 +49,22 @@ impl CollectorManager {
             runtime_state: Arc::new(Mutex::new(HashMap::new())),
             rules: Arc::new(Mutex::new(rules)),
             sites_cache: Arc::new(Mutex::new(Vec::new())),
+            event_tx: Mutex::new(None),
         };
         manager.start_registry_watcher();
         manager
+    }
+
+    /// Wire the graph event channel so collector connect/disconnect events
+    /// appear on the SSE stream alongside telemetry events.
+    pub fn set_event_sender(&self, tx: broadcast::Sender<BonsaiEvent>) {
+        *self.event_tx.lock().expect("event_tx lock poisoned") = Some(tx);
+    }
+
+    fn publish_ws(&self, event: BonsaiEvent) {
+        if let Some(tx) = self.event_tx.lock().expect("event_tx lock poisoned").as_ref() {
+            let _ = tx.send(event);
+        }
     }
 
     /// Returns the current routing rules (sorted by priority descending).
@@ -214,6 +229,13 @@ impl CollectorManager {
             entry.last_heartbeat_ns = now_ns();
         }
 
+        self.publish_ws(BonsaiEvent {
+            device_address: collector_id.clone(),
+            event_type: "collector_status_change".to_string(),
+            detail_json: format!(r#"{{"collector_id":"{}","connected":true}}"#, collector_id),
+            occurred_at_ns: now_ns(),
+            state_change_event_id: String::new(),
+        });
         info!(%collector_id, "collector registered, initial assignments sent");
         Ok(rx)
     }
@@ -229,6 +251,13 @@ impl CollectorManager {
                 entry.connected = false;
             }
         }
+        self.publish_ws(BonsaiEvent {
+            device_address: collector_id.to_string(),
+            event_type: "collector_status_change".to_string(),
+            detail_json: format!(r#"{{"collector_id":"{}","connected":false}}"#, collector_id),
+            occurred_at_ns: now_ns(),
+            state_change_event_id: String::new(),
+        });
         info!(%collector_id, "collector unregistered; re-evaluating its devices");
 
         // Clear collector_id on all devices this collector owned, then re-evaluate

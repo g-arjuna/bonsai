@@ -45,6 +45,7 @@ REPO_ROOT = Path(__file__).parents[2]
 FAULT_CATALOG = REPO_ROOT / "lab" / "fault_catalog.yaml"
 DEFAULT_BASE_URL = os.environ.get("BONSAI_URL", "http://localhost:3000")
 DEFAULT_OUTPUT = REPO_ROOT / "runtime" / "driver_results" / "chaos.json"
+MATRIX_DIR = REPO_ROOT / "docs" / "test_results" / "chaos_matrix"
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
@@ -217,12 +218,86 @@ def detections_cleared(base_url: str, expectations: list[dict]) -> bool:
         return True
 
 
+# ── Incidents API check (T4-3) ────────────────────────────────────────────────
+
+def wait_for_incident(
+    base_url: str,
+    expected_rule_id: str,
+    timeout_s: int,
+) -> tuple[bool, float]:
+    """
+    Poll /api/incidents until an incident whose root rule_id matches
+    expected_rule_id appears, or timeout expires.
+    Returns (found, latency_ms).
+    """
+    start = time.monotonic()
+    deadline = start + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            resp = requests.get(f"{base_url}/api/incidents", timeout=5)
+            if resp.ok:
+                data = resp.json()
+                for inc in data.get("incidents", []):
+                    root_rule = (inc.get("root") or {}).get("rule_id", "")
+                    if expected_rule_id.lower() in root_rule.lower():
+                        return True, (time.monotonic() - start) * 1000
+        except Exception:
+            pass
+        time.sleep(3)
+    return False, (time.monotonic() - start) * 1000
+
+
+# ── Matrix report writer ──────────────────────────────────────────────────────
+
+def write_matrix_report(harness: "HarnessResult") -> Path:
+    """Write a Markdown detection-firing matrix to docs/test_results/chaos_matrix/<date>.md."""
+    import datetime
+    date_str = datetime.date.today().isoformat()
+    MATRIX_DIR.mkdir(parents=True, exist_ok=True)
+    out = MATRIX_DIR / f"{date_str}.md"
+
+    lines = [
+        f"# Chaos Detection Matrix — {date_str}",
+        "",
+        f"Base URL: `{harness.base_url}`  |  Topology filter: `{harness.topology_filter}`  |  "
+        f"Total: {harness.total}  |  Passed: {harness.passed}  |  Failed: {harness.failed}",
+        "",
+        "| Fault ID | Topology | Expected detection | Pre-fault clean | Detected | "
+        "Latency (ms) | Post-heal clear | Pass |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+
+    for fr in harness.faults:
+        expected = ", ".join(e.get("detection", "?") for e in fr.expected_detections) or "—"
+        row = (
+            f"| `{fr.fault_id}` "
+            f"| {fr.topology} "
+            f"| {expected} "
+            f"| {'✓' if fr.pre_fault_clean else '✗'} "
+            f"| {'✓' if fr.detection_observed else '✗'} "
+            f"| {fr.detection_latency_ms:.0f} "
+            f"| {'✓' if fr.post_heal_clear else ('—' if not fr.detection_observed else '✗')} "
+            f"| {'✅' if fr.passed else ('⚠️' if fr.error else '❌')} |"
+        )
+        lines.append(row)
+
+    if any(fr.error for fr in harness.faults):
+        lines += ["", "## Errors", ""]
+        for fr in harness.faults:
+            if fr.error:
+                lines.append(f"- **{fr.fault_id}**: {fr.error}")
+
+    out.write_text("\n".join(lines) + "\n")
+    return out
+
+
 # ── Fault execution ───────────────────────────────────────────────────────────
 
 def run_fault(
     fault: dict,
     base_url: str,
     dry_run: bool = False,
+    check_incidents: bool = True,
 ) -> FaultResult:
     fid = fault["id"]
     topology = fault.get("topology", "")
@@ -261,7 +336,7 @@ def run_fault(
         result.passed = True
         return result
 
-    # 3. Wait for expected detections
+    # 3. Wait for expected detections (via /api/detections)
     matched, latency_ms, observed = wait_for_detections(
         base_url, expectations, timeout_s=max_window + 30
     )
@@ -273,6 +348,17 @@ def run_fault(
         print(f"[chaos]   DETECTED in {latency_ms:.0f}ms ✓", file=sys.stderr)
     else:
         print(f"[chaos]   DETECTION MISSED after {latency_ms:.0f}ms ✗", file=sys.stderr)
+
+    # 3b. Also verify via /api/incidents (T4-3 — close the empty-Incidents diagnosis).
+    bonsai_rule = fault.get("bonsai_rule", "")
+    if check_incidents and bonsai_rule and matched:
+        inc_found, inc_latency = wait_for_incident(base_url, bonsai_rule, timeout_s=30)
+        if inc_found:
+            print(f"[chaos]   Incident visible in /api/incidents ({inc_latency:.0f}ms) ✓", file=sys.stderr)
+        else:
+            print(f"[chaos]   Incident NOT in /api/incidents after 30s ✗", file=sys.stderr)
+            # Detection fired but incident not grouped — treat as partial failure.
+            result.error = (result.error or "") + f"; incident not grouped for rule={bonsai_rule}"
 
     # 4. Heal fault
     print("[chaos]   Healing fault...", file=sys.stderr)
@@ -304,6 +390,14 @@ def main() -> int:
     parser.add_argument("--topology", choices=["dc", "sp", "all"], default="all")
     parser.add_argument("--fault", help="Run a single fault by ID")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--write-matrix", action="store_true",
+        help="Write a Markdown detection-firing matrix to docs/test_results/chaos_matrix/<date>.md",
+    )
+    parser.add_argument(
+        "--no-incidents-check", action="store_true",
+        help="Skip /api/incidents verification step (T4-3)",
+    )
     args = parser.parse_args()
 
     if not FAULT_CATALOG.exists():
@@ -342,7 +436,11 @@ def main() -> int:
     )
 
     for fault in faults_to_run:
-        fr = run_fault(fault, args.base_url, dry_run=args.dry_run)
+        fr = run_fault(
+            fault, args.base_url,
+            dry_run=args.dry_run,
+            check_incidents=not args.no_incidents_check,
+        )
         harness.faults.append(fr)
         if fr.passed:
             harness.passed += 1
@@ -365,6 +463,11 @@ def main() -> int:
     with open(output_path, "w") as f:
         json.dump(payload, f, indent=2)
     print(f"[chaos] Results written to {output_path}", file=sys.stderr)
+
+    # Write Markdown matrix report if requested.
+    if args.write_matrix:
+        matrix_path = write_matrix_report(harness)
+        print(f"[chaos] Matrix report written to {matrix_path}", file=sys.stderr)
 
     # Also print compact summary to stdout for AI consumption
     summary = {

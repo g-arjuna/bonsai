@@ -426,6 +426,12 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Wire the graph event channel into the collector manager so that
+    // collector connect/disconnect events appear on the SSE stream.
+    if let (Some(Store::Core(core_store)), Some(manager)) = (&store, &collector_manager) {
+        manager.set_event_sender(core_store.event_sender());
+    }
+
     // Seed the collector manager's site cache and keep it refreshed so that
     // hierarchy-aware assignment rules reflect current graph state.
     if let (Some(store), Some(manager)) = (&store, &collector_manager) {

@@ -1,0 +1,116 @@
+name: UI Screenshot Diff
+
+# T4-4: Capture screenshots of each workspace after SSE connection and compare
+# against committed baselines.  A visual regression fails the check.
+#
+# Baselines are stored in tests/ui_driver/screenshots/baseline/.
+# To update baselines: run the workflow with inputs.update_baselines=true, or
+# commit the new screenshots produced by the `capture-baselines` job.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ui/**'
+      - 'src/http_server.rs'
+      - 'tests/ui_driver/**'
+  workflow_dispatch:
+    inputs:
+      update_baselines:
+        description: 'Capture new baselines (overwrite existing)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['true', 'false']
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  screenshot-diff:
+    name: UI screenshot diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build bonsai (release)
+        run: cargo build --release
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build Svelte SPA
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install Playwright + browsers
+        working-directory: tests/ui_driver
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Start bonsai (no-lab mode)
+        run: |
+          mkdir -p runtime/graph runtime/archive
+          ./target/release/bonsai --no-collector &
+          echo "BONSAI_PID=$!" >> "$GITHUB_ENV"
+          # Wait for HTTP server to be ready
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3000/api/topology && break
+            sleep 1
+          done
+
+      - name: Capture screenshots (or diff against baseline)
+        working-directory: tests/ui_driver
+        env:
+          BONSAI_URL: http://localhost:3000
+          UPDATE_BASELINES: ${{ github.event.inputs.update_baselines || 'false' }}
+        run: |
+          if [ "$UPDATE_BASELINES" = "true" ]; then
+            npx playwright test --update-snapshots || true
+          else
+            npx playwright test --grep "@screenshot"
+          fi
+
+      - name: Stop bonsai
+        if: always()
+        run: |
+          if [ -n "$BONSAI_PID" ]; then
+            kill "$BONSAI_PID" 2>/dev/null || true
+          fi
+
+      - name: Upload diff artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-diffs
+          path: |
+            tests/ui_driver/test-results/
+            tests/ui_driver/screenshots/actual/
+          retention-days: 7
+
+      - name: Commit updated baselines
+        if: github.event.inputs.update_baselines == 'true'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'chore: update UI screenshot baselines'
+          file_pattern: 'tests/ui_driver/screenshots/baseline/**'

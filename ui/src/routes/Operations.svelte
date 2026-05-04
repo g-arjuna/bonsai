@@ -7,7 +7,19 @@
   let loading = $state(true);
   let error = $state(null);
 
-  onMount(async () => {
+  // Ring buffer — last 12 samples at 5s interval = 1 minute of history.
+  const SPARKLINE_MAX = 12;
+  let rssSamples = $state([]);
+  let archiveSamples = $state([]);
+  let graphSamples = $state([]);
+
+  onMount(() => {
+    fetchAll();
+    const poll = setInterval(fetchAll, 5_000);
+    return () => clearInterval(poll);
+  });
+
+  async function fetchAll() {
     try {
       const [opsRes, collRes, topoRes] = await Promise.all([
         fetch('/api/operations'),
@@ -21,12 +33,28 @@
         const topo = await topoRes.json();
         subscriptions = topo.devices ?? [];
       }
+      // Update sparkline ring buffers.
+      rssSamples = [...rssSamples, ops.rss_bytes ?? 0].slice(-SPARKLINE_MAX);
+      archiveSamples = [...archiveSamples, ops.archive_disk_bytes ?? 0].slice(-SPARKLINE_MAX);
+      graphSamples = [...graphSamples, ops.graph_disk_bytes ?? 0].slice(-SPARKLINE_MAX);
+      error = null;
     } catch (e) {
       error = e.message;
     } finally {
       loading = false;
     }
-  });
+  }
+
+  function sparklinePath(samples, w, h) {
+    if (samples.length < 2) return '';
+    const max = Math.max(...samples, 1);
+    const pts = samples.map((v, i) => {
+      const x = (i / (samples.length - 1)) * w;
+      const y = h - (v / max) * h;
+      return `${x},${y}`;
+    });
+    return 'M' + pts.join(' L');
+  }
 
   function subBadgeClass(status) {
     if (status === 'observed') return 'healthy';
@@ -129,15 +157,20 @@
       </div>
     </div>
 
-    <!-- ── Memory and disk ───────────────────────────────────────────── -->
+    <!-- ── Memory and disk (live sparklines, 5s poll) ───────────────── -->
     <div class="ops-grid" style="margin-top:12px;">
-      <div class="card metric">
+      <div class="card metric sparkline-card">
         <span>RSS memory</span>
         <strong class="{(ops.rss_bytes ?? 0) > 900 * 1024 * 1024 ? 'warn-text' : ''}">
           {Math.round((ops.rss_bytes ?? 0) / 1024 / 1024)} MB
         </strong>
+        {#if rssSamples.length > 1}
+          <svg class="sparkline" viewBox="0 0 100 24" preserveAspectRatio="none">
+            <path d={sparklinePath(rssSamples, 100, 24)} />
+          </svg>
+        {/if}
       </div>
-      <div class="card metric">
+      <div class="card metric sparkline-card">
         <span>Archive on disk</span>
         <strong class="{(ops.archive_disk_pct ?? 0) >= 80 ? 'warn-text' : ''}">
           {Math.round((ops.archive_disk_bytes ?? 0) / 1024 / 1024)} MB
@@ -145,8 +178,13 @@
             <small>({ops.archive_disk_pct}%)</small>
           {/if}
         </strong>
+        {#if archiveSamples.length > 1}
+          <svg class="sparkline" viewBox="0 0 100 24" preserveAspectRatio="none">
+            <path d={sparklinePath(archiveSamples, 100, 24)} />
+          </svg>
+        {/if}
       </div>
-      <div class="card metric">
+      <div class="card metric sparkline-card">
         <span>Graph DB on disk</span>
         <strong class="{(ops.graph_disk_pct ?? 0) >= 80 ? 'warn-text' : ''}">
           {Math.round((ops.graph_disk_bytes ?? 0) / 1024 / 1024)} MB
@@ -154,6 +192,11 @@
             <small>({ops.graph_disk_pct}%)</small>
           {/if}
         </strong>
+        {#if graphSamples.length > 1}
+          <svg class="sparkline" viewBox="0 0 100 24" preserveAspectRatio="none">
+            <path d={sparklinePath(graphSamples, 100, 24)} />
+          </svg>
+        {/if}
       </div>
     </div>
 
@@ -299,6 +342,9 @@
   @keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.2; } }
   .skeleton { height: 90px; opacity: 0.4; animation: pulse 1.5s infinite; }
   .ops-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 12px; }
+  .sparkline-card { display: flex; flex-direction: column; gap: 4px; }
+  .sparkline { width: 100%; height: 24px; margin-top: 4px; }
+  .sparkline path { fill: none; stroke: var(--blue, #58a6ff); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
   .ops-sections { display: grid; gap: 16px; margin-top: 16px; }
   .section { padding: 16px; margin-top: 16px; }
   .section h3 { margin: 0 0 12px; font-size: 14px; }

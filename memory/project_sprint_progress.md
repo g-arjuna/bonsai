@@ -14,14 +14,26 @@ type: project
 - T0-8: Startup phase timing logs added (config_load, graph_open, schema_init, backfill, ready).
 - T1-2/T1-3: Memory-budget CI updated to 10-min run / 1.5 GiB budget; resource_contract.md updated.
 
-**Next: v12 Sprint 2 — Always-on infrastructure**
-- T0-5: restart: unless-stopped in compose-external.yml / docker-compose.yml
-- T0-6: --reset flag on all seed_*.py scripts
-- T3-2: lab/dc and lab/sp Makefiles (up/down/status/reset)
-- T3-3: scripts/reset_for_test.sh wrapper
-- T0-9: trap cleanup EXIT in e2e scripts
-- T2-2: Release artefact GitHub Actions pipeline
-- T2-3: bonsai self-test subcommand
+**v12 Sprint 2 — Always-on infrastructure — COMPLETE 2026-05-03 (commit b5162de)**
+- T0-5: restart:unless-stopped on all services in compose-external.yml + servicenow-mock
+- T0-6: --reset flag on seed_netbox.py, seed_splunk.py, seed_elastic.py, seed_servicenow_pdi.py
+- T3-2: lab/dc/Makefile + lab/sp/Makefile (up/down/status/reset via containerlab --reconfigure)
+- T3-3: scripts/reset_for_test.sh — canonical pre-test reset (wipes data, restarts bonsai, services stay up)
+- T0-9: trap cleanup EXIT in all 6 e2e scripts
+- T2-2: .github/workflows/release.yml — bonsai-linux-amd64/arm64 tarballs + SHA256 on v* tags
+- T2-3: bonsai self-test subcommand — 4 checks with [✓]/[✗] output
+
+**v12 Sprint 3 — UI liveness — COMPLETE 2026-05-04**
+- T0-7 / T4-1: SSE event broadcasting — detection_fired (write_detection), remediation_outcome (write_remediation), collector_status_change (CollectorManager connect/disconnect) published; CollectorManager wired to GraphStore event_sender in main.rs
+- Collectors.svelte: SSE subscription on collector_status_change + 60s poll fallback
+- Incidents.svelte: SSE subscription on detection_fired / incident_grouped / remediation_outcome + 60s poll fallback
+- T0-10: Operations.svelte: 5s live polling + RSS/archive/graph sparklines (12-sample ring buffer)
+- T4-2: Playwright screen-level assertions — tests/ui_driver/collectors.spec.js + incidents.spec.js
+- T4-3: Chaos harness extended — /api/incidents check (wait_for_incident), --write-matrix flag, Markdown matrix report to docs/test_results/chaos_matrix/<date>.md
+- T4-4: .github/workflows/screenshot-diff.yml + tests/ui_driver/screenshots.spec.js (@screenshot tag, 2% pixel tolerance)
+- T4-5: docs/ui_audit_2026-05-04.md — full per-route audit; 4 open issues identified for v13
+
+**Next: v12 Sprint 4 — Startup polish**
 
 ## Backlog v8 (prior sessions)
 

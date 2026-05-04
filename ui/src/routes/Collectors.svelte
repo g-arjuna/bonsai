@@ -10,7 +10,29 @@
   let overrideCollector = $state('');
   let saving = $state(false);
 
-  onMount(loadStatus);
+  onMount(() => {
+    loadStatus();
+
+    // Subscribe to SSE for live collector status updates.
+    let es;
+    try {
+      es = new EventSource('/api/events');
+      es.onmessage = (e) => {
+        try {
+          const ev = JSON.parse(e.data);
+          if (ev.event_type === 'collector_status_change') loadStatus();
+        } catch {}
+      };
+    } catch {}
+
+    // 60s polling fallback (covers browsers without SSE and missed events).
+    const poll = setInterval(loadStatus, 60_000);
+
+    return () => {
+      clearInterval(poll);
+      if (es) es.close();
+    };
+  });
 
   async function loadStatus() {
     loading = true;

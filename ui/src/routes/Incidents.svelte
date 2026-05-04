@@ -9,18 +9,45 @@
 
   const SEV_CLASS = { critical: 'critical', high: 'warn', warn: 'warn', warning: 'warn', medium: 'info', low: 'info', unknown: 'info' };
 
-  onMount(async () => {
+  const SSE_REFRESH_TYPES = new Set([
+    'detection_fired', 'incident_grouped', 'remediation_outcome',
+  ]);
+
+  onMount(() => {
+    loadIncidents();
+
+    let es;
+    try {
+      es = new EventSource('/api/events');
+      es.onmessage = (e) => {
+        try {
+          const ev = JSON.parse(e.data);
+          if (SSE_REFRESH_TYPES.has(ev.event_type)) loadIncidents();
+        } catch {}
+      };
+    } catch {}
+
+    const poll = setInterval(loadIncidents, 60_000);
+
+    return () => {
+      clearInterval(poll);
+      if (es) es.close();
+    };
+  });
+
+  async function loadIncidents() {
     try {
       const r = await fetch('/api/incidents');
       if (!r.ok) throw new Error(await r.text());
       const data = await r.json();
       incidents = data.incidents ?? [];
+      error = null;
     } catch (e) {
       error = e.message;
     } finally {
       loading = false;
     }
-  });
+  }
 
   function sevClass(sev) {
     return SEV_CLASS[sev?.toLowerCase()] ?? 'info';

@@ -175,6 +175,12 @@ impl GraphStore {
     pub fn subscribe_events(&self) -> broadcast::Receiver<BonsaiEvent> {
         self.event_tx.subscribe()
     }
+
+    /// Clone the event sender so other components can publish workspace events
+    /// onto the same SSE channel (e.g. CollectorManager for status changes).
+    pub fn event_sender(&self) -> broadcast::Sender<BonsaiEvent> {
+        self.event_tx.clone()
+    }
 }
 
 #[tonic::async_trait]
@@ -880,9 +886,12 @@ impl GraphStore {
         fired_at_ns: i64,
         state_change_event_id: String,
     ) -> Result<String> {
+        let event_addr = device_address.clone();
+        let event_rule = rule_id.clone();
+        let event_sev = severity.clone();
         let db = Arc::clone(&self.db);
         let write_lock = Arc::clone(&self.write_lock);
-        tokio::task::spawn_blocking(move || {
+        let id = tokio::task::spawn_blocking(move || {
             let _guard = write_lock.lock().expect("write lock poisoned");
             let conn = Connection::new(&db).context("detection write connection")?;
             let id = Uuid::new_v4().to_string();
@@ -951,6 +960,20 @@ impl GraphStore {
         })
         .await
         .context("spawn_blocking panicked")?
+        .context("detection write")?;
+
+        self.publish_event(BonsaiEvent {
+            device_address: event_addr,
+            event_type: "detection_fired".to_string(),
+            detail_json: format!(
+                r#"{{"id":"{}","rule_id":"{}","severity":"{}"}}"#,
+                id, event_rule, event_sev
+            ),
+            occurred_at_ns: fired_at_ns,
+            state_change_event_id: String::new(),
+        });
+
+        Ok(id)
     }
 
     /// Write a Remediation node and link it to its DetectionEvent.
@@ -963,9 +986,12 @@ impl GraphStore {
         attempted_at_ns: i64,
         completed_at_ns: i64,
     ) -> Result<String> {
+        let event_detection_id = detection_id.clone();
+        let event_action = action.clone();
+        let event_status = status.clone();
         let db = Arc::clone(&self.db);
         let write_lock = Arc::clone(&self.write_lock);
-        tokio::task::spawn_blocking(move || {
+        let id = tokio::task::spawn_blocking(move || {
             let _guard = write_lock.lock().expect("write lock poisoned");
             let conn = Connection::new(&db).context("remediation write connection")?;
             let id = Uuid::new_v4().to_string();
@@ -1017,6 +1043,20 @@ impl GraphStore {
         })
         .await
         .context("spawn_blocking panicked")?
+        .context("remediation write")?;
+
+        self.publish_event(BonsaiEvent {
+            device_address: String::new(),
+            event_type: "remediation_outcome".to_string(),
+            detail_json: format!(
+                r#"{{"id":"{}","detection_id":"{}","action":"{}","status":"{}"}}"#,
+                id, event_detection_id, event_action, event_status
+            ),
+            occurred_at_ns: attempted_at_ns,
+            state_change_event_id: String::new(),
+        });
+
+        Ok(id)
     }
 
     pub async fn write_remediation_proposal(
