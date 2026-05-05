@@ -161,8 +161,11 @@
     <div class="ops-grid" style="margin-top:12px;">
       <div class="card metric sparkline-card">
         <span>RSS memory</span>
-        <strong class="{(ops.rss_bytes ?? 0) > 900 * 1024 * 1024 ? 'warn-text' : ''}">
+        <strong class="{(ops.memory_rss_pct_of_budget ?? 0) >= 80 ? 'warn-text' : ''}">
           {Math.round((ops.rss_bytes ?? 0) / 1024 / 1024)} MB
+          {#if (ops.memory_budget_bytes ?? 0) > 0}
+            <small>({(ops.memory_rss_pct_of_budget ?? 0).toFixed(0)}% of {Math.round((ops.memory_budget_bytes ?? 0) / 1024 / 1024)} MB budget)</small>
+          {/if}
         </strong>
         {#if rssSamples.length > 1}
           <svg class="sparkline" viewBox="0 0 100 24" preserveAspectRatio="none">

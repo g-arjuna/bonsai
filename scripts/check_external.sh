@@ -16,6 +16,20 @@ set -euo pipefail
 NETBOX_URL="${NETBOX_URL:-http://localhost:8000}"
 NETBOX_TOKEN="${NETBOX_API_TOKEN:-bonsai-dev-token}"
 BONSAI_HTTP="${BONSAI_HTTP:-http://localhost:3000}"
+WATCH_MODE=false
+WATCH_INTERVAL=30
+OUTPUT_FILE=""
+
+# Parse flags
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --watch)         WATCH_MODE=true ;;
+        --interval=*)    WATCH_INTERVAL="${1#*=}" ;;
+        --output=*)      OUTPUT_FILE="${1#*=}" ;;
+        *) echo "Unknown flag: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
 
 log() { echo "$*" >&2; }
 j()  { printf '%s' "$*"; }  # JSON fragment helper
@@ -178,18 +192,35 @@ check_bonsai() {
 
 # ── Assemble JSON ─────────────────────────────────────────────────────────────
 
-NB=$(check_netbox)
-SP=$(check_splunk)
-ES=$(check_elastic)
-PR=$(check_prometheus)
-SN=$(check_servicenow)
-BN=$(check_bonsai)
+run_checks() {
+    local NB SP ES PR SN BN JSON TS
+    NB=$(check_netbox)
+    SP=$(check_splunk)
+    ES=$(check_elastic)
+    PR=$(check_prometheus)
+    SN=$(check_servicenow)
+    BN=$(check_bonsai)
+    TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-printf '{\n'
-printf '  "netbox": %s,\n'      "$NB"
-printf '  "splunk": %s,\n'      "$SP"
-printf '  "elastic": %s,\n'     "$ES"
-printf '  "prometheus": %s,\n'  "$PR"
-printf '  "servicenow_pdi": %s,\n' "$SN"
-printf '  "bonsai": %s\n'       "$BN"
-printf '}\n'
+    JSON=$(printf '{\n  "checked_at": "%s",\n  "netbox": %s,\n  "splunk": %s,\n  "elastic": %s,\n  "prometheus": %s,\n  "servicenow_pdi": %s,\n  "bonsai": %s\n}\n' \
+        "$TS" "$NB" "$SP" "$ES" "$PR" "$SN" "$BN")
+
+    if [[ -n "$OUTPUT_FILE" ]]; then
+        printf '%s' "$JSON" > "$OUTPUT_FILE"
+        log "[check_external] wrote $OUTPUT_FILE"
+    else
+        printf '%s' "$JSON"
+    fi
+}
+
+if $WATCH_MODE; then
+    # Default output file for watch mode if not specified.
+    [[ -z "$OUTPUT_FILE" ]] && OUTPUT_FILE="runtime/external_status.json"
+    log "[check_external] watch mode: polling every ${WATCH_INTERVAL}s → ${OUTPUT_FILE}"
+    while true; do
+        run_checks
+        sleep "$WATCH_INTERVAL"
+    done
+else
+    run_checks
+fi

@@ -79,6 +79,8 @@ impl InProcessBus {
         rx
     }
 
+    pub fn capacity(&self) -> u64 { self.capacity }
+
     pub fn snapshot() -> EventBusSnapshot {
         EventBusSnapshot {
             depth: EVENT_BUS_DEPTH.load(Ordering::Relaxed),

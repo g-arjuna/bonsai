@@ -1,0 +1,98 @@
+name: Startup Time Budget
+
+# T5-2: Measure bonsai cold-start latency and fail if >25% over baseline.
+#
+# Baseline is stored as STARTUP_BASELINE_MS in the workflow env.
+# Update it by hand after intentional startup-cost changes (schema additions,
+# new init passes, etc.) and commit the updated value.
+#
+# The binary boots with --once-and-exit which exits immediately after the
+# "phase=ready" log line, giving us end-to-end startup time without any
+# external service dependency.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+
+env:
+  CARGO_TERM_COLOR: always
+  # Baseline cold-start (ms). Update when startup cost intentionally changes.
+  STARTUP_BASELINE_MS: 3000
+  # Fail if measured time exceeds baseline by more than this fraction.
+  STARTUP_BUDGET_PCT: 25
+
+jobs:
+  startup-time:
+    name: Startup time budget
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build bonsai (release)
+        run: cargo build --release
+
+      - name: Prepare minimal runtime env
+        run: |
+          mkdir -p runtime/graph runtime/archive
+          # Minimal bonsai.toml that lets --once-and-exit reach ready without external deps.
+          cat > bonsai.toml <<'TOML'
+          [runtime]
+          mode = "core"
+          [graph]
+          path = "runtime/graph/test.db"
+          buffer_pool_bytes = 67108864
+          [archive]
+          path = "runtime/archive"
+          [credentials]
+          path = "runtime/credentials.json"
+          passphrase_env = "BONSAI_VAULT_PASSPHRASE"
+          [event_bus]
+          capacity = 64
+          TOML
+
+      - name: Measure startup time
+        id: measure
+        run: |
+          START_MS=$(date +%s%3N)
+          ./target/release/bonsai --once-and-exit 2>&1 | tail -5
+          END_MS=$(date +%s%3N)
+          ELAPSED=$((END_MS - START_MS))
+          echo "elapsed_ms=${ELAPSED}" >> "$GITHUB_OUTPUT"
+          echo "[startup-time] elapsed=${ELAPSED}ms baseline=${STARTUP_BASELINE_MS}ms"
+
+      - name: Check against budget
+        env:
+          ELAPSED_MS: ${{ steps.measure.outputs.elapsed_ms }}
+        run: |
+          BUDGET=$(( STARTUP_BASELINE_MS * (100 + STARTUP_BUDGET_PCT) / 100 ))
+          echo "[startup-time] budget=${BUDGET}ms measured=${ELAPSED_MS}ms"
+          if [ "${ELAPSED_MS}" -gt "${BUDGET}" ]; then
+            echo "::error::Startup time ${ELAPSED_MS}ms exceeds budget ${BUDGET}ms (baseline=${STARTUP_BASELINE_MS}ms +${STARTUP_BUDGET_PCT}%)"
+            exit 1
+          fi
+          echo "::notice::Startup time ${ELAPSED_MS}ms is within budget ${BUDGET}ms"

@@ -808,6 +808,12 @@ async fn main() -> Result<()> {
 
     info!(phase = "ready", elapsed_ms = startup_start.elapsed().as_millis() as u64, "startup");
 
+    // T5-2: used by the startup-time CI budget workflow to measure cold-start latency.
+    if std::env::args().any(|a| a == "--once-and-exit") {
+        info!("--once-and-exit: startup verified, exiting");
+        return Ok(());
+    }
+
     tokio::signal::ctrl_c().await?;
     info!("Ctrl+C received - shutting down");
     let _ = shutdown_tx.send(true);

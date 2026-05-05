@@ -141,6 +141,8 @@ pub struct GraphStore {
     /// KuzuDB permits only one concurrent write transaction. All spawn_blocking
     /// write paths must hold this lock for the duration of their Connection.
     write_lock: Arc<Mutex<()>>,
+    /// Configured LadybugDB buffer pool cap — exposed for memory health reporting.
+    buffer_pool_bytes: u64,
 }
 
 impl GraphStore {
@@ -157,6 +159,7 @@ impl GraphStore {
             db: Arc::new(db),
             event_tx,
             write_lock: Arc::new(Mutex::new(())),
+            buffer_pool_bytes,
         };
 
         let t = Instant::now();
@@ -180,6 +183,11 @@ impl GraphStore {
     /// onto the same SSE channel (e.g. CollectorManager for status changes).
     pub fn event_sender(&self) -> broadcast::Sender<BonsaiEvent> {
         self.event_tx.clone()
+    }
+
+    /// Configured LadybugDB buffer pool cap in bytes (for memory health reporting).
+    pub fn buffer_pool_bytes(&self) -> u64 {
+        self.buffer_pool_bytes
     }
 }
 
@@ -585,6 +593,14 @@ impl GraphStore {
         )
         .context("create HAS_PROPOSAL rel")?;
 
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS MigrationMarker(\
+                id         STRING,\
+                applied_at TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create MigrationMarker table")?;
+
         info!("graph schema initialised");
         Ok(())
     }
@@ -848,7 +864,21 @@ impl GraphStore {
     }
 
     fn backfill_remediation_trust_marks(&self) -> Result<()> {
+        const MARKER_ID: &str = "backfill_trust_v1";
         let conn = Connection::new(&self.db).context("trust-mark backfill connection")?;
+
+        // Skip if this one-shot migration has already been applied.
+        let mut check = conn
+            .prepare("MATCH (m:MigrationMarker {id: $id}) RETURN m.id")
+            .context("prepare migration marker check")?;
+        let rows = conn
+            .execute(&mut check, vec![("id", Value::String(MARKER_ID.to_string()))])
+            .context("execute migration marker check")?;
+        if rows.into_iter().next().is_some() {
+            debug!("backfill_trust_v1 already applied — skipping");
+            return Ok(());
+        }
+
         let mut stmt = conn
             .prepare(
                 "MATCH (r:Remediation) \
@@ -873,6 +903,24 @@ impl GraphStore {
         if created > 0 {
             info!(created, "backfilled remediation trust marks");
         }
+
+        // Record that this migration has run so future startups skip it.
+        let mut mark = conn
+            .prepare(
+                "MERGE (m:MigrationMarker {id: $id}) \
+                 ON CREATE SET m.applied_at = $ts",
+            )
+            .context("prepare migration marker insert")?;
+        conn.execute(
+            &mut mark,
+            vec![
+                ("id", Value::String(MARKER_ID.to_string())),
+                ("ts", ts(now_ns())),
+            ],
+        )
+        .context("execute migration marker insert")?;
+
+        info!("migration marker backfill_trust_v1 recorded");
         Ok(())
     }
 

@@ -180,6 +180,9 @@ struct OperationsResponse {
     archive_disk_pct: u8,
     graph_disk_bytes: u64,
     graph_disk_pct: u8,
+    // Memory health (T1-4)
+    memory_budget_bytes: u64,
+    memory_rss_pct_of_budget: f64,
 }
 
 #[derive(Serialize)]
@@ -1737,6 +1740,15 @@ async fn operations_handler(
         archive_disk_pct: disk_snapshot.archive_pct,
         graph_disk_bytes: disk_snapshot.graph_bytes,
         graph_disk_pct: disk_snapshot.graph_pct,
+        memory_budget_bytes: state.store.buffer_pool_bytes(),
+        memory_rss_pct_of_budget: {
+            let budget = state.store.buffer_pool_bytes();
+            if budget > 0 {
+                (mem_snapshot.rss_bytes as f64 / budget as f64) * 100.0
+            } else {
+                0.0
+            }
+        },
     }))
 }
 

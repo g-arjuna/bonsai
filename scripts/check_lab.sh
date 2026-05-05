@@ -72,14 +72,13 @@ check_dc() {
         local raw
         raw=$(node_exec "$(clab_node dc srl-spine1)" sr_cli -d "show network-instance default protocols isis adjacency" 2>/dev/null || echo "__FAILED__")
         if [[ "$raw" != "__FAILED__" ]]; then
-            # Count lines containing "Up"
             isis_adj_spine1=$(echo "$raw" | grep -c " Up " || echo "0")
         fi
     fi
     log "  IS-IS adjacencies on spine1: ${isis_adj_spine1}"
 
     # BGP EVPN sessions on super1 (expect: 7 — super2 + 2 spines + 4 leaves)
-    local bgp_established_super1="unknown"
+    local bgp_established_super1=0 bgp_total_super1=7
     if node_running "$(clab_node dc srl-super1)"; then
         local raw
         raw=$(node_exec "$(clab_node dc srl-super1)" sr_cli -d "show network-instance default protocols bgp neighbor" 2>/dev/null || echo "__FAILED__")
@@ -87,10 +86,10 @@ check_dc() {
             bgp_established_super1=$(echo "$raw" | grep -c "established" || echo "0")
         fi
     fi
-    log "  BGP EVPN established on super1: ${bgp_established_super1}"
+    log "  BGP EVPN established on super1: ${bgp_established_super1}/${bgp_total_super1}"
 
     # EVPN routes on leaf1 (expect type-2/3/5 from other leaves)
-    local evpn_routes_leaf1="unknown"
+    local evpn_routes_leaf1=0 evpn_routes_present=false
     if node_running "$(clab_node dc srl-leaf1)"; then
         local raw
         raw=$(node_exec "$(clab_node dc srl-leaf1)" sr_cli -d "show network-instance mac-vrf-a protocols bgp-evpn routes" 2>/dev/null || echo "__FAILED__")
@@ -98,13 +97,41 @@ check_dc() {
             evpn_routes_leaf1=$(echo "$raw" | grep -c "type-" || echo "0")
         fi
     fi
+    [[ "$evpn_routes_leaf1" -gt 0 ]] && evpn_routes_present=true
     log "  EVPN routes in mac-vrf-a on leaf1: ${evpn_routes_leaf1}"
+
+    # SR-MPLS segment routing: check IS-IS SR prefix-SIDs programmed on spine1
+    local srv6_ok=false
+    if node_running "$(clab_node dc srl-spine1)"; then
+        local raw
+        raw=$(node_exec "$(clab_node dc srl-spine1)" sr_cli -d "show network-instance default protocols isis segment-routing prefix-sids" 2>/dev/null || echo "__FAILED__")
+        if [[ "$raw" != "__FAILED__" ]] && echo "$raw" | grep -qi "prefix-sid\|SID"; then
+            srv6_ok=true
+        fi
+    fi
+    log "  SR-MPLS reachability on spine1: ${srv6_ok}"
+
+    # Build warnings list
+    local warnings=()
+    [[ ${#missing_nodes[@]} -gt 0 ]] && warnings+=("${#missing_nodes[@]} DC node(s) down: $(IFS=,; echo "${missing_nodes[*]}")")
+    if [[ "$isis_adj_spine1" != "unknown" ]] && [[ "$isis_adj_spine1" -lt 6 ]]; then
+        warnings+=("DC spine1 IS-IS: only ${isis_adj_spine1}/6 adjacencies")
+    fi
+    if [[ "$bgp_established_super1" -lt "$bgp_total_super1" ]]; then
+        warnings+=("DC super1 BGP: only ${bgp_established_super1}/${bgp_total_super1} established")
+    fi
+    $evpn_routes_present || warnings+=("DC leaf1: no EVPN routes in mac-vrf-a")
 
     # Build missing_nodes JSON
     local missing_json="[]"
     if [[ ${#missing_nodes[@]} -gt 0 ]]; then
         missing_json=$(printf '"%s",' "${missing_nodes[@]}")
         missing_json="[${missing_json%,}]"
+    fi
+    local warnings_json="[]"
+    if [[ ${#warnings[@]} -gt 0 ]]; then
+        warnings_json=$(printf '"%s",' "${warnings[@]}")
+        warnings_json="[${warnings_json%,}]"
     fi
 
     local passed=false
@@ -116,11 +143,18 @@ check_dc() {
     "nodes_up": %d,
     "nodes_total": %d,
     "missing_nodes": %s,
+    "bgp_sessions_established": %d,
+    "bgp_sessions_total": %d,
     "isis_adjacencies_spine1": "%s",
-    "bgp_evpn_established_super1": "%s",
-    "evpn_routes_leaf1_mac_vrf_a": "%s"
+    "bgp_evpn_established_super1": %d,
+    "evpn_routes_leaf1_mac_vrf_a": %d,
+    "evpn_routes_present": %s,
+    "srv6_reachability_verified": %s,
+    "warnings": %s
   }' "$passed" "$nodes_up" "$nodes_total" "$missing_json" \
-      "$isis_adj_spine1" "$bgp_established_super1" "$evpn_routes_leaf1"
+      "$bgp_established_super1" "$bgp_total_super1" \
+      "$isis_adj_spine1" "$bgp_established_super1" "$evpn_routes_leaf1" \
+      "$evpn_routes_present" "$srv6_ok" "$warnings_json"
 }
 
 # ── SP topology checks ────────────────────────────────────────────────────────
@@ -169,15 +203,15 @@ check_sp() {
     log "  LDP sessions on frr-p1: ${ldp_sessions_p1}"
 
     # BGP VPN-IPv4 sessions on rr1 (expect: 4 clients + 1 RR peer = 5)
-    local bgp_vpn_rr1="unknown"
+    local bgp_established_rr1=0 bgp_total_rr1=5
     if node_running "$(clab_node sp srl-rr1)"; then
         local raw
         raw=$(node_exec "$(clab_node sp srl-rr1)" sr_cli -d "show network-instance default protocols bgp neighbor" 2>/dev/null || echo "__FAILED__")
         if [[ "$raw" != "__FAILED__" ]]; then
-            bgp_vpn_rr1=$(echo "$raw" | grep -c "established" || echo "0")
+            bgp_established_rr1=$(echo "$raw" | grep -c "established" || echo "0")
         fi
     fi
-    log "  BGP VPN-IPv4 established on rr1: ${bgp_vpn_rr1}"
+    log "  BGP VPN-IPv4 established on rr1: ${bgp_established_rr1}/${bgp_total_rr1}"
 
     # CE1 BGP session to pe1 (expect: established)
     local ce1_bgp="unknown"
@@ -190,10 +224,31 @@ check_sp() {
     fi
     log "  CE1 BGP state toward pe1: ${ce1_bgp}"
 
+    # SRv6: SP topo uses LDP/MPLS, not SRv6 — mark as N/A for summary
+    # (SRv6 assertion applies to DC topo only)
+    local srv6_ok=false
+
+    # Build warnings list
+    local warnings=()
+    [[ ${#missing_nodes[@]} -gt 0 ]] && warnings+=("${#missing_nodes[@]} SP node(s) down: $(IFS=,; echo "${missing_nodes[*]}")")
+    if [[ "$isis_adj_p1" != "unknown" ]] && [[ "$isis_adj_p1" -lt 3 ]]; then
+        warnings+=("SP frr-p1 IS-IS: only ${isis_adj_p1}/3 adjacencies")
+    fi
+    if [[ "$bgp_established_rr1" -lt "$bgp_total_rr1" ]]; then
+        warnings+=("SP rr1 BGP: only ${bgp_established_rr1}/${bgp_total_rr1} established")
+    fi
+    [[ "$ce1_bgp" != "Estab" ]] && [[ "$ce1_bgp" != "unknown" ]] && \
+        warnings+=("SP CE1 BGP to pe1: state=${ce1_bgp}")
+
     local missing_json="[]"
     if [[ ${#missing_nodes[@]} -gt 0 ]]; then
         missing_json=$(printf '"%s",' "${missing_nodes[@]}")
         missing_json="[${missing_json%,}]"
+    fi
+    local warnings_json="[]"
+    if [[ ${#warnings[@]} -gt 0 ]]; then
+        warnings_json=$(printf '"%s",' "${warnings[@]}")
+        warnings_json="[${warnings_json%,}]"
     fi
 
     local passed=false
@@ -205,12 +260,19 @@ check_sp() {
     "nodes_up": %d,
     "nodes_total": %d,
     "missing_nodes": %s,
+    "bgp_sessions_established": %d,
+    "bgp_sessions_total": %d,
     "isis_adjacencies_frr_p1": "%s",
     "ldp_sessions_frr_p1": "%s",
-    "bgp_vpn_established_rr1": "%s",
-    "ce1_bgp_state": "%s"
+    "bgp_vpn_established_rr1": %d,
+    "ce1_bgp_state": "%s",
+    "evpn_routes_present": false,
+    "srv6_reachability_verified": %s,
+    "warnings": %s
   }' "$passed" "$nodes_up" "$nodes_total" "$missing_json" \
-      "$isis_adj_p1" "$ldp_sessions_p1" "$bgp_vpn_rr1" "$ce1_bgp"
+      "$bgp_established_rr1" "$bgp_total_rr1" \
+      "$isis_adj_p1" "$ldp_sessions_p1" "$bgp_established_rr1" "$ce1_bgp" \
+      "$srv6_ok" "$warnings_json"
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -244,6 +306,52 @@ case "${TOPOLOGY:-all}" in
 esac
 
 TS=$(date -u +%s)
-printf '{"ts_unix": %d, "dc": %s, "sp": %s}\n' "$TS" "$DC_JSON" "$SP_JSON"
+
+# ── Top-level summary ─────────────────────────────────────────────────────────
+# Aggregate fields across all checked topologies.
+SUMMARY=$(python3 - <<PYEOF
+import json, sys
+
+dc = $DC_JSON
+sp = $SP_JSON
+
+bgp_est = 0
+bgp_total = 0
+evpn_present = False
+srv6_ok = False
+warnings = []
+all_passed = True
+
+for topo in (dc, sp):
+    if topo is None:
+        continue
+    bgp_est += topo.get("bgp_sessions_established", 0)
+    bgp_total += topo.get("bgp_sessions_total", 0)
+    evpn_present = evpn_present or topo.get("evpn_routes_present", False)
+    srv6_ok = srv6_ok or topo.get("srv6_reachability_verified", False)
+    warnings.extend(topo.get("warnings", []))
+    if not topo.get("passed", False):
+        all_passed = False
+
+print(json.dumps({
+    "bgp_sessions_established": bgp_est,
+    "bgp_sessions_total": bgp_total,
+    "evpn_routes_present": evpn_present,
+    "srv6_reachability_verified": srv6_ok,
+    "warnings": warnings,
+    "overall_passed": all_passed,
+}))
+PYEOF
+)
+
+printf '{"ts_unix": %d, "summary": %s, "dc": %s, "sp": %s}\n' \
+    "$TS" "$SUMMARY" "$DC_JSON" "$SP_JSON"
 
 log "Done."
+
+# Exit 1 if any topology check failed.
+python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+sys.exit(0 if data['summary']['overall_passed'] else 1)
+" <<< "$(printf '{"ts_unix": %d, "summary": %s, "dc": %s, "sp": %s}\n' "$TS" "$SUMMARY" "$DC_JSON" "$SP_JSON")"
