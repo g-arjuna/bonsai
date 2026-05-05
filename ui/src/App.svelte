@@ -18,6 +18,7 @@
   import Approvals from './routes/Approvals.svelte';
   import Adapters from './routes/Adapters.svelte';
   import Explorer from './routes/Explorer.svelte';
+  import Investigations from './routes/Investigations.svelte';
 
   const NAV = [
     { href: '/',              label: 'Live',         icon: '◉' },
@@ -32,7 +33,8 @@
     { href: '/sites',         label: 'Sites',        icon: '◎' },
     { href: '/credentials',   label: 'Credentials',  icon: '⚿' },
     { href: '/operations',    label: 'Operations',   icon: '♡' },
-    { href: '/explorer',      label: 'Explorer',     icon: '⬡' },
+    { href: '/explorer',       label: 'Explorer',       icon: '⬡' },
+    { href: '/investigations', label: 'Investigations', icon: '🔍' },
   ];
 
   let setupChecked = $state(false);
@@ -123,6 +125,8 @@
       <Approvals />
     {:else if path() === '/explorer'}
       <Explorer />
+    {:else if path() === '/investigations'}
+      <Investigations />
     {:else}
       <div class="empty">Page not found.</div>
     {/if}

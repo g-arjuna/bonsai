@@ -97,6 +97,31 @@ pub struct SavedQueryRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvestigationRecord {
+    pub id: String,
+    pub detection_id: String,
+    pub device_address: String,
+    pub trigger: String,        // "auto" | "operator"
+    pub status: String,         // "running" | "complete" | "failed"
+    pub summary: String,
+    pub proposal_json: String,  // serialised RemediationProposal request, or ""
+    pub tokens_used: i64,
+    pub cost_usd: f64,
+    pub started_at_ns: i64,
+    pub completed_at_ns: i64,   // 0 while running
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallRecord {
+    pub id: String,
+    pub investigation_id: String,
+    pub tool_name: String,
+    pub input_json: String,
+    pub output_json: String,
+    pub called_at_ns: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingRecord {
     pub device_address: String,
     pub version: String,
@@ -640,6 +665,41 @@ impl GraphStore {
                 PRIMARY KEY (id))",
         )
         .context("create SavedQuery table")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS Investigation(\
+                id              STRING,\
+                detection_id    STRING,\
+                device_address  STRING,\
+                trigger         STRING,\
+                status          STRING,\
+                summary         STRING,\
+                proposal_json   STRING,\
+                tokens_used     INT64,\
+                cost_usd        DOUBLE,\
+                started_at      TIMESTAMP_NS,\
+                completed_at    TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create Investigation table")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS AgentToolCall(\
+                id               STRING,\
+                investigation_id STRING,\
+                tool_name        STRING,\
+                input_json       STRING,\
+                output_json      STRING,\
+                called_at        TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create AgentToolCall table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_TOOL_CALL(\
+                FROM Investigation TO AgentToolCall)",
+        )
+        .context("create HAS_TOOL_CALL rel table")?;
 
         // id = "{device_address}:{version}" to allow one embedding per (device, schema version).
         conn.query(
@@ -1689,6 +1749,262 @@ impl GraphStore {
                     })
                 })
                 .collect::<Result<Vec<_>>>()
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+}
+
+// ── investigation methods (T3-1) ─────────────────────────────────────────────
+
+impl GraphStore {
+    pub async fn create_investigation(
+        &self,
+        detection_id: String,
+        device_address: String,
+        trigger: String,
+    ) -> Result<InvestigationRecord> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock");
+            let conn = Connection::new(&db).context("create_investigation conn")?;
+            let id = Uuid::new_v4().to_string();
+            let now = now_ns();
+            let mut stmt = conn
+                .prepare(
+                    "CREATE (i:Investigation {id: $id, detection_id: $did, \
+                     device_address: $addr, trigger: $trigger, status: 'running', \
+                     summary: '', proposal_json: '', tokens_used: 0, cost_usd: 0.0, \
+                     started_at: $ts, completed_at: $ts})",
+                )
+                .context("create_investigation prepare")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id",      Value::String(id.clone())),
+                    ("did",     Value::String(detection_id.clone())),
+                    ("addr",    Value::String(device_address.clone())),
+                    ("trigger", Value::String(trigger.clone())),
+                    ("ts",      ts(now)),
+                ],
+            )
+            .context("create_investigation execute")?;
+            Ok::<_, anyhow::Error>(InvestigationRecord {
+                id,
+                detection_id,
+                device_address,
+                trigger,
+                status: "running".into(),
+                summary: String::new(),
+                proposal_json: String::new(),
+                tokens_used: 0,
+                cost_usd: 0.0,
+                started_at_ns: now,
+                completed_at_ns: 0,
+            })
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn complete_investigation(
+        &self,
+        id: String,
+        status: String,
+        summary: String,
+        proposal_json: String,
+        tokens_used: i64,
+        cost_usd: f64,
+    ) -> Result<()> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock");
+            let conn = Connection::new(&db).context("complete_investigation conn")?;
+            let mut stmt = conn
+                .prepare(
+                    "MATCH (i:Investigation {id: $id}) \
+                     SET i.status = $status, i.summary = $summary, \
+                         i.proposal_json = $prop, i.tokens_used = $tok, \
+                         i.cost_usd = $cost, i.completed_at = $ts",
+                )
+                .context("complete_investigation prepare")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id",     Value::String(id)),
+                    ("status", Value::String(status)),
+                    ("summary",Value::String(summary)),
+                    ("prop",   Value::String(proposal_json)),
+                    ("tok",    Value::Int64(tokens_used)),
+                    ("cost",   Value::Float(cost_usd as f32)),
+                    ("ts",     ts(now_ns())),
+                ],
+            )
+            .context("complete_investigation execute")?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn list_investigations(&self) -> Result<Vec<InvestigationRecord>> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("list_investigations conn")?;
+            let rows = conn
+                .query(
+                    "MATCH (i:Investigation) \
+                     RETURN i.id, i.detection_id, i.device_address, i.trigger, i.status, \
+                            i.summary, i.proposal_json, i.tokens_used, i.cost_usd, \
+                            i.started_at, i.completed_at \
+                     ORDER BY i.started_at DESC",
+                )
+                .context("list_investigations query")?;
+            Ok::<_, anyhow::Error>(
+                rows.map(|r| InvestigationRecord {
+                    id:              read_str(&r[0]),
+                    detection_id:    read_str(&r[1]),
+                    device_address:  read_str(&r[2]),
+                    trigger:         read_str(&r[3]),
+                    status:          read_str(&r[4]),
+                    summary:         read_str(&r[5]),
+                    proposal_json:   read_str(&r[6]),
+                    tokens_used:     match &r[7] { Value::Int64(n) => *n, Value::Int32(n) => *n as i64, _ => 0 },
+                    cost_usd:        match &r[8] { Value::Float(f) => *f as f64, _ => 0.0 },
+                    started_at_ns:   read_ts_ns(&r[9]),
+                    completed_at_ns: read_ts_ns(&r[10]),
+                })
+                .collect(),
+            )
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn get_investigation(&self, id: String) -> Result<Option<InvestigationRecord>> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("get_investigation conn")?;
+            let mut stmt = conn
+                .prepare(
+                    "MATCH (i:Investigation {id: $id}) \
+                     RETURN i.id, i.detection_id, i.device_address, i.trigger, i.status, \
+                            i.summary, i.proposal_json, i.tokens_used, i.cost_usd, \
+                            i.started_at, i.completed_at",
+                )
+                .context("get_investigation prepare")?;
+            let rows: Vec<_> = conn
+                .execute(&mut stmt, vec![("id", Value::String(id))])
+                .context("get_investigation execute")?
+                .collect();
+            Ok::<_, anyhow::Error>(rows.into_iter().next().map(|r| InvestigationRecord {
+                id:              read_str(&r[0]),
+                detection_id:    read_str(&r[1]),
+                device_address:  read_str(&r[2]),
+                trigger:         read_str(&r[3]),
+                status:          read_str(&r[4]),
+                summary:         read_str(&r[5]),
+                proposal_json:   read_str(&r[6]),
+                tokens_used:     match &r[7] { Value::Int64(n) => *n, Value::Int32(n) => *n as i64, _ => 0 },
+                cost_usd:        match &r[8] { Value::Float(f) => *f as f64, _ => 0.0 },
+                started_at_ns:   read_ts_ns(&r[9]),
+                completed_at_ns: read_ts_ns(&r[10]),
+            }))
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn add_tool_call(
+        &self,
+        investigation_id: String,
+        tool_name: String,
+        input_json: String,
+        output_json: String,
+    ) -> Result<ToolCallRecord> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock");
+            let conn = Connection::new(&db).context("add_tool_call conn")?;
+            let id = Uuid::new_v4().to_string();
+            let now = now_ns();
+            let mut stmt = conn
+                .prepare(
+                    "CREATE (t:AgentToolCall {id: $id, investigation_id: $iid, \
+                     tool_name: $name, input_json: $inp, output_json: $out, called_at: $ts})",
+                )
+                .context("add_tool_call prepare")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id",   Value::String(id.clone())),
+                    ("iid",  Value::String(investigation_id.clone())),
+                    ("name", Value::String(tool_name.clone())),
+                    ("inp",  Value::String(input_json.clone())),
+                    ("out",  Value::String(output_json.clone())),
+                    ("ts",   ts(now)),
+                ],
+            )
+            .context("add_tool_call execute")?;
+            // Edge: Investigation -[:HAS_TOOL_CALL]-> AgentToolCall
+            let mut edge_stmt = conn
+                .prepare(
+                    "MATCH (i:Investigation {id: $iid}), (t:AgentToolCall {id: $tid}) \
+                     CREATE (i)-[:HAS_TOOL_CALL]->(t)",
+                )
+                .context("add_tool_call edge prepare")?;
+            conn.execute(
+                &mut edge_stmt,
+                vec![
+                    ("iid", Value::String(investigation_id.clone())),
+                    ("tid", Value::String(id.clone())),
+                ],
+            )
+            .context("add_tool_call edge execute")?;
+            Ok::<_, anyhow::Error>(ToolCallRecord {
+                id,
+                investigation_id,
+                tool_name,
+                input_json,
+                output_json,
+                called_at_ns: now,
+            })
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn list_tool_calls(&self, investigation_id: String) -> Result<Vec<ToolCallRecord>> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("list_tool_calls conn")?;
+            let mut stmt = conn
+                .prepare(
+                    "MATCH (t:AgentToolCall {investigation_id: $iid}) \
+                     RETURN t.id, t.investigation_id, t.tool_name, \
+                            t.input_json, t.output_json, t.called_at \
+                     ORDER BY t.called_at",
+                )
+                .context("list_tool_calls prepare")?;
+            let rows: Vec<_> = conn
+                .execute(&mut stmt, vec![("iid", Value::String(investigation_id))])
+                .context("list_tool_calls execute")?
+                .collect();
+            Ok::<_, anyhow::Error>(
+                rows.iter()
+                    .map(|r| ToolCallRecord {
+                        id:               read_str(&r[0]),
+                        investigation_id: read_str(&r[1]),
+                        tool_name:        read_str(&r[2]),
+                        input_json:       read_str(&r[3]),
+                        output_json:      read_str(&r[4]),
+                        called_at_ns:     read_ts_ns(&r[5]),
+                    })
+                    .collect(),
+            )
         })
         .await
         .context("spawn_blocking panicked")?
@@ -3263,6 +3579,108 @@ mod tests {
             metadata_json: "{}".to_string(),
             environment_id: String::new(),
         }
+    }
+
+    // ── Investigation tests (T3-1) ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn create_and_get_investigation() {
+        let path = temp_graph_path("investigation-create");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open");
+        let inv = store
+            .create_investigation("det-1".into(), "10.0.0.1:57400".into(), "operator".into())
+            .await
+            .expect("create");
+        assert!(!inv.id.is_empty());
+        assert_eq!(inv.status, "running");
+
+        let got = store
+            .get_investigation(inv.id.clone())
+            .await
+            .expect("get")
+            .expect("should exist");
+        assert_eq!(got.detection_id, "det-1");
+        assert_eq!(got.trigger, "operator");
+    }
+
+    #[tokio::test]
+    async fn complete_investigation_updates_status() {
+        let path = temp_graph_path("investigation-complete");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open");
+        let inv = store
+            .create_investigation("det-2".into(), "10.0.0.2:57400".into(), "auto".into())
+            .await
+            .expect("create");
+
+        store
+            .complete_investigation(
+                inv.id.clone(),
+                "complete".into(),
+                "BGP session restored after interface reset.".into(),
+                "".into(),
+                1234,
+                0.001,
+            )
+            .await
+            .expect("complete");
+
+        let got = store.get_investigation(inv.id).await.expect("get").expect("exists");
+        assert_eq!(got.status, "complete");
+        assert_eq!(got.tokens_used, 1234);
+        assert!(got.summary.contains("BGP"));
+    }
+
+    #[tokio::test]
+    async fn list_investigations_returns_newest_first() {
+        let path = temp_graph_path("investigation-list");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open");
+        let _ = store.create_investigation("d1".into(), "10.0.0.1".into(), "auto".into()).await.expect("c1");
+        let _ = store.create_investigation("d2".into(), "10.0.0.2".into(), "auto".into()).await.expect("c2");
+        let list = store.list_investigations().await.expect("list");
+        assert_eq!(list.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn add_and_list_tool_calls() {
+        let path = temp_graph_path("tool-calls");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open");
+        let inv = store
+            .create_investigation("det-3".into(), "10.0.0.3:57400".into(), "operator".into())
+            .await
+            .expect("create");
+
+        store
+            .add_tool_call(
+                inv.id.clone(),
+                "get_blast_radius".into(),
+                r#"{"device_address":"10.0.0.3:57400"}"#.into(),
+                r#"{"devices":["10.0.0.4"]}"#.into(),
+            )
+            .await
+            .expect("add tool call 1");
+
+        store
+            .add_tool_call(
+                inv.id.clone(),
+                "summarise".into(),
+                r#"{"text":"BGP session down."}"#.into(),
+                r#"{"summary":"BGP session down."}"#.into(),
+            )
+            .await
+            .expect("add tool call 2");
+
+        let calls = store.list_tool_calls(inv.id.clone()).await.expect("list");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].tool_name, "get_blast_radius");
+        assert_eq!(calls[1].tool_name, "summarise");
+    }
+
+    #[tokio::test]
+    async fn get_investigation_returns_none_for_unknown() {
+        let path = temp_graph_path("investigation-missing");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open");
+        let result = store.get_investigation("nonexistent-id".into()).await.expect("no error");
+        assert!(result.is_none());
     }
 
     // ── DeviceEmbedding tests (T2-1 / T5-3) ──────────────────────────────────

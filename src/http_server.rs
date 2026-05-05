@@ -710,6 +710,11 @@ pub fn router(
             "/api/explorer/saved-queries/:id/delete",
             post(delete_saved_query_handler),
         )
+        // investigations (T3-1/T3-2)
+        .route("/api/investigations", get(list_investigations_handler).post(create_investigation_handler))
+        .route("/api/investigations/:id", get(get_investigation_handler))
+        .route("/api/investigations/:id/tool-calls", get(list_tool_calls_handler))
+        .route("/api/investigations/:id/complete", post(complete_investigation_handler))
         // graph embeddings (T2-1)
         .route(
             "/api/graph/embeddings/upsert",
@@ -4582,5 +4587,107 @@ async fn list_embeddings_handler(
         .list_device_embeddings(address)
         .await
         .map(|embeddings| Json(EmbeddingsResponse { embeddings }))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+// ── investigation handlers (T3-1 / T3-2) ─────────────────────────────────────
+
+#[derive(Deserialize)]
+struct CreateInvestigationBody {
+    detection_id: String,
+    device_address: String,
+    #[serde(default = "default_trigger")]
+    trigger: String,
+}
+fn default_trigger() -> String { "operator".into() }
+
+#[derive(Deserialize)]
+struct CompleteInvestigationBody {
+    status: String,
+    summary: String,
+    #[serde(default)]
+    proposal_json: String,
+    #[serde(default)]
+    tokens_used: i64,
+    #[serde(default)]
+    cost_usd: f64,
+}
+
+#[derive(Serialize)]
+struct InvestigationDetailResponse {
+    investigation: crate::graph::InvestigationRecord,
+    tool_calls: Vec<crate::graph::ToolCallRecord>,
+}
+
+async fn list_investigations_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    state
+        .store
+        .list_investigations()
+        .await
+        .map(|inv| Json(serde_json::json!({ "investigations": inv })))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn create_investigation_handler(
+    State(state): State<AppState>,
+    Json(body): Json<CreateInvestigationBody>,
+) -> Result<Json<crate::graph::InvestigationRecord>, (StatusCode, String)> {
+    state
+        .store
+        .create_investigation(body.detection_id, body.device_address, body.trigger)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn get_investigation_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<InvestigationDetailResponse>, (StatusCode, String)> {
+    let inv = state
+        .store
+        .get_investigation(id.clone())
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("investigation {} not found", id)))?;
+    let tool_calls = state
+        .store
+        .list_tool_calls(id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(InvestigationDetailResponse { investigation: inv, tool_calls }))
+}
+
+async fn list_tool_calls_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    state
+        .store
+        .list_tool_calls(id)
+        .await
+        .map(|tc| Json(serde_json::json!({ "tool_calls": tc })))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn complete_investigation_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<CompleteInvestigationBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    state
+        .store
+        .complete_investigation(
+            id,
+            body.status,
+            body.summary,
+            body.proposal_json,
+            body.tokens_used,
+            body.cost_usd,
+        )
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }

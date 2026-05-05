@@ -6,6 +6,15 @@ type: project
 
 ## Backlog Bv1 (Bravo series — current, supersedes v12)
 
+**Bv1 Sprint 4 — Investigation agent foundation — COMPLETE 2026-05-05**
+
+- T3-1: `python/bonsai_agent/` package — 7 graph-aware tools (get_blast_radius, get_application_impact, query_graph, get_recent_detections, get_remediation_history, summarise, propose_playbook). `agent.py` implements Anthropic tool-use ReAct loop (equivalent to LangGraph ReAct, no extra dep). Requires ANTHROPIC_API_KEY env var. propose_playbook writes to /api/approvals — never executes directly. Budget is fail-closed (BudgetExceeded → status=failed). Model: claude-haiku-4-5-20251001, max 12 turns. `python/pyproject.toml` gains `agent = ["anthropic>=0.30"]` optional dep group.
+- T3-3: `python/bonsai_agent/budget.py` — per-investigation token budget + daily rolling budget. Daily resets at UTC midnight. Cost estimated from Haiku pricing. `daily_summary()` for Prometheus/UI reporting.
+- T3-1 backend: `Investigation` + `AgentToolCall` graph nodes + `HAS_TOOL_CALL` rel table. GraphStore: `create_investigation`, `complete_investigation`, `list_investigations`, `get_investigation`, `add_tool_call`, `list_tool_calls`. Routes: POST/GET /api/investigations, GET /api/investigations/:id, GET /api/investigations/:id/tool-calls, POST /api/investigations/:id/complete. f32 cast fix for lbug `Value::Float` at cost_usd boundary.
+- T3-2: `ui/src/routes/Investigations.svelte` — sidebar list (status badge, token cost), reasoning trail (tool call chain with input/output JSON), summary panel, proposal panel with link to Approvals. Trigger form for operator-initiated investigations. Budget exceeded warning. Wired into App.svelte nav.
+- Tests: 20 Python tests (tools dispatch, budget limits, schema validation). 5 Rust tests (create/complete/list investigation, add/list tool calls, missing-id returns None).
+- Total: 171 Rust tests + 44 Python tests pass.
+
 **Bv1 Sprint 3 — Graph embeddings + Feature schema — COMPLETE 2026-05-05**
 
 - T2-1: `python/bonsai_ml/embeddings.py` — spectral graph embedding (Laplacian eigenmaps via sklearn) using existing `ml` deps (no new packages). `fetch_adjacency` reads `/api/topology`, `compute_spectral_embedding` builds precomputed adjacency matrix + sklearn SpectralEmbedding, `push_embeddings` posts to new API. `run_embedding_pipeline` is the end-to-end entry point. CLI: `python -m bonsai_ml.embeddings`. Model card at `python/bonsai_ml/model_cards/spectral_v1.md`.

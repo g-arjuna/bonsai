@@ -24,6 +24,9 @@ ml  = [
     "pandas>=2.0",
     "numpy>=1.26",
 ]
+agent = [
+    "anthropic>=0.30",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["bonsai_sdk"]
