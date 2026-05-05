@@ -6,6 +6,15 @@ type: project
 
 ## Backlog Bv1 (Bravo series — current, supersedes v12)
 
+**Bv1 Sprint 3 — Graph embeddings + Feature schema — COMPLETE 2026-05-05**
+
+- T2-1: `python/bonsai_ml/embeddings.py` — spectral graph embedding (Laplacian eigenmaps via sklearn) using existing `ml` deps (no new packages). `fetch_adjacency` reads `/api/topology`, `compute_spectral_embedding` builds precomputed adjacency matrix + sklearn SpectralEmbedding, `push_embeddings` posts to new API. `run_embedding_pipeline` is the end-to-end entry point. CLI: `python -m bonsai_ml.embeddings`. Model card at `python/bonsai_ml/model_cards/spectral_v1.md`.
+- T2-1 backend: `DeviceEmbedding` graph node (id = `"{address}:{version}"` composite key) added to `init_schema()`. `write_device_embeddings` (batch upsert via MERGE) and `list_device_embeddings` (newest first) added to GraphStore. Routes: `POST /api/graph/embeddings/upsert`, `GET /api/graph/embeddings/:address`.
+- T7-11: `python/bonsai_ml/feature_schema.py` — `FeatureSchema` dataclass with `save`/`load`/`matches`. Schema hash = SHA-256 of canonical JSON (excludes `created_at` and prior hash, so re-exports don't drift). `SPECTRAL_V1_SCHEMA` canonical instance; hash frozen in test to catch accidental hyperparameter changes. Canonical JSON saved to `python/bonsai_ml/schemas/spectral_v1.json`.
+- T5-3: 24 Python tests in `python/tests/test_embeddings.py` (adjacency parsing, embedding shape/reproducibility/star-topology sanity, push payload, pipeline e2e, schema hash determinism/drift, save/load roundtrip). 4 Rust tests for DeviceEmbedding roundtrip, multi-version, upsert-overwrite, empty-query.
+- BonsaiClient extended: `push_device_embeddings`, `get_device_embeddings`.
+- Total: 166 Rust tests pass; 24 Python tests pass.
+
 **Bv1 Sprint 2 — Graph algorithms + Explorer — COMPLETE 2026-05-05**
 
 - T1-4: `src/graph/algorithms.rs` — device centrality, site dependency depth, detection correlation, subscription health by tier, orphan count. `graph_insights` bundles all five. 8 tests. Key finding: all connected devices in 2-spine/4-leaf fixture have undirected degree=2 so land in "aggregation" tier (spine threshold is ≥4).

@@ -710,6 +710,15 @@ pub fn router(
             "/api/explorer/saved-queries/:id/delete",
             post(delete_saved_query_handler),
         )
+        // graph embeddings (T2-1)
+        .route(
+            "/api/graph/embeddings/upsert",
+            post(upsert_embeddings_handler),
+        )
+        .route(
+            "/api/graph/embeddings/:address",
+            get(list_embeddings_handler),
+        )
         .fallback_service(spa)
         .with_state(state)
         .layer(CorsLayer::permissive())
@@ -4533,5 +4542,45 @@ async fn delete_saved_query_handler(
         .delete_saved_query(id)
         .await
         .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+// ── embedding handlers (T2-1) ─────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct UpsertEmbeddingsBody {
+    records: Vec<crate::graph::EmbeddingRecord>,
+}
+
+async fn upsert_embeddings_handler(
+    State(state): State<AppState>,
+    Json(body): Json<UpsertEmbeddingsBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let count = body.records.len();
+    state
+        .store
+        .write_device_embeddings(body.records)
+        .await
+        .map(|_| {
+            tracing::info!(count, "embedding upsert accepted");
+            StatusCode::NO_CONTENT
+        })
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+#[derive(Serialize)]
+struct EmbeddingsResponse {
+    embeddings: Vec<crate::graph::EmbeddingRecord>,
+}
+
+async fn list_embeddings_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<Json<EmbeddingsResponse>, (StatusCode, String)> {
+    state
+        .store
+        .list_device_embeddings(address)
+        .await
+        .map(|embeddings| Json(EmbeddingsResponse { embeddings }))
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }

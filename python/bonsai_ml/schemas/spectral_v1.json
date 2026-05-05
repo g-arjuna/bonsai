@@ -1,0 +1,30 @@
+{
+  "algorithm": "spectral",
+  "created_at_iso": "2026-05-05T10:38:04Z",
+  "dimension": 16,
+  "feature_names": [
+    "graph_position_dim_0",
+    "graph_position_dim_1",
+    "graph_position_dim_2",
+    "graph_position_dim_3",
+    "graph_position_dim_4",
+    "graph_position_dim_5",
+    "graph_position_dim_6",
+    "graph_position_dim_7",
+    "graph_position_dim_8",
+    "graph_position_dim_9",
+    "graph_position_dim_10",
+    "graph_position_dim_11",
+    "graph_position_dim_12",
+    "graph_position_dim_13",
+    "graph_position_dim_14",
+    "graph_position_dim_15"
+  ],
+  "hyperparams": {
+    "affinity": "nearest_neighbors",
+    "n_neighbors": 10,
+    "random_state": 42
+  },
+  "schema_hash": "16930b3e902e7600028ec87215ba6b5d7949899cc9bb61e4576a85e3d2995f75",
+  "version": "spectral_v1"
+}

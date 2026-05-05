@@ -271,6 +271,20 @@ class BonsaiClient:
             {"operator_note": operator_note},
         )
 
+    # ── graph embeddings (T2-1) ───────────────────────────────────────────────
+
+    def push_device_embeddings(self, records: list[dict]) -> None:
+        """Upsert embedding vectors for one or more devices.
+
+        Each record: {device_address, version, algorithm, dimension, vector, computed_at_ns}
+        """
+        self._http_json("POST", "/api/graph/embeddings/upsert", {"records": records})
+
+    def get_device_embeddings(self, address: str) -> list[dict]:
+        """Return all stored embedding versions for a device, newest first."""
+        result = self._http_json("GET", f"/api/graph/embeddings/{address}")
+        return result.get("embeddings", [])
+
     def _http_json(self, method: str, path: str, payload: dict | None = None) -> dict:
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(

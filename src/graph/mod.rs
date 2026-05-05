@@ -96,6 +96,17 @@ pub struct SavedQueryRecord {
     pub last_result_count: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingRecord {
+    pub device_address: String,
+    pub version: String,
+    pub algorithm: String,
+    pub dimension: i64,
+    /// Dense embedding vector serialised as a JSON array.
+    pub vector: Vec<f64>,
+    pub computed_at_ns: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct SubscriptionStatusWrite {
     pub device_address: String,
@@ -629,6 +640,20 @@ impl GraphStore {
                 PRIMARY KEY (id))",
         )
         .context("create SavedQuery table")?;
+
+        // id = "{device_address}:{version}" to allow one embedding per (device, schema version).
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS DeviceEmbedding(\
+                id             STRING,\
+                device_address STRING,\
+                version        STRING,\
+                algorithm      STRING,\
+                dimension      INT64,\
+                vector_json    STRING,\
+                computed_at    TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create DeviceEmbedding table")?;
 
         info!("graph schema initialised");
         Ok(())
@@ -1577,6 +1602,93 @@ impl GraphStore {
             )
             .context("mark_saved_query_run execute")?;
             Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    /// Upsert a batch of device embedding vectors. Each record is keyed by
+    /// (device_address, version); re-inserting the same key overwrites the prior vector.
+    pub async fn write_device_embeddings(&self, records: Vec<EmbeddingRecord>) -> Result<()> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("write_device_embeddings connection")?;
+            let mut stmt = conn
+                .prepare(
+                    "MERGE (e:DeviceEmbedding {id: $id}) \
+                     ON CREATE SET \
+                       e.device_address = $addr, e.version = $ver, e.algorithm = $algo, \
+                       e.dimension = $dim, e.vector_json = $vec, e.computed_at = $ts \
+                     ON MATCH SET \
+                       e.algorithm = $algo, e.dimension = $dim, \
+                       e.vector_json = $vec, e.computed_at = $ts",
+                )
+                .context("write_device_embeddings prepare")?;
+            for rec in &records {
+                let vec_json = serde_json::to_string(&rec.vector)
+                    .context("serialise embedding vector")?;
+                let id = format!("{}:{}", rec.device_address, rec.version);
+                conn.execute(
+                    &mut stmt,
+                    vec![
+                        ("id",   Value::String(id)),
+                        ("addr", Value::String(rec.device_address.clone())),
+                        ("ver",  Value::String(rec.version.clone())),
+                        ("algo", Value::String(rec.algorithm.clone())),
+                        ("dim",  Value::Int64(rec.dimension)),
+                        ("vec",  Value::String(vec_json)),
+                        ("ts",   ts(rec.computed_at_ns)),
+                    ],
+                )
+                .context("write_device_embeddings execute")?;
+            }
+            info!(count = records.len(), "device embeddings upserted");
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    /// Return all stored embeddings for a device, newest first.
+    pub async fn list_device_embeddings(
+        &self,
+        device_address: String,
+    ) -> Result<Vec<EmbeddingRecord>> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("list_device_embeddings connection")?;
+            let mut stmt = conn
+                .prepare(
+                    "MATCH (e:DeviceEmbedding {device_address: $addr}) \
+                     RETURN e.device_address, e.version, e.algorithm, \
+                            e.dimension, e.vector_json, e.computed_at \
+                     ORDER BY e.computed_at DESC",
+                )
+                .context("list_device_embeddings prepare")?;
+            let rows: Vec<_> = conn
+                .execute(&mut stmt, vec![("addr", Value::String(device_address))])
+                .context("list_device_embeddings execute")?
+                .collect();
+            rows.iter()
+                .map(|r| {
+                    let vec: Vec<f64> = serde_json::from_str(&read_str(&r[4]))
+                        .unwrap_or_default();
+                    Ok(EmbeddingRecord {
+                        device_address: read_str(&r[0]),
+                        version:        read_str(&r[1]),
+                        algorithm:      read_str(&r[2]),
+                        dimension:      match &r[3] {
+                            Value::Int64(n) => *n,
+                            Value::Int32(n) => *n as i64,
+                            _ => 0,
+                        },
+                        vector:         vec,
+                        computed_at_ns: read_ts_ns(&r[5]),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
         })
         .await
         .context("spawn_blocking panicked")?
@@ -3151,5 +3263,146 @@ mod tests {
             metadata_json: "{}".to_string(),
             environment_id: String::new(),
         }
+    }
+
+    // ── DeviceEmbedding tests (T2-1 / T5-3) ──────────────────────────────────
+
+    #[tokio::test]
+    async fn write_and_read_device_embedding_roundtrip() {
+        let path = temp_graph_path("embedding-roundtrip");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        let conn = Connection::new(&store.db).expect("conn");
+        upsert_device(&conn, "10.0.0.1:57400", "nokia_srl", "spine1", ts(1_000_000_000))
+            .expect("seed device");
+        drop(conn);
+
+        let rec = EmbeddingRecord {
+            device_address: "10.0.0.1:57400".to_string(),
+            version: "spectral_v1".to_string(),
+            algorithm: "spectral".to_string(),
+            dimension: 4,
+            vector: vec![0.1, 0.2, 0.3, 0.4],
+            computed_at_ns: 1_000_000_000,
+        };
+        store
+            .write_device_embeddings(vec![rec.clone()])
+            .await
+            .expect("write embedding");
+
+        let results = store
+            .list_device_embeddings("10.0.0.1:57400".to_string())
+            .await
+            .expect("list embeddings");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].version, "spectral_v1");
+        assert_eq!(results[0].algorithm, "spectral");
+        assert_eq!(results[0].dimension, 4);
+        let diff: f64 = results[0]
+            .vector
+            .iter()
+            .zip(&rec.vector)
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(diff < 1e-9, "vector roundtrip should be lossless; diff={}", diff);
+    }
+
+    #[tokio::test]
+    async fn write_device_embedding_multiple_versions() {
+        let path = temp_graph_path("embedding-versions");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        let conn = Connection::new(&store.db).expect("conn");
+        upsert_device(&conn, "10.0.0.2:57400", "nokia_srl", "leaf1", ts(1_000_000_000))
+            .expect("seed device");
+        drop(conn);
+
+        let v1 = EmbeddingRecord {
+            device_address: "10.0.0.2:57400".to_string(),
+            version: "spectral_v1".to_string(),
+            algorithm: "spectral".to_string(),
+            dimension: 4,
+            vector: vec![0.1, 0.2, 0.3, 0.4],
+            computed_at_ns: 1_000_000_000,
+        };
+        let v2 = EmbeddingRecord {
+            device_address: "10.0.0.2:57400".to_string(),
+            version: "spectral_v2".to_string(),
+            algorithm: "spectral".to_string(),
+            dimension: 8,
+            vector: vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+            computed_at_ns: 2_000_000_000,
+        };
+        store
+            .write_device_embeddings(vec![v1, v2])
+            .await
+            .expect("write embeddings");
+
+        let results = store
+            .list_device_embeddings("10.0.0.2:57400".to_string())
+            .await
+            .expect("list embeddings");
+
+        assert_eq!(results.len(), 2, "both versions should be stored");
+        // newest first (computed_at DESC)
+        assert_eq!(results[0].version, "spectral_v2");
+        assert_eq!(results[0].dimension, 8);
+        assert_eq!(results[1].version, "spectral_v1");
+        assert_eq!(results[1].dimension, 4);
+    }
+
+    #[tokio::test]
+    async fn write_device_embedding_upsert_overwrites_same_version() {
+        let path = temp_graph_path("embedding-upsert");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        let conn = Connection::new(&store.db).expect("conn");
+        upsert_device(&conn, "10.0.0.3:57400", "nokia_srl", "leaf2", ts(1_000_000_000))
+            .expect("seed device");
+        drop(conn);
+
+        let original = EmbeddingRecord {
+            device_address: "10.0.0.3:57400".to_string(),
+            version: "spectral_v1".to_string(),
+            algorithm: "spectral".to_string(),
+            dimension: 4,
+            vector: vec![0.1, 0.2, 0.3, 0.4],
+            computed_at_ns: 1_000_000_000,
+        };
+        store
+            .write_device_embeddings(vec![original])
+            .await
+            .expect("first write");
+
+        let updated = EmbeddingRecord {
+            device_address: "10.0.0.3:57400".to_string(),
+            version: "spectral_v1".to_string(),
+            algorithm: "spectral_updated".to_string(),
+            dimension: 4,
+            vector: vec![0.9, 0.8, 0.7, 0.6],
+            computed_at_ns: 2_000_000_000,
+        };
+        store
+            .write_device_embeddings(vec![updated])
+            .await
+            .expect("upsert write");
+
+        let results = store
+            .list_device_embeddings("10.0.0.3:57400".to_string())
+            .await
+            .expect("list embeddings");
+
+        assert_eq!(results.len(), 1, "upsert should not duplicate");
+        assert_eq!(results[0].algorithm, "spectral_updated");
+        assert!((results[0].vector[0] - 0.9).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn list_device_embeddings_returns_empty_for_unknown_device() {
+        let path = temp_graph_path("embedding-empty");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        let results = store
+            .list_device_embeddings("does.not.exist:57400".to_string())
+            .await
+            .expect("list should not error");
+        assert!(results.is_empty());
     }
 }
