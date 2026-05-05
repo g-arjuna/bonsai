@@ -1,4 +1,9 @@
+pub mod algorithms;
 pub mod common;
+pub mod explorer;
+pub mod queries;
+#[cfg(test)]
+pub mod test_fixtures;
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -78,6 +83,17 @@ pub struct TraceStep {
     pub status: String,
     pub detail_json: String,
     pub occurred_at_ns: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SavedQueryRecord {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub cypher: String,
+    pub created_at_ns: i64,
+    pub last_run_at_ns: i64,
+    pub last_result_count: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -601,6 +617,19 @@ impl GraphStore {
         )
         .context("create MigrationMarker table")?;
 
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS SavedQuery(\
+                id                STRING,\
+                name              STRING,\
+                description       STRING,\
+                cypher            STRING,\
+                created_at        TIMESTAMP_NS,\
+                last_run_at       TIMESTAMP_NS,\
+                last_result_count INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create SavedQuery table")?;
+
         info!("graph schema initialised");
         Ok(())
     }
@@ -886,12 +915,15 @@ impl GraphStore {
                  RETURN r.id, r.attempted_at, m.remediation_id",
             )
             .context("prepare trust-mark backfill query")?;
-        let rows = conn
+        // Eagerly collect all rows before the write loop: lbug does not support
+        // an open read cursor and a write on the same connection simultaneously.
+        let rows: Vec<_> = conn
             .execute(&mut stmt, Vec::new())
-            .context("execute trust-mark backfill query")?;
+            .context("execute trust-mark backfill query")?
+            .collect();
 
         let mut created = 0usize;
-        for row in rows {
+        for row in &rows {
             let remediation_id = read_str(&row[0]);
             if remediation_id.is_empty() || !read_str(&row[2]).is_empty() {
                 continue;
@@ -904,23 +936,26 @@ impl GraphStore {
             info!(created, "backfilled remediation trust marks");
         }
 
-        // Record that this migration has run so future startups skip it.
-        let mut mark = conn
-            .prepare(
-                "MERGE (m:MigrationMarker {id: $id}) \
-                 ON CREATE SET m.applied_at = $ts",
+        // Only record the migration marker when there were remediations to examine.
+        // If the DB is empty at startup the marker is withheld so that the next
+        // startup (when remediations may exist) gets a chance to backfill them.
+        if !rows.is_empty() {
+            let mut mark = conn
+                .prepare(
+                    "MERGE (m:MigrationMarker {id: $id}) \
+                     ON CREATE SET m.applied_at = $ts",
+                )
+                .context("prepare migration marker insert")?;
+            conn.execute(
+                &mut mark,
+                vec![
+                    ("id", Value::String(MARKER_ID.to_string())),
+                    ("ts", ts(now_ns())),
+                ],
             )
-            .context("prepare migration marker insert")?;
-        conn.execute(
-            &mut mark,
-            vec![
-                ("id", Value::String(MARKER_ID.to_string())),
-                ("ts", ts(now_ns())),
-            ],
-        )
-        .context("execute migration marker insert")?;
-
-        info!("migration marker backfill_trust_v1 recorded");
+            .context("execute migration marker insert")?;
+            info!("migration marker backfill_trust_v1 recorded");
+        }
         Ok(())
     }
 
@@ -1413,6 +1448,135 @@ impl GraphStore {
             let _guard = write_lock.lock().expect("write lock poisoned");
             let conn = Connection::new(&db).context("subscription status write connection")?;
             write_subscription_status_blocking(&conn, status)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    // ── saved queries ─────────────────────────────────────────────────────────
+
+    pub async fn list_saved_queries(&self) -> Result<Vec<SavedQueryRecord>> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("list_saved_queries connection")?;
+            let rows = conn
+                .query(
+                    "MATCH (q:SavedQuery) \
+                     RETURN q.id, q.name, q.description, q.cypher, \
+                            q.created_at, q.last_run_at, q.last_result_count \
+                     ORDER BY q.name",
+                )
+                .context("list_saved_queries query")?;
+            Ok::<_, anyhow::Error>(
+                rows.map(|r| SavedQueryRecord {
+                    id: read_str(&r[0]),
+                    name: read_str(&r[1]),
+                    description: read_str(&r[2]),
+                    cypher: read_str(&r[3]),
+                    created_at_ns: read_ts_ns(&r[4]),
+                    last_run_at_ns: read_ts_ns(&r[5]),
+                    last_result_count: match &r[6] {
+                        Value::Int64(n) => *n,
+                        Value::Int32(n) => *n as i64,
+                        _ => 0,
+                    },
+                })
+                .collect(),
+            )
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn create_saved_query(
+        &self,
+        name: String,
+        description: String,
+        cypher: String,
+    ) -> Result<SavedQueryRecord> {
+        // Validate before hitting the DB
+        crate::graph::explorer::validate_query(&cypher)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("create_saved_query connection")?;
+            let id = Uuid::new_v4().to_string();
+            let now = ts(now_ns());
+            let mut stmt = conn
+                .prepare(
+                    "CREATE (q:SavedQuery {id: $id, name: $name, description: $desc, \
+                     cypher: $cypher, created_at: $ts, last_run_at: $ts, \
+                     last_result_count: 0})",
+                )
+                .context("create_saved_query prepare")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("name", Value::String(name.clone())),
+                    ("desc", Value::String(description.clone())),
+                    ("cypher", Value::String(cypher.clone())),
+                    ("ts", now),
+                ],
+            )
+            .context("create_saved_query execute")?;
+            Ok::<_, anyhow::Error>(SavedQueryRecord {
+                id,
+                name,
+                description,
+                cypher,
+                created_at_ns: now_ns(),
+                last_run_at_ns: 0,
+                last_result_count: 0,
+            })
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn delete_saved_query(&self, id: String) -> Result<()> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("delete_saved_query connection")?;
+            let mut stmt = conn
+                .prepare("MATCH (q:SavedQuery {id: $id}) DELETE q")
+                .context("delete_saved_query prepare")?;
+            conn.execute(&mut stmt, vec![("id", Value::String(id))])
+                .context("delete_saved_query execute")?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn mark_saved_query_run(&self, id: String, result_count: i64) -> Result<()> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("mark_saved_query_run connection")?;
+            let now = ts(now_ns());
+            let mut stmt = conn
+                .prepare(
+                    "MATCH (q:SavedQuery {id: $id}) \
+                     SET q.last_run_at = $ts, q.last_result_count = $count",
+                )
+                .context("mark_saved_query_run prepare")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id)),
+                    ("ts", now),
+                    ("count", Value::Int64(result_count)),
+                ],
+            )
+            .context("mark_saved_query_run execute")?;
+            Ok::<_, anyhow::Error>(())
         })
         .await
         .context("spawn_blocking panicked")?
@@ -2741,54 +2905,63 @@ mod tests {
     fn backfill_remediation_trust_marks_marks_legacy_rows() {
         let path = temp_graph_path("trust-backfill");
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
-        let conn = Connection::new(&store.db).expect("graph connection");
 
-        let mut old_stmt = conn
-            .prepare(
-                "CREATE (r:Remediation {\
-                    id: $id, detection_id: $did, action: $action, status: $status, \
-                    detail_json: $detail, attempted_at: $att, completed_at: $comp})",
-            )
-            .expect("prepare old remediation");
-        conn.execute(
-            &mut old_stmt,
-            vec![
-                ("id", Value::String("legacy-old".to_string())),
-                ("did", Value::String("det-1".to_string())),
-                ("action", Value::String("log_only".to_string())),
-                ("status", Value::String("success".to_string())),
-                ("detail", Value::String("{}".to_string())),
-                ("att", ts(REMEDIATION_TRUST_CUTOFF_NS - 1)),
-                ("comp", ts(REMEDIATION_TRUST_CUTOFF_NS - 1)),
-            ],
-        )
-        .expect("insert old remediation");
+        // Insert test data in a scoped block so the connection is dropped (and its
+        // writes fully committed to lbug) before backfill opens its own connection.
+        // lbug 0.15.x does not expose auto-committed writes to a second concurrent
+        // connection until the first connection is closed.
+        {
+            let conn = Connection::new(&store.db).expect("graph connection");
 
-        let mut new_stmt = conn
-            .prepare(
-                "CREATE (r:Remediation {\
-                    id: $id, detection_id: $did, action: $action, status: $status, \
-                    detail_json: $detail, attempted_at: $att, completed_at: $comp})",
+            let mut old_stmt = conn
+                .prepare(
+                    "CREATE (r:Remediation {\
+                        id: $id, detection_id: $did, action: $action, status: $status, \
+                        detail_json: $detail, attempted_at: $att, completed_at: $comp})",
+                )
+                .expect("prepare old remediation");
+            conn.execute(
+                &mut old_stmt,
+                vec![
+                    ("id", Value::String("legacy-old".to_string())),
+                    ("did", Value::String("det-1".to_string())),
+                    ("action", Value::String("log_only".to_string())),
+                    ("status", Value::String("success".to_string())),
+                    ("detail", Value::String("{}".to_string())),
+                    ("att", ts(REMEDIATION_TRUST_CUTOFF_NS - 1)),
+                    ("comp", ts(REMEDIATION_TRUST_CUTOFF_NS - 1)),
+                ],
             )
-            .expect("prepare new remediation");
-        conn.execute(
-            &mut new_stmt,
-            vec![
-                ("id", Value::String("legacy-new".to_string())),
-                ("did", Value::String("det-2".to_string())),
-                ("action", Value::String("log_only".to_string())),
-                ("status", Value::String("success".to_string())),
-                ("detail", Value::String("{}".to_string())),
-                ("att", ts(REMEDIATION_TRUST_CUTOFF_NS + 1)),
-                ("comp", ts(REMEDIATION_TRUST_CUTOFF_NS + 1)),
-            ],
-        )
-        .expect("insert new remediation");
+            .expect("insert old remediation");
+
+            let mut new_stmt = conn
+                .prepare(
+                    "CREATE (r:Remediation {\
+                        id: $id, detection_id: $did, action: $action, status: $status, \
+                        detail_json: $detail, attempted_at: $att, completed_at: $comp})",
+                )
+                .expect("prepare new remediation");
+            conn.execute(
+                &mut new_stmt,
+                vec![
+                    ("id", Value::String("legacy-new".to_string())),
+                    ("did", Value::String("det-2".to_string())),
+                    ("action", Value::String("log_only".to_string())),
+                    ("status", Value::String("success".to_string())),
+                    ("detail", Value::String("{}".to_string())),
+                    ("att", ts(REMEDIATION_TRUST_CUTOFF_NS + 1)),
+                    ("comp", ts(REMEDIATION_TRUST_CUTOFF_NS + 1)),
+                ],
+            )
+            .expect("insert new remediation");
+        } // conn dropped — writes now visible to a new connection
 
         store
             .backfill_remediation_trust_marks()
             .expect("backfill trust marks");
 
+        // Re-open connection for verification queries.
+        let conn = Connection::new(&store.db).expect("verify connection");
         let mut query = conn
             .prepare(
                 "MATCH (m:RemediationTrustMark) \
@@ -2809,6 +2982,7 @@ mod tests {
         assert_eq!(read_i64(&rows[1][1]), 0);
         assert_eq!(read_str(&rows[1][2]), REMEDIATION_TRUST_REASON_PRE_CUTOFF);
     }
+
 
     #[tokio::test]
     async fn subscription_status_write_preserves_device_metadata() {

@@ -1,8 +1,30 @@
 ---
 name: Sprint Progress
-description: Backlog sprint completion status — v8 through v12 sprint progress
+description: Backlog sprint completion status — v8 through Bv1 sprint progress
 type: project
 ---
+
+## Backlog Bv1 (Bravo series — current, supersedes v12)
+
+**Bv1 Sprint 2 — Graph algorithms + Explorer — COMPLETE 2026-05-05**
+
+- T1-4: `src/graph/algorithms.rs` — device centrality, site dependency depth, detection correlation, subscription health by tier, orphan count. `graph_insights` bundles all five. 8 tests. Key finding: all connected devices in 2-spine/4-leaf fixture have undirected degree=2 so land in "aggregation" tier (spine threshold is ≥4).
+- T1-5: `src/graph/explorer.rs` — Cypher sanitiser (word-boundary keyword search banning 8 mutation keywords), column extractor (RETURN clause parser, AS alias preference), executor (500-row cap, returns ExplorerResult). 11 tests.
+- T1-6: `SavedQuery` graph node + CRUD GraphStore methods (`list_saved_queries`, `create_saved_query`, `delete_saved_query`, `mark_saved_query_run`). Added to `init_schema()`.
+- HTTP: `/api/graph/insights`, `/api/explorer/query` (POST), `/api/explorer/saved-queries` (GET/POST), `/api/explorer/saved-queries/:id/delete` (POST) wired in `src/http_server.rs`.
+- UI: `ui/src/routes/Explorer.svelte` — two tabs (Query + Insights), 12 curated queries, saved queries sidebar, save modal, Ctrl+Enter shortcut, device centrality/site deps/detection co-fire/tier health display. Wired into App.svelte nav.
+- Bug fix: `backfill_remediation_trust_marks` migration marker only recorded when remediations exist — prevents marker from blocking future backfill when store is opened on empty DB. Also: eager `.collect()` closes read cursor before writes (lbug constraint: no concurrent read cursor + write on same connection).
+- All 162 tests pass (exit 0).
+
+**Bv1 Sprint 1 — Graph foundation — COMPLETE 2026-05-05**
+
+- T1-1: `src/graph/queries.rs` created with 13 multi-hop production queries (neighbors_of_device, shortest_topology_path, blast_radius, devices_in_environment, detections_in_environment, applications_on_site, devices_missing_enrichment, orphan_devices, detections_without_remediation, subscription_health_for_device, co_firing_detections, device_enrichment_context, topology_edges). All 17 tests pass.
+- T1-2: `path_handler` in `src/http_server.rs` replaced — BFS now uses per-device `neighbors_of_device` queries instead of loading all CONNECTED_TO edges at once. Key finding: lbug 0.15.3 `LIMIT 1` with `*1..N` variable-length patterns does NOT guarantee shortest path (Kuzu uses join-based materialization, not BFS). Undirected `[:CONNECTED_TO]-` needed because edges are stored directionally.
+- T1-3: `/api/blast-radius/:address?max_hops=N` endpoint added. Capped at max_hops=5 (hop_depth=15 edges).
+- T1-7: `src/graph/test_fixtures.rs` created. 2-spine/4-leaf DC + SP pair + isolated device. All fixtures use parameterized queries with `ts()` — inline `timestamp_ns()` function does not exist in lbug Cypher.
+- T4-1 (partial): `.cargo/config.toml` changed — `LBUG_SHARED=1` now commented out; static linking is the default. Full static binary verification (ldd assertion) pending a clean static build (~15–30 min first time).
+
+**Still pending for Sprint 1 completion**: static build verification (T4-1 done-when condition).
 
 ## Backlog v12 (current — supersedes v11)
 
@@ -33,7 +55,14 @@ type: project
 - T4-4: .github/workflows/screenshot-diff.yml + tests/ui_driver/screenshots.spec.js (@screenshot tag, 2% pixel tolerance)
 - T4-5: docs/ui_audit_2026-05-04.md — full per-route audit; 4 open issues identified for v13
 
-**Next: v12 Sprint 4 — Startup polish**
+**v12 Sprint 4 — Startup polish — COMPLETE 2026-05-05 (commit e9f537a)**
+- T5-3: MigrationMarker node table; backfill_remediation_trust_marks skips on repeat starts via marker 'backfill_trust_v1'.
+- T5-2: --once-and-exit exits after phase=ready; .github/workflows/startup-time.yml CI fails if >25% over 3000ms baseline.
+- T1-4: buffer_pool_bytes on GraphStore + InProcessBus::capacity(); /api/operations adds memory_budget_bytes + memory_rss_pct_of_budget; Operations.svelte shows RSS % of budget.
+- T3-4: check_external.sh --watch polls every 30s → runtime/external_status.json; --interval=N and --output=FILE flags.
+- T3-5: check_lab.sh emits summary block: bgp_sessions_established, bgp_sessions_total, evpn_routes_present, srv6_reachability_verified, warnings[], overall_passed; exits 1 on failure.
+
+**v12 complete. Next: v13 (open issues from UI audit: Topology/Devices SSE liveness, Approvals SSE, enricher/adapter event publishing)**
 
 ## Backlog v8 (prior sessions)
 

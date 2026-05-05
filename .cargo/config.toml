@@ -1,10 +1,11 @@
 [env]
-# Enables the shared (.so) LadybugDB build on Linux. Set unconditionally here
-# because this file is primarily used on Linux dev machines and in Docker.
-# Windows developers: LBUG_SHARED is ignored on Windows (static lib is used).
-# If you see a build failure about lbug_shared on Windows, check build.rs and
-# ensure the lbug static lib path is correct for your environment.
-LBUG_SHARED = "1"
+# lbug link mode: when LBUG_SHARED is set, lbug links as a shared library
+# (liblbug.so.0); when unset, lbug links statically and the binary is
+# self-contained. Static is the default for release binaries and CI.
+#
+# Uncomment for faster incremental builds during development (avoids
+# re-linking the large static archive on every change):
+# LBUG_SHARED = "1"
 
 [build]
 # sccache wraps rustc to cache compilation artefacts across clean builds.

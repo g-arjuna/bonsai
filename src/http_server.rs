@@ -594,6 +594,7 @@ pub fn router(
         .route("/api/overrides/remove", post(remove_override))
 
         .route("/api/path", get(path_handler))
+        .route("/api/blast-radius/:address", get(blast_radius_handler))
         .route("/api/incidents/grouped", get(incidents_handler))
         .route(
             "/api/onboarding/devices",
@@ -697,6 +698,17 @@ pub fn router(
         .route(
             "/api/assignment/override",
             post(assignment_override_handler),
+        )
+        // graph insights + explorer (T1-4, T1-5, T1-6)
+        .route("/api/graph/insights", get(graph_insights_handler))
+        .route("/api/explorer/query", post(explorer_query_handler))
+        .route(
+            "/api/explorer/saved-queries",
+            get(list_saved_queries_handler).post(create_saved_query_handler),
+        )
+        .route(
+            "/api/explorer/saved-queries/:id/delete",
+            post(delete_saved_query_handler),
         )
         .fallback_service(spa)
         .with_state(state)
@@ -842,8 +854,11 @@ struct PathParams {
     dst: String,
 }
 
-/// BFS shortest-path between two devices over LLDP links.
-/// Returns the device-address hop list and the link segments traversed.
+/// Shortest path between two devices, computed in the graph database.
+///
+/// Replaces Rust-side BFS that loaded all CONNECTED_TO edges into a Vec.
+/// The graph DB traverses HAS_INTERFACE|CONNECTED_TO edges with a variable-
+/// length pattern and returns a single path; no edge-loading into Rust.
 async fn path_handler(
     State(state): State<AppState>,
     Query(params): Query<PathParams>,
@@ -851,96 +866,55 @@ async fn path_handler(
     let db = state.store.db();
     let (src, dst) = (params.src.clone(), params.dst.clone());
 
-    let all_links = tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
-        let rows = conn
-            .query(
-                "MATCH (a:Interface)-[:CONNECTED_TO]->(b:Interface) \
-                 RETURN a.device_address, a.name, b.device_address, b.name",
-            )
-            .map_err(|e| e.to_string())?;
-        Ok::<Vec<(String, String, String, String)>, String>(
-            rows.map(|row| {
-                (
-                    read_str(&row[0]),
-                    read_str(&row[1]),
-                    read_str(&row[2]),
-                    read_str(&row[3]),
-                )
-            })
-            .collect(),
-        )
+        crate::graph::queries::shortest_topology_path(&conn, &src, &dst)
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    // Build undirected adjacency: device → Vec<(neighbour, src_iface, dst_iface)>
-    let mut adj: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
-    for (a_dev, a_if, b_dev, b_if) in &all_links {
-        adj.entry(a_dev.clone())
-            .or_default()
-            .push((b_dev.clone(), a_if.clone(), b_if.clone()));
-        adj.entry(b_dev.clone())
-            .or_default()
-            .push((a_dev.clone(), b_if.clone(), a_if.clone()));
+    match result {
+        None => Ok(Json(PathResponse { hops: vec![], links: vec![] })),
+        Some(path) => Ok(Json(PathResponse {
+            hops: path.hops,
+            links: path.links,
+        })),
     }
+}
 
-    if src == dst {
-        return Ok(Json(PathResponse {
-            hops: vec![src],
-            links: vec![],
-        }));
-    }
+// ─── blast radius ─────────────────────────────────────────────────────────────
 
-    // BFS
-    use std::collections::VecDeque;
-    let mut visited: HashMap<String, Option<(String, String, String)>> = HashMap::new(); // device → (via_device, via_src_if, via_dst_if)
-    visited.insert(src.clone(), None);
-    let mut queue: VecDeque<String> = VecDeque::new();
-    queue.push_back(src.clone());
+#[derive(Deserialize)]
+struct BlastRadiusParams {
+    #[serde(default = "default_max_hops")]
+    max_hops: usize,
+}
 
-    'bfs: while let Some(current) = queue.pop_front() {
-        if let Some(neighbours) = adj.get(&current) {
-            for (nb, src_if, dst_if) in neighbours {
-                if visited.contains_key(nb.as_str()) {
-                    continue;
-                }
-                visited.insert(
-                    nb.clone(),
-                    Some((current.clone(), src_if.clone(), dst_if.clone())),
-                );
-                if nb == &dst {
-                    break 'bfs;
-                }
-                queue.push_back(nb.clone());
-            }
-        }
-    }
+fn default_max_hops() -> usize { 2 }
 
-    if !visited.contains_key(dst.as_str()) {
-        return Ok(Json(PathResponse {
-            hops: vec![],
-            links: vec![],
-        }));
-    }
+/// Devices, applications, and active detections reachable from `address` within
+/// `max_hops` physical network hops.
+///
+/// Example: GET /api/blast-radius/10.0.0.1?max_hops=2
+async fn blast_radius_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+    Query(params): Query<BlastRadiusParams>,
+) -> Result<Json<crate::graph::queries::BlastRadiusResult>, (StatusCode, String)> {
+    let db = state.store.db();
+    let max_hops = params.max_hops.min(5); // cap at 5 to bound query time
 
-    // Reconstruct path backwards
-    let mut hops = vec![dst.clone()];
-    let mut link_segs: Vec<(String, String, String, String)> = Vec::new();
-    let mut cur = dst.clone();
-    while let Some(Some((prev, src_if, dst_if))) = visited.get(&cur) {
-        link_segs.push((prev.clone(), src_if.clone(), cur.clone(), dst_if.clone()));
-        hops.push(prev.clone());
-        cur = prev.clone();
-    }
-    hops.reverse();
-    link_segs.reverse();
-
-    Ok(Json(PathResponse {
-        hops,
-        links: link_segs,
-    }))
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        crate::graph::queries::blast_radius(&conn, &address, max_hops)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
 }
 
 async fn managed_devices_handler(
@@ -4465,4 +4439,99 @@ fn read_recent_adapter_audit(
         }
     }
     entries
+}
+
+// ─── graph insights (T1-4) ───────────────────────────────────────────────────
+
+async fn graph_insights_handler(
+    State(state): State<AppState>,
+) -> Result<Json<crate::graph::algorithms::GraphInsights>, (StatusCode, String)> {
+    let db = state.store.db();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        crate::graph::algorithms::graph_insights(&conn).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
+// ─── explorer (T1-5) ─────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ExplorerQueryBody {
+    cypher: String,
+    /// If set, record last_run_at and row count on this saved-query id.
+    saved_query_id: Option<String>,
+}
+
+async fn explorer_query_handler(
+    State(state): State<AppState>,
+    Json(body): Json<ExplorerQueryBody>,
+) -> Result<Json<crate::graph::explorer::ExplorerResult>, (StatusCode, String)> {
+    let cypher = body.cypher.clone();
+    let saved_query_id = body.saved_query_id.clone();
+    let db = state.store.db();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        crate::graph::explorer::execute_query(&conn, &cypher).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+    // Best-effort: update run metadata on the saved query if one was specified.
+    if let Some(id) = saved_query_id {
+        let count = result.row_count as i64;
+        let _ = state.store.mark_saved_query_run(id, count).await;
+    }
+
+    Ok(Json(result))
+}
+
+// ─── saved queries CRUD (T1-6) ───────────────────────────────────────────────
+
+async fn list_saved_queries_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::graph::SavedQueryRecord>>, (StatusCode, String)> {
+    state
+        .store
+        .list_saved_queries()
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+#[derive(Deserialize)]
+struct CreateSavedQueryBody {
+    name: String,
+    #[serde(default)]
+    description: String,
+    cypher: String,
+}
+
+async fn create_saved_query_handler(
+    State(state): State<AppState>,
+    Json(body): Json<CreateSavedQueryBody>,
+) -> Result<Json<crate::graph::SavedQueryRecord>, (StatusCode, String)> {
+    state
+        .store
+        .create_saved_query(body.name, body.description, body.cypher)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn delete_saved_query_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    state
+        .store
+        .delete_saved_query(id)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
