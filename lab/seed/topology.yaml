@@ -1,17 +1,10 @@
 # Bonsai lab seed topology — single source of truth.
-#
-# All downstream representations (ContainerLab topology, NetBox seed data,
-# ServiceNow mock seed) are generated from this file by scripts/seed_lab.sh.
-#
-# When adding a device here, run:
-#   scripts/seed_lab.sh --all
-# to regenerate all downstream targets.
+# Updated 2026-05-05 to match DC EVPN-SRv6 8-node lab (SRL v26.3.1).
 
 lab:
-  name: bonsai-p4
-  # ContainerLab management network name (must match docker-compose external network)
-  mgmt_network: bonsai-p4-mgmt
-  mgmt_subnet: 172.100.102.0/24
+  name: bonsai-dc
+  mgmt_network: bonsai-dc-mgmt
+  mgmt_subnet: 172.100.103.0/24
 
 sites:
   - id: site-lab-dc
@@ -20,105 +13,179 @@ sites:
     description: "Lab data centre site"
 
 devices:
+  - name: srl-super1
+    address: 172.100.103.11
+    gnmi_port: 57400
+    vendor: nokia_srl
+    role: super-spine
+    site: lab-dc
+    clab_kind: nokia_srlinux
+    clab_image: ghcr.io/nokia/srlinux:latest
+    netbox_model: "7220 IXR-D2L (lab sim)"
+    netbox_serial: "LAB-SRL-SUPER1"
+    netbox_platform: "SR Linux"
+    snow_ci_class: cmdb_ci_netgear
+    snow_owner_group: "Network-Operations"
+    snow_environment: "lab"
+    interfaces:
+      - name: lo0.0
+        description: "Loopback"
+        ip: 10.1.0.1/32
+
+  - name: srl-super2
+    address: 172.100.103.12
+    gnmi_port: 57400
+    vendor: nokia_srl
+    role: super-spine
+    site: lab-dc
+    clab_kind: nokia_srlinux
+    clab_image: ghcr.io/nokia/srlinux:latest
+    netbox_model: "7220 IXR-D2L (lab sim)"
+    netbox_serial: "LAB-SRL-SUPER2"
+    netbox_platform: "SR Linux"
+    snow_ci_class: cmdb_ci_netgear
+    snow_owner_group: "Network-Operations"
+    snow_environment: "lab"
+    interfaces:
+      - name: lo0.0
+        description: "Loopback"
+        ip: 10.1.0.2/32
+
   - name: srl-spine1
-    address: 172.100.102.11
+    address: 172.100.103.13
     gnmi_port: 57400
     vendor: nokia_srl
     role: spine
     site: lab-dc
     clab_kind: nokia_srlinux
     clab_image: ghcr.io/nokia/srlinux:latest
-    # NetBox fields
-    netbox_model: "7750 SR-1s (lab sim)"
+    netbox_model: "7220 IXR-D2L (lab sim)"
     netbox_serial: "LAB-SRL-SPINE1"
     netbox_platform: "SR Linux"
-    # ServiceNow CMDB fields
     snow_ci_class: cmdb_ci_netgear
     snow_owner_group: "Network-Operations"
     snow_environment: "lab"
     interfaces:
-      - name: ethernet-1/1
-        description: "to srl-leaf1 e1-1"
-        ip: 10.0.0.0/31
-      - name: ethernet-1/2
-        description: "to srl-leaf2 e1-1"
-        ip: 10.0.0.2/31
-      - name: ethernet-1/3
-        description: "to xrd-pe1 gi0/0/0/0"
-        ip: 10.0.0.4/31
+      - name: lo0.0
+        description: "Loopback"
+        ip: 10.1.0.3/32
+
+  - name: srl-spine2
+    address: 172.100.103.14
+    gnmi_port: 57400
+    vendor: nokia_srl
+    role: spine
+    site: lab-dc
+    clab_kind: nokia_srlinux
+    clab_image: ghcr.io/nokia/srlinux:latest
+    netbox_model: "7220 IXR-D2L (lab sim)"
+    netbox_serial: "LAB-SRL-SPINE2"
+    netbox_platform: "SR Linux"
+    snow_ci_class: cmdb_ci_netgear
+    snow_owner_group: "Network-Operations"
+    snow_environment: "lab"
+    interfaces:
+      - name: lo0.0
+        description: "Loopback"
+        ip: 10.1.0.4/32
 
   - name: srl-leaf1
-    address: 172.100.102.12
+    address: 172.100.103.15
     gnmi_port: 57400
     vendor: nokia_srl
     role: leaf
     site: lab-dc
     clab_kind: nokia_srlinux
     clab_image: ghcr.io/nokia/srlinux:latest
-    netbox_model: "7750 SR-1s (lab sim)"
+    netbox_model: "7220 IXR-D2L (lab sim)"
     netbox_serial: "LAB-SRL-LEAF1"
     netbox_platform: "SR Linux"
     snow_ci_class: cmdb_ci_netgear
     snow_owner_group: "Network-Operations"
     snow_environment: "lab"
     interfaces:
-      - name: ethernet-1/1
-        description: "to srl-spine1 e1-1"
-        ip: 10.0.0.1/31
-      - name: ethernet-1/2
-        description: "server uplink"
-        ip: 192.168.10.1/24
+      - name: lo0.0
+        description: "Loopback"
+        ip: 10.1.0.5/32
+      - name: irb0.1
+        description: "Tenant-A Gateway"
+        ip: 192.168.100.1/24
 
   - name: srl-leaf2
-    address: 172.100.102.13
+    address: 172.100.103.16
     gnmi_port: 57400
     vendor: nokia_srl
     role: leaf
     site: lab-dc
     clab_kind: nokia_srlinux
     clab_image: ghcr.io/nokia/srlinux:latest
-    netbox_model: "7750 SR-1s (lab sim)"
+    netbox_model: "7220 IXR-D2L (lab sim)"
     netbox_serial: "LAB-SRL-LEAF2"
     netbox_platform: "SR Linux"
     snow_ci_class: cmdb_ci_netgear
     snow_owner_group: "Network-Operations"
     snow_environment: "lab"
     interfaces:
-      - name: ethernet-1/1
-        description: "to srl-spine1 e1-2"
-        ip: 10.0.0.3/31
-      - name: ethernet-1/2
-        description: "server uplink"
-        ip: 192.168.20.1/24
+      - name: lo0.0
+        description: "Loopback"
+        ip: 10.1.0.6/32
+      - name: irb0.1
+        description: "Tenant-A Gateway"
+        ip: 192.168.100.1/24
 
-  - name: xrd-pe1
-    address: 172.100.102.14
+  - name: srl-leaf3
+    address: 172.100.103.17
     gnmi_port: 57400
-    vendor: cisco_xrd
-    role: pe
+    vendor: nokia_srl
+    role: leaf
     site: lab-dc
-    clab_kind: cisco_xrd
-    clab_image: ios-xr/xrd-control-plane:latest
-    netbox_model: "IOS XRd (lab sim)"
-    netbox_serial: "LAB-XRD-PE1"
-    netbox_platform: "IOS XR"
+    clab_kind: nokia_srlinux
+    clab_image: ghcr.io/nokia/srlinux:latest
+    netbox_model: "7220 IXR-D2L (lab sim)"
+    netbox_serial: "LAB-SRL-LEAF3"
+    netbox_platform: "SR Linux"
     snow_ci_class: cmdb_ci_netgear
-    snow_owner_group: "SP-Engineering"
+    snow_owner_group: "Network-Operations"
     snow_environment: "lab"
     interfaces:
-      - name: "GigabitEthernet0/0/0/0"
-        description: "to srl-spine1 e1-3"
-        ip: 10.0.0.5/31
+      - name: lo0.0
+        description: "Loopback"
+        ip: 10.1.0.7/32
+      - name: irb0.1
+        description: "Tenant-A Gateway"
+        ip: 192.168.100.1/24
 
-business_services:
-  - name: "BGP Underlay"
-    sys_id: "svc-bgp-underlay"
-    criticality: high
+  - name: srl-leaf4
+    address: 172.100.103.18
+    gnmi_port: 57400
+    vendor: nokia_srl
+    role: leaf
+    site: lab-dc
+    clab_kind: nokia_srlinux
+    clab_image: ghcr.io/nokia/srlinux:latest
+    netbox_model: "7220 IXR-D2L (lab sim)"
+    netbox_serial: "LAB-SRL-LEAF4"
+    netbox_platform: "SR Linux"
+    snow_ci_class: cmdb_ci_netgear
+    snow_owner_group: "Network-Operations"
+    snow_environment: "lab"
+    interfaces:
+      - name: lo0.0
+        description: "Loopback"
+        ip: 10.1.0.8/32
+      - name: irb0.1
+        description: "Tenant-A Gateway"
+        ip: 192.168.100.1/24
+
+services:
+  - name: "DC EVPN Fabric"
+    description: "Multi-tenant DC EVPN transport"
+    criticality: "1"
     owner_group: "Network-Operations"
-    runs_on: [srl-spine1, srl-leaf1, srl-leaf2, xrd-pe1]
+    runs_on: [srl-super1, srl-super2, srl-spine1, srl-spine2, srl-leaf1, srl-leaf2, srl-leaf3, srl-leaf4]
 
-  - name: "Lab L3VPN"
-    sys_id: "svc-lab-l3vpn"
-    criticality: medium
-    owner_group: "SP-Engineering"
-    runs_on: [xrd-pe1]
+  - name: "Tenant-A Connectivity"
+    description: "L2/L3 services for Tenant-A"
+    criticality: "2"
+    owner_group: "Network-Operations"
+    runs_on: [srl-leaf1, srl-leaf2, srl-leaf3, srl-leaf4]

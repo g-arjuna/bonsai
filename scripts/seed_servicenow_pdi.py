@@ -3,7 +3,7 @@
 
 Reads lab/seed/topology.yaml (single source of truth) and populates:
   - cmdb_ci_netgear CIs for each lab device
-  - cmdb_ci_business_service for representative applications
+  - cmdb_ci_service for representative applications
   - cmdb_rel_ci relationships (Runs::Provided by) linking devices to services
   - Rack / site CIs from site definitions
 
@@ -20,7 +20,7 @@ Usage:
     python scripts/seed_servicenow_pdi.py --reset   # wipe bonsai-managed records then re-seed
 
 --reset deletes cmdb_ci_netgear device CIs, cmdb_ci_rack site CIs,
-cmdb_ci_business_service records, cmdb_rel_ci relationships, and the sample
+cmdb_ci_service records, cmdb_rel_ci relationships, and the sample
 incident that match bonsai-managed names. ServiceNow stays up.
 """
 
@@ -76,6 +76,8 @@ class SnowClient:
         existing = self._lookup_one(table, match_field, match_value)
         if existing:
             sys_id = existing["sys_id"]
+            if isinstance(sys_id, dict):
+                sys_id = sys_id.get("value", "")
             if self.dry_run:
                 print(f"  [dry-run] PATCH {table}/{sys_id} {json.dumps(payload)[:80]}")
                 return existing
@@ -184,7 +186,7 @@ def reset_snow(client: SnowClient, topology: dict) -> None:
 
     print("Resetting business services ...")
     for svc in services:
-        delete_record("cmdb_ci_business_service", f"name={svc['name']}")
+        delete_record("cmdb_ci_service", f"name={svc['name']}")
 
     print("Resetting site CIs ...")
     for site in sites:
@@ -246,7 +248,7 @@ def seed(client: SnowClient, topology: dict) -> None:
             "short_description": svc.get("description", ""),
             "operational_status": "1",
         }
-        result = client.upsert("cmdb_ci_business_service", "name", svc["name"], payload)
+        result = client.upsert("cmdb_ci_service", "name", svc["name"], payload)
         service_sys_ids[svc["name"]] = result.get("sys_id", "")
 
     print("\n== Relationships (Runs::Provided by) ==")

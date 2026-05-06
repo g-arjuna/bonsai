@@ -103,7 +103,7 @@ services:
       DB_PASSWORD: bonsai-netbox-dev
       REDIS_HOST: netbox-redis
       REDIS_PORT: "6379"
-      SECRET_KEY: bonsai-dev-secret-key-do-not-use-in-production
+      SECRET_KEY: bonsai-dev-secret-key-do-not-use-in-production-1234
       SUPERUSER_NAME: admin
       SUPERUSER_EMAIL: admin@bonsai.local
       SUPERUSER_PASSWORD: bonsai-dev
@@ -118,7 +118,7 @@ services:
     networks:
       - bonsai-external
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/api/"]
+      test: ["CMD", "curl", "-f", "-H", "Authorization: Token bonsai-dev-token", "http://localhost:8080/api/"]
       interval: 15s
       timeout: 5s
       start_period: 60s
@@ -138,7 +138,7 @@ services:
       DB_PASSWORD: bonsai-netbox-dev
       REDIS_HOST: netbox-redis
       REDIS_PORT: "6379"
-      SECRET_KEY: bonsai-dev-secret-key-do-not-use-in-production
+      SECRET_KEY: bonsai-dev-secret-key-do-not-use-in-production-1234
     command: /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py rqworker
     networks:
       - bonsai-external

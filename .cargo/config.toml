@@ -12,3 +12,8 @@
 # Run `scripts/install_sccache.sh` to install it. If sccache is not installed,
 # cargo will print an error; remove this line to build without caching.
 rustc-wrapper = "sccache"
+
+[target.x86_64-unknown-linux-gnu]
+# lbug bundles its own libzstd.a (C++) which conflicts with zstd-sys (C).
+# --allow-multiple-definition picks the first definition and suppresses the dup error.
+rustflags = ["-C", "link-arg=-Wl,--allow-multiple-definition"]

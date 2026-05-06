@@ -594,7 +594,7 @@ pub fn router(
         .route("/api/overrides/remove", post(remove_override))
 
         .route("/api/path", get(path_handler))
-        .route("/api/blast-radius/:address", get(blast_radius_handler))
+        .route("/api/blast-radius/{address}", get(blast_radius_handler))
         .route("/api/incidents/grouped", get(incidents_handler))
         .route(
             "/api/onboarding/devices",
@@ -707,21 +707,21 @@ pub fn router(
             get(list_saved_queries_handler).post(create_saved_query_handler),
         )
         .route(
-            "/api/explorer/saved-queries/:id/delete",
+            "/api/explorer/saved-queries/{id}/delete",
             post(delete_saved_query_handler),
         )
         // investigations (T3-1/T3-2)
         .route("/api/investigations", get(list_investigations_handler).post(create_investigation_handler))
-        .route("/api/investigations/:id", get(get_investigation_handler))
-        .route("/api/investigations/:id/tool-calls", get(list_tool_calls_handler))
-        .route("/api/investigations/:id/complete", post(complete_investigation_handler))
+        .route("/api/investigations/{id}", get(get_investigation_handler))
+        .route("/api/investigations/{id}/tool-calls", get(list_tool_calls_handler))
+        .route("/api/investigations/{id}/complete", post(complete_investigation_handler))
         // graph embeddings (T2-1)
         .route(
             "/api/graph/embeddings/upsert",
             post(upsert_embeddings_handler),
         )
         .route(
-            "/api/graph/embeddings/:address",
+            "/api/graph/embeddings/{address}",
             get(list_embeddings_handler),
         )
         .fallback_service(spa)

@@ -58,7 +58,7 @@ def reset(base_url: str, token: str):
         "Accept": "application/json",
     })
 
-    wait_for_netbox(base_url)
+    wait_for_netbox(base_url, token)
 
     # Devices (and their interfaces/IPs cascade in NetBox)
     print("Resetting devices ...")
@@ -124,12 +124,13 @@ def get_or_create(session, base_url, endpoint, lookup_field, lookup_value, paylo
     return api(session, base_url, "post", f"{endpoint}/", json=payload)
 
 
-def wait_for_netbox(base_url: str, timeout: int = 120):
+def wait_for_netbox(base_url: str, token: str, timeout: int = 120):
     print(f"Waiting for NetBox at {base_url}/api/ ...")
+    headers = {"Authorization": f"Token {token}"}
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            r = requests.get(f"{base_url}/api/", timeout=5)
+            r = requests.get(f"{base_url}/api/", headers=headers, timeout=5)
             if r.status_code == 200:
                 print("  NetBox ready.")
                 return
@@ -150,7 +151,29 @@ def seed(base_url: str, token: str):
         "Accept": "application/json",
     })
 
-    wait_for_netbox(base_url)
+    wait_for_netbox(base_url, token)
+
+    # 0. Custom Fields
+    print("Seeding custom fields ...")
+    content_types = ["dcim.device"]
+    get_or_create(session, base_url, "extras/custom-fields", "name", "gnmi_address", {
+        "name": "gnmi_address",
+        "label": "gNMI Address",
+        "type": "text",
+        "object_types": content_types,
+    })
+    get_or_create(session, base_url, "extras/custom-fields", "name", "gnmi_port", {
+        "name": "gnmi_port",
+        "label": "gNMI Port",
+        "type": "text",
+        "object_types": content_types,
+    })
+    get_or_create(session, base_url, "extras/custom-fields", "name", "bonsai_vendor", {
+        "name": "bonsai_vendor",
+        "label": "Bonsai Vendor",
+        "type": "text",
+        "object_types": content_types,
+    })
 
     # 1. Manufacturer
     print("Seeding manufacturer ...")
