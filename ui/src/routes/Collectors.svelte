@@ -120,7 +120,11 @@
       </div>
     </div>
 
-    {#if (status.unassigned_count ?? 0) > 0}
+    {#if (status.collectors?.length ?? 0) === 0}
+      <div class="notice info" style="margin-top: 16px;">
+        Running in monolithic mode — all devices ingest directly on this node. Register a collector to enable distributed ingestion.
+      </div>
+    {:else if (status.unassigned_count ?? 0) > 0}
       <div class="notice error" style="margin-top: 16px;">
         {status.unassigned_count} device{status.unassigned_count === 1 ? '' : 's'} unassigned. Use an assignment rule or the manual override below.
       </div>

@@ -258,6 +258,7 @@ tr:hover td { background: rgba(255,255,255,0.03); cursor: pointer; }
 
 .notice.error { border-color: rgba(248,81,73,0.5); color: var(--red); background: rgba(248,81,73,0.08); }
 .notice.success { border-color: rgba(63,185,80,0.5); color: var(--green); background: rgba(63,185,80,0.08); }
+.notice.info { border-color: rgba(88,166,255,0.4); color: var(--blue); background: rgba(88,166,255,0.08); }
 
 .onboarding-grid {
   display: grid;

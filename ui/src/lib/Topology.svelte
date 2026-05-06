@@ -173,11 +173,51 @@
       simLinks.push({ source: l.src_device, target: l.dst_device, ...l });
     }
 
+    // Hierarchical tier assignment for DC Clos fabric:
+    //   tier 0 = super-spines (spine role + "super" in hostname)
+    //   tier 1 = spines
+    //   tier 2 = leaves / unknown
+    function nodeTier(d) {
+      const role = (d.role || '').toLowerCase();
+      const hn   = (d.hostname || '').toLowerCase();
+      if (role === 'spine' && hn.includes('super')) return 0;
+      if (role === 'spine') return 1;
+      return 2;
+    }
+
+    const TIER_Y = [H * 0.14, H * 0.44, H * 0.78];
+    const tierCounts = [0, 0, 0];
+    nodes.forEach(n => { n._tier = nodeTier(n); tierCounts[n._tier]++; });
+
+    // Pre-seed x positions evenly within each tier so the simulation
+    // converges immediately to a readable layout.
+    const tierOffset = [0, 0, 0];
+    nodes.forEach(n => {
+      const t = n._tier;
+      const count = tierCounts[t];
+      tierOffset[t]++;
+      n.x = (W / (count + 1)) * tierOffset[t];
+      n.y = TIER_Y[t];
+    });
+
     const sim = d3.forceSimulation(nodes)
-      .force('link',      d3.forceLink(simLinks).id(d => d.id).distance(170))
-      .force('charge',    d3.forceManyBody().strength(-700))
-      .force('center',    d3.forceCenter(W / 2, H / 2))
-      .force('collision', d3.forceCollide(50));
+      .force('link',      d3.forceLink(simLinks).id(d => d.id).distance(140))
+      .force('charge',    d3.forceManyBody().strength(-500))
+      .force('y',         d3.forceY(d => TIER_Y[d._tier]).strength(0.85))
+      .force('x',         d3.forceX(W / 2).strength(0.04))
+      .force('collision', d3.forceCollide(52));
+
+    // Draw tier rail labels (static — appended before simulation nodes)
+    const TIER_LABELS = ['Super-Spines', 'Spines', 'Leaves'];
+    TIER_LABELS.forEach((label, i) => {
+      if (tierCounts[i] === 0) return;
+      g.append('text')
+        .attr('x', 6).attr('y', TIER_Y[i])
+        .attr('dominant-baseline', 'middle')
+        .attr('font-size', 9).attr('fill', '#444d56')
+        .attr('pointer-events', 'none')
+        .text(label);
+    });
 
     // Links
     const link = g.append('g').selectAll('line').data(simLinks).join('line')

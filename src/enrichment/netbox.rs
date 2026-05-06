@@ -412,6 +412,22 @@ impl GraphEnricher for NetBoxEnricher {
 
 // ── Graph write helpers ───────────────────────────────────────────────────────
 
+/// Retry a blocking graph write up to 8 times with exponential back-off when
+/// LadybugDB rejects the attempt because another write transaction is active.
+/// Max cumulative sleep ≈ 5 s, well within any enrichment timeout.
+fn with_write_retry(mut f: impl FnMut() -> Result<()>) -> Result<()> {
+    for attempt in 0u32..8 {
+        match f() {
+            Ok(()) => return Ok(()),
+            Err(e) if e.to_string().contains("Only one write transaction") => {
+                std::thread::sleep(std::time::Duration::from_millis(20 << attempt.min(7)));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    f()
+}
+
 fn write_to_graph(
     db: &Arc<lbug::Database>,
     devices: &[NbDevice],
@@ -426,19 +442,50 @@ fn write_to_graph(
     let mut warnings = Vec::new();
     let now_ns = crate::graph::common::now_ns();
 
+    // Build hostname → full Device address map (Device.address includes port, e.g. "1.2.3.4:57400").
+    // Used to correlate NetBox device names to graph Device nodes without a primary_ip dependency.
+    let hostname_to_addr: std::collections::HashMap<String, String> = {
+        let mut stmt = conn
+            .prepare("MATCH (d:Device) RETURN d.hostname, d.address")
+            .context("prepare hostname→address lookup")?;
+        let rows = conn
+            .execute(&mut stmt, vec![])
+            .context("execute hostname→address lookup")?;
+        rows.filter_map(|row| {
+            let hostname = match &row[0] {
+                lbug::Value::String(s) if !s.is_empty() => s.clone(),
+                _ => return None,
+            };
+            let address = match &row[1] {
+                lbug::Value::String(s) if !s.is_empty() => s.clone(),
+                _ => return None,
+            };
+            Some((hostname, address))
+        })
+        .collect()
+    };
+
     // 1. Write EnrichmentProperty nodes for each device (chunked for progress visibility)
     for (chunk_idx, chunk) in devices.chunks(100).enumerate() {
         for dev in chunk {
-            let Some(ip) = dev.primary_ip.as_ref() else {
+            // Resolve the graph Device address: prefer primary_ip match, fall back to hostname.
+            let addr = if let Some(ip) = dev.primary_ip.as_ref() {
+                // Strip prefix length (e.g. "192.168.1.1/32" → "192.168.1.1")
+                let bare = ip.address.split('/').next().unwrap_or(&ip.address);
+                // Graph stores "host:port" — find the Device whose address starts with this IP.
+                hostname_to_addr
+                    .values()
+                    .find(|a| a.starts_with(&format!("{bare}:")))
+                    .cloned()
+                    .unwrap_or_else(|| bare.to_string())
+            } else if let Some(name) = &dev.name {
+                match hostname_to_addr.get(name) {
+                    Some(a) => a.clone(),
+                    None => continue, // device not yet in graph — skip silently
+                }
+            } else {
                 continue;
             };
-            // Strip prefix length from IP address (e.g. "192.168.1.1/32" → "192.168.1.1")
-            let addr = ip
-                .address
-                .split('/')
-                .next()
-                .unwrap_or(&ip.address)
-                .to_string();
 
             let mut props: Vec<(&str, String)> = vec![];
             if !dev.serial.is_empty() {
@@ -463,13 +510,15 @@ fn write_to_graph(
 
             for (key, value) in props {
                 let id = format!("{addr}:{key}");
-                if let Err(e) =
-                    upsert_enrichment_property(&conn, &id, &addr, key, &value, source, now_ns)
-                {
+                let addr2 = addr.clone();
+                let value2 = value.clone();
+                if let Err(e) = with_write_retry(|| {
+                    upsert_enrichment_property(&conn, &id, &addr2, key, &value2, source, now_ns)
+                }) {
                     warnings.push(format!("device {addr} property {key}: {e:#}"));
                 } else {
                     nodes += 1;
-                    edges += 1; // HAS_ENRICHMENT_PROPERTY created inside upsert_enrichment_property
+                    edges += 1;
                 }
             }
         }
@@ -479,7 +528,7 @@ fn write_to_graph(
     // 2. Write VLAN nodes (site-scope VLANs from NetBox)
     for vlan in vlans {
         let id = format!("netbox_vlan_{}", vlan.vid);
-        if let Err(e) = upsert_vlan(&conn, &id, vlan.vid as i64, &vlan.name, source, now_ns) {
+        if let Err(e) = with_write_retry(|| upsert_vlan(&conn, &id, vlan.vid as i64, &vlan.name, source, now_ns)) {
             warnings.push(format!("VLAN {}: {e:#}", vlan.vid));
         } else {
             nodes += 1;
@@ -494,7 +543,7 @@ fn write_to_graph(
             .as_ref()
             .map(|r| r.name.as_str())
             .unwrap_or("unknown");
-        if let Err(e) = upsert_prefix(
+        if let Err(e) = with_write_retry(|| upsert_prefix(
             &conn,
             &id,
             &prefix.prefix,
@@ -502,7 +551,7 @@ fn write_to_graph(
             &prefix.description,
             source,
             now_ns,
-        ) {
+        )) {
             warnings.push(format!("prefix {}: {e:#}", prefix.prefix));
         } else {
             nodes += 1;
@@ -513,7 +562,9 @@ fn write_to_graph(
             && let Some(dev_ref) = &assigned.device
             && let Some(dev_name) = &dev_ref.name
         {
-            match link_device_prefix(&conn, dev_name, &id) {
+            let dev_name2 = dev_name.clone();
+            let id2 = id.clone();
+            match with_write_retry(|| link_device_prefix(&conn, &dev_name2, &id2)) {
                 Ok(()) => edges += 1,
                 Err(e) => warnings.push(format!("HAS_PREFIX {dev_name} → {}: {e:#}", prefix.prefix)),
             }
@@ -529,15 +580,17 @@ fn write_to_graph(
 
         if !iface.description.is_empty() {
             let prop_id = format!("{iface_id}:netbox_description");
-            if let Err(e) = upsert_enrichment_property(
+            let iface_id2 = iface_id.clone();
+            let descr = iface.description.clone();
+            if let Err(e) = with_write_retry(|| upsert_enrichment_property(
                 &conn,
                 &prop_id,
-                &iface_id,
+                &iface_id2,
                 "netbox_if_description",
-                &iface.description,
+                &descr,
                 source,
                 now_ns,
-            ) {
+            )) {
                 warn!("interface {iface_id} description: {e:#}");
             } else {
                 nodes += 1;
@@ -549,7 +602,7 @@ fn write_to_graph(
         if let Some(av) = &iface.untagged_vlan {
             let vlan_id = format!("netbox_vlan_{}", av.vid);
             let if_node_id = format!("{dev_name}:{}:if", iface.name);
-            match link_interface_vlan(&conn, &if_node_id, &vlan_id, "ACCESS_VLAN") {
+            match with_write_retry(|| link_interface_vlan(&conn, &if_node_id, &vlan_id, "ACCESS_VLAN")) {
                 Ok(()) => edges += 1,
                 Err(e) => warnings.push(format!("ACCESS_VLAN {iface_id}: {e:#}")),
             }
@@ -559,7 +612,7 @@ fn write_to_graph(
         for tv in &iface.tagged_vlans {
             let vlan_id = format!("netbox_vlan_{}", tv.vid);
             let if_node_id = format!("{dev_name}:{}:if", iface.name);
-            match link_interface_vlan(&conn, &if_node_id, &vlan_id, "TRUNK_VLAN") {
+            match with_write_retry(|| link_interface_vlan(&conn, &if_node_id, &vlan_id, "TRUNK_VLAN")) {
                 Ok(()) => edges += 1,
                 Err(e) => warnings.push(format!("TRUNK_VLAN {iface_id} vlan {}: {e:#}", tv.vid)),
             }
