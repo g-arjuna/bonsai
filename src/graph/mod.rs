@@ -337,10 +337,17 @@ impl GraphStore {
                 address    STRING,\
                 vendor     STRING,\
                 hostname   STRING,\
+                role       STRING,\
+                site       STRING,\
                 updated_at TIMESTAMP_NS,\
                 PRIMARY KEY (address))",
         )
         .context("create Device table")?;
+
+        // Migration: add role/site to Device table for DBs created before Sprint 2.
+        // ALTER TABLE ADD is idempotent in lbug (ignored if column already exists).
+        let _ = conn.query("ALTER TABLE Device ADD role STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE Device ADD site STRING DEFAULT ''");
 
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS Site(\
@@ -943,6 +950,17 @@ impl GraphStore {
             let conn = Connection::new(&db).context("site sync connection")?;
             let now = ts(now_ns());
             for target in targets {
+                let role = target.role.as_deref().unwrap_or_default();
+                let site_str = target.site.as_deref().unwrap_or_default();
+                upsert_device(
+                    &conn,
+                    &target.address,
+                    target.vendor.as_deref().unwrap_or_default(),
+                    target.hostname.as_deref().unwrap_or_default(),
+                    role,
+                    site_str,
+                    now.clone(),
+                )?;
                 let Some(site_name) = target
                     .site
                     .as_deref()
@@ -961,13 +979,6 @@ impl GraphStore {
                     metadata_json: "{}".to_string(),
                     environment_id: String::new(),
                 };
-                upsert_device(
-                    &conn,
-                    &target.address,
-                    target.vendor.as_deref().unwrap_or_default(),
-                    target.hostname.as_deref().unwrap_or_default(),
-                    now.clone(),
-                )?;
                 upsert_site_record(&conn, &site, now.clone())?;
                 link_device_to_site(&conn, &target.address, &site.id)?;
             }
@@ -2084,7 +2095,7 @@ fn write_interface_summary(
     let id = format!("{}:{}", u.target, if_name);
     let now = ts(u.timestamp_ns);
 
-    upsert_device(conn, &u.target, &u.vendor, &u.hostname, now.clone())?;
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
 
     let summary = u
         .value
@@ -2193,7 +2204,7 @@ fn write_subscription_status_blocking(
     let first_observed_at = ts(status.first_observed_at_ns);
     let last_observed_at = ts(status.last_observed_at_ns);
 
-    upsert_device(conn, &status.device_address, "", "", updated_at.clone())?;
+    upsert_device(conn, &status.device_address, "", "", "", "", updated_at.clone())?;
 
     let mut stmt = conn
         .prepare(
@@ -2329,7 +2340,7 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
     let id = format!("{}:{}", u.target, if_name);
     let now = ts(u.timestamp_ns);
 
-    upsert_device(conn, &u.target, &u.vendor, &u.hostname, now.clone())?;
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
 
     let mut stmt = conn
         .prepare(
@@ -2470,7 +2481,7 @@ fn write_bgp_neighbor(
     let now = ts(u.timestamp_ns);
     let new_state = json_str(val, "session-state").to_lowercase();
 
-    upsert_device(conn, &u.target, &u.vendor, &u.hostname, now.clone())?;
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
 
     // Read current state before upserting so we can detect transitions.
     let old_state = get_bgp_state(conn, &id)?;
@@ -2579,7 +2590,7 @@ fn write_bfd_session(
         return Ok(());
     }
 
-    upsert_device(conn, &u.target, &u.vendor, &u.hostname, now.clone())?;
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
 
     let old_state = get_bfd_state(conn, &id)?;
 
@@ -2767,7 +2778,7 @@ fn write_lldp_neighbor(
     let id = format!("{}:{}:{}", u.target, local_if, neighbor_id);
     let now = ts(u.timestamp_ns);
 
-    upsert_device(conn, &u.target, &u.vendor, &u.hostname, now.clone())?;
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
 
     // cEOS sends chassis-id and system-name/port-id in separate notifications.
     // Use CASE WHEN to preserve existing non-empty values on partial updates.
@@ -3268,7 +3279,7 @@ fn emit_oper_status_event(
         state_change_event_id: String::new(),
     });
     // Best-effort: ensure Device node exists so graph queries stay consistent.
-    upsert_device(conn, &u.target, &u.vendor, &u.hostname, ts(u.timestamp_ns))?;
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", ts(u.timestamp_ns))?;
     debug!(target = %u.target, if_name, oper_status, "interface oper-status event emitted");
     Ok(())
 }
@@ -3418,7 +3429,7 @@ mod tests {
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
         let conn = Connection::new(&store.db).expect("graph connection");
 
-        upsert_device(&conn, "dut:57400", "nokia_srl", "dut1", ts(1_000_000_000))
+        upsert_device(&conn, "dut:57400", "nokia_srl", "dut1", "", "", ts(1_000_000_000))
             .expect("seed device");
 
         store
@@ -3690,7 +3701,7 @@ mod tests {
         let path = temp_graph_path("embedding-roundtrip");
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
         let conn = Connection::new(&store.db).expect("conn");
-        upsert_device(&conn, "10.0.0.1:57400", "nokia_srl", "spine1", ts(1_000_000_000))
+        upsert_device(&conn, "10.0.0.1:57400", "nokia_srl", "spine1", "", "", ts(1_000_000_000))
             .expect("seed device");
         drop(conn);
 
@@ -3730,7 +3741,7 @@ mod tests {
         let path = temp_graph_path("embedding-versions");
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
         let conn = Connection::new(&store.db).expect("conn");
-        upsert_device(&conn, "10.0.0.2:57400", "nokia_srl", "leaf1", ts(1_000_000_000))
+        upsert_device(&conn, "10.0.0.2:57400", "nokia_srl", "leaf1", "", "", ts(1_000_000_000))
             .expect("seed device");
         drop(conn);
 
@@ -3773,7 +3784,7 @@ mod tests {
         let path = temp_graph_path("embedding-upsert");
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
         let conn = Connection::new(&store.db).expect("conn");
-        upsert_device(&conn, "10.0.0.3:57400", "nokia_srl", "leaf2", ts(1_000_000_000))
+        upsert_device(&conn, "10.0.0.3:57400", "nokia_srl", "leaf2", "", "", ts(1_000_000_000))
             .expect("seed device");
         drop(conn);
 

@@ -305,7 +305,7 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
     let id = format!("{}:{}", u.target, if_name);
     let now = ts(u.timestamp_ns);
 
-    upsert_device(conn, &u.target, &u.vendor, &u.hostname, now.clone())?;
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
 
     let mut stmt = conn.prepare(
         "MERGE (i:Interface {id: $id}) \
@@ -344,7 +344,7 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
 fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &str, val: &serde_json::Value) -> Result<()> {
     let id = format!("{}:{}", u.target, peer_addr);
     let now = ts(u.timestamp_ns);
-    upsert_device(conn, &u.target, &u.vendor, &u.hostname, now.clone())?;
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
 
     let mut stmt = conn.prepare(
         "MERGE (n:BgpNeighbor {id: $id}) \
@@ -375,7 +375,7 @@ fn write_bgp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, peer_addr: &st
 fn write_bfd_session(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str, local_discriminator: &str, val: &serde_json::Value) -> Result<()> {
     let id = format!("{}:{}:{}", u.target, if_name, local_discriminator);
     let now = ts(u.timestamp_ns);
-    upsert_device(conn, &u.target, &u.vendor, &u.hostname, now.clone())?;
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
 
     let mut stmt = conn.prepare(
         "MERGE (b:BfdSession {id: $id}) \
@@ -409,7 +409,7 @@ fn write_bfd_session(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str, 
 fn write_lldp_neighbor(conn: &Connection<'_>, u: &TelemetryUpdate, local_if: &str, neighbor_id: &str, val: &serde_json::Value) -> Result<()> {
     let id = format!("{}:{}:{}", u.target, local_if, neighbor_id);
     let now = ts(u.timestamp_ns);
-    upsert_device(conn, &u.target, &u.vendor, &u.hostname, now.clone())?;
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
 
     let mut stmt = conn.prepare(
         "MERGE (n:LldpNeighbor {id: $id}) \

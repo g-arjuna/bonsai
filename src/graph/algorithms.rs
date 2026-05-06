@@ -107,7 +107,7 @@ pub fn site_dependency_depth(conn: &Connection<'_>) -> Result<Vec<SiteDependency
     let cross: HashMap<String, i64> = conn
         .query(
             "MATCH (s:Site)<-[:LOCATED_AT]-(d:Device) \
-             MATCH (d)-[:HAS_INTERFACE|CONNECTED_TO*1..6]-(n:Device) \
+             MATCH (d)-[:HAS_INTERFACE|CONNECTED_TO*1..10]-(n:Device) \
              WHERE n.address <> d.address \
              MATCH (n)-[:LOCATED_AT]->(other_s:Site) \
              WHERE other_s.name <> s.name \
@@ -159,9 +159,16 @@ pub fn detection_correlation(
 }
 
 /// Subscription health grouped by topology tier.
-/// Tier is derived from undirected degree: spine (≥4), aggregation (2–3), leaf (1), isolated (0).
+/// Tier is derived from the device `role` field when set; falls back to undirected degree
+/// (spine ≥4, aggregation 2–3, leaf 1, isolated 0) for devices with no role.
 pub fn subscription_health_by_tier(conn: &Connection<'_>) -> Result<Vec<TierHealthRow>> {
-    // Step 1: degree per device (undirected)
+    // Step 1: role and degree per device
+    let role_map: HashMap<String, String> = conn
+        .query("MATCH (d:Device) RETURN d.address, coalesce(d.role, '')")
+        .context("tier health — roles")?
+        .map(|row| (read_str(&row[0]), read_str(&row[1])))
+        .collect();
+
     let degree_map: HashMap<String, i64> = conn
         .query(
             "MATCH (d:Device)-[:HAS_INTERFACE]->(i:Interface)-[:CONNECTED_TO]-() \
@@ -189,13 +196,19 @@ pub fn subscription_health_by_tier(conn: &Connection<'_>) -> Result<Vec<TierHeal
         .map(|row| (read_str(&row[0]), read_i64(&row[1])))
         .collect();
 
-    // Step 4: bucket by tier
+    // Step 4: bucket by tier — role wins over degree when set
     let tier_label = |addr: &str| -> &'static str {
-        match degree_map.get(addr).copied().unwrap_or(0) {
-            d if d >= 4 => "spine",
-            d if d >= 2 => "aggregation",
-            d if d >= 1 => "leaf",
-            _ => "isolated",
+        let role = role_map.get(addr).map(String::as_str).unwrap_or("");
+        match role {
+            "spine" | "super-spine" | "pe" | "route-reflector" => "spine",
+            "leaf" | "vtep" | "access" | "ce" => "leaf",
+            "aggregation" | "distribution" | "border" => "aggregation",
+            _ => match degree_map.get(addr).copied().unwrap_or(0) {
+                d if d >= 4 => "spine",
+                d if d >= 2 => "aggregation",
+                d if d >= 1 => "leaf",
+                _ => "isolated",
+            },
         }
     };
 
