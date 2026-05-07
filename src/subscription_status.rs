@@ -43,7 +43,7 @@ pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
     let (sub, mut telemetry_rx) = crate::event_bus::MpscSubscriber::new(
         "subscription_verifier",
         1024,
-        crate::event_bus::OverflowPolicy::DropOldest,
+        crate::event_bus::OverflowPolicy::DropNewest,
     );
     bus.add_subscriber(sub).await;
 
@@ -120,7 +120,7 @@ async fn register_plan<S: BonsaiStore>(
 async fn observe_update<S: BonsaiStore>(
     store: &S,
     tracked: &mut HashMap<(String, String), TrackedPath>,
-    update: TelemetryUpdate,
+    update: std::sync::Arc<TelemetryUpdate>,
 ) {
     let event = update.classify();
     let now = update.timestamp_ns.max(now_ns());

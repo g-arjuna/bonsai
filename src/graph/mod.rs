@@ -1558,19 +1558,28 @@ impl GraphStore {
             let _guard = write_lock.lock().expect("write lock poisoned");
             let conn = Connection::new(&db).context("batch write connection")?;
             conn.query("BEGIN TRANSACTION").context("begin batch transaction")?;
-            let mut ok = true;
+            let mut errors = 0u32;
             for update in updates {
                 metrics::counter!("bonsai_telemetry_updates_total", "target" => update.target.clone())
                     .increment(1);
                 if let Err(error) = write_blocking(&conn, &update, &event_tx) {
-                    tracing::warn!(target = %update.target, path = %update.path, %error, "batched graph write failed");
-                    ok = false;
+                    // Log individual failures but keep processing — a single bad update
+                    // from buggy device firmware must not poison the entire batch (C-1).
+                    tracing::warn!(
+                        target = %update.target,
+                        path = %update.path,
+                        %error,
+                        "batched graph write failed (skipped)"
+                    );
+                    errors += 1;
+                    metrics::counter!("bonsai_graph_write_errors_total", "target" => update.target.clone())
+                        .increment(1);
                 }
             }
-            if ok {
-                conn.query("COMMIT").context("commit batch transaction")?;
-            } else {
-                let _ = conn.query("ROLLBACK");
+            // Always COMMIT: preserve the writes that succeeded.
+            conn.query("COMMIT").context("commit batch transaction")?;
+            if errors > 0 {
+                tracing::debug!(errors, "batch committed with partial write failures");
             }
             metrics::histogram!("bonsai_graph_batch_write_latency_seconds")
                 .record(t0.elapsed().as_secs_f64());

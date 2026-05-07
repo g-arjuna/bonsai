@@ -203,6 +203,30 @@
       </div>
     </div>
 
+    <!-- ── Counter ingest mode (C-9 / T1-8) ─────────────────────────── -->
+    {#if ops.counter_mode}
+      <div class="card section counter-mode-card" style="margin-top:12px;">
+        <div class="counter-mode-header">
+          <span class="counter-mode-label">Counter ingest mode</span>
+          <span class="badge {ops.counter_mode === 'summary' ? 'badge-info' : ops.counter_mode === 'raw' ? 'badge-warn' : 'badge-default'}">
+            {ops.counter_mode}
+          </span>
+        </div>
+        <div class="counter-mode-detail">
+          {#if ops.counter_mode === 'summary'}
+            <span>Aggregating interface counters into <strong>{ops.counter_window_secs ?? 60}s</strong> windows before writing to graph.
+              Raw counter volume is reduced; summaries carry computed rate-of-change values.</span>
+          {:else if ops.counter_mode === 'raw'}
+            <span>Forwarding raw counter samples at full gNMI cadence.
+              High-volume at scale — consider switching to <code>summary</code> for &gt;50 devices.</span>
+          {:else}
+            <span>Debouncing counter updates with a <strong>{ops.counter_debounce_secs ?? 10}s</strong> minimum
+              interval per interface. Non-counter state changes (BGP, LLDP, oper-status) are always forwarded immediately.</span>
+          {/if}
+        </div>
+      </div>
+    {/if}
+
     <!-- ── Collector health ────────────────────────────────────────────── -->
     {#if collectors?.collectors?.length}
       <div class="card section">
@@ -358,4 +382,12 @@
     border: 1px solid var(--border); padding: 4px 10px; border-radius: 4px;
   }
   .ghost-link:hover { background: var(--bg2); }
+  .counter-mode-card { padding: 14px 16px; }
+  .counter-mode-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .counter-mode-label { font-size: 13px; font-weight: 600; }
+  .counter-mode-detail { font-size: 12px; color: var(--fg2); line-height: 1.5; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .badge-info { background: var(--blue, #1f6feb); color: #fff; }
+  .badge-warn { background: var(--yellow, #d29922); color: #000; }
+  .badge-default { background: var(--bg3, #30363d); color: var(--fg); }
 </style>

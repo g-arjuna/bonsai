@@ -54,12 +54,76 @@ async fn main() -> Result<()> {
         return run_catalogue_cli(command).await;
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("bonsai=debug".parse()?),
-        )
-        .init();
+    // ── Logging setup (T2-1/T2-2) ─────────────────────────────────────────────
+    // Load config early (just for logging config) so we can set up rotation
+    // before the first log line. Re-load below for the full config.
+    let early_cfg_path = config_path();
+    let log_cfg = match config::load(&early_cfg_path).await {
+        Ok(c) => c.logging,
+        Err(_) => config::LoggingConfig::default(),
+    };
+
+    // Build env filter: base level from config, overridden by RUST_LOG, then per-module targets.
+    let base_directive = format!("bonsai={}", log_cfg.level);
+    let mut filter = tracing_subscriber::EnvFilter::from_default_env()
+        .add_directive(base_directive.parse()?);
+    for (module, level) in &log_cfg.targets {
+        if let Ok(dir) = format!("{module}={level}").parse() {
+            filter = filter.add_directive(dir);
+        }
+    }
+
+    if log_cfg.file_path.is_empty() {
+        // Stderr only (foreground / development mode).
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .init();
+    } else {
+        use tracing_appender::rolling::{RollingFileAppender, Rotation};
+        use tracing_subscriber::prelude::*;
+
+        let rotation = match log_cfg.rotation.to_lowercase().as_str() {
+            "hourly" => Rotation::HOURLY,
+            "never" => Rotation::NEVER,
+            _ => Rotation::DAILY,
+        };
+
+        let log_path = std::path::Path::new(&log_cfg.file_path);
+        let log_dir = log_path.parent().unwrap_or(std::path::Path::new("."));
+        let log_file = log_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("bonsai.log");
+
+        // T2-4: Pre-flight disk space check.
+        if log_cfg.min_free_bytes > 0 {
+            preflight_disk_check(log_dir, log_cfg.min_free_bytes)?;
+        }
+
+        let file_appender = RollingFileAppender::builder()
+            .rotation(rotation)
+            .filename_prefix(log_file)
+            .max_log_files(log_cfg.retention_days as usize)
+            .build(log_dir)
+            .context("failed to create rolling file appender")?;
+
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+        // T2-3: Log volume layer — count every event.
+        let log_volume_layer = LogVolumeLayer;
+
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+            .with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false))
+            .with(log_volume_layer)
+            .init();
+
+        // Keep _guard alive for the lifetime of the process by leaking it.
+        // The guard flushes the non-blocking writer on drop; leaking is intentional here
+        // because the process lifetime equals the guard lifetime.
+        std::mem::forget(_guard);
+    }
 
     info!(
         protocol_version = bonsai::api::PROTOCOL_VERSION,
@@ -102,6 +166,7 @@ async fn main() -> Result<()> {
         std::sync::Arc::clone(&queue_depth),
         cfg.ingest.backpressure.clone(),
         cfg.event_bus.capacity,
+        cfg.ingest.debounce_memory_bytes,
     ));
 
     #[derive(Clone)]
@@ -301,9 +366,11 @@ async fn main() -> Result<()> {
         bus.add_subscriber(sub).await;
         
         tokio::spawn(async move {
-            while let Some(update) = rx.recv().await {
+            while let Some(arc_update) = rx.recv().await {
                 if let Err(error) = coordinator
-                    .submit(bonsai::write_coordinator::WriteRequest::Telemetry(update))
+                    .submit(bonsai::write_coordinator::WriteRequest::Telemetry(
+                        std::sync::Arc::unwrap_or_clone(arc_update),
+                    ))
                     .await
                 {
                     warn!(%error, "failed to submit telemetry to write coordinator");
@@ -712,6 +779,9 @@ async fn main() -> Result<()> {
                         cfg.archive.path.clone(),
                         cfg.graph_path.clone(),
                         storage_config_for_http,
+                        cfg.collector.filter.counter_forward_mode.clone(),
+                        cfg.collector.filter.counter_window_secs,
+                        cfg.collector.filter.counter_debounce_secs,
                     ),
                 )
                 .await
@@ -1727,4 +1797,60 @@ fn resolve_target_credentials(
             _ => None,
         },
     )
+}
+
+// ── T2-4: Pre-flight disk space check ─────────────────────────────────────────
+
+fn preflight_disk_check(log_dir: &std::path::Path, min_free_bytes: u64) -> Result<()> {
+    let dir = if log_dir.exists() {
+        log_dir.to_path_buf()
+    } else {
+        std::path::PathBuf::from(".")
+    };
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::ffi::CString;
+        let path_str = dir.to_str().unwrap_or(".");
+        let c_path = CString::new(path_str).unwrap_or_default();
+        let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+        let ret = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
+        if ret == 0 {
+            let free_bytes = stat.f_bsize as u64 * stat.f_bavail as u64;
+            if free_bytes < min_free_bytes {
+                anyhow::bail!(
+                    "insufficient disk space at '{}': {:.1} GiB free, {:.1} GiB required. \
+                     Adjust [logging] min_free_bytes or free disk space before starting bonsai.",
+                    dir.display(),
+                    free_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                    min_free_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                );
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (dir, min_free_bytes);
+    }
+
+    Ok(())
+}
+
+// ── T2-3: Log volume tracing Layer ────────────────────────────────────────────
+
+/// Tracing Layer that increments a Prometheus counter for every log event.
+struct LogVolumeLayer;
+
+impl<S> tracing_subscriber::Layer<S> for LogVolumeLayer
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let level = event.metadata().level().as_str();
+        metrics::counter!("bonsai_log_lines_total", "level" => level).increment(1);
+    }
 }

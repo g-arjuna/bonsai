@@ -30,15 +30,65 @@ use crate::event_bus::InProcessBus;
 use crate::subscription_status::SubscriptionPlan;
 use crate::telemetry::{TelemetryEvent, TelemetryUpdate};
 
+// ── Sharded LRU cache (C-6/C-7) ──────────────────────────────────────────────
+
+const CACHE_SHARDS: usize = 16;
+
+/// 16-shard LRU cache that spreads Mutex contention across shards by key hash.
+/// Each shard holds an independent LruCache with a per-shard capacity.
+struct ShardedLruCache<V> {
+    shards: Vec<Mutex<LruCache<String, V>>>,
+}
+
+impl<V> ShardedLruCache<V> {
+    fn new(per_shard_cap: usize) -> Self {
+        let cap = NonZeroUsize::new(per_shard_cap.max(64)).unwrap();
+        let shards = (0..CACHE_SHARDS)
+            .map(|_| Mutex::new(LruCache::new(cap)))
+            .collect();
+        Self { shards }
+    }
+
+    fn shard_idx(&self, key: &str) -> usize {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut h);
+        (h.finish() as usize) % CACHE_SHARDS
+    }
+
+    /// Atomic check-then-update within a single shard lock.
+    /// Returns `true` if `skip_if(existing)` held — caller should drop the update.
+    /// Returns `false` and inserts `new_value` if the predicate did not hold or the key was absent.
+    fn check_debounce(&self, key: &str, new_value: V, skip_if: impl Fn(&V) -> bool) -> bool {
+        let idx = self.shard_idx(key);
+        let mut cache = self.shards[idx].lock().unwrap();
+        if let Some(existing) = cache.peek(key) {
+            if skip_if(existing) {
+                return true;
+            }
+        }
+        cache.put(key.to_string(), new_value);
+        false
+    }
+}
+
+/// Compute a per-shard LRU capacity from a byte budget.
+/// `entry_bytes` is the estimated memory cost of one entry including key String heap + value + node overhead.
+fn shard_cap_from_budget(total_budget_bytes: usize, entry_bytes: usize) -> usize {
+    let total_entries = total_budget_bytes / entry_bytes.max(1);
+    (total_entries / CACHE_SHARDS).max(64)
+}
+
+// ── TelemetryDebouncer ────────────────────────────────────────────────────────
+
 pub struct TelemetryDebouncer {
-    last_counter_write: Mutex<LruCache<String, Instant>>,
+    last_counter_write: ShardedLruCache<Instant>,
     debounce_window: Duration,
     queue_depth: Arc<AtomicUsize>,
     queue_capacity: usize,
     backpressure: BackpressureConfig,
-    last_oper_status_write: Mutex<LruCache<String, Instant>>,
-    // Value-aware debounce for topology/state updates (BGP, LLDP, oper-status, etc.)
-    last_state_write: Mutex<LruCache<String, (Instant, String)>>,
+    last_oper_status_write: ShardedLruCache<Instant>,
+    last_state_write: ShardedLruCache<(Instant, String)>,
     state_debounce_window: Duration,
 }
 
@@ -48,23 +98,50 @@ impl TelemetryDebouncer {
         queue_depth: Arc<AtomicUsize>,
         backpressure: BackpressureConfig,
         queue_capacity: usize,
+        debounce_memory_bytes: usize,
     ) -> Self {
-        // State debounce: 30 s or half the counter window, whichever is smaller.
-        // State changes bypass the window immediately; only same-value repeats are dropped.
         let state_debounce_secs = (debounce_secs / 2).clamp(10, 30);
+
+        // Divide the RAM budget equally across three caches; estimate bytes per entry:
+        //   counter/oper_status: String key ~48b + Instant 16b + LRU node ~64b = ~128b
+        //   state: String key ~48b + (Instant 16b + String value ~48b) + LRU node ~64b = ~256b
+        let budget_per_cache = debounce_memory_bytes / 3;
+        let counter_shard_cap = shard_cap_from_budget(budget_per_cache, 128);
+        let oper_shard_cap = shard_cap_from_budget(budget_per_cache, 128);
+        let state_shard_cap = shard_cap_from_budget(budget_per_cache, 256);
+
+        tracing::debug!(
+            counter_total = counter_shard_cap * CACHE_SHARDS,
+            oper_status_total = oper_shard_cap * CACHE_SHARDS,
+            state_total = state_shard_cap * CACHE_SHARDS,
+            shards = CACHE_SHARDS,
+            budget_mb = debounce_memory_bytes / 1024 / 1024,
+            "ingest debounce cache sizing"
+        );
+
         Self {
-            last_counter_write: Mutex::new(LruCache::new(NonZeroUsize::new(4096).unwrap())),
+            last_counter_write: ShardedLruCache::new(counter_shard_cap),
             debounce_window: Duration::from_secs(debounce_secs),
             queue_depth,
             queue_capacity,
             backpressure,
-            last_oper_status_write: Mutex::new(LruCache::new(NonZeroUsize::new(4096).unwrap())),
-            last_state_write: Mutex::new(LruCache::new(NonZeroUsize::new(16384).unwrap())),
+            last_oper_status_write: ShardedLruCache::new(oper_shard_cap),
+            last_state_write: ShardedLruCache::new(state_shard_cap),
             state_debounce_window: Duration::from_secs(state_debounce_secs),
         }
     }
 
     pub fn should_drop(&self, update: &TelemetryUpdate) -> bool {
+        // T1-1: Structural pre-validation — drop updates with empty target or path.
+        if update.target.is_empty() || update.path.is_empty() {
+            metrics::counter!(
+                "bonsai_ingest_validation_drops_total",
+                "reason" => "empty_target_or_path"
+            )
+            .increment(1);
+            return true;
+        }
+
         let depth = self.queue_depth.load(Ordering::Relaxed);
         let fill_pct = if self.queue_capacity > 0 {
             (depth as u64 * 100) / (self.queue_capacity as u64)
@@ -82,20 +159,22 @@ impl TelemetryDebouncer {
                 let key = format!("{}/{}", update.target, update.path);
                 let value_str = update.value.to_string();
                 let now = Instant::now();
-                let mut cache = self.last_state_write.lock().unwrap();
-                if let Some((last_time, last_value)) = cache.peek(&key) {
-                    if *last_value == value_str
-                        && now.duration_since(*last_time) < self.state_debounce_window
-                    {
-                        metrics::counter!(
-                            "bonsai_ingest_debounce_drops_total",
-                            "reason" => "topology_unchanged"
-                        )
-                        .increment(1);
-                        return true;
-                    }
+                let window = self.state_debounce_window;
+                let dropped = self.last_state_write.check_debounce(
+                    &key,
+                    (now, value_str.clone()),
+                    |(last_time, last_value)| {
+                        *last_value == value_str && now.duration_since(*last_time) < window
+                    },
+                );
+                if dropped {
+                    metrics::counter!(
+                        "bonsai_ingest_debounce_drops_total",
+                        "reason" => "topology_unchanged"
+                    )
+                    .increment(1);
+                    return true;
                 }
-                cache.put(key, (now, value_str));
             }
         }
 
@@ -109,29 +188,28 @@ impl TelemetryDebouncer {
                 if !self.debounce_window.is_zero() {
                     let key = format!("{}:{}", update.target, if_name);
                     let now = Instant::now();
-                    let mut cache = self.last_counter_write.lock().unwrap();
-                    let skip = cache
-                        .peek(&key)
-                        .is_some_and(|t| now.duration_since(*t) < self.debounce_window);
-                    if skip {
+                    let window = self.debounce_window;
+                    if self.last_counter_write.check_debounce(
+                        &key,
+                        now,
+                        |t| now.duration_since(*t) < window,
+                    ) {
                         return true;
                     }
-                    cache.put(key, now);
                 }
             }
             TelemetryEvent::InterfaceOperStatus { if_name, .. } => {
                 if fill_pct >= self.backpressure.level_2_pct {
                     let key = format!("{}:{}", update.target, if_name);
                     let now = Instant::now();
-                    let mut cache = self.last_oper_status_write.lock().unwrap();
-                    let skip = cache
-                        .peek(&key)
-                        .is_some_and(|t| now.duration_since(*t) < Duration::from_secs(6));
-                    if skip {
+                    if self.last_oper_status_write.check_debounce(
+                        &key,
+                        now,
+                        |t| now.duration_since(*t) < Duration::from_secs(6),
+                    ) {
                         metrics::counter!("bonsai_ingest_backpressure_drops_total", "reason" => "level_2_oper_status").increment(1);
                         return true;
                     }
-                    cache.put(key, now);
                 }
             }
             _ => {}
@@ -464,7 +542,7 @@ async fn queue_bus_updates(
     let (sub, mut rx) = crate::event_bus::MpscSubscriber::new(
         "collector_forwarder",
         4096,
-        crate::event_bus::OverflowPolicy::DropOldest,
+        crate::event_bus::OverflowPolicy::DropNewest,
     );
     bus.add_subscriber(sub).await;
     
@@ -486,7 +564,7 @@ async fn queue_bus_updates(
 }
 
 async fn queue_bus_updates_debounced(
-    rx: &mut tokio::sync::mpsc::Receiver<TelemetryUpdate>,
+    rx: &mut tokio::sync::mpsc::Receiver<std::sync::Arc<TelemetryUpdate>>,
     collector_id: &str,
     queue: Arc<CollectorQueue>,
     filter_config: CollectorFilterConfig,
@@ -526,7 +604,7 @@ async fn queue_bus_updates_debounced(
 }
 
 async fn queue_bus_updates_summary(
-    rx: &mut tokio::sync::mpsc::Receiver<TelemetryUpdate>,
+    rx: &mut tokio::sync::mpsc::Receiver<std::sync::Arc<TelemetryUpdate>>,
     collector_id: &str,
     queue: Arc<CollectorQueue>,
     filter_config: CollectorFilterConfig,
@@ -554,8 +632,8 @@ async fn queue_bus_updates_summary(
                         let classified = update.classify();
                         if let TelemetryEvent::InterfaceStats { .. } = classified {
                             // Counter update: feed the summarizer.
-                            if let Some(summary) = summarizer.observe(&update) {
-                                let proto = summary_to_ingest_update(collector_id, Some(&update), summary)?;
+                            if let Some(summary) = summarizer.observe(&*update) {
+                                let proto = summary_to_ingest_update(collector_id, Some(&*update), summary)?;
                                 queue.append(proto, collector_id)?;
                                 metrics::counter!("bonsai_summaries_emitted_total", "collector_id" => collector_id.to_string()).increment(1);
                             }

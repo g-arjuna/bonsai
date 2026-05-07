@@ -321,10 +321,10 @@ impl OutputAdapter for StubAdapter {
         let (sub, mut rx) = crate::event_bus::MpscSubscriber::new(
             &self.name,
             1024,
-            crate::event_bus::OverflowPolicy::DropOldest,
+            crate::event_bus::OverflowPolicy::DropNewest,
         );
         bus.add_subscriber(sub).await;
-        
+
         let mut count = 0usize;
         loop {
             tokio::select! {

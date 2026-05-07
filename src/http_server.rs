@@ -186,6 +186,10 @@ struct OperationsResponse {
     // Memory health (T1-4)
     memory_budget_bytes: u64,
     memory_rss_pct_of_budget: f64,
+    // Counter mode (T1-8 / C-9) — operational visibility of ingest mode
+    counter_mode: String,
+    counter_window_secs: u64,
+    counter_debounce_secs: u64,
 }
 
 const RSS_BUDGET_BYTES: u64 = 1_610_612_736; // 1.5 GiB
@@ -558,6 +562,10 @@ pub struct AppState {
     pub archive_path: String,
     pub graph_path: String,
     pub storage_config: StorageConfig,
+    /// Counter ingest mode for operations visibility (C-9 / T1-8).
+    pub counter_mode: String,
+    pub counter_window_secs: u64,
+    pub counter_debounce_secs: u64,
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -579,6 +587,9 @@ pub fn router(
     archive_path: String,
     graph_path: String,
     storage_config: StorageConfig,
+    counter_mode: String,
+    counter_window_secs: u64,
+    counter_debounce_secs: u64,
 ) -> Router {
     let state = AppState {
         store,
@@ -596,6 +607,9 @@ pub fn router(
         archive_path,
         graph_path,
         storage_config,
+        counter_mode,
+        counter_window_secs,
+        counter_debounce_secs,
     };
 
     // Serve the Svelte SPA from ui/dist/. Fall back to index.html so
@@ -1776,6 +1790,9 @@ async fn operations_handler(
                 0.0
             }
         },
+        counter_mode: state.counter_mode.clone(),
+        counter_window_secs: state.counter_window_secs,
+        counter_debounce_secs: state.counter_debounce_secs,
     }))
 }
 

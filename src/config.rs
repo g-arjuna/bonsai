@@ -36,8 +36,52 @@ pub struct Config {
     #[serde(default)]
     pub remediation: RemediationConfig,
     #[serde(default)]
+    pub logging: LoggingConfig,
+    #[serde(default)]
     pub target: Vec<TargetConfig>,
 }
+
+// ── Logging ───────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct LoggingConfig {
+    /// Path for the rotating log file. Disabled (stderr only) when empty. Default: "".
+    #[serde(default)]
+    pub file_path: String,
+    /// Rotation period: "daily" | "hourly" | "never". Default: "daily".
+    #[serde(default = "default_log_rotation")]
+    pub rotation: String,
+    /// Number of days of rotated files to retain. Default: 7.
+    #[serde(default = "default_log_retention_days")]
+    pub retention_days: u32,
+    /// Log level for stderr and file appender. Default: "info".
+    #[serde(default = "default_log_level")]
+    pub level: String,
+    /// Minimum disk free bytes at log file path required to start. Default: 5 GiB (0 = skip).
+    #[serde(default = "default_log_min_free_bytes")]
+    pub min_free_bytes: u64,
+    /// Per-module level overrides, e.g. {"bonsai::ingest" = "debug"}.
+    #[serde(default)]
+    pub targets: HashMap<String, String>,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            file_path: String::new(),
+            rotation: default_log_rotation(),
+            retention_days: default_log_retention_days(),
+            level: default_log_level(),
+            min_free_bytes: default_log_min_free_bytes(),
+            targets: HashMap::new(),
+        }
+    }
+}
+
+fn default_log_rotation() -> String { "daily".to_string() }
+fn default_log_retention_days() -> u32 { 7 }
+fn default_log_level() -> String { "info".to_string() }
+fn default_log_min_free_bytes() -> u64 { 5 * 1024 * 1024 * 1024 }
 
 // ── Remediation ───────────────────────────────────────────────────────────────
 
@@ -385,6 +429,10 @@ pub struct IngestConfig {
     pub counter_debounce_secs: u64,
     #[serde(default)]
     pub backpressure: BackpressureConfig,
+    /// Total RAM budget for the three ingest debounce LRU caches combined. Default: 16 MiB.
+    /// Caps are computed as (memory_bytes / 3) / per_entry_size_estimate.
+    #[serde(default = "default_debounce_memory_bytes")]
+    pub debounce_memory_bytes: usize,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -420,8 +468,13 @@ impl Default for IngestConfig {
         Self {
             counter_debounce_secs: default_debounce_secs(),
             backpressure: BackpressureConfig::default(),
+            debounce_memory_bytes: default_debounce_memory_bytes(),
         }
     }
+}
+
+fn default_debounce_memory_bytes() -> usize {
+    16 * 1024 * 1024 // 16 MiB
 }
 
 #[derive(Deserialize)]

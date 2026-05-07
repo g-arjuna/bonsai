@@ -130,7 +130,7 @@ impl OutputAdapter for PrometheusRemoteWriteAdapter {
         let (sub, mut rx) = crate::event_bus::MpscSubscriber::new(
             &self.config.name,
             1024,
-            crate::event_bus::OverflowPolicy::DropOldest,
+            crate::event_bus::OverflowPolicy::DropNewest,
         );
         bus.add_subscriber(sub).await;
 
@@ -146,7 +146,7 @@ impl OutputAdapter for PrometheusRemoteWriteAdapter {
                             let base_labels = base_labels_for(&update.target, &update.hostname, &update.vendor, &job, &update.role, &update.site);
                             extract_metrics(&update.path, &update.value, ts_ms, base_labels, &mut buffer);
                         }
-                        None => break,
+                        None => break, // channel closed
                     }
                 }
                 _ = flush_interval.tick() => {

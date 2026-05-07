@@ -75,13 +75,11 @@ pub async fn run_archiver(
     writer_max_idle_secs: u64,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
-    let (sub, mut rx) = crate::event_bus::MpscSubscriber::new(
-        "archive",
-        4096,
-        crate::event_bus::OverflowPolicy::DropOldest,
-    );
+    // BroadcastSubscriber gives true DropOldest: when the archive falls behind,
+    // oldest telemetry is silently overwritten rather than stalling the bus.
+    let (sub, mut rx) = crate::event_bus::BroadcastSubscriber::new("archive", 4096);
     bus.add_subscriber(sub).await;
-    
+
     let mut buffer: Vec<TelemetryUpdate> = Vec::with_capacity(max_batch_rows);
     let mut flush_timer = tokio::time::interval(flush_interval);
     flush_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -115,7 +113,9 @@ pub async fn run_archiver(
                 break;
             }
             recv = rx.recv() => match recv {
-                Some(update) => {
+                Ok(arc_update) => {
+                    // Arc::unwrap_or_clone: free if archive is the sole holder, clone otherwise.
+                    let update = Arc::unwrap_or_clone(arc_update);
                     buffer.push(update);
                     record_archive_lag(&buffer);
                     if buffer.len() >= max_batch_rows {
@@ -123,7 +123,14 @@ pub async fn run_archiver(
                         record_archive_lag(&buffer);
                     }
                 }
-                None => {
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    // DropOldest in action: n messages were overwritten because archive was slow.
+                    metrics::counter!("bonsai_archive_drops_total", "reason" => "lagged")
+                        .increment(n);
+                    warn!(dropped = n, "archive lagged — oldest telemetry dropped");
+                    // Continue reading; the receiver is still valid after a lag.
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     if !buffer.is_empty() {
                         flush_buffer(std::mem::take(&mut buffer), Arc::clone(&writer)).await?;
                         record_archive_lag(&buffer);

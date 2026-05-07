@@ -1618,3 +1618,66 @@ healthcheck until Compose exists.
 **API surface**: `GET /api/environments`, `POST /api/environments` (create), `POST /api/environments/update`, `POST /api/environments/remove`, `POST /api/environments/assign-site`. Setup detection: `GET /api/setup/status`.
 
 **First-run detection**: `setup_status_handler` returns `is_first_run: true` when no non-default environments exist, no credential aliases are configured, and no devices are onboarded. The UI routes to `/setup` on this signal.
+
+---
+
+## 2026-05-07 — Bv4 Sprint 1: Arc<TelemetryUpdate> through the bus (C-4)
+
+**Decision**: Wrap `TelemetryUpdate` in `Arc<TelemetryUpdate>` at the point of `InProcessBus::publish()`. All subscribers receive `Arc<TelemetryUpdate>`; the router clones the Arc pointer (8 bytes) rather than the full struct per subscriber.
+
+**Rationale**: At 6 subscribers × 256-update batches × ~1-5 KB per update, the Bv3 code allocated 1.5–7.5 MB of struct copies per flush. Arc clone eliminates per-subscriber heap allocation. Subscribers that need ownership call `Arc::unwrap_or_clone()` — free if the Arc is uniquely held, one clone otherwise.
+
+**Alternatives considered**: Keeping `TelemetryUpdate` unboxed and accepting the clone cost was acceptable at 12-node scale but becomes a wall at 200+ devices.
+
+---
+
+## 2026-05-07 — Bv4 Sprint 1: Remove dual-bus legacy_tx (C-2)
+
+**Decision**: Deleted `legacy_tx: broadcast::Sender<TelemetryUpdate>` from `InProcessBus`. All six subscriber sites (graph_writer, archive, subscription_verifier, prometheus adapter, output traits base, ingest forwarder) were already migrated to `MpscSubscriber` in Bv3. The dual-send was pure overhead.
+
+**Rationale**: The dual-bus pattern was a backward-compat shim. With all callers verified on the router path, keeping it added one broadcast channel's worth of memory and one clone + channel send per publish for zero benefit.
+
+---
+
+## 2026-05-07 — Bv4 Sprint 1: BroadcastSubscriber for DropOldest (C-3)
+
+**Decision**: Implemented `BroadcastSubscriber` backed by `tokio::sync::broadcast`. The archive consumer uses this subscriber. `MpscSubscriber` now only supports `DropNewest` and `BlockProducer`; `DropOldest` requires `BroadcastSubscriber`.
+
+**Rationale**: `mpsc` cannot drop the oldest queued message without a deque wrapper. `broadcast` naturally supports lag-tolerance: when a slow receiver falls behind by more than capacity, the oldest slots are overwritten. This is exactly the right semantic for the archive — recent telemetry is more valuable than old telemetry when the writer is slow.
+
+**Alternatives considered**: (a) Deque-backed mpsc wrapper — more complex, no existing crate with LRU-style mpsc. (b) Documenting DropOldest as unsupported and switching archive to DropNewest — operationally surprising, operators expect archive to prioritise recent data.
+
+---
+
+## 2026-05-07 — Bv4 Sprint 1: arc_swap for lock-free subscriber list (C-5)
+
+**Decision**: Replaced `Arc<RwLock<Vec<Arc<dyn BusSubscriber>>>>` with `Arc<ArcSwap<Vec<Arc<dyn BusSubscriber>>>>`. The router's read path (`subs.load()`) is now lock-free. `add_subscriber` uses `rcu()` (read-copy-update) — clones the Vec, appends, swaps atomically. Subscribers are added at startup and never removed during steady state.
+
+**Rationale**: At 10K+ updates/sec, the RwLock acquisition added measurable overhead. ArcSwap read is a single atomic load (no lock, no cache-line contention). Write (add_subscriber) is rare and pays the Vec clone cost, which is acceptable.
+
+---
+
+## 2026-05-07 — Bv4 Sprint 1: Sharded ingest debounce caches (C-6/C-7)
+
+**Decision**: Replaced three `Mutex<LruCache>` in `TelemetryDebouncer` with 16-shard `ShardedLruCache<V>`. Shard selection by `DefaultHasher(key) % 16`. Per-shard capacity computed from configurable `[ingest] debounce_memory_bytes` (default 16 MiB) divided across three caches and 16 shards.
+
+**Rationale (C-6)**: Single Mutex becomes a serialisation point at 200+ devices × 50 interfaces = 10K+ updates/sec. 16 shards spread contention by 16x at the cost of 16 lock objects.
+
+**Rationale (C-7)**: Hardcoded 4096/16384 caps are insufficient at 1000-device scale (50K unique interface keys). RAM-based caps scale with operator hardware. Default 16 MiB yields ~43K counter entries and ~21K state entries — 10x the prior limit at the same memory cost.
+
+---
+
+## 2026-05-07 — Bv4 Sprint 1: write_batch always-COMMIT (C-1)
+
+**Decision**: Removed the all-or-nothing ROLLBACK from `write_batch`. Individual update failures are logged as warnings and counted by `bonsai_graph_write_errors_total` metric; the batch always COMMITS the successful writes.
+
+**Rationale**: One malformed gNMI update from buggy device firmware poisoned 255 good updates in Bv3. At 1000-device scale with diverse firmware, every batch would roll back. The correct fix is to reject malformed updates early (structural pre-validation added in `TelemetryDebouncer::should_drop`) and treat individual write errors as diagnostic events, not transaction failures.
+
+---
+
+## 2026-05-07 — Bv4 Sprint 1: File-rotated logging (C-8 / T2-1/T2-2/T2-3/T2-4)
+
+**Decision**: Added `[logging]` config section. When `file_path` is set, bonsai uses `tracing_appender::RollingFileAppender` with configurable daily rotation and N-day retention (default 7). Per-module level overrides via `[logging.targets]` table. Pre-flight disk space check at startup (`min_free_bytes`, default 5 GiB) refuses to start on near-full disk. Log volume counters (`bonsai_log_lines_total{level}`) via a custom tracing Layer.
+
+**Rationale**: At debug level on a 12-node lab, ~500 MB–2 GB/day fills a 30 GB cloud VM disk in 15 days. The disk-fill crash mode is now engineered out. Per-module overrides avoid flooding logs when debugging one subsystem. The pre-flight check prevents silent failure modes where the log write itself errors.
+

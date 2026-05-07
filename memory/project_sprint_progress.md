@@ -1,8 +1,37 @@
 ---
 name: Sprint Progress
-description: Backlog sprint completion status — v8 through Bv1 sprint progress
+description: Backlog sprint completion status — v8 through Bv4 sprint progress
 type: project
 ---
+
+## Backlog Bv4 (current — supersedes Bv3)
+
+**Bv4 Sprint 1 — Architectural cleanup + logging — COMPLETE 2026-05-07**
+
+All 12 items from the execution order landed and compile clean (`cargo build --release` ✅).
+
+| Task | What | Files |
+|---|---|---|
+| T2-1 | `tracing_appender::RollingFileAppender` — daily rotation, N-day retention. `[logging]` config section in `config.rs`. Stderr stays always; file appender gated on `file_path`. | `src/config.rs`, `src/main.rs`, `Cargo.toml` |
+| T2-2 | `[logging.targets]` per-module level overrides parsed into `EnvFilter::add_directive` chain. | `src/config.rs`, `src/main.rs` |
+| T2-3 | `LogVolumeLayer` — custom tracing `Layer` that increments `bonsai_log_lines_total{level}` on every event. | `src/main.rs` |
+| T2-4 | `preflight_disk_check()` — `statvfs` at startup refuses to start if `< min_free_bytes` (default 5 GiB) free. Linux-only, no-op on other platforms. | `src/main.rs` |
+| T1-2 | Deleted `legacy_tx: broadcast::Sender<TelemetryUpdate>` and dual-send from `InProcessBus::publish()`. All 6 callers already on MpscSubscriber (verified by grep). | `src/event_bus.rs` |
+| T1-3 | `BroadcastSubscriber` backed by `tokio::sync::broadcast` — true DropOldest. Archive switched to it. `MpscSubscriber` now only supports DropNewest + BlockProducer. Other DropOldest callers (subscription_verifier, prometheus, traits, ingest forwarder) changed to DropNewest. | `src/event_bus.rs`, `src/archive.rs`, `src/subscription_status.rs`, `src/output/prometheus.rs`, `src/output/traits.rs`, `src/ingest.rs` |
+| T1-4 | `Arc<TelemetryUpdate>` wrapping at `publish()`. Bus internal channel is `mpsc::Sender<Arc<...>>`. `BusSubscriber::handle()` takes `Arc<TelemetryUpdate>`. All subscriber impls updated; graph_writer unwraps via `Arc::unwrap_or_clone`. | `src/event_bus.rs` + all subscriber files |
+| T1-5 | `arc_swap::ArcSwap<Vec<...>>` replaces `Arc<RwLock<Vec<...>>>`. `add_subscriber` uses `rcu()`. `load()` in router is lock-free. | `src/event_bus.rs`, `Cargo.toml` |
+| T1-1 | `write_batch` always COMMITs. Individual errors logged + `bonsai_graph_write_errors_total` incremented, batch continues. Pre-validation in `should_drop`: empty target or path → `bonsai_ingest_validation_drops_total` + return true. | `src/graph/mod.rs`, `src/ingest.rs` |
+| T1-6 | `ShardedLruCache<V>` — 16-shard array of `Mutex<LruCache>`. Shard selection by `DefaultHasher(key) % 16`. Replaces 3 single-mutex caches in `TelemetryDebouncer`. | `src/ingest.rs` |
+| T1-7 | Per-shard capacity from `[ingest] debounce_memory_bytes` (default 16 MiB). Counter entries ~128 B, state entries ~256 B. Total entries: ~43K counter, ~21K state (vs 4K/16K before). `TelemetryDebouncer::new()` takes `debounce_memory_bytes` param. | `src/config.rs`, `src/ingest.rs`, `src/main.rs` |
+| T1-8 | `OperationsResponse` gains `counter_mode`, `counter_window_secs`, `counter_debounce_secs`. `AppState` carries them from `cfg.collector.filter.*`. `router()` signature extended. Operations.svelte shows prominent counter-mode card with description. | `src/http_server.rs`, `src/main.rs`, `ui/src/routes/Operations.svelte` |
+
+6 ADR entries written to `DECISIONS.md`.
+
+**Bv4 Sprint 2 — Chaos data gathering — NEXT**
+- T3-2: Fault catalogue depth (≥18 DC scenarios)
+- T3-1: Always-on chaos schedule (`scripts/chaos_runner.sh`)
+- T3-3: Archive integrity verification (nightly CI)
+- T3-4: Detection rule baseline metrics
 
 ## Backlog Bv1 (Bravo series — current, supersedes v12)
 
