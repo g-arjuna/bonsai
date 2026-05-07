@@ -85,3 +85,14 @@ lab/dc/ca.pem
 # Python test coverage
 python/.coverage
 .coverage
+
+# Historical backlog versions and prompt/tooling artifacts (kept locally, not public)
+BONSAI_CONSOLIDATED_BACKLOG_V*.md
+BONSAI_CONSOLIDATED_BACKLOG_BV1.md
+BONSAI_CONSOLIDATED_BACKLOG_BV2.md
+BONSAI_CONSOLIDATED_BACKLOG_BV2_MOD.md
+BACKLOG_V2_EXECUTION_LOG.md
+CLAUDE_CODE_RESUME_PROMPT.md
+CODEX_HARVEST_RESUME_PROMPT.md
+PHASE4.md
+PHASE5_*.md
