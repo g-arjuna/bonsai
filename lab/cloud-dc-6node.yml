@@ -1,0 +1,93 @@
+name: bonsai-cloud-dc
+
+# Cloud 6-node DC topology — scaled for Oracle Always Free ARM (24 GB RAM)
+#
+# Topology (logical):
+#
+#          [srl-super1]        AS 65100 — iBGP RR
+#               |
+#           e1-1 (10.4.10.0/31)
+#               |
+#          [srl-spine1]        IS-IS + iBGP RR client
+#         /   |    |   \
+#    e1-2  e1-3  e1-4  e1-5
+#       |    |    |    |
+#   [leaf1][leaf2][leaf3][leaf4]   iBGP RR clients, BFD on uplinks
+#
+# Memory budget (Oracle Always Free: 24 GB):
+#   6 × SRL nodes @ 2 GB cap = 12 GB
+#   OS + Docker overhead      = ~3 GB
+#   bonsai + NetBox + Prom    = ~4 GB
+#   Headroom                  = ~5 GB
+#
+# Addressing:
+#   Mgmt:            172.100.104.0/24
+#   Loopbacks:       10.4.0.x/32 (super1=1, spine1=2, leaf1=3..leaf4=6)
+#   super1↔spine1:   10.4.10.0/31
+#   spine1↔leaf1:    10.4.11.0/31
+#   spine1↔leaf2:    10.4.11.2/31
+#   spine1↔leaf3:    10.4.11.4/31
+#   spine1↔leaf4:    10.4.11.6/31
+#
+# Deploy:
+#   sudo containerlab deploy -t lab/cloud-dc-6node.yml
+#
+# Verify:
+#   bash scripts/check_lab.sh --topology cloud-dc
+#
+# Start chaos:
+#   bash scripts/chaos_runner.sh
+
+mgmt:
+  network: bonsai-cloud-dc-mgmt
+  ipv4-subnet: 172.100.104.0/24
+  ipv4-gw: 172.100.104.1
+
+topology:
+  defaults:
+    kind: nokia_srlinux
+    image: ghcr.io/nokia/srlinux:latest
+
+  nodes:
+    # ── Super-spine (sole EVPN route reflector) ───────────────────────────────
+    srl-super1:
+      mgmt-ipv4: 172.100.104.11
+      memory: 2048m
+      startup-config: cloud-dc-6node-configs/srl-super1.cfg
+
+    # ── Spine ─────────────────────────────────────────────────────────────────
+    srl-spine1:
+      mgmt-ipv4: 172.100.104.12
+      memory: 2048m
+      startup-config: cloud-dc-6node-configs/srl-spine1.cfg
+
+    # ── Leaves ────────────────────────────────────────────────────────────────
+    srl-leaf1:
+      mgmt-ipv4: 172.100.104.13
+      memory: 2048m
+      startup-config: cloud-dc-6node-configs/srl-leaf1.cfg
+
+    srl-leaf2:
+      mgmt-ipv4: 172.100.104.14
+      memory: 2048m
+      startup-config: cloud-dc-6node-configs/srl-leaf2.cfg
+
+    srl-leaf3:
+      mgmt-ipv4: 172.100.104.15
+      memory: 2048m
+      startup-config: cloud-dc-6node-configs/srl-leaf3.cfg
+
+    srl-leaf4:
+      mgmt-ipv4: 172.100.104.16
+      memory: 2048m
+      startup-config: cloud-dc-6node-configs/srl-leaf4.cfg
+
+  links:
+    # super1 e1-1 ↔ spine1 e1-1
+    - endpoints: ["srl-super1:e1-1", "srl-spine1:e1-1"]
+
+    # spine1 ↔ leaves (e1-2..e1-5)
+    - endpoints: ["srl-spine1:e1-2", "srl-leaf1:e1-1"]
+    - endpoints: ["srl-spine1:e1-3", "srl-leaf2:e1-1"]
+    - endpoints: ["srl-spine1:e1-4", "srl-leaf3:e1-1"]
+    - endpoints: ["srl-spine1:e1-5", "srl-leaf4:e1-1"]

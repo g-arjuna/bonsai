@@ -69,6 +69,7 @@ _run sudo dnf install -y -q \
     docker docker-compose \
     gcc make pkg-config openssl-devel \
     python3 python3-pip python3-venv \
+    zstd \
     iproute-tc   # tc / netem for chaos injection
 
 # Enable and start Docker
@@ -276,8 +277,11 @@ CHAOS_STATUS=$(bash "$INSTALL_DIR/scripts/chaos_runner.sh" --status 2>/dev/null 
 if echo "$CHAOS_STATUS" | grep -q "RUNNING"; then
     _log "  Chaos runner already running"
 else
-    _log "  Starting chaos runner daemon..."
+    _log "  Starting chaos runner daemon (cloud DC plan)..."
+    # Use cloud-specific plan (bonsai-cloud-dc topology, 10.4.x.x addressing)
+    export PLAN="$INSTALL_DIR/chaos_plans/always_on_cloud_dc.yaml"
     _run bash "$INSTALL_DIR/scripts/chaos_runner.sh"
+    unset PLAN
 fi
 
 # ── Step 11: Daily archive sync cron ─────────────────────────────────────────

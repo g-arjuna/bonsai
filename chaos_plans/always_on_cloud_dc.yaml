@@ -1,0 +1,118 @@
+# chaos_plans/always_on_cloud_dc.yaml
+#
+# Always-on chaos plan for the cloud 6-node DC topology (bonsai-cloud-dc).
+# Mirrors always_on_dc.yaml but uses the cloud topology name and 10.4.x.x
+# addressing derived from lab/cloud-dc-6node-configs/*.cfg
+#
+# Run via deploy.sh (Step 10) which invokes chaos_runner.sh with this plan.
+# Direct usage:
+#   bash scripts/chaos_runner.sh --fg  (picks up from chaos_runner.sh default)
+#   python3 scripts/chaos_runner.py chaos_plans/always_on_cloud_dc.yaml
+
+duration_hours: 0.5
+topology: bonsai-cloud-dc
+injection_interval_seconds: [45, 120]
+
+# BGP peer addresses (loopbacks — iBGP sessions via IS-IS reachability):
+#   srl-super1: 10.4.0.1   srl-spine1: 10.4.0.2
+#   srl-leaf1:  10.4.0.3   srl-leaf2:  10.4.0.4
+#   srl-leaf3:  10.4.0.5   srl-leaf4:  10.4.0.6
+
+faults:
+  # ── Link impairment (netem) ───────────────────────────────────────────────────
+  - type: netem_loss
+    weight: 5
+    targets: [srl-leaf1]
+    interfaces: [e1-1]
+    loss_percent: [2, 20]
+    healing_delay_seconds: [30, 90]
+
+  - type: netem_loss
+    weight: 5
+    targets: [srl-leaf2]
+    interfaces: [e1-1]
+    loss_percent: [2, 20]
+    healing_delay_seconds: [30, 90]
+
+  - type: netem_loss
+    weight: 4
+    targets: [srl-leaf3]
+    interfaces: [e1-1]
+    loss_percent: [2, 20]
+    healing_delay_seconds: [30, 90]
+
+  - type: netem_loss
+    weight: 4
+    targets: [srl-leaf4]
+    interfaces: [e1-1]
+    loss_percent: [2, 20]
+    healing_delay_seconds: [30, 90]
+
+  - type: netem_loss
+    weight: 3
+    targets: [srl-spine1]
+    interfaces: [e1-1, e1-2, e1-3, e1-4, e1-5]
+    loss_percent: [2, 10]
+    healing_delay_seconds: [30, 75]
+
+  # ── Interface shutdown ────────────────────────────────────────────────────────
+  - type: interface_shut
+    weight: 5
+    targets: [srl-leaf1]
+    interfaces: [ethernet-1/1]
+    healing_delay_seconds: [20, 60]
+
+  - type: interface_shut
+    weight: 5
+    targets: [srl-leaf2]
+    interfaces: [ethernet-1/1]
+    healing_delay_seconds: [20, 60]
+
+  - type: interface_shut
+    weight: 4
+    targets: [srl-leaf3]
+    interfaces: [ethernet-1/1]
+    healing_delay_seconds: [20, 60]
+
+  - type: interface_shut
+    weight: 4
+    targets: [srl-leaf4]
+    interfaces: [ethernet-1/1]
+    healing_delay_seconds: [20, 60]
+
+  - type: interface_shut
+    weight: 3
+    targets: [srl-spine1]
+    interfaces: [ethernet-1/1, ethernet-1/2, ethernet-1/3, ethernet-1/4, ethernet-1/5]
+    healing_delay_seconds: [20, 45]
+
+  # ── BGP session faults (loopback-based iBGP to super1 RR) ────────────────────
+  - type: bgp_session_down
+    weight: 5
+    targets: [srl-leaf1]
+    peer_addresses: ["10.4.0.1"]
+    healing_delay_seconds: [20, 60]
+
+  - type: bgp_session_down
+    weight: 5
+    targets: [srl-leaf2]
+    peer_addresses: ["10.4.0.1"]
+    healing_delay_seconds: [20, 60]
+
+  - type: bgp_session_down
+    weight: 4
+    targets: [srl-leaf3]
+    peer_addresses: ["10.4.0.1"]
+    healing_delay_seconds: [20, 60]
+
+  - type: bgp_session_down
+    weight: 4
+    targets: [srl-leaf4]
+    peer_addresses: ["10.4.0.1"]
+    healing_delay_seconds: [20, 60]
+
+  - type: bgp_session_down
+    weight: 3
+    targets: [srl-spine1]
+    peer_addresses: ["10.4.0.1"]
+    healing_delay_seconds: [20, 45]
