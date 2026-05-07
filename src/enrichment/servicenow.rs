@@ -129,7 +129,7 @@ async fn snow_get<T: for<'de> Deserialize<'de>>(
     password: &str,
 ) -> Result<Vec<T>> {
     let url = format!(
-        "{instance_url}/api/now/table/{table}?sysparm_query={query}&sysparm_fields={fields}&sysparm_display_value=all&sysparm_limit=500"
+        "{instance_url}/api/now/table/{table}?sysparm_query={query}&sysparm_fields={fields}&sysparm_display_value=true&sysparm_limit=500"
     );
 
     let mut delay_secs = 1u64;
