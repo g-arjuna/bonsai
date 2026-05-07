@@ -88,6 +88,9 @@ struct LinkJson {
     /// Combined bytes on this link (sum of both interface in_octets + out_octets) — used for
     /// link utilisation heatmap. Zero when counter data is unavailable.
     bytes_total: i64,
+    /// True for MGMT_LINK edges (out-of-band management plane). Hidden by default in the UI.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    is_mgmt: bool,
 }
 
 #[derive(Serialize)]
@@ -759,7 +762,7 @@ async fn topology_handler(
             .map(|row| (read_str(&row[0]), read_str(&row[1]), read_str(&row[2])))
             .collect();
 
-        // LLDP links with interface counter totals for heatmap
+        // LLDP fabric links with interface counter totals for heatmap
         let link_rows = conn
             .query(
                 "MATCH (a:Interface)-[:CONNECTED_TO]->(b:Interface) \
@@ -767,7 +770,7 @@ async fn topology_handler(
                         a.in_octets + a.out_octets + b.in_octets + b.out_octets",
             )
             .map_err(|e| e.to_string())?;
-        let links_raw: Vec<(String, String, String, String, i64)> = link_rows
+        let links_raw: Vec<(String, String, String, String, i64, bool)> = link_rows
             .map(|row| {
                 (
                     read_str(&row[0]),
@@ -775,9 +778,32 @@ async fn topology_handler(
                     read_str(&row[2]),
                     read_str(&row[3]),
                     read_i64(&row[4]),
+                    false,
                 )
             })
             .collect();
+
+        // Management-plane LLDP links (out-of-band; hidden by default in UI)
+        let mgmt_rows = conn
+            .query(
+                "MATCH (a:Interface)-[:MGMT_LINK]->(b:Interface) \
+                 RETURN a.device_address, a.name, b.device_address, b.name",
+            )
+            .map_err(|e| e.to_string())?;
+        let mgmt_raw: Vec<(String, String, String, String, i64, bool)> = mgmt_rows
+            .map(|row| {
+                (
+                    read_str(&row[0]),
+                    read_str(&row[1]),
+                    read_str(&row[2]),
+                    read_str(&row[3]),
+                    0i64,
+                    true,
+                )
+            })
+            .collect();
+        let links_raw: Vec<(String, String, String, String, i64, bool)> =
+            links_raw.into_iter().chain(mgmt_raw).collect();
 
         // BGP neighbors
         let bgp_rows = conn
@@ -861,12 +887,13 @@ async fn topology_handler(
     let links = links_raw
         .into_iter()
         .map(
-            |(src_device, src_iface, dst_device, dst_iface, bytes_total)| LinkJson {
+            |(src_device, src_iface, dst_device, dst_iface, bytes_total, is_mgmt)| LinkJson {
                 src_device,
                 src_iface,
                 dst_device,
                 dst_iface,
                 bytes_total,
+                is_mgmt,
             },
         )
         .collect();

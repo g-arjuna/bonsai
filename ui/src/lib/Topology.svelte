@@ -12,6 +12,7 @@
   // --- Filter state ---
   let layerFilter = $state('combined'); // 'combined' | 'l3' | 'l2'
   let siteFilter  = $state('');         // '' = all, else site name
+  let showMgmt    = $state(false);      // show MGMT_LINK (out-of-band) edges
   let traceSrc    = $state(null);       // address of shift-click source
   let traceDst    = $state(null);       // address of shift-click destination
   let tracePath   = $state(null);       // { hops: [], links: [] }
@@ -65,8 +66,18 @@
 
   const lldpLinks = $derived(
     topology.links.filter(l =>
+      !l.is_mgmt &&
       filteredAddresses.has(l.src_device) && filteredAddresses.has(l.dst_device)
     )
+  );
+
+  const mgmtLinks = $derived(
+    showMgmt
+      ? topology.links.filter(l =>
+          l.is_mgmt &&
+          filteredAddresses.has(l.src_device) && filteredAddresses.has(l.dst_device)
+        )
+      : []
   );
 
   const bgpLinks = $derived(
@@ -86,9 +97,9 @@
   );
 
   const visibleLinks = $derived(
-    layerFilter === 'l3' ? bgpLinks :
-    layerFilter === 'l2' ? lldpLinks :
-    [...lldpLinks, ...bgpLinks]
+    layerFilter === 'l3' ? [...bgpLinks, ...mgmtLinks] :
+    layerFilter === 'l2' ? [...lldpLinks, ...mgmtLinks] :
+    [...lldpLinks, ...bgpLinks, ...mgmtLinks]
   );
 
   async function load() {
@@ -269,6 +280,7 @@
       .attr('stroke', l => {
         const key = [l.source.id ?? l.source, l.target.id ?? l.target].sort().join('|');
         if (tracePath && pathLinkSet.has(key)) return '#58a6ff';
+        if (l.is_mgmt) return '#444d56';
         if (l.isBgp) return l.state === 'established' ? '#3fb950' : '#f85149';
         return linkColor(l);
       })
@@ -276,13 +288,15 @@
         const key = [l.source.id ?? l.source, l.target.id ?? l.target].sort().join('|');
         return tracePath && pathLinkSet.has(key) ? 3 : 1.5;
       })
-      .attr('stroke-dasharray', l => l.isBgp ? '5,3' : null)
-      .attr('opacity', 0.85);
+      .attr('stroke-dasharray', l => l.is_mgmt ? '4,4' : l.isBgp ? '5,3' : null)
+      .attr('opacity', l => l.is_mgmt ? 0.5 : 0.85);
 
     link.append('title').text(l =>
-      l.isBgp
-        ? `BGP  ${l.src_device} ↔ ${l.dst_device}  [${l.state}]`
-        : `${l.src_iface}  ↔  ${l.dst_iface}  (${(l.bytes_total / 1e9).toFixed(2)} GB)`
+      l.is_mgmt
+        ? `MGMT  ${l.src_iface}  ↔  ${l.dst_iface}  (management plane)`
+        : l.isBgp
+          ? `BGP  ${l.src_device} ↔ ${l.dst_device}  [${l.state}]`
+          : `${l.src_iface}  ↔  ${l.dst_iface}  (${(l.bytes_total / 1e9).toFixed(2)} GB)`
     );
 
     // Nodes
@@ -400,6 +414,13 @@
           {/each}
         </select>
       {/if}
+
+      <!-- Mgmt-plane toggle -->
+      <button class="chip {showMgmt ? 'active' : ''}"
+              onclick={() => showMgmt = !showMgmt}
+              title="Show out-of-band management-plane LLDP links as dashed grey lines">
+        Mgmt links
+      </button>
 
       <button class="ghost-btn" onclick={load}>Refresh</button>
     </div>

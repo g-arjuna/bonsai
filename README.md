@@ -99,6 +99,17 @@ Setup details live in `docs/DEVELOPMENT.md`.
 
 ---
 
+## Enrichment Integrations
+
+Bonsai enriches the graph with business context from two sources:
+
+- **NetBox** (local): bring up via `docker compose -f docker/compose-external.yml --profile netbox up -d`. Pre-seeded by `scripts/seed_external.sh`. No account required.
+- **ServiceNow**: use your own Personal Developer Instance (PDI). Get one free at [developer.servicenow.com](https://developer.servicenow.com). Set `SNOW_INSTANCE_URL`, `SNOW_USERNAME`, `SNOW_PASSWORD` in `.env` and run `scripts/seed_external.sh` to populate it with lab device records.
+
+Credentials are stored encrypted in the local credential vault (never in config files). Add them via the UI or the HTTP API after bonsai starts.
+
+---
+
 ## Scope
 
 **In scope:** Data center + service provider topologies · gNMI/OpenConfig only ·
