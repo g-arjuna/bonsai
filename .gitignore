@@ -71,3 +71,17 @@ ui/.vscode/
 # YANG discovery — generated artefacts (large, gitignored by discipline)
 .yang-cache/
 discovered_paths/
+
+# graphify knowledge graph (generated artefact, rebuilt from source)
+graphify-out/
+
+# UI test driver dependencies and generated files
+tests/ui_driver/node_modules/
+tests/ui_driver/package-lock.json
+
+# Lab DC CA cert (generated per clab deployment)
+lab/dc/ca.pem
+
+# Python test coverage
+python/.coverage
+.coverage

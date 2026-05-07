@@ -318,12 +318,18 @@ impl OutputAdapter for StubAdapter {
         audit: OutputAdapterAuditLog,
         mut shutdown: watch::Receiver<bool>,
     ) -> Result<()> {
-        let mut rx = bus.subscribe();
+        let (sub, mut rx) = crate::event_bus::MpscSubscriber::new(
+            &self.name,
+            1024,
+            crate::event_bus::OverflowPolicy::DropOldest,
+        );
+        bus.add_subscriber(sub).await;
+        
         let mut count = 0usize;
         loop {
             tokio::select! {
                 res = rx.recv() => {
-                    if res.is_ok() { count += 1; }
+                    if res.is_some() { count += 1; }
                 }
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() { break; }

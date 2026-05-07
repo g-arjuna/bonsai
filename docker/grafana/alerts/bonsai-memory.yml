@@ -1,0 +1,84 @@
+# Grafana Unified Alerting provisioning — bonsai memory budget rules.
+# These mirror docker/prometheus/alerts/bonsai-memory.yml which is evaluated
+# by Prometheus. Place this file in grafana/provisioning/alerting/ to also
+# manage the alerts from the Grafana UI.
+#
+# Datasource uid "prometheus" matches the default datasource provisioned in
+# docker/grafana/provisioning/datasources/datasources.yml.
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: bonsai_memory
+    folder: Bonsai
+    interval: 1m
+    rules:
+      - uid: bonsai-rss-budget
+        title: Bonsai RSS exceeds 1.5 GiB budget
+        condition: A
+        for: 1m
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 300
+              to: 0
+            model:
+              expr: bonsai_memory_rss_bytes > 1610612736
+              instant: true
+              refId: A
+        noDataState: OK
+        execErrState: Alerting
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bonsai RSS exceeds 1.5 GiB budget"
+          description: >
+            bonsai process RSS is above the 1.5 GiB lab budget.
+            Check write_coordinator_queue_depth and backpressure_drops.
+
+      - uid: bonsai-coord-queue-high
+        title: Bonsai write coordinator queue >75% for 5 min
+        condition: A
+        for: 5m
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              expr: bonsai_write_coordinator_queue_depth / 4096 * 100 > 75
+              instant: true
+              refId: A
+        noDataState: OK
+        execErrState: Alerting
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bonsai write coordinator queue >75% full for 5 min"
+          description: >
+            The write coordinator queue has been above 75% for 5 minutes.
+            Backpressure level-1 drops are active.
+
+      - uid: bonsai-bus-dropping
+        title: Bonsai event bus router dropping messages
+        condition: A
+        for: 0m
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 300
+              to: 0
+            model:
+              expr: increase(bonsai_event_bus_router_drops_total[5m]) > 0
+              instant: true
+              refId: A
+        noDataState: OK
+        execErrState: Alerting
+        labels:
+          severity: warning
+        annotations:
+          summary: "Event bus router dropping messages — investigate subscriber lag"

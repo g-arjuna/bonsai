@@ -22,6 +22,7 @@ use crate::proto::gnmi::{
 use crate::config::SelectedSubscriptionPath;
 use crate::config::TargetConfig;
 use crate::event_bus::InProcessBus;
+use crate::ingest::TelemetryDebouncer;
 use crate::subscription_status::{SubscriptionPathExpectation, SubscriptionPlan};
 use crate::telemetry::TelemetryUpdate;
 
@@ -39,6 +40,7 @@ pub struct GnmiSubscriber {
     ca_cert_pem: Option<Vec<u8>>,
     tls_domain: String,
     bus: Arc<InProcessBus>,
+    debouncer: Option<Arc<TelemetryDebouncer>>,
     subscription_plan_tx: Option<tokio::sync::mpsc::Sender<SubscriptionPlan>>,
     selected_paths: Vec<SelectedSubscriptionPath>,
 }
@@ -56,6 +58,7 @@ impl GnmiSubscriber {
         tls_domain: impl Into<String>,
         ca_cert_pem: Option<Vec<u8>>,
         bus: Arc<InProcessBus>,
+        debouncer: Option<Arc<TelemetryDebouncer>>,
         subscription_plan_tx: Option<tokio::sync::mpsc::Sender<SubscriptionPlan>>,
         selected_paths: Vec<SelectedSubscriptionPath>,
     ) -> Self {
@@ -70,6 +73,7 @@ impl GnmiSubscriber {
             ca_cert_pem,
             tls_domain: tls_domain.into(),
             bus,
+            debouncer,
             subscription_plan_tx,
             selected_paths,
         }
@@ -286,6 +290,11 @@ impl GnmiSubscriber {
                                         path,
                                         value: val,
                                     };
+                                    if let Some(ref d) = self.debouncer {
+                                        if d.should_drop(&msg) {
+                                            continue;
+                                        }
+                                    }
                                     self.bus.publish(msg);
                                 }
                             }
@@ -375,6 +384,7 @@ pub async fn load_ca_cert_pem(target: &TargetConfig) -> Result<Option<Vec<u8>>> 
 pub async fn spawn_subscriber_with_creds(
     target: TargetConfig,
     bus: &std::sync::Arc<InProcessBus>,
+    debouncer: Option<Arc<TelemetryDebouncer>>,
     subscription_plan_tx: Option<&mpsc::Sender<SubscriptionPlan>>,
     subscribers: &mut SubscriberHandleMap,
 ) -> Result<()> {
@@ -401,6 +411,7 @@ pub async fn spawn_subscriber_with_creds(
         target.tls_domain.clone().unwrap_or_default(),
         ca_cert_pem,
         std::sync::Arc::clone(bus),
+        debouncer,
         subscription_plan_tx.cloned(),
         target.selected_paths.clone(),
     );

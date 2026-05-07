@@ -362,8 +362,10 @@ impl GraphEnricher for NetBoxEnricher {
 
         let source = self.config.name.clone();
         let db = store.db();
+        let write_lock = store.write_lock();
 
         let (nodes_touched, edges_created, write_warnings) = tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
             write_to_graph(
                 &db,
                 &nb_devices,

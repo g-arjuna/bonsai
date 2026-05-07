@@ -25,6 +25,7 @@ pub mod store;
 pub mod subscriber;
 pub mod subscription_status;
 pub mod telemetry;
+pub mod write_coordinator;
 
 pub use async_trait;
 pub use async_stream;

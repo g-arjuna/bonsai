@@ -55,7 +55,7 @@ type: project
 - T1-2/T1-3: Memory-budget CI updated to 10-min run / 1.5 GiB budget; resource_contract.md updated.
 
 **v12 Sprint 2 — Always-on infrastructure — COMPLETE 2026-05-03 (commit b5162de)**
-- T0-5: restart:unless-stopped on all services in compose-external.yml + servicenow-mock
+- T0-5: restart:unless-stopped on all services in compose-external.yml
 - T0-6: --reset flag on seed_netbox.py, seed_splunk.py, seed_elastic.py, seed_servicenow_pdi.py
 - T3-2: lab/dc/Makefile + lab/sp/Makefile (up/down/status/reset via containerlab --reconfigure)
 - T3-3: scripts/reset_for_test.sh — canonical pre-test reset (wipes data, restarts bonsai, services stay up)

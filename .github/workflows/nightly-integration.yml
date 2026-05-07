@@ -15,7 +15,7 @@ jobs:
   # ── Python integration tests ───────────────────────────────────────────────
   #
   # Runs the Python test suite with the integration marker enabled.
-  # Requires no external services — uses the mock-servicenow container.
+  # Uses unit mocks for external services (no running containers required).
   python-integration:
     name: Python integration tests
     runs-on: ubuntu-latest

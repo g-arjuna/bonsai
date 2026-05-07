@@ -185,11 +185,23 @@ struct OperationsResponse {
     memory_rss_pct_of_budget: f64,
 }
 
+const RSS_BUDGET_BYTES: u64 = 1_610_612_736; // 1.5 GiB
+const COORDINATOR_QUEUE_BUDGET_PCT: u64 = 75;
+
+#[derive(Serialize)]
+struct BudgetBreach {
+    name: &'static str,
+    current: f64,
+    budget: f64,
+    unit: &'static str,
+}
+
 #[derive(Serialize)]
 struct TestStatusResponse {
     ts_unix: u64,
     memory: memory_profile::MemorySnapshot,
     disk: DiskStatusJson,
+    budget_breaches: Vec<BudgetBreach>,
     external: serde_json::Value,
     driver_results: serde_json::Value,
 }
@@ -1773,6 +1785,24 @@ async fn test_status_handler(
         .unwrap_or_default()
         .as_secs();
 
+    let mut budget_breaches: Vec<BudgetBreach> = Vec::new();
+    if mem.rss_bytes > RSS_BUDGET_BYTES {
+        budget_breaches.push(BudgetBreach {
+            name: "rss_budget",
+            current: mem.rss_bytes as f64,
+            budget: RSS_BUDGET_BYTES as f64,
+            unit: "bytes",
+        });
+    }
+    if mem.write_coordinator_queue_pct >= COORDINATOR_QUEUE_BUDGET_PCT {
+        budget_breaches.push(BudgetBreach {
+            name: "write_coordinator_queue_budget",
+            current: mem.write_coordinator_queue_pct as f64,
+            budget: COORDINATOR_QUEUE_BUDGET_PCT as f64,
+            unit: "percent",
+        });
+    }
+
     Ok(Json(TestStatusResponse {
         ts_unix,
         memory: mem,
@@ -1784,6 +1814,7 @@ async fn test_status_handler(
             graph_max_bytes: disk.graph_max_bytes,
             graph_pct: disk.graph_pct,
         },
+        budget_breaches,
         external,
         driver_results: serde_json::Value::Object(driver_results),
     }))

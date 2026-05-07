@@ -173,51 +173,96 @@
       simLinks.push({ source: l.src_device, target: l.dst_device, ...l });
     }
 
-    // Hierarchical tier assignment for DC Clos fabric:
-    //   tier 0 = super-spines (spine role + "super" in hostname)
-    //   tier 1 = spines
-    //   tier 2 = leaves / unknown
+    // Topology-agnostic tier assignment.
+    // Role map covers DC Clos, SP, campus, and arbitrary topologies.
+    // Unknown roles fall back to fabric-degree percentile.
+    const ROLE_TIER = {
+      'superspine': 0, 'core': 0, 'rr': 0, 'routereflector': 0,
+      'spine': 1, 'p': 1, 'pe': 1, 'border': 1, 'distribution': 1, 'aggregation': 1,
+      'leaf': 2, 'access': 2, 'ce': 2, 'edge': 2,
+    };
+    const TIER_FALLBACK_LABELS = ['Aggregation', 'Distribution', 'Access'];
+
+    // Compute fabric (non-BGP) degree from raw link data before D3 resolves node refs.
+    const fabricDegree = new Map(nodes.map(n => [n.id, 0]));
+    for (const l of links) {
+      if (l.isBgp) continue;
+      fabricDegree.set(l.src_device, (fabricDegree.get(l.src_device) ?? 0) + 1);
+      fabricDegree.set(l.dst_device, (fabricDegree.get(l.dst_device) ?? 0) + 1);
+    }
+    const sortedDegs = [...fabricDegree.values()].sort((a, b) => b - a);
+    const highDegCut = sortedDegs[Math.max(0, Math.floor(sortedDegs.length * 0.25))] ?? 1;
+    const lowDegCut  = sortedDegs[Math.min(sortedDegs.length - 1, Math.floor(sortedDegs.length * 0.75))] ?? 0;
+
     function nodeTier(d) {
-      const role = (d.role || '').toLowerCase();
+      const role = (d.role || '').toLowerCase().replace(/[-_ ]/g, '');
       const hn   = (d.hostname || '').toLowerCase();
-      if (role === 'spine' && hn.includes('super')) return 0;
-      if (role === 'spine') return 1;
-      return 2;
+      // Super-spine heuristic: spine role + "super" in hostname
+      if (role === 'spine' && (hn.includes('super') || hn.startsWith('ss'))) return 0;
+      // Explicit role map
+      if (role in ROLE_TIER) return ROLE_TIER[role];
+      // Degree-based fallback
+      const deg = fabricDegree.get(d.id) ?? 0;
+      return deg >= highDegCut ? 0 : deg <= lowDegCut ? 2 : 1;
     }
 
-    const TIER_Y = [H * 0.14, H * 0.44, H * 0.78];
-    const tierCounts = [0, 0, 0];
-    nodes.forEach(n => { n._tier = nodeTier(n); tierCounts[n._tier]++; });
+    nodes.forEach(n => { n._tier = nodeTier(n); });
 
-    // Pre-seed x positions evenly within each tier so the simulation
-    // converges immediately to a readable layout.
-    const tierOffset = [0, 0, 0];
+    // Map distinct tiers to evenly-spaced Y bands.
+    const usedTiers = [...new Set(nodes.map(n => n._tier))].sort((a, b) => a - b);
+    const tierYMap = new Map(
+      usedTiers.length === 1
+        ? [[usedTiers[0], H * 0.5]]
+        : usedTiers.map((t, i) => [t, H * (0.14 + (0.64 * i) / (usedTiers.length - 1))])
+    );
+
+    // Derive tier labels from the roles present in each tier.
+    function tierLabel(t) {
+      const tierNodes = nodes.filter(n => n._tier === t);
+      const labels = new Set();
+      for (const n of tierNodes) {
+        const role = (n.role || '').toLowerCase();
+        const hn = (n.hostname || '').toLowerCase();
+        if (role === 'spine' && (hn.includes('super') || hn.startsWith('ss'))) {
+          labels.add('Super-Spine');
+        } else if (n.role) {
+          labels.add(n.role.charAt(0).toUpperCase() + n.role.slice(1));
+        }
+      }
+      if (!labels.size) {
+        const idx = usedTiers.indexOf(t);
+        return TIER_FALLBACK_LABELS[Math.min(idx, TIER_FALLBACK_LABELS.length - 1)];
+      }
+      return [...labels].slice(0, 3).join(' / ');
+    }
+
+    // Pre-seed x positions evenly within each tier.
+    const tierCounts = new Map(usedTiers.map(t => [t, nodes.filter(n => n._tier === t).length]));
+    const tierOffset = new Map(usedTiers.map(t => [t, 0]));
     nodes.forEach(n => {
       const t = n._tier;
-      const count = tierCounts[t];
-      tierOffset[t]++;
-      n.x = (W / (count + 1)) * tierOffset[t];
-      n.y = TIER_Y[t];
+      tierOffset.set(t, tierOffset.get(t) + 1);
+      n.x = (W / (tierCounts.get(t) + 1)) * tierOffset.get(t);
+      n.y = tierYMap.get(t);
     });
 
     const sim = d3.forceSimulation(nodes)
       .force('link',      d3.forceLink(simLinks).id(d => d.id).distance(140))
       .force('charge',    d3.forceManyBody().strength(-500))
-      .force('y',         d3.forceY(d => TIER_Y[d._tier]).strength(0.85))
+      .force('y',         d3.forceY(d => tierYMap.get(d._tier) ?? H * 0.5).strength(0.85))
       .force('x',         d3.forceX(W / 2).strength(0.04))
       .force('collision', d3.forceCollide(52));
 
-    // Draw tier rail labels (static — appended before simulation nodes)
-    const TIER_LABELS = ['Super-Spines', 'Spines', 'Leaves'];
-    TIER_LABELS.forEach((label, i) => {
-      if (tierCounts[i] === 0) return;
+    // Draw tier rail labels.
+    for (const t of usedTiers) {
+      if (!tierCounts.get(t)) continue;
       g.append('text')
-        .attr('x', 6).attr('y', TIER_Y[i])
+        .attr('x', 6).attr('y', tierYMap.get(t))
         .attr('dominant-baseline', 'middle')
         .attr('font-size', 9).attr('fill', '#444d56')
         .attr('pointer-events', 'none')
-        .text(label);
-    });
+        .text(tierLabel(t));
+    }
 
     // Links
     const link = g.append('g').selectAll('line').data(simLinks).join('line')

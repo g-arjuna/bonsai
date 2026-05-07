@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
-use crate::{archive, event_bus::InProcessBus};
+use crate::{archive, event_bus::InProcessBus, write_coordinator};
 
 static LAST_RSS_BYTES: AtomicU64 = AtomicU64::new(0);
 
@@ -17,6 +17,9 @@ pub struct MemorySnapshot {
     pub archive_buffer_rows: u64,
     pub archive_lag_millis: i64,
     pub archive_last_compression_ppm: u64,
+    pub write_coordinator_queue_depth: u64,
+    pub write_coordinator_queue_capacity: u64,
+    pub write_coordinator_queue_pct: u64,
 }
 
 /// Read resident set size from /proc/self/status (Linux-only; returns 0 elsewhere).
@@ -42,6 +45,7 @@ pub fn snapshot() -> MemorySnapshot {
     LAST_RSS_BYTES.store(rss, Ordering::Relaxed);
     let bus = InProcessBus::snapshot();
     let arch = archive::snapshot();
+    let coord = write_coordinator::snapshot();
 
     metrics::gauge!("bonsai_memory_rss_bytes").set(rss as f64);
 
@@ -52,6 +56,9 @@ pub fn snapshot() -> MemorySnapshot {
         archive_buffer_rows: arch.buffer_rows,
         archive_lag_millis: arch.lag_millis,
         archive_last_compression_ppm: arch.last_compression_ppm,
+        write_coordinator_queue_depth: coord.queue_depth as u64,
+        write_coordinator_queue_capacity: coord.queue_capacity as u64,
+        write_coordinator_queue_pct: coord.queue_pct,
     }
 }
 

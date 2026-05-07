@@ -70,14 +70,17 @@ This document defines what a compliant enricher implementation must and must not
 
 ## Lab compliance checklist
 
-| Check | NetBox mock (compose-netbox.yml) | ServiceNow mock (mock-servicenow/) |
+| Check | NetBox (compose-netbox.yml) | ServiceNow (your PDI) |
 |---|---|---|
-| Responds to health probe | `GET /api/` → 200 | `GET /health` → 200 |
+| Responds to health probe | `GET /api/` → 200 | `GET /api/now/table/cmdb_ci_netgear` → 200 |
 | Returns device records | `GET /api/dcim/devices/` | `GET /api/now/table/cmdb_ci_netgear` |
 | Returns service records | n/a | `GET /api/now/table/cmdb_ci_business_service` |
 | Returns relationships | n/a | `GET /api/now/table/cmdb_rel_ci` |
-| Seed matches topology | `scripts/seed_netbox.py` reads `lab/seed/topology.yaml` | `docker/mock-servicenow/seed.yaml` mirrors topology |
-| Token auth | `Authorization: Token <alias>` | `POST /oauth_token.do` → bearer |
+| Seed matches topology | `scripts/seed_netbox.py` reads `lab/seed/topology.yaml` | `scripts/seed_servicenow_pdi.py` seeds your PDI |
+| Auth | `Authorization: Token <alias>` | Basic auth → `SNOW_USERNAME` / `SNOW_PASSWORD` |
 
-Run `./scripts/seed_lab.sh --all` to seed NetBox and verify the ServiceNow mock before
-running enrichment integration tests.
+**ServiceNow**: use your own Personal Developer Instance (PDI) from [developer.servicenow.com](https://developer.servicenow.com).
+Set `SNOW_INSTANCE_URL`, `SNOW_USERNAME`, `SNOW_PASSWORD` in your environment and run `scripts/seed_servicenow_pdi.py` to populate it.
+
+Run `./scripts/seed_lab.sh --netbox` to seed NetBox before running enrichment integration tests.
+ServiceNow enricher integration tests require a live PDI — mark them with `@pytest.mark.pdi` and run with `pytest -m pdi`.

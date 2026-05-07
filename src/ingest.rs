@@ -1,13 +1,16 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use lru::LruCache;
 use prost::Message;
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 use tonic::Request;
 use tonic::codec::CompressionEncoding;
@@ -20,11 +23,123 @@ use crate::api::pb::{
 };
 use crate::config::{
     CollectorConfig, CollectorFilterConfig, CollectorQueueConfig, RuntimeConfig, RuntimeTlsConfig,
+    BackpressureConfig,
 };
 use crate::counter_summarizer::CounterSummarizer;
 use crate::event_bus::InProcessBus;
 use crate::subscription_status::SubscriptionPlan;
 use crate::telemetry::{TelemetryEvent, TelemetryUpdate};
+
+pub struct TelemetryDebouncer {
+    last_counter_write: Mutex<LruCache<String, Instant>>,
+    debounce_window: Duration,
+    queue_depth: Arc<AtomicUsize>,
+    queue_capacity: usize,
+    backpressure: BackpressureConfig,
+    last_oper_status_write: Mutex<LruCache<String, Instant>>,
+    // Value-aware debounce for topology/state updates (BGP, LLDP, oper-status, etc.)
+    last_state_write: Mutex<LruCache<String, (Instant, String)>>,
+    state_debounce_window: Duration,
+}
+
+impl TelemetryDebouncer {
+    pub fn new(
+        debounce_secs: u64,
+        queue_depth: Arc<AtomicUsize>,
+        backpressure: BackpressureConfig,
+        queue_capacity: usize,
+    ) -> Self {
+        // State debounce: 30 s or half the counter window, whichever is smaller.
+        // State changes bypass the window immediately; only same-value repeats are dropped.
+        let state_debounce_secs = (debounce_secs / 2).clamp(10, 30);
+        Self {
+            last_counter_write: Mutex::new(LruCache::new(NonZeroUsize::new(4096).unwrap())),
+            debounce_window: Duration::from_secs(debounce_secs),
+            queue_depth,
+            queue_capacity,
+            backpressure,
+            last_oper_status_write: Mutex::new(LruCache::new(NonZeroUsize::new(4096).unwrap())),
+            last_state_write: Mutex::new(LruCache::new(NonZeroUsize::new(16384).unwrap())),
+            state_debounce_window: Duration::from_secs(state_debounce_secs),
+        }
+    }
+
+    pub fn should_drop(&self, update: &TelemetryUpdate) -> bool {
+        let depth = self.queue_depth.load(Ordering::Relaxed);
+        let fill_pct = if self.queue_capacity > 0 {
+            (depth as u64 * 100) / (self.queue_capacity as u64)
+        } else {
+            0
+        };
+
+        let classified = update.classify();
+
+        // Value-aware debounce: drop non-counter updates whose value hasn't changed within the window.
+        // State changes (different value) always pass through immediately.
+        match &classified {
+            TelemetryEvent::InterfaceStats { .. } | TelemetryEvent::Ignored => {}
+            _ => {
+                let key = format!("{}/{}", update.target, update.path);
+                let value_str = update.value.to_string();
+                let now = Instant::now();
+                let mut cache = self.last_state_write.lock().unwrap();
+                if let Some((last_time, last_value)) = cache.peek(&key) {
+                    if *last_value == value_str
+                        && now.duration_since(*last_time) < self.state_debounce_window
+                    {
+                        metrics::counter!(
+                            "bonsai_ingest_debounce_drops_total",
+                            "reason" => "topology_unchanged"
+                        )
+                        .increment(1);
+                        return true;
+                    }
+                }
+                cache.put(key, (now, value_str));
+            }
+        }
+
+        match &classified {
+            TelemetryEvent::InterfaceStats { if_name } => {
+                if fill_pct >= self.backpressure.level_1_pct {
+                    metrics::counter!("bonsai_ingest_backpressure_drops_total", "reason" => "level_1_counter").increment(1);
+                    return true;
+                }
+
+                if !self.debounce_window.is_zero() {
+                    let key = format!("{}:{}", update.target, if_name);
+                    let now = Instant::now();
+                    let mut cache = self.last_counter_write.lock().unwrap();
+                    let skip = cache
+                        .peek(&key)
+                        .is_some_and(|t| now.duration_since(*t) < self.debounce_window);
+                    if skip {
+                        return true;
+                    }
+                    cache.put(key, now);
+                }
+            }
+            TelemetryEvent::InterfaceOperStatus { if_name, .. } => {
+                if fill_pct >= self.backpressure.level_2_pct {
+                    let key = format!("{}:{}", update.target, if_name);
+                    let now = Instant::now();
+                    let mut cache = self.last_oper_status_write.lock().unwrap();
+                    let skip = cache
+                        .peek(&key)
+                        .is_some_and(|t| now.duration_since(*t) < Duration::from_secs(6));
+                    if skip {
+                        metrics::counter!("bonsai_ingest_backpressure_drops_total", "reason" => "level_2_oper_status").increment(1);
+                        return true;
+                    }
+                    cache.put(key, now);
+                }
+            }
+            _ => {}
+        }
+
+        false
+    }
+}
 
 const FORWARDER_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 const COMPRESSION_STATS_INTERVAL: u64 = 1_000;
@@ -346,7 +461,13 @@ async fn queue_bus_updates(
     filter_config: CollectorFilterConfig,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
-    let mut rx = bus.subscribe();
+    let (sub, mut rx) = crate::event_bus::MpscSubscriber::new(
+        "collector_forwarder",
+        4096,
+        crate::event_bus::OverflowPolicy::DropOldest,
+    );
+    bus.add_subscriber(sub).await;
+    
     let mode = filter_config.counter_forward_mode.to_lowercase();
 
     if mode == "summary" {
@@ -365,7 +486,7 @@ async fn queue_bus_updates(
 }
 
 async fn queue_bus_updates_debounced(
-    rx: &mut broadcast::Receiver<TelemetryUpdate>,
+    rx: &mut tokio::sync::mpsc::Receiver<TelemetryUpdate>,
     collector_id: &str,
     queue: Arc<CollectorQueue>,
     filter_config: CollectorFilterConfig,
@@ -382,7 +503,7 @@ async fn queue_bus_updates_debounced(
         };
 
         match update {
-            Ok(update) => {
+            Some(update) => {
                 if mode != "raw" {
                     let classified = update.classify();
                     if let TelemetryEvent::InterfaceStats { if_name } = classified {
@@ -399,16 +520,13 @@ async fn queue_bus_updates_debounced(
                 let proto = telemetry_to_ingest_update(collector_id, &update)?;
                 queue.append(proto, collector_id)?;
             }
-            Err(broadcast::error::RecvError::Lagged(dropped)) => {
-                warn!(dropped, "collector forwarder lagged on local event bus");
-            }
-            Err(broadcast::error::RecvError::Closed) => return Ok(()),
+            None => return Ok(()),
         }
     }
 }
 
 async fn queue_bus_updates_summary(
-    rx: &mut broadcast::Receiver<TelemetryUpdate>,
+    rx: &mut tokio::sync::mpsc::Receiver<TelemetryUpdate>,
     collector_id: &str,
     queue: Arc<CollectorQueue>,
     filter_config: CollectorFilterConfig,
@@ -432,7 +550,7 @@ async fn queue_bus_updates_summary(
             }
             received = rx.recv() => {
                 match received {
-                    Ok(update) => {
+                    Some(update) => {
                         let classified = update.classify();
                         if let TelemetryEvent::InterfaceStats { .. } = classified {
                             // Counter update: feed the summarizer.
@@ -448,10 +566,7 @@ async fn queue_bus_updates_summary(
                             queue.append(proto, collector_id)?;
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(dropped)) => {
-                        warn!(dropped, "collector forwarder lagged on local event bus");
-                    }
-                    Err(broadcast::error::RecvError::Closed) => return Ok(()),
+                    None => return Ok(()),
                 }
             }
         }
@@ -1358,6 +1473,7 @@ async fn handle_assignment_update(
         if let Err(error) = crate::subscriber::spawn_subscriber_with_creds(
             target,
             bus,
+            None, // debouncer is local to core
             subscription_plan_tx.as_ref(),
             subscribers,
         )

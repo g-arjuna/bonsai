@@ -40,7 +40,13 @@ pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
     mut plan_rx: tokio::sync::mpsc::Receiver<SubscriptionPlan>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
-    let mut telemetry_rx = bus.subscribe();
+    let (sub, mut telemetry_rx) = crate::event_bus::MpscSubscriber::new(
+        "subscription_verifier",
+        1024,
+        crate::event_bus::OverflowPolicy::DropOldest,
+    );
+    bus.add_subscriber(sub).await;
+
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     let mut tracked: HashMap<(String, String), TrackedPath> = HashMap::new();
 
@@ -59,11 +65,8 @@ pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
             }
             event = telemetry_rx.recv() => {
                 match event {
-                    Ok(update) => observe_update(&store, &mut tracked, update).await,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        warn!(skipped, "subscription verifier lagged on telemetry bus");
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Some(update) => observe_update(&store, &mut tracked, update).await,
+                    None => break,
                 }
             }
             _ = interval.tick() => {

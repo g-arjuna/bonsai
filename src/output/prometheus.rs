@@ -127,7 +127,13 @@ impl OutputAdapter for PrometheusRemoteWriteAdapter {
         let mut flush_interval = tokio::time::interval(Duration::from_secs(flush_secs));
         flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        let mut rx = bus.subscribe();
+        let (sub, mut rx) = crate::event_bus::MpscSubscriber::new(
+            &self.config.name,
+            1024,
+            crate::event_bus::OverflowPolicy::DropOldest,
+        );
+        bus.add_subscriber(sub).await;
+
         let mut buffer: Vec<MetricPoint> = Vec::new();
         let job = self.job_label();
 
@@ -135,15 +141,12 @@ impl OutputAdapter for PrometheusRemoteWriteAdapter {
             tokio::select! {
                 res = rx.recv() => {
                     match res {
-                        Ok(update) => {
+                        Some(update) => {
                             let ts_ms = update.timestamp_ns / 1_000_000;
                             let base_labels = base_labels_for(&update.target, &update.hostname, &update.vendor, &job, &update.role, &update.site);
                             extract_metrics(&update.path, &update.value, ts_ms, base_labels, &mut buffer);
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            warn!(adapter = %self.config.name, skipped = n, "bus lagged — metrics dropped");
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        None => break,
                     }
                 }
                 _ = flush_interval.tick() => {
@@ -180,6 +183,7 @@ impl OutputAdapter for PrometheusRemoteWriteAdapter {
                 }
             }
         }
+
         Ok(())
     }
 

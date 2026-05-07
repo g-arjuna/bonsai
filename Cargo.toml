@@ -60,6 +60,10 @@ toml = "0.8"
 # Graph database
 lbug = "0.15.3"
 
+# Allocator — jemalloc returns freed pages to OS aggressively (madvise MADV_DONTNEED),
+# preventing KuZuDB buffer-pool evictions from inflating RSS via glibc arena fragmentation.
+tikv-jemallocator = "0.6"
+
 # Timestamp conversion for lbug Value::TimestampNs
 time = { version = "0.3", features = ["parsing"] }
 

@@ -1,12 +1,12 @@
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use std::collections::HashMap;
 use std::fs;
-use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tracing::{info, warn};
-
-use lru::LruCache;
 
 use bonsai::{
     api::{
@@ -28,7 +28,6 @@ use bonsai::{
     store::BonsaiStore,
     subscriber::{self, SubscriberHandleMap, stop_all_subscribers, stop_subscriber},
     subscription_status::{self, SubscriptionPlan},
-    telemetry::TelemetryEvent,
 };
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tonic::codec::CompressionEncoding;
@@ -97,7 +96,13 @@ async fn main() -> Result<()> {
     }
 
     let bus = InProcessBus::new(cfg.event_bus.capacity);
-    let debounce_secs = cfg.event_bus.counter_debounce_secs;
+    let queue_depth = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let debouncer = std::sync::Arc::new(bonsai::ingest::TelemetryDebouncer::new(
+        cfg.ingest.counter_debounce_secs,
+        std::sync::Arc::clone(&queue_depth),
+        cfg.ingest.backpressure.clone(),
+        cfg.event_bus.capacity,
+    ));
 
     #[derive(Clone)]
     enum Store {
@@ -111,6 +116,12 @@ async fn main() -> Result<()> {
             match self {
                 Store::Core(s) => s.db(),
                 Store::Collector(s) => s.db(),
+            }
+        }
+        fn write_lock(&self) -> std::sync::Arc<std::sync::Mutex<()>> {
+            match self {
+                Store::Core(s) => s.write_lock(),
+                Store::Collector(s) => s.write_lock(),
             }
         }
         fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<graph::BonsaiEvent> {
@@ -268,54 +279,37 @@ async fn main() -> Result<()> {
         None
     };
 
-    if let Some(ref store) = store {
-        let store_writer = store.clone();
-        let mut rx = bus.subscribe();
+    let coordinator = if let Some(Store::Core(ref s)) = store {
+        let coordinator_cfg = bonsai::write_coordinator::WriteCoordinatorConfig::default();
+        Some(std::sync::Arc::new(bonsai::write_coordinator::WriteCoordinator::new(
+            std::sync::Arc::clone(s),
+            coordinator_cfg,
+            std::sync::Arc::clone(&queue_depth),
+        )))
+    } else {
+        None
+    };
+
+
+    if let Some(ref coordinator) = coordinator {
+        let coordinator = std::sync::Arc::clone(coordinator);
+        let (sub, mut rx) = bonsai::event_bus::MpscSubscriber::new(
+            "graph_writer",
+            cfg.event_bus.capacity.max(4096),
+            bonsai::event_bus::OverflowPolicy::BlockProducer,
+        );
+        bus.add_subscriber(sub).await;
+        
         tokio::spawn(async move {
-            let mut last_counter_write: LruCache<String, Instant> =
-                LruCache::new(NonZeroUsize::new(1024).unwrap());
-            let debounce = Duration::from_secs(debounce_secs);
-
-            loop {
-                match rx.recv().await {
-                    Ok(update) => {
-                        let classified = update.classify();
-                        let is_counter =
-                            matches!(classified, TelemetryEvent::InterfaceStats { .. });
-
-                        if is_counter {
-                            let key = format!(
-                                "{}:{}",
-                                update.target,
-                                if let TelemetryEvent::InterfaceStats { ref if_name } = classified {
-                                    if_name.clone()
-                                } else {
-                                    String::new()
-                                }
-                            );
-                            let now = Instant::now();
-                            let skip = last_counter_write
-                                .peek(&key)
-                                .is_some_and(|t| now.duration_since(*t) < debounce);
-                            if skip {
-                                continue;
-                            }
-                            last_counter_write.put(key, now);
-                        }
-
-                        if let Err(error) = store_writer.write(update).await {
-                            warn!(%error, "graph write failed");
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
-                        warn!(dropped, "graph writer lagged on event bus");
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        info!("event bus closed - graph writer stopping");
-                        break;
-                    }
+            while let Some(update) = rx.recv().await {
+                if let Err(error) = coordinator
+                    .submit(bonsai::write_coordinator::WriteRequest::Telemetry(update))
+                    .await
+                {
+                    warn!(%error, "failed to submit telemetry to write coordinator");
                 }
             }
+            info!("event bus closed - graph writer stopping");
         });
     }
 
@@ -483,6 +477,7 @@ async fn main() -> Result<()> {
         let registry = std::sync::Arc::clone(&registry);
         let credentials = std::sync::Arc::clone(&credentials);
         let bus = std::sync::Arc::clone(&bus);
+        let debouncer_for_subs = std::sync::Arc::clone(&debouncer);
         let subscription_plan_tx = subscription_plan_tx.clone();
         let mut shutdown = shutdown_rx.clone();
         Some(tokio::spawn(async move {
@@ -500,6 +495,7 @@ async fn main() -> Result<()> {
                             target,
                             &credentials,
                             &bus,
+                            Some(std::sync::Arc::clone(&debouncer_for_subs)),
                             subscription_plan_tx.as_ref(),
                             &mut subscribers,
                         )
@@ -526,13 +522,13 @@ async fn main() -> Result<()> {
 
                         match change {
                             RegistryChange::Added(target) => {
-                                if let Err(error) = spawn_subscriber(target, &credentials, &bus, subscription_plan_tx.as_ref(), &mut subscribers).await {
+                                if let Err(error) = spawn_subscriber(target, &credentials, &bus, Some(std::sync::Arc::clone(&debouncer_for_subs)), subscription_plan_tx.as_ref(), &mut subscribers).await {
                                     warn!(%error, "failed to start subscriber for added device");
                                 }
                             }
                             RegistryChange::Updated(target) => {
                                 if target.enabled {
-                                    if let Err(error) = restart_subscriber(target, &credentials, &bus, subscription_plan_tx.as_ref(), &mut subscribers).await {
+                                    if let Err(error) = restart_subscriber(target, &credentials, &bus, Some(std::sync::Arc::clone(&debouncer_for_subs)), subscription_plan_tx.as_ref(), &mut subscribers).await {
                                         warn!(%error, "failed to restart subscriber for updated device");
                                     }
                                 } else {
@@ -642,6 +638,7 @@ async fn main() -> Result<()> {
                         registry_for_api,
                         credentials_for_api,
                         bus_for_api,
+                        Some(std::sync::Arc::clone(&debouncer)),
                         collector_manager_for_api,
                     ))
                     .accept_compressed(CompressionEncoding::Zstd);
@@ -655,6 +652,7 @@ async fn main() -> Result<()> {
                         registry_for_api,
                         credentials_for_api,
                         bus_for_api,
+                        Some(std::sync::Arc::clone(&debouncer)),
                         None,
                     ))
                     .accept_compressed(CompressionEncoding::Zstd);
@@ -1646,6 +1644,7 @@ async fn spawn_subscriber(
     target: TargetConfig,
     credentials: &std::sync::Arc<CredentialVault>,
     bus: &std::sync::Arc<InProcessBus>,
+    debouncer: Option<std::sync::Arc<ingest::TelemetryDebouncer>>,
     subscription_plan_tx: Option<&tokio::sync::mpsc::Sender<SubscriptionPlan>>,
     subscribers: &mut SubscriberHandleMap,
 ) -> Result<()> {
@@ -1676,6 +1675,7 @@ async fn spawn_subscriber(
         target.tls_domain.clone().unwrap_or_default(),
         ca_cert_pem,
         std::sync::Arc::clone(bus),
+        debouncer,
         subscription_plan_tx.cloned(),
         target.selected_paths.clone(),
     );
@@ -1690,12 +1690,13 @@ async fn restart_subscriber(
     target: TargetConfig,
     credentials: &std::sync::Arc<CredentialVault>,
     bus: &std::sync::Arc<InProcessBus>,
+    debouncer: Option<std::sync::Arc<ingest::TelemetryDebouncer>>,
     subscription_plan_tx: Option<&tokio::sync::mpsc::Sender<SubscriptionPlan>>,
     subscribers: &mut SubscriberHandleMap,
 ) -> Result<()> {
     let address = target.address.clone();
     stop_subscriber(&address, subscribers).await;
-    spawn_subscriber(target, credentials, bus, subscription_plan_tx, subscribers).await
+    spawn_subscriber(target, credentials, bus, debouncer, subscription_plan_tx, subscribers).await
 }
 
 async fn load_ca_cert_pem(target: &TargetConfig) -> Result<Option<Vec<u8>>> {

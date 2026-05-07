@@ -22,6 +22,8 @@ pub struct Config {
     #[serde(default)]
     pub event_bus: EventBusConfig,
     #[serde(default)]
+    pub ingest: IngestConfig,
+    #[serde(default)]
     pub archive: ArchiveConfig,
     #[serde(default)]
     pub credentials: CredentialsConfig,
@@ -366,16 +368,58 @@ pub struct EventBusConfig {
     /// broadcast channel capacity. Default: 2048.
     #[serde(default = "default_bus_capacity")]
     pub capacity: usize,
-    /// Minimum interval between counter writes per (device, interface). Default: 10s.
-    #[serde(default = "default_debounce_secs")]
-    pub counter_debounce_secs: u64,
 }
 
 impl Default for EventBusConfig {
     fn default() -> Self {
         Self {
             capacity: default_bus_capacity(),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct IngestConfig {
+    /// Minimum interval between counter writes per (device, interface). Default: 10s.
+    #[serde(default = "default_debounce_secs")]
+    pub counter_debounce_secs: u64,
+    #[serde(default)]
+    pub backpressure: BackpressureConfig,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct BackpressureConfig {
+    #[serde(default = "default_bp_level_1_pct")]
+    pub level_1_pct: u64,
+    #[serde(default = "default_bp_level_2_pct")]
+    pub level_2_pct: u64,
+    #[serde(default)]
+    pub exemptions: Vec<String>,
+}
+
+impl Default for BackpressureConfig {
+    fn default() -> Self {
+        Self {
+            level_1_pct: default_bp_level_1_pct(),
+            level_2_pct: default_bp_level_2_pct(),
+            exemptions: vec![],
+        }
+    }
+}
+
+fn default_bp_level_1_pct() -> u64 {
+    75
+}
+
+fn default_bp_level_2_pct() -> u64 {
+    90
+}
+
+impl Default for IngestConfig {
+    fn default() -> Self {
+        Self {
             counter_debounce_secs: default_debounce_secs(),
+            backpressure: BackpressureConfig::default(),
         }
     }
 }

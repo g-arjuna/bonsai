@@ -13,7 +13,7 @@ use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, Encoding, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use time::OffsetDateTime;
-use tokio::sync::{broadcast::error::RecvError, watch};
+use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::event_bus::InProcessBus;
@@ -75,7 +75,13 @@ pub async fn run_archiver(
     writer_max_idle_secs: u64,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
-    let mut rx = bus.subscribe();
+    let (sub, mut rx) = crate::event_bus::MpscSubscriber::new(
+        "archive",
+        4096,
+        crate::event_bus::OverflowPolicy::DropOldest,
+    );
+    bus.add_subscriber(sub).await;
+    
     let mut buffer: Vec<TelemetryUpdate> = Vec::with_capacity(max_batch_rows);
     let mut flush_timer = tokio::time::interval(flush_interval);
     flush_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -109,7 +115,7 @@ pub async fn run_archiver(
                 break;
             }
             recv = rx.recv() => match recv {
-                Ok(update) => {
+                Some(update) => {
                     buffer.push(update);
                     record_archive_lag(&buffer);
                     if buffer.len() >= max_batch_rows {
@@ -117,10 +123,7 @@ pub async fn run_archiver(
                         record_archive_lag(&buffer);
                     }
                 }
-                Err(RecvError::Lagged(n)) => {
-                    warn!(dropped = n, "archive consumer lagged on event bus");
-                }
-                Err(RecvError::Closed) => {
+                None => {
                     if !buffer.is_empty() {
                         flush_buffer(std::mem::take(&mut buffer), Arc::clone(&writer)).await?;
                         record_archive_lag(&buffer);

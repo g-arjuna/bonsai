@@ -211,6 +211,10 @@ impl BonsaiStore for CollectorGraphStore {
         Arc::clone(&self.db)
     }
 
+    fn write_lock(&self) -> Arc<std::sync::Mutex<()>> {
+        Arc::clone(&self.write_lock)
+    }
+
     fn subscribe_events(&self) -> broadcast::Receiver<BonsaiEvent> {
         self.event_tx.subscribe()
     }

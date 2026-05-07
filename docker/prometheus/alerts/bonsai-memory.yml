@@ -1,0 +1,51 @@
+groups:
+  - name: bonsai_memory
+    interval: 30s
+    rules:
+      - alert: BonsaiRssExceedsBudget
+        expr: bonsai_memory_rss_bytes > 1610612736
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bonsai RSS exceeds 1.5 GiB budget"
+          description: >
+            bonsai process RSS is {{ $value | humanize }}B, above the 1.5 GiB
+            lab budget. Check bonsai_write_coordinator_queue_depth and
+            bonsai_ingest_backpressure_drops_total for root cause.
+
+      - alert: BonsaiWriteCoordinatorQueueHigh
+        expr: bonsai_write_coordinator_queue_depth / 4096 * 100 > 75
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bonsai write coordinator queue >75% full for 5 min"
+          description: >
+            The write coordinator queue has been above 75% capacity for 5
+            minutes. Telemetry backpressure (level-1 drops) is active.
+            Check bonsai_ingest_backpressure_drops_total.
+
+      - alert: BonsaiEventBusDropping
+        expr: increase(bonsai_event_bus_router_drops_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bonsai event bus router is dropping messages"
+          description: >
+            Messages are being dropped at the event bus router level, meaning
+            the router input queue itself is full. This should not occur under
+            normal backpressure — the write coordinator queue should absorb
+            load first. Investigate subscriber lag.
+
+      - alert: BonsaiSubscriberQueueFull
+        expr: bonsai_subscriber_queue_depth / on() group_left() bonsai_subscriber_queue_depth * 100 > 90
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bonsai subscriber queue is >90% full"
+          description: >
+            A per-subscriber queue is >90% full for 2 minutes.
+            Subscriber: {{ $labels.subscriber }}.

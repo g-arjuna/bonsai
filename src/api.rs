@@ -61,6 +61,7 @@ pub struct BonsaiService<S: BonsaiStore> {
     registry: Arc<ApiRegistry>,
     credentials: Arc<CredentialVault>,
     bus: Arc<InProcessBus>,
+    debouncer: Option<Arc<ingest::TelemetryDebouncer>>,
     collector_manager: Option<Arc<crate::assignment::CollectorManager>>,
 }
 
@@ -70,6 +71,7 @@ impl<S: BonsaiStore> BonsaiService<S> {
         registry: Arc<ApiRegistry>,
         credentials: Arc<CredentialVault>,
         bus: Arc<InProcessBus>,
+        debouncer: Option<Arc<ingest::TelemetryDebouncer>>,
         collector_manager: Option<Arc<crate::assignment::CollectorManager>>,
     ) -> Self {
         Self {
@@ -77,6 +79,7 @@ impl<S: BonsaiStore> BonsaiService<S> {
             registry,
             credentials,
             bus,
+            debouncer,
             collector_manager,
         }
     }
@@ -692,6 +695,14 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             let collector_id = update.collector_id.clone();
             let telemetry = ingest::ingest_update_to_telemetry(update)
                 .map_err(|e| Status::invalid_argument(format!("{e:#}")))?;
+
+            if let Some(ref d) = self.debouncer {
+                if d.should_drop(&telemetry) {
+                    accepted += 1;
+                    continue;
+                }
+            }
+
             self.bus.publish(telemetry);
             accepted += 1;
 

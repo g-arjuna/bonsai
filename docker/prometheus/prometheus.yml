@@ -1,6 +1,9 @@
 global:
   scrape_interval: 15s
-  evaluation_interval: 15s
+  evaluation_interval: 30s
+
+rule_files:
+  - "alerts/*.yml"
 
 scrape_configs:
   # Bonsai metrics — running on the host (or at BONSAI_METRICS_ADDR if overridden)

@@ -4,13 +4,11 @@
 # Usage:
 #   ./scripts/seed_lab.sh --all
 #   ./scripts/seed_lab.sh --netbox [--url http://localhost:8000] [--token TOKEN]
-#   ./scripts/seed_lab.sh --servicenow [--url http://localhost:8080]
 #   ./scripts/seed_lab.sh --clab      # print ContainerLab topology YAML to stdout
 #
 # Options:
-#   --all          Run all seeding steps (NetBox + ServiceNow mock)
+#   --all          Run all seeding steps (NetBox)
 #   --netbox       Seed NetBox only
-#   --servicenow   Verify ServiceNow mock is up (mock uses its own embedded seed)
 #   --clab         Generate ContainerLab topology YAML from seed (to stdout)
 #   --url          Base URL override (applies to the step being run)
 #   --token        API token override for NetBox
@@ -23,10 +21,8 @@ SEED_NETBOX="${REPO_ROOT}/scripts/seed_netbox.py"
 
 NETBOX_URL="http://localhost:8000"
 NETBOX_TOKEN="bonsai-dev-token"
-SNOW_URL="http://localhost:8080"
 TARGET_ALL=false
 TARGET_NETBOX=false
-TARGET_SNOW=false
 TARGET_CLAB=false
 
 # ── Arg parsing ───────────────────────────────────────────────────────────────
@@ -35,17 +31,16 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --all)           TARGET_ALL=true ;;
     --netbox)        TARGET_NETBOX=true ;;
-    --servicenow)    TARGET_SNOW=true ;;
     --clab)          TARGET_CLAB=true ;;
-    --url)           shift; NETBOX_URL="$1"; SNOW_URL="$1" ;;
+    --url)           shift; NETBOX_URL="$1" ;;
     --token)         shift; NETBOX_TOKEN="$1" ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
   shift
 done
 
-if ! $TARGET_ALL && ! $TARGET_NETBOX && ! $TARGET_SNOW && ! $TARGET_CLAB; then
-  echo "Usage: $0 [--all|--netbox|--servicenow|--clab] [options]"
+if ! $TARGET_ALL && ! $TARGET_NETBOX && ! $TARGET_CLAB; then
+  echo "Usage: $0 [--all|--netbox|--clab] [options]"
   exit 1
 fi
 
@@ -115,19 +110,6 @@ seed_netbox() {
   fi
 }
 
-# ── ServiceNow mock verification ──────────────────────────────────────────────
-
-verify_snow() {
-  echo "→ Checking ServiceNow mock at ${SNOW_URL}/health ..."
-  if curl -sf "${SNOW_URL}/health" | python3 -m json.tool; then
-    echo "  ServiceNow mock is up."
-  else
-    echo "  ServiceNow mock not reachable. Start it with:"
-    echo "  docker compose --profile servicenow-mock up -d servicenow-mock"
-    exit 1
-  fi
-}
-
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 
 if $TARGET_CLAB; then
@@ -136,10 +118,6 @@ fi
 
 if $TARGET_ALL || $TARGET_NETBOX; then
   seed_netbox
-fi
-
-if $TARGET_ALL || $TARGET_SNOW; then
-  verify_snow
 fi
 
 echo "seed_lab.sh done."

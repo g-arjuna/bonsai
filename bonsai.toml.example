@@ -44,7 +44,7 @@ graph_path   = "bonsai.db"
 # Default: min(2 GiB, 25% of RAM) for core; min(256 MiB, 10%) for collector.
 # Override here if you have more RAM to spare or run on a constrained device.
 # [graph]
-# buffer_pool_bytes = 2147483648   # 2 GiB — safe for 16 GB machines with a 4-device lab
+# buffer_pool_bytes = 536870912    # 512 MiB default; fits within 1.5 GiB RSS budget for 8-12 node labs
 
 # ── Event bus (T1-1) ──────────────────────────────────────────────────────────
 # [event_bus]

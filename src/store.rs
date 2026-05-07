@@ -10,6 +10,10 @@ use crate::telemetry::TelemetryUpdate;
 #[tonic::async_trait]
 pub trait BonsaiStore: Send + Sync {
     fn db(&self) -> Arc<Database>;
+    /// KuzuDB allows only one concurrent write transaction. Callers that open a
+    /// lbug Connection directly (e.g. enrichers) must hold this lock for the
+    /// duration of their writes so they don't race the write coordinator.
+    fn write_lock(&self) -> Arc<std::sync::Mutex<()>>;
     fn subscribe_events(&self) -> broadcast::Receiver<BonsaiEvent>;
     
     async fn write(&self, update: TelemetryUpdate) -> Result<()>;

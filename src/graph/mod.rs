@@ -199,7 +199,10 @@ pub struct GraphStore {
 
 impl GraphStore {
     pub fn open(path: &str, buffer_pool_bytes: u64) -> Result<Self> {
-        let sysconfig = SystemConfig::default().buffer_pool_size(buffer_pool_bytes);
+        let sysconfig = SystemConfig::default()
+            .buffer_pool_size(buffer_pool_bytes)
+            .max_num_threads(2)
+            .checkpoint_threshold(2 * 1024 * 1024); // 2 MiB: checkpoint aggressively to free buffer pool pages
         let db = Database::new(path, sysconfig).context("failed to open LadybugDB")?;
         info!(
             path,
@@ -247,6 +250,10 @@ impl GraphStore {
 impl BonsaiStore for GraphStore {
     fn db(&self) -> Arc<Database> {
         Arc::clone(&self.db)
+    }
+
+    fn write_lock(&self) -> Arc<std::sync::Mutex<()>> {
+        Arc::clone(&self.write_lock)
     }
 
     fn subscribe_events(&self) -> broadcast::Receiver<BonsaiEvent> {
@@ -455,6 +462,9 @@ impl GraphStore {
 
         conn.query("CREATE REL TABLE IF NOT EXISTS CONNECTED_TO(FROM Interface TO Interface)")
             .context("create CONNECTED_TO rel")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS MGMT_LINK(FROM Interface TO Interface)")
+            .context("create MGMT_LINK rel")?;
 
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS DetectionEvent(\
@@ -1528,10 +1538,43 @@ impl GraphStore {
                 .increment(1);
             let t0 = Instant::now();
             let _guard = write_lock.lock().expect("write lock poisoned");
-            let result = write_blocking(&db, &update, &event_tx);
+            let conn = Connection::new(&db).context("single write connection")?;
+            let result = write_blocking(&conn, &update, &event_tx);
             metrics::histogram!("bonsai_graph_write_latency_seconds", "target" => target)
                 .record(t0.elapsed().as_secs_f64());
             result
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    /// Write a batch of telemetry updates to the graph using a single block.
+    pub async fn write_batch(&self, updates: Vec<TelemetryUpdate>) -> Result<()> {
+        let db = Arc::clone(&self.db);
+        let event_tx = self.event_tx.clone();
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let t0 = Instant::now();
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("batch write connection")?;
+            conn.query("BEGIN TRANSACTION").context("begin batch transaction")?;
+            let mut ok = true;
+            for update in updates {
+                metrics::counter!("bonsai_telemetry_updates_total", "target" => update.target.clone())
+                    .increment(1);
+                if let Err(error) = write_blocking(&conn, &update, &event_tx) {
+                    tracing::warn!(target = %update.target, path = %update.path, %error, "batched graph write failed");
+                    ok = false;
+                }
+            }
+            if ok {
+                conn.query("COMMIT").context("commit batch transaction")?;
+            } else {
+                let _ = conn.query("ROLLBACK");
+            }
+            metrics::histogram!("bonsai_graph_batch_write_latency_seconds")
+                .record(t0.elapsed().as_secs_f64());
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .context("spawn_blocking panicked")?
@@ -2025,11 +2068,10 @@ impl GraphStore {
 // ── blocking write helpers ────────────────────────────────────────────────────
 
 fn write_blocking(
-    db: &Database,
+    conn: &Connection<'_>,
     update: &TelemetryUpdate,
     event_tx: &broadcast::Sender<BonsaiEvent>,
 ) -> Result<()> {
-    let conn = Connection::new(db).context("graph write connection")?;
     match update.classify() {
         TelemetryEvent::InterfaceStats { if_name } => {
             // Skip interfaces with no data (SR Linux sends empty {} for unconfigured ports)
@@ -2839,9 +2881,11 @@ fn write_lldp_neighbor(
     let port_id = json_str(val, "port-id").to_string();
     if !system_name.is_empty()
         && !port_id.is_empty()
-        && let Err(e) = try_connect_interfaces(conn, &u.target, local_if, &system_name, &port_id)
+        && let Err(e) = try_connect_interfaces(
+            conn, &u.target, local_if, &system_name, &port_id, is_mgmt_interface(local_if),
+        )
     {
-        debug!(error = %e, local_if, system_name, port_id, "CONNECTED_TO skipped");
+        debug!(error = %e, local_if, system_name, port_id, "interface link skipped");
     }
 
     info!(
@@ -2885,7 +2929,9 @@ fn backfill_connected_to(conn: &Connection<'_>, local_addr: &str, local_if: &str
             _ => continue,
         };
         if !system_name.is_empty() && !port_id.is_empty() {
-            let _ = try_connect_interfaces(conn, local_addr, local_if, &system_name, &port_id);
+            let _ = try_connect_interfaces(
+                conn, local_addr, local_if, &system_name, &port_id, is_mgmt_interface(local_if),
+            );
         }
     }
 
@@ -2920,13 +2966,28 @@ fn backfill_connected_to(conn: &Connection<'_>, local_addr: &str, local_if: &str
         if system_name.is_empty() {
             continue;
         }
-        let _ = try_connect_interfaces(conn, &remote_addr, &remote_if, &system_name, local_if);
+        let _ = try_connect_interfaces(
+            conn, &remote_addr, &remote_if, &system_name, local_if, is_mgmt_interface(&remote_if),
+        );
     }
 
     Ok(())
 }
 
-/// Resolve the remote Interface by hostname+port_id and MERGE a CONNECTED_TO edge.
+/// Returns true when `if_name` is a management-plane interface that should produce
+/// MGMT_LINK edges instead of fabric CONNECTED_TO edges.
+fn is_mgmt_interface(if_name: &str) -> bool {
+    let lo = if_name.to_lowercase();
+    lo.starts_with("mgmt")          // Nokia SR Linux mgmt0, Cisco Mgmt0/...
+        || lo.starts_with("management") // Arista Management1, Juniper
+        || lo == "eth0"                 // FRR / generic Linux
+        || lo.starts_with("fxp0")       // Juniper fxp0
+        || lo.starts_with("me0")        // Juniper me0
+        || lo.starts_with("em0")        // Juniper em0
+}
+
+/// Resolve the remote Interface by hostname+port_id and MERGE either a CONNECTED_TO
+/// (fabric) or MGMT_LINK (management-plane) edge depending on `is_mgmt`.
 /// Returns Ok(()) if the remote is not yet in the graph — caller treats that as a no-op.
 fn try_connect_interfaces(
     conn: &Connection<'_>,
@@ -2934,6 +2995,7 @@ fn try_connect_interfaces(
     local_if: &str,
     remote_hostname: &str,
     remote_port_id: &str,
+    is_mgmt: bool,
 ) -> Result<()> {
     // Find the remote device's address via its configured hostname.
     let mut find_stmt = conn
@@ -2957,12 +3019,15 @@ fn try_connect_interfaces(
     let local_if_id = format!("{}:{}", local_addr, local_if);
     let remote_if_id = format!("{}:{}", remote_addr, remote_port_id);
 
-    let mut edge_stmt = conn
-        .prepare(
-            "MATCH (li:Interface {id: $lid}), (ri:Interface {id: $rid}) \
-             MERGE (li)-[:CONNECTED_TO]->(ri)",
-        )
-        .context("prepare CONNECTED_TO merge")?;
+    let cypher = if is_mgmt {
+        "MATCH (li:Interface {id: $lid}), (ri:Interface {id: $rid}) \
+         MERGE (li)-[:MGMT_LINK]->(ri)"
+    } else {
+        "MATCH (li:Interface {id: $lid}), (ri:Interface {id: $rid}) \
+         MERGE (li)-[:CONNECTED_TO]->(ri)"
+    };
+
+    let mut edge_stmt = conn.prepare(cypher).context("prepare interface link merge")?;
     conn.execute(
         &mut edge_stmt,
         vec![
@@ -2970,7 +3035,7 @@ fn try_connect_interfaces(
             ("rid", Value::String(remote_if_id)),
         ],
     )
-    .context("execute CONNECTED_TO merge")?;
+    .context("execute interface link merge")?;
 
     Ok(())
 }
