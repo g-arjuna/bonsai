@@ -29,11 +29,11 @@ OCI_REGION="${OCI_REGION:-us-ashburn-1}"          # Always Free available in all
 OCI_COMPARTMENT_ID="${OCI_COMPARTMENT_ID:-}"      # Required: your tenancy OCID or sub-compartment
 OCI_SSH_KEY_PATH="${OCI_SSH_KEY_PATH:-$HOME/.ssh/bonsai_cloud.pub}"
 INSTANCE_NAME="${INSTANCE_NAME:-bonsai-cloud-spike}"
-INSTANCE_SHAPE="VM.Standard.A1.Flex"              # ARM Always Free shape
-OCPU_COUNT=4
-MEM_GB=24
-BOOT_VOL_GB=100
-DATA_VOL_GB=100
+INSTANCE_SHAPE="${INSTANCE_SHAPE:-VM.Standard.A1.Flex}"              # ARM Always Free shape
+OCPU_COUNT="${OCPU_COUNT:-4}"
+MEM_GB="${MEM_GB:-24}"
+BOOT_VOL_GB="${BOOT_VOL_GB:-100}"
+DATA_VOL_GB="${DATA_VOL_GB:-100}"
 
 STATE_FILE="$(dirname "${BASH_SOURCE[0]}")/instance.env"
 
@@ -132,7 +132,7 @@ _log "Step 3: Resolving VCN and subnet..."
 VCN_ID=$(oci network vcn list \
     --compartment-id "$OCI_COMPARTMENT_ID" \
     --region "$OCI_REGION" \
-    --output json | jq -r '.data[] | select(.display-name == "bonsai-vcn") | .id' | head -1)
+    --output json | jq -r '.data[] | select(."display-name" == "bonsai-vcn") | .id' | head -1)
 
 if [[ -z "$VCN_ID" ]]; then
     _log "  Creating bonsai-vcn..."
@@ -204,7 +204,6 @@ _log "  Subnet: $SUBNET_ID"
 
 # Step 4: Launch instance
 _log "Step 4: Launching Always Free ARM instance..."
-SSH_KEY=$(cat "$OCI_SSH_KEY_PATH")
 
 LAUNCH_JSON=$(oci compute instance launch \
     --compartment-id "$OCI_COMPARTMENT_ID" \
@@ -215,7 +214,7 @@ LAUNCH_JSON=$(oci compute instance launch \
     --shape-config "{\"ocpus\":$OCPU_COUNT,\"memoryInGBs\":$MEM_GB}" \
     --subnet-id "$SUBNET_ID" \
     --assign-public-ip true \
-    --ssh-authorized-keys "$SSH_KEY" \
+    --ssh-authorized-keys-file "$OCI_SSH_KEY_PATH" \
     --boot-volume-size-in-gbs "$BOOT_VOL_GB" \
     --metadata "{\"user_data\":\"$(base64 -w0 "$(dirname "${BASH_SOURCE[0]}")/cloud_init.sh" 2>/dev/null || echo "")\"}" \
     --region "$OCI_REGION" \
@@ -231,7 +230,7 @@ LAUNCH_JSON=$(oci compute instance launch \
         --shape-config "{\"ocpus\":$OCPU_COUNT,\"memoryInGBs\":$MEM_GB}" \
         --subnet-id "$SUBNET_ID" \
         --assign-public-ip true \
-        --ssh-authorized-keys "$SSH_KEY" \
+        --ssh-authorized-keys-file "$OCI_SSH_KEY_PATH" \
         --boot-volume-size-in-gbs "$BOOT_VOL_GB" \
         --region "$OCI_REGION" \
         --wait-for-state RUNNING \
