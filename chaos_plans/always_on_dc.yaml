@@ -1,0 +1,131 @@
+# chaos_plans/always_on_dc.yaml
+#
+# Always-on DC chaos plan driven by scripts/chaos_runner.sh.
+# Runs in 30-minute cycles, cycling through all DC fault classes to accumulate
+# GNN training data. Designed for overnight/continuous operation on the dev lab.
+#
+# Run via:
+#   bash scripts/chaos_runner.sh          # starts loop daemon in background
+#   bash scripts/chaos_runner.sh --fg     # foreground, Ctrl-C to stop
+
+duration_hours: 0.5
+topology: bonsai-dc
+injection_interval_seconds: [45, 120]
+
+faults:
+  # ── Link impairment (netem) ───────────────────────────────────────────────────
+  - type: netem_loss
+    weight: 5
+    targets: [srl-leaf1]
+    interfaces: [e1-1, e1-2]
+    loss_percent: [2, 15]
+    healing_delay_seconds: [30, 90]
+
+  - type: netem_loss
+    weight: 5
+    targets: [srl-leaf2]
+    interfaces: [e1-1, e1-2]
+    loss_percent: [2, 15]
+    healing_delay_seconds: [30, 90]
+
+  - type: netem_loss
+    weight: 4
+    targets: [srl-leaf3]
+    interfaces: [e1-1, e1-2]
+    loss_percent: [2, 15]
+    healing_delay_seconds: [30, 90]
+
+  - type: netem_loss
+    weight: 4
+    targets: [srl-leaf4]
+    interfaces: [e1-1, e1-2]
+    loss_percent: [2, 15]
+    healing_delay_seconds: [30, 90]
+
+  - type: netem_loss
+    weight: 3
+    targets: [srl-spine1]
+    interfaces: [e1-1, e1-2, e1-3, e1-4]
+    loss_percent: [2, 10]
+    healing_delay_seconds: [30, 75]
+
+  - type: netem_loss
+    weight: 3
+    targets: [srl-spine2]
+    interfaces: [e1-1, e1-2, e1-3, e1-4]
+    loss_percent: [2, 10]
+    healing_delay_seconds: [30, 75]
+
+  # ── Interface shutdown ────────────────────────────────────────────────────────
+  - type: interface_shut
+    weight: 5
+    targets: [srl-leaf1]
+    interfaces: [ethernet-1/1, ethernet-1/2]
+    healing_delay_seconds: [20, 60]
+
+  - type: interface_shut
+    weight: 5
+    targets: [srl-leaf2]
+    interfaces: [ethernet-1/1, ethernet-1/2]
+    healing_delay_seconds: [20, 60]
+
+  - type: interface_shut
+    weight: 4
+    targets: [srl-leaf3]
+    interfaces: [ethernet-1/1, ethernet-1/2]
+    healing_delay_seconds: [20, 60]
+
+  - type: interface_shut
+    weight: 4
+    targets: [srl-leaf4]
+    interfaces: [ethernet-1/1, ethernet-1/2]
+    healing_delay_seconds: [20, 60]
+
+  - type: interface_shut
+    weight: 3
+    targets: [srl-spine1]
+    interfaces: [ethernet-1/1, ethernet-1/2, ethernet-1/3]
+    healing_delay_seconds: [20, 45]
+
+  - type: interface_shut
+    weight: 3
+    targets: [srl-spine2]
+    interfaces: [ethernet-1/1, ethernet-1/2, ethernet-1/3]
+    healing_delay_seconds: [20, 45]
+
+  # ── BGP session faults ────────────────────────────────────────────────────────
+  - type: bgp_session_down
+    weight: 5
+    targets: [srl-leaf1]
+    peer_addresses: ["10.1.0.2", "10.1.0.4"]
+    healing_delay_seconds: [20, 60]
+
+  - type: bgp_session_down
+    weight: 5
+    targets: [srl-leaf2]
+    peer_addresses: ["10.1.0.2", "10.1.0.4"]
+    healing_delay_seconds: [20, 60]
+
+  - type: bgp_session_down
+    weight: 4
+    targets: [srl-leaf3]
+    peer_addresses: ["10.1.0.1", "10.1.0.3"]
+    healing_delay_seconds: [20, 60]
+
+  - type: bgp_session_down
+    weight: 4
+    targets: [srl-leaf4]
+    peer_addresses: ["10.1.0.1", "10.1.0.3"]
+    healing_delay_seconds: [20, 60]
+
+  - type: bgp_session_down
+    weight: 3
+    targets: [srl-spine1]
+    peer_addresses: ["10.1.0.5", "10.1.0.6", "10.1.0.7", "10.1.0.8"]
+    healing_delay_seconds: [20, 45]
+
+  - type: bgp_session_down
+    weight: 3
+    targets: [srl-spine2]
+    peer_addresses: ["10.1.0.5", "10.1.0.6", "10.1.0.7", "10.1.0.8"]
+    healing_delay_seconds: [20, 45]

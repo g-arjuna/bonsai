@@ -125,11 +125,53 @@ jobs:
       - name: Build bonsai (for dry-run preflight)
         run: cargo build --release
 
-      - name: Dry-run: compose e2e
+      - name: "Dry-run: compose e2e"
         run: bash scripts/e2e_compose_test.sh --dry-run || true
 
-      - name: Dry-run: output adapters
+      - name: "Dry-run: output adapters"
         run: bash scripts/e2e_output_adapters_test.sh --dry-run || true
+
+  # ── Archive integrity verification ────────────────────────────────────────
+  #
+  # Validates that any committed Parquet test fixtures are non-corrupt, have
+  # the expected schema, and that the row-count snapshot is non-decreasing.
+  # The job is informational (continue-on-error) so it does not block CI on
+  # empty-archive first runs; failures still surface in the nightly summary.
+  archive-verify:
+    name: Archive integrity check
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pyarrow
+        run: pip install pyarrow
+
+      - name: Verify archive (JSON output)
+        id: verify
+        run: |
+          # Run against any committed archive fixtures in docs/test_results/
+          ARCHIVE_DIR="docs/test_results/chaos_matrix"
+          if [[ -d "$ARCHIVE_DIR" ]]; then
+            bash scripts/verify_archive.sh "$ARCHIVE_DIR" --json | tee /tmp/archive_verify.json
+            STATUS=$(python3 -c "import json; d=json.load(open('/tmp/archive_verify.json')); print(d.get('status','unknown'))")
+            echo "archive_status=$STATUS" >> "$GITHUB_OUTPUT"
+          else
+            echo '{"status":"no_archive","checks":[]}' > /tmp/archive_verify.json
+            echo "archive_status=no_archive" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload verification result
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: archive-verify-result
+          path: /tmp/archive_verify.json
 
   # ── Summary issue ─────────────────────────────────────────────────────────
   #
@@ -137,7 +179,7 @@ jobs:
   nightly-summary:
     name: Nightly summary
     runs-on: ubuntu-latest
-    needs: [python-integration, output-adapter-smoke, e2e-dry-run]
+    needs: [python-integration, output-adapter-smoke, e2e-dry-run, archive-verify]
     if: always()
     steps:
       - uses: actions/checkout@v4

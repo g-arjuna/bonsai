@@ -146,6 +146,319 @@ faults:
         within_seconds: 20
     bonsai_rule: bfd_session_down
 
+  # ── IS-IS spine2 uplink ───────────────────────────────────────────────────────
+
+  - id: dc-isis-adj-down-spine2-super1
+    topology: dc
+    description: "Disable IS-IS on spine2's e1-1 uplink (adj to super1 drops, spine1 still up)"
+    inject:
+      - >
+        docker exec clab-bonsai-dc-srl-spine2
+        sr_cli -d "set / network-instance default protocols isis instance main interface ethernet-1/1.0 admin-state disable"
+    heal:
+      - >
+        docker exec clab-bonsai-dc-srl-spine2
+        sr_cli -d "set / network-instance default protocols isis instance main interface ethernet-1/1.0 admin-state enable"
+    expects:
+      - detection: isis_adjacency_down
+        target: srl-spine2
+        neighbor: srl-super1
+        within_seconds: 45
+    bonsai_rule: isis_adjacency_down
+
+  # ── Dual spine-link failure (leaf isolation) ──────────────────────────────────
+
+  - id: dc-leaf1-dual-uplink-down
+    topology: dc
+    description: "Shut both uplinks from leaf1 (e1-1 to spine1, e1-2 to spine2) — complete fabric isolation"
+    inject:
+      - >
+        docker exec clab-bonsai-dc-srl-leaf1
+        sr_cli -d "set / interface ethernet-1/1 admin-state disable"
+      - >
+        docker exec clab-bonsai-dc-srl-leaf1
+        sr_cli -d "set / interface ethernet-1/2 admin-state disable"
+    heal:
+      - >
+        docker exec clab-bonsai-dc-srl-leaf1
+        sr_cli -d "set / interface ethernet-1/1 admin-state enable"
+      - >
+        docker exec clab-bonsai-dc-srl-leaf1
+        sr_cli -d "set / interface ethernet-1/2 admin-state enable"
+    expects:
+      - detection: interface_admin_down
+        target: srl-leaf1
+        interface: ethernet-1/1
+        within_seconds: 30
+      - detection: interface_admin_down
+        target: srl-leaf1
+        interface: ethernet-1/2
+        within_seconds: 30
+      - detection: bgp_neighbor_down
+        target: srl-leaf1
+        within_seconds: 45
+      - detection: device_unreachable
+        target: srl-leaf1
+        within_seconds: 60
+    bonsai_rule: device_isolated
+
+  # ── Asymmetric link impairment ────────────────────────────────────────────────
+
+  - id: dc-asymmetric-loss-leaf2-spine2
+    topology: dc
+    description: "Asymmetric loss: 15% on leaf2→spine2 only (opposite direction clean)"
+    inject:
+      - >
+        containerlab tools netem set bonsai-dc srl-leaf2 e1-2
+        --loss 15
+    heal:
+      - containerlab tools netem reset bonsai-dc srl-leaf2 e1-2
+    expects:
+      - detection: interface_high_error_rate
+        target: srl-leaf2
+        interface: ethernet-1/2
+        within_seconds: 60
+      - detection: bgp_neighbor_degraded
+        target: srl-leaf2
+        peer: srl-spine2
+        within_seconds: 90
+    bonsai_rule: interface_error_rate_high
+
+  # ── Slow BFD timeout via high-but-not-total loss ──────────────────────────────
+
+  - id: dc-slow-bfd-timeout-leaf3
+    topology: dc
+    description: "35% loss on leaf3 e1-1 — BFD degrades slowly (vs 100% hard-kill); tests detection latency"
+    inject:
+      - >
+        containerlab tools netem set bonsai-dc srl-leaf3 e1-1
+        --loss 35
+    heal:
+      - containerlab tools netem reset bonsai-dc srl-leaf3 e1-1
+    expects:
+      - detection: bfd_session_down
+        target: srl-leaf3
+        interface: ethernet-1/1
+        within_seconds: 45
+      - detection: interface_high_error_rate
+        target: srl-leaf3
+        interface: ethernet-1/1
+        within_seconds: 30
+    bonsai_rule: bfd_session_down
+
+  # ── BGP RR failover (both sessions on super1 disabled) ────────────────────────
+
+  - id: dc-bgp-rr-failover-super1
+    topology: dc
+    description: "Disable all BGP sessions on super1 (both spines lose their RR — tests RR failover to super2)"
+    inject:
+      - >
+        docker exec clab-bonsai-dc-srl-super1
+        sr_cli -d "set / network-instance default protocols bgp admin-state disable"
+    heal:
+      - >
+        docker exec clab-bonsai-dc-srl-super1
+        sr_cli -d "set / network-instance default protocols bgp admin-state enable"
+    expects:
+      - detection: bgp_neighbor_down
+        target: srl-spine1
+        peer: srl-super1
+        within_seconds: 30
+      - detection: bgp_neighbor_down
+        target: srl-spine2
+        peer: srl-super1
+        within_seconds: 30
+      - detection: bgp_rr_unavailable
+        target: srl-super1
+        within_seconds: 45
+    bonsai_rule: bgp_rr_unavailable
+
+  # ── EVPN MTU mismatch (simulated via large-frame netem truncation) ────────────
+
+  - id: dc-evpn-mtu-mismatch-leaf4-spine1
+    topology: dc
+    description: "Simulate MTU mismatch via 10% corruption + 10% loss on leaf4 e1-1 (EVPN type-2 misadvertisement path)"
+    inject:
+      - >
+        containerlab tools netem set bonsai-dc srl-leaf4 e1-1
+        --loss 10 --corrupt 10
+    heal:
+      - containerlab tools netem reset bonsai-dc srl-leaf4 e1-1
+    expects:
+      - detection: interface_high_error_rate
+        target: srl-leaf4
+        interface: ethernet-1/1
+        within_seconds: 60
+      - detection: bgp_neighbor_degraded
+        target: srl-leaf4
+        peer: srl-spine1
+        within_seconds: 90
+    bonsai_rule: interface_error_rate_high
+
+  # ── Multi-fault simultaneous: link down + BGP down on different nodes ─────────
+
+  - id: dc-multi-fault-leaf2-link-leaf3-bgp
+    topology: dc
+    description: "Simultaneous: leaf2 e1-1 shut AND leaf3 BGP disabled — tests multi-event correlation"
+    inject:
+      - >
+        docker exec clab-bonsai-dc-srl-leaf2
+        sr_cli -d "set / interface ethernet-1/1 admin-state disable"
+      - >
+        docker exec clab-bonsai-dc-srl-leaf3
+        sr_cli -d "set / network-instance default protocols bgp admin-state disable"
+    heal:
+      - >
+        docker exec clab-bonsai-dc-srl-leaf2
+        sr_cli -d "set / interface ethernet-1/1 admin-state enable"
+      - >
+        docker exec clab-bonsai-dc-srl-leaf3
+        sr_cli -d "set / network-instance default protocols bgp admin-state enable"
+    expects:
+      - detection: interface_admin_down
+        target: srl-leaf2
+        interface: ethernet-1/1
+        within_seconds: 30
+      - detection: bgp_neighbor_down
+        target: srl-leaf2
+        peer: srl-spine1
+        within_seconds: 45
+      - detection: bgp_neighbor_down
+        target: srl-leaf3
+        within_seconds: 30
+    bonsai_rule: multi_fault_correlation
+
+  # ── BGP session rapid flap ────────────────────────────────────────────────────
+
+  - id: dc-bgp-session-flap-leaf1-spine1
+    topology: dc
+    description: "Rapid BGP session oscillation on leaf1→spine1 (short inject+heal cycle repeated externally)"
+    inject:
+      - >
+        docker exec clab-bonsai-dc-srl-leaf1
+        sr_cli -d "set / network-instance default protocols bgp neighbor 10.1.0.2 admin-state disable"
+    heal:
+      - >
+        docker exec clab-bonsai-dc-srl-leaf1
+        sr_cli -d "set / network-instance default protocols bgp neighbor 10.1.0.2 admin-state enable"
+    expects:
+      - detection: bgp_neighbor_down
+        target: srl-leaf1
+        peer_ip: 10.1.0.2
+        within_seconds: 30
+      - detection: bgp_session_flapping
+        target: srl-leaf1
+        peer_ip: 10.1.0.2
+        within_seconds: 120
+    bonsai_rule: bgp_session_flapping
+
+  # ── Spine dual uplink to superleaf failure ────────────────────────────────────
+
+  - id: dc-spine1-uplink-and-bgp-down
+    topology: dc
+    description: "spine1 e1-1 uplink shut AND its remaining BGP session to super2 disabled"
+    inject:
+      - >
+        docker exec clab-bonsai-dc-srl-spine1
+        sr_cli -d "set / interface ethernet-1/1 admin-state disable"
+      - >
+        docker exec clab-bonsai-dc-srl-spine1
+        sr_cli -d "set / network-instance default protocols bgp neighbor 10.1.0.6 admin-state disable"
+    heal:
+      - >
+        docker exec clab-bonsai-dc-srl-spine1
+        sr_cli -d "set / interface ethernet-1/1 admin-state enable"
+      - >
+        docker exec clab-bonsai-dc-srl-spine1
+        sr_cli -d "set / network-instance default protocols bgp neighbor 10.1.0.6 admin-state enable"
+    expects:
+      - detection: interface_admin_down
+        target: srl-spine1
+        interface: ethernet-1/1
+        within_seconds: 30
+      - detection: bgp_neighbor_down
+        target: srl-spine1
+        peer: srl-super1
+        within_seconds: 30
+      - detection: bgp_neighbor_down
+        target: srl-spine1
+        peer_ip: 10.1.0.6
+        within_seconds: 30
+    bonsai_rule: device_isolated
+
+  # ── High-latency silent degradation ──────────────────────────────────────────
+
+  - id: dc-high-latency-spine2-uplink
+    topology: dc
+    description: "500ms delay + 50ms jitter on spine2 e1-2 uplink — high latency, no packet loss"
+    inject:
+      - >
+        containerlab tools netem set bonsai-dc srl-spine2 e1-2
+        --delay 500ms --jitter 50ms
+    heal:
+      - containerlab tools netem reset bonsai-dc srl-spine2 e1-2
+    expects:
+      - detection: interface_high_latency
+        target: srl-spine2
+        interface: ethernet-1/2
+        within_seconds: 120
+      - detection: bgp_neighbor_degraded
+        target: srl-spine2
+        within_seconds: 150
+    bonsai_rule: interface_high_latency
+
+  # ── Staggered cascade failure ─────────────────────────────────────────────────
+
+  - id: dc-staggered-cascade-leaf1-then-leaf2
+    topology: dc
+    description: "Time-distributed cascade: leaf1 link down first, then leaf2 BGP disabled 90s later"
+    inject:
+      - >
+        docker exec clab-bonsai-dc-srl-leaf1
+        sr_cli -d "set / interface ethernet-1/1 admin-state disable"
+      # 90-second gap before second fault — handled by chaos_runner stagger_seconds parameter
+      - >
+        docker exec clab-bonsai-dc-srl-leaf2
+        sr_cli -d "set / network-instance default protocols bgp neighbor 10.1.0.4 admin-state disable"
+    heal:
+      - >
+        docker exec clab-bonsai-dc-srl-leaf1
+        sr_cli -d "set / interface ethernet-1/1 admin-state enable"
+      - >
+        docker exec clab-bonsai-dc-srl-leaf2
+        sr_cli -d "set / network-instance default protocols bgp neighbor 10.1.0.4 admin-state enable"
+    stagger_seconds: 90
+    expects:
+      - detection: interface_admin_down
+        target: srl-leaf1
+        interface: ethernet-1/1
+        within_seconds: 30
+      - detection: bgp_neighbor_down
+        target: srl-leaf2
+        peer_ip: 10.1.0.4
+        within_seconds: 30
+    bonsai_rule: staggered_multi_fault
+
+  # ── ISIS metric manipulation ───────────────────────────────────────────────────
+
+  - id: dc-isis-metric-spike-leaf4-spine1
+    topology: dc
+    description: "Set IS-IS metric to max (16777214) on leaf4 e1-1 — effectively withdraws path without adjacency drop"
+    inject:
+      - >
+        docker exec clab-bonsai-dc-srl-leaf4
+        sr_cli -d "set / network-instance default protocols isis instance main interface ethernet-1/1.0 level 2 metric 16777214"
+    heal:
+      - >
+        docker exec clab-bonsai-dc-srl-leaf4
+        sr_cli -d "set / network-instance default protocols isis instance main interface ethernet-1/1.0 level 2 metric 10"
+    expects:
+      - detection: isis_metric_anomaly
+        target: srl-leaf4
+        interface: ethernet-1/1
+        within_seconds: 60
+    bonsai_rule: isis_metric_anomaly
+
   # ── SP topology faults ────────────────────────────────────────────────────────
 
   - id: sp-link-down-pe1-p1
