@@ -60,6 +60,9 @@ _die() { echo "ERROR: $*" >&2; exit 1; }
 _run() { "$DRY_RUN" && echo "[DRY-RUN] $*" || "$@"; }
 _step() { _log ""; _log "=== Step $1: $2 ==="; }
 
+OS_ID=""
+[[ -f /etc/os-release ]] && OS_ID=$(awk -F= '$1 == "ID" {gsub(/"/, "", $2); print $2}' /etc/os-release)
+
 # ── Step 1: System packages ───────────────────────────────────────────────────
 
 _step 1 "System packages"
@@ -67,7 +70,7 @@ _step 1 "System packages"
 _run sudo dnf install -y -q \
     git curl wget jq \
     gcc gcc-c++ make cmake pkg-config openssl-devel \
-    python3 python3-pip python3-virtualenv \
+    python3 python3-pip python3-virtualenv python3.12 \
     zstd \
     iproute-tc   # tc / netem for chaos injection
 
@@ -75,8 +78,6 @@ _run sudo dnf install -y -q \
 # Install Docker CE from Docker's script when the distro repos do not provide it.
 if ! command -v docker &>/dev/null; then
     _log "Installing Docker CE..."
-    OS_ID=""
-    [[ -f /etc/os-release ]] && OS_ID=$(awk -F= '$1 == "ID" {gsub(/"/, "", $2); print $2}' /etc/os-release)
     if [[ "$OS_ID" == "ol" ]]; then
         _run sudo dnf config-manager --add-repo=https://download.docker.com/linux/centos/docker-ce.repo
         _run sudo dnf install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
@@ -163,6 +164,16 @@ fi
 
 cd "$INSTALL_DIR"
 
+# ── Step 3b: Python tooling venv ──────────────────────────────────────────────
+
+_step "3b" "Python tooling venv"
+
+if [[ ! -x "$INSTALL_DIR/.venv/bin/python3" ]]; then
+    _run python3.12 -m venv "$INSTALL_DIR/.venv"
+fi
+_run "$INSTALL_DIR/.venv/bin/python3" -m pip install -q --upgrade pip
+_run "$INSTALL_DIR/.venv/bin/python3" -m pip install -q pyyaml paramiko pyarrow
+
 # ── Step 4: Build bonsai binary ────────────────────────────────────────────────
 
 _step 4 "Cargo build (--release)"
@@ -171,6 +182,15 @@ if "$SKIP_BUILD" && [[ -f "target/release/bonsai" ]]; then
     _log "  Skipping build (--skip-build, binary exists)"
 else
     source "$HOME/.cargo/env" 2>/dev/null || true
+    if [[ "$OS_ID" == "ol" ]]; then
+        _run sudo dnf install -y -q gcc-toolset-14-gcc gcc-toolset-14-gcc-c++
+        export CC=/opt/rh/gcc-toolset-14/root/usr/bin/gcc
+        export CXX=/opt/rh/gcc-toolset-14/root/usr/bin/g++
+        export CMAKE_ARGS="-DPython3_EXECUTABLE=/usr/bin/python3.12 ${CMAKE_ARGS:-}"
+        export RUSTFLAGS="-C link-arg=-Wl,--allow-multiple-definition ${RUSTFLAGS:-}"
+        export PATH="/opt/rh/gcc-toolset-14/root/usr/bin:$PATH"
+        _run rm -rf target/release/build/lbug-*
+    fi
     _run env RUSTC_WRAPPER= cargo build --release
 fi
 
@@ -203,7 +223,10 @@ COMPOSE
 
 COMPOSE_EXTERNAL="docker/compose-external.yml"
 if [[ -f "$COMPOSE_EXTERNAL" ]]; then
-    _run docker compose \
+    _run env \
+        SPLUNK_PASSWORD="${SPLUNK_PASSWORD:-bonsai-cloud-disabled}" \
+        SPLUNK_HEC_TOKEN="${SPLUNK_HEC_TOKEN:-bonsai-cloud-disabled}" \
+        docker compose \
         -f "$COMPOSE_EXTERNAL" \
         -f /tmp/compose-cloud-override.yml \
         --profile netbox --profile prometheus \
@@ -336,8 +359,8 @@ WorkingDirectory=$INSTALL_DIR
 ExecStart=$INSTALL_DIR/target/release/bonsai
 Restart=on-failure
 RestartSec=10s
-StandardOutput=append:$ARCHIVE_MOUNT/logs/bonsai.log
-StandardError=append:$ARCHIVE_MOUNT/logs/bonsai.log
+StandardOutput=journal
+StandardError=journal
 Environment=RUST_LOG=info
 
 [Install]
@@ -385,13 +408,15 @@ curl -sf "http://localhost:$BONSAI_PORT/api/topology" &>/dev/null && \
 _step 10 "Chaos runner daemon"
 
 CHAOS_STATUS=$(bash "$INSTALL_DIR/scripts/chaos_runner.sh" --status 2>/dev/null || echo "stopped")
-if echo "$CHAOS_STATUS" | grep -q "RUNNING"; then
+if echo "$CHAOS_STATUS" | grep -q "daemon is RUNNING"; then
     _log "  Chaos runner already running"
 else
     _log "  Starting chaos runner daemon (cloud DC plan)..."
     # Use cloud-specific plan (bonsai-cloud-dc topology, 10.4.x.x addressing)
     export PLAN="$INSTALL_DIR/chaos_plans/always_on_cloud_dc.yaml"
+    export BONSAI_FAULT_TRANSPORT=docker
     _run bash "$INSTALL_DIR/scripts/chaos_runner.sh"
+    unset BONSAI_FAULT_TRANSPORT
     unset PLAN
 fi
 

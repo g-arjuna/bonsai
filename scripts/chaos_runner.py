@@ -113,7 +113,7 @@ def inject(fault: dict, targets: dict, topology: str, dry_run: bool) -> dict | N
             peer = random.choice(fault["peer_addresses"])
             log.info("[INJECT] bgp_session_down  host=%s  peer=%s", hostname, peer)
             if not dry_run:
-                inject_fault.dispatch_bgp_down(targets, hostname, peer)
+                inject_fault.dispatch_bgp_down(targets, hostname, peer, topology)
             return {
                 "fault_type": fault_type,
                 "hostname": hostname,
@@ -127,7 +127,7 @@ def inject(fault: dict, targets: dict, topology: str, dry_run: bool) -> dict | N
             iface = random.choice(fault["interfaces"])
             log.info("[INJECT] interface_shut  host=%s  iface=%s", hostname, iface)
             if not dry_run:
-                inject_fault.dispatch_iface_down(targets, hostname, iface)
+                inject_fault.dispatch_iface_down(targets, hostname, iface, topology)
             return {
                 "fault_type": fault_type,
                 "hostname": hostname,
@@ -170,12 +170,12 @@ def heal(record: dict, fault: dict, targets: dict, topology: str, dry_run: bool)
         if fault_type == "bgp_session_down":
             log.info("[HEAL] bgp_session_up  host=%s  peer=%s", hostname, param)
             if not dry_run:
-                inject_fault.dispatch_bgp_up(targets, hostname, param)
+                inject_fault.dispatch_bgp_up(targets, hostname, param, topology)
 
         elif fault_type == "interface_shut":
             log.info("[HEAL] interface_up  host=%s  iface=%s", hostname, param)
             if not dry_run:
-                inject_fault.dispatch_iface_up(targets, hostname, param)
+                inject_fault.dispatch_iface_up(targets, hostname, param, topology)
 
         elif fault_type == "netem_loss":
             iface = param.split(":")[0]

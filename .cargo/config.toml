@@ -17,3 +17,8 @@ rustc-wrapper = "sccache"
 # lbug bundles its own libzstd.a (C++) which conflicts with zstd-sys (C).
 # --allow-multiple-definition picks the first definition and suppresses the dup error.
 rustflags = ["-C", "link-arg=-Wl,--allow-multiple-definition"]
+
+[target.aarch64-unknown-linux-gnu]
+# Oracle Always Free ARM hosts hit the same static lbug/zstd-sys duplicate symbol
+# link conflict as Linux x86 host builds.
+rustflags = ["-C", "link-arg=-Wl,--allow-multiple-definition"]

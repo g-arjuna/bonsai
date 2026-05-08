@@ -30,6 +30,7 @@ Vendor detection: reads the `vendor` field from bonsai.toml [[target]] blocks.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -124,6 +125,22 @@ def _run_srl(address: str, username: str, password: str, command: str) -> str:
         client.close()
 
 
+def _run_srl_docker(hostname: str, command: str, topology: str = TOPOLOGY_NAME) -> str:
+    """Run an SR Linux config command through the local ContainerLab container."""
+    container = _clab_node_name(topology, hostname)
+    result = subprocess.run(
+        ["docker", "exec", "-i", container, "sr_cli"],
+        input=f"enter candidate exclusive\n{command}\ncommit now\n",
+        capture_output=True,
+        text=True,
+        timeout=CMD_TIMEOUT,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return lines[-1] if lines else "ok"
+
+
 def _run_xrd(address: str, username: str, password: str, commands: list[str]) -> str:
     """Run a list of XR exec/config commands in an interactive shell."""
     client = _ssh_connect(address, username, password)
@@ -153,9 +170,21 @@ def srl_bgp_disable(address: str, username: str, password: str, peer: str) -> No
     print(f"  SRL BGP disable {peer}: {out or 'ok'}")
 
 
+def srl_bgp_disable_docker(hostname: str, peer: str, topology: str = TOPOLOGY_NAME) -> None:
+    cmd = f"set / network-instance default protocols bgp neighbor {peer} admin-state disable"
+    out = _run_srl_docker(hostname, cmd, topology)
+    print(f"  SRL BGP disable {peer}: {out or 'ok'}")
+
+
 def srl_bgp_enable(address: str, username: str, password: str, peer: str) -> None:
     cmd = f"set / network-instance default protocols bgp neighbor {peer} admin-state enable"
     out = _run_srl(address, username, password, cmd)
+    print(f"  SRL BGP enable {peer}: {out or 'ok'}")
+
+
+def srl_bgp_enable_docker(hostname: str, peer: str, topology: str = TOPOLOGY_NAME) -> None:
+    cmd = f"set / network-instance default protocols bgp neighbor {peer} admin-state enable"
+    out = _run_srl_docker(hostname, cmd, topology)
     print(f"  SRL BGP enable {peer}: {out or 'ok'}")
 
 
@@ -165,9 +194,21 @@ def srl_iface_down(address: str, username: str, password: str, iface: str) -> No
     print(f"  SRL interface down {iface}: {out or 'ok'}")
 
 
+def srl_iface_down_docker(hostname: str, iface: str, topology: str = TOPOLOGY_NAME) -> None:
+    cmd = f"set / interface {iface} admin-state disable"
+    out = _run_srl_docker(hostname, cmd, topology)
+    print(f"  SRL interface down {iface}: {out or 'ok'}")
+
+
 def srl_iface_up(address: str, username: str, password: str, iface: str) -> None:
     cmd = f"set / interface {iface} admin-state enable"
     out = _run_srl(address, username, password, cmd)
+    print(f"  SRL interface up {iface}: {out or 'ok'}")
+
+
+def srl_iface_up_docker(hostname: str, iface: str, topology: str = TOPOLOGY_NAME) -> None:
+    cmd = f"set / interface {iface} admin-state enable"
+    out = _run_srl_docker(hostname, cmd, topology)
     print(f"  SRL interface up {iface}: {out or 'ok'}")
 
 
@@ -199,9 +240,19 @@ def xrd_iface_up(address: str, username: str, password: str, iface: str) -> None
 
 # ── netem (runs clab on host, not via SSH) ────────────────────────────────────
 
+def _clab_node_name(topology: str, node_name: str) -> str:
+    """Return the Docker container name ContainerLab netem expects."""
+    prefix = f"clab-{topology}-"
+    if node_name.startswith(prefix):
+        return node_name
+    return f"{prefix}{node_name}"
+
+
 def netem_loss(node_name: str, iface: str, loss_pct: float, topology: str = TOPOLOGY_NAME) -> None:
     """Apply packet loss via `clab tools netem`. Requires clab on PATH."""
-    cmd = ["clab", "tools", "netem", "set", topology, node_name, iface,
+    clab_node = _clab_node_name(topology, node_name)
+    cmd = ["clab", "tools", "netem", "set",
+           "--name", topology, "--node", clab_node, "--interface", iface,
            "--loss", str(loss_pct)]
     print(f"  netem: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -212,18 +263,28 @@ def netem_loss(node_name: str, iface: str, loss_pct: float, topology: str = TOPO
 
 
 def netem_delay(node_name: str, iface: str, delay_ms: int, topology: str = TOPOLOGY_NAME) -> None:
-    cmd = ["clab", "tools", "netem", "set", topology, node_name, iface,
+    clab_node = _clab_node_name(topology, node_name)
+    cmd = ["clab", "tools", "netem", "set",
+           "--name", topology, "--node", clab_node, "--interface", iface,
            "--delay", f"{delay_ms}ms"]
     print(f"  netem: {' '.join(cmd)}")
-    subprocess.run(cmd, capture_output=True, text=True)
-    print(f"  netem delay {delay_ms}ms applied to {node_name}:{iface}")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"  [netem error] {result.stderr.strip()}", file=sys.stderr)
+    else:
+        print(f"  netem delay {delay_ms}ms applied to {node_name}:{iface}")
 
 
 def netem_clear(node_name: str, iface: str, topology: str = TOPOLOGY_NAME) -> None:
-    cmd = ["clab", "tools", "netem", "del", topology, node_name, iface]
+    clab_node = _clab_node_name(topology, node_name)
+    cmd = ["clab", "tools", "netem", "reset",
+           "--name", topology, "--node", clab_node, "--interface", iface]
     print(f"  netem: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
-    print(f"  netem cleared on {node_name}:{iface}")
+    if result.returncode != 0:
+        print(f"  [netem error] {result.stderr.strip()}", file=sys.stderr)
+    else:
+        print(f"  netem cleared on {node_name}:{iface}")
 
 
 # ── dispatch ──────────────────────────────────────────────────────────────────
@@ -235,38 +296,50 @@ def _get_target(targets: dict, hostname: str) -> dict:
     return targets[hostname]
 
 
-def dispatch_bgp_down(targets: dict, hostname: str, peer: str) -> None:
+def _use_docker_transport() -> bool:
+    return os.environ.get("BONSAI_FAULT_TRANSPORT", "").lower() == "docker"
+
+
+def dispatch_bgp_down(targets: dict, hostname: str, peer: str, topology: str = TOPOLOGY_NAME) -> None:
     t = _get_target(targets, hostname)
     print(f"[{time.strftime('%H:%M:%S')}] BGP DOWN: {hostname} peer {peer}")
     if "xrd" in t["vendor"]:
         xrd_bgp_disable(t["address"], t["username"], t["password"], peer)
+    elif _use_docker_transport():
+        srl_bgp_disable_docker(hostname, peer, topology)
     else:
         srl_bgp_disable(t["address"], t["username"], t["password"], peer)
 
 
-def dispatch_bgp_up(targets: dict, hostname: str, peer: str) -> None:
+def dispatch_bgp_up(targets: dict, hostname: str, peer: str, topology: str = TOPOLOGY_NAME) -> None:
     t = _get_target(targets, hostname)
     print(f"[{time.strftime('%H:%M:%S')}] BGP UP: {hostname} peer {peer}")
     if "xrd" in t["vendor"]:
         xrd_bgp_enable(t["address"], t["username"], t["password"], peer)
+    elif _use_docker_transport():
+        srl_bgp_enable_docker(hostname, peer, topology)
     else:
         srl_bgp_enable(t["address"], t["username"], t["password"], peer)
 
 
-def dispatch_iface_down(targets: dict, hostname: str, iface: str) -> None:
+def dispatch_iface_down(targets: dict, hostname: str, iface: str, topology: str = TOPOLOGY_NAME) -> None:
     t = _get_target(targets, hostname)
     print(f"[{time.strftime('%H:%M:%S')}] IFACE DOWN: {hostname} {iface}")
     if "xrd" in t["vendor"]:
         xrd_iface_down(t["address"], t["username"], t["password"], iface)
+    elif _use_docker_transport():
+        srl_iface_down_docker(hostname, iface, topology)
     else:
         srl_iface_down(t["address"], t["username"], t["password"], iface)
 
 
-def dispatch_iface_up(targets: dict, hostname: str, iface: str) -> None:
+def dispatch_iface_up(targets: dict, hostname: str, iface: str, topology: str = TOPOLOGY_NAME) -> None:
     t = _get_target(targets, hostname)
     print(f"[{time.strftime('%H:%M:%S')}] IFACE UP: {hostname} {iface}")
     if "xrd" in t["vendor"]:
         xrd_iface_up(t["address"], t["username"], t["password"], iface)
+    elif _use_docker_transport():
+        srl_iface_up_docker(hostname, iface, topology)
     else:
         srl_iface_up(t["address"], t["username"], t["password"], iface)
 
@@ -314,28 +387,28 @@ def main() -> None:
     targets = _load_targets(args.config)
 
     if args.cmd == "bgp-down":
-        dispatch_bgp_down(targets, args.hostname, args.peer)
+        dispatch_bgp_down(targets, args.hostname, args.peer, args.topology)
 
     elif args.cmd == "bgp-up":
-        dispatch_bgp_up(targets, args.hostname, args.peer)
+        dispatch_bgp_up(targets, args.hostname, args.peer, args.topology)
 
     elif args.cmd == "bgp-flap":
-        dispatch_bgp_down(targets, args.hostname, args.peer)
+        dispatch_bgp_down(targets, args.hostname, args.peer, args.topology)
         print(f"  holding down for {args.hold}s...")
         time.sleep(args.hold)
-        dispatch_bgp_up(targets, args.hostname, args.peer)
+        dispatch_bgp_up(targets, args.hostname, args.peer, args.topology)
 
     elif args.cmd == "iface-down":
-        dispatch_iface_down(targets, args.hostname, args.iface)
+        dispatch_iface_down(targets, args.hostname, args.iface, args.topology)
 
     elif args.cmd == "iface-up":
-        dispatch_iface_up(targets, args.hostname, args.iface)
+        dispatch_iface_up(targets, args.hostname, args.iface, args.topology)
 
     elif args.cmd == "iface-flap":
-        dispatch_iface_down(targets, args.hostname, args.iface)
+        dispatch_iface_down(targets, args.hostname, args.iface, args.topology)
         print(f"  holding down for {args.hold}s...")
         time.sleep(args.hold)
-        dispatch_iface_up(targets, args.hostname, args.iface)
+        dispatch_iface_up(targets, args.hostname, args.iface, args.topology)
 
     elif args.cmd == "netem-loss":
         netem_loss(args.hostname, args.iface, args.loss_pct, args.topology)

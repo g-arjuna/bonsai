@@ -1,8 +1,10 @@
 # chaos_plans/always_on_cloud_dc.yaml
 #
 # Always-on chaos plan for the cloud 6-node DC topology (bonsai-cloud-dc).
-# Mirrors always_on_dc.yaml but uses the cloud topology name and 10.4.x.x
-# addressing derived from lab/cloud-dc-6node-configs/*.cfg
+# Mirrors the interface and BGP portions of always_on_dc.yaml but uses the
+# cloud topology name and 10.4.x.x addressing derived from
+# lab/cloud-dc-6node-configs/*.cfg. Netem impairments are intentionally omitted
+# because Oracle Linux UEK on the Always Free A1 image does not ship sch_netem.
 #
 # Run via deploy.sh (Step 10) which invokes chaos_runner.sh with this plan.
 # Direct usage:
@@ -19,42 +21,6 @@ injection_interval_seconds: [45, 120]
 #   srl-leaf3:  10.4.0.5   srl-leaf4:  10.4.0.6
 
 faults:
-  # ── Link impairment (netem) ───────────────────────────────────────────────────
-  - type: netem_loss
-    weight: 5
-    targets: [srl-leaf1]
-    interfaces: [e1-1]
-    loss_percent: [2, 20]
-    healing_delay_seconds: [30, 90]
-
-  - type: netem_loss
-    weight: 5
-    targets: [srl-leaf2]
-    interfaces: [e1-1]
-    loss_percent: [2, 20]
-    healing_delay_seconds: [30, 90]
-
-  - type: netem_loss
-    weight: 4
-    targets: [srl-leaf3]
-    interfaces: [e1-1]
-    loss_percent: [2, 20]
-    healing_delay_seconds: [30, 90]
-
-  - type: netem_loss
-    weight: 4
-    targets: [srl-leaf4]
-    interfaces: [e1-1]
-    loss_percent: [2, 20]
-    healing_delay_seconds: [30, 90]
-
-  - type: netem_loss
-    weight: 3
-    targets: [srl-spine1]
-    interfaces: [e1-1, e1-2, e1-3, e1-4, e1-5]
-    loss_percent: [2, 10]
-    healing_delay_seconds: [30, 75]
-
   # ── Interface shutdown ────────────────────────────────────────────────────────
   - type: interface_shut
     weight: 5

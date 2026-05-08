@@ -37,6 +37,7 @@ if [[ "${1:-}" == "--stop" ]]; then
         if kill -0 "$PID" 2>/dev/null; then
             _log "Sending SIGTERM to chaos_runner daemon (PID $PID)"
             kill "$PID"
+            pkill -P "$PID" 2>/dev/null || true
         else
             _log "PID $PID not running — cleaning stale pid file"
         fi
@@ -82,6 +83,7 @@ fi
 
 # ── Main loop (foreground worker) ─────────────────────────────────────────────
 _run_loop() {
+    cd "$REPO_ROOT"
     _log "=== Chaos runner started (PID $$) ==="
     _log "Plan: $PLAN"
     _log "Python: $PYTHON"
@@ -128,8 +130,8 @@ if [[ -f "$PID_FILE" ]]; then
     fi
 fi
 
-# Fork into background, keeping log appended
-nohup bash "$0" --fg >>"$LOG_FILE" 2>&1 &
+# Fork into background. The foreground worker writes its own log entries.
+nohup bash "$0" --fg >/dev/null 2>&1 &
 DAEMON_PID=$!
 echo "$DAEMON_PID" > "$PID_FILE"
 _log "Daemon started in background (PID $DAEMON_PID)"

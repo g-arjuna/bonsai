@@ -76,8 +76,8 @@ End-to-end code review confirms all Bv4 work landed cleanly. Removing completed 
 |---|---|---|
 | File-rotated logging | ✅ Done | `[logging]` config section, per-module level overrides, log volume metrics |
 | Always-on chaos plan (DC) | ✅ Built | `chaos_plans/always_on_dc.yaml` (132 lines, 18 fault entries: 6 netem_loss, 6 interface_shut, 6 bgp_session_down) |
-| Always-on chaos plan (cloud-DC) | ✅ Built | `chaos_plans/always_on_cloud_dc.yaml` (118 lines, sized for 6-node lab) |
-| Chaos runner daemon | ✅ Built | `scripts/chaos_runner.sh` (139 lines) + `scripts/chaos_runner.py` |
+| Always-on chaos plan (cloud-DC) | ✅ Built | `chaos_plans/always_on_cloud_dc.yaml` (84 lines, 10 cloud-safe fault entries: interface_shut + bgp_session_down; netem omitted because Oracle UEK lacks `sch_netem`) |
+| Chaos runner daemon | ✅ Built | `scripts/chaos_runner.sh` (140 lines) + `scripts/chaos_runner.py` |
 | Detection baseline computation | ✅ Built | `scripts/compute_detection_baselines.py` (384 lines) |
 | Archive integrity verification | ✅ Built | `scripts/verify_archive.sh` (230 lines) |
 | Cloud lab variant | ✅ Built | `lab/cloud-dc-6node.yml` + 6 SRL configs (sized for Oracle Always Free 24 GB ARM) |
@@ -90,8 +90,8 @@ End-to-end code review confirms all Bv4 work landed cleanly. Removing completed 
 
 ### Not yet started
 
-- ❌ Chaos archive accumulation — runner built, never run continuously
-- ❌ Cloud spike execution — infrastructure built, free-tier VM not yet provisioned
+- 🟡 Chaos archive accumulation — laptop quiet baseline started; cloud chaos started 2026-05-08 and is producing clean BGP/interface cycles
+- 🟡 Cloud spike execution — Oracle Always Free VM provisioned and deployed; 5-day evaluation now running
 - ❌ Detection baseline computation against real archive — script exists, no archive to compute against
 - ❌ SP lab bring-up — deferred to after sufficient DC archive
 - ❌ GNN training — gates on archive depth
@@ -102,7 +102,11 @@ End-to-end code review confirms all Bv4 work landed cleanly. Removing completed 
 - ✅ T2-1 GNN data loader skeleton landed with synthetic fixtures and unit tests.
 - ✅ Cloud T1-B-1 provisioning completed: Oracle A1 Always Free VM is running at `4 OCPU / 24 GB RAM`, with `50 GB` boot + `150 GB` archive block volume (`200 GB` total).
 - ✅ Cloud provisioning/deploy scripts hardened: `--dry-run` no longer launches instances, cloud-init firewalld calls are timeout-bounded, cloud deploy writes a cloud-specific `bonsai.toml`.
-- ⏳ Cloud T1-B-2 deployment pending: install/build/start cloud lab, Bonsai, archive, chaos runner, and daily sync on the VM.
+- ✅ T1-A-3 daily verification wrapper added: `scripts/bv5_daily_check.sh` writes `docs/test_results/daily_runs/<date>.md`; 2026-05-08 laptop snapshot captured.
+- ✅ T2-2 synthetic rule-baseline harness added: `python/bonsai_ml/eval/rule_baseline.py` with precision/recall/F1, latency, clear-time, and Markdown reporting tests.
+- ✅ Cloud T1-B-2 deployment completed: Docker/ContainerLab, 6-node SR Linux lab, Bonsai systemd service, NetBox, Prometheus, Grafana, archive verification, and chaos daemon are running on the VM.
+- ✅ Cloud chaos adjusted for Oracle Always Free: netem removed from the cloud plan because `sch_netem` is absent on Oracle UEK; Nokia SR Linux BGP/interface faults use Docker transport so they do not depend on per-node management SSH.
+- ⚠️ Cloud T1-B-3 sync is partially ready: daily cron is installed and archive verification passes, but `GITHUB_TOKEN` is missing from the VM environment, so GitHub push is not active yet.
 
 ---
 
@@ -331,6 +335,8 @@ If T1-B-1 succeeds:
 6. Start chaos runner with `chaos_plans/always_on_cloud_dc.yaml`
 
 **Done when**: cloud chaos runner producing cycles; daily sync reaching GitHub.
+
+**2026-05-08 status**: chaos runner is producing clean BGP/interface cycles after restart at `2026-05-08T15:36:57Z`; archive verification passes. Daily sync cron is installed, but GitHub push still needs a VM-side `GITHUB_TOKEN`.
 
 #### T1-B-3 (Bv5) — Daily sync verification
 
