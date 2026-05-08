@@ -66,15 +66,25 @@ _step 1 "System packages"
 
 _run sudo dnf install -y -q \
     git curl wget jq \
-    docker docker-compose \
     gcc make pkg-config openssl-devel \
-    python3 python3-pip python3-venv \
+    python3 python3-pip python3-virtualenv \
     zstd \
     iproute-tc   # tc / netem for chaos injection
+
+# Oracle Linux package names for Docker/Compose vary by image and repo set.
+# Install Docker CE from Docker's script when the distro repos do not provide it.
+if ! command -v docker &>/dev/null; then
+    _log "Installing Docker CE..."
+    _run curl -fsSL https://get.docker.com | sudo sh
+fi
 
 # Enable and start Docker
 _run sudo systemctl enable --now docker
 _run sudo usermod -aG docker "$USER" || true
+
+if ! docker compose version &>/dev/null; then
+    _die "Docker Compose plugin is not available after Docker install"
+fi
 
 # Install Rust (if not present)
 if ! command -v cargo &>/dev/null; then
