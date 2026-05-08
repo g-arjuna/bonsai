@@ -47,7 +47,10 @@ RESULTS=()
 
 _pass() { PASS=$((PASS+1)); RESULTS+=("{\"check\":\"$1\",\"status\":\"pass\",\"detail\":\"$2\"}"); }
 _fail() { FAIL=$((FAIL+1)); RESULTS+=("{\"check\":\"$1\",\"status\":\"fail\",\"detail\":\"$2\"}"); }
-_info() { [[ "$JSON_MODE" == "false" ]] && echo "  $*"; }
+_info() {
+    [[ "$JSON_MODE" == "false" ]] && echo "  $*"
+    return 0
+}
 
 [[ "$JSON_MODE" == "false" ]] && echo "=== Bonsai archive verification ===" && echo "Archive: $ARCHIVE_DIR"
 
@@ -84,12 +87,46 @@ else
     _info "Files: ${PARQUET_FILES[*]}"
 fi
 
+# ── Split active writer files from closed/readable files ──────────────────────
+# ArrowWriter may keep the current hourly file at 0 bytes until the writer is
+# closed.  Treat recently-modified zero-byte parquet files as active writers,
+# but fail stale zero-byte files because those indicate truncation.
+READABLE_PARQUET_FILES=()
+STALE_ZERO_FILES=()
+ACTIVE_ZERO_FILES=()
+NOW_EPOCH=$(date +%s)
+ACTIVE_ZERO_GRACE_SECS=$((3 * 60 * 60))
+
+for f in "${PARQUET_FILES[@]}"; do
+    size=$(stat -c%s "$f" 2>/dev/null || echo 0)
+    if [[ "$size" -gt 0 ]]; then
+        READABLE_PARQUET_FILES+=("$f")
+        continue
+    fi
+
+    mtime=$(stat -c%Y "$f" 2>/dev/null || echo 0)
+    age=$((NOW_EPOCH - mtime))
+    if [[ "$age" -le "$ACTIVE_ZERO_GRACE_SECS" ]]; then
+        ACTIVE_ZERO_FILES+=("$f")
+    else
+        STALE_ZERO_FILES+=("$f")
+    fi
+done
+
+if [[ ${#ACTIVE_ZERO_FILES[@]} -gt 0 ]]; then
+    _pass "active_writer_files" "${#ACTIVE_ZERO_FILES[@]} zero-byte active writer file(s) ignored"
+fi
+
+if [[ ${#STALE_ZERO_FILES[@]} -gt 0 ]]; then
+    _fail "stale_zero_byte_files" "${#STALE_ZERO_FILES[@]} stale zero-byte parquet file(s)"
+fi
+
 # ── Check 3: Schema validation (expected columns present) ─────────────────────
 SCHEMA_OK=true
 SCHEMA_ERRORS=""
 
-if [[ ${#PARQUET_FILES[@]} -gt 0 && "$PASS" -gt 0 ]]; then
-    SCHEMA_RESULT=$("$PYTHON" - <<'EOF'
+if [[ ${#READABLE_PARQUET_FILES[@]} -gt 0 && "$PASS" -gt 0 ]]; then
+    SCHEMA_RESULT=$("$PYTHON" - "$ARCHIVE_DIR" <<'EOF'
 import sys, json
 import pyarrow.parquet as pq
 import glob, os
@@ -102,6 +139,7 @@ archive_dir = sys.argv[1] if len(sys.argv) > 1 else "."
 files = sorted(glob.glob(os.path.join(archive_dir, "**/*.parquet"), recursive=True))
 if not files:
     files = glob.glob(os.path.join(archive_dir, "*.parquet"))
+files = [f for f in files if os.path.getsize(f) > 0]
 
 errors = []
 for f in files:
@@ -116,7 +154,7 @@ for f in files:
 
 print(json.dumps({"errors": errors, "files_checked": len(files)}))
 EOF
-    "$ARCHIVE_DIR" 2>/dev/null) || SCHEMA_RESULT='{"errors":["python error"],"files_checked":0}'
+    2>/dev/null) || SCHEMA_RESULT='{"errors":["python error"],"files_checked":0}'
 
     SCHEMA_ERRORS=$(echo "$SCHEMA_RESULT" | "$PYTHON" -c "import json,sys; d=json.load(sys.stdin); print('\n'.join(d['errors']))")
     FILES_CHECKED=$(echo "$SCHEMA_RESULT" | "$PYTHON" -c "import json,sys; d=json.load(sys.stdin); print(d['files_checked'])")
@@ -126,18 +164,19 @@ EOF
     else
         _pass "schema_valid" "all $FILES_CHECKED file(s) have required columns"
     fi
+else
+    _pass "schema_pending" "no closed non-empty parquet files yet; active writers are still open"
 fi
 
 # ── Check 4: Row count non-decreasing (today >= yesterday) ────────────────────
-if [[ ${#PARQUET_FILES[@]} -gt 0 && "$FAIL" -eq 0 ]]; then
+if [[ ${#READABLE_PARQUET_FILES[@]} -gt 0 && "$FAIL" -eq 0 ]]; then
     TOTAL_ROWS=$("$PYTHON" - "$ARCHIVE_DIR" <<'EOF'
 import sys, glob, os
 import pyarrow.parquet as pq
 
 archive_dir = sys.argv[1]
 files = sorted(glob.glob(os.path.join(archive_dir, "**/*.parquet"), recursive=True))
-if not files:
-    files = glob.glob(os.path.join(archive_dir, "*.parquet"))
+files = [f for f in files if os.path.getsize(f) > 0]
 
 total = 0
 for f in files:
@@ -198,13 +237,15 @@ fi
 # ── Check 5: Compression ratio (raw / parquet size, expect > 2.0) ─────────────
 if [[ ${#PARQUET_FILES[@]} -gt 0 ]]; then
     TOTAL_SIZE=0
-    for f in "${PARQUET_FILES[@]}"; do
+    for f in "${READABLE_PARQUET_FILES[@]}"; do
         TOTAL_SIZE=$((TOTAL_SIZE + $(stat -c%s "$f" 2>/dev/null || echo 0)))
     done
 
     if [[ "$TOTAL_SIZE" -gt 0 ]]; then
         _pass "files_non_empty" "total size=${TOTAL_SIZE} bytes"
         _info "Total parquet size: $((TOTAL_SIZE / 1024)) KiB"
+    elif [[ ${#STALE_ZERO_FILES[@]} -eq 0 && ${#ACTIVE_ZERO_FILES[@]} -gt 0 ]]; then
+        _pass "files_pending_close" "only active zero-byte writer files present"
     else
         _fail "files_non_empty" "parquet files sum to 0 bytes — truncation?"
     fi

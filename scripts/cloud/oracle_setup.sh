@@ -205,6 +205,26 @@ _log "  Subnet: $SUBNET_ID"
 # Step 4: Launch instance
 _log "Step 4: Launching Always Free ARM instance..."
 
+if "$DRY_RUN"; then
+    _run oci compute instance launch \
+        --compartment-id "$OCI_COMPARTMENT_ID" \
+        --availability-domain "$AD" \
+        --display-name "$INSTANCE_NAME" \
+        --image-id "$IMAGE_ID" \
+        --shape "$INSTANCE_SHAPE" \
+        --shape-config "{\"ocpus\":$OCPU_COUNT,\"memoryInGBs\":$MEM_GB}" \
+        --subnet-id "$SUBNET_ID" \
+        --assign-public-ip true \
+        --ssh-authorized-keys-file "$OCI_SSH_KEY_PATH" \
+        --boot-volume-size-in-gbs "$BOOT_VOL_GB" \
+        --metadata "{\"user_data\":\"$(base64 -w0 "$(dirname "${BASH_SOURCE[0]}")/cloud_init.sh" 2>/dev/null || echo "")\"}" \
+        --region "$OCI_REGION" \
+        --wait-for-state RUNNING \
+        --output json
+    _log "Dry-run complete before instance creation."
+    exit 0
+fi
+
 LAUNCH_JSON=$(oci compute instance launch \
     --compartment-id "$OCI_COMPARTMENT_ID" \
     --availability-domain "$AD" \

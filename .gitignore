@@ -33,6 +33,9 @@ docker/tls/
 # Compose local env overrides — contains vault passphrase
 .env
 
+# OCI cloud spike live resource state — contains instance/volume OCIDs and IPs
+scripts/cloud/instance.env
+
 # gNMI probe credentials (copy from gnmi-creds.sh.example)
 lab/tools/gnmi-creds.sh
 

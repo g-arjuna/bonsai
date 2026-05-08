@@ -179,14 +179,16 @@ services:
     profiles: [disabled]
 COMPOSE
 
-if [[ -f "compose-external.yml" ]]; then
+COMPOSE_EXTERNAL="docker/compose-external.yml"
+if [[ -f "$COMPOSE_EXTERNAL" ]]; then
     _run docker compose \
-        -f compose-external.yml \
+        -f "$COMPOSE_EXTERNAL" \
         -f /tmp/compose-cloud-override.yml \
+        --profile netbox --profile prometheus \
         up -d --remove-orphans
     _log "  External infra started"
 else
-    _log "  No compose-external.yml — skipping infra"
+    _log "  No $COMPOSE_EXTERNAL — skipping infra"
 fi
 
 # ── Step 7: Write bonsai.toml ─────────────────────────────────────────────────
@@ -194,14 +196,100 @@ fi
 _step 7 "bonsai.toml configuration"
 
 if [[ ! -f "$INSTALL_DIR/bonsai.toml" ]]; then
-    _log "  Writing bonsai.toml from template..."
-    # Derive archive path from the mounted data volume
-    sed \
-        -e "s|^# archive_path.*|archive_path = \"$ARCHIVE_MOUNT/archive\"|" \
-        -e "s|^# file_path.*|file_path = \"$ARCHIVE_MOUNT/logs/bonsai.log\"|" \
-        "$INSTALL_DIR/bonsai.toml.example" > "$INSTALL_DIR/bonsai.toml"
+    _log "  Writing cloud bonsai.toml..."
+    cat > "$INSTALL_DIR/bonsai.toml" <<CONFIG
+graph_path = "$ARCHIVE_MOUNT/bonsai.db"
+metrics_addr = "[::1]:9090"
+
+[graph]
+buffer_pool_bytes = 805306368
+
+[event_bus]
+capacity = 4096
+counter_debounce_secs = 60
+
+[archive]
+enabled = true
+path = "$ARCHIVE_MOUNT/archive"
+flush_interval_seconds = 10
+max_batch_rows = 1000
+compression_level = 12
+writer_max_idle_secs = 7200
+
+[logging]
+file_path = "$ARCHIVE_MOUNT/logs/bonsai.log"
+rotation = "daily"
+retention_days = 7
+level = "info"
+min_free_bytes = 5368709120
+
+[storage]
+max_archive_bytes = 150323855360
+max_graph_bytes = 5368709120
+check_interval_secs = 300
+warn_threshold_pct = 80
+
+[[target]]
+address = "172.100.104.11:57400"
+hostname = "srl-super1"
+role = "spine"
+site = "cloud-dc"
+tls_domain = "clab-bonsai-cloud-dc-srl-super1"
+ca_cert = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
+username = "admin"
+password = "NokiaSrl1!"
+
+[[target]]
+address = "172.100.104.12:57400"
+hostname = "srl-spine1"
+role = "spine"
+site = "cloud-dc"
+tls_domain = "clab-bonsai-cloud-dc-srl-spine1"
+ca_cert = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
+username = "admin"
+password = "NokiaSrl1!"
+
+[[target]]
+address = "172.100.104.13:57400"
+hostname = "srl-leaf1"
+role = "leaf"
+site = "cloud-dc"
+tls_domain = "clab-bonsai-cloud-dc-srl-leaf1"
+ca_cert = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
+username = "admin"
+password = "NokiaSrl1!"
+
+[[target]]
+address = "172.100.104.14:57400"
+hostname = "srl-leaf2"
+role = "leaf"
+site = "cloud-dc"
+tls_domain = "clab-bonsai-cloud-dc-srl-leaf2"
+ca_cert = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
+username = "admin"
+password = "NokiaSrl1!"
+
+[[target]]
+address = "172.100.104.15:57400"
+hostname = "srl-leaf3"
+role = "leaf"
+site = "cloud-dc"
+tls_domain = "clab-bonsai-cloud-dc-srl-leaf3"
+ca_cert = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
+username = "admin"
+password = "NokiaSrl1!"
+
+[[target]]
+address = "172.100.104.16:57400"
+hostname = "srl-leaf4"
+role = "leaf"
+site = "cloud-dc"
+tls_domain = "clab-bonsai-cloud-dc-srl-leaf4"
+ca_cert = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
+username = "admin"
+password = "NokiaSrl1!"
+CONFIG
     _log "  Written: $INSTALL_DIR/bonsai.toml"
-    _log "  NOTE: Add device credentials to bonsai.toml before starting collection."
 else
     _log "  bonsai.toml already exists — not overwriting"
 fi
@@ -223,7 +311,7 @@ Wants=docker.service
 Type=simple
 User=$USER
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/target/release/bonsai --config $INSTALL_DIR/bonsai.toml
+ExecStart=$INSTALL_DIR/target/release/bonsai
 Restart=on-failure
 RestartSec=10s
 StandardOutput=append:$ARCHIVE_MOUNT/logs/bonsai.log
@@ -236,17 +324,7 @@ SERVICE
 
 _run sudo systemctl daemon-reload
 _run sudo systemctl enable bonsai
-_run sudo systemctl restart bonsai
-_log "  bonsai.service started"
-
-# Wait for bonsai HTTP
-_log "  Waiting for bonsai HTTP on :$BONSAI_PORT..."
-for i in $(seq 1 24); do
-    curl -sf "http://localhost:$BONSAI_PORT/api/topology" &>/dev/null && break || sleep 5
-done
-curl -sf "http://localhost:$BONSAI_PORT/api/topology" &>/dev/null && \
-    _log "  bonsai is up" || \
-    _log "  WARN: bonsai not responding on :$BONSAI_PORT — check $ARCHIVE_MOUNT/logs/bonsai.log"
+_log "  bonsai.service installed"
 
 # ── Step 9: ContainerLab 6-node DC topology ────────────────────────────────────
 
@@ -268,6 +346,17 @@ else
     _log "  WARN: lab/cloud-dc-6node.yml not found — skipping lab"
     _log "  Create a scaled-down 6-node topology and place it at lab/cloud-dc-6node.yml"
 fi
+
+_log "  Starting bonsai.service after lab bring-up..."
+_run sudo systemctl restart bonsai
+
+_log "  Waiting for bonsai HTTP on :$BONSAI_PORT..."
+for i in $(seq 1 24); do
+    curl -sf "http://localhost:$BONSAI_PORT/api/topology" &>/dev/null && break || sleep 5
+done
+curl -sf "http://localhost:$BONSAI_PORT/api/topology" &>/dev/null && \
+    _log "  bonsai is up" || \
+    _log "  WARN: bonsai not responding on :$BONSAI_PORT — check $ARCHIVE_MOUNT/logs/bonsai.log"
 
 # ── Step 10: Always-on chaos runner ────────────────────────────────────────────
 

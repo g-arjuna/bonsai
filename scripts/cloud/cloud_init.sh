@@ -70,9 +70,9 @@ echo "[OK] swap disabled"
 # ── Firewalld: open bonsai HTTP port ─────────────────────────────────────────
 
 if command -v firewall-cmd &>/dev/null && systemctl is-active firewalld &>/dev/null; then
-    firewall-cmd --permanent --add-port=3000/tcp
-    firewall-cmd --permanent --add-port=22/tcp
-    firewall-cmd --reload
+    timeout 15 firewall-cmd --permanent --add-port=3000/tcp || true
+    timeout 15 firewall-cmd --permanent --add-port=22/tcp || true
+    timeout 15 firewall-cmd --reload || true
     echo "[OK] firewalld rules added (SSH + :3000)"
 else
     # iptables fallback
