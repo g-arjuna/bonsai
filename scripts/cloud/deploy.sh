@@ -75,7 +75,9 @@ _run sudo dnf install -y -q \
 # Install Docker CE from Docker's script when the distro repos do not provide it.
 if ! command -v docker &>/dev/null; then
     _log "Installing Docker CE..."
-    if [[ -f /etc/os-release ]] && grep -q '^ID="*ol"*' /etc/os-release; then
+    OS_ID=""
+    [[ -f /etc/os-release ]] && OS_ID=$(awk -F= '$1 == "ID" {gsub(/"/, "", $2); print $2}' /etc/os-release)
+    if [[ "$OS_ID" == "ol" ]]; then
         _run sudo dnf config-manager --add-repo=https://download.docker.com/linux/centos/docker-ce.repo
         _run sudo dnf install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     else
