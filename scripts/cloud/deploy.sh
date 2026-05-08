@@ -66,7 +66,7 @@ _step 1 "System packages"
 
 _run sudo dnf install -y -q \
     git curl wget jq \
-    gcc gcc-c++ make pkg-config openssl-devel \
+    gcc gcc-c++ make cmake pkg-config openssl-devel \
     python3 python3-pip python3-virtualenv \
     zstd \
     iproute-tc   # tc / netem for chaos injection
