@@ -75,7 +75,12 @@ _run sudo dnf install -y -q \
 # Install Docker CE from Docker's script when the distro repos do not provide it.
 if ! command -v docker &>/dev/null; then
     _log "Installing Docker CE..."
-    _run curl -fsSL https://get.docker.com | sudo sh
+    if [[ -f /etc/os-release ]] && grep -q '^ID="*ol"*' /etc/os-release; then
+        _run sudo dnf config-manager --add-repo=https://download.docker.com/linux/centos/docker-ce.repo
+        _run sudo dnf install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    else
+        _run curl -fsSL https://get.docker.com | sudo sh
+    fi
 fi
 
 # Enable and start Docker
