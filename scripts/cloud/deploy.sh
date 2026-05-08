@@ -171,7 +171,7 @@ if "$SKIP_BUILD" && [[ -f "target/release/bonsai" ]]; then
     _log "  Skipping build (--skip-build, binary exists)"
 else
     source "$HOME/.cargo/env" 2>/dev/null || true
-    _run cargo build --release
+    _run env RUSTC_WRAPPER= cargo build --release
 fi
 
 # ── Step 5: Build Svelte SPA ──────────────────────────────────────────────────
