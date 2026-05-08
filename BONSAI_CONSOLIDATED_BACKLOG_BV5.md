@@ -104,6 +104,7 @@ End-to-end code review confirms all Bv4 work landed cleanly. Removing completed 
 - ✅ Cloud provisioning/deploy scripts hardened: `--dry-run` no longer launches instances, cloud-init firewalld calls are timeout-bounded, cloud deploy writes a cloud-specific `bonsai.toml`.
 - ✅ T1-A-3 daily verification wrapper added: `scripts/bv5_daily_check.sh` writes `docs/test_results/daily_runs/<date>.md`; 2026-05-08 laptop snapshot captured.
 - ✅ T2-2 synthetic rule-baseline harness added: `python/bonsai_ml/eval/rule_baseline.py` with precision/recall/F1, latency, clear-time, and Markdown reporting tests.
+- ✅ T2-3 tabular ML detector harness added: `python/bonsai_ml/eval/tabular_ml.py` scores feature windows via model duck-typing and reuses the shared rule metric contract.
 - ✅ Cloud T1-B-2 deployment completed: Docker/ContainerLab, 6-node SR Linux lab, Bonsai systemd service, NetBox, Prometheus, Grafana, archive verification, and chaos daemon are running on the VM.
 - ✅ Cloud chaos adjusted for Oracle Always Free: netem removed from the cloud plan because `sch_netem` is absent on Oracle UEK; Nokia SR Linux BGP/interface faults use Docker transport so they do not depend on per-node management SSH.
 - ⚠️ Cloud T1-B-3 sync is partially ready: daily cron is installed and archive verification passes, but `GITHUB_TOKEN` is missing from the VM environment, so GitHub push is not active yet.
@@ -407,7 +408,7 @@ While archive accumulates (30+ days), engineering work proceeds on items that do
 
 **Done when**: harness runs end-to-end on synthetic chaos log + synthetic archive; produces structured evaluation report.
 
-### T2-3 (Bv5) — Tabular ML detector evaluation harness
+### T2-3 (Bv5) — Tabular ML detector evaluation harness ✅ Done
 
 **What**: existing tabular ML detector code in collector_engine.py needs an evaluation harness like T2-2. We need apples-to-apples comparison across detector types.
 
@@ -416,6 +417,8 @@ While archive accumulates (30+ days), engineering work proceeds on items that do
 **Where**: `python/bonsai_ml/eval/tabular_ml.py`.
 
 **Done when**: harness produces ML detector metrics in same format as rule baseline.
+
+**2026-05-08 status**: done with synthetic fixtures and tests. The harness accepts timestamped feature windows, scores duck-typed sklearn-style models (`decision_function`, `predict_proba`, or `predict`), emits ML `DetectionEvent` rows, and reuses `RuleEvaluationReport` for TP/FP/FN/TN, precision/recall/F1, and latency metrics.
 
 ### T2-4 (Bv5) — Investigation agent productive use (when token budget arrives)
 
