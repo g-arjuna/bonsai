@@ -148,6 +148,11 @@ fi
 
 _step 3 "Repository ($REPO_URL → $INSTALL_DIR)"
 
+if [[ ! -d "$INSTALL_DIR" ]]; then
+    _run sudo mkdir -p "$INSTALL_DIR"
+    _run sudo chown "$USER:$USER" "$INSTALL_DIR"
+fi
+
 if [[ -d "$INSTALL_DIR/.git" ]]; then
     _log "  Pulling latest..."
     _run git -C "$INSTALL_DIR" pull --ff-only
