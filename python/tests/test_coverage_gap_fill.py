@@ -139,6 +139,53 @@ def test_chaos_runner_heal_bgp(mock_dispatch):
     assert record["healed_at_ns"] is not None
     mock_dispatch.assert_called_once()
 
+@patch("scripts.chaos_runner.time.time_ns", return_value=12345)
+@patch("scripts.chaos_runner.inject_fault.dispatch_bfd_down")
+def test_chaos_runner_inject_bfd(mock_dispatch, mock_time):
+    """Test BFD session-down injection dispatch."""
+    fault = {
+        "type": "bfd_session_down",
+        "targets": ["h1"],
+        "subinterfaces": ["ethernet-1/1.0"],
+        "scenario": "admin_disable_leaf_uplink",
+    }
+    targets = {"h1": {}}
+    record = chaos_runner.inject(fault, targets, "topo", dry_run=False)
+    assert record["fault_type"] == "bfd_session_down"
+    assert record["hostname"] == "h1"
+    assert record["param"] == "ethernet-1/1.0:scenario=admin_disable_leaf_uplink"
+    assert record["injected_at_ns"] == 12345
+    mock_dispatch.assert_called_once_with(targets, "h1", "ethernet-1/1.0", "topo")
+
+@patch("scripts.chaos_runner.inject_fault.dispatch_bfd_up")
+def test_chaos_runner_heal_bfd(mock_dispatch):
+    """Test BFD session-down healing dispatch."""
+    record = {
+        "fault_type": "bfd_session_down",
+        "hostname": "h1",
+        "param": "ethernet-1/1.0:scenario=admin_disable_leaf_uplink",
+    }
+    targets = {"h1": {}}
+    chaos_runner.heal(record, {}, targets, "topo", dry_run=False)
+    assert record["healed_at_ns"] is not None
+    mock_dispatch.assert_called_once_with(targets, "h1", "ethernet-1/1.0", "topo")
+
+@patch("python.inject_fault.srl_bfd_disable")
+def test_inject_fault_dispatch_bfd_down_srl(mock_disable):
+    """Test SR Linux BFD disable dispatch."""
+    import python.inject_fault as inject_fault
+
+    targets = {
+        "h1": {
+            "address": "192.0.2.1",
+            "username": "admin",
+            "password": "secret",
+            "vendor": "nokia_srl",
+        }
+    }
+    inject_fault.dispatch_bfd_down(targets, "h1", "ethernet-1/1.0", "topo")
+    mock_disable.assert_called_once_with("192.0.2.1", "admin", "secret", "ethernet-1/1.0")
+
 def test_discover_yang_paths_preflight(capsys):
     """Test discover_yang_paths.py preflight check."""
     with patch("scripts.discover_yang_paths.shutil.which", return_value=None):

@@ -48,6 +48,12 @@ pub enum TelemetryEvent {
         if_name: String,
         oper_status: String,
     },
+    SyslogEvent {
+        category: String,
+    },
+    SnmpTrap {
+        event_type: String,
+    },
     Ignored,
 }
 
@@ -250,6 +256,25 @@ impl TelemetryUpdate {
                     oper_status: status,
                 };
             }
+        }
+
+        if self.path.starts_with("signals/syslog/")
+            && let Some(category) = self.path.rsplit('/').next()
+            && !category.is_empty()
+            && self.value.get("message").is_some()
+        {
+            return TelemetryEvent::SyslogEvent {
+                category: category.to_string(),
+            };
+        }
+
+        if self.path.starts_with("signals/snmp/")
+            && let Some(event_type) = self.path.rsplit('/').next()
+            && !event_type.is_empty()
+        {
+            return TelemetryEvent::SnmpTrap {
+                event_type: event_type.to_string(),
+            };
         }
 
         TelemetryEvent::Ignored

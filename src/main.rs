@@ -382,6 +382,48 @@ async fn main() -> Result<()> {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
+    if cfg.signals.syslog.enabled && run_collector {
+        let syslog_cfg = cfg.signals.syslog.clone();
+        let syslog_targets = cfg.target.clone();
+        let syslog_bus = std::sync::Arc::clone(&bus);
+        let syslog_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(error) = bonsai::signals::syslog::run_syslog_receiver(
+                syslog_cfg,
+                syslog_targets,
+                syslog_bus,
+                syslog_shutdown,
+            ).await {
+                warn!(%error, "syslog receiver stopped");
+            }
+        });
+    } else if cfg.signals.syslog.enabled {
+        info!(
+            "syslog receiver enabled but runtime mode has no collector role; skipping syslog receiver"
+        );
+    }
+
+    if cfg.signals.snmp.enabled && run_collector {
+        let snmp_cfg = cfg.signals.snmp.clone();
+        let snmp_targets = cfg.target.clone();
+        let snmp_bus = std::sync::Arc::clone(&bus);
+        let snmp_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(error) = bonsai::signals::snmp::run_snmp_receiver(
+                snmp_cfg,
+                snmp_targets,
+                snmp_bus,
+                snmp_shutdown,
+            ).await {
+                warn!(%error, "snmp receiver stopped");
+            }
+        });
+    } else if cfg.signals.snmp.enabled {
+        info!(
+            "snmp receiver enabled but runtime mode has no collector role; skipping snmp receiver"
+        );
+    }
+
     if cfg.archive.enabled && run_collector {
         let archive_root = std::path::PathBuf::from(&cfg.archive.path);
         let flush_interval = Duration::from_secs(cfg.archive.flush_interval_seconds);

@@ -38,8 +38,87 @@ pub struct Config {
     #[serde(default)]
     pub logging: LoggingConfig,
     #[serde(default)]
+    pub signals: SignalsConfig,
+    #[serde(default)]
     pub target: Vec<TargetConfig>,
 }
+
+// ── Signals ──────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct SignalsConfig {
+    #[serde(default)]
+    pub syslog: SyslogConfig,
+    #[serde(default)]
+    pub snmp: SnmpConfig,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct SnmpConfig {
+    /// Enable the SNMP trap receiver. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// UDP listen address for traps. Use "0.0.0.0:162" in deployment; default avoids privileged port.
+    #[serde(default = "default_snmp_udp_addr")]
+    pub udp_addr: String,
+    /// JSONL signal archive path for raw SNMP trap records.
+    #[serde(default = "default_snmp_archive_path")]
+    pub archive_path: String,
+    /// Maximum accepted trap size in bytes. Default: 8192 bytes.
+    #[serde(default = "default_snmp_max_frame_bytes")]
+    pub max_frame_bytes: usize,
+}
+
+impl Default for SnmpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            udp_addr: default_snmp_udp_addr(),
+            archive_path: default_snmp_archive_path(),
+            max_frame_bytes: default_snmp_max_frame_bytes(),
+        }
+    }
+}
+
+fn default_snmp_udp_addr() -> String { "0.0.0.0:9162".to_string() }
+fn default_snmp_archive_path() -> String { "runtime/signals/snmp.jsonl".to_string() }
+fn default_snmp_max_frame_bytes() -> usize { 8192 }
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct SyslogConfig {
+    /// Enable the syslog receiver. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// UDP listen address. Use "0.0.0.0:514" in deployment; default avoids privileged ports.
+    #[serde(default = "default_syslog_udp_addr")]
+    pub udp_addr: String,
+    /// TCP listen address. Use "0.0.0.0:6514" for deployment-style testing.
+    #[serde(default = "default_syslog_tcp_addr")]
+    pub tcp_addr: String,
+    /// JSONL signal archive path for raw + parsed syslog records.
+    #[serde(default = "default_syslog_archive_path")]
+    pub archive_path: String,
+    /// Maximum accepted syslog frame size. Default: 8192 bytes.
+    #[serde(default = "default_syslog_max_frame_bytes")]
+    pub max_frame_bytes: usize,
+}
+
+impl Default for SyslogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            udp_addr: default_syslog_udp_addr(),
+            tcp_addr: default_syslog_tcp_addr(),
+            archive_path: default_syslog_archive_path(),
+            max_frame_bytes: default_syslog_max_frame_bytes(),
+        }
+    }
+}
+
+fn default_syslog_udp_addr() -> String { "0.0.0.0:5514".to_string() }
+fn default_syslog_tcp_addr() -> String { "0.0.0.0:6514".to_string() }
+fn default_syslog_archive_path() -> String { "runtime/signals/syslog.jsonl".to_string() }
+fn default_syslog_max_frame_bytes() -> usize { 8192 }
 
 // ── Logging ───────────────────────────────────────────────────────────────────
 

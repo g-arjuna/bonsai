@@ -20,10 +20,15 @@ DEFAULT_FEATURE_NAMES = [
     "vendor_cisco",
     "vendor_juniper",
     "vendor_arista",
+    "vendor_frr",
     "vendor_other",
     "role_super_spine",
     "role_spine",
     "role_leaf",
+    "role_pe",
+    "role_p",
+    "role_rr",
+    "role_ce",
     "role_other",
     "embedding_0",
     "embedding_1",
@@ -40,8 +45,12 @@ VENDOR_FEATURES = {
     "iosxrd": "vendor_cisco",
     "juniper": "vendor_juniper",
     "crpd": "vendor_juniper",
+    "vjunos": "vendor_juniper",
+    "vjunos-evolved": "vendor_juniper",
     "arista": "vendor_arista",
     "ceos": "vendor_arista",
+    "frr": "vendor_frr",
+    "holo": "vendor_frr",
 }
 
 ROLE_FEATURES = {
@@ -50,6 +59,17 @@ ROLE_FEATURES = {
     "superspine": "role_super_spine",
     "spine": "role_spine",
     "leaf": "role_leaf",
+    "pe": "role_pe",
+    "provider-edge": "role_pe",
+    "provider_edge": "role_pe",
+    "p": "role_p",
+    "provider": "role_p",
+    "rr": "role_rr",
+    "route-reflector": "role_rr",
+    "route_reflector": "role_rr",
+    "ce": "role_ce",
+    "customer-edge": "role_ce",
+    "customer_edge": "role_ce",
 }
 
 
@@ -276,8 +296,20 @@ def _vendor_feature(vendor: Any) -> str:
 
 
 def _role_feature(role: Any) -> str:
-    text = str(role or "").lower()
+    text = str(role or "").lower().replace("_", "-")
+    tokens = [part for part in text.replace("/", "-").split("-") if part]
+    token_set = set(tokens)
+    token_roots = {token.rstrip("0123456789") for token in tokens}
+
     for key, feature in ROLE_FEATURES.items():
-        if key in text:
+        normalised_key = key.replace("_", "-")
+        if normalised_key == text or normalised_key in token_set or normalised_key in token_roots:
             return feature
+
+    # Preserve the legacy hostname-derived inference for common DC names like
+    # srl-leaf1 and srl-spine2 without letting one-letter SP roles overmatch.
+    for key in ("super", "superspine", "spine", "leaf"):
+        if key in text:
+            return ROLE_FEATURES[key]
+
     return "role_other"

@@ -9,6 +9,7 @@
 #   bash scripts/chaos_runner.sh --fg         # foreground; Ctrl-C stops cleanly
 #   bash scripts/chaos_runner.sh --stop       # kill the running daemon
 #   bash scripts/chaos_runner.sh --status     # print daemon status + recent log
+#   bash scripts/chaos_runner.sh --ensure-running
 #   bash scripts/chaos_runner.sh --dry-run    # one dry-run cycle, then exit
 #
 # Requires: WSL with clab on PATH, .venv at repo root.
@@ -20,6 +21,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME_DIR="$REPO_ROOT/runtime"
 LOG_FILE="$RUNTIME_DIR/chaos_runner.log"
 PID_FILE="$RUNTIME_DIR/chaos_runner.pid"
+CHAOS_LOG_JSONL="$RUNTIME_DIR/chaos_log.jsonl"
 PLAN="${PLAN:-$REPO_ROOT/chaos_plans/always_on_dc.yaml}"
 PYTHON="$REPO_ROOT/.venv/bin/python3"
 RUNNER="$REPO_ROOT/scripts/chaos_runner.py"
@@ -29,6 +31,27 @@ mkdir -p "$RUNTIME_DIR"
 
 _log() { echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*" | tee -a "$LOG_FILE"; }
 _die() { _log "ERROR: $*"; exit 1; }
+_json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+_write_restart_marker() {
+    local reason="$1"
+    local old_pid="${2:-}"
+    local ts
+    ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    printf '{"event_type":"restart_marker","ts":"%s","reason":"%s","old_pid":"%s","plan":"%s"}\n' \
+        "$ts" "$(_json_escape "$reason")" "$(_json_escape "$old_pid")" "$(_json_escape "$PLAN")" \
+        >> "$CHAOS_LOG_JSONL"
+}
+_preflight() {
+    [[ -f "$PYTHON" ]] || _die ".venv not found at $REPO_ROOT/.venv — activate or create it first"
+    [[ -f "$PLAN" ]]   || _die "Chaos plan not found: $PLAN"
+    [[ -f "$RUNNER" ]] || _die "chaos_runner.py not found: $RUNNER"
+
+    if ! command -v clab &>/dev/null; then
+        _log "WARNING: clab not on PATH — netem faults will be skipped"
+    fi
+}
 
 # ── --stop ────────────────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--stop" ]]; then
@@ -66,14 +89,33 @@ if [[ "${1:-}" == "--status" ]]; then
     exit 0
 fi
 
-# ── Preflight checks ──────────────────────────────────────────────────────────
-[[ -f "$PYTHON" ]] || _die ".venv not found at $REPO_ROOT/.venv — activate or create it first"
-[[ -f "$PLAN" ]]   || _die "Chaos plan not found: $PLAN"
-[[ -f "$RUNNER" ]] || _die "chaos_runner.py not found: $RUNNER"
+# ── --ensure-running ──────────────────────────────────────────────────────────
+if [[ "${1:-}" == "--ensure-running" ]]; then
+    if [[ -f "$PID_FILE" ]]; then
+        EXISTING_PID=$(<"$PID_FILE")
+        if kill -0 "$EXISTING_PID" 2>/dev/null; then
+            _log "ensure-running: daemon already running (PID $EXISTING_PID)"
+            exit 0
+        fi
+        _log "ensure-running: stale pid file found ($EXISTING_PID) — restarting"
+        _write_restart_marker "stale_pid" "$EXISTING_PID"
+        rm -f "$PID_FILE"
+    else
+        _log "ensure-running: no pid file found — starting daemon"
+        _write_restart_marker "missing_pid_file" ""
+    fi
 
-if ! command -v clab &>/dev/null; then
-    _log "WARNING: clab not on PATH — netem faults will be skipped"
+    _preflight
+    nohup bash "$0" --fg >/dev/null 2>&1 &
+    DAEMON_PID=$!
+    echo "$DAEMON_PID" > "$PID_FILE"
+    _log "ensure-running: daemon started in background (PID $DAEMON_PID)"
+    echo "chaos_runner daemon started (PID $DAEMON_PID)"
+    exit 0
 fi
+
+# ── Preflight checks ──────────────────────────────────────────────────────────
+_preflight
 
 DRY_RUN_FLAG=""
 if [[ "${1:-}" == "--dry-run" ]]; then

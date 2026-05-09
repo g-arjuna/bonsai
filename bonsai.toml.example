@@ -58,6 +58,24 @@ graph_path   = "bonsai.db"
 # compression_level      = 12        # ZSTD level 1-22 (default 12; level 22 not worth CPU cost)
 # writer_max_idle_secs   = 7200      # force-close partition writers idle for >2h (prevents open-file leaks)
 
+# ── Signals (BV6) ────────────────────────────────────────────────────────────
+# Syslog is disabled by default. The sample UDP port avoids root privileges for
+# local development; deployments can use 0.0.0.0:514 and TCP 6514.
+# [signals.syslog]
+# enabled          = false
+# udp_addr         = "0.0.0.0:5514"
+# tcp_addr         = "0.0.0.0:6514"
+# archive_path     = "runtime/signals/syslog.jsonl"
+# max_frame_bytes  = 8192
+#
+# SNMP trap receiver uses an unprivileged default port for development.
+# Real deployments can bind 0.0.0.0:162 if the process has permission.
+# [signals.snmp]
+# enabled          = false
+# udp_addr         = "0.0.0.0:9162"
+# archive_path     = "runtime/signals/snmp.jsonl"
+# max_frame_bytes  = 8192
+
 # ── Retention (v11 T4-3) ─────────────────────────────────────────────────────
 # Enabled by default to bound graph memory and WAL size.
 # [retention]

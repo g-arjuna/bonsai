@@ -72,7 +72,7 @@ check_dc() {
         local raw
         raw=$(node_exec "$(clab_node dc srl-spine1)" sr_cli -d "show network-instance default protocols isis adjacency" 2>/dev/null || echo "__FAILED__")
         if [[ "$raw" != "__FAILED__" ]]; then
-            isis_adj_spine1=$(echo "$raw" | grep -c " Up " || echo "0")
+            isis_adj_spine1=$(echo "$raw" | { grep -i -c " up " || true; } )
         fi
     fi
     log "  IS-IS adjacencies on spine1: ${isis_adj_spine1}"
@@ -83,19 +83,24 @@ check_dc() {
         local raw
         raw=$(node_exec "$(clab_node dc srl-super1)" sr_cli -d "show network-instance default protocols bgp neighbor" 2>/dev/null || echo "__FAILED__")
         if [[ "$raw" != "__FAILED__" ]]; then
-            bgp_established_super1=$(echo "$raw" | grep -c "established" || echo "0")
+            bgp_established_super1=$(echo "$raw" | { grep -i -E -c "established.*\[" || true; } )
         fi
     fi
     log "  BGP EVPN established on super1: ${bgp_established_super1}/${bgp_total_super1}"
 
-    # EVPN routes on leaf1 (expect type-2/3/5 from other leaves)
+    # EVPN routes on leaf1 (expect type-2/3/5 from other leaves).
+    # SR Linux v26.x exposes these under the default BGP EVPN neighbor view;
+    # the older mac-vrf bgp-evpn routes command no longer parses.
     local evpn_routes_leaf1=0 evpn_routes_present=false
     if node_running "$(clab_node dc srl-leaf1)"; then
-        local raw
-        raw=$(node_exec "$(clab_node dc srl-leaf1)" sr_cli -d "show network-instance mac-vrf-a protocols bgp-evpn routes" 2>/dev/null || echo "__FAILED__")
-        if [[ "$raw" != "__FAILED__" ]]; then
-            evpn_routes_leaf1=$(echo "$raw" | grep -c "type-" || echo "0")
-        fi
+        local rr raw count
+        for rr in 10.1.0.1 10.1.0.2; do
+            raw=$(node_exec "$(clab_node dc srl-leaf1)" sr_cli -d "show network-instance default protocols bgp neighbor ${rr} received-routes evpn" 2>/dev/null || echo "__FAILED__")
+            if [[ "$raw" != "__FAILED__" ]]; then
+                count=$(echo "$raw" | { grep -E -c "10\\.1\\.0\\.[0-9]+:" || true; } )
+                evpn_routes_leaf1=$((evpn_routes_leaf1 + count))
+            fi
+        done
     fi
     [[ "$evpn_routes_leaf1" -gt 0 ]] && evpn_routes_present=true
     log "  EVPN routes in mac-vrf-a on leaf1: ${evpn_routes_leaf1}"
@@ -186,7 +191,7 @@ check_sp() {
         local raw
         raw=$(node_exec "$(clab_node sp frr-p1)" vtysh -c "show isis neighbor" 2>/dev/null || echo "__FAILED__")
         if [[ "$raw" != "__FAILED__" ]]; then
-            isis_adj_p1=$(echo "$raw" | grep -c "Up" || echo "0")
+            isis_adj_p1=$(echo "$raw" | { grep -i -c " up " || true; } )
         fi
     fi
     log "  IS-IS adjacencies on frr-p1: ${isis_adj_p1}"
@@ -197,7 +202,7 @@ check_sp() {
         local raw
         raw=$(node_exec "$(clab_node sp frr-p1)" vtysh -c "show mpls ldp neighbor" 2>/dev/null || echo "__FAILED__")
         if [[ "$raw" != "__FAILED__" ]]; then
-            ldp_sessions_p1=$(echo "$raw" | grep -c "OPERATIONAL" || echo "0")
+            ldp_sessions_p1=$(echo "$raw" | { grep -i -c "operational" || true; } )
         fi
     fi
     log "  LDP sessions on frr-p1: ${ldp_sessions_p1}"
@@ -208,7 +213,7 @@ check_sp() {
         local raw
         raw=$(node_exec "$(clab_node sp srl-rr1)" sr_cli -d "show network-instance default protocols bgp neighbor" 2>/dev/null || echo "__FAILED__")
         if [[ "$raw" != "__FAILED__" ]]; then
-            bgp_established_rr1=$(echo "$raw" | grep -c "established" || echo "0")
+            bgp_established_rr1=$(echo "$raw" | { grep -i -E -c "established.*\[" || true; } )
         fi
     fi
     log "  BGP VPN-IPv4 established on rr1: ${bgp_established_rr1}/${bgp_total_rr1}"
@@ -309,11 +314,12 @@ TS=$(date -u +%s)
 
 # ── Top-level summary ─────────────────────────────────────────────────────────
 # Aggregate fields across all checked topologies.
-SUMMARY=$(python3 - <<PYEOF
+SUMMARY=$(python3 -c "
 import json, sys
 
-dc = $DC_JSON
-sp = $SP_JSON
+data = json.loads(sys.stdin.read())
+dc = data['dc']
+sp = data['sp']
 
 bgp_est = 0
 bgp_total = 0
@@ -325,24 +331,23 @@ all_passed = True
 for topo in (dc, sp):
     if topo is None:
         continue
-    bgp_est += topo.get("bgp_sessions_established", 0)
-    bgp_total += topo.get("bgp_sessions_total", 0)
-    evpn_present = evpn_present or topo.get("evpn_routes_present", False)
-    srv6_ok = srv6_ok or topo.get("srv6_reachability_verified", False)
-    warnings.extend(topo.get("warnings", []))
-    if not topo.get("passed", False):
+    bgp_est += topo.get('bgp_sessions_established', 0)
+    bgp_total += topo.get('bgp_sessions_total', 0)
+    evpn_present = evpn_present or topo.get('evpn_routes_present', False)
+    srv6_ok = srv6_ok or topo.get('srv6_reachability_verified', False)
+    warnings.extend(topo.get('warnings', []))
+    if not topo.get('passed', False):
         all_passed = False
 
 print(json.dumps({
-    "bgp_sessions_established": bgp_est,
-    "bgp_sessions_total": bgp_total,
-    "evpn_routes_present": evpn_present,
-    "srv6_reachability_verified": srv6_ok,
-    "warnings": warnings,
-    "overall_passed": all_passed,
+    'bgp_sessions_established': bgp_est,
+    'bgp_sessions_total': bgp_total,
+    'evpn_routes_present': evpn_present,
+    'srv6_reachability_verified': srv6_ok,
+    'warnings': warnings,
+    'overall_passed': all_passed,
 }))
-PYEOF
-)
+" <<< "{\"dc\": $DC_JSON, \"sp\": $SP_JSON}")
 
 printf '{"ts_unix": %d, "summary": %s, "dc": %s, "sp": %s}\n' \
     "$TS" "$SUMMARY" "$DC_JSON" "$SP_JSON"

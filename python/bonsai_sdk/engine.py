@@ -12,6 +12,8 @@ from .ml_detector import MLDetector
 from .rules.bfd import BFD_RULES
 from .rules.bgp import BGP_RULES
 from .rules.interface import INTERFACE_RULES, InterfaceErrorSpike, InterfaceHighUtilization
+from .rules.snmp import SNMP_RULES
+from .rules.syslog import SYSLOG_RULES
 from .rules.topology import TOPOLOGY_RULES
 
 # Model files scanned at startup. Each entry: (filename, rule_id, threshold, severity).
@@ -45,7 +47,7 @@ class RuleEngine:
         self._dry_run      = dry_run or os.environ.get("BONSAI_DRY_RUN", "0") == "1"
         self._run_scope    = run_scope
         self._rules: list[Detector] = [
-            r for r in (BFD_RULES + BGP_RULES + INTERFACE_RULES)
+            r for r in (BFD_RULES + BGP_RULES + INTERFACE_RULES + SYSLOG_RULES + SNMP_RULES)
             if r.scope == "hybrid" or r.scope == run_scope
         ]
         self._stop = threading.Event()

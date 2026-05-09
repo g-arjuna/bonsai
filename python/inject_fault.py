@@ -16,6 +16,10 @@ Usage:
     python python/inject_fault.py iface-down srl-spine1 ethernet-1/1
     python python/inject_fault.py iface-up   srl-spine1 ethernet-1/1
 
+    # Disable BFD on a subinterface, then restore it
+    python python/inject_fault.py bfd-down srl-spine1 ethernet-1/1.0
+    python python/inject_fault.py bfd-up   srl-spine1 ethernet-1/1.0
+
     # Apply 5% packet loss via ContainerLab netem (run from clab host)
     python python/inject_fault.py netem-loss srl-spine1 e1-1 5
     python python/inject_fault.py netem-clear srl-spine1 e1-1
@@ -212,6 +216,30 @@ def srl_iface_up_docker(hostname: str, iface: str, topology: str = TOPOLOGY_NAME
     print(f"  SRL interface up {iface}: {out or 'ok'}")
 
 
+def srl_bfd_disable(address: str, username: str, password: str, subinterface: str) -> None:
+    cmd = f"set / bfd subinterface {subinterface} admin-state disable"
+    out = _run_srl(address, username, password, cmd)
+    print(f"  SRL BFD disable {subinterface}: {out or 'ok'}")
+
+
+def srl_bfd_disable_docker(hostname: str, subinterface: str, topology: str = TOPOLOGY_NAME) -> None:
+    cmd = f"set / bfd subinterface {subinterface} admin-state disable"
+    out = _run_srl_docker(hostname, cmd, topology)
+    print(f"  SRL BFD disable {subinterface}: {out or 'ok'}")
+
+
+def srl_bfd_enable(address: str, username: str, password: str, subinterface: str) -> None:
+    cmd = f"set / bfd subinterface {subinterface} admin-state enable"
+    out = _run_srl(address, username, password, cmd)
+    print(f"  SRL BFD enable {subinterface}: {out or 'ok'}")
+
+
+def srl_bfd_enable_docker(hostname: str, subinterface: str, topology: str = TOPOLOGY_NAME) -> None:
+    cmd = f"set / bfd subinterface {subinterface} admin-state enable"
+    out = _run_srl_docker(hostname, cmd, topology)
+    print(f"  SRL BFD enable {subinterface}: {out or 'ok'}")
+
+
 # ── XRd fault actions ─────────────────────────────────────────────────────────
 
 def xrd_bgp_disable(address: str, username: str, password: str, peer: str) -> None:
@@ -344,6 +372,28 @@ def dispatch_iface_up(targets: dict, hostname: str, iface: str, topology: str = 
         srl_iface_up(t["address"], t["username"], t["password"], iface)
 
 
+def dispatch_bfd_down(targets: dict, hostname: str, subinterface: str, topology: str = TOPOLOGY_NAME) -> None:
+    t = _get_target(targets, hostname)
+    print(f"[{time.strftime('%H:%M:%S')}] BFD DOWN: {hostname} {subinterface}")
+    if "xrd" in t["vendor"]:
+        raise NotImplementedError("BFD fault injection is currently implemented for SR Linux targets")
+    if _use_docker_transport():
+        srl_bfd_disable_docker(hostname, subinterface, topology)
+    else:
+        srl_bfd_disable(t["address"], t["username"], t["password"], subinterface)
+
+
+def dispatch_bfd_up(targets: dict, hostname: str, subinterface: str, topology: str = TOPOLOGY_NAME) -> None:
+    t = _get_target(targets, hostname)
+    print(f"[{time.strftime('%H:%M:%S')}] BFD UP: {hostname} {subinterface}")
+    if "xrd" in t["vendor"]:
+        raise NotImplementedError("BFD fault injection is currently implemented for SR Linux targets")
+    if _use_docker_transport():
+        srl_bfd_enable_docker(hostname, subinterface, topology)
+    else:
+        srl_bfd_enable(t["address"], t["username"], t["password"], subinterface)
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -372,6 +422,16 @@ def main() -> None:
 
     p = sub.add_parser("iface-flap", help="Interface down then up after --hold seconds")
     p.add_argument("hostname"); p.add_argument("iface")
+    p.add_argument("--hold", type=int, default=15)
+
+    p = sub.add_parser("bfd-down", help="Disable BFD on an SR Linux subinterface")
+    p.add_argument("hostname"); p.add_argument("subinterface")
+
+    p = sub.add_parser("bfd-up", help="Enable BFD on an SR Linux subinterface")
+    p.add_argument("hostname"); p.add_argument("subinterface")
+
+    p = sub.add_parser("bfd-flap", help="BFD admin disable then enable after --hold seconds")
+    p.add_argument("hostname"); p.add_argument("subinterface")
     p.add_argument("--hold", type=int, default=15)
 
     p = sub.add_parser("netem-loss",  help="Apply packet loss (clab tools netem)")
@@ -409,6 +469,18 @@ def main() -> None:
         print(f"  holding down for {args.hold}s...")
         time.sleep(args.hold)
         dispatch_iface_up(targets, args.hostname, args.iface, args.topology)
+
+    elif args.cmd == "bfd-down":
+        dispatch_bfd_down(targets, args.hostname, args.subinterface, args.topology)
+
+    elif args.cmd == "bfd-up":
+        dispatch_bfd_up(targets, args.hostname, args.subinterface, args.topology)
+
+    elif args.cmd == "bfd-flap":
+        dispatch_bfd_down(targets, args.hostname, args.subinterface, args.topology)
+        print(f"  holding down for {args.hold}s...")
+        time.sleep(args.hold)
+        dispatch_bfd_up(targets, args.hostname, args.subinterface, args.topology)
 
     elif args.cmd == "netem-loss":
         netem_loss(args.hostname, args.iface, args.loss_pct, args.topology)

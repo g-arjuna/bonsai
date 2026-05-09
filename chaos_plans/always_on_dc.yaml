@@ -93,6 +93,52 @@ faults:
     interfaces: [ethernet-1/1, ethernet-1/2, ethernet-1/3]
     healing_delay_seconds: [20, 45]
 
+  # ── BFD session faults ───────────────────────────────────────────────────────
+  # These disable BFD on one SR Linux subinterface and then restore it, giving
+  # the bfd_session_down detector real up->down chaos coverage without dropping
+  # the whole physical interface.
+  - type: bfd_session_down
+    scenario: admin_disable_leaf_uplink
+    weight: 4
+    targets: [srl-leaf1]
+    subinterfaces: [ethernet-1/1.0, ethernet-1/2.0]
+    healing_delay_seconds: [20, 60]
+
+  - type: bfd_session_down
+    scenario: admin_disable_leaf_uplink
+    weight: 4
+    targets: [srl-leaf2]
+    subinterfaces: [ethernet-1/1.0, ethernet-1/2.0]
+    healing_delay_seconds: [20, 60]
+
+  - type: bfd_session_down
+    scenario: admin_disable_leaf_uplink
+    weight: 3
+    targets: [srl-leaf3, srl-leaf4]
+    subinterfaces: [ethernet-1/1.0, ethernet-1/2.0]
+    healing_delay_seconds: [20, 60]
+
+  - type: bfd_session_down
+    scenario: admin_disable_spine_downlink
+    weight: 3
+    targets: [srl-spine1]
+    subinterfaces: [ethernet-1/1.0, ethernet-1/2.0, ethernet-1/3.0, ethernet-1/4.0]
+    healing_delay_seconds: [20, 45]
+
+  - type: bfd_session_down
+    scenario: admin_disable_spine_downlink
+    weight: 3
+    targets: [srl-spine2]
+    subinterfaces: [ethernet-1/1.0, ethernet-1/2.0, ethernet-1/3.0, ethernet-1/4.0]
+    healing_delay_seconds: [20, 45]
+
+  - type: bfd_session_down
+    scenario: admin_disable_super_spine
+    weight: 2
+    targets: [srl-super1, srl-super2]
+    subinterfaces: [ethernet-1/1.0, ethernet-1/2.0]
+    healing_delay_seconds: [20, 45]
+
   # ── BGP session faults ────────────────────────────────────────────────────────
   - type: bgp_session_down
     weight: 5

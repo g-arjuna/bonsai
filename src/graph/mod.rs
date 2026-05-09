@@ -2134,6 +2134,12 @@ fn write_blocking(
             if_name,
             oper_status,
         } => emit_oper_status_event(&conn, update, &if_name, &oper_status, event_tx),
+        TelemetryEvent::SyslogEvent { category } => {
+            write_syslog_state_change_event(&conn, update, &category, event_tx)
+        }
+        TelemetryEvent::SnmpTrap { event_type } => {
+            write_signal_state_change_event(&conn, update, &event_type, event_tx)
+        }
         TelemetryEvent::Ignored => Ok(()),
     }
 }
@@ -2822,6 +2828,44 @@ fn write_state_change_event(
 
     debug!(device = %device_address, event_type = %event_type, "state change event recorded");
     Ok(id)
+}
+
+fn write_syslog_state_change_event(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    category: &str,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+) -> Result<()> {
+    write_signal_state_change_event(conn, update, &format!("syslog_{category}"), event_tx)
+}
+
+fn write_signal_state_change_event(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    event_type: &str,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+) -> Result<()> {
+    let now = ts(update.timestamp_ns);
+    upsert_device(
+        conn,
+        &update.target,
+        &update.vendor,
+        &update.hostname,
+        &update.role,
+        &update.site,
+        now.clone(),
+    )?;
+    let detail = serde_json::to_string(&update.value).context("serialize syslog event detail")?;
+    let _ = write_state_change_event(
+        conn,
+        &update.target,
+        event_type,
+        &detail,
+        now,
+        update.timestamp_ns,
+        event_tx,
+    )?;
+    Ok(())
 }
 
 fn write_lldp_neighbor(

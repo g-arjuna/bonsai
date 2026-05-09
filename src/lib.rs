@@ -24,6 +24,7 @@ pub mod retention;
 pub mod store;
 pub mod subscriber;
 pub mod subscription_status;
+pub mod signals;
 pub mod telemetry;
 pub mod write_coordinator;
 

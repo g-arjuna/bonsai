@@ -248,6 +248,8 @@ fn path_matches_update(
         }
         TelemetryEvent::BfdSessionState { .. } => expected.contains("bfd"),
         TelemetryEvent::LldpNeighbor { .. } => expected.contains("lldp"),
+        TelemetryEvent::SyslogEvent { .. } => false,
+        TelemetryEvent::SnmpTrap { .. } => false,
         TelemetryEvent::Ignored => false,
     }
 }

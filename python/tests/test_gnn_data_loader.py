@@ -34,6 +34,38 @@ def test_loader_features_include_degree_vendor_role_and_embeddings():
     )
 
 
+def test_loader_feature_space_supports_sp_roles_and_frr():
+    snapshot = {
+        "snapshot_ns": 1_700_000_000_000_000_000,
+        "devices": [
+            {"id": "pe1", "vendor": "frr", "role": "pe"},
+            {"id": "p1", "vendor": "holo", "role": "p1"},
+            {"id": "rr1", "vendor": "juniper", "role": "route-reflector"},
+            {"id": "ce1", "vendor": "unknown-nos", "role": "customer-edge"},
+        ],
+        "links": [
+            {"src_device": "pe1", "dst_device": "p1"},
+            {"src_device": "p1", "dst_device": "rr1"},
+            {"src_device": "pe1", "dst_device": "ce1"},
+        ],
+    }
+    graph = BonsaiGnnDataLoader().from_snapshot(snapshot)
+    feature = {name: idx for idx, name in enumerate(graph.feature_names)}
+
+    pe_row = graph.node_ids.index("pe1")
+    p_row = graph.node_ids.index("p1")
+    rr_row = graph.node_ids.index("rr1")
+    ce_row = graph.node_ids.index("ce1")
+
+    assert graph.x[pe_row, feature["vendor_frr"]] == 1
+    assert graph.x[p_row, feature["vendor_frr"]] == 1
+    assert graph.x[pe_row, feature["role_pe"]] == 1
+    assert graph.x[p_row, feature["role_p"]] == 1
+    assert graph.x[rr_row, feature["role_rr"]] == 1
+    assert graph.x[ce_row, feature["role_ce"]] == 1
+    assert graph.x[ce_row, feature["vendor_other"]] == 1
+
+
 def test_loader_ignores_fault_outside_snapshot_window():
     snapshot = synthetic_dc_snapshot()
     snapshot["chaos_log"][0]["healed_at_ns"] = snapshot["snapshot_ns"] - 1

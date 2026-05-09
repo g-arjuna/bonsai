@@ -136,6 +136,26 @@ def inject(fault: dict, targets: dict, topology: str, dry_run: bool) -> dict | N
                 "healed_at_ns": None,
             }
 
+        elif fault_type == "bfd_session_down":
+            hostname = random.choice(fault["targets"])
+            subinterface = random.choice(fault["subinterfaces"])
+            scenario = fault.get("scenario", "admin_disable")
+            log.info(
+                "[INJECT] bfd_session_down  host=%s  subinterface=%s  scenario=%s",
+                hostname,
+                subinterface,
+                scenario,
+            )
+            if not dry_run:
+                inject_fault.dispatch_bfd_down(targets, hostname, subinterface, topology)
+            return {
+                "fault_type": fault_type,
+                "hostname": hostname,
+                "param": f"{subinterface}:scenario={scenario}",
+                "injected_at_ns": now_ns,
+                "healed_at_ns": None,
+            }
+
         elif fault_type == "netem_loss":
             hostname = random.choice(fault["targets"])
             iface = random.choice(fault["interfaces"])
@@ -176,6 +196,12 @@ def heal(record: dict, fault: dict, targets: dict, topology: str, dry_run: bool)
             log.info("[HEAL] interface_up  host=%s  iface=%s", hostname, param)
             if not dry_run:
                 inject_fault.dispatch_iface_up(targets, hostname, param, topology)
+
+        elif fault_type == "bfd_session_down":
+            subinterface = param.split(":")[0]
+            log.info("[HEAL] bfd_session_up  host=%s  subinterface=%s", hostname, subinterface)
+            if not dry_run:
+                inject_fault.dispatch_bfd_up(targets, hostname, subinterface, topology)
 
         elif fault_type == "netem_loss":
             iface = param.split(":")[0]

@@ -53,6 +53,18 @@ EVENT_TYPE_ENCODING  = {
     "interface_oper_status_change": 2,
     "lldp_neighbor_change":        3,
     "bfd_session_state_change":    4,
+    "syslog_auth":                 5,
+    "syslog_hardware":             6,
+    "syslog_software":             7,
+    "syslog_protocol":             8,
+    "syslog_license":              9,
+    "snmp_cold_start":             10,
+    "snmp_warm_start":             11,
+    "snmp_auth_failure":           12,
+    "snmp_environmental":          13,
+    "snmp_fru_failure":            14,
+    "snmp_link_down":              15,
+    "snmp_link_up":                16,
 }
 
 

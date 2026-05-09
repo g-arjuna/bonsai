@@ -160,3 +160,18 @@ def test_shared_extractor_interface_event():
     assert f.if_name == "ethernet-1/1"
     assert f.oper_status == "down"
     client.get_bgp_neighbors.assert_not_called()
+
+
+def test_shared_extractor_syslog_event_preserves_detail():
+    from bonsai_sdk.ml_detector import extract_features_for_event
+
+    client = MagicMock()
+    ev = _make_bgp_event(
+        device="leaf-syslog-a",
+        etype="syslog_auth",
+        detail_json='{"message":"Failed password for admin","category":"auth"}',
+    )
+    f = extract_features_for_event(ev, client)
+    assert f.detail["message"] == "Failed password for admin"
+    assert f.event_type == "syslog_auth"
+    client.get_bgp_neighbors.assert_not_called()
