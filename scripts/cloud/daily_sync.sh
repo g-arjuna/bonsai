@@ -24,6 +24,11 @@ set -euo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/bonsai}"
 ARCHIVE_MOUNT="${ARCHIVE_MOUNT:-/mnt/bonsai-archive}"
+ENV_FILE="${CLOUD_SYNC_ENV_FILE:-$INSTALL_DIR/.cloud_sync.env}"
+if [[ -f "$ENV_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+fi
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 SYNC_BRANCH_PREFIX="sync/cloud-spike"
 SNAPSHOTS_DIR="$ARCHIVE_MOUNT/snapshots"
@@ -40,6 +45,7 @@ done
 
 _log() { echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*"; }
 _run() { "$DRY_RUN" && echo "[DRY-RUN] $*" || "$@"; }
+_die() { _log "ERROR: $*"; exit 1; }
 
 YESTERDAY=$(date -u -d "yesterday" '+%Y-%m-%d' 2>/dev/null || date -u -v-1d '+%Y-%m-%d')
 SNAPSHOT_NAME="snapshot-$YESTERDAY"
@@ -129,7 +135,13 @@ ls "$SNAPSHOT_DIR" | _log "  Files: $(ls "$SNAPSHOT_DIR" | tr '\n' ' ')"
 # ── Compress snapshot ─────────────────────────────────────────────────────────
 
 _log "  Compressing to $SNAPSHOT_TAR..."
-_run tar --zstd -cf "$SNAPSHOT_TAR" -C "$SNAPSHOTS_DIR" "$SNAPSHOT_NAME"
+if tar --help 2>/dev/null | grep -q -- "--zstd"; then
+    _run tar --zstd -cf "$SNAPSHOT_TAR" -C "$SNAPSHOTS_DIR" "$SNAPSHOT_NAME"
+else
+    command -v zstd >/dev/null 2>&1 || _die "zstd not found; install zstd or use a tar build with --zstd"
+    "$DRY_RUN" && echo "[DRY-RUN] tar -cf - -C $SNAPSHOTS_DIR $SNAPSHOT_NAME | zstd -T0 -f -o $SNAPSHOT_TAR" || \
+        tar -cf - -C "$SNAPSHOTS_DIR" "$SNAPSHOT_NAME" | zstd -T0 -f -o "$SNAPSHOT_TAR"
+fi
 
 TARSIZE_KB=$(du -k "$SNAPSHOT_TAR" 2>/dev/null | cut -f1 || echo 0)
 _log "  Compressed size: ${TARSIZE_KB} KiB"
@@ -140,7 +152,6 @@ if [[ -z "$GITHUB_TOKEN" ]]; then
     _log "WARN: GITHUB_TOKEN not set — skipping GitHub push"
     _log "  Export GITHUB_TOKEN in your shell or add to crontab environment"
     _log "  Snapshot available locally: $SNAPSHOT_TAR"
-    touch "$DONE_MARKER"
     exit 0
 fi
 

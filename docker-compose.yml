@@ -4,6 +4,7 @@ x-bonsai-base: &bonsai-base
     dockerfile: docker/Dockerfile.bonsai
   image: bonsai:latest
   restart: unless-stopped
+  env_file: .env
   environment:
     - RUST_LOG=info,bonsai=debug
     # BONSAI_VAULT_PASSPHRASE must be set in the environment or an .env file.
@@ -35,11 +36,11 @@ services:
       - bonsai_graph:/app/runtime
       - bonsai_creds:/app/bonsai-credentials
       - ./docker/configs/core.toml:/etc/bonsai/bonsai.toml:ro
-      - ./lab/fast-iteration/p4-ca.pem:/app/lab/fast-iteration/p4-ca.pem:ro
+      - ./lab/dc/ca.pem:/app/lab/dc/ca.pem:ro
       - ./docker/tls:/app/tls:ro
     ports:
-      - "3000:3000"
-      - "50051:50051"
+      - "${BONSAI_DISTRIBUTED_HTTP_PORT:-3000}:3000"
+      - "${BONSAI_DISTRIBUTED_GRPC_PORT:-50051}:50051"
     networks:
       - bonsai-p4-mgmt
     healthcheck:
@@ -58,10 +59,12 @@ services:
     volumes:
       - collector_1_queue:/app/runtime
       - ./docker/configs/collector-1.toml:/etc/bonsai/bonsai.toml:ro
-      - ./lab/fast-iteration/p4-ca.pem:/app/lab/fast-iteration/p4-ca.pem:ro
+      - ./lab/dc/ca.pem:/app/lab/dc/ca.pem:ro
       - ./docker/tls:/app/tls:ro
     networks:
       - bonsai-p4-mgmt
+    healthcheck:
+      disable: true
 
   bonsai-collector-2:
     <<: *bonsai-base
@@ -72,10 +75,12 @@ services:
     volumes:
       - collector_2_queue:/app/runtime
       - ./docker/configs/collector-2.toml:/etc/bonsai/bonsai.toml:ro
-      - ./lab/fast-iteration/p4-ca.pem:/app/lab/fast-iteration/p4-ca.pem:ro
+      - ./lab/dc/ca.pem:/app/lab/dc/ca.pem:ro
       - ./docker/tls:/app/tls:ro
     networks:
       - bonsai-p4-mgmt
+    healthcheck:
+      disable: true
 
   chaos:
     image: gaiaadm/pumba
@@ -111,6 +116,7 @@ services:
       - bonsai_graph_lab_dc:/app/runtime
       - bonsai_creds_lab_dc:/app/bonsai-credentials
       - ./docker/configs/lab-dc.toml:/etc/bonsai/bonsai.toml:ro
+      - ./lab/dc/ca.pem:/app/lab/dc/ca.pem:ro
     ports:
       - "3000:3000"
       - "50051:50051"

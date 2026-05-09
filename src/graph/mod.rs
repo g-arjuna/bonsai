@@ -2232,10 +2232,15 @@ fn write_interface_summary(
         &mut edge_stmt,
         vec![
             ("addr", Value::String(u.target.clone())),
-            ("id", Value::String(id)),
+            ("id", Value::String(id.clone())),
         ],
     )
     .context("execute HAS_INTERFACE merge for summary")?;
+
+    // Distributed collectors forward counter summaries instead of every raw
+    // counter update. Those summaries still create Interface nodes, so they
+    // must trigger the same LLDP backfill as the raw interface writer.
+    let _ = backfill_connected_to(conn, &u.target, if_name);
 
     Ok(())
 }

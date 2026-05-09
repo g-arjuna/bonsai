@@ -83,17 +83,33 @@
   const bgpLinks = $derived(
     filteredDevices.flatMap(dev =>
       dev.bgp
-        .filter(b => filteredAddresses.has(b.peer))
-        .map(b => ({
+        .map(b => ({ bgp: b, peerDevice: b.peer_device ?? b.peer_device_address ?? b.peer }))
+        .filter(({ peerDevice }) => filteredAddresses.has(peerDevice))
+        .map(({ bgp: b, peerDevice }) => ({
           src_device: dev.address,
           src_iface: 'BGP',
-          dst_device: b.peer,
+          dst_device: peerDevice,
           dst_iface: 'BGP',
           state: b.state,
           bytes_total: 0,
           isBgp: true,
         }))
     )
+  );
+
+  const unresolvedBgpSessions = $derived(
+    filteredDevices.reduce((count, dev) => (
+      count + dev.bgp.filter(b => {
+        const peerDevice = b.peer_device ?? b.peer_device_address ?? b.peer;
+        return !filteredAddresses.has(peerDevice);
+      }).length
+    ), 0)
+  );
+
+  const layerNotice = $derived(
+    layerFilter === 'l3' && !bgpLinks.length && unresolvedBgpSessions
+      ? 'BGP sessions are present, but peers are reported as loopback addresses rather than topology device IDs, so L3 edges cannot be drawn yet.'
+      : null
   );
 
   const visibleLinks = $derived(
@@ -398,7 +414,7 @@
     <div class="topo-controls">
       <!-- Layer filter -->
       <div class="chip-group" role="group" aria-label="Layer filter">
-        {#each [['combined','L2 + L3'],['l2','L2 only'],['l3','L3 only']] as [val, label]}
+        {#each [['combined','Fabric + BGP'],['l2','Fabric only'],['l3','BGP sessions']] as [val, label]}
           <button class="chip {layerFilter === val ? 'active' : ''}"
                   onclick={() => layerFilter = val}>{label}</button>
         {/each}
@@ -444,6 +460,12 @@
         <button onclick={clearTrace}>Clear</button>
       </div>
     {/if}
+  {/if}
+
+  {#if layerNotice}
+    <div class="trace-banner warn">
+      {layerNotice}
+    </div>
   {/if}
 
   {#if loading}

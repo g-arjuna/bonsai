@@ -14,35 +14,93 @@ key         = "tls/core-key.pem"
 path = "bonsai-credentials"
 passphrase_env = "BONSAI_VAULT_PASSPHRASE"
 
-# Credentials are stored only in the vault. Run scripts/seed_lab_creds.sh once
-# after first startup to populate the vault with lab device credentials under
-# the alias referenced below.
+# T2-5 distributed validation targets the active DC ContainerLab topology.
+# Credentials are read from environment variables supplied through .env so no
+# device secrets need to be committed in this config.
 [[target]]
-address      = "172.100.102.11:57400"
+address      = "172.100.103.11:57400"
+hostname     = "srl-super1"
+tls_domain   = "clab-bonsai-dc-srl-super1"
+ca_cert      = "lab/dc/ca.pem"
+username_env = "BONSAI_SRL_USERNAME"
+password_env = "BONSAI_SRL_PASSWORD"
+role         = "super-spine"
+site         = "lab-dc"
+collector_id = "collector-1"
+
+[[target]]
+address      = "172.100.103.12:57400"
+hostname     = "srl-super2"
+tls_domain   = "clab-bonsai-dc-srl-super2"
+ca_cert      = "lab/dc/ca.pem"
+username_env = "BONSAI_SRL_USERNAME"
+password_env = "BONSAI_SRL_PASSWORD"
+role         = "super-spine"
+site         = "lab-dc"
+collector_id = "collector-1"
+
+[[target]]
+address      = "172.100.103.13:57400"
 hostname     = "srl-spine1"
-tls_domain   = "clab-bonsai-p4-srl-spine1"
-ca_cert      = "lab/fast-iteration/p4-ca.pem"
-credential_alias = "lab-admin"
+tls_domain   = "clab-bonsai-dc-srl-spine1"
+ca_cert      = "lab/dc/ca.pem"
+username_env = "BONSAI_SRL_USERNAME"
+password_env = "BONSAI_SRL_PASSWORD"
+role         = "spine"
+site         = "lab-dc"
 collector_id = "collector-1"
 
 [[target]]
-address      = "172.100.102.12:57400"
+address      = "172.100.103.14:57400"
+hostname     = "srl-spine2"
+tls_domain   = "clab-bonsai-dc-srl-spine2"
+ca_cert      = "lab/dc/ca.pem"
+username_env = "BONSAI_SRL_USERNAME"
+password_env = "BONSAI_SRL_PASSWORD"
+role         = "spine"
+site         = "lab-dc"
+collector_id = "collector-1"
+
+[[target]]
+address      = "172.100.103.15:57400"
 hostname     = "srl-leaf1"
-tls_domain   = "clab-bonsai-p4-srl-leaf1"
-ca_cert      = "lab/fast-iteration/p4-ca.pem"
-credential_alias = "lab-admin"
-collector_id = "collector-1"
-
-[[target]]
-address      = "172.100.102.13:57400"
-hostname     = "srl-leaf2"
-tls_domain   = "clab-bonsai-p4-srl-leaf2"
-ca_cert      = "lab/fast-iteration/p4-ca.pem"
-credential_alias = "lab-admin"
+tls_domain   = "clab-bonsai-dc-srl-leaf1"
+ca_cert      = "lab/dc/ca.pem"
+username_env = "BONSAI_SRL_USERNAME"
+password_env = "BONSAI_SRL_PASSWORD"
+role         = "leaf"
+site         = "lab-dc"
 collector_id = "collector-2"
 
 [[target]]
-address          = "172.100.102.21:57400"
-hostname         = "xrd-pe1"
-credential_alias = "lab-cisco"
-collector_id     = "collector-2"
+address      = "172.100.103.16:57400"
+hostname     = "srl-leaf2"
+tls_domain   = "clab-bonsai-dc-srl-leaf2"
+ca_cert      = "lab/dc/ca.pem"
+username_env = "BONSAI_SRL_USERNAME"
+password_env = "BONSAI_SRL_PASSWORD"
+role         = "leaf"
+site         = "lab-dc"
+collector_id = "collector-2"
+
+[[target]]
+address      = "172.100.103.17:57400"
+hostname     = "srl-leaf3"
+tls_domain   = "clab-bonsai-dc-srl-leaf3"
+ca_cert      = "lab/dc/ca.pem"
+username_env = "BONSAI_SRL_USERNAME"
+password_env = "BONSAI_SRL_PASSWORD"
+role         = "leaf"
+site         = "lab-dc"
+collector_id = "collector-2"
+
+[[target]]
+address      = "172.100.103.18:57400"
+hostname     = "srl-leaf4"
+tls_domain   = "clab-bonsai-dc-srl-leaf4"
+ca_cert      = "lab/dc/ca.pem"
+username_env = "BONSAI_SRL_USERNAME"
+password_env = "BONSAI_SRL_PASSWORD"
+role         = "leaf"
+site         = "lab-dc"
+collector_id = "collector-2"

@@ -1,9 +1,62 @@
 # Distributed Validation
 
-This note captures the T2-4 live validation for Bonsai's distributed
+This note captures the T2-5 live validation for Bonsai's distributed
 collector/core runtime. It is intentionally safe to share: generated configs,
 certificates, and copied lab credentials stay under ignored `runtime/`
 directories and are not reproduced here.
+
+## 2026-05-08 BV5 DC Compose Path
+
+The BV5 validation target is the active native-Ubuntu DC lab, not the older
+fast-iteration P4 lab. The distributed compose profile now points at
+`bonsai-dc-mgmt` and the eight SR Linux nodes on `172.100.103.11-18`.
+
+The laptop baseline usually owns `localhost:3000` and `localhost:50051`, so
+distributed validation defaults to alternate host ports:
+
+```bash
+BONSAI_DISTRIBUTED_HTTP_PORT=3100
+BONSAI_DISTRIBUTED_GRPC_PORT=51051
+CLAB_NETWORK=bonsai-dc-mgmt
+```
+
+Before starting a run, ensure `.env` contains the lab SR Linux credentials:
+
+```bash
+BONSAI_SRL_USERNAME=<operator supplied>
+BONSAI_SRL_PASSWORD=<operator supplied>
+```
+
+Run the safe preflight first:
+
+```bash
+scripts/e2e_compose_test.sh --dry-run
+```
+
+If the dry-run passes, start the distributed validation with:
+
+```bash
+scripts/e2e_compose_test.sh
+```
+
+The script uses a separate Compose project name (`bonsai-distributed`) and
+tears down only that project, leaving the monolithic laptop Bonsai process and
+the running ContainerLab topology untouched. Use `--keep-running` to leave the
+stack up for the 7-day validation window.
+
+Result:
+
+- `scripts/e2e_compose_test.sh --dry-run` passed.
+- `scripts/e2e_compose_test.sh --keep-running` passed.
+- Both collectors connected: `collector-1` handles supers/spines; `collector-2`
+  handles leaves.
+- Distributed graph reached 24 fabric `CONNECTED_TO` edges after the interface
+  summary LLDP backfill fix.
+- Core is reachable at `http://localhost:3100`; gRPC is mapped to `51051`.
+
+Operational note: collector-only containers intentionally disable the Docker
+HTTP healthcheck inherited from the runtime image. The healthcheck probes the
+UI/readiness server, which exists only in core/all mode.
 
 ## 2026-04-22 Live Lab Run
 

@@ -438,6 +438,8 @@ While archive accumulates (30+ days), engineering work proceeds on items that do
 
 **Done when**: 7 days of distributed-mode operation against chaos lab; metrics indistinguishable from monolithic.
 
+**2026-05-09 status**: compose distributed validation has been realigned to the active `bonsai-dc` lab (`172.100.103.11-18`) and runs on alternate host ports (`3100`/`51051`) so it does not interrupt the monolithic laptop baseline on `3000`/`50051`. Two-collector smoke passed and the stack is running as Compose project `bonsai-distributed` for the validation window. During bring-up, distributed topology parity exposed a real bug: interface summaries from collectors created `Interface` nodes but did not run LLDP backfill, leaving `CONNECTED_TO` edges empty. Fixed in `src/graph/mod.rs`; post-fix distributed graph has 24 fabric edges.
+
 ### T2-6 (Bv5) — UI completion items (carryover from prior backlogs)
 
 Bv1 Tier 6 items still pending. Build during data accumulation:

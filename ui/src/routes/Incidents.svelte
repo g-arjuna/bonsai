@@ -79,7 +79,9 @@
   {:else if error}
     <div class="notice error">{error}</div>
   {:else if incidents.length === 0}
-    <div class="empty">No incidents recorded yet.</div>
+    <div class="empty">
+      No incidents recorded yet. Live health changes become incidents only after DetectionEvent rows are created.
+    </div>
   {:else}
     <div class="incident-list">
       {#each incidents as inc (inc.id ?? inc.root?.id)}
