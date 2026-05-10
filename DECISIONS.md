@@ -1681,3 +1681,19 @@ healthcheck until Compose exists.
 
 **Rationale**: At debug level on a 12-node lab, ~500 MB–2 GB/day fills a 30 GB cloud VM disk in 15 days. The disk-fill crash mode is now engineered out. Per-module overrides avoid flooding logs when debugging one subsystem. The pre-flight check prevents silent failure modes where the log write itself errors.
 
+---
+
+## 2026-05-10 — CV1 Sprint 4: YANG library lifecycle is a first-class runtime subsystem
+
+**Decision**: Bonsai now manages YANG modules through a dedicated local library under `runtime/yang_catalogue`, with a paired cache under `runtime/yang_cache`. The library is operated through `bonsai yang ...` commands covering online sync from canonical public repositories, manual directory import, signed bundle creation for offline transfer, signed bundle install for restricted environments, trust-state updates (`trusted` vs `experimental`), and search against a Bonsai-local path index.
+
+**Workflow split**:
+- `bonsai yang sync` is the internet-connected workflow. It clones or updates canonical public YANG repos into the cache, imports `.yang` files into the local library, and refreshes the local path index.
+- `bonsai yang import <dir>` is the curated workflow. Operators can import vendor bundles, internal extensions, or NDA-only modules from local storage without reaching the internet.
+- `bonsai yang bundle` + `bonsai yang install` is the restricted-environment workflow. A workstation with internet prepares a signed tar bundle; the air-gapped Bonsai node verifies the signature and per-file checksums before importing.
+
+**Signature choice**: the first implementation uses `HMAC-SHA256` with an operator-supplied shared secret (`BONSAI_YANG_BUNDLE_KEY` by default) rather than public-key signatures. This keeps the implementation dependency-light and immediately usable in lab and enterprise jump-host workflows while still providing cryptographic integrity and origin verification between the producing workstation and the receiving Bonsai node.
+
+**Synthesizer impact**: the synthesizer remains driven by advertised gNMI capabilities for device-path availability, but now also consults the local YANG library to flag incomplete local module coverage. Missing required models are surfaced as recommendation gaps so operators know when to run `yang-sync` or `yang-import` before trusting catalogue-only reasoning.
+
+**Why not embed pyang/libyang into bonsai-core**: module lifecycle and path discovery are operator workflows, not hot-path telemetry work. Keeping the library/index in a dedicated subsystem preserves the streaming path and avoids forcing heavy parser dependencies into every Bonsai deployment.

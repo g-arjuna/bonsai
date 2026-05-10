@@ -4,8 +4,11 @@ fn main() {
     let db_path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "bonsai-mv.db".to_string());
-    let db = Database::new(&db_path, SystemConfig::default().buffer_pool_size(256 * 1024 * 1024))
-        .unwrap_or_else(|_| panic!("failed to open {db_path} — run from project root"));
+    let db = Database::new(
+        &db_path,
+        SystemConfig::default().buffer_pool_size(256 * 1024 * 1024),
+    )
+    .unwrap_or_else(|_| panic!("failed to open {db_path} — run from project root"));
     let conn = Connection::new(&db).unwrap();
 
     println!("\n=== DEVICES ===");

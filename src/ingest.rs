@@ -3,8 +3,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -18,12 +18,12 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity
 use tracing::{info, warn};
 
 use crate::api::pb::{
-    bonsai_graph_client::BonsaiGraphClient, AssignmentUpdate, CollectorIdentity, CollectorStats,
-    InterfaceSummary, TelemetryIngestUpdate as ProtoTelemetryIngestUpdate,
+    AssignmentUpdate, CollectorIdentity, CollectorStats, InterfaceSummary,
+    TelemetryIngestUpdate as ProtoTelemetryIngestUpdate, bonsai_graph_client::BonsaiGraphClient,
 };
 use crate::config::{
-    CollectorConfig, CollectorFilterConfig, CollectorQueueConfig, RuntimeConfig, RuntimeTlsConfig,
-    BackpressureConfig,
+    BackpressureConfig, CollectorConfig, CollectorFilterConfig, CollectorQueueConfig,
+    RuntimeConfig, RuntimeTlsConfig,
 };
 use crate::counter_summarizer::CounterSummarizer;
 use crate::event_bus::InProcessBus;
@@ -62,10 +62,10 @@ impl<V> ShardedLruCache<V> {
     fn check_debounce(&self, key: &str, new_value: V, skip_if: impl Fn(&V) -> bool) -> bool {
         let idx = self.shard_idx(key);
         let mut cache = self.shards[idx].lock().unwrap();
-        if let Some(existing) = cache.peek(key) {
-            if skip_if(existing) {
-                return true;
-            }
+        if let Some(existing) = cache.peek(key)
+            && skip_if(existing)
+        {
+            return true;
         }
         cache.put(key.to_string(), new_value);
         false
@@ -189,27 +189,24 @@ impl TelemetryDebouncer {
                     let key = format!("{}:{}", update.target, if_name);
                     let now = Instant::now();
                     let window = self.debounce_window;
-                    if self.last_counter_write.check_debounce(
-                        &key,
-                        now,
-                        |t| now.duration_since(*t) < window,
-                    ) {
+                    if self
+                        .last_counter_write
+                        .check_debounce(&key, now, |t| now.duration_since(*t) < window)
+                    {
                         return true;
                     }
                 }
             }
-            TelemetryEvent::InterfaceOperStatus { if_name, .. } => {
-                if fill_pct >= self.backpressure.level_2_pct {
-                    let key = format!("{}:{}", update.target, if_name);
-                    let now = Instant::now();
-                    if self.last_oper_status_write.check_debounce(
-                        &key,
-                        now,
-                        |t| now.duration_since(*t) < Duration::from_secs(6),
-                    ) {
-                        metrics::counter!("bonsai_ingest_backpressure_drops_total", "reason" => "level_2_oper_status").increment(1);
-                        return true;
-                    }
+            TelemetryEvent::InterfaceOperStatus { if_name, .. }
+                if fill_pct >= self.backpressure.level_2_pct =>
+            {
+                let key = format!("{}:{}", update.target, if_name);
+                let now = Instant::now();
+                if self.last_oper_status_write.check_debounce(&key, now, |t| {
+                    now.duration_since(*t) < Duration::from_secs(6)
+                }) {
+                    metrics::counter!("bonsai_ingest_backpressure_drops_total", "reason" => "level_2_oper_status").increment(1);
+                    return true;
                 }
             }
             _ => {}
@@ -545,18 +542,11 @@ async fn queue_bus_updates(
         crate::event_bus::OverflowPolicy::DropNewest,
     );
     bus.add_subscriber(sub).await;
-    
+
     let mode = filter_config.counter_forward_mode.to_lowercase();
 
     if mode == "summary" {
-        queue_bus_updates_summary(
-            &mut rx,
-            &collector_id,
-            queue,
-            filter_config,
-            &mut shutdown,
-        )
-        .await
+        queue_bus_updates_summary(&mut rx, &collector_id, queue, filter_config, &mut shutdown).await
     } else {
         queue_bus_updates_debounced(&mut rx, &collector_id, queue, filter_config, &mut shutdown)
             .await
@@ -632,8 +622,8 @@ async fn queue_bus_updates_summary(
                         let classified = update.classify();
                         if let TelemetryEvent::InterfaceStats { .. } = classified {
                             // Counter update: feed the summarizer.
-                            if let Some(summary) = summarizer.observe(&*update) {
-                                let proto = summary_to_ingest_update(collector_id, Some(&*update), summary)?;
+                            if let Some(summary) = summarizer.observe(&update) {
+                                let proto = summary_to_ingest_update(collector_id, Some(&update), summary)?;
                                 queue.append(proto, collector_id)?;
                                 metrics::counter!("bonsai_summaries_emitted_total", "collector_id" => collector_id.to_string()).increment(1);
                             }
@@ -1495,7 +1485,7 @@ pub async fn run_collector_manager(
                 _ = heartbeat_interval.tick() => {
                     let stats = CollectorStats {
                         collector_id: collector_id.clone(),
-                        queue_depth_updates: 0, 
+                        queue_depth_updates: 0,
                         subscription_count: subscribers.len() as u32,
                         uptime_secs: 0,
                     };
@@ -1562,9 +1552,11 @@ async fn handle_assignment_update(
     }
 }
 
-async fn create_ingest_client(cfg: &RuntimeConfig) -> Result<BonsaiGraphClient<tonic::transport::Channel>> {
+async fn create_ingest_client(
+    cfg: &RuntimeConfig,
+) -> Result<BonsaiGraphClient<tonic::transport::Channel>> {
     let mut endpoint = tonic::transport::Endpoint::from_shared(cfg.core_ingest_endpoint.clone())?;
-    
+
     if cfg.tls.enabled {
         let tls = client_tls_config(&cfg.tls)?;
         endpoint = endpoint.tls_config(tls)?;

@@ -17,12 +17,12 @@ use bonsai::{
         },
     },
     archive, audit, catalogue, config,
-    config::{resolve_buffer_pool_collector, resolve_buffer_pool_core},
-    output::OutputAdapter,
     config::TargetConfig,
+    config::{resolve_buffer_pool_collector, resolve_buffer_pool_core},
     credentials::{CredentialVault, ResolvePurpose, ResolvedCredential},
     event_bus::InProcessBus,
     graph, ingest,
+    output::OutputAdapter,
     registry::{ApiRegistry, DeviceRegistry, RegistryChange},
     retention,
     store::BonsaiStore,
@@ -53,6 +53,9 @@ async fn main() -> Result<()> {
     if let Some(command) = CatalogueCliCommand::parse()? {
         return run_catalogue_cli(command).await;
     }
+    if let Some(command) = YangCliCommand::parse()? {
+        return run_yang_cli(command).await;
+    }
 
     // ── Logging setup (T2-1/T2-2) ─────────────────────────────────────────────
     // Load config early (just for logging config) so we can set up rotation
@@ -65,8 +68,8 @@ async fn main() -> Result<()> {
 
     // Build env filter: base level from config, overridden by RUST_LOG, then per-module targets.
     let base_directive = format!("bonsai={}", log_cfg.level);
-    let mut filter = tracing_subscriber::EnvFilter::from_default_env()
-        .add_directive(base_directive.parse()?);
+    let mut filter =
+        tracing_subscriber::EnvFilter::from_default_env().add_directive(base_directive.parse()?);
     for (module, level) in &log_cfg.targets {
         if let Ok(dir) = format!("{module}={level}").parse() {
             filter = filter.add_directive(dir);
@@ -75,9 +78,7 @@ async fn main() -> Result<()> {
 
     if log_cfg.file_path.is_empty() {
         // Stderr only (foreground / development mode).
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .init();
+        tracing_subscriber::fmt().with_env_filter(filter).init();
     } else {
         use tracing_appender::rolling::{RollingFileAppender, Rotation};
         use tracing_subscriber::prelude::*;
@@ -115,7 +116,11 @@ async fn main() -> Result<()> {
         tracing_subscriber::registry()
             .with(filter)
             .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
-            .with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(non_blocking)
+                    .with_ansi(false),
+            )
             .with(log_volume_layer)
             .init();
 
@@ -135,7 +140,11 @@ async fn main() -> Result<()> {
     let t = Instant::now();
     let config_path = config_path();
     let cfg = config::load(&config_path).await?;
-    info!(phase = "config_load", elapsed_ms = t.elapsed().as_millis() as u64, "startup");
+    info!(
+        phase = "config_load",
+        elapsed_ms = t.elapsed().as_millis() as u64,
+        "startup"
+    );
 
     let runtime_mode = cfg.runtime.parsed_mode()?;
     let run_core = runtime_mode.runs_core();
@@ -320,7 +329,11 @@ async fn main() -> Result<()> {
         .await
         .context("graph open panicked")?
         .context("graph open failed")?;
-        info!(phase = "graph_open", elapsed_ms = t.elapsed().as_millis() as u64, "startup");
+        info!(
+            phase = "graph_open",
+            elapsed_ms = t.elapsed().as_millis() as u64,
+            "startup"
+        );
         Some(Store::Core(std::sync::Arc::new(s)))
     } else if run_collector {
         let graph_path = if cfg.collector.graph_path.is_empty() {
@@ -338,7 +351,11 @@ async fn main() -> Result<()> {
         .await
         .context("collector graph open panicked")?
         .context("collector graph open failed")?;
-        info!(phase = "graph_open", elapsed_ms = t.elapsed().as_millis() as u64, "startup");
+        info!(
+            phase = "graph_open",
+            elapsed_ms = t.elapsed().as_millis() as u64,
+            "startup"
+        );
         Some(Store::Collector(std::sync::Arc::new(s)))
     } else {
         None
@@ -346,15 +363,16 @@ async fn main() -> Result<()> {
 
     let coordinator = if let Some(Store::Core(ref s)) = store {
         let coordinator_cfg = bonsai::write_coordinator::WriteCoordinatorConfig::default();
-        Some(std::sync::Arc::new(bonsai::write_coordinator::WriteCoordinator::new(
-            std::sync::Arc::clone(s),
-            coordinator_cfg,
-            std::sync::Arc::clone(&queue_depth),
-        )))
+        Some(std::sync::Arc::new(
+            bonsai::write_coordinator::WriteCoordinator::new(
+                std::sync::Arc::clone(s),
+                coordinator_cfg,
+                std::sync::Arc::clone(&queue_depth),
+            ),
+        ))
     } else {
         None
     };
-
 
     if let Some(ref coordinator) = coordinator {
         let coordinator = std::sync::Arc::clone(coordinator);
@@ -364,7 +382,7 @@ async fn main() -> Result<()> {
             bonsai::event_bus::OverflowPolicy::BlockProducer,
         );
         bus.add_subscriber(sub).await;
-        
+
         tokio::spawn(async move {
             while let Some(arc_update) = rx.recv().await {
                 if let Err(error) = coordinator
@@ -393,7 +411,9 @@ async fn main() -> Result<()> {
                 syslog_targets,
                 syslog_bus,
                 syslog_shutdown,
-            ).await {
+            )
+            .await
+            {
                 warn!(%error, "syslog receiver stopped");
             }
         });
@@ -414,7 +434,9 @@ async fn main() -> Result<()> {
                 snmp_targets,
                 snmp_bus,
                 snmp_shutdown,
-            ).await {
+            )
+            .await
+            {
                 warn!(%error, "snmp receiver stopped");
             }
         });
@@ -424,7 +446,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    if cfg.archive.enabled && run_collector {
+    if cfg.archive.enabled && (run_collector || run_core) {
         let archive_root = std::path::PathBuf::from(&cfg.archive.path);
         let flush_interval = Duration::from_secs(cfg.archive.flush_interval_seconds);
         let max_batch_rows = cfg.archive.max_batch_rows;
@@ -449,7 +471,7 @@ async fn main() -> Result<()> {
         });
     } else if cfg.archive.enabled {
         info!(
-            "archive enabled but runtime mode has no collector role; skipping collector-local archive"
+            "archive enabled but runtime mode has no telemetry ingest role; skipping archive consumer"
         );
     }
 
@@ -713,6 +735,22 @@ async fn main() -> Result<()> {
     }
 
     if let Some(ref store) = store {
+        let change_detection_runtime = if run_core {
+            Some(bonsai::change_detection::ChangeDetectionRuntime::start(
+                if let Store::Core(s) = store {
+                    std::sync::Arc::clone(s)
+                } else {
+                    unreachable!()
+                },
+                std::sync::Arc::clone(&registry),
+                std::sync::Arc::clone(&credentials),
+                std::sync::Arc::clone(&bus),
+                cfg.layered_ingestion.clone(),
+            )?)
+        } else {
+            None
+        };
+
         let api_addr = cfg
             .api_addr
             .parse()
@@ -782,6 +820,10 @@ async fn main() -> Result<()> {
             info!(%http_addr, "HTTP UI server listening");
             let registry_for_http = std::sync::Arc::clone(&registry);
             let credentials_for_http = std::sync::Arc::clone(&credentials);
+            let change_detection_for_http = change_detection_runtime
+                .as_ref()
+                .map(std::sync::Arc::clone)
+                .expect("change detection runtime should exist in core mode");
             let collector_manager_for_http = collector_manager.clone();
             let catalogue_dir = "config/path_profiles".to_string();
             let catalogue = std::sync::Arc::new(tokio::sync::RwLock::new(
@@ -809,6 +851,7 @@ async fn main() -> Result<()> {
                         http_store,
                         registry_for_http,
                         credentials_for_http,
+                        change_detection_for_http,
                         collector_manager_for_http,
                         catalogue,
                         catalogue_dir,
@@ -821,6 +864,10 @@ async fn main() -> Result<()> {
                         cfg.archive.path.clone(),
                         cfg.graph_path.clone(),
                         storage_config_for_http,
+                        cfg.layered_ingestion.clone(),
+                        cfg.yang.library_root.clone(),
+                        cfg.yang.cache_root.clone(),
+                        cfg.yang.bundle_key_env.clone(),
                         cfg.collector.filter.counter_forward_mode.clone(),
                         cfg.collector.filter.counter_window_secs,
                         cfg.collector.filter.counter_debounce_secs,
@@ -841,9 +888,7 @@ async fn main() -> Result<()> {
                         .collect()
                 };
                 for config in configs {
-                    if let Some(adapter) =
-                        bonsai::output::prometheus::build(&config)
-                    {
+                    if let Some(adapter) = bonsai::output::build_adapter(&config, store.db()) {
                         let bus_for_adapter = std::sync::Arc::clone(&bus);
                         let creds_for_adapter = std::sync::Arc::clone(&credentials);
                         let audit = bonsai::output::traits::OutputAdapterAuditLog::new(
@@ -851,15 +896,25 @@ async fn main() -> Result<()> {
                             &config.name,
                         );
                         let adapter_shutdown = shutdown_rx.clone();
+                        let adapter_registry = std::sync::Arc::clone(&adapter_registry_for_startup);
+                        let adapter_name = config.name.clone();
                         tokio::spawn(async move {
+                            adapter_registry
+                                .write()
+                                .await
+                                .set_running(&adapter_name, true);
                             if let Err(e) = adapter
                                 .run(bus_for_adapter, creds_for_adapter, audit, adapter_shutdown)
                                 .await
                             {
                                 warn!(adapter = %adapter.name(), error = %e, "output adapter exited with error");
                             }
+                            adapter_registry
+                                .write()
+                                .await
+                                .set_running(&adapter_name, false);
                         });
-                        info!(adapter = %config.name, "output adapter started");
+                        info!(adapter = %config.name, adapter_type = %config.adapter_type, "output adapter started");
                     }
                 }
             }
@@ -870,17 +925,29 @@ async fn main() -> Result<()> {
             && cfg.integrations.servicenow.enabled
             && cfg.integrations.servicenow.em_push_enabled
         {
-            let snow_cfg = cfg.integrations.servicenow.clone();
-            let creds_for_snow = std::sync::Arc::clone(&credentials);
-            let (_, shutdown_rx) = tokio::sync::watch::channel(false);
-            let db_for_snow = store.db();
-            bonsai::output::servicenow_em::maybe_start(
-                &snow_cfg,
-                db_for_snow,
-                creds_for_snow,
-                std::path::PathBuf::from("runtime"),
-                shutdown_rx,
-            );
+            let servicenow_adapter_enabled = {
+                let reg = adapter_registry_for_startup.read().await;
+                reg.list()
+                    .into_iter()
+                    .any(|(c, _)| c.enabled && c.adapter_type == "servicenow_em")
+            };
+            if servicenow_adapter_enabled {
+                info!(
+                    "skipping legacy ServiceNow EM pusher because servicenow_em output adapter is enabled"
+                );
+            } else {
+                let snow_cfg = cfg.integrations.servicenow.clone();
+                let creds_for_snow = std::sync::Arc::clone(&credentials);
+                let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+                let db_for_snow = store.db();
+                bonsai::output::servicenow_em::maybe_start(
+                    &snow_cfg,
+                    db_for_snow,
+                    creds_for_snow,
+                    std::path::PathBuf::from("runtime"),
+                    shutdown_rx,
+                );
+            }
         }
 
         if run_core && cfg.retention.enabled {
@@ -916,7 +983,11 @@ async fn main() -> Result<()> {
         }
     }
 
-    info!(phase = "ready", elapsed_ms = startup_start.elapsed().as_millis() as u64, "startup");
+    info!(
+        phase = "ready",
+        elapsed_ms = startup_start.elapsed().as_millis() as u64,
+        "startup"
+    );
 
     // T5-2: used by the startup-time CI budget workflow to measure cold-start latency.
     if std::env::args().any(|a| a == "--once-and-exit") {
@@ -983,6 +1054,35 @@ enum CatalogueCliCommand {
     List,
     Install { url: String, name: Option<String> },
     Uninstall { name: String },
+}
+
+enum YangCliCommand {
+    Help,
+    List,
+    Search {
+        query: String,
+    },
+    Sync {
+        vendor: Option<String>,
+    },
+    Import {
+        directory: String,
+        vendor: Option<String>,
+        trust: String,
+    },
+    Trust {
+        module_name: String,
+        revision: Option<String>,
+        trust: String,
+    },
+    Bundle {
+        vendor: String,
+        version: Option<String>,
+        output: String,
+    },
+    Install {
+        bundle: String,
+    },
 }
 
 struct DeviceCliAdd {
@@ -1117,6 +1217,125 @@ impl CatalogueCliCommand {
             }
             "help" | "--help" | "-h" => Ok(Some(Self::Help)),
             other => anyhow::bail!("unknown catalogue command '{other}'"),
+        }
+    }
+}
+
+impl YangCliCommand {
+    fn parse() -> Result<Option<Self>> {
+        let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+        if args.first().map(String::as_str) != Some("yang") {
+            return Ok(None);
+        }
+        args.remove(0);
+        let Some(action) = args.first().cloned() else {
+            return Ok(Some(Self::Help));
+        };
+        args.remove(0);
+
+        match action.as_str() {
+            "list" => Ok(Some(Self::List)),
+            "search" => {
+                let query = args
+                    .into_iter()
+                    .find(|arg| !arg.starts_with("--"))
+                    .ok_or_else(|| anyhow::anyhow!("yang search requires a query"))?;
+                Ok(Some(Self::Search { query }))
+            }
+            "sync" => {
+                let mut vendor = None;
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--vendor" => vendor = Some(require_flag_value("--vendor", iter.next())?),
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other => anyhow::bail!("unknown yang sync argument '{other}'"),
+                    }
+                }
+                Ok(Some(Self::Sync { vendor }))
+            }
+            "import" => {
+                let mut directory = None;
+                let mut vendor = None;
+                let mut trust = "trusted".to_string();
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--vendor" => vendor = Some(require_flag_value("--vendor", iter.next())?),
+                        "--trust" => trust = require_flag_value("--trust", iter.next())?,
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other if directory.is_none() && !other.starts_with("--") => {
+                            directory = Some(other.to_string());
+                        }
+                        other => anyhow::bail!("unknown yang import argument '{other}'"),
+                    }
+                }
+                Ok(Some(Self::Import {
+                    directory: directory
+                        .ok_or_else(|| anyhow::anyhow!("yang import requires a directory"))?,
+                    vendor,
+                    trust,
+                }))
+            }
+            "trust" => {
+                let mut module_name = None;
+                let mut revision = None;
+                let mut trust = None;
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--revision" => {
+                            revision = Some(require_flag_value("--revision", iter.next())?)
+                        }
+                        "--trust" => trust = Some(require_flag_value("--trust", iter.next())?),
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other if module_name.is_none() && !other.starts_with("--") => {
+                            module_name = Some(other.to_string());
+                        }
+                        other => anyhow::bail!("unknown yang trust argument '{other}'"),
+                    }
+                }
+                Ok(Some(Self::Trust {
+                    module_name: module_name
+                        .ok_or_else(|| anyhow::anyhow!("yang trust requires a module name"))?,
+                    revision,
+                    trust: trust.ok_or_else(|| anyhow::anyhow!("yang trust requires --trust"))?,
+                }))
+            }
+            "bundle" => {
+                let mut vendor = None;
+                let mut version = None;
+                let mut output = "runtime/yang_bundle.tar".to_string();
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--version" => {
+                            version = Some(require_flag_value("--version", iter.next())?)
+                        }
+                        "--output" => output = require_flag_value("--output", iter.next())?,
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other if vendor.is_none() && !other.starts_with("--") => {
+                            vendor = Some(other.to_string());
+                        }
+                        other => anyhow::bail!("unknown yang bundle argument '{other}'"),
+                    }
+                }
+                Ok(Some(Self::Bundle {
+                    vendor: vendor
+                        .ok_or_else(|| anyhow::anyhow!("yang bundle requires a vendor"))?,
+                    version,
+                    output,
+                }))
+            }
+            "install" => {
+                let bundle = args
+                    .into_iter()
+                    .find(|arg| !arg.starts_with("--"))
+                    .ok_or_else(|| anyhow::anyhow!("yang install requires a bundle path"))?;
+                Ok(Some(Self::Install { bundle }))
+            }
+            "help" | "--help" | "-h" => Ok(Some(Self::Help)),
+            other => anyhow::bail!("unknown yang command '{other}'"),
         }
     }
 }
@@ -1543,10 +1762,7 @@ async fn run_catalogue_cli(command: CatalogueCliCommand) -> Result<()> {
                 } else {
                     p.roles.join(", ")
                 };
-                println!(
-                    "  {:<30} env={:<20} roles={}",
-                    p.name, env, roles
-                );
+                println!("  {:<30} env={:<20} roles={}", p.name, env, roles);
             }
 
             if state.plugins.is_empty() {
@@ -1555,10 +1771,7 @@ async fn run_catalogue_cli(command: CatalogueCliCommand) -> Result<()> {
                 println!("\nInstalled plugins ({}):", state.plugins.len());
                 for plugin in &state.plugins {
                     let m = &plugin.manifest;
-                    println!(
-                        "  {:<24} v{:<10} by {}",
-                        m.name, m.version, m.author
-                    );
+                    println!("  {:<24} v{:<10} by {}", m.name, m.version, m.author);
                     for p in &plugin.profiles {
                         println!("    profile: {}", p.name);
                     }
@@ -1581,9 +1794,7 @@ async fn run_catalogue_cli(command: CatalogueCliCommand) -> Result<()> {
             });
 
             if plugin_name.is_empty() || plugin_name.contains(['/', '\\', '.']) {
-                anyhow::bail!(
-                    "plugin name '{plugin_name}' is invalid. Use --name to override."
-                );
+                anyhow::bail!("plugin name '{plugin_name}' is invalid. Use --name to override.");
             }
 
             let plugins_dir = catalogue_plugins_dir();
@@ -1596,12 +1807,19 @@ async fn run_catalogue_cli(command: CatalogueCliCommand) -> Result<()> {
                 );
             }
 
-            std::fs::create_dir_all(&plugins_dir)
-                .with_context(|| format!("cannot create plugins dir '{}'", plugins_dir.display()))?;
+            std::fs::create_dir_all(&plugins_dir).with_context(|| {
+                format!("cannot create plugins dir '{}'", plugins_dir.display())
+            })?;
 
             println!("cloning {url} → {}", dest.display());
             let status = std::process::Command::new("git")
-                .args(["clone", "--depth=1", "--quiet", &url, &dest.to_string_lossy()])
+                .args([
+                    "clone",
+                    "--depth=1",
+                    "--quiet",
+                    &url,
+                    &dest.to_string_lossy(),
+                ])
                 .status()
                 .with_context(|| "git not found — install git and retry")?;
 
@@ -1619,8 +1837,8 @@ async fn run_catalogue_cli(command: CatalogueCliCommand) -> Result<()> {
                 );
             }
 
-            let manifest_bytes = std::fs::read(&manifest_path)
-                .with_context(|| "cannot read MANIFEST.yaml")?;
+            let manifest_bytes =
+                std::fs::read(&manifest_path).with_context(|| "cannot read MANIFEST.yaml")?;
             let manifest: catalogue::PluginManifest = serde_yaml::from_slice(&manifest_bytes)
                 .with_context(|| "MANIFEST.yaml is not valid YAML or missing required fields")?;
 
@@ -1667,6 +1885,148 @@ async fn run_catalogue_cli(command: CatalogueCliCommand) -> Result<()> {
     }
 }
 
+async fn run_yang_cli(command: YangCliCommand) -> Result<()> {
+    if matches!(command, YangCliCommand::Help) {
+        print_yang_cli_usage();
+        return Ok(());
+    }
+
+    let config_path = config_path();
+    let cfg = config::load(&config_path).await?;
+    let library = bonsai::yang::YangLibrary::open(
+        &cfg.yang.library_root,
+        &cfg.yang.cache_root,
+        &cfg.yang.bundle_key_env,
+    )?;
+    let catalogue_dir = std::path::Path::new("config/path_profiles");
+
+    match command {
+        YangCliCommand::Help => print_yang_cli_usage(),
+        YangCliCommand::List => {
+            let modules = library.list_modules()?;
+            if modules.is_empty() {
+                println!("No YANG modules imported yet.");
+            } else {
+                println!(
+                    "{:<28} {:<14} {:<12} {:<14} trust",
+                    "module", "revision", "vendor", "source"
+                );
+                for module in modules {
+                    println!(
+                        "{:<28} {:<14} {:<12} {:<14} {}",
+                        module.module_name,
+                        module.revision,
+                        module.vendor_scope,
+                        module.source_kind,
+                        module.trust,
+                    );
+                }
+            }
+        }
+        YangCliCommand::Search { query } => {
+            let result = library.search(&query)?;
+            println!("Query: {}", result.query);
+            if result.modules.is_empty() {
+                println!("No matching modules.");
+            } else {
+                println!("\nModules:");
+                for module in result.modules {
+                    println!(
+                        "  {}@{} [{}] {}",
+                        module.module_name, module.revision, module.vendor_scope, module.source_ref
+                    );
+                }
+            }
+            if result.paths.is_empty() {
+                println!("\nNo matching Bonsai path mappings.");
+            } else {
+                println!("\nBonsai path mappings:");
+                for path in result.paths {
+                    println!(
+                        "  {} -> {} ({})",
+                        path.module_name, path.path, path.profile_name
+                    );
+                }
+            }
+        }
+        YangCliCommand::Sync { vendor } => {
+            let report = library.sync(vendor.as_deref(), catalogue_dir)?;
+            println!(
+                "synced {} source(s): imported={}, updated={}, skipped={}",
+                report.sources.len(),
+                report.imported,
+                report.updated,
+                report.skipped
+            );
+            for source in report.sources {
+                println!("  {source}");
+            }
+        }
+        YangCliCommand::Import {
+            directory,
+            vendor,
+            trust,
+        } => {
+            let report = library.import_directory(
+                std::path::Path::new(&directory),
+                &bonsai::yang::YangImportOptions {
+                    source_kind: "manual".to_string(),
+                    source_ref: directory.clone(),
+                    vendor_scope: vendor.unwrap_or_else(|| "manual".to_string()),
+                    trust,
+                },
+                catalogue_dir,
+            )?;
+            println!(
+                "imported={}, updated={}, skipped={}",
+                report.imported, report.updated, report.skipped
+            );
+            for module in report.modules {
+                println!("  {}@{}", module.module_name, module.revision);
+            }
+        }
+        YangCliCommand::Trust {
+            module_name,
+            revision,
+            trust,
+        } => {
+            let updated = library.set_module_trust(&module_name, revision.as_deref(), &trust)?;
+            println!(
+                "updated {}@{} trust={}",
+                updated.module_name, updated.revision, updated.trust
+            );
+        }
+        YangCliCommand::Bundle {
+            vendor,
+            version,
+            output,
+        } => {
+            let output_path = std::path::Path::new(&output);
+            if let Some(parent) = output_path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)?;
+            }
+            let manifest = library.create_bundle(&vendor, version.as_deref(), output_path)?;
+            println!(
+                "created YANG bundle '{}' with {} module(s); key env={}",
+                output,
+                manifest.modules.len(),
+                library.bundle_key_env()
+            );
+        }
+        YangCliCommand::Install { bundle } => {
+            let report = library.install_bundle(std::path::Path::new(&bundle), catalogue_dir)?;
+            println!(
+                "installed bundle '{}': imported={}, updated={}, skipped={}",
+                bundle, report.imported, report.updated, report.skipped
+            );
+        }
+    }
+
+    Ok(())
+}
+
 fn print_catalogue_cli_usage() {
     println!(
         "usage:\n\
@@ -1684,6 +2044,22 @@ fn print_catalogue_cli_usage() {
     );
 }
 
+fn print_yang_cli_usage() {
+    println!(
+        "usage:\n\
+         \x20 bonsai yang list\n\
+         \x20 bonsai yang search <query>\n\
+         \x20 bonsai yang sync [--vendor <openconfig|cisco|juniper|arista|nokia>]\n\
+         \x20 bonsai yang import <directory> [--vendor <name>] [--trust <trusted|experimental>]\n\
+         \x20 bonsai yang trust <module-name> [--revision <rev>] --trust <trusted|experimental>\n\
+         \x20 bonsai yang bundle <vendor> [--version <filter>] [--output <bundle.tar>]\n\
+         \x20 bonsai yang install <bundle.tar>\n\
+         \n\
+         The local library lives under runtime/yang_catalogue by default.\n\
+         Signed bundle create/install commands require the env var configured by [yang].bundle_key_env."
+    );
+}
+
 struct SelfTestCliCommand;
 
 impl SelfTestCliCommand {
@@ -1698,10 +2074,20 @@ async fn run_self_test() -> Result<()> {
 
     macro_rules! check {
         ($label:expr, $body:block) => {{
-            let result: Result<()> = async { $body; Ok(()) }.await;
+            let result: Result<()> = async {
+                $body;
+                Ok(())
+            }
+            .await;
             match result {
-                Ok(()) => { println!("  [✓] {}", $label); passed += 1; }
-                Err(e) => { println!("  [✗] {} — {e}", $label); failed += 1; }
+                Ok(()) => {
+                    println!("  [✓] {}", $label);
+                    passed += 1;
+                }
+                Err(e) => {
+                    println!("  [✗] {} — {e}", $label);
+                    failed += 1;
+                }
             }
         }};
     }
@@ -1731,11 +2117,11 @@ async fn run_self_test() -> Result<()> {
     });
 
     check!("LadybugDB linkage (open temp database)", {
-        let db_path = std::env::temp_dir()
-            .join(format!("bonsai-self-test-{}", std::process::id()));
+        let db_path = std::env::temp_dir().join(format!("bonsai-self-test-{}", std::process::id()));
         // Remove any leftover from a previous run so Kuzu creates a fresh DB.
         let _ = std::fs::remove_dir_all(&db_path);
-        let path = db_path.to_str()
+        let path = db_path
+            .to_str()
             .ok_or_else(|| anyhow::anyhow!("non-UTF8 temp path"))?
             .to_owned();
         let result = bonsai::graph::GraphStore::open(&path, 64 * 1024 * 1024);
@@ -1808,7 +2194,15 @@ async fn restart_subscriber(
 ) -> Result<()> {
     let address = target.address.clone();
     stop_subscriber(&address, subscribers).await;
-    spawn_subscriber(target, credentials, bus, debouncer, subscription_plan_tx, subscribers).await
+    spawn_subscriber(
+        target,
+        credentials,
+        bus,
+        debouncer,
+        subscription_plan_tx,
+        subscribers,
+    )
+    .await
 }
 
 async fn load_ca_cert_pem(target: &TargetConfig) -> Result<Option<Vec<u8>>> {

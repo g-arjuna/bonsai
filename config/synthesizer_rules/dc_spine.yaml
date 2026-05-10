@@ -1,0 +1,6 @@
+name: dc_spine
+description: Data-center spine and superspine recommendation.
+role_hints: ["spine", "superspine", "distribution", "border"]
+environment: ["data_center", "home_lab"]
+profile_names: ["dc_spine_standard"]
+rationale: "Spines prioritize underlay, fanout BGP, LLDP, and fast-failure signals."

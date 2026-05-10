@@ -173,7 +173,10 @@ impl CredentialVault {
         ensure_unlocked(&state)?;
 
         if state.entries.contains_key(&alias) {
-            bail!("credential alias '{}' already exists; use update() to change it", alias);
+            bail!(
+                "credential alias '{}' already exists; use update() to change it",
+                alias
+            );
         }
 
         state.entries.insert(

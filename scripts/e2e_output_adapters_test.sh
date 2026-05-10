@@ -111,6 +111,18 @@ adapter_remove() {
         -d "{\"name\":\"${1}\"}" \
         >>"$LOG_FILE" 2>&1 || true
 }
+credential_upsert() {
+    curl -sf -X POST "${BONSAI_HTTP}/api/credentials" \
+        -H "Content-Type: application/json" \
+        -d "{\"alias\":\"${1}\",\"username\":\"${2}\",\"password\":\"${3}\"}" \
+        >>"$LOG_FILE" 2>&1
+}
+credential_remove() {
+    curl -sf -X POST "${BONSAI_HTTP}/api/credentials/remove" \
+        -H "Content-Type: application/json" \
+        -d "{\"alias\":\"${1}\"}" \
+        >>"$LOG_FILE" 2>&1 || true
+}
 
 RESULT_PROMETHEUS="SKIP"
 RESULT_SPLUNK="SKIP"
@@ -125,6 +137,7 @@ cleanup() {
     adapter_remove "prom-test"   2>/dev/null || true
     adapter_remove "splunk-test" 2>/dev/null || true
     adapter_remove "elastic-test" 2>/dev/null || true
+    credential_remove "splunk-hec-e2e" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -214,6 +227,7 @@ test_splunk() {
     docker stop bonsai-e2e-splunk >>"$LOG_FILE" 2>&1 || true
     docker rm   bonsai-e2e-splunk >>"$LOG_FILE" 2>&1 || true
     docker run -d --name bonsai-e2e-splunk \
+        -e SPLUNK_GENERAL_TERMS="--accept-sgt-current-at-splunk-com" \
         -e SPLUNK_START_ARGS="--accept-license" \
         -e SPLUNK_PASSWORD="Bonsai1234!" \
         -e SPLUNK_HEC_TOKEN="$splunk_hec_token" \
@@ -223,13 +237,14 @@ test_splunk() {
 
     log "[splunk] Waiting up to 90s for Splunk to be ready..."
     local elapsed=0
-    while ! curl -sf "http://localhost:${splunk_port}/services/collector/health" >/dev/null 2>&1; do
+    while ! curl -skf "https://localhost:${splunk_port}/services/collector/health" >/dev/null 2>&1; do
         sleep 5; elapsed=$((elapsed+5))
         [[ $elapsed -ge 90 ]] && { fail "splunk" "HEC health endpoint did not respond within 90s"; return; }
     done
 
     log "[splunk] Registering Splunk HEC adapter and restarting bonsai..."
-    adapter_upsert "{\"name\":\"splunk-test\",\"adapter_type\":\"splunk_hec\",\"endpoint_url\":\"http://localhost:${splunk_port}/services/collector\",\"enabled\":true,\"flush_interval_secs\":10,\"extra\":{\"hec_token\":\"${splunk_hec_token}\"}}"
+    credential_upsert "splunk-hec-e2e" "hec" "$splunk_hec_token"
+    adapter_upsert "{\"name\":\"splunk-test\",\"adapter_type\":\"splunk_hec\",\"endpoint_url\":\"https://localhost:${splunk_port}\",\"credential_alias\":\"splunk-hec-e2e\",\"enabled\":true,\"flush_interval_secs\":10,\"extra\":{\"insecure_tls\":true}}"
     bonsai_stop
     bonsai_start || { fail "splunk" "bonsai failed to restart"; return; }
 
@@ -250,6 +265,7 @@ test_splunk() {
 
     log "[splunk] Cleaning up..."
     adapter_remove "splunk-test"
+    credential_remove "splunk-hec-e2e"
     docker stop bonsai-e2e-splunk >>"$LOG_FILE" 2>&1 || true
     docker rm   bonsai-e2e-splunk >>"$LOG_FILE" 2>&1 || true
 }
@@ -277,7 +293,7 @@ test_elastic() {
     done
 
     log "[elastic] Registering Elastic adapter and restarting bonsai..."
-    adapter_upsert "{\"name\":\"elastic-test\",\"adapter_type\":\"elasticsearch\",\"endpoint_url\":\"http://localhost:${es_port}\",\"enabled\":true,\"flush_interval_secs\":10}"
+    adapter_upsert "{\"name\":\"elastic-test\",\"adapter_type\":\"elastic\",\"endpoint_url\":\"http://localhost:${es_port}\",\"enabled\":true,\"flush_interval_secs\":10}"
     bonsai_stop
     bonsai_start || { fail "elastic" "bonsai failed to restart"; return; }
 

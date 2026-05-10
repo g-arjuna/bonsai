@@ -1,0 +1,6 @@
+vendor: arista
+patterns:
+  - "copy completed successfully"
+  - "configuration has been changed"
+  - "startup-config updated"
+  - "config saved"

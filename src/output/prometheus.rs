@@ -87,7 +87,10 @@ pub struct PrometheusRemoteWriteAdapter {
 impl PrometheusRemoteWriteAdapter {
     pub fn from_config(config: OutputAdapterConfig) -> Self {
         let environments = config.environment_scope.clone();
-        Self { config, environments }
+        Self {
+            config,
+            environments,
+        }
     }
 
     fn job_label(&self) -> String {
@@ -240,8 +243,19 @@ fn parse_path(path: &str) -> (String, Vec<(String, String)>) {
     (name_parts.join("_").to_lowercase(), labels)
 }
 
-fn base_labels_for(target: &str, hostname: &str, vendor: &str, job: &str, role: &str, site: &str) -> Vec<(String, String)> {
-    let instance = if hostname.is_empty() { target } else { hostname };
+fn base_labels_for(
+    target: &str,
+    hostname: &str,
+    vendor: &str,
+    job: &str,
+    role: &str,
+    site: &str,
+) -> Vec<(String, String)> {
+    let instance = if hostname.is_empty() {
+        target
+    } else {
+        hostname
+    };
     let mut labels = vec![
         ("device".to_string(), target.to_string()),
         ("instance".to_string(), instance.to_string()),
@@ -465,7 +479,8 @@ mod tests {
 
     #[test]
     fn parse_path_multiple_keys() {
-        let (name, labels) = parse_path("/bgp/neighbor[peer-address=1.2.3.4]/afi-safi[afi-safi-name=IPV4_UNICAST]");
+        let (name, labels) =
+            parse_path("/bgp/neighbor[peer-address=1.2.3.4]/afi-safi[afi-safi-name=IPV4_UNICAST]");
         assert_eq!(name, "bgp_neighbor_afi_safi");
         assert!(labels.iter().any(|(k, _)| k == "peer_address"));
         assert!(labels.iter().any(|(k, _)| k == "afi_safi_name"));
@@ -499,8 +514,14 @@ mod tests {
         );
         // "label" is a string, should be skipped
         assert_eq!(out.len(), 2);
-        assert!(out.iter().any(|m| m.name == "bonsai_interface_statistics_in_octets"));
-        assert!(out.iter().any(|m| m.name == "bonsai_interface_statistics_out_octets"));
+        assert!(
+            out.iter()
+                .any(|m| m.name == "bonsai_interface_statistics_in_octets")
+        );
+        assert!(
+            out.iter()
+                .any(|m| m.name == "bonsai_interface_statistics_out_octets")
+        );
     }
 
     #[test]

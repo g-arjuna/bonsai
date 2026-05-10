@@ -53,12 +53,18 @@ topology:
       image: ghcr.io/nokia/srlinux:latest
       mgmt-ipv4: 172.100.103.11
       startup-config: configs/srl-super1.cfg
+      labels:
+        bonsai.role: super-spine
+        bonsai.environment: data_center
 
     srl-super2:
       kind: nokia_srlinux
       image: ghcr.io/nokia/srlinux:latest
       mgmt-ipv4: 172.100.103.12
       startup-config: configs/srl-super2.cfg
+      labels:
+        bonsai.role: super-spine
+        bonsai.environment: data_center
 
     # ── Spines ────────────────────────────────────────────────────────────────
     srl-spine1:
@@ -66,12 +72,18 @@ topology:
       image: ghcr.io/nokia/srlinux:latest
       mgmt-ipv4: 172.100.103.13
       startup-config: configs/srl-spine1.cfg
+      labels:
+        bonsai.role: spine
+        bonsai.environment: data_center
 
     srl-spine2:
       kind: nokia_srlinux
       image: ghcr.io/nokia/srlinux:latest
       mgmt-ipv4: 172.100.103.14
       startup-config: configs/srl-spine2.cfg
+      labels:
+        bonsai.role: spine
+        bonsai.environment: data_center
 
     # ── Leaves (VTEPs) ────────────────────────────────────────────────────────
     srl-leaf1:
@@ -79,24 +91,36 @@ topology:
       image: ghcr.io/nokia/srlinux:latest
       mgmt-ipv4: 172.100.103.15
       startup-config: configs/srl-leaf1.cfg
+      labels:
+        bonsai.role: leaf
+        bonsai.environment: data_center
 
     srl-leaf2:
       kind: nokia_srlinux
       image: ghcr.io/nokia/srlinux:latest
       mgmt-ipv4: 172.100.103.16
       startup-config: configs/srl-leaf2.cfg
+      labels:
+        bonsai.role: leaf
+        bonsai.environment: data_center
 
     srl-leaf3:
       kind: nokia_srlinux
       image: ghcr.io/nokia/srlinux:latest
       mgmt-ipv4: 172.100.103.17
       startup-config: configs/srl-leaf3.cfg
+      labels:
+        bonsai.role: leaf
+        bonsai.environment: data_center
 
     srl-leaf4:
       kind: nokia_srlinux
       image: ghcr.io/nokia/srlinux:latest
       mgmt-ipv4: 172.100.103.18
       startup-config: configs/srl-leaf4.cfg
+      labels:
+        bonsai.role: leaf
+        bonsai.environment: data_center
 
     # ── Traffic generators (Alpine) ───────────────────────────────────────────
     host1:
@@ -104,24 +128,36 @@ topology:
       image: alpine:latest
       mgmt-ipv4: 172.100.103.21
       startup-config: configs/host1.sh
+      labels:
+        bonsai.role: host
+        bonsai.environment: data_center
 
     host2:
       kind: linux
       image: alpine:latest
       mgmt-ipv4: 172.100.103.22
       startup-config: configs/host2.sh
+      labels:
+        bonsai.role: host
+        bonsai.environment: data_center
 
     host3:
       kind: linux
       image: alpine:latest
       mgmt-ipv4: 172.100.103.23
       startup-config: configs/host3.sh
+      labels:
+        bonsai.role: host
+        bonsai.environment: data_center
 
     host4:
       kind: linux
       image: alpine:latest
       mgmt-ipv4: 172.100.103.24
       startup-config: configs/host4.sh
+      labels:
+        bonsai.role: host
+        bonsai.environment: data_center
 
   links:
     # ── Super-spine ↔ Spine tier ──────────────────────────────────────────────

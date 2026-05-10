@@ -29,7 +29,9 @@ pub fn rss_bytes() -> u64 {
         if let Ok(status) = fs::read_to_string("/proc/self/status") {
             for line in status.lines() {
                 if let Some(rest) = line.strip_prefix("VmRSS:") {
-                    let kb: u64 = rest.split_whitespace().next()
+                    let kb: u64 = rest
+                        .split_whitespace()
+                        .next()
                         .and_then(|s| s.parse().ok())
                         .unwrap_or(0);
                     return kb * 1024;
@@ -74,7 +76,11 @@ pub async fn run_memory_profiler(
 
     info!(
         interval_secs = interval.as_secs(),
-        output_path = output_path.as_ref().map(|p| p.display().to_string()).as_deref().unwrap_or("none"),
+        output_path = output_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .as_deref()
+            .unwrap_or("none"),
         "memory profiler started"
     );
 
@@ -123,6 +129,9 @@ fn chrono_now_iso() -> String {
 
 fn append_to_file(path: &std::path::Path, data: &str) -> std::io::Result<()> {
     use std::io::Write;
-    let mut f = fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let mut f = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
     f.write_all(data.as_bytes())
 }

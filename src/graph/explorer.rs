@@ -83,11 +83,11 @@ pub fn extract_columns(cypher: &str) -> Vec<String> {
                 term[as_pos + 4..].trim().to_string()
             } else {
                 // Last identifier after . or space (e.g. "d.address" → "address")
-                let last = term
-                    .split(|c: char| c == '.' || c == '(' || c == ')' || c == ' ')
-                    .filter(|s| !s.is_empty() && s.chars().next().map_or(false, |c| c.is_alphanumeric()))
-                    .last();
-                last.map(|s| s.to_string()).unwrap_or_else(|| format!("col_{}", i))
+                let last = term.split(['.', '(', ')', ' ']).rfind(|s| {
+                    !s.is_empty() && s.chars().next().is_some_and(|c| c.is_alphanumeric())
+                });
+                last.map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("col_{}", i))
             }
         })
         .collect()
@@ -96,7 +96,9 @@ pub fn extract_columns(cypher: &str) -> Vec<String> {
 /// Byte offset in `s` where the RETURN clause ends (ORDER/LIMIT/SKIP/EOF).
 fn clause_end(s: &str) -> usize {
     let upper = s.to_uppercase();
-    for kw in &[" ORDER ", " LIMIT ", " SKIP ", "\nORDER", "\nLIMIT", "\nSKIP"] {
+    for kw in &[
+        " ORDER ", " LIMIT ", " SKIP ", "\nORDER", "\nLIMIT", "\nSKIP",
+    ] {
         if let Some(pos) = upper.find(kw) {
             return pos;
         }
@@ -139,13 +141,18 @@ pub fn execute_query(conn: &Connection<'_>, cypher: &str) -> Result<ExplorerResu
     }
 
     let row_count = rows.len();
-    Ok(ExplorerResult { columns, rows, row_count, truncated })
+    Ok(ExplorerResult {
+        columns,
+        rows,
+        row_count,
+        truncated,
+    })
 }
 
 // ─── Value → serde_json::Value ───────────────────────────────────────────────
 
 fn value_to_json(v: &Value) -> serde_json::Value {
-    use serde_json::{json, Value as J};
+    use serde_json::{Value as J, json};
     match v {
         Value::String(s) => J::String(s.clone()),
         Value::Int64(n) => json!(*n),
@@ -165,7 +172,10 @@ fn value_to_json(v: &Value) -> serde_json::Value {
 fn format_ts(dt: OffsetDateTime) -> String {
     let (y, m, d) = (dt.year(), dt.month() as u8, dt.day());
     let (h, min, s, ns) = (dt.hour(), dt.minute(), dt.second(), dt.nanosecond());
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:09}Z", y, m, d, h, min, s, ns)
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:09}Z",
+        y, m, d, h, min, s, ns
+    )
 }
 
 // ─── tests ────────────────────────────────────────────────────────────────────
@@ -217,7 +227,12 @@ mod tests {
     #[test]
     fn validate_does_not_false_positive_on_inlined_words() {
         // "dataset" contains "set" but is not the keyword SET
-        assert!(validate_query("MATCH (d:Device) WHERE d.hostname STARTS WITH 'dataset' RETURN d.address").is_ok());
+        assert!(
+            validate_query(
+                "MATCH (d:Device) WHERE d.hostname STARTS WITH 'dataset' RETURN d.address"
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -234,8 +249,7 @@ mod tests {
 
     #[test]
     fn extract_columns_with_order_by() {
-        let cols =
-            extract_columns("MATCH (d:Device) RETURN d.address, d.vendor ORDER BY d.vendor");
+        let cols = extract_columns("MATCH (d:Device) RETURN d.address, d.vendor ORDER BY d.vendor");
         assert_eq!(cols, vec!["address", "vendor"]);
     }
 
@@ -244,9 +258,11 @@ mod tests {
         use crate::graph::test_fixtures::TestGraph;
         let g = TestGraph::build();
         let conn = lbug::Connection::new(&g.db).unwrap();
-        let result =
-            execute_query(&conn, "MATCH (d:Device) RETURN d.address ORDER BY d.address LIMIT 3")
-                .unwrap();
+        let result = execute_query(
+            &conn,
+            "MATCH (d:Device) RETURN d.address ORDER BY d.address LIMIT 3",
+        )
+        .unwrap();
         assert_eq!(result.columns, vec!["address"]);
         assert_eq!(result.rows.len(), 3);
         assert!(!result.truncated);

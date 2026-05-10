@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -193,7 +193,10 @@ async fn flush_buffer(
     })
     .await
     .context("archive flush panicked")??;
-    ARCHIVE_LAST_FLUSH_MILLIS.store(flush_started.elapsed().as_millis() as u64, Ordering::Relaxed);
+    ARCHIVE_LAST_FLUSH_MILLIS.store(
+        flush_started.elapsed().as_millis() as u64,
+        Ordering::Relaxed,
+    );
 
     for stat in stats.flushes {
         let compression_ratio = if stat.file_bytes > 0 {
@@ -201,7 +204,10 @@ async fn flush_buffer(
         } else {
             0.0
         };
-        ARCHIVE_LAST_COMPRESSION_PPM.store((compression_ratio * 1_000_000.0).round() as u64, Ordering::Relaxed);
+        ARCHIVE_LAST_COMPRESSION_PPM.store(
+            (compression_ratio * 1_000_000.0).round() as u64,
+            Ordering::Relaxed,
+        );
         info!(
             path = %stat.path.display(),
             rows = stat.rows,
@@ -390,7 +396,11 @@ struct OpenPartitionWriter {
 }
 
 impl OpenPartitionWriter {
-    fn open(archive_root: &Path, partition: &ArchivePartition, compression_level: u32) -> Result<Self> {
+    fn open(
+        archive_root: &Path,
+        partition: &ArchivePartition,
+        compression_level: u32,
+    ) -> Result<Self> {
         let dir = archive_root
             .join(format!("{:04}", partition.year))
             .join(format!("{:02}", partition.month))
@@ -399,9 +409,12 @@ impl OpenPartitionWriter {
             .with_context(|| format!("failed to create archive directory '{}'", dir.display()))?;
 
         let (path, file) = create_hourly_archive_file(&dir, partition)?;
-        let writer =
-            ArrowWriter::try_new(file, archive_schema(), Some(writer_properties(compression_level)?))
-                .with_context(|| format!("failed to open parquet writer '{}'", path.display()))?;
+        let writer = ArrowWriter::try_new(
+            file,
+            archive_schema(),
+            Some(writer_properties(compression_level)?),
+        )
+        .with_context(|| format!("failed to open parquet writer '{}'", path.display()))?;
 
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -491,8 +504,7 @@ fn archive_schema() -> Arc<Schema> {
 }
 
 fn writer_properties(compression_level: u32) -> Result<WriterProperties> {
-    let level =
-        i32::try_from(compression_level).unwrap_or(12).clamp(1, 22);
+    let level = i32::try_from(compression_level).unwrap_or(12).clamp(1, 22);
     let zstd = Compression::ZSTD(ZstdLevel::try_new(level).context("invalid zstd level")?);
 
     // Enable dictionary encoding globally — parquet uses it for low-cardinality columns

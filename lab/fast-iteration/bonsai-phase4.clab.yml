@@ -35,24 +35,36 @@ topology:
       image: ghcr.io/nokia/srlinux:latest
       mgmt-ipv4: 172.100.102.11
       startup-config: configs-p4/srl-spine1.cfg
+      labels:
+        bonsai.role: spine
+        bonsai.environment: data_center
 
     srl-leaf1:
       kind: nokia_srlinux
       image: ghcr.io/nokia/srlinux:latest
       mgmt-ipv4: 172.100.102.12
       startup-config: configs-p4/srl-leaf1.cfg
+      labels:
+        bonsai.role: leaf
+        bonsai.environment: data_center
 
     srl-leaf2:
       kind: nokia_srlinux
       image: ghcr.io/nokia/srlinux:latest
       mgmt-ipv4: 172.100.102.13
       startup-config: configs-p4/srl-leaf2.cfg
+      labels:
+        bonsai.role: leaf
+        bonsai.environment: data_center
 
     xrd-pe1:
       kind: cisco_xrd
       image: ios-xr/xrd-control-plane:24.4.2
       mgmt-ipv4: 172.100.102.21
       startup-config: configs-p4/xrd-pe1.cfg
+      labels:
+        bonsai.role: pe
+        bonsai.environment: data_center
 
   links:
     # spine <-> leaf1

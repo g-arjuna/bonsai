@@ -31,7 +31,10 @@ pub fn append_credential_resolve(
     let dir = audit_dir(root);
     fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create audit directory '{}'", dir.display()))?;
-    let file_path = dir.join(format!("{FILE_PREFIX}{}{FILE_SUFFIX}", epoch_day(timestamp_ns)));
+    let file_path = dir.join(format!(
+        "{FILE_PREFIX}{}{FILE_SUFFIX}",
+        epoch_day(timestamp_ns)
+    ));
 
     let mut event = json!({
         "timestamp_ns": timestamp_ns,
@@ -71,7 +74,10 @@ pub fn append_enrichment_run(
     let dir = audit_dir(root);
     fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create audit directory '{}'", dir.display()))?;
-    let file_path = dir.join(format!("{FILE_PREFIX}{}{FILE_SUFFIX}", epoch_day(timestamp_ns)));
+    let file_path = dir.join(format!(
+        "{FILE_PREFIX}{}{FILE_SUFFIX}",
+        epoch_day(timestamp_ns)
+    ));
 
     let mut event = json!({
         "timestamp_ns": timestamp_ns,
@@ -90,7 +96,10 @@ pub fn append_enrichment_run(
         .open(&file_path)
         .with_context(|| format!("failed to open audit log '{}'", file_path.display()))?;
     writeln!(file, "{event}").with_context(|| {
-        format!("failed to append enrichment run audit event to '{}'", file_path.display())
+        format!(
+            "failed to append enrichment run audit event to '{}'",
+            file_path.display()
+        )
     })?;
 
     enforce_retention(root, RETENTION_DAYS_DEFAULT)?;
@@ -102,14 +111,17 @@ pub fn append_trust_operation(
     root: &Path,
     timestamp_ns: i64,
     trust_key: &str,
-    operation: &str,   // "approve" | "reject" | "graduate" | "rollback" | "set_state"
+    operation: &str, // "approve" | "reject" | "graduate" | "rollback" | "set_state"
     proposal_id: &str,
     operator_note: Option<&str>,
 ) -> Result<()> {
     let dir = audit_dir(root);
     fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create audit directory '{}'", dir.display()))?;
-    let file_path = dir.join(format!("{FILE_PREFIX}{}{FILE_SUFFIX}", epoch_day(timestamp_ns)));
+    let file_path = dir.join(format!(
+        "{FILE_PREFIX}{}{FILE_SUFFIX}",
+        epoch_day(timestamp_ns)
+    ));
 
     let mut event = json!({
         "timestamp_ns": timestamp_ns,
@@ -128,7 +140,10 @@ pub fn append_trust_operation(
         .open(&file_path)
         .with_context(|| format!("failed to open audit log '{}'", file_path.display()))?;
     writeln!(file, "{event}").with_context(|| {
-        format!("failed to append trust_op audit event to '{}'", file_path.display())
+        format!(
+            "failed to append trust_op audit event to '{}'",
+            file_path.display()
+        )
     })?;
 
     enforce_retention(root, RETENTION_DAYS_DEFAULT)?;
@@ -148,7 +163,10 @@ pub fn append_adapter_push(
     let dir = audit_dir(root);
     fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create audit directory '{}'", dir.display()))?;
-    let file_path = dir.join(format!("{FILE_PREFIX}{}{FILE_SUFFIX}", epoch_day(timestamp_ns)));
+    let file_path = dir.join(format!(
+        "{FILE_PREFIX}{}{FILE_SUFFIX}",
+        epoch_day(timestamp_ns)
+    ));
 
     let mut event = json!({
         "timestamp_ns": timestamp_ns,
@@ -168,7 +186,10 @@ pub fn append_adapter_push(
         .open(&file_path)
         .with_context(|| format!("failed to open audit log '{}'", file_path.display()))?;
     writeln!(file, "{event}").with_context(|| {
-        format!("failed to append adapter push audit event to '{}'", file_path.display())
+        format!(
+            "failed to append adapter push audit event to '{}'",
+            file_path.display()
+        )
     })?;
 
     enforce_retention(root, RETENTION_DAYS_DEFAULT)?;
@@ -188,7 +209,8 @@ pub fn enforce_retention(root: &Path, retention_days: i64) -> Result<usize> {
     for entry in
         fs::read_dir(&dir).with_context(|| format!("failed to read '{}'", dir.display()))?
     {
-        let entry = entry.with_context(|| format!("failed to read entry in '{}'", dir.display()))?;
+        let entry =
+            entry.with_context(|| format!("failed to read entry in '{}'", dir.display()))?;
         let path = entry.path();
         let Some(day) = parse_epoch_day_from_filename(&path) else {
             continue;
@@ -232,7 +254,8 @@ pub fn export_tarball(
             .with_context(|| format!("failed to open audit file '{}'", file.display()))?;
         let reader = BufReader::new(fd);
         for line in reader.lines() {
-            let line = line.with_context(|| format!("failed to read line from '{}'", file.display()))?;
+            let line =
+                line.with_context(|| format!("failed to read line from '{}'", file.display()))?;
             if line.trim().is_empty() {
                 continue;
             }
@@ -277,10 +300,13 @@ pub fn export_tarball(
         "exported_at_ns": now_ns(),
         "entry_count": filtered_lines.len(),
     });
-    let manifest_payload = serde_json::to_vec_pretty(&manifest).context("serialize audit manifest")?;
+    let manifest_payload =
+        serde_json::to_vec_pretty(&manifest).context("serialize audit manifest")?;
     append_bytes(&mut builder, "audit/manifest.json", &manifest_payload)?;
 
-    builder.finish().context("failed to finalize audit export tarball")?;
+    builder
+        .finish()
+        .context("failed to finalize audit export tarball")?;
 
     Ok(AuditExportResult {
         output_path: output_path.to_path_buf(),
@@ -333,4 +359,3 @@ fn now_ns() -> i64 {
         .try_into()
         .unwrap_or(i64::MAX)
 }
-

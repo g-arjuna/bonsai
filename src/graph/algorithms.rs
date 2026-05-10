@@ -129,10 +129,7 @@ pub fn site_dependency_depth(conn: &Connection<'_>) -> Result<Vec<SiteDependency
 
 /// Detection rule pairs that co-fire on the same device within `since_ns`.
 /// Ordered by co-fire frequency descending. Only different rule pairs (rule_a < rule_b).
-pub fn detection_correlation(
-    conn: &Connection<'_>,
-    since_ns: i64,
-) -> Result<Vec<CorrelationPair>> {
+pub fn detection_correlation(conn: &Connection<'_>, since_ns: i64) -> Result<Vec<CorrelationPair>> {
     let since_ts = ts(since_ns);
     let mut stmt = conn
         .prepare(
@@ -328,12 +325,10 @@ mod tests {
         let conn = lbug::Connection::new(&g.db).unwrap();
         let pairs = detection_correlation(&conn, 0).unwrap();
         // leaf1 has both bgp_session_down and interface_down detections
-        let pair = pairs
-            .iter()
-            .find(|p| {
-                (p.rule_a == "bgp_session_down" && p.rule_b == "interface_down")
-                    || (p.rule_a == "interface_down" && p.rule_b == "bgp_session_down")
-            });
+        let pair = pairs.iter().find(|p| {
+            (p.rule_a == "bgp_session_down" && p.rule_b == "interface_down")
+                || (p.rule_a == "interface_down" && p.rule_b == "bgp_session_down")
+        });
         assert!(
             pair.is_some(),
             "should find bgp_session_down/interface_down co-fire pair; got {:?}",
@@ -373,6 +368,9 @@ mod tests {
         let conn = lbug::Connection::new(&g.db).unwrap();
         let insights = graph_insights(&conn).unwrap();
         assert!(!insights.device_centrality.is_empty());
-        assert!(insights.orphan_count >= 1, "isolated device should count as orphan");
+        assert!(
+            insights.orphan_count >= 1,
+            "isolated device should count as orphan"
+        );
     }
 }

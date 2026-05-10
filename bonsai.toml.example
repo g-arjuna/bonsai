@@ -39,6 +39,45 @@ graph_path   = "bonsai.db"
 # path = "bonsai-credentials"
 # passphrase_env = "BONSAI_VAULT_PASSPHRASE"
 
+# ── Layered ingestion (CV1 Sprint 2 baseline) ───────────────────────────────
+# Encrypted-at-rest config snapshots captured via gNMI Get(CONFIG). Manual
+# re-parse is available from the device drawer; a weekly scheduled verification
+# queue runs automatically when enabled.
+# [layered_ingestion]
+# enabled = true
+# config_store_path = "runtime/config-store"
+# config_store_passphrase_env = "BONSAI_VAULT_PASSPHRASE"
+# change_detection_schedule_interval_secs = 3600
+# change_detection_reparse_interval_secs = 604800
+# history_limit = 25
+# default_gnmi_get_paths = []   # empty means "request the full config tree"
+# gnmi_known_issues_path = "config/gnmi_known_issues/default.yaml"
+# syslog_patterns_path = "config/syslog_patterns"
+#
+# [layered_ingestion.parser_chain]
+# consensus_mode = false
+# priorities."cisco-iosxr::show bgp summary" = ["pyats_genie", "ntc_templates", "bonsai_native"]
+# priorities."cisco-iosxr::show bgp neighbors" = ["pyats_genie", "ntc_templates", "bonsai_native"]
+# priorities."cisco-nxos::*" = ["pyats_genie", "suzieq_native", "ntc_templates"]
+# priorities."arista-eos::*" = ["suzieq_native", "pyats_genie", "ntc_templates"]
+# priorities."juniper-junos::*" = ["pyats_genie", "ntc_templates", "bonsai_native"]
+# priorities."nokia-srlinux::*" = ["bonsai_native"]
+# priorities."frr::*" = ["bonsai_native"]
+#
+# [layered_ingestion.parser_chain.sidecars]
+# pyats_url = "http://127.0.0.1:9101"
+# native_url = "http://127.0.0.1:9102"
+
+# ── YANG library lifecycle (CV1 Sprint 4) ───────────────────────────────────
+# The local YANG catalogue stores imported/synced modules and the Bonsai path
+# index derived from them. Signed bundle workflows use a shared secret key env
+# var so internet-connected workstations can prepare bundles for restricted
+# environments.
+# [yang]
+# library_root = "runtime/yang_catalogue"
+# cache_root = "runtime/yang_cache"
+# bundle_key_env = "BONSAI_YANG_BUNDLE_KEY"
+
 # ── Graph database (v12 T0-1) ─────────────────────────────────────────────────
 # LadybugDB buffer pool is capped by default to avoid the ~80% RAM grab.
 # Default: min(2 GiB, 25% of RAM) for core; min(256 MiB, 10%) for collector.

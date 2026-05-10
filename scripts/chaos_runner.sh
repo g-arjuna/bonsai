@@ -26,11 +26,18 @@ PLAN="${PLAN:-$REPO_ROOT/chaos_plans/always_on_dc.yaml}"
 PYTHON="$REPO_ROOT/.venv/bin/python3"
 RUNNER="$REPO_ROOT/scripts/chaos_runner.py"
 CYCLE_PAUSE_SECS=30   # gap between consecutive 30-min cycles
+CHAOS_SYSTEMD_SERVICE="${CHAOS_SYSTEMD_SERVICE:-bonsai-chaos.service}"
 
 mkdir -p "$RUNTIME_DIR"
 
 _log() { echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*" | tee -a "$LOG_FILE"; }
 _die() { _log "ERROR: $*"; exit 1; }
+_systemd_service_installed() {
+    command -v systemctl &>/dev/null && systemctl list-unit-files "$CHAOS_SYSTEMD_SERVICE" --no-legend 2>/dev/null | grep -q "^${CHAOS_SYSTEMD_SERVICE}[[:space:]]"
+}
+_systemd_service_active() {
+    command -v systemctl &>/dev/null && systemctl is-active --quiet "$CHAOS_SYSTEMD_SERVICE"
+}
 _json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -55,6 +62,16 @@ _preflight() {
 
 # ── --stop ────────────────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--stop" ]]; then
+    if _systemd_service_installed; then
+        if _systemd_service_active; then
+            _log "Stopping systemd chaos service ($CHAOS_SYSTEMD_SERVICE)"
+            sudo systemctl stop "$CHAOS_SYSTEMD_SERVICE"
+        else
+            _log "systemd chaos service is not running"
+        fi
+        rm -f "$PID_FILE"
+        exit 0
+    fi
     if [[ -f "$PID_FILE" ]]; then
         PID=$(<"$PID_FILE")
         if kill -0 "$PID" 2>/dev/null; then
@@ -73,6 +90,17 @@ fi
 
 # ── --status ──────────────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--status" ]]; then
+    if _systemd_service_installed; then
+        if _systemd_service_active; then
+            echo "chaos_runner service is RUNNING via systemd ($CHAOS_SYSTEMD_SERVICE)"
+        else
+            echo "chaos_runner service is NOT RUNNING via systemd ($CHAOS_SYSTEMD_SERVICE)"
+        fi
+        echo ""
+        echo "=== systemd status ==="
+        systemctl status "$CHAOS_SYSTEMD_SERVICE" --no-pager -l 2>/dev/null || true
+        echo ""
+    fi
     if [[ -f "$PID_FILE" ]]; then
         PID=$(<"$PID_FILE")
         if kill -0 "$PID" 2>/dev/null; then
@@ -91,6 +119,15 @@ fi
 
 # ── --ensure-running ──────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--ensure-running" ]]; then
+    if _systemd_service_installed; then
+        if _systemd_service_active; then
+            _log "ensure-running: systemd service already active ($CHAOS_SYSTEMD_SERVICE)"
+            exit 0
+        fi
+        _log "ensure-running: starting systemd service ($CHAOS_SYSTEMD_SERVICE)"
+        sudo systemctl start "$CHAOS_SYSTEMD_SERVICE"
+        exit 0
+    fi
     if [[ -f "$PID_FILE" ]]; then
         EXISTING_PID=$(<"$PID_FILE")
         if kill -0 "$EXISTING_PID" 2>/dev/null; then

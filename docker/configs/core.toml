@@ -4,6 +4,12 @@ api_addr     = "0.0.0.0:50051"
 [runtime]
 mode = "core"
 
+[archive]
+enabled = true
+path = "runtime/archive"
+flush_interval_seconds = 10
+max_batch_rows = 1000
+
 [runtime.tls]
 enabled     = true
 ca_cert     = "tls/ca.pem"

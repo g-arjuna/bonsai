@@ -32,6 +32,12 @@ scripts/configure_external.sh
 
 Total time: approximately 5-10 minutes (dominated by NetBox and Splunk startup).
 
+For Sprint 5 specifically, use the focused preflight:
+
+```bash
+scripts/sprint5_preflight.sh --start --check
+```
+
 ## Service URLs
 
 | Service | URL | Notes |
@@ -39,7 +45,7 @@ Total time: approximately 5-10 minutes (dominated by NetBox and Splunk startup).
 | NetBox API | http://localhost:8000/api/ | Token: `bonsai-dev-token` |
 | NetBox UI | http://localhost:8000 | admin / bonsai-dev |
 | Splunk Web | http://localhost:8100 | admin / `$SPLUNK_PASSWORD` |
-| Splunk HEC | http://localhost:8088/services/collector | Token: `$SPLUNK_HEC_TOKEN` |
+| Splunk HEC | https://localhost:8088/services/collector | Token: `$SPLUNK_HEC_TOKEN` |
 | Elasticsearch | http://localhost:9200 | No auth (dev mode) |
 | Kibana | http://localhost:5601 | No auth (dev mode) |
 | Prometheus | http://localhost:9093 | Includes remote-write receiver |
@@ -117,6 +123,13 @@ SNOW_PASSWORD=<your-pdi-password>
 
 # Then run:
 source .env && scripts/seed_servicenow_pdi.py
+```
+
+For adapter validation against the PDI:
+
+```bash
+source .env
+scripts/e2e_servicenow_pdi_test.sh
 ```
 
 ## Stopping and cleaning up

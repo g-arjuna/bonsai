@@ -93,6 +93,24 @@ services:
       delay --time ${CHAOS_DELAY_MS:-500}
       re2:^bonsai-collector
 
+  pyats-sidecar:
+    build:
+      context: .
+      dockerfile: docker/sidecars/pyats/Dockerfile
+    profiles: ["parsers"]
+    ports:
+      - "9101:9101"
+    command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "9101"]
+
+  bonsai-native-parser:
+    build:
+      context: .
+      dockerfile: docker/sidecars/bonsai-native-parser/Dockerfile
+    profiles: ["parsers"]
+    ports:
+      - "9102:9102"
+    command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "9102"]
+
   # ── Lab-aware bonsai instances (Sprint 4 v11) ──────────────────────────────
   #
   # These profiles connect bonsai to the ContainerLab DC or SP management

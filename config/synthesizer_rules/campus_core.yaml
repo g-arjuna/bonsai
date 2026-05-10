@@ -1,0 +1,6 @@
+name: campus_core
+description: Campus core recommendation.
+role_hints: ["core"]
+environment: ["campus_wired"]
+profile_names: ["campus_core"]
+rationale: "Campus core devices prioritize backbone interfaces, routing convergence, and adjacency state."

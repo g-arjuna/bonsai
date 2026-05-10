@@ -32,9 +32,15 @@ pub fn check_protocol_compat(client_version: u32, server_version: u32) -> Versio
     if client_version == server_version {
         VersionCompat::Compatible
     } else if client_version.abs_diff(server_version) >= 10 || client_version == 0 {
-        VersionCompat::MajorSkew { client: client_version, server: server_version }
+        VersionCompat::MajorSkew {
+            client: client_version,
+            server: server_version,
+        }
     } else {
-        VersionCompat::MinorSkew { client: client_version, server: server_version }
+        VersionCompat::MinorSkew {
+            client: client_version,
+            server: server_version,
+        }
     }
 }
 
@@ -89,7 +95,8 @@ pub type CollectorService = BonsaiService<crate::collector::graph::CollectorGrap
 pub type CoreService = BonsaiService<GraphStore>;
 
 type EventStream = Pin<Box<dyn Stream<Item = Result<pb::StateEvent, Status>> + Send>>;
-type RegisterCollectorStream = Pin<Box<dyn Stream<Item = Result<pb::AssignmentUpdate, Status>> + Send>>;
+type RegisterCollectorStream =
+    Pin<Box<dyn Stream<Item = Result<pb::AssignmentUpdate, Status>> + Send>>;
 
 #[tonic::async_trait]
 impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
@@ -696,11 +703,11 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             let telemetry = ingest::ingest_update_to_telemetry(update)
                 .map_err(|e| Status::invalid_argument(format!("{e:#}")))?;
 
-            if let Some(ref d) = self.debouncer {
-                if d.should_drop(&telemetry) {
-                    accepted += 1;
-                    continue;
-                }
+            if let Some(ref d) = self.debouncer
+                && d.should_drop(&telemetry)
+            {
+                accepted += 1;
+                continue;
             }
 
             self.bus.publish(telemetry);
@@ -1033,7 +1040,9 @@ fn resolve_target_credentials(
     credentials: &CredentialVault,
 ) -> anyhow::Result<Option<ResolvedCredential>> {
     if let Some(alias) = target.credential_alias.as_deref() {
-        return credentials.resolve(alias, ResolvePurpose::Remediate).map(Some);
+        return credentials
+            .resolve(alias, ResolvePurpose::Remediate)
+            .map(Some);
     }
 
     Ok(
@@ -1051,7 +1060,9 @@ fn resolve_request_credentials(
     password_env: Option<String>,
 ) -> anyhow::Result<Option<ResolvedCredential>> {
     if let Some(alias) = credential_alias {
-        return credentials.resolve(&alias, ResolvePurpose::Discover).map(Some);
+        return credentials
+            .resolve(&alias, ResolvePurpose::Discover)
+            .map(Some);
     }
 
     let username = username_env

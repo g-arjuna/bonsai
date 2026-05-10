@@ -280,6 +280,102 @@ check_sp() {
       "$srv6_ok" "$warnings_json"
 }
 
+# ── Cloud DC topology checks ──────────────────────────────────────────────────
+
+check_cloud_dc() {
+    log "Checking cloud DC topology (bonsai-cloud-dc)..."
+
+    local dc_nodes=("srl-super1" "srl-spine1" "srl-leaf1" "srl-leaf2" "srl-leaf3" "srl-leaf4")
+
+    local nodes_up=0 nodes_total=${#dc_nodes[@]}
+    local missing_nodes=()
+    for n in "${dc_nodes[@]}"; do
+        local cname="clab-bonsai-cloud-dc-${n}"
+        if node_running "$cname"; then
+            ((nodes_up++)) || true
+        else
+            missing_nodes+=("$n")
+        fi
+    done
+
+    log "  Cloud DC nodes up: ${nodes_up}/${nodes_total}"
+
+    local isis_adj_spine1="unknown"
+    if node_running "clab-bonsai-cloud-dc-srl-spine1"; then
+        local raw
+        raw=$(node_exec "clab-bonsai-cloud-dc-srl-spine1" sr_cli -d "show network-instance default protocols isis adjacency" 2>/dev/null || echo "__FAILED__")
+        if [[ "$raw" != "__FAILED__" ]]; then
+            isis_adj_spine1=$(echo "$raw" | { grep -i -c " up " || true; } )
+        fi
+    fi
+    log "  IS-IS adjacencies on cloud spine1: ${isis_adj_spine1}"
+
+    local bgp_established_super1=0 bgp_total_super1=5
+    if node_running "clab-bonsai-cloud-dc-srl-super1"; then
+        local raw
+        raw=$(node_exec "clab-bonsai-cloud-dc-srl-super1" sr_cli -d "show network-instance default protocols bgp neighbor" 2>/dev/null || echo "__FAILED__")
+        if [[ "$raw" != "__FAILED__" ]]; then
+            bgp_established_super1=$(echo "$raw" | { grep -i -E -c "established.*\[" || true; } )
+        fi
+    fi
+    log "  BGP EVPN established on cloud super1: ${bgp_established_super1}/${bgp_total_super1}"
+
+    local evpn_routes_leaf1=0 evpn_routes_present=false
+    if node_running "clab-bonsai-cloud-dc-srl-leaf1"; then
+        local raw count
+        raw=$(node_exec "clab-bonsai-cloud-dc-srl-leaf1" sr_cli -d "show network-instance default protocols bgp neighbor 10.4.0.1 received-routes evpn" 2>/dev/null || echo "__FAILED__")
+        if [[ "$raw" != "__FAILED__" ]]; then
+            count=$(echo "$raw" | { grep -E -c "10\\.4\\.0\\.[0-9]+:" || true; } )
+            evpn_routes_leaf1=$((evpn_routes_leaf1 + count))
+        fi
+    fi
+    [[ "$evpn_routes_leaf1" -gt 0 ]] && evpn_routes_present=true
+    log "  EVPN routes on cloud leaf1: ${evpn_routes_leaf1}"
+
+    local warnings=()
+    [[ ${#missing_nodes[@]} -gt 0 ]] && warnings+=("${#missing_nodes[@]} cloud DC node(s) down: $(IFS=,; echo "${missing_nodes[*]}")")
+    if [[ "$isis_adj_spine1" != "unknown" ]] && [[ "$isis_adj_spine1" -lt 5 ]]; then
+        warnings+=("Cloud DC spine1 IS-IS: only ${isis_adj_spine1}/5 adjacencies")
+    fi
+    if [[ "$bgp_established_super1" -lt "$bgp_total_super1" ]]; then
+        warnings+=("Cloud DC super1 BGP: only ${bgp_established_super1}/${bgp_total_super1} established")
+    fi
+    $evpn_routes_present || warnings+=("Cloud DC leaf1: no EVPN routes received from super1")
+
+    local missing_json="[]"
+    if [[ ${#missing_nodes[@]} -gt 0 ]]; then
+        missing_json=$(printf '"%s",' "${missing_nodes[@]}")
+        missing_json="[${missing_json%,}]"
+    fi
+    local warnings_json="[]"
+    if [[ ${#warnings[@]} -gt 0 ]]; then
+        warnings_json=$(printf '"%s",' "${warnings[@]}")
+        warnings_json="[${warnings_json%,}]"
+    fi
+
+    local passed=false
+    [[ "$nodes_up" -eq "$nodes_total" ]] && passed=true
+
+    printf '{
+    "topology": "cloud-dc",
+    "passed": %s,
+    "nodes_up": %d,
+    "nodes_total": %d,
+    "missing_nodes": %s,
+    "bgp_sessions_established": %d,
+    "bgp_sessions_total": %d,
+    "isis_adjacencies_spine1": "%s",
+    "bgp_evpn_established_super1": %d,
+    "evpn_routes_leaf1": %d,
+    "evpn_routes_present": %s,
+    "srv6_reachability_verified": false,
+    "warnings": %s
+  }' "$passed" "$nodes_up" "$nodes_total" "$missing_json" \
+      "$bgp_established_super1" "$bgp_total_super1" \
+      "$isis_adj_spine1" "$bgp_established_super1" "$evpn_routes_leaf1" \
+      "$evpn_routes_present" "$warnings_json"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 log "Starting lab health check (topology=${TOPOLOGY:-all})"
@@ -292,6 +388,7 @@ fi
 
 DC_JSON="null"
 SP_JSON="null"
+CLOUD_DC_JSON="null"
 
 case "${TOPOLOGY:-all}" in
     dc)
@@ -300,12 +397,15 @@ case "${TOPOLOGY:-all}" in
     sp)
         SP_JSON=$(check_sp)
         ;;
+    cloud-dc)
+        CLOUD_DC_JSON=$(check_cloud_dc)
+        ;;
     all|"")
         DC_JSON=$(check_dc)
         SP_JSON=$(check_sp)
         ;;
     *)
-        log "Unknown topology '${TOPOLOGY}'. Use: dc | sp | all"
+        log "Unknown topology '${TOPOLOGY}'. Use: dc | sp | cloud-dc | all"
         exit 1
         ;;
 esac
@@ -320,6 +420,7 @@ import json, sys
 data = json.loads(sys.stdin.read())
 dc = data['dc']
 sp = data['sp']
+cloud_dc = data['cloud_dc']
 
 bgp_est = 0
 bgp_total = 0
@@ -328,7 +429,7 @@ srv6_ok = False
 warnings = []
 all_passed = True
 
-for topo in (dc, sp):
+for topo in (dc, sp, cloud_dc):
     if topo is None:
         continue
     bgp_est += topo.get('bgp_sessions_established', 0)
@@ -347,10 +448,10 @@ print(json.dumps({
     'warnings': warnings,
     'overall_passed': all_passed,
 }))
-" <<< "{\"dc\": $DC_JSON, \"sp\": $SP_JSON}")
+" <<< "{\"dc\": $DC_JSON, \"sp\": $SP_JSON, \"cloud_dc\": $CLOUD_DC_JSON}")
 
-printf '{"ts_unix": %d, "summary": %s, "dc": %s, "sp": %s}\n' \
-    "$TS" "$SUMMARY" "$DC_JSON" "$SP_JSON"
+printf '{"ts_unix": %d, "summary": %s, "dc": %s, "sp": %s, "cloud_dc": %s}\n' \
+    "$TS" "$SUMMARY" "$DC_JSON" "$SP_JSON" "$CLOUD_DC_JSON"
 
 log "Done."
 
@@ -359,4 +460,4 @@ python3 -c "
 import json, sys
 data = json.loads(sys.stdin.read())
 sys.exit(0 if data['summary']['overall_passed'] else 1)
-" <<< "$(printf '{"ts_unix": %d, "summary": %s, "dc": %s, "sp": %s}\n' "$TS" "$SUMMARY" "$DC_JSON" "$SP_JSON")"
+" <<< "$(printf '{"ts_unix": %d, "summary": %s, "dc": %s, "sp": %s, "cloud_dc": %s}\n' "$TS" "$SUMMARY" "$DC_JSON" "$SP_JSON" "$CLOUD_DC_JSON")"

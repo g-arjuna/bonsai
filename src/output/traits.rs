@@ -260,7 +260,11 @@ impl OutputAdapterRegistry {
 
     pub fn record_push(&mut self, name: &str, report: &OutputReport) {
         let ts = now_ns();
-        let outcome = if report.error.is_some() { "error" } else { "success" };
+        let outcome = if report.error.is_some() {
+            "error"
+        } else {
+            "success"
+        };
         if let Err(e) = crate::audit::append_adapter_push(
             &self.audit_root,
             ts,
@@ -270,7 +274,10 @@ impl OutputAdapterRegistry {
             report.bytes_sent,
             report.error.as_deref(),
         ) {
-            warn!(adapter = name, "failed to write adapter push audit entry: {e}");
+            warn!(
+                adapter = name,
+                "failed to write adapter push audit entry: {e}"
+            );
         }
         let state = self.states.entry(name.to_string()).or_default();
         state.last_push_at_ns = Some(ts);
@@ -279,7 +286,6 @@ impl OutputAdapterRegistry {
         state.last_push_bytes = Some(report.bytes_sent);
         state.last_push_warnings = report.warnings.clone();
         state.last_push_error = report.error.clone();
-        state.is_running = false;
         state.total_events_pushed += report.events_pushed as u64;
         state.total_bytes_sent += report.bytes_sent;
     }
@@ -355,7 +361,9 @@ mod tests {
 
     #[test]
     fn stub_adapter_compiles() {
-        let adapter = StubAdapter { name: "test".to_string() };
+        let adapter = StubAdapter {
+            name: "test".to_string(),
+        };
         assert_eq!(adapter.name(), "test");
         assert_eq!(adapter.topics(), &[OutputTopic::RawTelemetry]);
         assert!(adapter.applies_to_environments().is_empty());

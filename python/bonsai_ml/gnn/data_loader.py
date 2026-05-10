@@ -29,6 +29,10 @@ DEFAULT_FEATURE_NAMES = [
     "role_p",
     "role_rr",
     "role_ce",
+    "role_access",
+    "role_distribution",
+    "role_core",
+    "role_edge",
     "role_other",
     "embedding_0",
     "embedding_1",
@@ -70,6 +74,13 @@ ROLE_FEATURES = {
     "ce": "role_ce",
     "customer-edge": "role_ce",
     "customer_edge": "role_ce",
+    "access": "role_access",
+    "distribution": "role_distribution",
+    "dist": "role_distribution",
+    "core": "role_core",
+    "edge": "role_edge",
+    "campus-edge": "role_edge",
+    "internet-edge": "role_edge",
 }
 
 
@@ -296,7 +307,7 @@ def _vendor_feature(vendor: Any) -> str:
 
 
 def _role_feature(role: Any) -> str:
-    text = str(role or "").lower().replace("_", "-")
+    text = str(role or "").lower().replace("_", "-").replace(" ", "-")
     tokens = [part for part in text.replace("/", "-").split("-") if part]
     token_set = set(tokens)
     token_roots = {token.rstrip("0123456789") for token in tokens}

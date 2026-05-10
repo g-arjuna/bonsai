@@ -14,14 +14,23 @@ topology:
     srl1:
       mgmt-ipv4: 172.100.100.11
       startup-config: configs/srl1.cfg
+      labels:
+        bonsai.role: spine
+        bonsai.environment: data_center
 
     srl2:
       mgmt-ipv4: 172.100.100.12
       startup-config: configs/srl2.cfg
+      labels:
+        bonsai.role: leaf
+        bonsai.environment: data_center
 
     srl3:
       mgmt-ipv4: 172.100.100.13
       startup-config: configs/srl3.cfg
+      labels:
+        bonsai.role: leaf
+        bonsai.environment: data_center
 
   links:
     # srl1 <-> srl2

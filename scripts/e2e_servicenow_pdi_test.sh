@@ -79,8 +79,8 @@ _CANARY_SYS_ID=""  # set when canary CI is created; used by cleanup
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-pass() { echo "  ✓ $*"; ((PASS++)); }
-fail() { echo "  ✗ $*" >&2; ((FAIL++)); }
+pass() { echo "  ✓ $*"; ((PASS++)) || true; }
+fail() { echo "  ✗ $*" >&2; ((FAIL++)) || true; }
 
 snow_get() {
   # snow_get <path> → response body
@@ -198,14 +198,14 @@ else
   }
 
   if [[ -n "$write_body" ]]; then
-    canary_sys_id=$(echo "$write_body" | jq -r '.result.sys_id.value // .result.sys_id // ""')
+    canary_sys_id=$(echo "$write_body" | jq -r 'if (.result.sys_id | type) == "object" then .result.sys_id.value else (.result.sys_id // "") end')
     _CANARY_SYS_ID="$canary_sys_id"
     if [[ -n "$canary_sys_id" && "$canary_sys_id" != "null" ]]; then
       pass "Wrote canary CI '$CANARY_NAME' (sys_id=$canary_sys_id)"
 
       # Verification GET
       verify_body=$(snow_get "/api/now/table/cmdb_ci_netgear/${canary_sys_id}" 2>/dev/null) || { verify_body=""; }
-      verify_name=$(echo "$verify_body" | jq -r '.result.name.value // .result.name // ""' 2>/dev/null || echo "")
+      verify_name=$(echo "$verify_body" | jq -r 'if (.result.name | type) == "object" then .result.name.value else (.result.name // "") end' 2>/dev/null || echo "")
       if [[ "$verify_name" == "$CANARY_NAME" ]]; then
         pass "Verification GET confirmed '$CANARY_NAME' is readable"
       else
@@ -244,7 +244,6 @@ else
   }')
 
   em_body=$(snow_post "/api/now/em/inbound_event" "$EM_PAYLOAD" 2>/dev/null) || {
-    fail "POST /api/now/em/inbound_event failed — is Event Management plugin enabled on this PDI?"
     em_body=""
   }
 
@@ -262,6 +261,30 @@ else
         pass "EM event accepted (HTTP $http_code)"
       else
         fail "EM event push: unexpected status='$em_status' body=${em_body:0:200}"
+      fi
+    fi
+  else
+    TABLE_PAYLOAD=$(jq -n '{
+      source:          "bonsai",
+      event_class:     "e2e-test",
+      resource:        "bonsai-e2e",
+      node:            "bonsai-lab-e2e",
+      metric_name:     "BGPSessionDown",
+      type:            "bgp_session_down",
+      severity:        "2",
+      description:     "bonsai e2e test event — safe to ignore",
+      additional_info: "{\"rule_id\":\"bgp_session_down\",\"test\":true}"
+    }')
+    table_body=$(snow_post "/api/now/table/em_event" "$TABLE_PAYLOAD" 2>/dev/null) || {
+      fail "POST /api/now/em/inbound_event failed and fallback POST /api/now/table/em_event also failed"
+      table_body=""
+    }
+    if [[ -n "$table_body" ]]; then
+      table_sys_id=$(echo "$table_body" | jq -r '.result.sys_id // .result.sys_id.value // ""' 2>/dev/null || echo "")
+      if [[ -n "$table_sys_id" && "$table_sys_id" != "null" ]]; then
+        pass "Inbound EM endpoint unavailable; fallback em_event insert succeeded (sys_id=$table_sys_id)"
+      else
+        fail "Fallback em_event insert returned unexpected body: ${table_body:0:200}"
       fi
     fi
   fi

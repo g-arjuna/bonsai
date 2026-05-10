@@ -15,7 +15,7 @@ pub trait BonsaiStore: Send + Sync {
     /// duration of their writes so they don't race the write coordinator.
     fn write_lock(&self) -> Arc<std::sync::Mutex<()>>;
     fn subscribe_events(&self) -> broadcast::Receiver<BonsaiEvent>;
-    
+
     async fn write(&self, update: TelemetryUpdate) -> Result<()>;
 
     async fn write_detection(
@@ -38,9 +38,13 @@ pub trait BonsaiStore: Send + Sync {
         completed_at_ns: i64,
     ) -> Result<String>;
 
-    async fn sync_sites_from_targets(&self, targets: Vec<crate::config::TargetConfig>) -> Result<()>;
+    async fn sync_sites_from_targets(
+        &self,
+        targets: Vec<crate::config::TargetConfig>,
+    ) -> Result<()>;
     async fn list_sites(&self) -> Result<Vec<crate::graph::SiteRecord>>;
-    async fn upsert_site(&self, site: crate::graph::SiteRecord) -> Result<crate::graph::SiteRecord>;
+    async fn upsert_site(&self, site: crate::graph::SiteRecord)
+    -> Result<crate::graph::SiteRecord>;
 
     async fn write_subscription_status(
         &self,

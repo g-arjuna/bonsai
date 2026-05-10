@@ -1,12 +1,12 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use anyhow::{Context, Result};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
-use anyhow::{Result, Context};
 
-use crate::telemetry::TelemetryUpdate;
 use crate::graph::{GraphStore, SubscriptionStatusWrite};
+use crate::telemetry::TelemetryUpdate;
 
 static GLOBAL_QUEUE_DEPTH: AtomicUsize = AtomicUsize::new(0);
 static GLOBAL_QUEUE_CAPACITY: AtomicUsize = AtomicUsize::new(0);
@@ -21,8 +21,16 @@ pub struct CoordinatorSnapshot {
 pub fn snapshot() -> CoordinatorSnapshot {
     let depth = GLOBAL_QUEUE_DEPTH.load(Ordering::Relaxed);
     let capacity = GLOBAL_QUEUE_CAPACITY.load(Ordering::Relaxed);
-    let pct = if capacity > 0 { (depth as u64 * 100) / capacity as u64 } else { 0 };
-    CoordinatorSnapshot { queue_depth: depth, queue_capacity: capacity, queue_pct: pct }
+    let pct = if capacity > 0 {
+        (depth as u64 * 100) / capacity as u64
+    } else {
+        0
+    };
+    CoordinatorSnapshot {
+        queue_depth: depth,
+        queue_capacity: capacity,
+        queue_pct: pct,
+    }
 }
 
 /// A request to write data to the graph database.
@@ -88,34 +96,45 @@ impl WriteCoordinator {
         GLOBAL_QUEUE_CAPACITY.store(capacity, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel(capacity);
         let depth_clone = Arc::clone(&depth);
-        
+
         tokio::spawn(async move {
             run_coordinator(rx, store, cfg, depth_clone).await;
         });
 
-        Self { tx, depth, capacity }
+        Self {
+            tx,
+            depth,
+            capacity,
+        }
     }
 
     pub async fn submit(&self, req: WriteRequest) -> Result<()> {
-        let res = self.tx.send(req).await.context("write coordinator channel closed");
+        let res = self
+            .tx
+            .send(req)
+            .await
+            .context("write coordinator channel closed");
         self.update_depth_metric();
         res
     }
 
     pub fn try_submit(&self, req: WriteRequest) -> Result<()> {
-        let res = self.tx.try_send(req).context("write coordinator channel full or closed");
+        let res = self
+            .tx
+            .try_send(req)
+            .context("write coordinator channel full or closed");
         self.update_depth_metric();
         res
     }
-    
+
     pub fn queue_depth(&self) -> usize {
         self.depth.load(Ordering::Relaxed)
     }
-    
+
     pub fn queue_fill_pct(&self) -> u64 {
         (self.queue_depth() as u64 * 100) / (self.capacity as u64)
     }
-    
+
     fn update_depth_metric(&self) {
         let current_depth = self.capacity - self.tx.capacity();
         self.depth.store(current_depth, Ordering::Relaxed);
@@ -178,7 +197,7 @@ async fn run_coordinator(
                 }
             }
         }
-        
+
         let current_depth = cfg.queue_capacity.saturating_sub(rx.capacity());
         depth.store(current_depth, Ordering::Relaxed);
         GLOBAL_QUEUE_DEPTH.store(current_depth, Ordering::Relaxed);
@@ -188,13 +207,9 @@ async fn run_coordinator(
     info!("write coordinator stopping");
 }
 
-async fn flush_telemetry_batch(
-    store: &Arc<GraphStore>,
-    batch: &mut Vec<TelemetryUpdate>,
-) {
+async fn flush_telemetry_batch(store: &Arc<GraphStore>, batch: &mut Vec<TelemetryUpdate>) {
     let updates = std::mem::replace(batch, Vec::with_capacity(batch.capacity()));
     if let Err(e) = store.write_batch(updates).await {
         warn!(error = %e, "telemetry batch write failed");
     }
 }
-

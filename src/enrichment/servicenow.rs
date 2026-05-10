@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use lbug::{Connection, Value};
-use serde::{de, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de};
 use tracing::warn;
 
 use crate::credentials::{CredentialVault, ResolvePurpose};
@@ -69,14 +69,18 @@ impl<'de> Deserialize<'de> for SnowRef {
                 write!(f, "a string or ServiceNow display_value object")
             }
             fn visit_str<E: de::Error>(self, v: &str) -> Result<SnowRef, E> {
-                Ok(SnowRef { display_value: v.to_string() })
+                Ok(SnowRef {
+                    display_value: v.to_string(),
+                })
             }
             fn visit_string<E: de::Error>(self, v: String) -> Result<SnowRef, E> {
                 Ok(SnowRef { display_value: v })
             }
             fn visit_map<A: de::MapAccess<'de>>(self, map: A) -> Result<SnowRef, A::Error> {
                 let inner = Inner::deserialize(de::value::MapAccessDeserializer::new(map))?;
-                Ok(SnowRef { display_value: inner.display_value })
+                Ok(SnowRef {
+                    display_value: inner.display_value,
+                })
             }
         }
 
@@ -299,12 +303,13 @@ impl GraphEnricher for ServiceNowEnricher {
 
         let db = store.db();
         let write_lock = store.write_lock();
-        let (nodes_touched, edges_created, write_warnings) = tokio::task::spawn_blocking(move || {
-            let _guard = write_lock.lock().expect("write lock poisoned");
-            write_to_graph(&db, &services, &cis, &rels, &incidents, &source)
-        })
-        .await
-        .context("graph write task panicked")??;
+        let (nodes_touched, edges_created, write_warnings) =
+            tokio::task::spawn_blocking(move || {
+                let _guard = write_lock.lock().expect("write lock poisoned");
+                write_to_graph(&db, &services, &cis, &rels, &incidents, &source)
+            })
+            .await
+            .context("graph write task panicked")??;
 
         warnings.extend(write_warnings);
         audit.log_run("success", nodes_touched, None);
@@ -679,7 +684,7 @@ fn link_detection_incident(
 mod tests {
     use super::*;
     use crate::graph::GraphStore;
-    use wiremock::matchers::{method};
+    use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn open_test_graph(label: &str) -> GraphStore {

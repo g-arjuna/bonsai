@@ -28,7 +28,7 @@ BONSAI_PROFILE="${BONSAI_PROFILE:-dev}"
 NETBOX_URL="${NETBOX_URL:-http://localhost:8000}"
 NETBOX_TOKEN="${NETBOX_TOKEN:-bonsai-dev-token}"
 SPLUNK_URL="${SPLUNK_URL:-http://localhost:8100}"
-SPLUNK_HEC_URL="${SPLUNK_HEC_URL:-http://localhost:8088}"
+SPLUNK_HEC_URL="${SPLUNK_HEC_URL:-https://localhost:8088}"
 SPLUNK_USERNAME="${SPLUNK_USERNAME:-admin}"
 ELASTIC_URL="${ELASTIC_URL:-http://localhost:9200}"
 

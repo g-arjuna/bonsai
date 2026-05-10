@@ -95,7 +95,10 @@ async fn readiness_handler(
     if inner.registered_with_core {
         (
             StatusCode::OK,
-            Json(ReadinessResponse { ready: true, reason: String::new() }),
+            Json(ReadinessResponse {
+                ready: true,
+                reason: String::new(),
+            }),
         )
     } else {
         (
@@ -144,11 +147,7 @@ async fn fallback_handler() -> StatusCode {
 
 /// Starts the diagnostic HTTP server on `port`. Returns immediately; the server
 /// runs in a background task and honours `shutdown`.
-pub async fn start(
-    port: u16,
-    state: DiagnosticState,
-    mut shutdown: watch::Receiver<bool>,
-) {
+pub async fn start(port: u16, state: DiagnosticState, mut shutdown: watch::Receiver<bool>) {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,

@@ -124,8 +124,8 @@ mod tests {
     #[test]
     fn active_windows_excludes_expired() {
         let mut reg = RollbackRegistry::default();
-        reg.register(make_state("fresh", 100 * NS, WINDOW));   // expires at 160s
-        reg.register(make_state("expired", 0, WINDOW));        // expired at 60s
+        reg.register(make_state("fresh", 100 * NS, WINDOW)); // expires at 160s
+        reg.register(make_state("expired", 0, WINDOW)); // expired at 60s
 
         let active = reg.active_windows(120 * NS); // now = 120s
         assert_eq!(active.len(), 1);

@@ -30,7 +30,7 @@ log "=== Bonsai external config generator ==="
 
 NETBOX_URL="${NETBOX_URL:-http://localhost:8000}"
 NETBOX_TOKEN="${NETBOX_API_TOKEN:-bonsai-dev-token}"
-SPLUNK_HEC_URL="http://localhost:8088"
+SPLUNK_HEC_URL="https://localhost:8088"
 SPLUNK_TOKEN="${SPLUNK_HEC_TOKEN:-}"
 ELASTIC_URL="http://localhost:9200"
 PROM_REMOTE_WRITE="http://localhost:9093/api/v1/write"
@@ -45,7 +45,7 @@ PROM_OK=false
 SNOW_OK=false
 
 curl -sf "${NETBOX_URL}/api/" -H "Authorization: Token ${NETBOX_TOKEN}" -o /dev/null 2>&1 && NETBOX_OK=true || true
-curl -sf "${SPLUNK_HEC_URL}/services/collector/health" -o /dev/null 2>&1 && SPLUNK_OK=true || true
+curl -skf "${SPLUNK_HEC_URL}/services/collector/health" -o /dev/null 2>&1 && SPLUNK_OK=true || true
 curl -sf "${ELASTIC_URL}/_cluster/health" -o /dev/null 2>&1 && ELASTIC_OK=true || true
 curl -sf "http://localhost:9093/-/ready" -o /dev/null 2>&1 && PROM_OK=true || true
 [[ -n "$SNOW_URL" ]] && curl -sf "${SNOW_URL}/api/now/table/cmdb_ci" -u "${SNOW_USER}:${SNOW_PASSWORD:-}" -o /dev/null 2>&1 && SNOW_OK=true || true
@@ -114,11 +114,10 @@ if [[ "$SPLUNK_OK" == "true" && -n "$SPLUNK_TOKEN" ]]; then
 # [[output_adapters]]
 # name              = "splunk-external"
 # adapter_type      = "splunk_hec"
-# endpoint_url      = "${SPLUNK_HEC_URL}/services/collector"
+# endpoint_url      = "${SPLUNK_HEC_URL}"
+# credential_alias  = "splunk-hec"
 # flush_interval_secs = 15
 # enabled           = true
-# [output_adapters.extra]
-# hec_token_env     = "SPLUNK_HEC_TOKEN"
 
 TOML
     log "  wrote splunk adapter hint"
@@ -128,7 +127,7 @@ if [[ "$ELASTIC_OK" == "true" ]]; then
     cat >> "$OUTPUT" <<TOML
 # [[output_adapters]]
 # name              = "elastic-external"
-# adapter_type      = "elasticsearch"
+# adapter_type      = "elastic"
 # endpoint_url      = "${ELASTIC_URL}"
 # flush_interval_secs = 15
 # enabled           = true

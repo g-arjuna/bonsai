@@ -1,6 +1,6 @@
-use std::{collections::HashMap, time::Duration};
 use std::sync::Arc;
-use tokio::sync::{watch, mpsc};
+use std::{collections::HashMap, time::Duration};
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use anyhow::{Context, Result};
@@ -290,10 +290,10 @@ impl GnmiSubscriber {
                                         path,
                                         value: val,
                                     };
-                                    if let Some(ref d) = self.debouncer {
-                                        if d.should_drop(&msg) {
-                                            continue;
-                                        }
+                                    if let Some(ref d) = self.debouncer
+                                        && d.should_drop(&msg)
+                                    {
+                                        continue;
                                     }
                                     self.bus.publish(msg);
                                 }
@@ -348,13 +348,7 @@ impl GnmiSubscriber {
     }
 }
 
-pub type SubscriberHandleMap = HashMap<
-    String,
-    (
-        watch::Sender<bool>,
-        JoinHandle<()>,
-    ),
->;
+pub type SubscriberHandleMap = HashMap<String, (watch::Sender<bool>, JoinHandle<()>)>;
 
 pub async fn stop_subscriber(address: &str, subscribers: &mut SubscriberHandleMap) {
     if let Some((shutdown_tx, handle)) = subscribers.remove(address) {

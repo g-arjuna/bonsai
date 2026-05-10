@@ -33,22 +33,29 @@ use tower_http::{cors::CorsLayer, services::ServeDir};
 use crate::assignment::{CollectorManager, CollectorStatus};
 use crate::catalogue::CatalogueState;
 use crate::enrichment::{EnricherConfig, SharedEnricherRegistry};
-use crate::output::traits::{OutputAdapter, OutputAdapterConfig, OutputAdapterRunState, SharedAdapterRegistry};
 use crate::gnmi_set::gnmi_set;
 use crate::graph::{
     DetectionRow, EnvironmentRecord, GraphStore, REMEDIATION_TRUST_CUTOFF_ISO,
     RemediationProposalRow, SiteRecord, TraceStep,
 };
+use crate::output::traits::{OutputAdapterConfig, OutputAdapterRunState, SharedAdapterRegistry};
 use crate::{
-    archive, audit, disk_guard, memory_profile,
-    config::{AssignmentRule, RemediationConfig, SelectedSubscriptionPath, StorageConfig, TargetConfig},
+    archive, audit,
+    change_detection::{self, ChangeDetectionRuntime},
+    config::{
+        AssignmentRule, LayeredIngestionConfig, RemediationConfig, SelectedSubscriptionPath,
+        StorageConfig, TargetConfig,
+    },
     credentials::{CredentialSummary, CredentialVault, ResolvePurpose, ResolvedCredential},
     discovery::{self, DiscoveryInput},
-    event_bus,
+    disk_guard, event_bus, memory_profile,
     registry::{ApiRegistry, DeviceRegistry, RegistryChange},
     remediation::{
         SharedRollbackRegistry, SharedTrustStore, TrustKey, TrustState, check_graduation,
     },
+    store::BonsaiStore,
+    synthesizer,
+    yang::YangLibrary,
 };
 
 // ── JSON response types ───────────────────────────────────────────────────────
@@ -550,6 +557,7 @@ pub struct AppState {
     pub store: Arc<GraphStore>,
     pub registry: Arc<ApiRegistry>,
     pub credentials: Arc<CredentialVault>,
+    pub change_detection: Arc<ChangeDetectionRuntime>,
     pub collector_manager: Option<Arc<CollectorManager>>,
     pub catalogue: Arc<RwLock<CatalogueState>>,
     pub catalogue_dir: String,
@@ -562,6 +570,10 @@ pub struct AppState {
     pub archive_path: String,
     pub graph_path: String,
     pub storage_config: StorageConfig,
+    pub layered_ingestion: LayeredIngestionConfig,
+    pub yang_library_root: String,
+    pub yang_cache_root: String,
+    pub yang_bundle_key_env: String,
     /// Counter ingest mode for operations visibility (C-9 / T1-8).
     pub counter_mode: String,
     pub counter_window_secs: u64,
@@ -575,6 +587,7 @@ pub fn router(
     store: Arc<GraphStore>,
     registry: Arc<ApiRegistry>,
     credentials: Arc<CredentialVault>,
+    change_detection: Arc<ChangeDetectionRuntime>,
     collector_manager: Option<Arc<CollectorManager>>,
     catalogue: Arc<RwLock<CatalogueState>>,
     catalogue_dir: String,
@@ -587,6 +600,10 @@ pub fn router(
     archive_path: String,
     graph_path: String,
     storage_config: StorageConfig,
+    layered_ingestion: LayeredIngestionConfig,
+    yang_library_root: String,
+    yang_cache_root: String,
+    yang_bundle_key_env: String,
     counter_mode: String,
     counter_window_secs: u64,
     counter_debounce_secs: u64,
@@ -595,6 +612,7 @@ pub fn router(
         store,
         registry,
         credentials,
+        change_detection,
         collector_manager,
         catalogue,
         catalogue_dir,
@@ -607,6 +625,10 @@ pub fn router(
         archive_path,
         graph_path,
         storage_config,
+        layered_ingestion,
+        yang_library_root,
+        yang_cache_root,
+        yang_bundle_key_env,
         counter_mode,
         counter_window_secs,
         counter_debounce_secs,
@@ -619,12 +641,33 @@ pub fn router(
 
     Router::new()
         .route("/api/topology", get(topology_handler))
+        .route("/api/yang/modules", get(yang_modules_handler))
+        .route("/api/yang/search", get(yang_search_handler))
         .route("/api/overrides", get(list_overrides).post(add_override))
         .route("/api/overrides/remove", post(remove_override))
-
         .route("/api/path", get(path_handler))
         .route("/api/blast-radius/{address}", get(blast_radius_handler))
         .route("/api/incidents/grouped", get(incidents_handler))
+        .route(
+            "/api/devices/{address}/gnmi-readiness",
+            get(device_gnmi_readiness_handler),
+        )
+        .route(
+            "/api/devices/{address}/recommendations",
+            get(device_recommendations_handler),
+        )
+        .route(
+            "/api/devices/{address}/selected-paths",
+            post(apply_device_selected_paths_handler),
+        )
+        .route(
+            "/api/devices/{address}/config-history",
+            get(device_config_history_handler),
+        )
+        .route(
+            "/api/devices/{address}/reparse",
+            post(device_reparse_handler),
+        )
         .route(
             "/api/onboarding/devices",
             get(managed_devices_handler).post(add_managed_device_handler),
@@ -740,10 +783,19 @@ pub fn router(
             post(delete_saved_query_handler),
         )
         // investigations (T3-1/T3-2)
-        .route("/api/investigations", get(list_investigations_handler).post(create_investigation_handler))
+        .route(
+            "/api/investigations",
+            get(list_investigations_handler).post(create_investigation_handler),
+        )
         .route("/api/investigations/{id}", get(get_investigation_handler))
-        .route("/api/investigations/{id}/tool-calls", get(list_tool_calls_handler))
-        .route("/api/investigations/{id}/complete", post(complete_investigation_handler))
+        .route(
+            "/api/investigations/{id}/tool-calls",
+            get(list_tool_calls_handler),
+        )
+        .route(
+            "/api/investigations/{id}/complete",
+            post(complete_investigation_handler),
+        )
         // graph embeddings (T2-1)
         .route(
             "/api/graph/embeddings/upsert",
@@ -935,15 +987,17 @@ async fn path_handler(
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
-        crate::graph::queries::shortest_topology_path(&conn, &src, &dst)
-            .map_err(|e| e.to_string())
+        crate::graph::queries::shortest_topology_path(&conn, &src, &dst).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     match result {
-        None => Ok(Json(PathResponse { hops: vec![], links: vec![] })),
+        None => Ok(Json(PathResponse {
+            hops: vec![],
+            links: vec![],
+        })),
         Some(path) => Ok(Json(PathResponse {
             hops: path.hops,
             links: path.links,
@@ -959,7 +1013,9 @@ struct BlastRadiusParams {
     max_hops: usize,
 }
 
-fn default_max_hops() -> usize { 2 }
+fn default_max_hops() -> usize {
+    2
+}
 
 /// Devices, applications, and active detections reachable from `address` within
 /// `max_hops` physical network hops.
@@ -975,8 +1031,7 @@ async fn blast_radius_handler(
 
     tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
-        crate::graph::queries::blast_radius(&conn, &address, max_hops)
-            .map_err(|e| e.to_string())
+        crate::graph::queries::blast_radius(&conn, &address, max_hops).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -1258,14 +1313,22 @@ async fn save_managed_device(
                 return Ok(Json(MutationResponse {
                     success: false,
                     error: format!("device saved but site graph sync failed: {error:#}"),
-                    device: Some(managed_device_json(device, &HashMap::new(), &state.registry.list_overrides().unwrap_or_default())),
+                    device: Some(managed_device_json(
+                        device,
+                        &HashMap::new(),
+                        &state.registry.list_overrides().unwrap_or_default(),
+                    )),
                 }));
             }
             let statuses = read_subscription_statuses(state.store.db()).await?;
             Ok(Json(MutationResponse {
                 success: true,
                 error: String::new(),
-                device: Some(managed_device_json(device, &statuses, &state.registry.list_overrides().unwrap_or_default())),
+                device: Some(managed_device_json(
+                    device,
+                    &statuses,
+                    &state.registry.list_overrides().unwrap_or_default(),
+                )),
             }))
         }
         Err(error) => Ok(Json(MutationResponse {
@@ -1521,7 +1584,11 @@ async fn remove_managed_device_handler(
         Ok(Some(device)) => Ok(Json(MutationResponse {
             success: true,
             error: String::new(),
-            device: Some(managed_device_json(device, &HashMap::new(), &state.registry.list_overrides().unwrap_or_default())),
+            device: Some(managed_device_json(
+                device,
+                &HashMap::new(),
+                &state.registry.list_overrides().unwrap_or_default(),
+            )),
         })),
         Ok(None) => Ok(Json(MutationResponse {
             success: false,
@@ -1569,7 +1636,11 @@ async fn bulk_managed_device_action_handler(
                     "api",
                     &format!("api_bulk_{action}"),
                 ) {
-                    Ok(device) => devices.push(managed_device_json(device, &statuses, &state.registry.list_overrides().unwrap_or_default())),
+                    Ok(device) => devices.push(managed_device_json(
+                        device,
+                        &statuses,
+                        &state.registry.list_overrides().unwrap_or_default(),
+                    )),
                     Err(error) => errors.push(format!("{address}: {error:#}")),
                 }
             }
@@ -1781,9 +1852,9 @@ async fn operations_handler(
         archive_disk_pct: disk_snapshot.archive_pct,
         graph_disk_bytes: disk_snapshot.graph_bytes,
         graph_disk_pct: disk_snapshot.graph_pct,
-        memory_budget_bytes: state.store.buffer_pool_bytes(),
+        memory_budget_bytes: RSS_BUDGET_BYTES,
         memory_rss_pct_of_budget: {
-            let budget = state.store.buffer_pool_bytes();
+            let budget = RSS_BUDGET_BYTES;
             if budget > 0 {
                 (mem_snapshot.rss_bytes as f64 / budget as f64) * 100.0
             } else {
@@ -2416,7 +2487,6 @@ async fn device_detail_handler(
     let subscription_statuses = all_statuses.get(&address).cloned().unwrap_or_default();
     let health = compute_health(&bgp);
 
-    
     let overrides = state.registry.list_overrides().unwrap_or_default();
     let (_, audit) = crate::discovery::resolve_subscription_paths(&target, &overrides);
     Ok(Json(DeviceDetailResponse {
@@ -2434,6 +2504,7 @@ async fn device_detail_handler(
         lldp_neighbors: lldp,
         recent_state_changes: state_changes,
         recent_detections: detections,
+        selected_paths: target.selected_paths.clone(),
         subscription_statuses,
         resolution_audit: audit,
         created_at_ns: target.created_at_ns,
@@ -2452,6 +2523,8 @@ struct EnrichmentPropertyJson {
     value: String,
     source_name: String,
     updated_at_ns: i64,
+    confidence: String,
+    parser: String,
 }
 
 #[derive(Serialize)]
@@ -2473,7 +2546,8 @@ async fn device_enrichment_handler(
         let mut stmt = conn
             .prepare(
                 "MATCH (d:Device {address: $addr})-[:HAS_ENRICHMENT_PROPERTY]->(p:EnrichmentProperty) \
-                 RETURN p.key, p.value, p.source_name, p.updated_at \
+                 OPTIONAL MATCH (p)-[:ENRICHMENT_PROPERTY_PROVENANCE]->(prov:PropertyProvenance) \
+                 RETURN p.key, p.value, p.source_name, p.updated_at, prov.confidence, prov.parser \
                  ORDER BY p.source_name, p.key",
             )
             .map_err(|e| e.to_string())?;
@@ -2486,6 +2560,8 @@ async fn device_enrichment_handler(
                 value: read_str(&row[1]),
                 source_name: read_str(&row[2]),
                 updated_at_ns: read_ts_ns(&row[3]),
+                confidence: read_str(&row[4]),
+                parser: read_str(&row[5]),
             })
             .collect();
         Ok::<_, String>(props)
@@ -2498,6 +2574,348 @@ async fn device_enrichment_handler(
         address,
         properties: props,
     }))
+}
+
+#[derive(Serialize)]
+struct DeviceConfigHistoryResponse {
+    address: String,
+    snapshots: Vec<change_detection::ConfigSnapshotSummary>,
+    changes: Vec<change_detection::ConfigChangeSummary>,
+}
+
+#[derive(Serialize)]
+struct DeviceGnmiReadinessResponse {
+    address: String,
+    report: discovery::GnmiReadinessReport,
+}
+
+async fn device_config_history_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<Json<DeviceConfigHistoryResponse>, (StatusCode, String)> {
+    let (snapshots, changes) = change_detection::config_history(
+        Arc::clone(&state.store),
+        address.clone(),
+        state.change_detection.history_limit,
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(DeviceConfigHistoryResponse {
+        address,
+        snapshots,
+        changes,
+    }))
+}
+
+async fn device_gnmi_readiness_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<Json<DeviceGnmiReadinessResponse>, (StatusCode, String)> {
+    let target = state
+        .registry
+        .get_device(&address)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("device '{address}' not found"),
+            )
+        })?;
+    let resolved = resolve_target_credentials_for_discovery(&target, &state.credentials)
+        .map_err(|e| (StatusCode::FAILED_DEPENDENCY, e.to_string()))?;
+    let report = discovery::gnmi_readiness_report(
+        DiscoveryInput {
+            address: target.address.clone(),
+            username: resolved.as_ref().map(|creds| creds.username.clone()),
+            password: resolved.as_ref().map(|creds| creds.password.clone()),
+            username_env: None,
+            password_env: None,
+            ca_cert_path: target.ca_cert.clone(),
+            tls_domain: target.tls_domain.clone(),
+            role_hint: target.role.clone(),
+            environment_archetype: None,
+        },
+        &state.layered_ingestion.gnmi_known_issues_path,
+    )
+    .await;
+    persist_gnmi_readiness(Arc::clone(&state.store), &address, &report)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(DeviceGnmiReadinessResponse { address, report }))
+}
+
+async fn device_recommendations_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<Json<DeviceRecommendationsResponse>, (StatusCode, String)> {
+    let target = state
+        .registry
+        .get_device(&address)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("device '{address}' not found"),
+            )
+        })?;
+
+    let mut warnings = Vec::new();
+    let resolved = match resolve_target_credentials_for_discovery(&target, &state.credentials) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            warnings.push(format!(
+                "could not resolve device credentials for live discovery: {error:#}"
+            ));
+            None
+        }
+    };
+
+    let discovery_input = DiscoveryInput {
+        address: target.address.clone(),
+        username: resolved.as_ref().map(|creds| creds.username.clone()),
+        password: resolved.as_ref().map(|creds| creds.password.clone()),
+        username_env: None,
+        password_env: None,
+        ca_cert_path: target.ca_cert.clone(),
+        tls_domain: target.tls_domain.clone(),
+        role_hint: target.role.clone(),
+        environment_archetype: None,
+    };
+
+    let discovery_report = match discovery::discover_device(discovery_input.clone()).await {
+        Ok(report) => Some(report),
+        Err(error) => {
+            warnings.push(format!(
+                "live capabilities discovery unavailable: {error:#}"
+            ));
+            None
+        }
+    };
+
+    let readiness_report = if resolved.is_some() || target.ca_cert.is_some() {
+        Some(
+            discovery::gnmi_readiness_report(
+                discovery_input,
+                &state.layered_ingestion.gnmi_known_issues_path,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+
+    let overrides = state.registry.list_overrides().unwrap_or_default();
+    let yang_library_state = YangLibrary::open(
+        &state.yang_library_root,
+        &state.yang_cache_root,
+        &state.yang_bundle_key_env,
+    )
+    .ok()
+    .and_then(|library| library.load_state().ok());
+
+    let report = synthesizer::synthesize_for_target(
+        &target,
+        discovery_report.as_ref(),
+        readiness_report.as_ref(),
+        warnings,
+        &overrides,
+        yang_library_state.as_ref(),
+    );
+    Ok(Json(DeviceRecommendationsResponse { report }))
+}
+
+async fn yang_modules_handler(
+    State(state): State<AppState>,
+) -> Result<Json<YangModulesResponse>, (StatusCode, String)> {
+    let library = YangLibrary::open(
+        &state.yang_library_root,
+        &state.yang_cache_root,
+        &state.yang_bundle_key_env,
+    )
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let modules = library
+        .list_modules()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(YangModulesResponse { modules }))
+}
+
+async fn yang_search_handler(
+    State(state): State<AppState>,
+    Query(params): Query<YangSearchParams>,
+) -> Result<Json<YangSearchResponse>, (StatusCode, String)> {
+    let library = YangLibrary::open(
+        &state.yang_library_root,
+        &state.yang_cache_root,
+        &state.yang_bundle_key_env,
+    )
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let result = library
+        .search(&params.q)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(YangSearchResponse { result }))
+}
+
+async fn apply_device_selected_paths_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+    Json(req): Json<ApplySelectedPathsRequest>,
+) -> Result<Json<ApplySelectedPathsResponse>, (StatusCode, String)> {
+    let mut target = state
+        .registry
+        .get_device(&address)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("device '{address}' not found"),
+            )
+        })?;
+
+    target.selected_paths = req
+        .selected_paths
+        .into_iter()
+        .filter(|path| !path.path.trim().is_empty())
+        .collect();
+
+    let updated = state
+        .registry
+        .update_device_with_audit(target, "api", "api_apply_recommendation_paths")
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(ApplySelectedPathsResponse {
+        success: true,
+        error: String::new(),
+        selected_paths: updated.selected_paths,
+    }))
+}
+
+async fn persist_gnmi_readiness(
+    store: Arc<GraphStore>,
+    address: &str,
+    report: &discovery::GnmiReadinessReport,
+) -> anyhow::Result<()> {
+    let db = store.db();
+    let write_lock = store.write_lock();
+    let address = address.to_string();
+    let report = report.clone();
+    tokio::task::spawn_blocking(move || {
+        let _guard = write_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("graph write lock poisoned"))?;
+        let conn = Connection::new(&db)?;
+        let readiness_id = format!("{address}:gnmi-readiness");
+        let checked_at =
+            time::OffsetDateTime::from_unix_timestamp_nanos(report.checked_at_ns.into())?;
+        let mut stmt = conn.prepare(
+            "MERGE (r:GnmiReadiness {id: $id}) \
+             SET r.device_address = $addr, r.service_status = $service_status, \
+                 r.tls_status = $tls_status, r.encoding_support = $encoding_support, \
+                 r.models_advertised = $models_advertised, r.known_issues = $known_issues, \
+                 r.blockers = $blockers, r.recommended_actions = $recommended_actions, \
+                 r.checked_at = $checked_at",
+        )?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("id", Value::String(readiness_id.clone())),
+                ("addr", Value::String(address.clone())),
+                ("service_status", Value::String(report.service_status)),
+                ("tls_status", Value::String(report.tls_status)),
+                (
+                    "encoding_support",
+                    Value::String(serde_json::to_string(&report.encoding_support)?),
+                ),
+                (
+                    "models_advertised",
+                    Value::String(serde_json::to_string(&report.models_advertised)?),
+                ),
+                (
+                    "known_issues",
+                    Value::String(serde_json::to_string(&report.known_issues)?),
+                ),
+                (
+                    "blockers",
+                    Value::String(serde_json::to_string(&report.blockers)?),
+                ),
+                (
+                    "recommended_actions",
+                    Value::String(serde_json::to_string(&report.recommended_actions)?),
+                ),
+                ("checked_at", Value::TimestampNs(checked_at)),
+            ],
+        )?;
+
+        let mut rel_stmt = conn.prepare(
+            "MATCH (d:Device {address: $addr}), (r:GnmiReadiness {id: $id}) \
+             MERGE (d)-[:HAS_GNMI_READINESS]->(r)",
+        )?;
+        conn.execute(
+            &mut rel_stmt,
+            vec![
+                ("addr", Value::String(address)),
+                ("id", Value::String(readiness_id)),
+            ],
+        )?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("gNMI readiness persistence task panicked: {e}"))?
+}
+
+#[derive(Deserialize)]
+struct DeviceReparseRequest {
+    #[serde(default)]
+    reason: String,
+}
+
+#[derive(Serialize)]
+struct DeviceReparseResponse {
+    success: bool,
+    message: String,
+}
+
+async fn device_reparse_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+    Json(req): Json<DeviceReparseRequest>,
+) -> Json<DeviceReparseResponse> {
+    let reason = if req.reason.trim().is_empty() {
+        "operator-triggered re-parse".to_string()
+    } else {
+        req.reason
+    };
+    match state
+        .change_detection
+        .enqueue_manual(&address, &reason)
+        .await
+    {
+        Ok(()) => Json(DeviceReparseResponse {
+            success: true,
+            message: format!("re-parse queued for {address}"),
+        }),
+        Err(error) => Json(DeviceReparseResponse {
+            success: false,
+            message: error.to_string(),
+        }),
+    }
+}
+
+fn resolve_target_credentials_for_discovery(
+    target: &TargetConfig,
+    credentials: &CredentialVault,
+) -> anyhow::Result<Option<ResolvedCredential>> {
+    if let Some(alias) = target.credential_alias.as_deref() {
+        return credentials
+            .resolve(alias, ResolvePurpose::Discover)
+            .map(Some);
+    }
+    Ok(
+        match (target.resolved_username(), target.resolved_password()) {
+            (Some(username), Some(password)) => Some(ResolvedCredential { username, password }),
+            _ => None,
+        },
+    )
 }
 
 // ── Incidents endpoint ────────────────────────────────────────────────────────
@@ -2644,6 +3062,7 @@ struct DeviceDetailResponse {
     lldp_neighbors: Vec<LldpNeighborJson>,
     recent_state_changes: Vec<StateChangeJson>,
     recent_detections: Vec<DetectionRow>,
+    selected_paths: Vec<SelectedSubscriptionPath>,
     subscription_statuses: Vec<SubscriptionStatusJson>,
     resolution_audit: Vec<String>,
     created_at_ns: i64,
@@ -2651,6 +3070,40 @@ struct DeviceDetailResponse {
     created_by: String,
     updated_by: String,
     last_operator_action: String,
+}
+
+#[derive(Serialize)]
+struct DeviceRecommendationsResponse {
+    report: synthesizer::SynthesizerReport,
+}
+
+#[derive(Serialize)]
+struct YangModulesResponse {
+    modules: Vec<crate::yang::YangModuleRecord>,
+}
+
+#[derive(Deserialize, Default)]
+struct YangSearchParams {
+    #[serde(default)]
+    q: String,
+}
+
+#[derive(Serialize)]
+struct YangSearchResponse {
+    result: crate::yang::YangSearchResult,
+}
+
+#[derive(Deserialize)]
+struct ApplySelectedPathsRequest {
+    #[serde(default)]
+    selected_paths: Vec<SelectedSubscriptionPath>,
+}
+
+#[derive(Serialize)]
+struct ApplySelectedPathsResponse {
+    success: bool,
+    error: String,
+    selected_paths: Vec<SelectedSubscriptionPath>,
 }
 
 #[derive(Serialize)]
@@ -4296,16 +4749,13 @@ async fn snow_integration_test_handler(
     }
 }
 
-
 #[derive(serde::Deserialize)]
 pub struct RemoveOverrideReq {
     pub scope: crate::registry::OverrideScope,
     pub path: String,
 }
 
-async fn list_overrides(
-    State(state): State<AppState>,
-) -> impl axum::response::IntoResponse {
+async fn list_overrides(State(state): State<AppState>) -> impl axum::response::IntoResponse {
     match state.registry.list_overrides() {
         Ok(overrides) => Json(overrides).into_response(),
         Err(e) => (
@@ -4324,20 +4774,17 @@ async fn add_override(
         .ok()
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| "unknown".to_string());
-    
+
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
         .unwrap_or_default();
-    
+
     req.created_at_ns = now;
     req.created_by = actor.clone();
 
     match state.registry.add_override(req.clone()) {
-        Ok(_) => {
-            
-            Json(req).into_response()
-        },
+        Ok(_) => Json(req).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("failed to add override: {}", e),
@@ -4351,9 +4798,7 @@ async fn remove_override(
     Json(req): Json<RemoveOverrideReq>,
 ) -> impl axum::response::IntoResponse {
     match state.registry.remove_override(&req.scope, &req.path) {
-        Ok(removed) => {
-            Json(serde_json::json!({ "removed": removed })).into_response()
-        },
+        Ok(removed) => Json(serde_json::json!({ "removed": removed })).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("failed to remove override: {}", e),
@@ -4375,14 +4820,27 @@ struct AdapterListResponse {
     adapters: Vec<AdapterEntry>,
 }
 
-async fn adapter_list_handler(
-    State(state): State<AppState>,
-) -> Json<AdapterListResponse> {
+async fn adapter_list_handler(State(state): State<AppState>) -> Json<AdapterListResponse> {
+    let audit_dir = std::path::Path::new(&state.runtime_dir).join("audit");
+    let latest_pushes = latest_adapter_push_state(&read_recent_adapter_audit(&audit_dir, 1000));
+
     let reg = state.adapter_registry.read().await;
     let adapters = reg
         .list()
         .into_iter()
-        .map(|(config, st)| AdapterEntry { config, state: st })
+        .map(|(config, mut st)| {
+            if let Some(audit_state) = latest_pushes.get(&config.name) {
+                st.last_push_at_ns = audit_state.last_push_at_ns;
+                st.last_push_duration_ms = audit_state.last_push_duration_ms;
+                st.last_push_events = audit_state.last_push_events;
+                st.last_push_bytes = audit_state.last_push_bytes;
+                st.last_push_warnings = audit_state.last_push_warnings.clone();
+                st.last_push_error = audit_state.last_push_error.clone();
+                st.total_events_pushed = audit_state.total_events_pushed;
+                st.total_bytes_sent = audit_state.total_bytes_sent;
+            }
+            AdapterEntry { config, state: st }
+        })
         .collect();
     Json(AdapterListResponse { adapters })
 }
@@ -4403,8 +4861,17 @@ async fn adapter_upsert_handler(
     State(state): State<AppState>,
     Json(req): Json<AdapterUpsertRequest>,
 ) -> Json<AdapterMutationResponse> {
+    if let Err(error) = crate::output::ensure_supported_adapter_type(&req.config) {
+        return Json(AdapterMutationResponse {
+            success: false,
+            error: Some(error.to_string()),
+        });
+    }
     state.adapter_registry.write().await.upsert(req.config);
-    Json(AdapterMutationResponse { success: true, error: None })
+    Json(AdapterMutationResponse {
+        success: true,
+        error: None,
+    })
 }
 
 #[derive(Deserialize)]
@@ -4418,7 +4885,10 @@ async fn adapter_remove_handler(
 ) -> Json<AdapterMutationResponse> {
     let removed = state.adapter_registry.write().await.remove(&req.name);
     if removed {
-        Json(AdapterMutationResponse { success: true, error: None })
+        Json(AdapterMutationResponse {
+            success: true,
+            error: None,
+        })
     } else {
         Json(AdapterMutationResponse {
             success: false,
@@ -4453,18 +4923,16 @@ async fn adapter_test_handler(
         &config.name,
     );
 
-    let result = match config.adapter_type.as_str() {
-        "prometheus_remote_write" => {
-            match crate::output::prometheus::build(&config) {
-                Some(adapter) => {
-                    adapter
-                        .test_connection(Arc::clone(&state.credentials), &audit)
-                        .await
-                }
-                None => Err(anyhow::anyhow!("failed to build prometheus adapter")),
-            }
+    let result = match crate::output::build_adapter(&config, state.store.db()) {
+        Some(adapter) => {
+            adapter
+                .test_connection(Arc::clone(&state.credentials), &audit)
+                .await
         }
-        other => Err(anyhow::anyhow!("unknown adapter type '{other}'")),
+        None => Err(anyhow::anyhow!(
+            "unknown adapter type '{}'",
+            config.adapter_type
+        )),
     };
 
     match result {
@@ -4484,18 +4952,13 @@ struct AdapterAuditResponse {
     entries: Vec<serde_json::Value>,
 }
 
-async fn adapter_audit_handler(
-    State(state): State<AppState>,
-) -> Json<AdapterAuditResponse> {
+async fn adapter_audit_handler(State(state): State<AppState>) -> Json<AdapterAuditResponse> {
     let audit_dir = std::path::Path::new(&state.runtime_dir).join("audit");
     let entries = read_recent_adapter_audit(&audit_dir, 100);
     Json(AdapterAuditResponse { entries })
 }
 
-fn read_recent_adapter_audit(
-    audit_dir: &std::path::Path,
-    limit: usize,
-) -> Vec<serde_json::Value> {
+fn read_recent_adapter_audit(audit_dir: &std::path::Path, limit: usize) -> Vec<serde_json::Value> {
     if !audit_dir.exists() {
         return vec![];
     }
@@ -4528,6 +4991,57 @@ fn read_recent_adapter_audit(
         }
     }
     entries
+}
+
+fn latest_adapter_push_state(
+    entries: &[serde_json::Value],
+) -> std::collections::HashMap<String, OutputAdapterRunState> {
+    let mut by_adapter = std::collections::HashMap::new();
+    for entry in entries {
+        if entry.get("event").and_then(|v| v.as_str()) != Some("adapter_push") {
+            continue;
+        }
+        let Some(name) = entry.get("adapter").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let state = by_adapter
+            .entry(name.to_string())
+            .or_insert_with(OutputAdapterRunState::default);
+        state.total_events_pushed += entry
+            .get("events_pushed")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        state.total_bytes_sent += entry
+            .get("bytes_sent")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        let ts = entry
+            .get("timestamp_ns")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_default();
+        if state.last_push_at_ns.is_none_or(|cur| ts >= cur) {
+            state.last_push_at_ns = Some(ts);
+            state.last_push_events = Some(
+                entry
+                    .get("events_pushed")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize,
+            );
+            state.last_push_bytes = Some(
+                entry
+                    .get("bytes_sent")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            );
+            state.last_push_error = entry
+                .get("error")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            state.last_push_warnings = vec![];
+        }
+    }
+    by_adapter
 }
 
 // ─── graph insights (T1-4) ───────────────────────────────────────────────────
@@ -4674,7 +5188,9 @@ struct CreateInvestigationBody {
     #[serde(default = "default_trigger")]
     trigger: String,
 }
-fn default_trigger() -> String { "operator".into() }
+fn default_trigger() -> String {
+    "operator".into()
+}
 
 #[derive(Deserialize)]
 struct CompleteInvestigationBody {
@@ -4726,13 +5242,21 @@ async fn get_investigation_handler(
         .get_investigation(id.clone())
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("investigation {} not found", id)))?;
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("investigation {} not found", id),
+            )
+        })?;
     let tool_calls = state
         .store
         .list_tool_calls(id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(InvestigationDetailResponse { investigation: inv, tool_calls }))
+    Ok(Json(InvestigationDetailResponse {
+        investigation: inv,
+        tool_calls,
+    }))
 }
 
 async fn list_tool_calls_handler(

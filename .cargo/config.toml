@@ -6,12 +6,17 @@
 # Uncomment for faster incremental builds during development (avoids
 # re-linking the large static archive on every change):
 # LBUG_SHARED = "1"
+#
+# Keep native CMake builds from auto-detecting `sccache`/`ccache` out of
+# ~/.cargo/bin when those launchers are present but unusable in the current
+# environment. Cargo already knows the absolute paths to rustc/cargo, so build
+# scripts only need standard system tool directories here.
+PATH = { value = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", force = true }
 
 [build]
-# sccache wraps rustc to cache compilation artefacts across clean builds.
-# Run `scripts/install_sccache.sh` to install it. If sccache is not installed,
-# cargo will print an error; remove this line to build without caching.
-rustc-wrapper = "sccache"
+# Keep the repo default toolchain path reliable across fresh sessions and
+# constrained environments. To opt into sccache in a shell where it works:
+#   export RUSTC_WRAPPER=sccache
 
 [target.x86_64-unknown-linux-gnu]
 # lbug bundles its own libzstd.a (C++) which conflicts with zstd-sys (C).

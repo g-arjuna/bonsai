@@ -1,0 +1,6 @@
+name: sp_p
+description: Service-provider P router recommendation.
+role_hints: ["p"]
+environment: ["service_provider"]
+profile_names: ["sp_p_core", "sp_p_sr_te"]
+rationale: "Core P routers emphasize transport health: interfaces, IGP, MPLS, and segment routing."

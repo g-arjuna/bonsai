@@ -107,7 +107,11 @@ fi
     systemctl status bonsai --no-pager 2>/dev/null || true
     echo ""
     echo "--- containerlab inspect ---"
-    sudo containerlab inspect 2>/dev/null || true
+    if [[ -f "$INSTALL_DIR/lab/cloud-dc-6node.yml" ]]; then
+        sudo containerlab inspect -t "$INSTALL_DIR/lab/cloud-dc-6node.yml" 2>/dev/null || true
+    else
+        sudo containerlab inspect 2>/dev/null || true
+    fi
     echo ""
     echo "--- chaos runner status ---"
     bash "$INSTALL_DIR/scripts/chaos_runner.sh" --status 2>/dev/null || true

@@ -66,7 +66,7 @@ check_netbox() {
 # ── Splunk ────────────────────────────────────────────────────────────────────
 
 check_splunk() {
-    if ! curl -sf "http://localhost:8088/services/collector/health" -o /dev/null 2>&1; then
+    if ! curl -skf "https://localhost:8088/services/collector/health" -o /dev/null 2>&1; then
         echo '{"reachable": false, "hec_token_valid": false, "reason": "HEC not reachable"}'
         return
     fi
@@ -78,7 +78,7 @@ check_splunk() {
         local http_status
         http_status=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Splunk ${token}" \
-            -X POST http://localhost:8088/services/collector/event \
+            -k -X POST https://localhost:8088/services/collector/event \
             -d '{"event": "check_external probe", "sourcetype": "_json", "index": "bonsai-events"}' 2>/dev/null || echo 0)
         [[ "$http_status" == "200" ]] && hec_valid=true
     fi

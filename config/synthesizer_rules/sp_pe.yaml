@@ -1,0 +1,8 @@
+name: sp_pe
+description: Service-provider PE recommendation.
+role_hints: ["pe"]
+environment: ["service_provider"]
+profile_names: ["sp_pe_full", "sp_pe_l3vpn"]
+rationale: "PE nodes need transport plus service state, especially MPLS, BGP, and VPN context."
+gaps:
+  - "If MPLS or SR models are absent, fall back to CLI or periodic Get for transport-state context."

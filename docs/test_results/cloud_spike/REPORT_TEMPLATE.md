@@ -13,6 +13,9 @@
 **VM**: Oracle Always Free ARM — 4 OCPU, 24 GB RAM, 200 GB block storage  
 **Region**: `<OCI_REGION>`
 
+Boundary reminder: the cloud spike is for archive accumulation and operational
+stability only. GNN training guidance lives in `docs/cloud_lab.md`.
+
 ---
 
 ## What was deployed

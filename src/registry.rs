@@ -30,7 +30,6 @@ pub trait DeviceRegistry: Send + Sync {
     fn subscribe_changes(&self) -> mpsc::Receiver<RegistryChange>;
 }
 
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum OverrideScope {
@@ -235,7 +234,6 @@ impl ApiRegistry {
         Ok(removed)
     }
 
-
     pub fn list_overrides(&self) -> Result<Vec<PathOverride>> {
         let state = self
             .state
@@ -260,7 +258,9 @@ impl ApiRegistry {
             .lock()
             .map_err(|_| anyhow!("registry lock poisoned"))?;
         let len_before = state.overrides.len();
-        state.overrides.retain(|o| !(o.scope == *scope && o.path == path));
+        state
+            .overrides
+            .retain(|o| !(o.scope == *scope && o.path == path));
         let changed = state.overrides.len() != len_before;
         if changed {
             Self::persist_state(&self.path, &state)?;
@@ -289,7 +289,11 @@ impl ApiRegistry {
             .collect())
     }
 
-    pub fn assign_device(&self, address: &str, collector_id: Option<String>) -> Result<TargetConfig> {
+    pub fn assign_device(
+        &self,
+        address: &str,
+        collector_id: Option<String>,
+    ) -> Result<TargetConfig> {
         self.assign_device_with_audit(
             address,
             collector_id,
@@ -311,17 +315,17 @@ impl ApiRegistry {
                 .state
                 .lock()
                 .map_err(|_| anyhow!("registry lock poisoned"))?;
-                let target = state
-                    .targets
-                    .get_mut(&address)
-                    .ok_or_else(|| anyhow!("device '{address}' does not exist"))?;
-                target.collector_id = collector_id;
-                target.updated_at_ns = now_ns();
-                target.updated_by = actor.to_string();
-                target.last_operator_action = action.to_string();
-                let updated = target.clone();
-                Self::persist_state(&self.path, &state)?;
-                updated
+            let target = state
+                .targets
+                .get_mut(&address)
+                .ok_or_else(|| anyhow!("device '{address}' does not exist"))?;
+            target.collector_id = collector_id;
+            target.updated_at_ns = now_ns();
+            target.updated_by = actor.to_string();
+            target.last_operator_action = action.to_string();
+            let updated = target.clone();
+            Self::persist_state(&self.path, &state)?;
+            updated
         };
 
         let _ = self.change_tx.send(RegistryChange::Updated(target.clone()));
@@ -334,8 +338,9 @@ impl ApiRegistry {
                 .with_context(|| format!("failed to read registry '{}'", path.display()))?;
             let raw = raw.trim_start();
             if raw.starts_with('[') {
-                let targets: Vec<TargetConfig> = serde_json::from_str(raw)
-                    .with_context(|| format!("failed to parse legacy registry '{}'", path.display()))?;
+                let targets: Vec<TargetConfig> = serde_json::from_str(raw).with_context(|| {
+                    format!("failed to parse legacy registry '{}'", path.display())
+                })?;
                 RegistryState::from_targets(targets)
             } else {
                 serde_json::from_str(raw)
@@ -361,8 +366,8 @@ impl ApiRegistry {
             format!("failed to create registry directory '{}'", parent.display())
         })?;
 
-        let serialized = serde_json::to_string_pretty(&state)
-            .context("failed to serialize registry state")?;
+        let serialized =
+            serde_json::to_string_pretty(&state).context("failed to serialize registry state")?;
         std::fs::write(path, serialized)
             .with_context(|| format!("failed to write registry '{}'", path.display()))?;
         Ok(())

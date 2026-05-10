@@ -39,6 +39,9 @@ ARCHIVE_MOUNT="${ARCHIVE_MOUNT:-/mnt/bonsai-archive}"
 DATA_DEVICE="${DATA_DEVICE:-/dev/sdb}"           # Second block device (data volume)
 BONSAI_PORT="${BONSAI_PORT:-3000}"
 NETBOX_PORT="${NETBOX_PORT:-8080}"
+GRAPH_BUFFER_BYTES="${GRAPH_BUFFER_BYTES:-536870912}"
+GNMI_USERNAME="${GNMI_USERNAME:-admin}"
+GNMI_PASSWORD="${GNMI_PASSWORD:-}"
 
 SKIP_BUILD=false
 SKIP_LAB=false
@@ -59,6 +62,26 @@ _log() { echo "[$(date -u '+%H:%M:%S')] $*"; }
 _die() { echo "ERROR: $*" >&2; exit 1; }
 _run() { "$DRY_RUN" && echo "[DRY-RUN] $*" || "$@"; }
 _step() { _log ""; _log "=== Step $1: $2 ==="; }
+_compute_cloud_graph_buffer_bytes() {
+    local mem_kib target_kib min_kib max_kib
+    mem_kib=$(awk '/MemTotal:/ { print $2 }' /proc/meminfo 2>/dev/null || echo 0)
+    if [[ -z "$mem_kib" || "$mem_kib" -le 0 ]]; then
+        echo "$GRAPH_BUFFER_BYTES"
+        return
+    fi
+
+    # Keep the cloud graph footprint modest: 2% of RAM, clamped to 256-512 MiB.
+    target_kib=$(( mem_kib / 50 ))
+    min_kib=$(( 256 * 1024 ))
+    max_kib=$(( 512 * 1024 ))
+    if (( target_kib < min_kib )); then
+        target_kib=$min_kib
+    fi
+    if (( target_kib > max_kib )); then
+        target_kib=$max_kib
+    fi
+    echo $(( target_kib * 1024 ))
+}
 
 OS_ID=""
 [[ -f /etc/os-release ]] && OS_ID=$(awk -F= '$1 == "ID" {gsub(/"/, "", $2); print $2}' /etc/os-release)
@@ -240,14 +263,18 @@ fi
 
 _step 7 "bonsai.toml configuration"
 
+GRAPH_BUFFER_BYTES="$(_compute_cloud_graph_buffer_bytes)"
+_log "  Cloud graph buffer: ${GRAPH_BUFFER_BYTES} bytes"
+
 if [[ ! -f "$INSTALL_DIR/bonsai.toml" ]]; then
+    [[ -n "$GNMI_PASSWORD" ]] || _die "GNMI_PASSWORD must be set before first cloud deploy"
     _log "  Writing cloud bonsai.toml..."
     cat > "$INSTALL_DIR/bonsai.toml" <<CONFIG
 graph_path = "$ARCHIVE_MOUNT/bonsai.db"
 metrics_addr = "[::1]:9090"
 
 [graph]
-buffer_pool_bytes = 805306368
+buffer_pool_bytes = $GRAPH_BUFFER_BYTES
 
 [event_bus]
 capacity = 4096
@@ -281,8 +308,8 @@ role = "spine"
 site = "cloud-dc"
 tls_domain = "clab-bonsai-cloud-dc-srl-super1"
 ca_cert = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
-username = "admin"
-password = "NokiaSrl1!"
+username = "$GNMI_USERNAME"
+password = "$GNMI_PASSWORD"
 
 [[target]]
 address = "172.100.104.12:57400"
@@ -291,8 +318,8 @@ role = "spine"
 site = "cloud-dc"
 tls_domain = "clab-bonsai-cloud-dc-srl-spine1"
 ca_cert = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
-username = "admin"
-password = "NokiaSrl1!"
+username = "$GNMI_USERNAME"
+password = "$GNMI_PASSWORD"
 
 [[target]]
 address = "172.100.104.13:57400"
@@ -301,8 +328,8 @@ role = "leaf"
 site = "cloud-dc"
 tls_domain = "clab-bonsai-cloud-dc-srl-leaf1"
 ca_cert = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
-username = "admin"
-password = "NokiaSrl1!"
+username = "$GNMI_USERNAME"
+password = "$GNMI_PASSWORD"
 
 [[target]]
 address = "172.100.104.14:57400"
@@ -311,8 +338,8 @@ role = "leaf"
 site = "cloud-dc"
 tls_domain = "clab-bonsai-cloud-dc-srl-leaf2"
 ca_cert = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
-username = "admin"
-password = "NokiaSrl1!"
+username = "$GNMI_USERNAME"
+password = "$GNMI_PASSWORD"
 
 [[target]]
 address = "172.100.104.15:57400"
@@ -321,8 +348,8 @@ role = "leaf"
 site = "cloud-dc"
 tls_domain = "clab-bonsai-cloud-dc-srl-leaf3"
 ca_cert = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
-username = "admin"
-password = "NokiaSrl1!"
+username = "$GNMI_USERNAME"
+password = "$GNMI_PASSWORD"
 
 [[target]]
 address = "172.100.104.16:57400"
@@ -331,8 +358,8 @@ role = "leaf"
 site = "cloud-dc"
 tls_domain = "clab-bonsai-cloud-dc-srl-leaf4"
 ca_cert = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
-username = "admin"
-password = "NokiaSrl1!"
+username = "$GNMI_USERNAME"
+password = "$GNMI_PASSWORD"
 CONFIG
     _log "  Written: $INSTALL_DIR/bonsai.toml"
 else
@@ -387,6 +414,31 @@ elif [[ -f "$INSTALL_DIR/lab/cloud-dc-6node.yml" ]]; then
     else
         _log "  Lab already running"
     fi
+
+    _log "  Waiting for cloud gNMI endpoints on port 57400..."
+    CLOUD_GNMI_IPS=(
+        172.100.104.11
+        172.100.104.12
+        172.100.104.13
+        172.100.104.14
+        172.100.104.15
+        172.100.104.16
+    )
+    for ip in "${CLOUD_GNMI_IPS[@]}"; do
+        READY=false
+        for _ in $(seq 1 24); do
+            if timeout 3 bash -lc "</dev/tcp/$ip/57400" >/dev/null 2>&1; then
+                READY=true
+                break
+            fi
+            sleep 5
+        done
+        if "$READY"; then
+            _log "    gNMI ready: $ip:57400"
+        else
+            _log "    WARN: gNMI did not come up in time on $ip:57400"
+        fi
+    done
 else
     _log "  WARN: lab/cloud-dc-6node.yml not found — skipping lab"
     _log "  Create a scaled-down 6-node topology and place it at lab/cloud-dc-6node.yml"
@@ -403,22 +455,36 @@ curl -sf "http://localhost:$BONSAI_PORT/api/topology" &>/dev/null && \
     _log "  bonsai is up" || \
     _log "  WARN: bonsai not responding on :$BONSAI_PORT — check $ARCHIVE_MOUNT/logs/bonsai.log"
 
-# ── Step 10: Always-on chaos runner ────────────────────────────────────────────
+# ── Step 10: Systemd chaos runner ─────────────────────────────────────────────
 
-_step 10 "Chaos runner daemon"
+_step 10 "Systemd service (bonsai-chaos)"
 
-CHAOS_STATUS=$(bash "$INSTALL_DIR/scripts/chaos_runner.sh" --status 2>/dev/null || echo "stopped")
-if echo "$CHAOS_STATUS" | grep -q "daemon is RUNNING"; then
-    _log "  Chaos runner already running"
-else
-    _log "  Starting chaos runner daemon (cloud DC plan)..."
-    # Use cloud-specific plan (bonsai-cloud-dc topology, 10.4.x.x addressing)
-    export PLAN="$INSTALL_DIR/chaos_plans/always_on_cloud_dc.yaml"
-    export BONSAI_FAULT_TRANSPORT=docker
-    _run bash "$INSTALL_DIR/scripts/chaos_runner.sh"
-    unset BONSAI_FAULT_TRANSPORT
-    unset PLAN
-fi
+sudo tee /etc/systemd/system/bonsai-chaos.service > /dev/null <<SERVICE
+[Unit]
+Description=Bonsai Cloud Chaos Runner
+After=network.target docker.service bonsai.service
+Wants=docker.service bonsai.service
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=$INSTALL_DIR
+Environment=PLAN=$INSTALL_DIR/chaos_plans/always_on_cloud_dc.yaml
+Environment=BONSAI_FAULT_TRANSPORT=docker
+Environment=CHAOS_SYSTEMD_SERVICE=bonsai-chaos.service
+ExecStart=/usr/bin/bash $INSTALL_DIR/scripts/chaos_runner.sh --fg
+Restart=always
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+_run sudo systemctl daemon-reload
+_run sudo systemctl enable bonsai-chaos
+_run sudo systemctl restart bonsai-chaos
 
 # ── Step 11: Daily archive sync cron ─────────────────────────────────────────
 

@@ -1,0 +1,6 @@
+vendor: juniper
+patterns:
+  - "commit complete"
+  - "configuration database changed"
+  - "ui_commit"
+  - "mgd: commit complete"

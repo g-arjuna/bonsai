@@ -25,8 +25,43 @@ pub mod servicenow_em;
 pub mod splunk_hec;
 pub mod traits;
 
+use std::sync::Arc;
+
+use anyhow::{Result, anyhow};
+use lbug::Database;
+
 pub use traits::{
-    new_adapter_registry, OutputAdapter, OutputAdapterAuditLog, OutputAdapterConfig,
-    OutputAdapterRegistry, OutputAdapterRunState, OutputReport, OutputTopic,
-    SharedAdapterRegistry, StubAdapter,
+    OutputAdapter, OutputAdapterAuditLog, OutputAdapterConfig, OutputAdapterRegistry,
+    OutputAdapterRunState, OutputReport, OutputTopic, SharedAdapterRegistry, StubAdapter,
+    new_adapter_registry,
 };
+
+pub fn build_adapter(
+    config: &OutputAdapterConfig,
+    db: Arc<Database>,
+) -> Option<Box<dyn OutputAdapter>> {
+    if let Some(adapter) = prometheus::build(config) {
+        return Some(Box::new(adapter));
+    }
+    if let Some(adapter) = splunk_hec::build(config, Arc::clone(&db)) {
+        return Some(Box::new(adapter));
+    }
+    if let Some(adapter) = elastic::build(config, Arc::clone(&db)) {
+        return Some(Box::new(adapter));
+    }
+    if let Some(adapter) = servicenow_em::build(config, db) {
+        return Some(Box::new(adapter));
+    }
+    None
+}
+
+pub fn ensure_supported_adapter_type(config: &OutputAdapterConfig) -> Result<()> {
+    if matches!(
+        config.adapter_type.as_str(),
+        "prometheus_remote_write" | "splunk_hec" | "elastic" | "servicenow_em"
+    ) {
+        Ok(())
+    } else {
+        Err(anyhow!("unknown adapter type '{}'", config.adapter_type))
+    }
+}

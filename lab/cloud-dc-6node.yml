@@ -54,33 +54,51 @@ topology:
       mgmt-ipv4: 172.100.104.11
       memory: 2048m
       startup-config: cloud-dc-6node-configs/srl-super1.cfg
+      labels:
+        bonsai.role: super-spine
+        bonsai.environment: data_center
 
     # ── Spine ─────────────────────────────────────────────────────────────────
     srl-spine1:
       mgmt-ipv4: 172.100.104.12
       memory: 2048m
       startup-config: cloud-dc-6node-configs/srl-spine1.cfg
+      labels:
+        bonsai.role: spine
+        bonsai.environment: data_center
 
     # ── Leaves ────────────────────────────────────────────────────────────────
     srl-leaf1:
       mgmt-ipv4: 172.100.104.13
       memory: 2048m
       startup-config: cloud-dc-6node-configs/srl-leaf1.cfg
+      labels:
+        bonsai.role: leaf
+        bonsai.environment: data_center
 
     srl-leaf2:
       mgmt-ipv4: 172.100.104.14
       memory: 2048m
       startup-config: cloud-dc-6node-configs/srl-leaf2.cfg
+      labels:
+        bonsai.role: leaf
+        bonsai.environment: data_center
 
     srl-leaf3:
       mgmt-ipv4: 172.100.104.15
       memory: 2048m
       startup-config: cloud-dc-6node-configs/srl-leaf3.cfg
+      labels:
+        bonsai.role: leaf
+        bonsai.environment: data_center
 
     srl-leaf4:
       mgmt-ipv4: 172.100.104.16
       memory: 2048m
       startup-config: cloud-dc-6node-configs/srl-leaf4.cfg
+      labels:
+        bonsai.role: leaf
+        bonsai.environment: data_center
 
   links:
     # super1 e1-1 ↔ spine1 e1-1

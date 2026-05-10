@@ -433,6 +433,7 @@ dependencies = [
  "axum",
  "futures",
  "hex",
+ "hmac",
  "hostname",
  "lbug",
  "libc",

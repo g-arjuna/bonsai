@@ -233,8 +233,7 @@ impl TrustStore {
                 // Operator should add [remediation.defaults.{archetype}] in bonsai.toml.
                 warn!(
                     archetype = other,
-                    rule_id,
-                    "unknown environment archetype; defaulting trust state to ApproveEach"
+                    rule_id, "unknown environment archetype; defaulting trust state to ApproveEach"
                 );
                 &String::new()
             }
@@ -264,10 +263,7 @@ mod tests {
         tempfile::tempdir().expect("create temp dir")
     }
 
-    fn config_with_defaults(
-        home_lab: &str,
-        data_center: &str,
-    ) -> RemediationConfig {
+    fn config_with_defaults(home_lab: &str, data_center: &str) -> RemediationConfig {
         RemediationConfig {
             defaults: RemediationDefaultsConfig {
                 home_lab: home_lab.to_string(),
@@ -287,15 +283,27 @@ mod tests {
     #[test]
     fn default_state_home_lab_maps_to_config() {
         let dir = tmp_dir();
-        let store = TrustStore::load(dir.path(), config_with_defaults("auto_silent", "approve_each"));
-        assert_eq!(store.default_state_for("r", "home_lab"), TrustState::AutoSilent);
+        let store = TrustStore::load(
+            dir.path(),
+            config_with_defaults("auto_silent", "approve_each"),
+        );
+        assert_eq!(
+            store.default_state_for("r", "home_lab"),
+            TrustState::AutoSilent
+        );
     }
 
     #[test]
     fn default_state_data_center_maps_to_config() {
         let dir = tmp_dir();
-        let store = TrustStore::load(dir.path(), config_with_defaults("auto_silent", "approve_each"));
-        assert_eq!(store.default_state_for("r", "data_center"), TrustState::ApproveEach);
+        let store = TrustStore::load(
+            dir.path(),
+            config_with_defaults("auto_silent", "approve_each"),
+        );
+        assert_eq!(
+            store.default_state_for("r", "data_center"),
+            TrustState::ApproveEach
+        );
     }
 
     #[test]
@@ -303,7 +311,10 @@ mod tests {
         let dir = tmp_dir();
         let store = TrustStore::load(dir.path(), RemediationConfig::default());
         // Should return ApproveEach (safe default) without panicking
-        assert_eq!(store.default_state_for("r", "exotic_network_type"), TrustState::ApproveEach);
+        assert_eq!(
+            store.default_state_for("r", "exotic_network_type"),
+            TrustState::ApproveEach
+        );
     }
 
     // ── get_or_default creates missing keys ───────────────────────────────────
@@ -379,7 +390,10 @@ mod tests {
             store.record_auto_success(&k, i as i64 + 2);
         }
         let after = store.get(&k).unwrap().total_failures;
-        assert_eq!(after, 0, "total_failures should reset after 10 consecutive successes");
+        assert_eq!(
+            after, 0,
+            "total_failures should reset after 10 consecutive successes"
+        );
     }
 
     #[test]

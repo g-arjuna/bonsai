@@ -13,6 +13,12 @@ api_addr   = "0.0.0.0:50051"
 mode         = "all"
 collector_id = "lab-dc"
 
+[archive]
+enabled = true
+path = "runtime/archive"
+flush_interval_seconds = 10
+max_batch_rows = 1000
+
 [credentials]
 path           = "bonsai-credentials"
 passphrase_env = "BONSAI_VAULT_PASSPHRASE"

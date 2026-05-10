@@ -72,8 +72,12 @@ impl MpscSubscriber {
 
 #[async_trait::async_trait]
 impl BusSubscriber for MpscSubscriber {
-    fn name(&self) -> &str { &self.name }
-    fn policy(&self) -> OverflowPolicy { self.policy }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn policy(&self) -> OverflowPolicy {
+        self.policy
+    }
 
     async fn handle(&self, update: Arc<TelemetryUpdate>) {
         let name = self.name.clone();
@@ -103,24 +107,24 @@ impl BusSubscriber for MpscSubscriber {
         metrics::gauge!("bonsai_subscriber_queue_depth", "subscriber" => self.name.clone())
             .set(depth as f64);
 
-        if let Some(fill_pct) = (depth * 100).checked_div(self.capacity as u64) {
-            if fill_pct >= SLOW_SUBSCRIBER_WARN_THRESHOLD_PCT {
-                let now_secs = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let last = self.last_queue_warn_secs.load(Ordering::Relaxed);
-                if now_secs.saturating_sub(last) >= 60 {
-                    self.last_queue_warn_secs.store(now_secs, Ordering::Relaxed);
-                    warn!(
-                        subscriber = %self.name,
-                        depth,
-                        capacity = self.capacity,
-                        fill_pct,
-                        "subscriber queue is {}% full",
-                        fill_pct
-                    );
-                }
+        if let Some(fill_pct) = (depth * 100).checked_div(self.capacity as u64)
+            && fill_pct >= SLOW_SUBSCRIBER_WARN_THRESHOLD_PCT
+        {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let last = self.last_queue_warn_secs.load(Ordering::Relaxed);
+            if now_secs.saturating_sub(last) >= 60 {
+                self.last_queue_warn_secs.store(now_secs, Ordering::Relaxed);
+                warn!(
+                    subscriber = %self.name,
+                    depth,
+                    capacity = self.capacity,
+                    fill_pct,
+                    "subscriber queue is {}% full",
+                    fill_pct
+                );
             }
         }
     }
@@ -153,26 +157,30 @@ impl BroadcastSubscriber {
 
 #[async_trait::async_trait]
 impl BusSubscriber for BroadcastSubscriber {
-    fn name(&self) -> &str { &self.name }
-    fn policy(&self) -> OverflowPolicy { OverflowPolicy::DropOldest }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn policy(&self) -> OverflowPolicy {
+        OverflowPolicy::DropOldest
+    }
 
     async fn handle(&self, update: Arc<TelemetryUpdate>) {
         // broadcast::send drops the oldest slot when full — true DropOldest.
-        if let Err(_) = self.tx.send(update) {
+        if self.tx.send(update).is_err() {
             // No active receivers — non-fatal.
         }
         let depth = self.tx.len() as u64;
         metrics::gauge!("bonsai_subscriber_queue_depth", "subscriber" => self.name.clone())
             .set(depth as f64);
-        if let Some(fill_pct) = (depth * 100).checked_div(self.capacity as u64) {
-            if fill_pct >= SLOW_SUBSCRIBER_WARN_THRESHOLD_PCT {
-                metrics::counter!(
-                    "bonsai_event_bus_subscriber_drops_total",
-                    "subscriber" => self.name.clone(),
-                    "reason" => "drop_oldest"
-                )
-                .increment(1);
-            }
+        if let Some(fill_pct) = (depth * 100).checked_div(self.capacity as u64)
+            && fill_pct >= SLOW_SUBSCRIBER_WARN_THRESHOLD_PCT
+        {
+            metrics::counter!(
+                "bonsai_event_bus_subscriber_drops_total",
+                "subscriber" => self.name.clone(),
+                "reason" => "drop_oldest"
+            )
+            .increment(1);
         }
     }
 }
@@ -222,7 +230,9 @@ impl InProcessBus {
             warn!("event bus router queue full, dropping message");
             metrics::counter!("bonsai_event_bus_router_drops_total").increment(1);
         }
-        let depth = (self.router_capacity.saturating_sub(self.router_tx.capacity())) as u64;
+        let depth = (self
+            .router_capacity
+            .saturating_sub(self.router_tx.capacity())) as u64;
         EVENT_BUS_DEPTH.store(depth, Ordering::Relaxed);
         metrics::gauge!("bonsai_event_bus_depth").set(depth as f64);
     }

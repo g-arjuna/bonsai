@@ -81,13 +81,13 @@ if [[ "$SKIP_SPLUNK" == "false" ]]; then
     elif [[ -z "${SPLUNK_HEC_TOKEN:-}" ]]; then
         err "SPLUNK_HEC_TOKEN not set — source .env or export it"
         RESULTS+=("splunk: SKIP (SPLUNK_HEC_TOKEN not set)")
-    elif ! curl -sf "http://localhost:8088/services/collector/health" >/dev/null 2>&1; then
+    elif ! curl -skf "https://localhost:8088/services/collector/health" >/dev/null 2>&1; then
         err "Splunk HEC not reachable at localhost:8088 — is the container running?"
         RESULTS+=("splunk: SKIP (not reachable)")
     else
         if "$PYTHON" "${SCRIPT_DIR}/seed_splunk.py" \
                 --url "http://localhost:8100" \
-                --hec-url "http://localhost:8088" \
+                --hec-url "https://localhost:8088" \
                 --password "$SPLUNK_PASSWORD" \
                 --hec-token "$SPLUNK_HEC_TOKEN" \
                 2>&1 | tee -a "$LOG_FILE"; then

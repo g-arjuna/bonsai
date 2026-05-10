@@ -1,0 +1,16 @@
+- vendor: cisco
+  model_contains: xrd
+  summary: "Older IOS-XR lab images can advertise gNMI but expose incomplete JSON_IETF config trees."
+  action: "Validate JSON_IETF support with Capabilities plus a CONFIG Get; pin the collector to a tested XRd image."
+- vendor: juniper
+  model_contains: crpd
+  summary: "Some cRPD builds require explicit firewall allowance before the gNMI port is reachable from the collector."
+  action: "Verify TCP reachability to port 57400 from the collector namespace and add the management-plane permit if needed."
+- vendor: arista
+  model_contains: ceos
+  summary: "cEOS lab images may ship with gNMI enabled but without a certificate SAN that matches the management IP."
+  action: "Regenerate the certificate with a SAN matching the IP or connect with the correct tls_domain hostname."
+- vendor: nokia
+  model_contains: srlinux
+  summary: "SR Linux is generally gNMI-ready, but stale lab CA bundles can cause TLS failures after topology rebuilds."
+  action: "Refresh the mounted CA bundle after lab redeploy and confirm the tls_domain matches the node certificate."

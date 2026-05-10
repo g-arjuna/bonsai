@@ -66,6 +66,36 @@ def test_loader_feature_space_supports_sp_roles_and_frr():
     assert graph.x[ce_row, feature["vendor_other"]] == 1
 
 
+def test_loader_feature_space_supports_campus_roles():
+    snapshot = {
+        "snapshot_ns": 1_700_000_000_000_000_000,
+        "devices": [
+            {"id": "access1", "vendor": "arista", "role": "access"},
+            {"id": "dist1", "vendor": "cisco", "role": "distribution"},
+            {"id": "core1", "vendor": "juniper", "role": "core"},
+            {"id": "edge1", "vendor": "unknown-nos", "role": "campus-edge"},
+        ],
+        "links": [
+            {"src_device": "access1", "dst_device": "dist1"},
+            {"src_device": "dist1", "dst_device": "core1"},
+            {"src_device": "core1", "dst_device": "edge1"},
+        ],
+    }
+    graph = BonsaiGnnDataLoader().from_snapshot(snapshot)
+    feature = {name: idx for idx, name in enumerate(graph.feature_names)}
+
+    access_row = graph.node_ids.index("access1")
+    dist_row = graph.node_ids.index("dist1")
+    core_row = graph.node_ids.index("core1")
+    edge_row = graph.node_ids.index("edge1")
+
+    assert graph.x[access_row, feature["role_access"]] == 1
+    assert graph.x[dist_row, feature["role_distribution"]] == 1
+    assert graph.x[core_row, feature["role_core"]] == 1
+    assert graph.x[edge_row, feature["role_edge"]] == 1
+    assert graph.x[edge_row, feature["vendor_other"]] == 1
+
+
 def test_loader_ignores_fault_outside_snapshot_window():
     snapshot = synthetic_dc_snapshot()
     snapshot["chaos_log"][0]["healed_at_ns"] = snapshot["snapshot_ns"] - 1

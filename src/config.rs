@@ -28,6 +28,10 @@ pub struct Config {
     #[serde(default)]
     pub credentials: CredentialsConfig,
     #[serde(default)]
+    pub layered_ingestion: LayeredIngestionConfig,
+    #[serde(default)]
+    pub yang: YangConfig,
+    #[serde(default)]
     pub storage: StorageConfig,
     #[serde(default)]
     pub assignment: AssignmentConfig,
@@ -80,9 +84,15 @@ impl Default for SnmpConfig {
     }
 }
 
-fn default_snmp_udp_addr() -> String { "0.0.0.0:9162".to_string() }
-fn default_snmp_archive_path() -> String { "runtime/signals/snmp.jsonl".to_string() }
-fn default_snmp_max_frame_bytes() -> usize { 8192 }
+fn default_snmp_udp_addr() -> String {
+    "0.0.0.0:9162".to_string()
+}
+fn default_snmp_archive_path() -> String {
+    "runtime/signals/snmp.jsonl".to_string()
+}
+fn default_snmp_max_frame_bytes() -> usize {
+    8192
+}
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct SyslogConfig {
@@ -115,10 +125,18 @@ impl Default for SyslogConfig {
     }
 }
 
-fn default_syslog_udp_addr() -> String { "0.0.0.0:5514".to_string() }
-fn default_syslog_tcp_addr() -> String { "0.0.0.0:6514".to_string() }
-fn default_syslog_archive_path() -> String { "runtime/signals/syslog.jsonl".to_string() }
-fn default_syslog_max_frame_bytes() -> usize { 8192 }
+fn default_syslog_udp_addr() -> String {
+    "0.0.0.0:5514".to_string()
+}
+fn default_syslog_tcp_addr() -> String {
+    "0.0.0.0:6514".to_string()
+}
+fn default_syslog_archive_path() -> String {
+    "runtime/signals/syslog.jsonl".to_string()
+}
+fn default_syslog_max_frame_bytes() -> usize {
+    8192
+}
 
 // ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -157,10 +175,18 @@ impl Default for LoggingConfig {
     }
 }
 
-fn default_log_rotation() -> String { "daily".to_string() }
-fn default_log_retention_days() -> u32 { 7 }
-fn default_log_level() -> String { "info".to_string() }
-fn default_log_min_free_bytes() -> u64 { 5 * 1024 * 1024 * 1024 }
+fn default_log_rotation() -> String {
+    "daily".to_string()
+}
+fn default_log_retention_days() -> u32 {
+    7
+}
+fn default_log_level() -> String {
+    "info".to_string()
+}
+fn default_log_min_free_bytes() -> u64 {
+    5 * 1024 * 1024 * 1024
+}
 
 // ── Remediation ───────────────────────────────────────────────────────────────
 
@@ -640,6 +666,97 @@ impl Default for CredentialsConfig {
     }
 }
 
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct LayeredIngestionConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_layered_ingestion_store_path")]
+    pub config_store_path: String,
+    #[serde(default = "default_credentials_passphrase_env")]
+    pub config_store_passphrase_env: String,
+    #[serde(default = "default_change_detection_schedule_interval_secs")]
+    pub change_detection_schedule_interval_secs: u64,
+    #[serde(default = "default_change_detection_reparse_interval_secs")]
+    pub change_detection_reparse_interval_secs: u64,
+    #[serde(default = "default_change_detection_history_limit")]
+    pub history_limit: usize,
+    #[serde(default)]
+    pub default_gnmi_get_paths: Vec<String>,
+    #[serde(default)]
+    pub parser_chain: ParserChainConfig,
+    #[serde(default = "default_gnmi_known_issues_path")]
+    pub gnmi_known_issues_path: String,
+    #[serde(default = "default_syslog_patterns_path")]
+    pub syslog_patterns_path: String,
+}
+
+impl Default for LayeredIngestionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            config_store_path: default_layered_ingestion_store_path(),
+            config_store_passphrase_env: default_credentials_passphrase_env(),
+            change_detection_schedule_interval_secs:
+                default_change_detection_schedule_interval_secs(),
+            change_detection_reparse_interval_secs: default_change_detection_reparse_interval_secs(
+            ),
+            history_limit: default_change_detection_history_limit(),
+            default_gnmi_get_paths: Vec::new(),
+            parser_chain: ParserChainConfig::default(),
+            gnmi_known_issues_path: default_gnmi_known_issues_path(),
+            syslog_patterns_path: default_syslog_patterns_path(),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct YangConfig {
+    #[serde(default = "default_yang_library_root")]
+    pub library_root: String,
+    #[serde(default = "default_yang_cache_root")]
+    pub cache_root: String,
+    #[serde(default = "default_yang_bundle_key_env")]
+    pub bundle_key_env: String,
+}
+
+impl Default for YangConfig {
+    fn default() -> Self {
+        Self {
+            library_root: default_yang_library_root(),
+            cache_root: default_yang_cache_root(),
+            bundle_key_env: default_yang_bundle_key_env(),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+pub struct ParserChainConfig {
+    #[serde(default)]
+    pub sidecars: ParserSidecarConfig,
+    /// Key format: "<vendor>::<command_pattern>"
+    #[serde(default)]
+    pub priorities: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub consensus_mode: bool,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct ParserSidecarConfig {
+    #[serde(default = "default_pyats_sidecar_url")]
+    pub pyats_url: String,
+    #[serde(default = "default_native_parser_url")]
+    pub native_url: String,
+}
+
+impl Default for ParserSidecarConfig {
+    fn default() -> Self {
+        Self {
+            pyats_url: default_pyats_sidecar_url(),
+            native_url: default_native_parser_url(),
+        }
+    }
+}
+
 // ── Graph database ────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Default)]
@@ -728,11 +845,11 @@ fn default_archive_writer_max_idle_secs() -> u64 {
 }
 
 fn default_max_archive_bytes() -> u64 {
-    10 * 1024 * 1024 * 1024   // 10 GB
+    10 * 1024 * 1024 * 1024 // 10 GB
 }
 
 fn default_max_graph_bytes() -> u64 {
-    5 * 1024 * 1024 * 1024    // 5 GB
+    5 * 1024 * 1024 * 1024 // 5 GB
 }
 
 fn default_disk_check_interval_secs() -> u64 {
@@ -749,6 +866,50 @@ fn default_credentials_path() -> String {
 
 fn default_credentials_passphrase_env() -> String {
     "BONSAI_VAULT_PASSPHRASE".to_string()
+}
+
+fn default_layered_ingestion_store_path() -> String {
+    "runtime/config-store".to_string()
+}
+
+fn default_change_detection_schedule_interval_secs() -> u64 {
+    3600
+}
+
+fn default_change_detection_reparse_interval_secs() -> u64 {
+    7 * 24 * 3600
+}
+
+fn default_change_detection_history_limit() -> usize {
+    25
+}
+
+fn default_gnmi_known_issues_path() -> String {
+    "config/gnmi_known_issues/default.yaml".to_string()
+}
+
+fn default_syslog_patterns_path() -> String {
+    "config/syslog_patterns".to_string()
+}
+
+fn default_pyats_sidecar_url() -> String {
+    "http://127.0.0.1:9101".to_string()
+}
+
+fn default_native_parser_url() -> String {
+    "http://127.0.0.1:9102".to_string()
+}
+
+fn default_yang_library_root() -> String {
+    "runtime/yang_catalogue".to_string()
+}
+
+fn default_yang_cache_root() -> String {
+    "runtime/yang_cache".to_string()
+}
+
+fn default_yang_bundle_key_env() -> String {
+    "BONSAI_YANG_BUNDLE_KEY".to_string()
 }
 
 fn default_counter_forward_mode() -> String {

@@ -12,9 +12,9 @@
 
   const ADAPTER_TYPES = [
     { value: 'prometheus_remote_write', label: 'Prometheus Remote Write' },
-    { value: 'splunk_hec',             label: 'Splunk HEC (Sprint 8)' },
-    { value: 'elastic',                label: 'Elastic Ingest (Sprint 8)' },
-    { value: 'servicenow_em',          label: 'ServiceNow Event Mgmt (Sprint 9)' },
+    { value: 'splunk_hec',             label: 'Splunk HEC' },
+    { value: 'elastic',                label: 'Elastic Ingest' },
+    { value: 'servicenow_em',          label: 'ServiceNow Event Mgmt' },
   ];
 
   const emptyConfig = () => ({

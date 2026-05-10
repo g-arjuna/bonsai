@@ -337,10 +337,22 @@ impl GraphEnricher for NetBoxEnricher {
 
         // Fetch all NetBox data with bounded concurrency (semaphore limits in-flight requests)
         let (devices_res, vlans_res, prefixes_res, ifaces_res) = tokio::join!(
-            async { let _p = sem.acquire().await.expect("sem"); transport.get_devices(&base_url, token).await },
-            async { let _p = sem.acquire().await.expect("sem"); transport.get_vlans(&base_url, token).await },
-            async { let _p = sem.acquire().await.expect("sem"); transport.get_prefixes(&base_url, token).await },
-            async { let _p = sem.acquire().await.expect("sem"); transport.get_interfaces(&base_url, token).await },
+            async {
+                let _p = sem.acquire().await.expect("sem");
+                transport.get_devices(&base_url, token).await
+            },
+            async {
+                let _p = sem.acquire().await.expect("sem");
+                transport.get_vlans(&base_url, token).await
+            },
+            async {
+                let _p = sem.acquire().await.expect("sem");
+                transport.get_prefixes(&base_url, token).await
+            },
+            async {
+                let _p = sem.acquire().await.expect("sem");
+                transport.get_interfaces(&base_url, token).await
+            },
         );
 
         let nb_devices = devices_res.unwrap_or_else(|e| {
@@ -364,19 +376,20 @@ impl GraphEnricher for NetBoxEnricher {
         let db = store.db();
         let write_lock = store.write_lock();
 
-        let (nodes_touched, edges_created, write_warnings) = tokio::task::spawn_blocking(move || {
-            let _guard = write_lock.lock().expect("write lock poisoned");
-            write_to_graph(
-                &db,
-                &nb_devices,
-                &nb_vlans,
-                &nb_prefixes,
-                &nb_ifaces,
-                &source,
-            )
-        })
-        .await
-        .context("graph write task panicked")??;
+        let (nodes_touched, edges_created, write_warnings) =
+            tokio::task::spawn_blocking(move || {
+                let _guard = write_lock.lock().expect("write lock poisoned");
+                write_to_graph(
+                    &db,
+                    &nb_devices,
+                    &nb_vlans,
+                    &nb_prefixes,
+                    &nb_ifaces,
+                    &source,
+                )
+            })
+            .await
+            .context("graph write task panicked")??;
 
         warnings.extend(write_warnings);
 
@@ -524,13 +537,19 @@ fn write_to_graph(
                 }
             }
         }
-        debug!(chunk = chunk_idx, size = chunk.len(), "wrote device enrichment chunk");
+        debug!(
+            chunk = chunk_idx,
+            size = chunk.len(),
+            "wrote device enrichment chunk"
+        );
     }
 
     // 2. Write VLAN nodes (site-scope VLANs from NetBox)
     for vlan in vlans {
         let id = format!("netbox_vlan_{}", vlan.vid);
-        if let Err(e) = with_write_retry(|| upsert_vlan(&conn, &id, vlan.vid as i64, &vlan.name, source, now_ns)) {
+        if let Err(e) = with_write_retry(|| {
+            upsert_vlan(&conn, &id, vlan.vid as i64, &vlan.name, source, now_ns)
+        }) {
             warnings.push(format!("VLAN {}: {e:#}", vlan.vid));
         } else {
             nodes += 1;
@@ -545,15 +564,17 @@ fn write_to_graph(
             .as_ref()
             .map(|r| r.name.as_str())
             .unwrap_or("unknown");
-        if let Err(e) = with_write_retry(|| upsert_prefix(
-            &conn,
-            &id,
-            &prefix.prefix,
-            role,
-            &prefix.description,
-            source,
-            now_ns,
-        )) {
+        if let Err(e) = with_write_retry(|| {
+            upsert_prefix(
+                &conn,
+                &id,
+                &prefix.prefix,
+                role,
+                &prefix.description,
+                source,
+                now_ns,
+            )
+        }) {
             warnings.push(format!("prefix {}: {e:#}", prefix.prefix));
         } else {
             nodes += 1;
@@ -568,7 +589,9 @@ fn write_to_graph(
             let id2 = id.clone();
             match with_write_retry(|| link_device_prefix(&conn, &dev_name2, &id2)) {
                 Ok(()) => edges += 1,
-                Err(e) => warnings.push(format!("HAS_PREFIX {dev_name} → {}: {e:#}", prefix.prefix)),
+                Err(e) => {
+                    warnings.push(format!("HAS_PREFIX {dev_name} → {}: {e:#}", prefix.prefix))
+                }
             }
         }
     }
@@ -584,15 +607,17 @@ fn write_to_graph(
             let prop_id = format!("{iface_id}:netbox_description");
             let iface_id2 = iface_id.clone();
             let descr = iface.description.clone();
-            if let Err(e) = with_write_retry(|| upsert_enrichment_property(
-                &conn,
-                &prop_id,
-                &iface_id2,
-                "netbox_if_description",
-                &descr,
-                source,
-                now_ns,
-            )) {
+            if let Err(e) = with_write_retry(|| {
+                upsert_enrichment_property(
+                    &conn,
+                    &prop_id,
+                    &iface_id2,
+                    "netbox_if_description",
+                    &descr,
+                    source,
+                    now_ns,
+                )
+            }) {
                 warn!("interface {iface_id} description: {e:#}");
             } else {
                 nodes += 1;
@@ -604,7 +629,9 @@ fn write_to_graph(
         if let Some(av) = &iface.untagged_vlan {
             let vlan_id = format!("netbox_vlan_{}", av.vid);
             let if_node_id = format!("{dev_name}:{}:if", iface.name);
-            match with_write_retry(|| link_interface_vlan(&conn, &if_node_id, &vlan_id, "ACCESS_VLAN")) {
+            match with_write_retry(|| {
+                link_interface_vlan(&conn, &if_node_id, &vlan_id, "ACCESS_VLAN")
+            }) {
                 Ok(()) => edges += 1,
                 Err(e) => warnings.push(format!("ACCESS_VLAN {iface_id}: {e:#}")),
             }
@@ -614,7 +641,9 @@ fn write_to_graph(
         for tv in &iface.tagged_vlans {
             let vlan_id = format!("netbox_vlan_{}", tv.vid);
             let if_node_id = format!("{dev_name}:{}:if", iface.name);
-            match with_write_retry(|| link_interface_vlan(&conn, &if_node_id, &vlan_id, "TRUNK_VLAN")) {
+            match with_write_retry(|| {
+                link_interface_vlan(&conn, &if_node_id, &vlan_id, "TRUNK_VLAN")
+            }) {
                 Ok(()) => edges += 1,
                 Err(e) => warnings.push(format!("TRUNK_VLAN {iface_id} vlan {}: {e:#}", tv.vid)),
             }
@@ -784,7 +813,10 @@ mod tests {
 
     fn open_test_graph(label: &str) -> GraphStore {
         let path = std::env::temp_dir()
-            .join(format!("bonsai-netbox-test-{label}-{}", uuid::Uuid::new_v4()))
+            .join(format!(
+                "bonsai-netbox-test-{label}-{}",
+                uuid::Uuid::new_v4()
+            ))
             .to_string_lossy()
             .into_owned();
         GraphStore::open(&path, 256 * 1024 * 1024).expect("open test graph")
@@ -811,20 +843,26 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(query_param("offset", "0"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(nb_page(serde_json::json!(page1))))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(nb_page(serde_json::json!(page1))),
+            )
             .expect(1)
             .mount(&server)
             .await;
 
         Mock::given(method("GET"))
             .and(query_param("offset", "200"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(nb_page(serde_json::json!(page2))))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(nb_page(serde_json::json!(page2))),
+            )
             .expect(1)
             .mount(&server)
             .await;
 
         let client = reqwest::Client::new();
-        let result: Vec<NbVlan> = paginate_rest(&client, &server.uri(), "ipam/vlans/", "tok").await.unwrap();
+        let result: Vec<NbVlan> = paginate_rest(&client, &server.uri(), "ipam/vlans/", "tok")
+            .await
+            .unwrap();
         assert_eq!(result.len(), 250);
         server.verify().await;
     }
@@ -901,12 +939,19 @@ mod tests {
         let db = store.db();
 
         let vlans = vec![
-            NbVlan { vid: 10, name: "mgmt".to_string(), description: String::new() },
-            NbVlan { vid: 20, name: "data".to_string(), description: String::new() },
+            NbVlan {
+                vid: 10,
+                name: "mgmt".to_string(),
+                description: String::new(),
+            },
+            NbVlan {
+                vid: 20,
+                name: "data".to_string(),
+                description: String::new(),
+            },
         ];
 
-        let (nodes, edges, warnings) =
-            write_to_graph(&db, &[], &vlans, &[], &[], "test").unwrap();
+        let (nodes, edges, warnings) = write_to_graph(&db, &[], &vlans, &[], &[], "test").unwrap();
 
         assert_eq!(nodes, 2, "two VLAN nodes should be touched");
         assert_eq!(edges, 0, "VLANs alone create no edges");
@@ -920,7 +965,10 @@ mod tests {
 
         let prefixes = vec![NbPrefix {
             prefix: "10.0.0.0/24".to_string(),
-            role: Some(NbNested { name: "loopback".to_string(), slug: "loopback".to_string() }),
+            role: Some(NbNested {
+                name: "loopback".to_string(),
+                slug: "loopback".to_string(),
+            }),
             description: "test prefix".to_string(),
             assigned_object: None,
         }];
@@ -937,7 +985,11 @@ mod tests {
         let store = open_test_graph("idem");
         let db = store.db();
 
-        let vlans = vec![NbVlan { vid: 100, name: "prod".to_string(), description: String::new() }];
+        let vlans = vec![NbVlan {
+            vid: 100,
+            name: "prod".to_string(),
+            description: String::new(),
+        }];
         let (n1, _, _) = write_to_graph(&db, &[], &vlans, &[], &[], "test").unwrap();
         let (n2, _, _) = write_to_graph(&db, &[], &vlans, &[], &[], "test").unwrap();
         // MERGE is idempotent — same number of nodes both times

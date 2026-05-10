@@ -1,0 +1,6 @@
+name: campus_access
+description: Campus access recommendation.
+role_hints: ["access", "edge"]
+environment: ["campus_wired"]
+profile_names: ["campus_access"]
+rationale: "Access switches need port state, LLDP, VLAN, and STP visibility first."

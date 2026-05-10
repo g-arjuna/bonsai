@@ -1,0 +1,6 @@
+name: sp_rr
+description: Service-provider route reflector recommendation.
+role_hints: ["rr", "peering"]
+environment: ["service_provider"]
+profile_names: ["sp_rr_basic", "sp_peering_edge"]
+rationale: "RR and peering-edge nodes center on control-plane reachability and BGP policy visibility."

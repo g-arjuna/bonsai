@@ -193,7 +193,9 @@ impl SnmpArchive {
         let mut line = serde_json::to_vec(event).context("serialize snmp event")?;
         line.push(b'\n');
         let mut file = file.lock().await;
-        file.write_all(&line).await.context("write snmp archive line")?;
+        file.write_all(&line)
+            .await
+            .context("write snmp archive line")?;
         Ok(())
     }
 }
@@ -203,7 +205,12 @@ impl SnmpTargetMap {
         let entries = targets
             .iter()
             .map(|target| SnmpTargetEntry {
-                address: target.address.split(':').next().unwrap_or(&target.address).to_string(),
+                address: target
+                    .address
+                    .split(':')
+                    .next()
+                    .unwrap_or(&target.address)
+                    .to_string(),
                 hostname: target.hostname.clone().unwrap_or_default(),
                 vendor: target.vendor.clone().unwrap_or_default(),
                 role: target.role.clone().unwrap_or_default(),
@@ -274,9 +281,22 @@ pub fn parse_snmp_message(raw: &[u8], peer_addr: &str, timestamp_ns: i64) -> Res
     };
 
     let mut event = if version == 0 && pdu_tag == 0xA4 {
-        parse_v1_trap(&pdu_content, peer_addr, timestamp_ns, &version_name, community)?
+        parse_v1_trap(
+            &pdu_content,
+            peer_addr,
+            timestamp_ns,
+            &version_name,
+            community,
+        )?
     } else {
-        parse_v2_trap(&pdu_content, peer_addr, timestamp_ns, &version_name, community, pdu_tag)?
+        parse_v2_trap(
+            &pdu_content,
+            peer_addr,
+            timestamp_ns,
+            &version_name,
+            community,
+            pdu_tag,
+        )?
     };
     event.raw_hex = hex::encode(raw);
     event.raw_len = raw.len();
@@ -454,7 +474,15 @@ fn classify_trap(
     }
     if contains_any(
         &text,
-        &["psu", "power", "temperature", "thermal", "fan", "voltage", "env"],
+        &[
+            "psu",
+            "power",
+            "temperature",
+            "thermal",
+            "fan",
+            "voltage",
+            "env",
+        ],
     ) {
         return (
             "snmp_environmental".to_string(),
@@ -464,7 +492,14 @@ fn classify_trap(
     }
     if contains_any(
         &text,
-        &["fru", "linecard", "line card", "fabric", "module", "chassis"],
+        &[
+            "fru",
+            "linecard",
+            "line card",
+            "fabric",
+            "module",
+            "chassis",
+        ],
     ) {
         return (
             "snmp_fru_failure".to_string(),
@@ -480,11 +515,7 @@ fn classify_trap(
             format!("enterprise-specific trap {enterprise_oid}{suffix}: {message}"),
         );
     }
-    (
-        "snmp_raw".to_string(),
-        "raw".to_string(),
-        message,
-    )
+    ("snmp_raw".to_string(), "raw".to_string(), message)
 }
 
 fn find_varbind_oid(varbinds: &[SnmpVarBind], oid: &str) -> Option<String> {
@@ -528,7 +559,10 @@ fn decode_value(tag: u8, value: &[u8]) -> Result<String> {
         0x06 => Ok(decode_oid(value)?),
         0x40 => {
             if value.len() == 4 {
-                Ok(format!("{}.{}.{}.{}", value[0], value[1], value[2], value[3]))
+                Ok(format!(
+                    "{}.{}.{}.{}",
+                    value[0], value[1], value[2], value[3]
+                ))
             } else {
                 Ok(hex::encode(value))
             }
@@ -756,12 +790,10 @@ mod tests {
                     encode_integer(6),
                     encode_integer(42),
                     encode_tag(0x43, &[0x00, 0x00, 0x01, 0x00]),
-                    encode_sequence(&[
-                        encode_varbind(
-                            "1.3.6.1.4.1.9.9.13.3.1.3.1",
-                            encode_octet_string(b"PSU failure alarm asserted"),
-                        ),
-                    ]),
+                    encode_sequence(&[encode_varbind(
+                        "1.3.6.1.4.1.9.9.13.3.1.3.1",
+                        encode_octet_string(b"PSU failure alarm asserted"),
+                    )]),
                 ]
                 .concat(),
             ),

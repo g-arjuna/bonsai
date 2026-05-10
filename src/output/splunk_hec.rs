@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use lbug::{Connection, Database};
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
@@ -60,7 +60,11 @@ pub struct SplunkHecAdapter {
 impl SplunkHecAdapter {
     pub fn from_config(config: OutputAdapterConfig, db: Arc<Database>) -> Self {
         let environments = config.environment_scope.clone();
-        Self { config, environments, db }
+        Self {
+            config,
+            environments,
+            db,
+        }
     }
 }
 
@@ -71,7 +75,10 @@ impl OutputAdapter for SplunkHecAdapter {
     }
 
     fn topics(&self) -> &[OutputTopic] {
-        &[OutputTopic::DetectionEvents, OutputTopic::RemediationOutcomes]
+        &[
+            OutputTopic::DetectionEvents,
+            OutputTopic::RemediationOutcomes,
+        ]
     }
 
     fn applies_to_environments(&self) -> &[String] {
@@ -133,7 +140,7 @@ impl OutputAdapter for SplunkHecAdapter {
         audit: &OutputAdapterAuditLog,
     ) -> Result<()> {
         let token = resolve_token(&self.config, &creds, audit)?;
-        let http = build_http_client()?;
+        let http = build_http_client(&self.config)?;
         let health_url = format!(
             "{}/services/collector/health",
             self.config.endpoint_url.trim_end_matches('/')
@@ -177,7 +184,10 @@ async fn push_cycle(
             .context("spawn_blocking panicked")??;
 
     if detections.is_empty() {
-        return Ok(OutputReport { adapter_name: config.name.clone(), ..Default::default() });
+        return Ok(OutputReport {
+            adapter_name: config.name.clone(),
+            ..Default::default()
+        });
     }
 
     let now = now_ns();
@@ -194,7 +204,11 @@ async fn push_cycle(
         .and_then(|v| v.as_str())
         .unwrap_or("bonsai:detection")
         .to_string();
-    let index = config.extra.get("index").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let index = config
+        .extra
+        .get("index")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     let mut hec_lines: Vec<String> = Vec::new();
     let mut bytes = 0u64;
@@ -240,7 +254,10 @@ async fn push_cycle(
     }
 
     if hec_lines.is_empty() {
-        return Ok(OutputReport { adapter_name: config.name.clone(), ..Default::default() });
+        return Ok(OutputReport {
+            adapter_name: config.name.clone(),
+            ..Default::default()
+        });
     }
 
     let n = hec_lines.len();
@@ -251,7 +268,7 @@ async fn push_cycle(
         config.endpoint_url.trim_end_matches('/')
     );
 
-    let http = build_http_client()?;
+    let http = build_http_client(config)?;
     let resp = http
         .post(&endpoint)
         .header("Authorization", format!("Splunk {token}"))
@@ -335,9 +352,15 @@ fn resolve_token(
     }
 }
 
-fn build_http_client() -> Result<reqwest::Client> {
+fn build_http_client(config: &OutputAdapterConfig) -> Result<reqwest::Client> {
+    let insecure_tls = config
+        .extra
+        .get("insecure_tls")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
+        .danger_accept_invalid_certs(insecure_tls)
         .build()
         .context("build reqwest client")
 }
@@ -379,13 +402,20 @@ mod tests {
             "{}/services/collector/event",
             c.endpoint_url.trim_end_matches('/')
         );
-        assert_eq!(url, "https://splunk.example.com:8088/services/collector/event");
+        assert_eq!(
+            url,
+            "https://splunk.example.com:8088/services/collector/event"
+        );
     }
 
     #[test]
     fn sourcetype_defaults_to_bonsai_detection() {
         let c = cfg("http://localhost:8088");
-        let st = c.extra.get("sourcetype").and_then(|v| v.as_str()).unwrap_or("bonsai:detection");
+        let st = c
+            .extra
+            .get("sourcetype")
+            .and_then(|v| v.as_str())
+            .unwrap_or("bonsai:detection");
         assert_eq!(st, "bonsai:detection");
     }
 
@@ -401,7 +431,11 @@ mod tests {
             environment_scope: vec![],
             extra: serde_json::json!({"sourcetype": "myapp:network"}),
         };
-        let st = c.extra.get("sourcetype").and_then(|v| v.as_str()).unwrap_or("bonsai:detection");
+        let st = c
+            .extra
+            .get("sourcetype")
+            .and_then(|v| v.as_str())
+            .unwrap_or("bonsai:detection");
         assert_eq!(st, "myapp:network");
     }
 
@@ -455,7 +489,10 @@ mod tests {
         dedup.insert(key.clone(), now - 10_000_000_000); // 10 seconds ago
         // 10s < 300s window → should be suppressed
         assert!(
-            dedup.get(&key).map(|&last| now - last < window_ns).unwrap_or(false),
+            dedup
+                .get(&key)
+                .map(|&last| now - last < window_ns)
+                .unwrap_or(false),
             "event within dedup window should be suppressed"
         );
     }

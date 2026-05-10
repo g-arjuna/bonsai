@@ -2,19 +2,19 @@
 
 ## Python And Lab Workflow
 
-Bonsai uses a WSL-first workflow for Python tooling and live lab operations.
+Bonsai uses a native Ubuntu/Linux workflow for Rust, Python, and live lab operations.
 
-- The source of truth for Python dependencies is [python/pyproject.toml](/C:/Users/arjun/Desktop/bonsai/python/pyproject.toml:1).
-- Create a project-local virtual environment at `.venv/` from inside WSL.
-- Run `scripts/chaos_runner.py`, `python/inject_fault.py`, and any `clab tools netem` commands from WSL, because the ContainerLab topology and `clab` binary live there.
-- Keep `bonsai.toml` in the repo root so both Rust on Windows and Python in WSL read the same target inventory.
+- The source of truth for Python dependencies is [python/pyproject.toml](/home/arjuna/Desktop/bonsai/python/pyproject.toml:1).
+- Create a project-local virtual environment at `.venv/`.
+- Run `scripts/chaos_runner.py`, `python/inject_fault.py`, and `clab` commands directly on Linux.
+- Keep `bonsai.toml` in the repo root so Rust, Python, and the live lab use the same target inventory.
 
 ## First-Time Setup
 
-From WSL:
+From Linux:
 
 ```bash
-cd /mnt/c/Users/arjun/Desktop/bonsai
+cd /home/arjuna/Desktop/bonsai
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
@@ -29,18 +29,13 @@ This installs:
 
 ## Daily Commands
 
-From WSL:
+From Linux:
 
 ```bash
-cd /mnt/c/Users/arjun/Desktop/bonsai
+cd /home/arjuna/Desktop/bonsai
 source .venv/bin/activate
 python scripts/chaos_runner.py chaos_plans/baseline_mix.yaml --duration-hours 0.03
 python python/inject_fault.py bgp-flap srl-spine1 10.0.12.1 --hold 10
-```
-
-From Windows PowerShell:
-
-```powershell
 cargo build --release
 cargo test --release
 cargo clippy --release -- -D warnings
@@ -50,45 +45,21 @@ Set `BONSAI_CONFIG` to point a process at a non-default config file. This is
 useful for distributed validation where a core and collector run side by side
 with separate working directories and separate `bonsai.toml` files.
 
-The repo-local `.cargo\config.toml` sets `LBUG_SHARED=1` on this Windows
-workspace. That keeps LadybugDB's bundled `zstd.lib` out of the Bonsai
-executable link unit so tonic's native zstd support can link cleanly. The root
-build script copies `lbug_shared.dll` into `target\release\` for standalone
-`target\release\bonsai.exe` runs.
+The repo-local `.cargo/config.toml` may use `sccache` as a Rust wrapper for
+faster rebuilds. If `sccache` is unavailable in your environment, temporarily
+clear it for a command with `RUSTC_WRAPPER= cargo ...`.
 
 ## Canonical Local Helpers
 
 Use these scripts instead of ad hoc PATH-dependent commands:
 
-```powershell
-# Verify Windows Python, real ripgrep, Cargo, WSL .venv, clab, and Bonsai readiness.
-powershell.exe -ExecutionPolicy Bypass -File scripts\check_dev_env.ps1
-
-# Search the repo without hitting the broken Chocolatey rg shim.
-powershell.exe -ExecutionPolicy Bypass -File scripts\search_repo.ps1 DiscoverDevice src proto
+```bash
+# Search the repo quickly.
+rg DiscoverDevice src proto
 
 # Regenerate committed Python gRPC stubs after editing proto/bonsai_service.proto.
-powershell.exe -ExecutionPolicy Bypass -File scripts\regenerate_python_stubs.ps1
-
-# Start/stop Bonsai from a normal Windows PowerShell.
-powershell.exe -ExecutionPolicy Bypass -File scripts\start_bonsai_windows.ps1
-powershell.exe -ExecutionPolicy Bypass -File scripts\stop_bonsai_windows.ps1
+python -m grpc_tools.protoc -I proto --python_out=python/generated --grpc_python_out=python/generated proto/bonsai_service.proto
 ```
-
-`scripts\start_bonsai_windows.ps1` is intended for a normal user PowerShell when Bonsai
-needs to stay running. Codex shell commands can use it for short smoke tests, but the
-desktop sandbox may clean up child processes after a tool call returns.
-
-## Windows vs WSL Boundary
-
-- Windows owns the Rust core process: `cargo build --release`, `cargo test --release`,
-  `cargo clippy --release -- -D warnings`, and the long-running `target\release\bonsai.exe`.
-- WSL owns the live lab: `clab`, `netem`, chaos plans, and lab-side fault injection.
-- Python SDK/lab dependencies live in WSL `.venv/`; however, protobuf stub generation can
-  use the Windows Python fallback via `scripts\regenerate_python_stubs.ps1`.
-- WSL clients may call Bonsai on Windows at `127.0.0.1:50051` / `127.0.0.1:3000` when the
-  Windows process is running and reachable. If a call fails, first check Windows Bonsai
-  readiness before debugging Python code.
 
 ## Runtime Modes
 
@@ -112,7 +83,7 @@ for `TelemetryIngest`; see `docs/distributed_tls.md` for the lab CA flow.
 
 Current T1-2 boundary:
 
-- `all` is still the normal Windows workflow for this machine.
+- `all` is the normal local Linux workflow for this machine.
 - `collector` should run wherever the gNMI targets are reachable.
 - collector-local archive is supported when `[archive].enabled = true`; it writes
   one Parquet file per target per hour during normal operation, closing files at
@@ -120,8 +91,24 @@ Current T1-2 boundary:
 - gRPC zstd compression, the disk-backed outage queue, and optional mTLS are
   enabled for collector-to-core ingest.
 
-## Why This Split Exists
+## Parser Sidecars
 
-- `clab` and the live ContainerLab lab run inside WSL, so Windows-hosted Python cannot reliably drive `netem` or other lab-side tooling.
-- A repo-local `.venv/` keeps Python packages reproducible and isolated from Codex runtime bundles or machine-global interpreters.
-- Rust stays on the existing Windows `--release` workflow because that is already the documented and validated path for this machine.
+CV1 Sprint 2 adds optional parser sidecars for layered ingestion. Native Linux
+development can keep the default localhost URLs from `bonsai.toml.example`:
+
+```bash
+docker compose --profile parsers up -d
+curl http://127.0.0.1:9101/healthz
+curl http://127.0.0.1:9102/healthz
+```
+
+This profile is intended for the native Linux workflow where Bonsai runs on the
+host and the sidecars run in containers. If you later run Bonsai itself inside
+Docker, set the sidecar URLs explicitly in that container's `bonsai.toml`
+instead of assuming `127.0.0.1` will cross container boundaries.
+
+## Why This Setup Exists
+
+- Native Linux keeps `clab`, `netem`, Rust, and Python in one environment with fewer path and socket surprises.
+- A repo-local `.venv/` keeps Python packages reproducible and isolated from machine-global interpreters.
+- The documented release build flow remains `cargo build --release`, `cargo test --release`, and `cargo clippy --release -- -D warnings`.

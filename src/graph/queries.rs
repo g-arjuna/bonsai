@@ -164,7 +164,10 @@ pub fn neighbors_of_device(conn: &Connection<'_>, address: &str) -> Result<Vec<N
         .context("prepare neighbors_of_device")?;
 
     let rows = conn
-        .execute(&mut stmt, vec![("addr", Value::String(address.to_string()))])
+        .execute(
+            &mut stmt,
+            vec![("addr", Value::String(address.to_string()))],
+        )
         .context("execute neighbors_of_device")?;
 
     Ok(rows
@@ -215,7 +218,11 @@ pub fn shortest_topology_path(
                 }
                 parent.insert(
                     nb.address.clone(),
-                    Some((device.clone(), nb.local_iface.clone(), nb.remote_iface.clone())),
+                    Some((
+                        device.clone(),
+                        nb.local_iface.clone(),
+                        nb.remote_iface.clone(),
+                    )),
                 );
                 if nb.address == dst {
                     found = true;
@@ -270,16 +277,20 @@ pub fn blast_radius(
         )
         .context("prepare blast_radius device")?;
     let dev_rows: Vec<_> = conn
-        .execute(&mut dev_stmt, vec![("addr", Value::String(address.to_string()))])
+        .execute(
+            &mut dev_stmt,
+            vec![("addr", Value::String(address.to_string()))],
+        )
         .context("execute blast_radius device")?
         .collect();
 
-    let (origin_hostname, site_name, env_name) = dev_rows.first().map(|row| {
-        (read_str(&row[1]), read_str(&row[2]), read_str(&row[3]))
-    }).unwrap_or_default();
+    let (origin_hostname, site_name, env_name) = dev_rows
+        .first()
+        .map(|row| (read_str(&row[1]), read_str(&row[2]), read_str(&row[3])))
+        .unwrap_or_default();
 
     // Reachable devices via topology traversal
-    let hop_depth = (max_hops * 3).max(3).min(30); // lbug 0.15.3 caps variable-length upper bound at 30
+    let hop_depth = (max_hops * 3).clamp(3, 30); // lbug 0.15.3 caps variable-length upper bound at 30
     let reach_cypher = format!(
         "MATCH (d:Device {{address: $addr}})-[:HAS_INTERFACE|CONNECTED_TO*1..{}]-(n:Device) \
          WHERE n.address <> $addr \
@@ -330,10 +341,7 @@ pub fn blast_radius(
         .collect();
     for addr in &all_addresses {
         let dets: Vec<String> = conn
-            .execute(
-                &mut det_stmt,
-                vec![("addr", Value::String(addr.clone()))],
-            )
+            .execute(&mut det_stmt, vec![("addr", Value::String(addr.clone()))])
             .context("execute blast_radius detections")?
             .map(|row| format!("{}:{}", addr, read_str(&row[0])))
             .collect();
@@ -360,7 +368,10 @@ fn apps_on_device(conn: &Connection<'_>, address: &str) -> Result<Vec<String>> {
         )
         .context("prepare apps_on_device")?;
     Ok(conn
-        .execute(&mut stmt, vec![("addr", Value::String(address.to_string()))])
+        .execute(
+            &mut stmt,
+            vec![("addr", Value::String(address.to_string()))],
+        )
         .context("execute apps_on_device")?
         .map(|row| read_str(&row[0]))
         .collect())
@@ -369,10 +380,7 @@ fn apps_on_device(conn: &Connection<'_>, address: &str) -> Result<Vec<String>> {
 // ─── query 4: devices in environment ─────────────────────────────────────────
 
 /// All devices in an environment, traversing Environment ← Site ← Device.
-pub fn devices_in_environment(
-    conn: &Connection<'_>,
-    env_id: &str,
-) -> Result<Vec<DeviceInEnvRow>> {
+pub fn devices_in_environment(conn: &Connection<'_>, env_id: &str) -> Result<Vec<DeviceInEnvRow>> {
     let mut stmt = conn
         .prepare(
             "MATCH (env:Environment {id: $eid})<-[:BELONGS_TO_ENVIRONMENT]-(s:Site) \
@@ -440,10 +448,7 @@ pub fn detections_in_environment(
 /// Applications running on devices located at a named site.
 ///
 /// Pattern: Site ← Device -[:RUNS_SERVICE|CARRIES_APPLICATION]-> Application
-pub fn applications_on_site(
-    conn: &Connection<'_>,
-    site_name: &str,
-) -> Result<Vec<AppOnSiteRow>> {
+pub fn applications_on_site(conn: &Connection<'_>, site_name: &str) -> Result<Vec<AppOnSiteRow>> {
     let mut stmt = conn
         .prepare(
             "MATCH (s:Site {name: $site})<-[:LOCATED_AT]-(d:Device) \
@@ -524,10 +529,7 @@ pub fn detections_without_remediation(
         .context("prepare detections_without_remediation")?;
 
     Ok(conn
-        .execute(
-            &mut stmt,
-            vec![("lim", Value::Int64(limit as i64))],
-        )
+        .execute(&mut stmt, vec![("lim", Value::Int64(limit as i64))])
         .context("execute detections_without_remediation")?
         .map(|row| UnresolvedDetection {
             id: read_str(&row[0]),
@@ -557,7 +559,10 @@ pub fn subscription_health_for_device(
         .context("prepare subscription_health_for_device")?;
 
     Ok(conn
-        .execute(&mut stmt, vec![("addr", Value::String(address.to_string()))])
+        .execute(
+            &mut stmt,
+            vec![("addr", Value::String(address.to_string()))],
+        )
         .context("execute subscription_health_for_device")?
         .map(|row| SubscriptionHealthRow {
             path: read_str(&row[0]),
@@ -572,10 +577,7 @@ pub fn subscription_health_for_device(
 /// Detection events grouped by (device, rule_id) that fired within `since_ns`.
 /// Devices with multiple rule_ids show up as separate rows; callers can group
 /// by device_address to find which devices have co-firing patterns.
-pub fn co_firing_detections(
-    conn: &Connection<'_>,
-    since_ns: i64,
-) -> Result<Vec<CoFireRow>> {
+pub fn co_firing_detections(conn: &Connection<'_>, since_ns: i64) -> Result<Vec<CoFireRow>> {
     let since_ts = super::common::ts(since_ns);
     let mut stmt = conn
         .prepare(
@@ -615,7 +617,10 @@ pub fn device_enrichment_context(
         .context("prepare device_enrichment_context")?;
 
     Ok(conn
-        .execute(&mut stmt, vec![("addr", Value::String(address.to_string()))])
+        .execute(
+            &mut stmt,
+            vec![("addr", Value::String(address.to_string()))],
+        )
         .context("execute device_enrichment_context")?
         .map(|row| EnrichmentRow {
             key: read_str(&row[0]),
@@ -655,7 +660,7 @@ pub fn topology_edges(conn: &Connection<'_>) -> Result<Vec<TopologyEdge>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::test_fixtures::{TestGraph, TEST_ENV_DC_ID, TEST_SITE_DC_NAME};
+    use crate::graph::test_fixtures::{TEST_ENV_DC_ID, TEST_SITE_DC_NAME, TestGraph};
 
     // ── q1: neighbors ──
 
@@ -665,8 +670,14 @@ mod tests {
         let conn = lbug::Connection::new(&g.db).unwrap();
         let rows = neighbors_of_device(&conn, "10.0.0.1").unwrap();
         let addrs: Vec<&str> = rows.iter().map(|r| r.address.as_str()).collect();
-        assert!(addrs.contains(&"10.0.0.3"), "leaf1 should be a neighbor of spine1");
-        assert!(addrs.contains(&"10.0.0.4"), "leaf2 should be a neighbor of spine1");
+        assert!(
+            addrs.contains(&"10.0.0.3"),
+            "leaf1 should be a neighbor of spine1"
+        );
+        assert!(
+            addrs.contains(&"10.0.0.4"),
+            "leaf2 should be a neighbor of spine1"
+        );
     }
 
     // ── q2: shortest path ──
@@ -675,7 +686,9 @@ mod tests {
     fn shortest_path_same_device_returns_single_hop() {
         let g = TestGraph::build();
         let conn = lbug::Connection::new(&g.db).unwrap();
-        let path = shortest_topology_path(&conn, "10.0.0.1", "10.0.0.1").unwrap().unwrap();
+        let path = shortest_topology_path(&conn, "10.0.0.1", "10.0.0.1")
+            .unwrap()
+            .unwrap();
         assert_eq!(path.hops, vec!["10.0.0.1"]);
         assert!(path.links.is_empty());
     }
@@ -684,12 +697,18 @@ mod tests {
     fn shortest_path_direct_neighbors_has_two_hops() {
         let g = TestGraph::build();
         let conn = lbug::Connection::new(&g.db).unwrap();
-        let path = shortest_topology_path(&conn, "10.0.0.1", "10.0.0.3").unwrap().unwrap();
+        let path = shortest_topology_path(&conn, "10.0.0.1", "10.0.0.3")
+            .unwrap()
+            .unwrap();
         // spine1 → leaf1: exactly 2 device hops
         assert_eq!(path.hops.len(), 2);
         assert_eq!(path.hops[0], "10.0.0.1");
         assert_eq!(path.hops[1], "10.0.0.3");
-        assert_eq!(path.links.len(), 1, "one physical link for a direct neighbor");
+        assert_eq!(
+            path.links.len(),
+            1,
+            "one physical link for a direct neighbor"
+        );
     }
 
     #[test]
@@ -697,7 +716,9 @@ mod tests {
         let g = TestGraph::build();
         let conn = lbug::Connection::new(&g.db).unwrap();
         // leaf1 → leaf2 must go through a spine
-        let path = shortest_topology_path(&conn, "10.0.0.3", "10.0.0.4").unwrap().unwrap();
+        let path = shortest_topology_path(&conn, "10.0.0.3", "10.0.0.4")
+            .unwrap()
+            .unwrap();
         assert!(
             path.hops.len() >= 3,
             "leaf-to-leaf path must traverse at least one spine"
@@ -721,7 +742,11 @@ mod tests {
         let g = TestGraph::build();
         let conn = lbug::Connection::new(&g.db).unwrap();
         let br = blast_radius(&conn, "10.0.0.1", 1).unwrap();
-        let addrs: Vec<&str> = br.reachable_devices.iter().map(|d| d.address.as_str()).collect();
+        let addrs: Vec<&str> = br
+            .reachable_devices
+            .iter()
+            .map(|d| d.address.as_str())
+            .collect();
         assert!(addrs.contains(&"10.0.0.3"));
         assert!(addrs.contains(&"10.0.0.4"));
     }
@@ -809,7 +834,10 @@ mod tests {
         let unresolved = detections_without_remediation(&conn, 50).unwrap();
         let ids: Vec<&str> = unresolved.iter().map(|r| r.id.as_str()).collect();
         // det-resolved is linked to a Remediation in the fixture
-        assert!(!ids.contains(&"det-resolved"), "resolved detection should not appear");
+        assert!(
+            !ids.contains(&"det-resolved"),
+            "resolved detection should not appear"
+        );
         // det-open has no remediation
         assert!(ids.contains(&"det-open"), "open detection should appear");
     }

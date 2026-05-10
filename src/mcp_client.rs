@@ -108,7 +108,7 @@ impl McpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{method};
+    use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // ── EnricherTransport::from_extra ─────────────────────────────────────────
@@ -124,7 +124,10 @@ mod tests {
     #[test]
     fn from_extra_explicit_rest() {
         let extra = serde_json::json!({"transport": "rest"});
-        assert_eq!(EnricherTransport::from_extra(&extra), EnricherTransport::Rest);
+        assert_eq!(
+            EnricherTransport::from_extra(&extra),
+            EnricherTransport::Rest
+        );
     }
 
     #[test]
@@ -135,7 +138,9 @@ mod tests {
         });
         assert_eq!(
             EnricherTransport::from_extra(&extra),
-            EnricherTransport::Mcp { server_url: "http://mcp.example.com:8090".to_string() }
+            EnricherTransport::Mcp {
+                server_url: "http://mcp.example.com:8090".to_string()
+            }
         );
     }
 
@@ -144,7 +149,10 @@ mod tests {
         let extra = serde_json::json!({"transport": "mcp"});
         match EnricherTransport::from_extra(&extra) {
             EnricherTransport::Mcp { server_url } => {
-                assert!(!server_url.is_empty(), "default server_url must not be empty");
+                assert!(
+                    !server_url.is_empty(),
+                    "default server_url must not be empty"
+                );
             }
             _ => panic!("expected Mcp transport"),
         }
@@ -167,7 +175,10 @@ mod tests {
             .await;
 
         let client = McpClient::new(server.uri()).unwrap();
-        let result = client.call("netbox:devices_list", serde_json::json!({})).await.unwrap();
+        let result = client
+            .call("netbox:devices_list", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(result["devices"][0]["name"], "srl-1");
     }
 
@@ -180,8 +191,14 @@ mod tests {
             .await;
 
         let client = McpClient::new(server.uri()).unwrap();
-        let err = client.call("netbox:devices_list", serde_json::json!({})).await.unwrap_err();
-        assert!(err.to_string().contains("500"), "error must mention status code");
+        let err = client
+            .call("netbox:devices_list", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("500"),
+            "error must mention status code"
+        );
     }
 
     #[tokio::test]
@@ -195,7 +212,13 @@ mod tests {
             .await;
 
         let client = McpClient::new(server.uri()).unwrap();
-        let err = client.call("netbox:devices_list", serde_json::json!({})).await.unwrap_err();
-        assert!(err.to_string().contains("content"), "error must mention missing content");
+        let err = client
+            .call("netbox:devices_list", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("content"),
+            "error must mention missing content"
+        );
     }
 }

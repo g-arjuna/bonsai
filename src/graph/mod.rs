@@ -101,14 +101,14 @@ pub struct InvestigationRecord {
     pub id: String,
     pub detection_id: String,
     pub device_address: String,
-    pub trigger: String,        // "auto" | "operator"
-    pub status: String,         // "running" | "complete" | "failed"
+    pub trigger: String, // "auto" | "operator"
+    pub status: String,  // "running" | "complete" | "failed"
     pub summary: String,
-    pub proposal_json: String,  // serialised RemediationProposal request, or ""
+    pub proposal_json: String, // serialised RemediationProposal request, or ""
     pub tokens_used: i64,
     pub cost_usd: f64,
     pub started_at_ns: i64,
-    pub completed_at_ns: i64,   // 0 while running
+    pub completed_at_ns: i64, // 0 while running
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,11 +219,19 @@ impl GraphStore {
 
         let t = Instant::now();
         store.init_schema()?;
-        info!(phase = "schema_init", elapsed_ms = t.elapsed().as_millis() as u64, "startup");
+        info!(
+            phase = "schema_init",
+            elapsed_ms = t.elapsed().as_millis() as u64,
+            "startup"
+        );
 
         let t = Instant::now();
         store.backfill_remediation_trust_marks()?;
-        info!(phase = "backfill", elapsed_ms = t.elapsed().as_millis() as u64, "startup");
+        info!(
+            phase = "backfill",
+            elapsed_ms = t.elapsed().as_millis() as u64,
+            "startup"
+        );
 
         info!(path, "graph store opened");
         Ok(store)
@@ -604,6 +612,100 @@ impl GraphStore {
 
         conn.query("CREATE REL TABLE IF NOT EXISTS HAS_PREFIX(FROM Device TO Prefix)")
             .context("create HAS_PREFIX rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS ConfigSnapshot(\
+                id                 STRING,\
+                device_address     STRING,\
+                source             STRING,\
+                trigger            STRING,\
+                reason             STRING,\
+                requested_at       TIMESTAMP_NS,\
+                snapshot_hash      STRING,\
+                stored_path        STRING,\
+                bytes_len          INT64,\
+                captured_at        TIMESTAMP_NS,\
+                summary            STRING,\
+                changed            BOOL,\
+                PRIMARY KEY (id))",
+        )
+        .context("create ConfigSnapshot table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_CONFIG_SNAPSHOT(FROM Device TO ConfigSnapshot)",
+        )
+        .context("create HAS_CONFIG_SNAPSHOT rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS ConfigChange(\
+                id                   STRING,\
+                device_address       STRING,\
+                source               STRING,\
+                trigger              STRING,\
+                previous_snapshot_id STRING,\
+                current_snapshot_id  STRING,\
+                previous_hash        STRING,\
+                current_hash         STRING,\
+                summary              STRING,\
+                added_lines          INT64,\
+                removed_lines        INT64,\
+                changed_at           TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create ConfigChange table")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS HAS_CONFIG_CHANGE(FROM Device TO ConfigChange)")
+            .context("create HAS_CONFIG_CHANGE rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS PropertyProvenance(\
+                id           STRING,\
+                owner_kind   STRING,\
+                owner_id     STRING,\
+                source       STRING,\
+                parser       STRING,\
+                confidence   STRING,\
+                captured_at  TIMESTAMP_NS,\
+                details_json STRING,\
+                PRIMARY KEY (id))",
+        )
+        .context("create PropertyProvenance table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS CONFIG_SNAPSHOT_PROVENANCE(FROM ConfigSnapshot TO PropertyProvenance)",
+        )
+        .context("create CONFIG_SNAPSHOT_PROVENANCE rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS CONFIG_CHANGE_PROVENANCE(FROM ConfigChange TO PropertyProvenance)",
+        )
+        .context("create CONFIG_CHANGE_PROVENANCE rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS ENRICHMENT_PROPERTY_PROVENANCE(FROM EnrichmentProperty TO PropertyProvenance)",
+        )
+        .context("create ENRICHMENT_PROPERTY_PROVENANCE rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS GnmiReadiness(\
+                id                  STRING,\
+                device_address      STRING,\
+                service_status      STRING,\
+                tls_status          STRING,\
+                encoding_support    STRING,\
+                models_advertised   STRING,\
+                known_issues        STRING,\
+                blockers            STRING,\
+                recommended_actions STRING,\
+                checked_at          TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create GnmiReadiness table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_GNMI_READINESS(FROM Device TO GnmiReadiness)",
+        )
+        .context("create HAS_GNMI_READINESS rel")?;
 
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS Application(\
@@ -1007,7 +1109,10 @@ impl GraphStore {
             .prepare("MATCH (m:MigrationMarker {id: $id}) RETURN m.id")
             .context("prepare migration marker check")?;
         let rows = conn
-            .execute(&mut check, vec![("id", Value::String(MARKER_ID.to_string()))])
+            .execute(
+                &mut check,
+                vec![("id", Value::String(MARKER_ID.to_string()))],
+            )
             .context("execute migration marker check")?;
         if rows.into_iter().next().is_some() {
             debug!("backfill_trust_v1 already applied — skipping");
@@ -1643,8 +1748,7 @@ impl GraphStore {
         cypher: String,
     ) -> Result<SavedQueryRecord> {
         // Validate before hitting the DB
-        crate::graph::explorer::validate_query(&cypher)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        crate::graph::explorer::validate_query(&cypher).map_err(|e| anyhow::anyhow!("{}", e))?;
 
         let db = Arc::clone(&self.db);
         let write_lock = Arc::clone(&self.write_lock);
@@ -1750,19 +1854,19 @@ impl GraphStore {
                 )
                 .context("write_device_embeddings prepare")?;
             for rec in &records {
-                let vec_json = serde_json::to_string(&rec.vector)
-                    .context("serialise embedding vector")?;
+                let vec_json =
+                    serde_json::to_string(&rec.vector).context("serialise embedding vector")?;
                 let id = format!("{}:{}", rec.device_address, rec.version);
                 conn.execute(
                     &mut stmt,
                     vec![
-                        ("id",   Value::String(id)),
+                        ("id", Value::String(id)),
                         ("addr", Value::String(rec.device_address.clone())),
-                        ("ver",  Value::String(rec.version.clone())),
+                        ("ver", Value::String(rec.version.clone())),
                         ("algo", Value::String(rec.algorithm.clone())),
-                        ("dim",  Value::Int64(rec.dimension)),
-                        ("vec",  Value::String(vec_json)),
-                        ("ts",   ts(rec.computed_at_ns)),
+                        ("dim", Value::Int64(rec.dimension)),
+                        ("vec", Value::String(vec_json)),
+                        ("ts", ts(rec.computed_at_ns)),
                     ],
                 )
                 .context("write_device_embeddings execute")?;
@@ -1796,18 +1900,17 @@ impl GraphStore {
                 .collect();
             rows.iter()
                 .map(|r| {
-                    let vec: Vec<f64> = serde_json::from_str(&read_str(&r[4]))
-                        .unwrap_or_default();
+                    let vec: Vec<f64> = serde_json::from_str(&read_str(&r[4])).unwrap_or_default();
                     Ok(EmbeddingRecord {
                         device_address: read_str(&r[0]),
-                        version:        read_str(&r[1]),
-                        algorithm:      read_str(&r[2]),
-                        dimension:      match &r[3] {
+                        version: read_str(&r[1]),
+                        algorithm: read_str(&r[2]),
+                        dimension: match &r[3] {
                             Value::Int64(n) => *n,
                             Value::Int32(n) => *n as i64,
                             _ => 0,
                         },
-                        vector:         vec,
+                        vector: vec,
                         computed_at_ns: read_ts_ns(&r[5]),
                     })
                 })
@@ -1845,11 +1948,11 @@ impl GraphStore {
             conn.execute(
                 &mut stmt,
                 vec![
-                    ("id",      Value::String(id.clone())),
-                    ("did",     Value::String(detection_id.clone())),
-                    ("addr",    Value::String(device_address.clone())),
+                    ("id", Value::String(id.clone())),
+                    ("did", Value::String(detection_id.clone())),
+                    ("addr", Value::String(device_address.clone())),
                     ("trigger", Value::String(trigger.clone())),
-                    ("ts",      ts(now)),
+                    ("ts", ts(now)),
                 ],
             )
             .context("create_investigation execute")?;
@@ -1896,13 +1999,13 @@ impl GraphStore {
             conn.execute(
                 &mut stmt,
                 vec![
-                    ("id",     Value::String(id)),
+                    ("id", Value::String(id)),
                     ("status", Value::String(status)),
-                    ("summary",Value::String(summary)),
-                    ("prop",   Value::String(proposal_json)),
-                    ("tok",    Value::Int64(tokens_used)),
-                    ("cost",   Value::Float(cost_usd as f32)),
-                    ("ts",     ts(now_ns())),
+                    ("summary", Value::String(summary)),
+                    ("prop", Value::String(proposal_json)),
+                    ("tok", Value::Int64(tokens_used)),
+                    ("cost", Value::Float(cost_usd as f32)),
+                    ("ts", ts(now_ns())),
                 ],
             )
             .context("complete_investigation execute")?;
@@ -1927,16 +2030,23 @@ impl GraphStore {
                 .context("list_investigations query")?;
             Ok::<_, anyhow::Error>(
                 rows.map(|r| InvestigationRecord {
-                    id:              read_str(&r[0]),
-                    detection_id:    read_str(&r[1]),
-                    device_address:  read_str(&r[2]),
-                    trigger:         read_str(&r[3]),
-                    status:          read_str(&r[4]),
-                    summary:         read_str(&r[5]),
-                    proposal_json:   read_str(&r[6]),
-                    tokens_used:     match &r[7] { Value::Int64(n) => *n, Value::Int32(n) => *n as i64, _ => 0 },
-                    cost_usd:        match &r[8] { Value::Float(f) => *f as f64, _ => 0.0 },
-                    started_at_ns:   read_ts_ns(&r[9]),
+                    id: read_str(&r[0]),
+                    detection_id: read_str(&r[1]),
+                    device_address: read_str(&r[2]),
+                    trigger: read_str(&r[3]),
+                    status: read_str(&r[4]),
+                    summary: read_str(&r[5]),
+                    proposal_json: read_str(&r[6]),
+                    tokens_used: match &r[7] {
+                        Value::Int64(n) => *n,
+                        Value::Int32(n) => *n as i64,
+                        _ => 0,
+                    },
+                    cost_usd: match &r[8] {
+                        Value::Float(f) => *f as f64,
+                        _ => 0.0,
+                    },
+                    started_at_ns: read_ts_ns(&r[9]),
                     completed_at_ns: read_ts_ns(&r[10]),
                 })
                 .collect(),
@@ -1963,16 +2073,23 @@ impl GraphStore {
                 .context("get_investigation execute")?
                 .collect();
             Ok::<_, anyhow::Error>(rows.into_iter().next().map(|r| InvestigationRecord {
-                id:              read_str(&r[0]),
-                detection_id:    read_str(&r[1]),
-                device_address:  read_str(&r[2]),
-                trigger:         read_str(&r[3]),
-                status:          read_str(&r[4]),
-                summary:         read_str(&r[5]),
-                proposal_json:   read_str(&r[6]),
-                tokens_used:     match &r[7] { Value::Int64(n) => *n, Value::Int32(n) => *n as i64, _ => 0 },
-                cost_usd:        match &r[8] { Value::Float(f) => *f as f64, _ => 0.0 },
-                started_at_ns:   read_ts_ns(&r[9]),
+                id: read_str(&r[0]),
+                detection_id: read_str(&r[1]),
+                device_address: read_str(&r[2]),
+                trigger: read_str(&r[3]),
+                status: read_str(&r[4]),
+                summary: read_str(&r[5]),
+                proposal_json: read_str(&r[6]),
+                tokens_used: match &r[7] {
+                    Value::Int64(n) => *n,
+                    Value::Int32(n) => *n as i64,
+                    _ => 0,
+                },
+                cost_usd: match &r[8] {
+                    Value::Float(f) => *f as f64,
+                    _ => 0.0,
+                },
+                started_at_ns: read_ts_ns(&r[9]),
                 completed_at_ns: read_ts_ns(&r[10]),
             }))
         })
@@ -2003,12 +2120,12 @@ impl GraphStore {
             conn.execute(
                 &mut stmt,
                 vec![
-                    ("id",   Value::String(id.clone())),
-                    ("iid",  Value::String(investigation_id.clone())),
+                    ("id", Value::String(id.clone())),
+                    ("iid", Value::String(investigation_id.clone())),
                     ("name", Value::String(tool_name.clone())),
-                    ("inp",  Value::String(input_json.clone())),
-                    ("out",  Value::String(output_json.clone())),
-                    ("ts",   ts(now)),
+                    ("inp", Value::String(input_json.clone())),
+                    ("out", Value::String(output_json.clone())),
+                    ("ts", ts(now)),
                 ],
             )
             .context("add_tool_call execute")?;
@@ -2059,12 +2176,12 @@ impl GraphStore {
             Ok::<_, anyhow::Error>(
                 rows.iter()
                     .map(|r| ToolCallRecord {
-                        id:               read_str(&r[0]),
+                        id: read_str(&r[0]),
                         investigation_id: read_str(&r[1]),
-                        tool_name:        read_str(&r[2]),
-                        input_json:       read_str(&r[3]),
-                        output_json:      read_str(&r[4]),
-                        called_at_ns:     read_ts_ns(&r[5]),
+                        tool_name: read_str(&r[2]),
+                        input_json: read_str(&r[3]),
+                        output_json: read_str(&r[4]),
+                        called_at_ns: read_ts_ns(&r[5]),
                     })
                     .collect(),
             )
@@ -2092,16 +2209,16 @@ fn write_blocking(
             {
                 return Ok(());
             }
-            write_interface(&conn, update, &if_name)
+            write_interface(conn, update, &if_name)
         }
         TelemetryEvent::InterfaceSummary { if_name } => {
-            write_interface_summary(&conn, update, &if_name)
+            write_interface_summary(conn, update, &if_name)
         }
         TelemetryEvent::BgpNeighborState {
             peer_address,
             state_value,
         } => write_bgp_neighbor(
-            &conn,
+            conn,
             update,
             &peer_address,
             state_value.as_ref().unwrap_or(&update.value),
@@ -2112,7 +2229,7 @@ fn write_blocking(
             local_discriminator,
             state_value,
         } => write_bfd_session(
-            &conn,
+            conn,
             update,
             &if_name,
             &local_discriminator,
@@ -2124,7 +2241,7 @@ fn write_blocking(
             neighbor_id,
             state_value,
         } => write_lldp_neighbor(
-            &conn,
+            conn,
             update,
             &local_if,
             &neighbor_id,
@@ -2133,12 +2250,12 @@ fn write_blocking(
         TelemetryEvent::InterfaceOperStatus {
             if_name,
             oper_status,
-        } => emit_oper_status_event(&conn, update, &if_name, &oper_status, event_tx),
+        } => emit_oper_status_event(conn, update, &if_name, &oper_status, event_tx),
         TelemetryEvent::SyslogEvent { category } => {
-            write_syslog_state_change_event(&conn, update, &category, event_tx)
+            write_syslog_state_change_event(conn, update, &category, event_tx)
         }
         TelemetryEvent::SnmpTrap { event_type } => {
-            write_signal_state_change_event(&conn, update, &event_type, event_tx)
+            write_signal_state_change_event(conn, update, &event_type, event_tx)
         }
         TelemetryEvent::Ignored => Ok(()),
     }
@@ -2266,7 +2383,15 @@ fn write_subscription_status_blocking(
     let first_observed_at = ts(status.first_observed_at_ns);
     let last_observed_at = ts(status.last_observed_at_ns);
 
-    upsert_device(conn, &status.device_address, "", "", "", "", updated_at.clone())?;
+    upsert_device(
+        conn,
+        &status.device_address,
+        "",
+        "",
+        "",
+        "",
+        updated_at.clone(),
+    )?;
 
     let mut stmt = conn
         .prepare(
@@ -2940,7 +3065,12 @@ fn write_lldp_neighbor(
     if !system_name.is_empty()
         && !port_id.is_empty()
         && let Err(e) = try_connect_interfaces(
-            conn, &u.target, local_if, &system_name, &port_id, is_mgmt_interface(local_if),
+            conn,
+            &u.target,
+            local_if,
+            &system_name,
+            &port_id,
+            is_mgmt_interface(local_if),
         )
     {
         debug!(error = %e, local_if, system_name, port_id, "interface link skipped");
@@ -2988,7 +3118,12 @@ fn backfill_connected_to(conn: &Connection<'_>, local_addr: &str, local_if: &str
         };
         if !system_name.is_empty() && !port_id.is_empty() {
             let _ = try_connect_interfaces(
-                conn, local_addr, local_if, &system_name, &port_id, is_mgmt_interface(local_if),
+                conn,
+                local_addr,
+                local_if,
+                &system_name,
+                &port_id,
+                is_mgmt_interface(local_if),
             );
         }
     }
@@ -3025,7 +3160,12 @@ fn backfill_connected_to(conn: &Connection<'_>, local_addr: &str, local_if: &str
             continue;
         }
         let _ = try_connect_interfaces(
-            conn, &remote_addr, &remote_if, &system_name, local_if, is_mgmt_interface(&remote_if),
+            conn,
+            &remote_addr,
+            &remote_if,
+            &system_name,
+            local_if,
+            is_mgmt_interface(&remote_if),
         );
     }
 
@@ -3041,7 +3181,7 @@ fn is_mgmt_interface(if_name: &str) -> bool {
         || lo == "eth0"                 // FRR / generic Linux
         || lo.starts_with("fxp0")       // Juniper fxp0
         || lo.starts_with("me0")        // Juniper me0
-        || lo.starts_with("em0")        // Juniper em0
+        || lo.starts_with("em0") // Juniper em0
 }
 
 /// Resolve the remote Interface by hostname+port_id and MERGE either a CONNECTED_TO
@@ -3085,7 +3225,9 @@ fn try_connect_interfaces(
          MERGE (li)-[:CONNECTED_TO]->(ri)"
     };
 
-    let mut edge_stmt = conn.prepare(cypher).context("prepare interface link merge")?;
+    let mut edge_stmt = conn
+        .prepare(cypher)
+        .context("prepare interface link merge")?;
     conn.execute(
         &mut edge_stmt,
         vec![
@@ -3402,7 +3544,15 @@ fn emit_oper_status_event(
         state_change_event_id: String::new(),
     });
     // Best-effort: ensure Device node exists so graph queries stay consistent.
-    upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", ts(u.timestamp_ns))?;
+    upsert_device(
+        conn,
+        &u.target,
+        &u.vendor,
+        &u.hostname,
+        "",
+        "",
+        ts(u.timestamp_ns),
+    )?;
     debug!(target = %u.target, if_name, oper_status, "interface oper-status event emitted");
     Ok(())
 }
@@ -3545,15 +3695,22 @@ mod tests {
         assert_eq!(read_str(&rows[1][2]), REMEDIATION_TRUST_REASON_PRE_CUTOFF);
     }
 
-
     #[tokio::test]
     async fn subscription_status_write_preserves_device_metadata() {
         let path = temp_graph_path("subscription-status");
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
         let conn = Connection::new(&store.db).expect("graph connection");
 
-        upsert_device(&conn, "dut:57400", "nokia_srl", "dut1", "", "", ts(1_000_000_000))
-            .expect("seed device");
+        upsert_device(
+            &conn,
+            "dut:57400",
+            "nokia_srl",
+            "dut1",
+            "",
+            "",
+            ts(1_000_000_000),
+        )
+        .expect("seed device");
 
         store
             .write_subscription_status(SubscriptionStatusWrite {
@@ -3758,7 +3915,11 @@ mod tests {
             .await
             .expect("complete");
 
-        let got = store.get_investigation(inv.id).await.expect("get").expect("exists");
+        let got = store
+            .get_investigation(inv.id)
+            .await
+            .expect("get")
+            .expect("exists");
         assert_eq!(got.status, "complete");
         assert_eq!(got.tokens_used, 1234);
         assert!(got.summary.contains("BGP"));
@@ -3768,8 +3929,14 @@ mod tests {
     async fn list_investigations_returns_newest_first() {
         let path = temp_graph_path("investigation-list");
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open");
-        let _ = store.create_investigation("d1".into(), "10.0.0.1".into(), "auto".into()).await.expect("c1");
-        let _ = store.create_investigation("d2".into(), "10.0.0.2".into(), "auto".into()).await.expect("c2");
+        let _ = store
+            .create_investigation("d1".into(), "10.0.0.1".into(), "auto".into())
+            .await
+            .expect("c1");
+        let _ = store
+            .create_investigation("d2".into(), "10.0.0.2".into(), "auto".into())
+            .await
+            .expect("c2");
         let list = store.list_investigations().await.expect("list");
         assert_eq!(list.len(), 2);
     }
@@ -3813,7 +3980,10 @@ mod tests {
     async fn get_investigation_returns_none_for_unknown() {
         let path = temp_graph_path("investigation-missing");
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open");
-        let result = store.get_investigation("nonexistent-id".into()).await.expect("no error");
+        let result = store
+            .get_investigation("nonexistent-id".into())
+            .await
+            .expect("no error");
         assert!(result.is_none());
     }
 
@@ -3824,8 +3994,16 @@ mod tests {
         let path = temp_graph_path("embedding-roundtrip");
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
         let conn = Connection::new(&store.db).expect("conn");
-        upsert_device(&conn, "10.0.0.1:57400", "nokia_srl", "spine1", "", "", ts(1_000_000_000))
-            .expect("seed device");
+        upsert_device(
+            &conn,
+            "10.0.0.1:57400",
+            "nokia_srl",
+            "spine1",
+            "",
+            "",
+            ts(1_000_000_000),
+        )
+        .expect("seed device");
         drop(conn);
 
         let rec = EmbeddingRecord {
@@ -3856,7 +4034,11 @@ mod tests {
             .zip(&rec.vector)
             .map(|(a, b)| (a - b).abs())
             .sum();
-        assert!(diff < 1e-9, "vector roundtrip should be lossless; diff={}", diff);
+        assert!(
+            diff < 1e-9,
+            "vector roundtrip should be lossless; diff={}",
+            diff
+        );
     }
 
     #[tokio::test]
@@ -3864,8 +4046,16 @@ mod tests {
         let path = temp_graph_path("embedding-versions");
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
         let conn = Connection::new(&store.db).expect("conn");
-        upsert_device(&conn, "10.0.0.2:57400", "nokia_srl", "leaf1", "", "", ts(1_000_000_000))
-            .expect("seed device");
+        upsert_device(
+            &conn,
+            "10.0.0.2:57400",
+            "nokia_srl",
+            "leaf1",
+            "",
+            "",
+            ts(1_000_000_000),
+        )
+        .expect("seed device");
         drop(conn);
 
         let v1 = EmbeddingRecord {
@@ -3907,8 +4097,16 @@ mod tests {
         let path = temp_graph_path("embedding-upsert");
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
         let conn = Connection::new(&store.db).expect("conn");
-        upsert_device(&conn, "10.0.0.3:57400", "nokia_srl", "leaf2", "", "", ts(1_000_000_000))
-            .expect("seed device");
+        upsert_device(
+            &conn,
+            "10.0.0.3:57400",
+            "nokia_srl",
+            "leaf2",
+            "",
+            "",
+            ts(1_000_000_000),
+        )
+        .expect("seed device");
         drop(conn);
 
         let original = EmbeddingRecord {

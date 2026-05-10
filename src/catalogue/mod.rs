@@ -8,7 +8,10 @@ fn semver_gt(a: &str, b: &str) -> bool {
     match (semver::Version::parse(a), semver::Version::parse(b)) {
         (Ok(va), Ok(vb)) => va > vb,
         _ => {
-            warn!(a, b, "non-semver plugin versions; falling back to string compare");
+            warn!(
+                a,
+                b, "non-semver plugin versions; falling back to string compare"
+            );
             a > b
         }
     }
@@ -107,9 +110,10 @@ pub fn load_catalogue(base_dir: &Path) -> CatalogueState {
     // 1. Load built-ins
     match std::fs::read_dir(base_dir) {
         Err(e) => {
-            state
-                .load_errors
-                .push(format!("cannot read catalogue dir '{}': {e}", base_dir.display()));
+            state.load_errors.push(format!(
+                "cannot read catalogue dir '{}': {e}",
+                base_dir.display()
+            ));
         }
         Ok(entries) => {
             for entry in entries.flatten() {
@@ -152,7 +156,7 @@ pub fn load_catalogue(base_dir: &Path) -> CatalogueState {
                     if !plugin_dir.is_dir() {
                         continue;
                     }
-                    
+
                     let manifest_path = plugin_dir.join("MANIFEST.yaml");
                     if !manifest_path.exists() {
                         continue;
@@ -166,11 +170,14 @@ pub fn load_catalogue(base_dir: &Path) -> CatalogueState {
                                 match load_profile_file(&profile_path) {
                                     Ok(profile) => loaded_profiles.push(profile),
                                     Err(e) => {
-                                        state.load_errors.push(format!("plugin '{}' profile '{}': {e}", manifest.name, profile_file));
+                                        state.load_errors.push(format!(
+                                            "plugin '{}' profile '{}': {e}",
+                                            manifest.name, profile_file
+                                        ));
                                     }
                                 }
                             }
-                            
+
                             plugins.push(PluginState {
                                 manifest,
                                 profiles: loaded_profiles,
@@ -178,7 +185,10 @@ pub fn load_catalogue(base_dir: &Path) -> CatalogueState {
                             });
                         }
                         Err(e) => {
-                            state.load_errors.push(format!("plugin '{}' manifest error: {e}", plugin_dir.display()));
+                            state.load_errors.push(format!(
+                                "plugin '{}' manifest error: {e}",
+                                plugin_dir.display()
+                            ));
                         }
                     }
                 }
@@ -188,7 +198,7 @@ pub fn load_catalogue(base_dir: &Path) -> CatalogueState {
 
     // Resolve conflicts
     let built_in_names: HashSet<String> = state.profiles.iter().map(|p| p.name.clone()).collect();
-    
+
     // Sort plugins by version descending, then name alphabetical tie-break
     // Wait, simpler: build a map of winning profiles.
     // Winning logic:
@@ -228,7 +238,10 @@ pub fn load_catalogue(base_dir: &Path) -> CatalogueState {
     for plugin in &mut final_plugins {
         plugin.conflicts.clear();
     }
-    let plugin_names: Vec<String> = final_plugins.iter().map(|p| p.manifest.name.clone()).collect();
+    let plugin_names: Vec<String> = final_plugins
+        .iter()
+        .map(|p| p.manifest.name.clone())
+        .collect();
 
     for (idx, plugin) in final_plugins.iter_mut().enumerate() {
         let mut actual_profiles = Vec::new();
@@ -244,7 +257,10 @@ pub fn load_catalogue(base_dir: &Path) -> CatalogueState {
             seen_in_this_plugin.insert(profile.name.clone());
 
             if built_in_names.contains(&profile.name) {
-                plugin.conflicts.push(format!("profile '{}' conflicts with a built-in profile", profile.name));
+                plugin.conflicts.push(format!(
+                    "profile '{}' conflicts with a built-in profile",
+                    profile.name
+                ));
                 continue;
             }
 
@@ -252,8 +268,14 @@ pub fn load_catalogue(base_dir: &Path) -> CatalogueState {
                 if winner_idx == idx {
                     actual_profiles.push(profile);
                 } else {
-                    let winner_name = plugin_names.get(winner_idx).map(|s| s.as_str()).unwrap_or("unknown");
-                    plugin.conflicts.push(format!("profile '{}' superseded by plugin '{}'", profile.name, winner_name));
+                    let winner_name = plugin_names
+                        .get(winner_idx)
+                        .map(|s| s.as_str())
+                        .unwrap_or("unknown");
+                    plugin.conflicts.push(format!(
+                        "profile '{}' superseded by plugin '{}'",
+                        profile.name, winner_name
+                    ));
                 }
             }
         }
@@ -261,13 +283,16 @@ pub fn load_catalogue(base_dir: &Path) -> CatalogueState {
     }
 
     state.plugins = final_plugins;
-    state.plugins.sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
+    state
+        .plugins
+        .sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
 
     state
 }
 
 fn load_plugin_manifest(path: &Path) -> anyhow::Result<PluginManifest> {
-    let raw = std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("cannot read MANIFEST.yaml: {e}"))?;
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("cannot read MANIFEST.yaml: {e}"))?;
     serde_yaml::from_str(&raw).map_err(|e| anyhow::anyhow!("cannot parse MANIFEST.yaml: {e}"))
 }
 
@@ -308,7 +333,13 @@ mod tests {
     fn semver_gt_handles_double_digit_patch() {
         assert!(semver_gt("0.10.0", "0.2.0"), "0.10.0 must outrank 0.2.0");
         assert!(semver_gt("1.0.0", "0.99.9"), "1.0.0 must outrank 0.99.9");
-        assert!(!semver_gt("0.2.0", "0.10.0"), "0.2.0 must not outrank 0.10.0");
-        assert!(!semver_gt("0.1.0", "0.1.0"), "equal versions must not outrank each other");
+        assert!(
+            !semver_gt("0.2.0", "0.10.0"),
+            "0.2.0 must not outrank 0.10.0"
+        );
+        assert!(
+            !semver_gt("0.1.0", "0.1.0"),
+            "equal versions must not outrank each other"
+        );
     }
 }

@@ -1,0 +1,6 @@
+name: campus_distribution
+description: Campus distribution recommendation.
+role_hints: ["distribution"]
+environment: ["campus_wired"]
+profile_names: ["campus_distribution"]
+rationale: "Distribution nodes aggregate access faults and need both uplink health and policy-state visibility."

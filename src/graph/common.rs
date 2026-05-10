@@ -53,20 +53,26 @@ pub fn upsert_device(
         let mut s = conn
             .prepare("MATCH (d:Device {address: $addr}) SET d.role = $role")
             .context("prepare Device role SET")?;
-        conn.execute(&mut s, vec![
-            ("addr", Value::String(address.to_string())),
-            ("role", Value::String(role.to_string())),
-        ])
+        conn.execute(
+            &mut s,
+            vec![
+                ("addr", Value::String(address.to_string())),
+                ("role", Value::String(role.to_string())),
+            ],
+        )
         .context("execute Device role SET")?;
     }
     if !site.is_empty() {
         let mut s = conn
             .prepare("MATCH (d:Device {address: $addr}) SET d.site = $site")
             .context("prepare Device site SET")?;
-        conn.execute(&mut s, vec![
-            ("addr", Value::String(address.to_string())),
-            ("site", Value::String(site.to_string())),
-        ])
+        conn.execute(
+            &mut s,
+            vec![
+                ("addr", Value::String(address.to_string())),
+                ("site", Value::String(site.to_string())),
+            ],
+        )
         .context("execute Device site SET")?;
     }
 

@@ -1,0 +1,6 @@
+vendor: cisco-iosxr
+patterns:
+  - "configuration committed"
+  - "configured from console"
+  - "commit replace"
+  - "running configuration updated"

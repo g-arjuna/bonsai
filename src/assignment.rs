@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use anyhow::Result;
 use std::cmp::Reverse;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use anyhow::Result;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 
@@ -62,7 +62,12 @@ impl CollectorManager {
     }
 
     fn publish_ws(&self, event: BonsaiEvent) {
-        if let Some(tx) = self.event_tx.lock().expect("event_tx lock poisoned").as_ref() {
+        if let Some(tx) = self
+            .event_tx
+            .lock()
+            .expect("event_tx lock poisoned")
+            .as_ref()
+        {
             let _ = tx.send(event);
         }
     }
@@ -182,7 +187,8 @@ impl CollectorManager {
                                 collectors.get(collector_id.as_str()).cloned()
                             };
                             if let Some(tx) = tx {
-                                let assignment = create_assignment(&target, &credentials, &registry);
+                                let assignment =
+                                    create_assignment(&target, &credentials, &registry);
                                 let update = AssignmentUpdate {
                                     assignments: vec![assignment],
                                     is_full_sync: false,
@@ -209,7 +215,11 @@ impl CollectorManager {
         let targets = self.registry.list_assigned_to(&collector_id)?;
         let mut assignments = Vec::new();
         for target in targets {
-            assignments.push(create_assignment(&target, &self.credentials, &self.registry));
+            assignments.push(create_assignment(
+                &target,
+                &self.credentials,
+                &self.registry,
+            ));
         }
 
         tx.send(AssignmentUpdate {
@@ -337,13 +347,17 @@ impl CollectorManager {
 
         for target in &all_targets {
             match &target.collector_id {
-                Some(col_id) => by_collector.entry(col_id.clone()).or_default().push(target.address.clone()),
+                Some(col_id) => by_collector
+                    .entry(col_id.clone())
+                    .or_default()
+                    .push(target.address.clone()),
                 None => unassigned_devices.push(target.address.clone()),
             }
         }
 
         // Connected collectors first, then known-but-disconnected ones.
-        let mut all_ids: std::collections::HashSet<String> = connected_ids.iter().cloned().collect();
+        let mut all_ids: std::collections::HashSet<String> =
+            connected_ids.iter().cloned().collect();
         all_ids.extend(by_collector.keys().cloned());
         all_ids.extend(runtime.keys().cloned());
 
@@ -367,7 +381,10 @@ impl CollectorManager {
             .collect();
         collectors.sort_by(|a, b| a.id.cmp(&b.id));
 
-        CollectorStatusSummary { collectors, unassigned_devices }
+        CollectorStatusSummary {
+            collectors,
+            unassigned_devices,
+        }
     }
 }
 
@@ -397,7 +414,10 @@ fn site_ancestor_set(device_site: &str, sites: &[SiteRecord]) -> Vec<String> {
     }
     let mut current_key = device_site.to_string();
     for _ in 0..10 {
-        let Some(rec) = sites.iter().find(|s| s.name == current_key || s.id == current_key) else {
+        let Some(rec) = sites
+            .iter()
+            .find(|s| s.name == current_key || s.id == current_key)
+        else {
             break;
         };
         for val in [&rec.name, &rec.id] {
@@ -489,10 +509,7 @@ mod tests {
 
     #[test]
     fn cycle_does_not_loop_forever() {
-        let sites = vec![
-            make_site("a", "site-a", "b"),
-            make_site("b", "site-b", "a"),
-        ];
+        let sites = vec![make_site("a", "site-a", "b"), make_site("b", "site-b", "a")];
         let result = site_ancestor_set("site-a", &sites);
         assert!(result.len() <= 12); // bounded by depth cap + seed
     }
@@ -504,7 +521,11 @@ mod tests {
     }
 }
 
-fn create_assignment(target: &TargetConfig, vault: &CredentialVault, registry: &ApiRegistry) -> DeviceAssignment {
+fn create_assignment(
+    target: &TargetConfig,
+    vault: &CredentialVault,
+    registry: &ApiRegistry,
+) -> DeviceAssignment {
     let mut username = String::new();
     let mut password = String::new();
 
@@ -520,7 +541,8 @@ fn create_assignment(target: &TargetConfig, vault: &CredentialVault, registry: &
 
     let mut target_clone = target.clone();
     let overrides = registry.list_overrides().unwrap_or_default();
-    let (resolved_paths, _) = crate::discovery::resolve_subscription_paths(&target_clone, &overrides);
+    let (resolved_paths, _) =
+        crate::discovery::resolve_subscription_paths(&target_clone, &overrides);
     target_clone.selected_paths = resolved_paths;
 
     DeviceAssignment {

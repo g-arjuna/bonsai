@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use lbug::{Connection, Database};
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
@@ -72,7 +72,11 @@ pub struct ElasticAdapter {
 impl ElasticAdapter {
     pub fn from_config(config: OutputAdapterConfig, db: Arc<Database>) -> Self {
         let environments = config.environment_scope.clone();
-        Self { config, environments, db }
+        Self {
+            config,
+            environments,
+            db,
+        }
     }
 }
 
@@ -83,7 +87,10 @@ impl OutputAdapter for ElasticAdapter {
     }
 
     fn topics(&self) -> &[OutputTopic] {
-        &[OutputTopic::DetectionEvents, OutputTopic::RemediationOutcomes]
+        &[
+            OutputTopic::DetectionEvents,
+            OutputTopic::RemediationOutcomes,
+        ]
     }
 
     fn applies_to_environments(&self) -> &[String] {
@@ -180,7 +187,10 @@ async fn push_cycle(
             .context("spawn_blocking panicked")??;
 
     if detections.is_empty() {
-        return Ok(OutputReport { adapter_name: config.name.clone(), ..Default::default() });
+        return Ok(OutputReport {
+            adapter_name: config.name.clone(),
+            ..Default::default()
+        });
     }
 
     let now = now_ns();
@@ -227,15 +237,21 @@ async fn push_cycle(
     }
 
     if n == 0 {
-        return Ok(OutputReport { adapter_name: config.name.clone(), ..Default::default() });
+        return Ok(OutputReport {
+            adapter_name: config.name.clone(),
+            ..Default::default()
+        });
     }
 
     // Elastic bulk: each line terminated by \n, including the final line
     let mut body = ndjson_lines.join("\n");
     body.push('\n');
 
-    let bulk_url =
-        format!("{}/{}/_bulk", config.endpoint_url.trim_end_matches('/'), index);
+    let bulk_url = format!(
+        "{}/{}/_bulk",
+        config.endpoint_url.trim_end_matches('/'),
+        index
+    );
     let http = build_http_client()?;
     let req = http
         .post(&bulk_url)
@@ -281,8 +297,7 @@ fn severity_to_ecs(s: &str) -> u32 {
 }
 
 fn build_ecs_doc(det: &DetectionRecord) -> JsonValue {
-    let features: JsonValue =
-        serde_json::from_str(&det.features_json).unwrap_or(JsonValue::Null);
+    let features: JsonValue = serde_json::from_str(&det.features_json).unwrap_or(JsonValue::Null);
     // @timestamp as epoch seconds (float). Elastic date_detection parses epoch floats,
     // or operators can set explicit mappings to date with format "epoch_second||epoch_millis".
     let ts_secs = det.fired_at_ns as f64 / 1_000_000_000.0;
@@ -427,9 +442,16 @@ mod tests {
     #[test]
     fn bulk_url_uses_default_index() {
         let c = cfg("https://elastic.example.com:9200");
-        let index = c.extra.get("index").and_then(|v| v.as_str()).unwrap_or("bonsai-detections");
+        let index = c
+            .extra
+            .get("index")
+            .and_then(|v| v.as_str())
+            .unwrap_or("bonsai-detections");
         let url = format!("{}/{index}/_bulk", c.endpoint_url.trim_end_matches('/'));
-        assert_eq!(url, "https://elastic.example.com:9200/bonsai-detections/_bulk");
+        assert_eq!(
+            url,
+            "https://elastic.example.com:9200/bonsai-detections/_bulk"
+        );
     }
 
     #[test]
@@ -444,7 +466,11 @@ mod tests {
             environment_scope: vec![],
             extra: serde_json::json!({"index": "network-events"}),
         };
-        let index = c.extra.get("index").and_then(|v| v.as_str()).unwrap_or("bonsai-detections");
+        let index = c
+            .extra
+            .get("index")
+            .and_then(|v| v.as_str())
+            .unwrap_or("bonsai-detections");
         let url = format!("{}/{index}/_bulk", c.endpoint_url.trim_end_matches('/'));
         assert_eq!(url, "https://elastic.example.com:9200/network-events/_bulk");
     }
@@ -486,14 +512,21 @@ mod tests {
         let lines = vec!["action".to_string(), "doc".to_string()];
         let mut body = lines.join("\n");
         body.push('\n');
-        assert!(body.ends_with('\n'), "Elastic bulk body must end with newline");
+        assert!(
+            body.ends_with('\n'),
+            "Elastic bulk body must end with newline"
+        );
         assert_eq!(body, "action\ndoc\n");
     }
 
     #[test]
     fn dedup_window_default_is_300s() {
         let c = cfg("http://localhost:9200");
-        let window_secs = c.extra.get("dedup_window_secs").and_then(|v| v.as_i64()).unwrap_or(300);
+        let window_secs = c
+            .extra
+            .get("dedup_window_secs")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(300);
         assert_eq!(window_secs, 300);
     }
 

@@ -1,2 +1,2 @@
-pub mod syslog;
 pub mod snmp;
+pub mod syslog;

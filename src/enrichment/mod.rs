@@ -10,6 +10,7 @@
 //!   - Are idempotent — re-running is always safe
 
 pub mod factory;
+pub mod multi_source;
 pub mod netbox;
 pub mod servicenow;
 
@@ -88,14 +89,9 @@ impl EnricherAuditLog {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as i64)
             .unwrap_or(0);
-        if let Err(e) = crate::audit::append_credential_resolve(
-            &self.root,
-            ts,
-            alias,
-            "enrich",
-            outcome,
-            error,
-        ) {
+        if let Err(e) =
+            crate::audit::append_credential_resolve(&self.root, ts, alias, "enrich", outcome, error)
+        {
             warn!(enricher = %self.enricher_name, "failed to write enrichment audit entry: {e}");
         }
     }
@@ -258,7 +254,11 @@ impl EnricherRegistry {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as i64)
             .unwrap_or(0);
-        let outcome = if report.error.is_some() { "error" } else { "success" };
+        let outcome = if report.error.is_some() {
+            "error"
+        } else {
+            "success"
+        };
         if let Err(e) = crate::audit::append_enrichment_run(
             &self.audit_root,
             ts,
@@ -267,7 +267,10 @@ impl EnricherRegistry {
             report.nodes_touched,
             report.error.as_deref(),
         ) {
-            warn!(enricher = name, "failed to write enrichment run audit entry: {e}");
+            warn!(
+                enricher = name,
+                "failed to write enrichment run audit entry: {e}"
+            );
         }
         let state = self.states.entry(name.to_string()).or_default();
         state.last_run_at_ns = Some(ts);
@@ -369,7 +372,10 @@ mod tests {
         let cfg_path = dir.path().join("enrichment_configs.json");
         std::fs::write(&cfg_path, b"this is not json {{{{").unwrap();
         let reg = EnricherRegistry::load(dir.path());
-        assert!(reg.list().is_empty(), "corrupted file should yield empty registry");
+        assert!(
+            reg.list().is_empty(),
+            "corrupted file should yield empty registry"
+        );
     }
 
     // ── upsert ────────────────────────────────────────────────────────────────

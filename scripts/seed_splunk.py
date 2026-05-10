@@ -4,7 +4,7 @@
 Usage:
     python scripts/seed_splunk.py \\
         [--url http://localhost:8100] \\
-        [--hec-url http://localhost:8088] \\
+        [--hec-url https://localhost:8088] \\
         [--username admin] \\
         [--password <SPLUNK_PASSWORD>] \\
         [--hec-token <SPLUNK_HEC_TOKEN>]
@@ -190,7 +190,7 @@ def seed(api_url: str, hec_url: str, username: str, password: str, hec_token: st
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--url", default="http://localhost:8100", help="Splunk management URL (default: %(default)s)")
-    ap.add_argument("--hec-url", default="http://localhost:8088", help="Splunk HEC URL (default: %(default)s)")
+    ap.add_argument("--hec-url", default="https://localhost:8088", help="Splunk HEC URL (default: %(default)s)")
     ap.add_argument("--username", default="admin")
     ap.add_argument("--password", required=True)
     ap.add_argument("--hec-token", required=True)

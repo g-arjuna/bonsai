@@ -62,18 +62,27 @@ topology:
       image: ghcr.io/nokia/srlinux:latest
       mgmt-ipv4: 172.100.104.11
       startup-config: configs/srl-pe1.cfg
+      labels:
+        bonsai.role: pe
+        bonsai.environment: service_provider
 
     srl-pe2:
       kind: nokia_srlinux
       image: ghcr.io/nokia/srlinux:latest
       mgmt-ipv4: 172.100.104.12
       startup-config: configs/srl-pe2.cfg
+      labels:
+        bonsai.role: pe
+        bonsai.environment: service_provider
 
     srl-pe3:
       kind: nokia_srlinux
       image: ghcr.io/nokia/srlinux:latest
       mgmt-ipv4: 172.100.104.13
       startup-config: configs/srl-pe3.cfg
+      labels:
+        bonsai.role: pe
+        bonsai.environment: service_provider
 
     # ── Nokia SR Linux Route Reflectors ───────────────────────────────────────
     srl-rr1:
@@ -81,12 +90,18 @@ topology:
       image: ghcr.io/nokia/srlinux:latest
       mgmt-ipv4: 172.100.104.14
       startup-config: configs/srl-rr1.cfg
+      labels:
+        bonsai.role: rr
+        bonsai.environment: service_provider
 
     srl-rr2:
       kind: nokia_srlinux
       image: ghcr.io/nokia/srlinux:latest
       mgmt-ipv4: 172.100.104.15
       startup-config: configs/srl-rr2.cfg
+      labels:
+        bonsai.role: rr
+        bonsai.environment: service_provider
 
     # ── FRR P routers (SR-MPLS + LDP transit) ────────────────────────────────
     frr-p1:
@@ -96,6 +111,9 @@ topology:
       binds:
         - configs/frr-p1/daemons:/etc/frr/daemons
         - configs/frr-p1/frr.conf:/etc/frr/frr.conf
+      labels:
+        bonsai.role: p
+        bonsai.environment: service_provider
 
     frr-p2:
       kind: linux
@@ -104,6 +122,9 @@ topology:
       binds:
         - configs/frr-p2/daemons:/etc/frr/daemons
         - configs/frr-p2/frr.conf:/etc/frr/frr.conf
+      labels:
+        bonsai.role: p
+        bonsai.environment: service_provider
 
     # ── FRR Customer Edge ─────────────────────────────────────────────────────
     frr-ce1:
@@ -113,6 +134,9 @@ topology:
       binds:
         - configs/frr-ce1/daemons:/etc/frr/daemons
         - configs/frr-ce1/frr.conf:/etc/frr/frr.conf
+      labels:
+        bonsai.role: ce
+        bonsai.environment: service_provider
 
     frr-ce2:
       kind: linux
@@ -121,6 +145,9 @@ topology:
       binds:
         - configs/frr-ce2/daemons:/etc/frr/daemons
         - configs/frr-ce2/frr.conf:/etc/frr/frr.conf
+      labels:
+        bonsai.role: ce
+        bonsai.environment: service_provider
 
   links:
     # ── Backbone ══════════════════════════════════════════════════════════════

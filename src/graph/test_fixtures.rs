@@ -30,8 +30,8 @@ use std::sync::Arc;
 
 use lbug::{Connection, Database, Value};
 
-use crate::graph::GraphStore;
 use super::common::ts;
+use crate::graph::GraphStore;
 
 pub const TEST_ENV_DC_ID: &str = "env-dc-test";
 pub const TEST_ENV_DC_NAME: &str = "DC Prod";
@@ -53,7 +53,11 @@ impl TestGraph {
     /// Build a fully populated test graph in a temporary directory.
     pub fn build() -> Self {
         let tmpdir = tempfile::tempdir().expect("temp dir for test graph");
-        let path = tmpdir.path().join("testgraph").to_string_lossy().into_owned();
+        let path = tmpdir
+            .path()
+            .join("testgraph")
+            .to_string_lossy()
+            .into_owned();
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open test graph store");
         let db = store.db();
 
@@ -69,11 +73,17 @@ impl TestGraph {
             build_subscription_status(&conn);
         } // conn dropped before db moves into Self
 
-        Self { store, db, _tmpdir: tmpdir }
+        Self {
+            store,
+            db,
+            _tmpdir: tmpdir,
+        }
     }
 }
 
-fn t() -> Value { ts(TS) }
+fn t() -> Value {
+    ts(TS)
+}
 
 // ─── environments ─────────────────────────────────────────────────────────────
 
@@ -152,15 +162,60 @@ struct DeviceSeed {
 
 fn build_devices(conn: &Connection<'_>) {
     let devices = vec![
-        DeviceSeed { address: "10.0.0.1", hostname: "spine1",   vendor: "nokia",   site_id: TEST_SITE_DC_ID },
-        DeviceSeed { address: "10.0.0.2", hostname: "spine2",   vendor: "nokia",   site_id: TEST_SITE_DC_ID },
-        DeviceSeed { address: "10.0.0.3", hostname: "leaf1",    vendor: "arista",  site_id: TEST_SITE_DC_ID },
-        DeviceSeed { address: "10.0.0.4", hostname: "leaf2",    vendor: "arista",  site_id: TEST_SITE_DC_ID },
-        DeviceSeed { address: "10.0.0.5", hostname: "leaf3",    vendor: "cisco",   site_id: TEST_SITE_DC_ID },
-        DeviceSeed { address: "10.0.0.6", hostname: "leaf4",    vendor: "cisco",   site_id: TEST_SITE_DC_ID },
-        DeviceSeed { address: "10.0.0.7", hostname: "pe1",      vendor: "juniper", site_id: TEST_SITE_SP_ID },
-        DeviceSeed { address: "10.0.0.8", hostname: "pe2",      vendor: "juniper", site_id: TEST_SITE_SP_ID },
-        DeviceSeed { address: "10.0.0.9", hostname: "isolated", vendor: "nokia",   site_id: TEST_SITE_DC_ID },
+        DeviceSeed {
+            address: "10.0.0.1",
+            hostname: "spine1",
+            vendor: "nokia",
+            site_id: TEST_SITE_DC_ID,
+        },
+        DeviceSeed {
+            address: "10.0.0.2",
+            hostname: "spine2",
+            vendor: "nokia",
+            site_id: TEST_SITE_DC_ID,
+        },
+        DeviceSeed {
+            address: "10.0.0.3",
+            hostname: "leaf1",
+            vendor: "arista",
+            site_id: TEST_SITE_DC_ID,
+        },
+        DeviceSeed {
+            address: "10.0.0.4",
+            hostname: "leaf2",
+            vendor: "arista",
+            site_id: TEST_SITE_DC_ID,
+        },
+        DeviceSeed {
+            address: "10.0.0.5",
+            hostname: "leaf3",
+            vendor: "cisco",
+            site_id: TEST_SITE_DC_ID,
+        },
+        DeviceSeed {
+            address: "10.0.0.6",
+            hostname: "leaf4",
+            vendor: "cisco",
+            site_id: TEST_SITE_DC_ID,
+        },
+        DeviceSeed {
+            address: "10.0.0.7",
+            hostname: "pe1",
+            vendor: "juniper",
+            site_id: TEST_SITE_SP_ID,
+        },
+        DeviceSeed {
+            address: "10.0.0.8",
+            hostname: "pe2",
+            vendor: "juniper",
+            site_id: TEST_SITE_SP_ID,
+        },
+        DeviceSeed {
+            address: "10.0.0.9",
+            hostname: "isolated",
+            vendor: "nokia",
+            site_id: TEST_SITE_DC_ID,
+        },
     ];
 
     let mut dev_stmt = conn
@@ -209,11 +264,36 @@ struct Link {
 
 fn build_interfaces_and_links(conn: &Connection<'_>) {
     let links = vec![
-        Link { a_dev: "10.0.0.1", a_if: "eth1", b_dev: "10.0.0.3", b_if: "eth1" },
-        Link { a_dev: "10.0.0.1", a_if: "eth2", b_dev: "10.0.0.4", b_if: "eth1" },
-        Link { a_dev: "10.0.0.2", a_if: "eth1", b_dev: "10.0.0.3", b_if: "eth2" },
-        Link { a_dev: "10.0.0.2", a_if: "eth2", b_dev: "10.0.0.4", b_if: "eth2" },
-        Link { a_dev: "10.0.0.7", a_if: "eth1", b_dev: "10.0.0.8", b_if: "eth1" },
+        Link {
+            a_dev: "10.0.0.1",
+            a_if: "eth1",
+            b_dev: "10.0.0.3",
+            b_if: "eth1",
+        },
+        Link {
+            a_dev: "10.0.0.1",
+            a_if: "eth2",
+            b_dev: "10.0.0.4",
+            b_if: "eth1",
+        },
+        Link {
+            a_dev: "10.0.0.2",
+            a_if: "eth1",
+            b_dev: "10.0.0.3",
+            b_if: "eth2",
+        },
+        Link {
+            a_dev: "10.0.0.2",
+            a_if: "eth2",
+            b_dev: "10.0.0.4",
+            b_if: "eth2",
+        },
+        Link {
+            a_dev: "10.0.0.7",
+            a_if: "eth1",
+            b_dev: "10.0.0.8",
+            b_if: "eth1",
+        },
     ];
 
     let mut iface_stmt = conn
@@ -300,7 +380,11 @@ fn build_applications(conn: &Connection<'_>) {
         )
         .expect("prepare CARRIES_APPLICATION");
 
-    for (id, name) in [("app-web", "app-web"), ("app-api", "app-api"), ("app-db", "app-db")] {
+    for (id, name) in [
+        ("app-web", "app-web"),
+        ("app-api", "app-api"),
+        ("app-db", "app-db"),
+    ] {
         conn.execute(
             &mut app_stmt,
             vec![
@@ -357,10 +441,34 @@ fn build_detections(conn: &Connection<'_>) {
         .expect("prepare TRIGGERED");
 
     let events = vec![
-        ("det-open",     "10.0.0.3", "bgp_session_down", "critical", TS + 3_600_000_000_000i64),
-        ("det-resolved", "10.0.0.1", "interface_down",   "warning",  TS + 1_800_000_000_000i64),
-        ("det-multi-1",  "10.0.0.3", "bgp_session_down", "critical", TS + 7_200_000_000_000i64),
-        ("det-multi-2",  "10.0.0.3", "interface_down",   "warning",  TS + 7_260_000_000_000i64),
+        (
+            "det-open",
+            "10.0.0.3",
+            "bgp_session_down",
+            "critical",
+            TS + 3_600_000_000_000i64,
+        ),
+        (
+            "det-resolved",
+            "10.0.0.1",
+            "interface_down",
+            "warning",
+            TS + 1_800_000_000_000i64,
+        ),
+        (
+            "det-multi-1",
+            "10.0.0.3",
+            "bgp_session_down",
+            "critical",
+            TS + 7_200_000_000_000i64,
+        ),
+        (
+            "det-multi-2",
+            "10.0.0.3",
+            "interface_down",
+            "warning",
+            TS + 7_260_000_000_000i64,
+        ),
     ];
 
     for (id, addr, rule, sev, fired_at_ns) in &events {
@@ -438,8 +546,8 @@ fn build_enrichment(conn: &Connection<'_>) {
 
     // spine1 enriched; spine2 deliberately NOT enriched
     let props = vec![
-        ("ep-spine1-1", "10.0.0.1", "site_code", "DC01",    "netbox"),
-        ("ep-leaf1-1",  "10.0.0.3", "rack",       "rack-01", "netbox"),
+        ("ep-spine1-1", "10.0.0.1", "site_code", "DC01", "netbox"),
+        ("ep-leaf1-1", "10.0.0.3", "rack", "rack-01", "netbox"),
     ];
     for (id, addr, key, val, src) in &props {
         conn.execute(
@@ -483,7 +591,10 @@ fn build_subscription_status(conn: &Connection<'_>) {
         vec![
             ("id", Value::String("ss-spine1-iface".to_string())),
             ("addr", Value::String("10.0.0.1".to_string())),
-            ("path", Value::String("/openconfig-interfaces:interfaces".to_string())),
+            (
+                "path",
+                Value::String("/openconfig-interfaces:interfaces".to_string()),
+            ),
             ("ts", t()),
         ],
     )

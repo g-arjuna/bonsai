@@ -83,6 +83,7 @@ metrics-exporter-prometheus = "0.16"
 tar = "0.4"
 semver = "1"
 sha2 = "0.10"
+hmac = "0.12"
 hex = "0.4"
 snap = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

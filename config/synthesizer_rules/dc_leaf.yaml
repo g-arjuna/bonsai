@@ -1,0 +1,8 @@
+name: dc_leaf
+description: Data-center EVPN leaf recommendation.
+role_hints: ["leaf", "access", "border-leaf"]
+environment: ["data_center", "home_lab"]
+profile_names: ["dc_evpn_leaf"]
+rationale: "BGP EVPN, VxLAN, interface health, and LLDP are the highest-signal subscriptions for a DC leaf."
+gaps:
+  - "If EVPN-specific paths are unavailable, keep LLDP and interface health active while using CLI enrichment for missing fabric context."

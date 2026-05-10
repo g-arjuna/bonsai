@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use serde::Deserialize;
 use serde::Serialize;
 use tonic::Request;
 use tonic::metadata::MetadataValue;
@@ -38,6 +39,18 @@ pub struct DiscoveryReport {
     pub gnmi_encoding: String,
     pub recommended_profiles: Vec<PathProfileMatch>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct GnmiReadinessReport {
+    pub service_status: String,
+    pub tls_status: String,
+    pub encoding_support: Vec<String>,
+    pub models_advertised: Vec<String>,
+    pub known_issues: Vec<String>,
+    pub blockers: Vec<String>,
+    pub recommended_actions: Vec<String>,
+    pub checked_at_ns: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -97,8 +110,11 @@ pub async fn discover_device(input: DiscoveryInput) -> Result<DiscoveryReport> {
             "TLS CA cert was provided without tls_domain; SNI may fail on some targets".to_string(),
         );
     }
-    let (recommended_profiles, profile_warnings) =
-        recommend_profiles(&summary, input.role_hint.as_deref(), input.environment_archetype.as_deref());
+    let (recommended_profiles, profile_warnings) = recommend_profiles(
+        &summary,
+        input.role_hint.as_deref(),
+        input.environment_archetype.as_deref(),
+    );
     warnings.extend(profile_warnings);
 
     Ok(DiscoveryReport {
@@ -108,6 +124,179 @@ pub async fn discover_device(input: DiscoveryInput) -> Result<DiscoveryReport> {
         recommended_profiles,
         warnings,
     })
+}
+
+pub async fn gnmi_readiness_report(
+    input: DiscoveryInput,
+    known_issues_path: &str,
+) -> GnmiReadinessReport {
+    let checked_at_ns = crate::graph::common::now_ns();
+    let address = input.address.clone();
+    let username = input
+        .username
+        .clone()
+        .or_else(|| env_value(input.username_env.as_deref()).ok().flatten());
+    let password = input
+        .password
+        .clone()
+        .or_else(|| env_value(input.password_env.as_deref()).ok().flatten());
+    let known_issues = load_known_issues(known_issues_path);
+    let tls_status = if input.ca_cert_path.is_some() {
+        if input
+            .tls_domain
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            "configured_missing_domain".to_string()
+        } else {
+            "configured".to_string()
+        }
+    } else {
+        "disabled".to_string()
+    };
+
+    match connect(
+        &address,
+        input.ca_cert_path.as_deref(),
+        input.tls_domain.as_deref(),
+    )
+    .await
+    {
+        Ok(channel) => {
+            let mut client = GNmiClient::new(channel);
+            let mut request = Request::new(CapabilityRequest::default());
+            add_auth_metadata(&mut request, username.as_deref(), password.as_deref());
+            match tokio::time::timeout(DISCOVERY_TIMEOUT, client.capabilities(request)).await {
+                Ok(Ok(response)) => {
+                    let response = response.into_inner();
+                    let summary = CapabilitySummary::from_response(
+                        &response.supported_models,
+                        &response.supported_encodings,
+                    );
+                    let issues = matching_known_issues(&known_issues, &summary);
+                    GnmiReadinessReport {
+                        service_status: "reachable".to_string(),
+                        tls_status,
+                        encoding_support: response
+                            .supported_encodings
+                            .iter()
+                            .filter_map(|encoding| Encoding::try_from(*encoding).ok())
+                            .map(|encoding| encoding.as_str_name().to_string())
+                            .collect(),
+                        models_advertised: summary.model_names,
+                        known_issues: issues.iter().map(|issue| issue.summary.clone()).collect(),
+                        blockers: Vec::new(),
+                        recommended_actions: recommended_actions(
+                            &issues,
+                            false,
+                            input.tls_domain.as_deref(),
+                        ),
+                        checked_at_ns,
+                    }
+                }
+                Ok(Err(error)) => GnmiReadinessReport {
+                    service_status: "rpc_failed".to_string(),
+                    tls_status,
+                    encoding_support: Vec::new(),
+                    models_advertised: Vec::new(),
+                    known_issues: Vec::new(),
+                    blockers: vec![format!("Capabilities RPC failed: {error}")],
+                    recommended_actions: recommended_actions(
+                        &[],
+                        true,
+                        input.tls_domain.as_deref(),
+                    ),
+                    checked_at_ns,
+                },
+                Err(_) => GnmiReadinessReport {
+                    service_status: "timeout".to_string(),
+                    tls_status,
+                    encoding_support: Vec::new(),
+                    models_advertised: Vec::new(),
+                    known_issues: Vec::new(),
+                    blockers: vec!["Capabilities RPC timed out".to_string()],
+                    recommended_actions: recommended_actions(
+                        &[],
+                        true,
+                        input.tls_domain.as_deref(),
+                    ),
+                    checked_at_ns,
+                },
+            }
+        }
+        Err(error) => GnmiReadinessReport {
+            service_status: "connect_failed".to_string(),
+            tls_status,
+            encoding_support: Vec::new(),
+            models_advertised: Vec::new(),
+            known_issues: Vec::new(),
+            blockers: vec![format!("{error:#}")],
+            recommended_actions: recommended_actions(&[], true, input.tls_domain.as_deref()),
+            checked_at_ns,
+        },
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct KnownGnmiIssue {
+    #[serde(default)]
+    vendor: String,
+    #[serde(default)]
+    model_contains: String,
+    summary: String,
+    #[serde(default)]
+    action: String,
+}
+
+fn load_known_issues(path: &str) -> Vec<KnownGnmiIssue> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_yaml::from_str::<Vec<KnownGnmiIssue>>(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn matching_known_issues(
+    issues: &[KnownGnmiIssue],
+    summary: &CapabilitySummary,
+) -> Vec<KnownGnmiIssue> {
+    issues
+        .iter()
+        .filter(|issue| {
+            (issue.vendor.is_empty() || summary.vendor_label.contains(&issue.vendor))
+                && (issue.model_contains.is_empty()
+                    || summary
+                        .model_names
+                        .iter()
+                        .any(|model| model.contains(&issue.model_contains)))
+        })
+        .cloned()
+        .collect()
+}
+
+fn recommended_actions(
+    issues: &[KnownGnmiIssue],
+    connect_failed: bool,
+    tls_domain: Option<&str>,
+) -> Vec<String> {
+    let mut actions = Vec::new();
+    if connect_failed {
+        actions.push("Verify TCP reachability to port 57400 from the collector".to_string());
+    }
+    if tls_domain.unwrap_or_default().trim().is_empty() {
+        actions.push(
+            "Set tls_domain when using a CA certificate so SNI/SAN validation can succeed"
+                .to_string(),
+        );
+    }
+    actions.extend(
+        issues
+            .iter()
+            .filter(|issue| !issue.action.trim().is_empty())
+            .map(|issue| issue.action.clone()),
+    );
+    actions
 }
 
 impl CapabilitySummary {
@@ -157,14 +346,16 @@ fn recommend_profiles(
     role_hint: Option<&str>,
     environment_archetype: Option<&str>,
 ) -> (Vec<PathProfileMatch>, Vec<String>) {
-    match load_templates_with_resolution(PATH_PROFILE_DIR)
-        .and_then(|(profiles, mut warnings)| {
-            let (matches, mut selection_warnings) =
-                recommend_profiles_from_templates(summary, role_hint, environment_archetype, &profiles)?;
-            warnings.append(&mut selection_warnings);
-            Ok((matches, warnings))
-        })
-    {
+    match load_templates_with_resolution(PATH_PROFILE_DIR).and_then(|(profiles, mut warnings)| {
+        let (matches, mut selection_warnings) = recommend_profiles_from_templates(
+            summary,
+            role_hint,
+            environment_archetype,
+            &profiles,
+        )?;
+        warnings.append(&mut selection_warnings);
+        Ok((matches, warnings))
+    }) {
         Ok(result) => result,
         Err(error) => {
             let warnings = vec![format!(
@@ -325,7 +516,11 @@ fn supported_template_paths(
                     optional: path.optional,
                 };
                 if path.fallback_for.is_some() {
-                    fallback_candidates.push((subscription, path.fallback_for.clone(), path.optional));
+                    fallback_candidates.push((
+                        subscription,
+                        path.fallback_for.clone(),
+                        path.optional,
+                    ));
                 } else {
                     immediate_paths.push(subscription);
                 }
@@ -344,8 +539,10 @@ fn supported_template_paths(
         }
     }
 
-    let mut selected_paths: std::collections::HashSet<String> =
-        immediate_paths.iter().map(|path| path.path.clone()).collect();
+    let mut selected_paths: std::collections::HashSet<String> = immediate_paths
+        .iter()
+        .map(|path| path.path.clone())
+        .collect();
     for (fallback_path, fallback_for, optional) in fallback_candidates {
         if let Some(primary_path) = fallback_for
             && (eligible_paths.contains(&primary_path) || selected_paths.contains(&primary_path))
@@ -367,9 +564,21 @@ fn supported_template_paths(
     (immediate_paths, dropped, template.paths.len())
 }
 
-fn missing_requirements(summary: &CapabilitySummary, vendor: &str, path: &PathTemplate) -> Option<String> {
-    if !path.vendor_only.is_empty() && !path.vendor_only.iter().any(|v| v.eq_ignore_ascii_case(vendor)) {
-        return Some(format!("path is restricted to vendors {:?}", path.vendor_only));
+fn missing_requirements(
+    summary: &CapabilitySummary,
+    vendor: &str,
+    path: &PathTemplate,
+) -> Option<String> {
+    if !path.vendor_only.is_empty()
+        && !path
+            .vendor_only
+            .iter()
+            .any(|v| v.eq_ignore_ascii_case(vendor))
+    {
+        return Some(format!(
+            "path is restricted to vendors {:?}",
+            path.vendor_only
+        ));
     }
 
     let missing_required: Vec<String> = path
@@ -398,21 +607,29 @@ fn missing_requirements(summary: &CapabilitySummary, vendor: &str, path: &PathTe
 }
 
 const KNOWN_ROLES: &[&str] = &[
-    "leaf", "access", "spine", "superspine", "distribution", "border", "ce-facing",
-    "pe", "p", "rr", "peering", "core", "edge", "router", "switch",
+    "leaf",
+    "access",
+    "spine",
+    "superspine",
+    "distribution",
+    "border",
+    "ce-facing",
+    "pe",
+    "p",
+    "rr",
+    "peering",
+    "core",
+    "edge",
+    "router",
+    "switch",
 ];
 
 fn discovery_warnings(summary: &CapabilitySummary, role_hint: Option<&str>) -> Vec<String> {
     let mut warnings = Vec::new();
     let raw_role = role_hint.unwrap_or("leaf").trim();
     let normalized_role = raw_role.to_lowercase();
-    if !normalized_role.is_empty()
-        && !KNOWN_ROLES.contains(&normalized_role.as_str())
-    {
-        warnings.push(format!(
-            "unknown role_hint '{}'",
-            raw_role
-        ));
+    if !normalized_role.is_empty() && !KNOWN_ROLES.contains(&normalized_role.as_str()) {
+        warnings.push(format!("unknown role_hint '{}'", raw_role));
     }
     if summary.model_names.is_empty() {
         warnings.push("device returned no advertised models".to_string());
@@ -511,57 +728,64 @@ mod tests {
     #[test]
     fn capability_summary_detects_vendor() {
         let summary = CapabilitySummary::from_model_names(
-            vec![
-                "urn:nokia.com:srlinux:chassis:srl_nokia-interfaces".to_string(),
-            ],
+            vec!["urn:nokia.com:srlinux:chassis:srl_nokia-interfaces".to_string()],
             &[Encoding::JsonIetf as i32],
         );
         assert_eq!(summary.vendor_label, "nokia_srl");
     }
 }
 
-
 pub fn resolve_subscription_paths(
     device: &crate::config::TargetConfig,
     overrides: &[crate::registry::PathOverride],
 ) -> (Vec<crate::config::SelectedSubscriptionPath>, Vec<String>) {
     let mut audit = Vec::new();
-    let mut paths: std::collections::BTreeMap<String, crate::config::SelectedSubscriptionPath> = std::collections::BTreeMap::new();
-    
+    let mut paths: std::collections::BTreeMap<String, crate::config::SelectedSubscriptionPath> =
+        std::collections::BTreeMap::new();
+
     // 1. Base profile paths
     if device.selected_paths.is_empty() {
         audit.push("Started with 0 paths (no base profile selected)".to_string());
     } else {
-        audit.push(format!("Started from profile with {} paths", device.selected_paths.len()));
+        audit.push(format!(
+            "Started from profile with {} paths",
+            device.selected_paths.len()
+        ));
         for p in &device.selected_paths {
             paths.insert(p.path.clone(), p.clone());
         }
     }
-    
+
     // Sort overrides correctly or apply them in order
     // Apply Role-Env overrides
     let role = device.role.as_deref().unwrap_or("");
     let _env = device.site.as_deref().unwrap_or("data_center"); // or look up actual env
     // Actually we need the environment, but the environment might be fetched from site or inferred.
-    
+
     for ovr in overrides {
         let matches = match &ovr.scope {
             crate::registry::OverrideScope::Site(s) => device.site.as_deref() == Some(s.as_str()),
-            crate::registry::OverrideScope::RoleEnv { role: r, environment: _e } => {
+            crate::registry::OverrideScope::RoleEnv {
+                role: r,
+                environment: _e,
+            } => {
                 // Here we would ideally check actual environment, for now just matching role as a best effort
                 // In production, we'd pass environment to this function.
                 role == r.as_str()
-            },
+            }
             crate::registry::OverrideScope::Device(d) => device.address == d.as_str(),
         };
-        
+
         if matches {
             let scope_str = match &ovr.scope {
                 crate::registry::OverrideScope::Site(s) => format!("site-override({})", s),
-                crate::registry::OverrideScope::RoleEnv { role: r, environment: e } => format!("role-override({}/{})", r, e),
+                crate::registry::OverrideScope::RoleEnv {
+                    role: r,
+                    environment: e,
+                } => format!("role-override({}/{})", r, e),
                 crate::registry::OverrideScope::Device(d) => format!("device-override({})", d),
             };
-            
+
             match ovr.action {
                 crate::registry::OverrideAction::Add => {
                     audit.push(format!("Applied {}: added path '{}'", scope_str, ovr.path));
@@ -577,12 +801,18 @@ pub fn resolve_subscription_paths(
                 }
                 crate::registry::OverrideAction::Drop => {
                     if paths.remove(&ovr.path).is_some() {
-                        audit.push(format!("Applied {}: dropped path '{}'", scope_str, ovr.path));
+                        audit.push(format!(
+                            "Applied {}: dropped path '{}'",
+                            scope_str, ovr.path
+                        ));
                     }
                 }
                 crate::registry::OverrideAction::Modify => {
                     if let Some(p) = paths.get_mut(&ovr.path) {
-                        audit.push(format!("Applied {}: modified path '{}'", scope_str, ovr.path));
+                        audit.push(format!(
+                            "Applied {}: modified path '{}'",
+                            scope_str, ovr.path
+                        ));
                         p.origin = format!("override(mod): {}", scope_str);
                         if let Some(s) = ovr.sample_interval_s {
                             p.sample_interval_ns = s * 1_000_000_000;
@@ -595,7 +825,7 @@ pub fn resolve_subscription_paths(
             }
         }
     }
-    
+
     audit.push(format!("Final path list has {} paths", paths.len()));
     (paths.into_values().collect(), audit)
 }

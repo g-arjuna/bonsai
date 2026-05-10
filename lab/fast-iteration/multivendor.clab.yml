@@ -12,18 +12,27 @@ topology:
       image: ghcr.io/nokia/srlinux:latest
       mgmt-ipv4: 172.100.101.11
       startup-config: configs-mv/srl1.cfg
+      labels:
+        bonsai.role: spine
+        bonsai.environment: data_center
 
     xrd1:
       kind: cisco_xrd
       image: ios-xr/xrd-control-plane:24.4.2
       mgmt-ipv4: 172.100.101.21
       startup-config: configs-mv/xrd1.cfg
+      labels:
+        bonsai.role: pe
+        bonsai.environment: data_center
 
     ceos1:
       kind: arista_ceos
       image: ceos64:4.36.0F
       mgmt-ipv4: 172.100.101.41
       startup-config: configs-mv/ceos1.cfg
+      labels:
+        bonsai.role: leaf
+        bonsai.environment: data_center
 
   links:
     # srl1 <-> xrd1
