@@ -276,6 +276,8 @@ pub struct ServiceNowConfig {
     pub em_push_enabled: bool,
     #[serde(default)]
     pub event_filter: ServiceNowEventFilterConfig,
+    #[serde(default)]
+    pub aiops: ServiceNowAiopsConfig,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -301,6 +303,61 @@ impl Default for ServiceNowEventFilterConfig {
     }
 }
 
+#[derive(Deserialize, Clone, Debug)]
+pub struct ServiceNowAiopsConfig {
+    /// Enable Sprint 6 incident sync and playbook bridge.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Background sync cadence in seconds.
+    #[serde(default = "default_snow_aiops_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+    /// Detections newer than this window are treated as active incidents.
+    #[serde(default = "default_snow_aiops_active_window_secs")]
+    pub active_window_secs: u64,
+    /// Time window used to correlate detections into one incident.
+    #[serde(default = "default_snow_aiops_correlation_window_secs")]
+    pub correlation_window_secs: u64,
+    /// Table name used for ITSM incidents. Default: `incident`.
+    #[serde(default = "default_snow_aiops_incident_table")]
+    pub incident_table: String,
+    /// Numeric ServiceNow state used for open incidents. Default: `1` (New).
+    #[serde(default = "default_snow_aiops_open_state")]
+    pub open_state: String,
+    /// Numeric ServiceNow state used when Bonsai auto-resolves. Default: `6` (Resolved).
+    #[serde(default = "default_snow_aiops_resolved_state")]
+    pub resolved_state: String,
+    /// Optional fallback assignment group name/sys_id when the device has no CMDB-derived group.
+    #[serde(default)]
+    pub assignment_group_fallback: String,
+    /// Maximum physical hop depth used for blast-radius context.
+    #[serde(default = "default_snow_aiops_max_blast_radius_hops")]
+    pub max_blast_radius_hops: usize,
+    /// If true, Bonsai will resolve previously-synced incidents when detections go quiet.
+    #[serde(default = "default_snow_aiops_auto_clear")]
+    pub auto_clear: bool,
+    /// If true, parse ServiceNow comments/work notes for `bonsai:playbook <id>` commands.
+    #[serde(default = "default_snow_aiops_playbook_bridge_enabled")]
+    pub playbook_bridge_enabled: bool,
+}
+
+impl Default for ServiceNowAiopsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            poll_interval_secs: default_snow_aiops_poll_interval_secs(),
+            active_window_secs: default_snow_aiops_active_window_secs(),
+            correlation_window_secs: default_snow_aiops_correlation_window_secs(),
+            incident_table: default_snow_aiops_incident_table(),
+            open_state: default_snow_aiops_open_state(),
+            resolved_state: default_snow_aiops_resolved_state(),
+            assignment_group_fallback: String::new(),
+            max_blast_radius_hops: default_snow_aiops_max_blast_radius_hops(),
+            auto_clear: default_snow_aiops_auto_clear(),
+            playbook_bridge_enabled: default_snow_aiops_playbook_bridge_enabled(),
+        }
+    }
+}
+
 fn default_snow_min_severity() -> String {
     "warning".to_string()
 }
@@ -309,6 +366,33 @@ fn default_snow_min_age_secs() -> u64 {
 }
 fn default_snow_dedup_window_secs() -> u64 {
     300
+}
+fn default_snow_aiops_poll_interval_secs() -> u64 {
+    120
+}
+fn default_snow_aiops_active_window_secs() -> u64 {
+    900
+}
+fn default_snow_aiops_correlation_window_secs() -> u64 {
+    30
+}
+fn default_snow_aiops_incident_table() -> String {
+    "incident".to_string()
+}
+fn default_snow_aiops_open_state() -> String {
+    "1".to_string()
+}
+fn default_snow_aiops_resolved_state() -> String {
+    "6".to_string()
+}
+fn default_snow_aiops_max_blast_radius_hops() -> usize {
+    2
+}
+fn default_snow_aiops_auto_clear() -> bool {
+    true
+}
+fn default_snow_aiops_playbook_bridge_enabled() -> bool {
+    true
 }
 
 /// Auto-assignment rules: when a device has no explicit collector_id, these

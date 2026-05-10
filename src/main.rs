@@ -22,7 +22,6 @@ use bonsai::{
     credentials::{CredentialVault, ResolvePurpose, ResolvedCredential},
     event_bus::InProcessBus,
     graph, ingest,
-    output::OutputAdapter,
     registry::{ApiRegistry, DeviceRegistry, RegistryChange},
     retention,
     store::BonsaiStore,
@@ -810,6 +809,8 @@ async fn main() -> Result<()> {
             }
         });
 
+        let mut startup_adapter_registry: Option<bonsai::output::traits::SharedAdapterRegistry> =
+            None;
         if run_core {
             let http_store = if let Store::Core(s) = store {
                 std::sync::Arc::clone(s)
@@ -834,13 +835,15 @@ async fn main() -> Result<()> {
                 bonsai::enrichment::new_registry(std::path::Path::new(&runtime_dir));
             let adapter_registry =
                 bonsai::output::traits::new_adapter_registry(std::path::Path::new(&runtime_dir));
-            let adapter_registry_for_startup = std::sync::Arc::clone(&adapter_registry);
+            let adapter_registry_handle = std::sync::Arc::clone(&adapter_registry);
+            startup_adapter_registry.replace(std::sync::Arc::clone(&adapter_registry));
             let trust_store = bonsai::remediation::trust::new_trust_store(
                 std::path::Path::new(&runtime_dir),
                 cfg.remediation.clone(),
             );
             let rollback_registry = bonsai::remediation::rollback::new_rollback_registry();
             let remediation_config = cfg.remediation.clone();
+            let servicenow_config = cfg.integrations.servicenow.clone();
             tokio::spawn(async move {
                 let listener = tokio::net::TcpListener::bind(http_addr)
                     .await
@@ -860,6 +863,7 @@ async fn main() -> Result<()> {
                         trust_store,
                         rollback_registry,
                         remediation_config,
+                        servicenow_config,
                         runtime_dir,
                         cfg.archive.path.clone(),
                         cfg.graph_path.clone(),
@@ -880,7 +884,7 @@ async fn main() -> Result<()> {
             // Start enabled output adapters as background tasks.
             {
                 let configs: Vec<_> = {
-                    let reg = adapter_registry_for_startup.read().await;
+                    let reg = adapter_registry_handle.read().await;
                     reg.list()
                         .into_iter()
                         .filter(|(c, _)| c.enabled)
@@ -896,7 +900,7 @@ async fn main() -> Result<()> {
                             &config.name,
                         );
                         let adapter_shutdown = shutdown_rx.clone();
-                        let adapter_registry = std::sync::Arc::clone(&adapter_registry_for_startup);
+                        let adapter_registry = std::sync::Arc::clone(&adapter_registry_handle);
                         let adapter_name = config.name.clone();
                         tokio::spawn(async move {
                             adapter_registry
@@ -925,6 +929,9 @@ async fn main() -> Result<()> {
             && cfg.integrations.servicenow.enabled
             && cfg.integrations.servicenow.em_push_enabled
         {
+            let Some(adapter_registry_for_startup) = startup_adapter_registry.as_ref() else {
+                unreachable!("adapter registry should exist in core mode");
+            };
             let servicenow_adapter_enabled = {
                 let reg = adapter_registry_for_startup.read().await;
                 reg.list()
@@ -948,6 +955,25 @@ async fn main() -> Result<()> {
                     shutdown_rx,
                 );
             }
+        }
+
+        if run_core
+            && cfg.integrations.servicenow.enabled
+            && cfg.integrations.servicenow.aiops.enabled
+        {
+            let snow_cfg = cfg.integrations.servicenow.clone();
+            let creds_for_snow = std::sync::Arc::clone(&credentials);
+            let store_for_snow = if let Store::Core(s) = store {
+                std::sync::Arc::clone(s)
+            } else {
+                unreachable!()
+            };
+            bonsai::integrations::servicenow_aiops::maybe_start(
+                &snow_cfg,
+                store_for_snow,
+                creds_for_snow,
+                shutdown_rx.clone(),
+            );
         }
 
         if run_core && cfg.retention.enabled {

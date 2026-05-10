@@ -17,6 +17,7 @@ pub mod gnmi_set;
 pub mod graph;
 pub mod http_server;
 pub mod ingest;
+pub mod integrations;
 pub mod mcp_client;
 pub mod memory_profile;
 pub mod output;

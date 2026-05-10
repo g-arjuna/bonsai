@@ -144,6 +144,19 @@ graph_path   = "bonsai.db"
 # min_severity       = "warning"   # "critical" | "warning" | "info"
 # min_age_secs       = 60          # only push detections older than N seconds (debounce transients)
 # dedup_window_secs  = 300         # suppress same (device, rule) re-push within N seconds
+#
+# [integrations.servicenow.aiops]
+# enabled                    = false
+# poll_interval_secs         = 120
+# active_window_secs         = 900
+# correlation_window_secs    = 30
+# incident_table             = "incident"
+# open_state                 = "1"   # ServiceNow "New"
+# resolved_state             = "6"   # ServiceNow "Resolved"
+# assignment_group_fallback  = ""
+# max_blast_radius_hops      = 2
+# auto_clear                 = true
+# playbook_bridge_enabled    = true
 
 # ── Human-in-the-loop remediation trust (Sprint 4) ────────────────────────────
 # [remediation]

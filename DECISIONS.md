@@ -1697,3 +1697,15 @@ healthcheck until Compose exists.
 **Synthesizer impact**: the synthesizer remains driven by advertised gNMI capabilities for device-path availability, but now also consults the local YANG library to flag incomplete local module coverage. Missing required models are surfaced as recommendation gaps so operators know when to run `yang-sync` or `yang-import` before trusting catalogue-only reasoning.
 
 **Why not embed pyang/libyang into bonsai-core**: module lifecycle and path discovery are operator workflows, not hot-path telemetry work. Keeping the library/index in a dedicated subsystem preserves the streaming path and avoids forcing heavy parser dependencies into every Bonsai deployment.
+
+---
+
+## 2026-05-10 — CV1 Sprint 6: ServiceNow AIOps sync is graph-driven and incident-centric
+
+**Decision**: Sprint 6 lands as a dedicated `servicenow_aiops` runtime subsystem rather than bolting more logic into the existing Event Management pusher or CMDB enricher. The new subsystem reads grouped Bonsai incidents from the graph, syncs them to ServiceNow ITSM incidents, auto-resolves them when detections go quiet, enriches the incident body with blast-radius context, and accepts operator playbook requests back from ServiceNow comments/work notes using the `bonsai:playbook <playbook_id>` command pattern.
+
+**Why incident-centric instead of detection-centric**: a raw DetectionEvent stream is the right output for Event Management, but it is too noisy for ITSM. ServiceNow operators need one correlated ticket with affected devices, causal hinting, and remediation posture rather than N sibling tickets for the same fault window.
+
+**Why re-use the graph instead of reimplementing correlation in the adapter**: the graph already holds topology, CMDB-derived assignment hints, remediation outcomes, and blast-radius traversals. Keeping correlation and root-cause context anchored there avoids a second source of truth and keeps the ServiceNow layer a projection of Bonsai state rather than an independent incident engine.
+
+**Bridge choice**: the first bidirectional bridge is comments/work-notes driven, not a custom ServiceNow app. That keeps the integration usable on a vanilla PDI or enterprise instance without schema customisation while still giving operators a concrete control path back into Bonsai proposals.

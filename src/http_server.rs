@@ -44,7 +44,7 @@ use crate::{
     change_detection::{self, ChangeDetectionRuntime},
     config::{
         AssignmentRule, LayeredIngestionConfig, RemediationConfig, SelectedSubscriptionPath,
-        StorageConfig, TargetConfig,
+        ServiceNowConfig, StorageConfig, TargetConfig,
     },
     credentials::{CredentialSummary, CredentialVault, ResolvePurpose, ResolvedCredential},
     discovery::{self, DiscoveryInput},
@@ -566,6 +566,7 @@ pub struct AppState {
     pub trust_store: SharedTrustStore,
     pub rollback_registry: SharedRollbackRegistry,
     pub remediation_config: RemediationConfig,
+    pub servicenow_config: ServiceNowConfig,
     pub runtime_dir: String,
     pub archive_path: String,
     pub graph_path: String,
@@ -596,6 +597,7 @@ pub fn router(
     trust_store: SharedTrustStore,
     rollback_registry: SharedRollbackRegistry,
     remediation_config: RemediationConfig,
+    servicenow_config: ServiceNowConfig,
     runtime_dir: String,
     archive_path: String,
     graph_path: String,
@@ -621,6 +623,7 @@ pub fn router(
         trust_store,
         rollback_registry,
         remediation_config,
+        servicenow_config,
         runtime_dir,
         archive_path,
         graph_path,
@@ -741,6 +744,10 @@ pub fn router(
         .route(
             "/api/integrations/servicenow/test",
             post(snow_integration_test_handler),
+        )
+        .route(
+            "/api/integrations/servicenow/aiops/sync",
+            post(servicenow_aiops_sync_handler),
         )
         .route(
             "/api/credentials",
@@ -4695,6 +4702,13 @@ struct SnowTestResponse {
     message: String,
 }
 
+#[derive(Serialize)]
+struct SnowAiopsSyncResponse {
+    success: bool,
+    error: String,
+    stats: crate::integrations::servicenow_aiops::SyncStats,
+}
+
 async fn snow_integration_test_handler(
     State(state): State<AppState>,
     Json(req): Json<SnowTestRequest>,
@@ -4745,6 +4759,29 @@ async fn snow_integration_test_handler(
         Ok(resp) => Json(SnowTestResponse {
             success: false,
             message: format!("ServiceNow returned {}", resp.status()),
+        }),
+    }
+}
+
+async fn servicenow_aiops_sync_handler(
+    State(state): State<AppState>,
+) -> Json<SnowAiopsSyncResponse> {
+    match crate::integrations::servicenow_aiops::run_sync_cycle(
+        &state.servicenow_config,
+        &state.store,
+        &state.credentials,
+    )
+    .await
+    {
+        Ok(stats) => Json(SnowAiopsSyncResponse {
+            success: true,
+            error: String::new(),
+            stats,
+        }),
+        Err(e) => Json(SnowAiopsSyncResponse {
+            success: false,
+            error: format!("{e:#}"),
+            stats: crate::integrations::servicenow_aiops::SyncStats::default(),
         }),
     }
 }
