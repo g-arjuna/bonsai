@@ -56,6 +56,9 @@ graph_path   = "bonsai.db"
 #
 # [layered_ingestion.parser_chain]
 # consensus_mode = false
+# CLI capture uses `scripts/cli_capture.py` plus Paramiko from the repo-local
+# Python environment. When `target.vendor` is absent, Bonsai falls back to
+# hostname inference (`xrd-*`, `srl-*`, `ceos-*`, `crpd-*`, `vjunos-*`, `frr-*`).
 # priorities."cisco-iosxr::show bgp summary" = ["pyats_genie", "ntc_templates", "bonsai_native"]
 # priorities."cisco-iosxr::show bgp neighbors" = ["pyats_genie", "ntc_templates", "bonsai_native"]
 # priorities."cisco-nxos::*" = ["pyats_genie", "suzieq_native", "ntc_templates"]
@@ -114,6 +117,34 @@ graph_path   = "bonsai.db"
 # udp_addr         = "0.0.0.0:9162"
 # archive_path     = "runtime/signals/snmp.jsonl"
 # max_frame_bytes  = 8192
+
+# ── Modern streaming protocols (CV2 Sprint 4) ───────────────────────────────
+# BMP is a native TCP receiver in bonsai-core. Devices export BMP directly to
+# the collector using RFC 7854. This is the preferred standards-based path for
+# per-prefix BGP visibility in mixed-vendor networks.
+# [streaming.bmp]
+# enabled          = false
+# tcp_addr         = "0.0.0.0:5000"
+# archive_path     = "runtime/streaming/bmp.jsonl"
+# max_frame_bytes  = 65535
+#
+# BGP-LS is ingested through a GoBGP-style sidecar that forwards normalized
+# JSON lines to Bonsai. The contract is intentionally vendor-neutral even though
+# the sidecar itself may be fed by vendor-specific control-plane sessions.
+# [streaming.bgp_ls]
+# enabled          = false
+# tcp_addr         = "127.0.0.1:15071"
+# archive_path     = "runtime/streaming/bgp_ls.jsonl"
+# max_frame_bytes  = 65535
+#
+# PCEP remains deferred until the SP lab is validated. The config section exists
+# now so the readiness report can describe the future seam without claiming the
+# runtime parser is already complete.
+# [streaming.pcep]
+# enabled          = false
+# tcp_addr         = "0.0.0.0:4189"
+# archive_path     = "runtime/streaming/pcep.jsonl"
+# max_frame_bytes  = 65535
 
 # ── Retention (v11 T4-3) ─────────────────────────────────────────────────────
 # Enabled by default to bound graph memory and WAL size.

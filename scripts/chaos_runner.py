@@ -171,6 +171,47 @@ def inject(fault: dict, targets: dict, topology: str, dry_run: bool) -> dict | N
                 "healed_at_ns": None,
             }
 
+        elif fault_type == "route_flap":
+            hostname = random.choice(fault["targets"])
+            peer = random.choice(fault["peer_addresses"])
+            flap_count = int(fault.get("flap_count", 3))
+            flap_hold = int(random_from_range(fault.get("flap_hold_seconds", [3, 8])))
+            log.info(
+                "[INJECT] route_flap  host=%s  peer=%s  flap_count=%s  hold=%ss",
+                hostname,
+                peer,
+                flap_count,
+                flap_hold,
+            )
+            if not dry_run:
+                for _ in range(flap_count):
+                    inject_fault.dispatch_bgp_down(targets, hostname, peer, topology)
+                    time.sleep(flap_hold)
+                    inject_fault.dispatch_bgp_up(targets, hostname, peer, topology)
+                    time.sleep(1)
+            healed_at_ns = time.time_ns()
+            return {
+                "fault_type": fault_type,
+                "hostname": hostname,
+                "param": f"{peer}:flap_count={flap_count}:hold={flap_hold}",
+                "injected_at_ns": now_ns,
+                "healed_at_ns": healed_at_ns,
+            }
+
+        elif fault_type == "sr_policy_degrade":
+            hostname = random.choice(fault["targets"])
+            policy_name = random.choice(fault["policy_names"])
+            log.info("[INJECT] sr_policy_degrade  host=%s  policy=%s", hostname, policy_name)
+            if not dry_run:
+                inject_fault.dispatch_sr_policy_down(targets, hostname, policy_name, topology)
+            return {
+                "fault_type": fault_type,
+                "hostname": hostname,
+                "param": policy_name,
+                "injected_at_ns": now_ns,
+                "healed_at_ns": None,
+            }
+
         else:
             log.warning("Unknown fault type: %s — skipping", fault_type)
             return None
@@ -185,6 +226,9 @@ def heal(record: dict, fault: dict, targets: dict, topology: str, dry_run: bool)
     fault_type = record["fault_type"]
     hostname = record["hostname"]
     param = record["param"]
+
+    if record.get("healed_at_ns") is not None:
+        return
 
     try:
         if fault_type == "bgp_session_down":
@@ -208,6 +252,11 @@ def heal(record: dict, fault: dict, targets: dict, topology: str, dry_run: bool)
             log.info("[HEAL] netem_clear  host=%s  iface=%s", hostname, iface)
             if not dry_run:
                 inject_fault.netem_clear(hostname, iface, topology)
+
+        elif fault_type == "sr_policy_degrade":
+            log.info("[HEAL] sr_policy_restore  host=%s  policy=%s", hostname, param)
+            if not dry_run:
+                inject_fault.dispatch_sr_policy_up(targets, hostname, param, topology)
 
     except Exception as exc:
         log.error("[HEAL ERROR] %s: %s", fault_type, exc)

@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::config::{LayeredIngestionConfig, TargetConfig};
 use crate::config_store::{ConfigStore, summarize_diff};
 use crate::credentials::{CredentialVault, ResolvePurpose, ResolvedCredential};
-use crate::enrichment::multi_source::{GnmiGetConfigEnricher, MultiSourceEnricher};
+use crate::enrichment::registry::MultiSourceEnricherRegistry;
 use crate::event_bus::{BusSubscriber, InProcessBus, MpscSubscriber, OverflowPolicy};
 use crate::graph::GraphStore;
 use crate::graph::common::{read_str, read_ts_ns, ts};
@@ -81,6 +81,7 @@ impl ChangeDetectionRuntime {
             tx,
             history_limit: layered.history_limit,
         });
+        let capture_registry = Arc::new(MultiSourceEnricherRegistry::from_layered_config(&layered));
 
         tokio::spawn(run_worker(
             rx,
@@ -88,7 +89,7 @@ impl ChangeDetectionRuntime {
             Arc::clone(&registry),
             Arc::clone(&credentials),
             Arc::clone(&config_store),
-            layered.default_gnmi_get_paths.clone(),
+            capture_registry,
         ));
 
         let (subscriber, mut subscriber_rx) =
@@ -250,7 +251,7 @@ async fn run_worker(
     registry: Arc<ApiRegistry>,
     credentials: Arc<CredentialVault>,
     config_store: Arc<ConfigStore>,
-    default_paths: Vec<String>,
+    capture_registry: Arc<MultiSourceEnricherRegistry>,
 ) {
     while let Some(request) = rx.recv().await {
         if let Err(error) = process_request(
@@ -259,7 +260,7 @@ async fn run_worker(
             Arc::clone(&registry),
             Arc::clone(&credentials),
             Arc::clone(&config_store),
-            default_paths.clone(),
+            Arc::clone(&capture_registry),
         )
         .await
         {
@@ -274,18 +275,16 @@ async fn process_request(
     registry: Arc<ApiRegistry>,
     credentials: Arc<CredentialVault>,
     config_store: Arc<ConfigStore>,
-    default_paths: Vec<String>,
+    capture_registry: Arc<MultiSourceEnricherRegistry>,
 ) -> Result<()> {
     let target = registry
         .get_device(&request.device_address)?
         .ok_or_else(|| anyhow!("managed device '{}' not found", request.device_address))?;
 
     let resolved_credentials = resolve_target_credentials(&target, &credentials)?;
-    let capture = GnmiGetConfigEnricher {
-        paths: default_paths,
-    }
-    .capture(&target, resolved_credentials.as_ref())
-    .await?;
+    let capture = capture_registry
+        .capture(&target, resolved_credentials.as_ref())
+        .await?;
     let snapshot_id = Uuid::new_v4().to_string();
     let captured_at_ns = now_ns();
     let stored = config_store.store_snapshot(&target.address, &snapshot_id, &capture.payload)?;
@@ -329,6 +328,16 @@ async fn process_request(
             )
         };
 
+    let details_json = serde_json::json!({
+        "trigger": request.trigger.clone(),
+        "reason": request.reason.clone(),
+        "capture": capture.details.clone(),
+        "summary": summary.clone(),
+        "added_lines": added_lines,
+        "removed_lines": removed_lines,
+    })
+    .to_string();
+
     write_snapshot_and_change(
         store,
         SnapshotWrite {
@@ -346,6 +355,9 @@ async fn process_request(
             changed,
             added_lines,
             removed_lines,
+            parser: capture.parser,
+            confidence: capture.confidence,
+            details_json,
             previous_snapshot_id,
             previous_hash,
         },
@@ -424,6 +436,9 @@ struct SnapshotWrite {
     changed: bool,
     added_lines: i64,
     removed_lines: i64,
+    parser: String,
+    confidence: String,
+    details_json: String,
     previous_snapshot_id: Option<String>,
     previous_hash: Option<String>,
 }
@@ -600,14 +615,10 @@ async fn write_snapshot_and_change(store: Arc<GraphStore>, write: SnapshotWrite)
                 owner_kind: "ConfigSnapshot",
                 owner_id: &write.snapshot_id,
                 source: &write.source,
-                parser: "gnmi_json",
-                confidence: "medium",
+                parser: &write.parser,
+                confidence: &write.confidence,
                 captured_at_ns: write.captured_at_ns,
-                details_json: &serde_json::json!({
-                    "trigger": write.trigger,
-                    "reason": write.reason,
-                })
-                .to_string(),
+                details_json: &write.details_json,
             },
         )?;
 
@@ -674,15 +685,10 @@ async fn write_snapshot_and_change(store: Arc<GraphStore>, write: SnapshotWrite)
                     owner_kind: "ConfigChange",
                     owner_id: &change_id,
                     source: &write.source,
-                    parser: "gnmi_json",
-                    confidence: "medium",
+                    parser: &write.parser,
+                    confidence: &write.confidence,
                     captured_at_ns: write.captured_at_ns,
-                    details_json: &serde_json::json!({
-                        "summary": write.summary,
-                        "added_lines": write.added_lines,
-                        "removed_lines": write.removed_lines,
-                    })
-                    .to_string(),
+                    details_json: &write.details_json,
                 },
             )?;
         }

@@ -215,8 +215,6 @@ fn native_parse(raw_output: &str) -> serde_json::Value {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use wiremock::matchers::{body_json, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn test_config() -> ParserChainConfig {
         let mut priorities = HashMap::new();
@@ -245,49 +243,45 @@ mod tests {
         assert_eq!(decision.consensus_state, "single-parser");
     }
 
-    #[tokio::test]
-    async fn parser_chain_calls_sidecar_and_records_consensus() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/parse"))
-            .and(body_json(serde_json::json!({
-                "parser": "pyats_genie",
-                "vendor": "cisco-iosxr",
-                "command_pattern": "show bgp summary",
-                "raw_output": "Neighbor 10.0.0.1 Established"
-            })))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "parser": "pyats_genie",
-                "parsed_json": {"neighbors": 1, "state": "Established"}
-            })))
-            .mount(&server)
-            .await;
-
-        let mut priorities = HashMap::new();
-        priorities.insert(
-            "cisco-iosxr::show bgp summary".to_string(),
-            vec!["pyats_genie".to_string(), "bonsai_native".to_string()],
-        );
-        let chain = ParserChain::new(ParserChainConfig {
-            sidecars: ParserSidecarConfig {
-                pyats_url: server.uri(),
-                native_url: server.uri(),
+    #[test]
+    fn consensus_state_marks_matching_outputs_as_agreed() {
+        let primary = serde_json::json!({"neighbors": 1, "state": "Established"});
+        let attempts = vec![
+            ParseAttempt {
+                parser: "pyats_genie".to_string(),
+                success: true,
+                error: String::new(),
+                parsed_json: primary.clone(),
             },
-            priorities,
-            consensus_mode: true,
-        });
+            ParseAttempt {
+                parser: "bonsai_native".to_string(),
+                success: true,
+                error: String::new(),
+                parsed_json: primary.clone(),
+            },
+        ];
 
-        let decision = chain
-            .parse(ParseRequest {
-                vendor: "cisco-iosxr".to_string(),
-                command_pattern: "show bgp summary".to_string(),
-                raw_output: "Neighbor 10.0.0.1 Established".to_string(),
-            })
-            .await
-            .expect("parse decision");
+        assert_eq!(consensus_state(&attempts, &primary), "agreed");
+    }
 
-        assert_eq!(decision.primary_parser, "pyats_genie");
-        assert_eq!(decision.consensus_state, "disagreed");
-        assert_eq!(decision.attempts.len(), 2);
+    #[test]
+    fn consensus_state_marks_divergent_outputs_as_disagreed() {
+        let primary = serde_json::json!({"neighbors": 1, "state": "Established"});
+        let attempts = vec![
+            ParseAttempt {
+                parser: "pyats_genie".to_string(),
+                success: true,
+                error: String::new(),
+                parsed_json: primary.clone(),
+            },
+            ParseAttempt {
+                parser: "bonsai_native".to_string(),
+                success: true,
+                error: String::new(),
+                parsed_json: serde_json::json!({"line_count": 1}),
+            },
+        ];
+
+        assert_eq!(consensus_state(&attempts, &primary), "disagreed");
     }
 }

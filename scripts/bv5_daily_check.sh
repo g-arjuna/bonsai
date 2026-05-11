@@ -114,11 +114,62 @@ else:
 PY
 }
 
+_driver_results_summary() {
+    "$PYTHON" - "$REPO_ROOT" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+driver_dir = Path(sys.argv[1]) / "runtime" / "driver_results"
+if not driver_dir.exists():
+    print("status: WARN - runtime/driver_results does not exist")
+    raise SystemExit(0)
+
+files = sorted(driver_dir.glob("*.json"))
+if not files:
+    print("status: WARN - no driver result files present")
+    raise SystemExit(0)
+
+counts = {"pass": 0, "fail": 0, "skip": 0, "unknown": 0}
+for path in files:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"{path.name}: invalid json - {exc}")
+        counts["fail"] += 1
+        continue
+
+    status = payload.get("status")
+    if status is None:
+        if payload.get("failed", 0) == 0:
+            status = "pass"
+        else:
+            status = "fail"
+    if status not in counts:
+        status = "unknown"
+    counts[status] += 1
+    summary = payload.get("summary", "")
+    print(f"{path.name}: {status} {summary}".rstrip())
+
+total = sum(counts.values())
+print(f"totals: {total} files, pass={counts['pass']}, fail={counts['fail']}, skip={counts['skip']}, unknown={counts['unknown']}")
+if counts["fail"] > 0:
+    print("status: FAIL - at least one driver result reported failure")
+elif counts["pass"] == 0:
+    print("status: WARN - no passing driver results recorded")
+else:
+    print("status: PASS - driver results aggregated cleanly")
+PY
+}
+
 {
     printf '# BV5 Daily Check — %s\n\n' "$DATE_UTC"
     printf 'Generated: %s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
     _run_block "Bonsai Status" curl -fsS "$API_BASE/api/_test/status"
+    _run_block "Driver Results Summary" _driver_results_summary
     _run_block "Archive Verification" bash "$REPO_ROOT/scripts/verify_archive.sh" "$ARCHIVE_DIR" --json
     _run_block "Chaos Runner Status" bash "$REPO_ROOT/scripts/chaos_runner.sh" --status
     _run_block "Chaos Cycle Summary" _chaos_summary

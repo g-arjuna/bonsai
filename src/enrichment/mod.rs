@@ -12,6 +12,8 @@
 pub mod factory;
 pub mod multi_source;
 pub mod netbox;
+pub mod parser_chain_enricher;
+pub mod registry;
 pub mod servicenow;
 
 use std::path::{Path, PathBuf};

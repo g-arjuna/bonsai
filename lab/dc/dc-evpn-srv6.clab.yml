@@ -26,6 +26,12 @@ name: bonsai-dc
 #   - BFD 1s intervals on all p2p uplinks
 #   - L3VPN tenant-A (all leaves) + tenant-B (leaf3, leaf4)
 #
+# Streaming tier intent (CV2 Sprint 4):
+#   - BMP exporters: spines + super-spines are the preferred RIB-export points for
+#     per-prefix visibility, with leaves optional when lab scale allows.
+#   - BGP-LS source: this topology does not enable BGP-LS by default because the
+#     DC fabric is SRv6-focused; keep it gNMI+BMP-first here.
+#
 # Addressing:
 #   Mgmt: 172.100.103.0/24
 #   Loopbacks: 10.1.0.x/32  (x=1 super1 .. x=8 leaf4)
@@ -56,6 +62,7 @@ topology:
       labels:
         bonsai.role: super-spine
         bonsai.environment: data_center
+        bonsai.streaming.bmp: exporter
 
     srl-super2:
       kind: nokia_srlinux
@@ -65,6 +72,7 @@ topology:
       labels:
         bonsai.role: super-spine
         bonsai.environment: data_center
+        bonsai.streaming.bmp: exporter
 
     # ── Spines ────────────────────────────────────────────────────────────────
     srl-spine1:
@@ -75,6 +83,7 @@ topology:
       labels:
         bonsai.role: spine
         bonsai.environment: data_center
+        bonsai.streaming.bmp: exporter
 
     srl-spine2:
       kind: nokia_srlinux
@@ -84,6 +93,7 @@ topology:
       labels:
         bonsai.role: spine
         bonsai.environment: data_center
+        bonsai.streaming.bmp: exporter
 
     # ── Leaves (VTEPs) ────────────────────────────────────────────────────────
     srl-leaf1:

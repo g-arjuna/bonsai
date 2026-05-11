@@ -44,7 +44,7 @@ use crate::{
     change_detection::{self, ChangeDetectionRuntime},
     config::{
         AssignmentRule, LayeredIngestionConfig, RemediationConfig, SelectedSubscriptionPath,
-        ServiceNowConfig, StorageConfig, TargetConfig,
+        ServiceNowConfig, StorageConfig, StreamingConfig, TargetConfig,
     },
     credentials::{CredentialSummary, CredentialVault, ResolvePurpose, ResolvedCredential},
     discovery::{self, DiscoveryInput},
@@ -54,6 +54,7 @@ use crate::{
         SharedRollbackRegistry, SharedTrustStore, TrustKey, TrustState, check_graduation,
     },
     store::BonsaiStore,
+    streaming::{self, StreamingReadinessReport},
     synthesizer,
     yang::YangLibrary,
 };
@@ -572,6 +573,7 @@ pub struct AppState {
     pub graph_path: String,
     pub storage_config: StorageConfig,
     pub layered_ingestion: LayeredIngestionConfig,
+    pub streaming: StreamingConfig,
     pub yang_library_root: String,
     pub yang_cache_root: String,
     pub yang_bundle_key_env: String,
@@ -603,6 +605,7 @@ pub fn router(
     graph_path: String,
     storage_config: StorageConfig,
     layered_ingestion: LayeredIngestionConfig,
+    streaming: StreamingConfig,
     yang_library_root: String,
     yang_cache_root: String,
     yang_bundle_key_env: String,
@@ -629,6 +632,7 @@ pub fn router(
         graph_path,
         storage_config,
         layered_ingestion,
+        streaming,
         yang_library_root,
         yang_cache_root,
         yang_bundle_key_env,
@@ -654,6 +658,10 @@ pub fn router(
         .route(
             "/api/devices/{address}/gnmi-readiness",
             get(device_gnmi_readiness_handler),
+        )
+        .route(
+            "/api/devices/{address}/streaming-readiness",
+            get(device_streaming_readiness_handler),
         )
         .route(
             "/api/devices/{address}/recommendations",
@@ -1893,12 +1901,20 @@ async fn test_status_handler(
 
     let driver_dir = std::path::Path::new(&state.runtime_dir).join("driver_results");
     let mut driver_results = serde_json::Map::new();
-    for name in &["api", "event", "ui"] {
-        let p = driver_dir.join(format!("{name}.json"));
-        if let Ok(s) = tokio::fs::read_to_string(&p).await
-            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&s)
-        {
-            driver_results.insert(name.to_string(), v);
+    if let Ok(mut entries) = tokio::fs::read_dir(&driver_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(s) = tokio::fs::read_to_string(&path).await
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&s)
+            {
+                driver_results.insert(stem.to_string(), v);
+            }
         }
     }
 
@@ -2596,6 +2612,12 @@ struct DeviceGnmiReadinessResponse {
     report: discovery::GnmiReadinessReport,
 }
 
+#[derive(Serialize)]
+struct DeviceStreamingReadinessResponse {
+    address: String,
+    report: StreamingReadinessReport,
+}
+
 async fn device_config_history_handler(
     State(state): State<AppState>,
     Path(address): Path<String>,
@@ -2650,6 +2672,53 @@ async fn device_gnmi_readiness_handler(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(DeviceGnmiReadinessResponse { address, report }))
+}
+
+async fn device_streaming_readiness_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<Json<DeviceStreamingReadinessResponse>, (StatusCode, String)> {
+    let target = state
+        .registry
+        .get_device(&address)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("device '{address}' not found"),
+            )
+        })?;
+
+    let resolved = resolve_target_credentials_for_discovery(&target, &state.credentials)
+        .map_err(|e| (StatusCode::FAILED_DEPENDENCY, e.to_string()))?;
+    let gnmi = if resolved.is_some() || target.ca_cert.is_some() {
+        Some(
+            discovery::gnmi_readiness_report(
+                DiscoveryInput {
+                    address: target.address.clone(),
+                    username: resolved.as_ref().map(|creds| creds.username.clone()),
+                    password: resolved.as_ref().map(|creds| creds.password.clone()),
+                    username_env: None,
+                    password_env: None,
+                    ca_cert_path: target.ca_cert.clone(),
+                    tls_domain: target.tls_domain.clone(),
+                    role_hint: target.role.clone(),
+                    environment_archetype: None,
+                },
+                &state.layered_ingestion.gnmi_known_issues_path,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+
+    let report =
+        streaming::build_streaming_readiness_report(&target, gnmi.as_ref(), &state.streaming);
+    persist_streaming_readiness(Arc::clone(&state.store), &address, &report)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(DeviceStreamingReadinessResponse { address, report }))
 }
 
 async fn device_recommendations_handler(
@@ -2711,6 +2780,11 @@ async fn device_recommendations_handler(
     } else {
         None
     };
+    let streaming_readiness = streaming::build_streaming_readiness_report(
+        &target,
+        readiness_report.as_ref(),
+        &state.streaming,
+    );
 
     let overrides = state.registry.list_overrides().unwrap_or_default();
     let yang_library_state = YangLibrary::open(
@@ -2725,6 +2799,7 @@ async fn device_recommendations_handler(
         &target,
         discovery_report.as_ref(),
         readiness_report.as_ref(),
+        Some(&streaming_readiness),
         warnings,
         &overrides,
         yang_library_state.as_ref(),
@@ -2868,6 +2943,64 @@ async fn persist_gnmi_readiness(
     })
     .await
     .map_err(|e| anyhow::anyhow!("gNMI readiness persistence task panicked: {e}"))?
+}
+
+async fn persist_streaming_readiness(
+    store: Arc<GraphStore>,
+    address: &str,
+    report: &StreamingReadinessReport,
+) -> anyhow::Result<()> {
+    let db = store.db();
+    let write_lock = store.write_lock();
+    let address = address.to_string();
+    let report = report.clone();
+    tokio::task::spawn_blocking(move || {
+        let _guard = write_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("graph write lock poisoned"))?;
+        let conn = Connection::new(&db)?;
+        let readiness_id = format!("{address}:streaming-readiness");
+        let checked_at =
+            time::OffsetDateTime::from_unix_timestamp_nanos(report.checked_at_ns.into())?;
+        let mut stmt = conn.prepare(
+            "MERGE (r:StreamingReadiness {id: $id}) \
+             SET r.device_address = $addr, r.vendor = $vendor, r.role = $role, \
+                 r.protocols_json = $protocols_json, r.recommended_protocols_json = $recommended_protocols_json, \
+                 r.checked_at = $checked_at",
+        )?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("id", Value::String(readiness_id.clone())),
+                ("addr", Value::String(address.clone())),
+                ("vendor", Value::String(report.vendor)),
+                ("role", Value::String(report.role)),
+                (
+                    "protocols_json",
+                    Value::String(serde_json::to_string(&report.protocols)?),
+                ),
+                (
+                    "recommended_protocols_json",
+                    Value::String(serde_json::to_string(&report.recommended_protocols)?),
+                ),
+                ("checked_at", Value::TimestampNs(checked_at)),
+            ],
+        )?;
+        let mut rel_stmt = conn.prepare(
+            "MATCH (d:Device {address: $addr}), (r:StreamingReadiness {id: $id}) \
+             MERGE (d)-[:HAS_STREAMING_READINESS]->(r)",
+        )?;
+        conn.execute(
+            &mut rel_stmt,
+            vec![
+                ("addr", Value::String(address)),
+                ("id", Value::String(readiness_id)),
+            ],
+        )?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("streaming readiness persistence task panicked: {e}"))?
 }
 
 #[derive(Deserialize)]

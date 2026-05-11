@@ -18,6 +18,9 @@ pub struct MultiSourceCapture {
     pub source: String,
     pub path_count: usize,
     pub payload: String,
+    pub parser: String,
+    pub confidence: String,
+    pub details: serde_json::Value,
 }
 
 #[async_trait::async_trait]
@@ -86,6 +89,12 @@ impl MultiSourceEnricher for GnmiGetConfigEnricher {
                 self.paths.len()
             },
             payload,
+            parser: "gnmi_json".to_string(),
+            confidence: "medium".to_string(),
+            details: serde_json::json!({
+                "transport": "gnmi_get",
+                "paths": self.paths,
+            }),
         })
     }
 }

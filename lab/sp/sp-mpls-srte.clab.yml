@@ -28,6 +28,11 @@ name: bonsai-sp
 #   - SR-TE policy on pe1: explicit path pe1→p1→p2→pe2 (color 100)
 #   - BFD 1 s on backbone links
 #
+# Streaming tier intent (CV2 Sprint 4):
+#   - BMP exporters: PEs + route reflectors are the preferred RIB-export points.
+#   - BGP-LS source: RR/PE sidecar feed is the preferred topology source.
+#   - SR policy degradation testing targets `bonsai-pe1-pe2` on `srl-pe1`.
+#
 # Addressing:
 #   Mgmt: 172.100.104.0/24
 #   Loopbacks: 10.2.0.x/32  (x=1 pe1 .. x=7 rr2; x=8 ce1, x=9 ce2)
@@ -65,6 +70,9 @@ topology:
       labels:
         bonsai.role: pe
         bonsai.environment: service_provider
+        bonsai.streaming.bmp: exporter
+        bonsai.streaming.bgp_ls: source
+        bonsai.streaming.sr_policy: bonsai-pe1-pe2
 
     srl-pe2:
       kind: nokia_srlinux
@@ -74,6 +82,8 @@ topology:
       labels:
         bonsai.role: pe
         bonsai.environment: service_provider
+        bonsai.streaming.bmp: exporter
+        bonsai.streaming.bgp_ls: source
 
     srl-pe3:
       kind: nokia_srlinux
@@ -83,6 +93,8 @@ topology:
       labels:
         bonsai.role: pe
         bonsai.environment: service_provider
+        bonsai.streaming.bmp: exporter
+        bonsai.streaming.bgp_ls: source
 
     # ── Nokia SR Linux Route Reflectors ───────────────────────────────────────
     srl-rr1:
@@ -93,6 +105,8 @@ topology:
       labels:
         bonsai.role: rr
         bonsai.environment: service_provider
+        bonsai.streaming.bmp: exporter
+        bonsai.streaming.bgp_ls: source
 
     srl-rr2:
       kind: nokia_srlinux
@@ -102,6 +116,8 @@ topology:
       labels:
         bonsai.role: rr
         bonsai.environment: service_provider
+        bonsai.streaming.bmp: exporter
+        bonsai.streaming.bgp_ls: source
 
     # ── FRR P routers (SR-MPLS + LDP transit) ────────────────────────────────
     frr-p1:
@@ -114,6 +130,7 @@ topology:
       labels:
         bonsai.role: p
         bonsai.environment: service_provider
+        bonsai.streaming.bgp_ls: source
 
     frr-p2:
       kind: linux
@@ -125,6 +142,7 @@ topology:
       labels:
         bonsai.role: p
         bonsai.environment: service_provider
+        bonsai.streaming.bgp_ls: source
 
     # ── FRR Customer Edge ─────────────────────────────────────────────────────
     frr-ce1:

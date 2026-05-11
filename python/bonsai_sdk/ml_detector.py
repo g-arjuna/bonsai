@@ -65,6 +65,9 @@ EVENT_TYPE_ENCODING  = {
     "snmp_fru_failure":            14,
     "snmp_link_down":              15,
     "snmp_link_up":                16,
+    "bmp_route_change":            17,
+    "bmp_session_change":          18,
+    "sr_policy_change":            19,
 }
 
 

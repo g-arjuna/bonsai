@@ -18,6 +18,8 @@ Notes
 - Host/peer/interface combinations are topology-specific. These plans are written for `lab/fast-iteration/bonsai-phase4.clab.yml`.
 - `interface_shut` uses NOS interface names (`ethernet-1/x`, `GigabitEthernet0/0/0/x`).
 - `netem_loss` uses ContainerLab link endpoint names (`e1-1`, `e1-2`, `e1-3`) because it operates through `clab tools netem`.
+- `route_flap` repeatedly bounces a BGP neighbor in short intervals so BMP route-monitoring can accumulate per-prefix churn.
+- `sr_policy_degrade` disables an SR Linux SR policy by name and then restores it after the plan's healing window. This is intended for the SP lab.
 - If `clab` is not installed on the host that runs `scripts/chaos_runner.py`, the runner will warn and skip `netem_loss` entries instead of failing the whole plan. The intended production path for these plans is still WSL, not Windows-hosted Python.
 - For a quick smoke run:
   `python scripts/chaos_runner.py chaos_plans/baseline_mix.yaml --duration-hours 0.03`

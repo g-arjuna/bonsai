@@ -1,0 +1,30 @@
+name: Wiring Check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "scripts/**"
+      - ".github/workflows/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "scripts/**"
+      - ".github/workflows/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+
+jobs:
+  wiring-check:
+    name: Sprint 1 wiring guard
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run wiring checks
+        run: bash scripts/check_wiring.sh

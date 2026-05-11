@@ -444,6 +444,7 @@ dependencies = [
  "prost",
  "prost-types",
  "protoc-bin-vendored",
+ "regex",
  "reqwest",
  "rmp-serde",
  "rustls",

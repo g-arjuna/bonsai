@@ -44,6 +44,8 @@ pub struct Config {
     #[serde(default)]
     pub signals: SignalsConfig,
     #[serde(default)]
+    pub streaming: StreamingConfig,
+    #[serde(default)]
     pub target: Vec<TargetConfig>,
 }
 
@@ -136,6 +138,116 @@ fn default_syslog_archive_path() -> String {
 }
 fn default_syslog_max_frame_bytes() -> usize {
     8192
+}
+
+// ── Modern streaming protocols (CV2 Sprint 4) ───────────────────────────────
+
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct StreamingConfig {
+    #[serde(default)]
+    pub bmp: BmpConfig,
+    #[serde(default)]
+    pub bgp_ls: BgpLsConfig,
+    #[serde(default)]
+    pub pcep: PcepConfig,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct BmpConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_bmp_tcp_addr")]
+    pub tcp_addr: String,
+    #[serde(default = "default_bmp_archive_path")]
+    pub archive_path: String,
+    #[serde(default = "default_bmp_max_frame_bytes")]
+    pub max_frame_bytes: usize,
+}
+
+impl Default for BmpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tcp_addr: default_bmp_tcp_addr(),
+            archive_path: default_bmp_archive_path(),
+            max_frame_bytes: default_bmp_max_frame_bytes(),
+        }
+    }
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct BgpLsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// TCP listener receiving line-delimited JSON events from a GoBGP sidecar.
+    #[serde(default = "default_bgp_ls_tcp_addr")]
+    pub tcp_addr: String,
+    #[serde(default = "default_bgp_ls_archive_path")]
+    pub archive_path: String,
+    #[serde(default = "default_bgp_ls_max_frame_bytes")]
+    pub max_frame_bytes: usize,
+}
+
+impl Default for BgpLsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tcp_addr: default_bgp_ls_tcp_addr(),
+            archive_path: default_bgp_ls_archive_path(),
+            max_frame_bytes: default_bgp_ls_max_frame_bytes(),
+        }
+    }
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct PcepConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_pcep_tcp_addr")]
+    pub tcp_addr: String,
+    #[serde(default = "default_pcep_archive_path")]
+    pub archive_path: String,
+    #[serde(default = "default_pcep_max_frame_bytes")]
+    pub max_frame_bytes: usize,
+}
+
+impl Default for PcepConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tcp_addr: default_pcep_tcp_addr(),
+            archive_path: default_pcep_archive_path(),
+            max_frame_bytes: default_pcep_max_frame_bytes(),
+        }
+    }
+}
+
+fn default_bmp_tcp_addr() -> String {
+    "0.0.0.0:5000".to_string()
+}
+fn default_bmp_archive_path() -> String {
+    "runtime/streaming/bmp.jsonl".to_string()
+}
+fn default_bmp_max_frame_bytes() -> usize {
+    65535
+}
+fn default_bgp_ls_tcp_addr() -> String {
+    "127.0.0.1:15071".to_string()
+}
+fn default_bgp_ls_archive_path() -> String {
+    "runtime/streaming/bgp_ls.jsonl".to_string()
+}
+fn default_bgp_ls_max_frame_bytes() -> usize {
+    65535
+}
+fn default_pcep_tcp_addr() -> String {
+    "0.0.0.0:4189".to_string()
+}
+fn default_pcep_archive_path() -> String {
+    "runtime/streaming/pcep.jsonl".to_string()
+}
+fn default_pcep_max_frame_bytes() -> usize {
+    65535
 }
 
 // ── Logging ───────────────────────────────────────────────────────────────────

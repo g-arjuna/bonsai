@@ -4,3 +4,27 @@ patterns:
   - "configuration database changed"
   - "ui_commit"
   - "mgd: commit complete"
+facts:
+  - fact_type: bgp_neighbor
+    category: protocol
+    regex: '(?i)bgp neighbor (?P<peer_address>\d{1,3}(?:\.\d{1,3}){3}) (?P<new_state>down|up|established|idle|active|connect)'
+    field_schema:
+      peer_address: string
+      new_state: string
+  - fact_type: interface_state
+    category: protocol
+    regex: '(?i)(?:interface|ifd) (?P<if_name>[A-Za-z0-9./:_-]+).*(?:state|link).*(?P<new_state>up|down|administratively down|errdisabled)'
+    field_schema:
+      if_name: string
+      new_state: string
+  - fact_type: hardware_error
+    category: hardware
+    regex: '(?i)(?P<component>fan|psu|power|temperature|thermal|fru)[^\n]*(?P<status>fail(?:ed|ure)?|alarm|critical|down)'
+    field_schema:
+      component: string
+      status: string
+  - fact_type: aaa_failure
+    category: auth
+    regex: '(?i)(?:failed password|login failed|aaa).*?(?:for|user) (?P<username>[A-Za-z0-9._-]+)'
+    field_schema:
+      username: string

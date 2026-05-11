@@ -27,6 +27,7 @@ pub mod remediation;
 pub mod retention;
 pub mod signals;
 pub mod store;
+pub mod streaming;
 pub mod subscriber;
 pub mod subscription_status;
 pub mod synthesizer;

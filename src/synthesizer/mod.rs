@@ -9,6 +9,7 @@ use crate::catalogue::{
 use crate::config::{SelectedSubscriptionPath, TargetConfig};
 use crate::discovery::{DiscoveryReport, GnmiReadinessReport, PathProfileMatch, SubscriptionPath};
 use crate::registry::{OverrideAction, OverrideScope, PathOverride};
+use crate::streaming::{ProtocolRecommendation, StreamingReadinessReport};
 use crate::yang::{YangLibraryState, evaluate_profile_requirements};
 
 const PATH_PROFILE_DIR: &str = "config/path_profiles";
@@ -64,6 +65,7 @@ pub struct SynthesizerReport {
     pub matched_rules: Vec<String>,
     pub recommended_profiles: Vec<SynthesizedProfile>,
     pub recommended_paths: Vec<SynthesizedPath>,
+    pub recommended_streaming_protocols: Vec<ProtocolRecommendation>,
     pub blockers: Vec<String>,
     pub gaps: Vec<String>,
     pub warnings: Vec<String>,
@@ -74,6 +76,7 @@ pub fn synthesize_for_target(
     target: &TargetConfig,
     discovery: Option<&DiscoveryReport>,
     readiness: Option<&GnmiReadinessReport>,
+    streaming_readiness: Option<&StreamingReadinessReport>,
     warnings: Vec<String>,
     overrides: &[PathOverride],
     yang_library: Option<&YangLibraryState>,
@@ -101,6 +104,9 @@ pub fn synthesize_for_target(
         matched_rules: matched_rules.iter().map(|rule| rule.name.clone()).collect(),
         recommended_profiles: Vec::new(),
         recommended_paths: Vec::new(),
+        recommended_streaming_protocols: streaming_readiness
+            .map(|report| report.recommended_protocols.clone())
+            .unwrap_or_default(),
         blockers: readiness.map(|r| r.blockers.clone()).unwrap_or_default(),
         gaps: Vec::new(),
         warnings,
@@ -625,6 +631,7 @@ mod tests {
             &target("leaf", "nokia_srl"),
             None,
             None,
+            None,
             Vec::new(),
             &[],
             None,
@@ -664,6 +671,7 @@ mod tests {
             &target("spine", "nokia_srl"),
             Some(&discovery),
             None,
+            None,
             Vec::new(),
             &[],
             None,
@@ -681,6 +689,7 @@ mod tests {
     fn synthesizer_applies_device_override_precedence() {
         let report = synthesize_for_target(
             &target("leaf", "nokia_srl"),
+            None,
             None,
             None,
             Vec::new(),
@@ -731,6 +740,7 @@ mod tests {
         };
         let report = synthesize_for_target(
             &target("leaf", "nokia_srl"),
+            None,
             None,
             None,
             Vec::new(),

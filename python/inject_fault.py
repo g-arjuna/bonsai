@@ -27,6 +27,10 @@ Usage:
     # Quick BGP flap: down then up after N seconds
     python python/inject_fault.py bgp-flap srl-spine1 10.0.12.1 --hold 10
 
+    # SR policy degrade / restore (SP lab)
+    python python/inject_fault.py sr-policy-down srl-pe1 bonsai-pe1-pe2
+    python python/inject_fault.py sr-policy-up   srl-pe1 bonsai-pe1-pe2
+
 Vendor detection: reads the `vendor` field from bonsai.toml [[target]] blocks.
   nokia_srl  → uses sr_cli wrapper
   cisco_xrd  → uses XR EXEC / config mode
@@ -240,6 +244,42 @@ def srl_bfd_enable_docker(hostname: str, subinterface: str, topology: str = TOPO
     print(f"  SRL BFD enable {subinterface}: {out or 'ok'}")
 
 
+def srl_sr_policy_disable(address: str, username: str, password: str, policy_name: str) -> None:
+    cmd = (
+        f"set / network-instance default segment-routing sr-policies policy {policy_name} "
+        "admin-state disable"
+    )
+    out = _run_srl(address, username, password, cmd)
+    print(f"  SRL SR policy disable {policy_name}: {out or 'ok'}")
+
+
+def srl_sr_policy_disable_docker(hostname: str, policy_name: str, topology: str = TOPOLOGY_NAME) -> None:
+    cmd = (
+        f"set / network-instance default segment-routing sr-policies policy {policy_name} "
+        "admin-state disable"
+    )
+    out = _run_srl_docker(hostname, cmd, topology)
+    print(f"  SRL SR policy disable {policy_name}: {out or 'ok'}")
+
+
+def srl_sr_policy_enable(address: str, username: str, password: str, policy_name: str) -> None:
+    cmd = (
+        f"set / network-instance default segment-routing sr-policies policy {policy_name} "
+        "admin-state enable"
+    )
+    out = _run_srl(address, username, password, cmd)
+    print(f"  SRL SR policy enable {policy_name}: {out or 'ok'}")
+
+
+def srl_sr_policy_enable_docker(hostname: str, policy_name: str, topology: str = TOPOLOGY_NAME) -> None:
+    cmd = (
+        f"set / network-instance default segment-routing sr-policies policy {policy_name} "
+        "admin-state enable"
+    )
+    out = _run_srl_docker(hostname, cmd, topology)
+    print(f"  SRL SR policy enable {policy_name}: {out or 'ok'}")
+
+
 # ── XRd fault actions ─────────────────────────────────────────────────────────
 
 def xrd_bgp_disable(address: str, username: str, password: str, peer: str) -> None:
@@ -394,6 +434,28 @@ def dispatch_bfd_up(targets: dict, hostname: str, subinterface: str, topology: s
         srl_bfd_enable(t["address"], t["username"], t["password"], subinterface)
 
 
+def dispatch_sr_policy_down(targets: dict, hostname: str, policy_name: str, topology: str = TOPOLOGY_NAME) -> None:
+    t = _get_target(targets, hostname)
+    print(f"[{time.strftime('%H:%M:%S')}] SR POLICY DOWN: {hostname} {policy_name}")
+    if "xrd" in t["vendor"]:
+        raise NotImplementedError("SR policy fault injection is currently implemented for SR Linux targets")
+    if _use_docker_transport():
+        srl_sr_policy_disable_docker(hostname, policy_name, topology)
+    else:
+        srl_sr_policy_disable(t["address"], t["username"], t["password"], policy_name)
+
+
+def dispatch_sr_policy_up(targets: dict, hostname: str, policy_name: str, topology: str = TOPOLOGY_NAME) -> None:
+    t = _get_target(targets, hostname)
+    print(f"[{time.strftime('%H:%M:%S')}] SR POLICY UP: {hostname} {policy_name}")
+    if "xrd" in t["vendor"]:
+        raise NotImplementedError("SR policy fault injection is currently implemented for SR Linux targets")
+    if _use_docker_transport():
+        srl_sr_policy_enable_docker(hostname, policy_name, topology)
+    else:
+        srl_sr_policy_enable(t["address"], t["username"], t["password"], policy_name)
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -432,6 +494,16 @@ def main() -> None:
 
     p = sub.add_parser("bfd-flap", help="BFD admin disable then enable after --hold seconds")
     p.add_argument("hostname"); p.add_argument("subinterface")
+    p.add_argument("--hold", type=int, default=15)
+
+    p = sub.add_parser("sr-policy-down", help="Disable an SR Linux SR policy")
+    p.add_argument("hostname"); p.add_argument("policy_name")
+
+    p = sub.add_parser("sr-policy-up", help="Enable an SR Linux SR policy")
+    p.add_argument("hostname"); p.add_argument("policy_name")
+
+    p = sub.add_parser("sr-policy-flap", help="Disable then re-enable an SR policy after --hold seconds")
+    p.add_argument("hostname"); p.add_argument("policy_name")
     p.add_argument("--hold", type=int, default=15)
 
     p = sub.add_parser("netem-loss",  help="Apply packet loss (clab tools netem)")
@@ -481,6 +553,18 @@ def main() -> None:
         print(f"  holding down for {args.hold}s...")
         time.sleep(args.hold)
         dispatch_bfd_up(targets, args.hostname, args.subinterface, args.topology)
+
+    elif args.cmd == "sr-policy-down":
+        dispatch_sr_policy_down(targets, args.hostname, args.policy_name, args.topology)
+
+    elif args.cmd == "sr-policy-up":
+        dispatch_sr_policy_up(targets, args.hostname, args.policy_name, args.topology)
+
+    elif args.cmd == "sr-policy-flap":
+        dispatch_sr_policy_down(targets, args.hostname, args.policy_name, args.topology)
+        print(f"  holding down for {args.hold}s...")
+        time.sleep(args.hold)
+        dispatch_sr_policy_up(targets, args.hostname, args.policy_name, args.topology)
 
     elif args.cmd == "netem-loss":
         netem_loss(args.hostname, args.iface, args.loss_pct, args.topology)

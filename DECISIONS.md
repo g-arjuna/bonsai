@@ -1709,3 +1709,44 @@ healthcheck until Compose exists.
 **Why re-use the graph instead of reimplementing correlation in the adapter**: the graph already holds topology, CMDB-derived assignment hints, remediation outcomes, and blast-radius traversals. Keeping correlation and root-cause context anchored there avoids a second source of truth and keeps the ServiceNow layer a projection of Bonsai state rather than an independent incident engine.
 
 **Bridge choice**: the first bidirectional bridge is comments/work-notes driven, not a custom ServiceNow app. That keeps the integration usable on a vanilla PDI or enterprise instance without schema customisation while still giving operators a concrete control path back into Bonsai proposals.
+
+---
+
+## 2026-05-11 — CV2 Sprint 1: Activate layered-ingestion runtime via enricher registry and Python SSH helper
+
+**Decision**: CV2 Sprint 1 activates the previously dead layered-ingestion architecture by routing change-detection capture through a dedicated `MultiSourceEnricherRegistry` instead of hardcoding `GnmiGetConfigEnricher`. The registry currently dispatches between `gnmi_get_config` and `parser_chain_cli`, with parser-chain CLI capture implemented by a small repo-local Python helper (`scripts/cli_capture.py`) that uses Paramiko for SSH execution and returns raw command output back to Rust for `ParserChain` parsing and provenance capture.
+
+**Why registry-first**: CV1 had the right trait shape but no runtime pluralism. The registry makes multi-source capture an actual dispatch point, which is the seam needed for future vendor/capability routing without rewriting change detection again.
+
+**Why a Python SSH helper instead of adding a Rust SSH stack now**: Sprint 1's job is to make dead architecture live with minimal compile churn. Paramiko is already in the repo-local Python environment, works in both the lab and WSL-oriented workflows, and keeps the Rust dependency surface smaller while we validate the runtime path. This choice is intentionally tactical: it activates CLI capture now without turning Sprint 1 into a transport-library integration sprint.
+
+**Fallback policy**: routing is capability-biased rather than dogmatic. TLS-capable SR Linux targets still prefer gNMI Get first, while current non-TLS/multi-vendor targets can prefer CLI-first and fall back across strategies. This preserves the streaming-first posture while acknowledging the current mixed-readiness reality.
+
+**Operational guardrail**: Sprint 1 also codifies the "no dead code without a callsite" rule with `scripts/check_wiring.sh`, sidecar smoke coverage, and endpoint smoke coverage. The discipline outcome matters as much as the code outcome: layered-ingestion features are no longer considered landed unless a cheap wiring/smoke path proves they are reachable.
+
+---
+
+## 2026-05-11 — CV2 Sprint 4: Modern streaming tier splits into native BMP, sidecar BGP-LS, deferred PCEP
+
+**Decision**: CV2 Sprint 4 adds a dedicated `streaming` subsystem instead of folding modern control-plane feeds into the existing `signals` or layered-ingestion code. Within that subsystem, Bonsai now treats:
+- **BMP** as a native in-process TCP receiver because it is a standards-based, vendor-neutral export protocol and maps cleanly onto Bonsai's existing event-bus and graph-writer architecture.
+- **BGP-LS** as a normalized sidecar feed, with Bonsai consuming line-delimited JSON from a GoBGP-style helper rather than implementing a full BGP speaker in Rust during this sprint.
+- **PCEP** as an explicitly deferred seam: configuration and readiness accounting exist now, but the runtime parser does not start until the service-provider lab is validated.
+
+**Why BMP is embedded but BGP-LS is sidecar-based**: BMP is operationally simpler to embed because the collector only needs RFC 7854 framing plus standard BGP UPDATE parsing. BGP-LS, by contrast, requires a whole BGP speaker posture and AFI/SAFI handling; using a GoBGP sidecar keeps Sprint 4 focused on Bonsai's graph and readiness integration rather than rebuilding routing-daemon behavior.
+
+**Why readiness became multi-protocol**: once BMP and BGP-LS are first-class streams, a device can be "streaming-healthy" even when one protocol is impaired and another is ready. The new `StreamingReadinessReport` therefore complements, rather than replaces, `GnmiReadinessReport`. gNMI remains the primary device-state stream, but Bonsai now tells operators which additional standards-based feeds are viable per device and role.
+
+**Graph choice**: Sprint 4 persists BMP sessions, BGP RIB entries, BGP-LS nodes/links, SR policies, and the aggregated streaming-readiness report as first-class graph nodes. This keeps control-plane visibility queryable in the same place as gNMI state, which is essential for later cross-source correlation and blast-radius reasoning.
+
+---
+
+## 2026-05-11 — CV2 Sprint 5: Syslog facts ride the telemetry bus and join into streamed state events
+
+**Decision**: Sprint 5 treats structured syslog extraction as a first-class telemetry path rather than as Python-only post-processing. The syslog receiver now loads vendor pattern catalogues with named capture groups, emits normalized `SyslogFact` telemetry updates on the in-process bus, and lets the Rust graph writer perform the first cross-source join against current graph state before publishing either `syslog_fact_joined` or `syslog_fact_orphan` events.
+
+**Why the extraction happens in Rust at ingress**: the raw syslog receiver already owns device resolution, vendor context, archive timing, and bus publication. Extracting facts there means the same structured record is available to the graph, archive, and downstream detectors without duplicating regex logic across subsystems.
+
+**Why join results are emitted as state-change events instead of introducing a new detector-facing transport**: Bonsai already has one durable/broadcast path for event-driven automation: `StateChangeEvent` plus the gRPC event stream. Reusing that path keeps the Python rule engine unchanged in shape while still giving it richer cross-source context.
+
+**Join policy**: Sprint 5 joins only when the syslog fact references a graph entity Bonsai can currently resolve reliably, starting with BGP neighbors and interfaces. Device-only context is attached for debugging, but it does not count as a successful cross-source join. Facts without a resolvable graph entity become explicit orphan events so the gap is visible rather than silently dropped.

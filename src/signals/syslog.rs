@@ -1,9 +1,11 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use serde::Serialize;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, UdpSocket};
@@ -36,6 +38,18 @@ impl SyslogCategory {
             Self::Custom => "custom",
         }
     }
+
+    fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auth" => Some(Self::Auth),
+            "hardware" => Some(Self::Hardware),
+            "software" => Some(Self::Software),
+            "protocol" => Some(Self::Protocol),
+            "license" => Some(Self::License),
+            "custom" => Some(Self::Custom),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -55,13 +69,32 @@ pub struct SyslogEvent {
     pub peer_addr: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyslogFact {
+    pub timestamp_ns: i64,
+    pub fact_type: String,
+    pub category: String,
+    pub hostname: String,
+    pub source_vendor: String,
+    pub message: String,
+    pub raw: String,
+    pub transport: String,
+    pub peer_addr: String,
+    #[serde(default)]
+    pub field_schema: BTreeMap<String, String>,
+    #[serde(default)]
+    pub fields: BTreeMap<String, String>,
+}
+
 pub async fn run_syslog_receiver(
     cfg: SyslogConfig,
+    pattern_dir: String,
     targets: Vec<TargetConfig>,
     bus: Arc<InProcessBus>,
     shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     let archive = SyslogArchive::open(&cfg.archive_path).await?;
+    let fact_extractor = Arc::new(SyslogFactExtractor::load_from_dir(&pattern_dir));
     let target_map = Arc::new(SyslogTargetMap::new(&targets));
     let mut tasks = Vec::new();
 
@@ -74,6 +107,7 @@ pub async fn run_syslog_receiver(
             socket,
             Arc::clone(&bus),
             archive.clone(),
+            Arc::clone(&fact_extractor),
             Arc::clone(&target_map),
             cfg.max_frame_bytes,
             shutdown.clone(),
@@ -89,6 +123,7 @@ pub async fn run_syslog_receiver(
             listener,
             Arc::clone(&bus),
             archive.clone(),
+            Arc::clone(&fact_extractor),
             Arc::clone(&target_map),
             cfg.max_frame_bytes,
             shutdown.clone(),
@@ -113,6 +148,7 @@ async fn run_udp(
     socket: UdpSocket,
     bus: Arc<InProcessBus>,
     archive: SyslogArchive,
+    fact_extractor: Arc<SyslogFactExtractor>,
     target_map: Arc<SyslogTargetMap>,
     max_frame_bytes: usize,
     mut shutdown: watch::Receiver<bool>,
@@ -128,7 +164,16 @@ async fn run_udp(
                 match recv {
                     Ok((n, peer)) => {
                         let raw = String::from_utf8_lossy(&buf[..n]).trim_end().to_string();
-                        handle_frame(raw, "udp", peer.to_string(), &bus, &archive, &target_map).await;
+                        handle_frame(
+                            raw,
+                            "udp",
+                            peer.to_string(),
+                            &bus,
+                            &archive,
+                            &fact_extractor,
+                            &target_map,
+                        )
+                        .await;
                     }
                     Err(error) => warn!(%error, "syslog UDP receive failed"),
                 }
@@ -141,6 +186,7 @@ async fn run_tcp(
     listener: TcpListener,
     bus: Arc<InProcessBus>,
     archive: SyslogArchive,
+    fact_extractor: Arc<SyslogFactExtractor>,
     target_map: Arc<SyslogTargetMap>,
     max_frame_bytes: usize,
     mut shutdown: watch::Receiver<bool>,
@@ -156,6 +202,7 @@ async fn run_tcp(
                     Ok((stream, peer)) => {
                         let bus = Arc::clone(&bus);
                         let archive = archive.clone();
+                        let fact_extractor = Arc::clone(&fact_extractor);
                         let target_map = Arc::clone(&target_map);
                         tokio::spawn(async move {
                             let mut reader = BufReader::new(stream);
@@ -175,6 +222,7 @@ async fn run_tcp(
                                             peer.to_string(),
                                             &bus,
                                             &archive,
+                                            &fact_extractor,
                                             &target_map,
                                         ).await;
                                     }
@@ -199,6 +247,7 @@ async fn handle_frame(
     peer_addr: String,
     bus: &Arc<InProcessBus>,
     archive: &SyslogArchive,
+    fact_extractor: &SyslogFactExtractor,
     target_map: &SyslogTargetMap,
 ) {
     if raw.is_empty() {
@@ -219,17 +268,37 @@ async fn handle_frame(
     }
 
     let target = target_map.resolve(&event);
+    let facts = fact_extractor.extract(&event, &target.vendor);
+    let target_address = target.address.clone();
+    let target_vendor = target.vendor.clone();
+    let target_hostname = target.hostname.clone();
+    let target_role = target.role.clone();
+    let target_site = target.site.clone();
 
     bus.publish(TelemetryUpdate {
-        target: target.address,
-        vendor: target.vendor,
-        hostname: target.hostname,
-        role: target.role,
-        site: target.site,
+        target: target_address.clone(),
+        vendor: target_vendor.clone(),
+        hostname: target_hostname.clone(),
+        role: target_role.clone(),
+        site: target_site.clone(),
         timestamp_ns: event.timestamp_ns,
         path: format!("signals/syslog/{}", event.category.as_str()),
         value: serde_json::to_value(&event).unwrap_or_else(|_| json!({ "raw": raw })),
     });
+
+    for fact in facts {
+        bus.publish(TelemetryUpdate {
+            target: target_address.clone(),
+            vendor: target_vendor.clone(),
+            hostname: target_hostname.clone(),
+            role: target_role.clone(),
+            site: target_site.clone(),
+            timestamp_ns: fact.timestamp_ns,
+            path: format!("signals/syslog_fact/{}", fact.fact_type),
+            value: serde_json::to_value(&fact)
+                .unwrap_or_else(|_| json!({ "message": event.message, "raw": raw })),
+        });
+    }
 }
 
 #[derive(Clone)]
@@ -258,6 +327,39 @@ struct ResolvedTarget {
     vendor: String,
     role: String,
     site: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SyslogPatternCatalog {
+    #[serde(default)]
+    vendor: String,
+    #[serde(default)]
+    facts: Vec<SyslogFactPattern>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SyslogFactPattern {
+    #[serde(default)]
+    fact_type: String,
+    #[serde(default)]
+    category: String,
+    regex: String,
+    #[serde(default)]
+    field_schema: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Default)]
+struct SyslogFactExtractor {
+    patterns: Vec<CompiledSyslogFactPattern>,
+}
+
+#[derive(Clone)]
+struct CompiledSyslogFactPattern {
+    vendor: String,
+    fact_type: String,
+    category: Option<SyslogCategory>,
+    regex: Regex,
+    field_schema: BTreeMap<String, String>,
 }
 
 impl SyslogArchive {
@@ -343,6 +445,99 @@ impl SyslogTargetMap {
             role: String::new(),
             site: String::new(),
         }
+    }
+}
+
+impl SyslogFactExtractor {
+    fn load_from_dir(dir: &str) -> Self {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Self::default();
+        };
+        let mut patterns = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(catalog) = serde_yaml::from_str::<SyslogPatternCatalog>(&raw) else {
+                continue;
+            };
+            for fact in catalog.facts {
+                if fact.fact_type.trim().is_empty() || fact.regex.trim().is_empty() {
+                    continue;
+                }
+                let regex = match Regex::new(&fact.regex) {
+                    Ok(regex) => regex,
+                    Err(error) => {
+                        warn!(
+                            path = %path.display(),
+                            fact_type = %fact.fact_type,
+                            %error,
+                            "invalid syslog fact regex"
+                        );
+                        continue;
+                    }
+                };
+                let category = if fact.category.trim().is_empty() {
+                    None
+                } else {
+                    SyslogCategory::from_str(&fact.category)
+                };
+                patterns.push(CompiledSyslogFactPattern {
+                    vendor: catalog.vendor.to_ascii_lowercase(),
+                    fact_type: fact.fact_type,
+                    category,
+                    regex,
+                    field_schema: fact.field_schema,
+                });
+            }
+        }
+        Self { patterns }
+    }
+
+    fn extract(&self, event: &SyslogEvent, vendor: &str) -> Vec<SyslogFact> {
+        let vendor = vendor.to_ascii_lowercase();
+        self.patterns
+            .iter()
+            .filter(|pattern| pattern.vendor.is_empty() || vendor.contains(&pattern.vendor))
+            .filter(|pattern| {
+                pattern
+                    .category
+                    .as_ref()
+                    .is_none_or(|cat| cat == &event.category)
+            })
+            .filter_map(|pattern| {
+                let captures = pattern.regex.captures(&event.message)?;
+                let mut fields = BTreeMap::new();
+                for name in pattern.regex.capture_names().flatten() {
+                    if let Some(value) = captures.name(name) {
+                        let value = value.as_str().trim();
+                        if !value.is_empty() {
+                            fields.insert(name.to_string(), value.to_string());
+                        }
+                    }
+                }
+                if fields.is_empty() {
+                    return None;
+                }
+                Some(SyslogFact {
+                    timestamp_ns: event.timestamp_ns,
+                    fact_type: pattern.fact_type.clone(),
+                    category: event.category.as_str().to_string(),
+                    hostname: event.hostname.clone(),
+                    source_vendor: vendor.clone(),
+                    message: event.message.clone(),
+                    raw: event.raw.clone(),
+                    transport: event.transport.clone(),
+                    peer_addr: event.peer_addr.clone(),
+                    field_schema: pattern.field_schema.clone(),
+                    fields,
+                })
+            })
+            .collect()
     }
 }
 
@@ -580,5 +775,50 @@ mod tests {
         assert_eq!(resolved.vendor, "nokia_srl");
         assert_eq!(resolved.role, "leaf");
         assert_eq!(resolved.site, "dc-a");
+    }
+
+    #[test]
+    fn extracts_named_syslog_fact_fields() {
+        let extractor = SyslogFactExtractor {
+            patterns: vec![CompiledSyslogFactPattern {
+                vendor: "nokia".to_string(),
+                fact_type: "bgp_neighbor".to_string(),
+                category: Some(SyslogCategory::Protocol),
+                regex: Regex::new(
+                    r"(?i)bgp neighbor (?P<peer_address>\d+\.\d+\.\d+\.\d+) (?P<new_state>down|up|established|idle)",
+                )
+                .expect("regex"),
+                field_schema: BTreeMap::from([
+                    ("peer_address".to_string(), "string".to_string()),
+                    ("new_state".to_string(), "string".to_string()),
+                ]),
+            }],
+        };
+        let event = parse_syslog(
+            "<165>May  9 12:00:00 srl-leaf1 BGP neighbor 10.1.0.1 down",
+            "udp",
+            "127.0.0.1:5514",
+            5,
+        );
+
+        let facts = extractor.extract(&event, "nokia_srl");
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].fact_type, "bgp_neighbor");
+        assert_eq!(
+            facts[0].fields.get("peer_address").map(String::as_str),
+            Some("10.1.0.1")
+        );
+        assert_eq!(
+            facts[0].fields.get("new_state").map(String::as_str),
+            Some("down")
+        );
+        assert_eq!(
+            facts[0]
+                .field_schema
+                .get("peer_address")
+                .map(String::as_str),
+            Some("string")
+        );
     }
 }

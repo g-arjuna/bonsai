@@ -12,13 +12,17 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use lbug::{Connection, Database, SystemConfig, Value};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value as JsonValue, json};
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use self::common::{now_ns, read_str, read_ts_ns, ts, upsert_device};
 use crate::config::TargetConfig;
+use crate::signals::syslog::SyslogFact;
 use crate::store::BonsaiStore;
+use crate::streaming::bgp_ls::BgpLsEvent;
+use crate::streaming::bmp::BmpEvent;
 use crate::telemetry::{TelemetryEvent, TelemetryUpdate, json_i64, json_i64_multi, json_str};
 
 pub const REMEDIATION_TRUST_CUTOFF_ISO: &str = "2026-04-20T09:32:50+00:00";
@@ -701,6 +705,121 @@ impl GraphStore {
                 PRIMARY KEY (id))",
         )
         .context("create GnmiReadiness table")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS StreamingReadiness(\
+                id                         STRING,\
+                device_address             STRING,\
+                vendor                     STRING,\
+                role                       STRING,\
+                protocols_json             STRING,\
+                recommended_protocols_json STRING,\
+                checked_at                 TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create StreamingReadiness table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_STREAMING_READINESS(FROM Device TO StreamingReadiness)",
+        )
+        .context("create HAS_STREAMING_READINESS rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS BmpSession(\
+                id                STRING,\
+                device_address    STRING,\
+                router_address    STRING,\
+                peer_address      STRING,\
+                peer_as           INT64,\
+                peer_bgp_id       STRING,\
+                session_state     STRING,\
+                last_message_type STRING,\
+                updated_at        TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create BmpSession table")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS HAS_BMP_SESSION(FROM Device TO BmpSession)")
+            .context("create HAS_BMP_SESSION rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS BgpRibEntry(\
+                id               STRING,\
+                device_address   STRING,\
+                peer_address     STRING,\
+                afi_safi         STRING,\
+                prefix           STRING,\
+                prefix_len       INT64,\
+                action           STRING,\
+                next_hop         STRING,\
+                as_path_json     STRING,\
+                communities_json STRING,\
+                med              INT64,\
+                local_pref       INT64,\
+                updated_at       TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create BgpRibEntry table")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS HAS_RIB_ENTRY(FROM Device TO BgpRibEntry)")
+            .context("create HAS_RIB_ENTRY rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS BgpLsNode(\
+                id            STRING,\
+                device_address STRING,\
+                router_id     STRING,\
+                protocol      STRING,\
+                asn           INT64,\
+                name          STRING,\
+                sr_node_sid   INT64,\
+                updated_at    TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create BgpLsNode table")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS HAS_BGPLS_NODE(FROM Device TO BgpLsNode)")
+            .context("create HAS_BGPLS_NODE rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS BgpLsLink(\
+                id                         STRING,\
+                device_address             STRING,\
+                local_router_id            STRING,\
+                remote_router_id           STRING,\
+                protocol                   STRING,\
+                local_interface            STRING,\
+                remote_interface           STRING,\
+                igp_metric                 INT64,\
+                te_metric                  INT64,\
+                unreserved_bandwidth_bps   INT64,\
+                admin_groups_json          STRING,\
+                srlgs_json                 STRING,\
+                updated_at                 TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create BgpLsLink table")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS HAS_BGPLS_LINK(FROM Device TO BgpLsLink)")
+            .context("create HAS_BGPLS_LINK rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS SrPolicy(\
+                id            STRING,\
+                device_address STRING,\
+                name          STRING,\
+                endpoint      STRING,\
+                color         INT64,\
+                preference    INT64,\
+                binding_sid   INT64,\
+                status        STRING,\
+                updated_at    TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create SrPolicy table")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS HAS_SR_POLICY(FROM Device TO SrPolicy)")
+            .context("create HAS_SR_POLICY rel")?;
 
         conn.query(
             "CREATE REL TABLE IF NOT EXISTS HAS_GNMI_READINESS(FROM Device TO GnmiReadiness)",
@@ -2254,9 +2373,15 @@ fn write_blocking(
         TelemetryEvent::SyslogEvent { category } => {
             write_syslog_state_change_event(conn, update, &category, event_tx)
         }
+        TelemetryEvent::SyslogFact { fact_type } => {
+            write_syslog_fact_event(conn, update, &fact_type, event_tx)
+        }
         TelemetryEvent::SnmpTrap { event_type } => {
             write_signal_state_change_event(conn, update, &event_type, event_tx)
         }
+        TelemetryEvent::BmpPeerState => write_bmp_peer_state(conn, update, event_tx),
+        TelemetryEvent::BmpRouteMonitoring => write_bmp_route_monitoring(conn, update, event_tx),
+        TelemetryEvent::BgpLsState => write_bgp_ls_state(conn, update, event_tx),
         TelemetryEvent::Ignored => Ok(()),
     }
 }
@@ -2964,6 +3089,205 @@ fn write_syslog_state_change_event(
     write_signal_state_change_event(conn, update, &format!("syslog_{category}"), event_tx)
 }
 
+#[derive(Serialize)]
+struct SyslogFactEventDetail {
+    fact_type: String,
+    category: String,
+    hostname: String,
+    message: String,
+    raw: String,
+    transport: String,
+    peer_addr: String,
+    field_schema: std::collections::BTreeMap<String, String>,
+    fields: std::collections::BTreeMap<String, String>,
+    device_context: JsonValue,
+    join: JsonValue,
+}
+
+fn write_syslog_fact_event(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    fact_type: &str,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+) -> Result<()> {
+    let fact: SyslogFact =
+        serde_json::from_value(update.value.clone()).context("parse syslog fact event")?;
+    upsert_device(
+        conn,
+        &update.target,
+        &update.vendor,
+        &update.hostname,
+        &update.role,
+        &update.site,
+        ts(update.timestamp_ns),
+    )?;
+    let join = join_syslog_fact(conn, update, &fact)?;
+    let event_type = if join
+        .get("status")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("orphan")
+        == "joined"
+    {
+        "syslog_fact_joined"
+    } else {
+        "syslog_fact_orphan"
+    };
+    let detail = SyslogFactEventDetail {
+        fact_type: fact_type.to_string(),
+        category: fact.category,
+        hostname: fact.hostname,
+        message: fact.message,
+        raw: fact.raw,
+        transport: fact.transport,
+        peer_addr: fact.peer_addr,
+        field_schema: fact.field_schema,
+        fields: fact.fields,
+        device_context: json!({
+            "device_address": update.target,
+            "vendor": update.vendor,
+            "hostname": update.hostname,
+            "role": update.role,
+            "site": update.site,
+        }),
+        join,
+    };
+    let detail_json = serde_json::to_string(&detail).context("serialize syslog fact detail")?;
+    let _ = write_state_change_event(
+        conn,
+        &update.target,
+        event_type,
+        &detail_json,
+        ts(update.timestamp_ns),
+        update.timestamp_ns,
+        event_tx,
+    )?;
+    Ok(())
+}
+
+fn join_syslog_fact(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    fact: &SyslogFact,
+) -> Result<JsonValue> {
+    if let Some(peer_address) = fact
+        .fields
+        .get("peer_address")
+        .or_else(|| fact.fields.get("peer"))
+        && let Some(graph_state) = lookup_bgp_neighbor_state(conn, &update.target, peer_address)?
+    {
+        return Ok(json!({
+            "status": "joined",
+            "kind": "bgp_neighbor",
+            "key": peer_address,
+            "graph_state": graph_state,
+        }));
+    }
+
+    if let Some(if_name) = fact
+        .fields
+        .get("if_name")
+        .or_else(|| fact.fields.get("interface"))
+        .or_else(|| fact.fields.get("interface_name"))
+    {
+        if let Some(graph_state) = lookup_interface_state(conn, &update.target, if_name)? {
+            return Ok(json!({
+                "status": "joined",
+                "kind": "interface",
+                "key": if_name,
+                "graph_state": graph_state,
+            }));
+        }
+        return Ok(json!({
+            "status": "orphan",
+            "kind": "interface",
+            "key": if_name,
+            "reason": "no_interface_match",
+        }));
+    }
+
+    if fact.fields.contains_key("peer_address") || fact.fields.contains_key("peer") {
+        return Ok(json!({
+            "status": "orphan",
+            "kind": "bgp_neighbor",
+            "key": fact
+                .fields
+                .get("peer_address")
+                .or_else(|| fact.fields.get("peer"))
+                .cloned()
+                .unwrap_or_default(),
+            "reason": "no_bgp_neighbor_match",
+        }));
+    }
+
+    Ok(json!({
+        "status": "orphan",
+        "kind": "unknown",
+        "reason": "no_cross_source_match_key",
+    }))
+}
+
+fn lookup_bgp_neighbor_state(
+    conn: &Connection<'_>,
+    device_address: &str,
+    peer_address: &str,
+) -> Result<Option<JsonValue>> {
+    let id = format!("{device_address}:{peer_address}");
+    let mut stmt = conn
+        .prepare(
+            "MATCH (n:BgpNeighbor {id: $id}) \
+             RETURN n.peer_address, n.peer_as, n.session_state, n.established_transitions",
+        )
+        .context("prepare BGP neighbor fact join lookup")?;
+    let mut rows = conn
+        .execute(&mut stmt, vec![("id", Value::String(id))])
+        .context("execute BGP neighbor fact join lookup")?;
+    let Some(row) = rows.next() else {
+        return Ok(None);
+    };
+    Ok(Some(json!({
+        "peer_address": read_str(&row[0]),
+        "peer_as": value_i64(&row[1]),
+        "session_state": read_str(&row[2]),
+        "established_transitions": value_i64(&row[3]),
+    })))
+}
+
+fn lookup_interface_state(
+    conn: &Connection<'_>,
+    device_address: &str,
+    if_name: &str,
+) -> Result<Option<JsonValue>> {
+    let id = format!("{device_address}:{if_name}");
+    let mut stmt = conn
+        .prepare(
+            "MATCH (i:Interface {id: $id}) \
+             RETURN i.name, i.in_errors, i.out_errors, i.in_octets, i.out_octets, i.in_pkts, i.out_pkts",
+        )
+        .context("prepare interface fact join lookup")?;
+    let mut rows = conn
+        .execute(&mut stmt, vec![("id", Value::String(id))])
+        .context("execute interface fact join lookup")?;
+    let Some(row) = rows.next() else {
+        return Ok(None);
+    };
+    Ok(Some(json!({
+        "if_name": read_str(&row[0]),
+        "in_errors": value_i64(&row[1]),
+        "out_errors": value_i64(&row[2]),
+        "in_octets": value_i64(&row[3]),
+        "out_octets": value_i64(&row[4]),
+        "in_pkts": value_i64(&row[5]),
+        "out_pkts": value_i64(&row[6]),
+    })))
+}
+
+fn value_i64(value: &Value) -> i64 {
+    match value {
+        Value::Int64(number) => *number,
+        _ => 0,
+    }
+}
+
 fn write_signal_state_change_event(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
@@ -2991,6 +3315,432 @@ fn write_signal_state_change_event(
         event_tx,
     )?;
     Ok(())
+}
+
+fn write_bmp_peer_state(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+) -> Result<()> {
+    let event: BmpEvent =
+        serde_json::from_value(update.value.clone()).context("parse BMP peer-state event")?;
+    upsert_device(
+        conn,
+        &update.target,
+        &update.vendor,
+        &update.hostname,
+        &update.role,
+        &update.site,
+        ts(update.timestamp_ns),
+    )?;
+    upsert_bmp_session(conn, update, &event)?;
+    let id = format!("{}:{}", update.target, event.peer_address);
+    let old_state = get_bmp_session_state(conn, &id)?;
+    if old_state.as_deref() != Some(event.session_state.as_str()) {
+        let detail = serde_json::to_string(&event).context("serialize BMP peer-state detail")?;
+        let _ = write_state_change_event(
+            conn,
+            &update.target,
+            "bmp_session_change",
+            &detail,
+            ts(update.timestamp_ns),
+            update.timestamp_ns,
+            event_tx,
+        )?;
+    }
+    Ok(())
+}
+
+fn write_bmp_route_monitoring(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+) -> Result<()> {
+    let event: BmpEvent =
+        serde_json::from_value(update.value.clone()).context("parse BMP route-monitoring event")?;
+    upsert_device(
+        conn,
+        &update.target,
+        &update.vendor,
+        &update.hostname,
+        &update.role,
+        &update.site,
+        ts(update.timestamp_ns),
+    )?;
+    upsert_bmp_session(conn, update, &event)?;
+    let now = ts(update.timestamp_ns);
+    for route in &event.route_entries {
+        let id = format!(
+            "{}:{}:{}:{}/{}",
+            update.target, event.peer_address, route.afi_safi, route.prefix, route.prefix_len
+        );
+        let mut stmt = conn.prepare(
+            "MERGE (r:BgpRibEntry {id: $id}) \
+             ON CREATE SET \
+               r.device_address = $addr, r.peer_address = $peer, r.afi_safi = $afi_safi, \
+               r.prefix = $prefix, r.prefix_len = $prefix_len, r.action = $action, \
+               r.next_hop = $next_hop, r.as_path_json = $as_path_json, \
+               r.communities_json = $communities_json, r.med = $med, r.local_pref = $local_pref, \
+               r.updated_at = $ts \
+             ON MATCH SET \
+               r.action = $action, r.next_hop = $next_hop, r.as_path_json = $as_path_json, \
+               r.communities_json = $communities_json, r.med = $med, r.local_pref = $local_pref, \
+               r.updated_at = $ts",
+        )?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("id", Value::String(id.clone())),
+                ("addr", Value::String(update.target.clone())),
+                ("peer", Value::String(event.peer_address.clone())),
+                ("afi_safi", Value::String(route.afi_safi.clone())),
+                ("prefix", Value::String(route.prefix.clone())),
+                ("prefix_len", Value::Int64(route.prefix_len as i64)),
+                ("action", Value::String(route.action.clone())),
+                ("next_hop", Value::String(route.next_hop.clone())),
+                (
+                    "as_path_json",
+                    Value::String(serde_json::to_string(&route.as_path)?),
+                ),
+                (
+                    "communities_json",
+                    Value::String(serde_json::to_string(&route.communities)?),
+                ),
+                ("med", Value::Int64(route.med.unwrap_or_default() as i64)),
+                (
+                    "local_pref",
+                    Value::Int64(route.local_pref.unwrap_or_default() as i64),
+                ),
+                ("ts", now.clone()),
+            ],
+        )?;
+        let mut edge_stmt = conn.prepare(
+            "MATCH (d:Device {address: $addr}), (r:BgpRibEntry {id: $id}) \
+             MERGE (d)-[:HAS_RIB_ENTRY]->(r)",
+        )?;
+        conn.execute(
+            &mut edge_stmt,
+            vec![
+                ("addr", Value::String(update.target.clone())),
+                ("id", Value::String(id)),
+            ],
+        )?;
+    }
+    let detail = serde_json::json!({
+        "peer_address": event.peer_address,
+        "router_address": event.router_address,
+        "route_count": event.route_entries.len(),
+        "route_entries": event.route_entries,
+    });
+    let _ = write_state_change_event(
+        conn,
+        &update.target,
+        "bmp_route_change",
+        &serde_json::to_string(&detail)?,
+        now,
+        update.timestamp_ns,
+        event_tx,
+    )?;
+    Ok(())
+}
+
+fn write_bgp_ls_state(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+) -> Result<()> {
+    let event: BgpLsEvent =
+        serde_json::from_value(update.value.clone()).context("parse BGP-LS event")?;
+    upsert_device(
+        conn,
+        &update.target,
+        &update.vendor,
+        &update.hostname,
+        &update.role,
+        &update.site,
+        ts(update.timestamp_ns),
+    )?;
+    match &event {
+        BgpLsEvent::Node {
+            router_id,
+            protocol,
+            asn,
+            name,
+            sr_node_sid,
+            ..
+        } => {
+            let id = format!("{}:{router_id}", update.target);
+            let mut stmt = conn.prepare(
+                "MERGE (n:BgpLsNode {id: $id}) \
+                 ON CREATE SET \
+                   n.device_address = $addr, n.router_id = $router_id, n.protocol = $protocol, \
+                   n.asn = $asn, n.name = $name, n.sr_node_sid = $sr_node_sid, n.updated_at = $ts \
+                 ON MATCH SET \
+                   n.protocol = $protocol, n.asn = $asn, n.name = $name, \
+                   n.sr_node_sid = $sr_node_sid, n.updated_at = $ts",
+            )?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("addr", Value::String(update.target.clone())),
+                    ("router_id", Value::String(router_id.clone())),
+                    ("protocol", Value::String(protocol.clone())),
+                    ("asn", Value::Int64(asn.unwrap_or_default() as i64)),
+                    ("name", Value::String(name.clone().unwrap_or_default())),
+                    (
+                        "sr_node_sid",
+                        Value::Int64(sr_node_sid.unwrap_or_default() as i64),
+                    ),
+                    ("ts", ts(update.timestamp_ns)),
+                ],
+            )?;
+            let mut edge_stmt = conn.prepare(
+                "MATCH (d:Device {address: $addr}), (n:BgpLsNode {id: $id}) \
+                 MERGE (d)-[:HAS_BGPLS_NODE]->(n)",
+            )?;
+            conn.execute(
+                &mut edge_stmt,
+                vec![
+                    ("addr", Value::String(update.target.clone())),
+                    ("id", Value::String(id)),
+                ],
+            )?;
+        }
+        BgpLsEvent::Link {
+            local_router_id,
+            remote_router_id,
+            protocol,
+            local_interface,
+            remote_interface,
+            igp_metric,
+            te_metric,
+            unreserved_bandwidth_bps,
+            admin_groups,
+            srlgs,
+            ..
+        } => {
+            let id = format!("{}:{local_router_id}->{remote_router_id}", update.target);
+            let mut stmt = conn.prepare(
+                "MERGE (l:BgpLsLink {id: $id}) \
+                 ON CREATE SET \
+                   l.device_address = $addr, l.local_router_id = $local_router_id, \
+                   l.remote_router_id = $remote_router_id, l.protocol = $protocol, \
+                   l.local_interface = $local_interface, l.remote_interface = $remote_interface, \
+                   l.igp_metric = $igp_metric, l.te_metric = $te_metric, \
+                   l.unreserved_bandwidth_bps = $unreserved_bandwidth_bps, \
+                   l.admin_groups_json = $admin_groups_json, l.srlgs_json = $srlgs_json, \
+                   l.updated_at = $ts \
+                 ON MATCH SET \
+                   l.protocol = $protocol, l.local_interface = $local_interface, \
+                   l.remote_interface = $remote_interface, l.igp_metric = $igp_metric, \
+                   l.te_metric = $te_metric, l.unreserved_bandwidth_bps = $unreserved_bandwidth_bps, \
+                   l.admin_groups_json = $admin_groups_json, l.srlgs_json = $srlgs_json, \
+                   l.updated_at = $ts",
+            )?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("addr", Value::String(update.target.clone())),
+                    ("local_router_id", Value::String(local_router_id.clone())),
+                    ("remote_router_id", Value::String(remote_router_id.clone())),
+                    ("protocol", Value::String(protocol.clone())),
+                    (
+                        "local_interface",
+                        Value::String(local_interface.clone().unwrap_or_default()),
+                    ),
+                    (
+                        "remote_interface",
+                        Value::String(remote_interface.clone().unwrap_or_default()),
+                    ),
+                    (
+                        "igp_metric",
+                        Value::Int64(igp_metric.unwrap_or_default() as i64),
+                    ),
+                    (
+                        "te_metric",
+                        Value::Int64(te_metric.unwrap_or_default() as i64),
+                    ),
+                    (
+                        "unreserved_bandwidth_bps",
+                        Value::Int64(unreserved_bandwidth_bps.unwrap_or_default() as i64),
+                    ),
+                    (
+                        "admin_groups_json",
+                        Value::String(serde_json::to_string(
+                            &admin_groups.clone().unwrap_or_default(),
+                        )?),
+                    ),
+                    (
+                        "srlgs_json",
+                        Value::String(serde_json::to_string(&srlgs.clone().unwrap_or_default())?),
+                    ),
+                    ("ts", ts(update.timestamp_ns)),
+                ],
+            )?;
+            let mut edge_stmt = conn.prepare(
+                "MATCH (d:Device {address: $addr}), (l:BgpLsLink {id: $id}) \
+                 MERGE (d)-[:HAS_BGPLS_LINK]->(l)",
+            )?;
+            conn.execute(
+                &mut edge_stmt,
+                vec![
+                    ("addr", Value::String(update.target.clone())),
+                    ("id", Value::String(id)),
+                ],
+            )?;
+        }
+        BgpLsEvent::SrPolicy {
+            name,
+            endpoint,
+            color,
+            preference,
+            binding_sid,
+            status,
+            ..
+        } => {
+            let id = format!("{}:{}:{}", update.target, color, endpoint);
+            let old_status = get_sr_policy_status(conn, &id)?;
+            let new_status = status.clone().unwrap_or_else(|| "unknown".to_string());
+            let mut stmt = conn.prepare(
+                "MERGE (p:SrPolicy {id: $id}) \
+                 ON CREATE SET \
+                   p.device_address = $addr, p.name = $name, p.endpoint = $endpoint, \
+                   p.color = $color, p.preference = $preference, p.binding_sid = $binding_sid, \
+                   p.status = $status, p.updated_at = $ts \
+                 ON MATCH SET \
+                   p.name = $name, p.preference = $preference, p.binding_sid = $binding_sid, \
+                   p.status = $status, p.updated_at = $ts",
+            )?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("addr", Value::String(update.target.clone())),
+                    ("name", Value::String(name.clone())),
+                    ("endpoint", Value::String(endpoint.clone())),
+                    ("color", Value::Int64(*color as i64)),
+                    (
+                        "preference",
+                        Value::Int64(preference.unwrap_or_default() as i64),
+                    ),
+                    (
+                        "binding_sid",
+                        Value::Int64(binding_sid.unwrap_or_default() as i64),
+                    ),
+                    ("status", Value::String(new_status.clone())),
+                    ("ts", ts(update.timestamp_ns)),
+                ],
+            )?;
+            let mut edge_stmt = conn.prepare(
+                "MATCH (d:Device {address: $addr}), (p:SrPolicy {id: $id}) \
+                 MERGE (d)-[:HAS_SR_POLICY]->(p)",
+            )?;
+            conn.execute(
+                &mut edge_stmt,
+                vec![
+                    ("addr", Value::String(update.target.clone())),
+                    ("id", Value::String(id.clone())),
+                ],
+            )?;
+            if old_status.as_deref() != Some(new_status.as_str()) {
+                let detail = serde_json::to_string(&event)?;
+                let _ = write_state_change_event(
+                    conn,
+                    &update.target,
+                    "sr_policy_change",
+                    &detail,
+                    ts(update.timestamp_ns),
+                    update.timestamp_ns,
+                    event_tx,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn upsert_bmp_session(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    event: &BmpEvent,
+) -> Result<()> {
+    let id = format!("{}:{}", update.target, event.peer_address);
+    let mut stmt = conn.prepare(
+        "MERGE (s:BmpSession {id: $id}) \
+         ON CREATE SET \
+           s.device_address = $addr, s.router_address = $router_address, \
+           s.peer_address = $peer_address, s.peer_as = $peer_as, s.peer_bgp_id = $peer_bgp_id, \
+           s.session_state = $session_state, s.last_message_type = $last_message_type, s.updated_at = $ts \
+         ON MATCH SET \
+           s.router_address = $router_address, s.peer_as = $peer_as, s.peer_bgp_id = $peer_bgp_id, \
+           s.session_state = $session_state, s.last_message_type = $last_message_type, s.updated_at = $ts",
+    )?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(id.clone())),
+            ("addr", Value::String(update.target.clone())),
+            (
+                "router_address",
+                Value::String(event.router_address.clone()),
+            ),
+            ("peer_address", Value::String(event.peer_address.clone())),
+            ("peer_as", Value::Int64(event.peer_as as i64)),
+            ("peer_bgp_id", Value::String(event.peer_bgp_id.clone())),
+            ("session_state", Value::String(event.session_state.clone())),
+            (
+                "last_message_type",
+                Value::String(event.message_type.clone()),
+            ),
+            ("ts", ts(update.timestamp_ns)),
+        ],
+    )?;
+    let mut edge_stmt = conn.prepare(
+        "MATCH (d:Device {address: $addr}), (s:BmpSession {id: $id}) \
+         MERGE (d)-[:HAS_BMP_SESSION]->(s)",
+    )?;
+    conn.execute(
+        &mut edge_stmt,
+        vec![
+            ("addr", Value::String(update.target.clone())),
+            ("id", Value::String(id)),
+        ],
+    )?;
+    Ok(())
+}
+
+fn get_bmp_session_state(conn: &Connection<'_>, id: &str) -> Result<Option<String>> {
+    let mut stmt = conn
+        .prepare("MATCH (s:BmpSession {id: $id}) RETURN s.session_state")
+        .context("prepare BMP session state lookup")?;
+    let mut result = conn
+        .execute(&mut stmt, vec![("id", Value::String(id.to_string()))])
+        .context("execute BMP session state lookup")?;
+    Ok(result.next().and_then(|row| {
+        if let Value::String(s) = &row[0] {
+            Some(s.clone())
+        } else {
+            None
+        }
+    }))
+}
+
+fn get_sr_policy_status(conn: &Connection<'_>, id: &str) -> Result<Option<String>> {
+    let mut stmt = conn
+        .prepare("MATCH (p:SrPolicy {id: $id}) RETURN p.status")
+        .context("prepare SR policy status lookup")?;
+    let mut result = conn
+        .execute(&mut stmt, vec![("id", Value::String(id.to_string()))])
+        .context("execute SR policy status lookup")?;
+    Ok(result.next().and_then(|row| {
+        if let Value::String(s) = &row[0] {
+            Some(s.clone())
+        } else {
+            None
+        }
+    }))
 }
 
 fn write_lldp_neighbor(
@@ -3605,12 +4355,138 @@ pub fn log_graph_summary(db: &Database) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::telemetry::TelemetryUpdate;
+    use tokio::time::{Duration, timeout};
 
     fn temp_graph_path(label: &str) -> String {
         std::env::temp_dir()
             .join(format!("bonsai-{}-{}", label, Uuid::new_v4()))
             .to_string_lossy()
             .into_owned()
+    }
+
+    #[tokio::test]
+    async fn syslog_fact_joined_event_is_emitted_for_known_bgp_neighbor() {
+        let path = temp_graph_path("syslog-fact-bgp");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
+        store
+            .write(TelemetryUpdate {
+                target: "leaf1".to_string(),
+                vendor: "nokia_srl".to_string(),
+                hostname: "leaf1".to_string(),
+                role: "leaf".to_string(),
+                site: "dc-a".to_string(),
+                timestamp_ns: 10,
+                path:
+                    "network-instance[name=default]/protocols/bgp/neighbor[peer-address=10.1.0.1]"
+                        .to_string(),
+                value: serde_json::json!({
+                    "session-state": "established",
+                    "peer-as": 65101,
+                    "established-transitions": 4,
+                }),
+            })
+            .await
+            .expect("seed BGP neighbor");
+
+        let mut rx = store.subscribe_events();
+        store
+            .write(TelemetryUpdate {
+                target: "leaf1".to_string(),
+                vendor: "nokia_srl".to_string(),
+                hostname: "leaf1".to_string(),
+                role: "leaf".to_string(),
+                site: "dc-a".to_string(),
+                timestamp_ns: 11,
+                path: "signals/syslog_fact/bgp_neighbor".to_string(),
+                value: serde_json::to_value(SyslogFact {
+                    timestamp_ns: 11,
+                    fact_type: "bgp_neighbor".to_string(),
+                    category: "protocol".to_string(),
+                    hostname: "leaf1".to_string(),
+                    source_vendor: "nokia_srl".to_string(),
+                    message: "BGP neighbor 10.1.0.1 down".to_string(),
+                    raw: "raw".to_string(),
+                    transport: "udp".to_string(),
+                    peer_addr: "127.0.0.1:5514".to_string(),
+                    field_schema: std::collections::BTreeMap::from([
+                        ("peer_address".to_string(), "string".to_string()),
+                        ("new_state".to_string(), "string".to_string()),
+                    ]),
+                    fields: std::collections::BTreeMap::from([
+                        ("peer_address".to_string(), "10.1.0.1".to_string()),
+                        ("new_state".to_string(), "down".to_string()),
+                    ]),
+                })
+                .expect("serialize syslog fact"),
+            })
+            .await
+            .expect("write syslog fact");
+
+        let event = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for joined syslog fact")
+            .expect("receive joined syslog fact event");
+        assert_eq!(event.event_type, "syslog_fact_joined");
+        let detail: serde_json::Value =
+            serde_json::from_str(&event.detail_json).expect("detail json");
+        assert_eq!(detail["fact_type"], "bgp_neighbor");
+        assert_eq!(detail["join"]["status"], "joined");
+        assert_eq!(detail["join"]["kind"], "bgp_neighbor");
+        assert_eq!(
+            detail["join"]["graph_state"]["session_state"],
+            "established"
+        );
+    }
+
+    #[tokio::test]
+    async fn syslog_fact_orphan_event_is_emitted_for_unknown_interface() {
+        let path = temp_graph_path("syslog-fact-orphan");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
+        let mut rx = store.subscribe_events();
+        store
+            .write(TelemetryUpdate {
+                target: "leaf2".to_string(),
+                vendor: "nokia_srl".to_string(),
+                hostname: "leaf2".to_string(),
+                role: "leaf".to_string(),
+                site: "dc-a".to_string(),
+                timestamp_ns: 12,
+                path: "signals/syslog_fact/interface_state".to_string(),
+                value: serde_json::to_value(SyslogFact {
+                    timestamp_ns: 12,
+                    fact_type: "interface_state".to_string(),
+                    category: "protocol".to_string(),
+                    hostname: "leaf2".to_string(),
+                    source_vendor: "nokia_srl".to_string(),
+                    message: "Interface ethernet-1/99 changed state to down".to_string(),
+                    raw: "raw".to_string(),
+                    transport: "udp".to_string(),
+                    peer_addr: "127.0.0.1:5514".to_string(),
+                    field_schema: std::collections::BTreeMap::from([
+                        ("if_name".to_string(), "string".to_string()),
+                        ("new_state".to_string(), "string".to_string()),
+                    ]),
+                    fields: std::collections::BTreeMap::from([
+                        ("if_name".to_string(), "ethernet-1/99".to_string()),
+                        ("new_state".to_string(), "down".to_string()),
+                    ]),
+                })
+                .expect("serialize syslog fact"),
+            })
+            .await
+            .expect("write syslog fact");
+
+        let event = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for orphan syslog fact")
+            .expect("receive orphan syslog fact event");
+        assert_eq!(event.event_type, "syslog_fact_orphan");
+        let detail: serde_json::Value =
+            serde_json::from_str(&event.detail_json).expect("detail json");
+        assert_eq!(detail["fact_type"], "interface_state");
+        assert_eq!(detail["join"]["status"], "orphan");
+        assert_eq!(detail["join"]["reason"], "no_interface_match");
     }
 
     #[test]

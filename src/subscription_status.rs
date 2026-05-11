@@ -249,7 +249,11 @@ fn path_matches_update(
         TelemetryEvent::BfdSessionState { .. } => expected.contains("bfd"),
         TelemetryEvent::LldpNeighbor { .. } => expected.contains("lldp"),
         TelemetryEvent::SyslogEvent { .. } => false,
+        TelemetryEvent::SyslogFact { .. } => false,
         TelemetryEvent::SnmpTrap { .. } => false,
+        TelemetryEvent::BmpPeerState => false,
+        TelemetryEvent::BmpRouteMonitoring => false,
+        TelemetryEvent::BgpLsState => false,
         TelemetryEvent::Ignored => false,
     }
 }

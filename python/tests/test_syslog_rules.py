@@ -6,8 +6,11 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from bonsai_sdk.rules.syslog import (
+    MultiSourceCorrelation,
+    OrphanInterfaceMention,
     SyslogAuthFailureCluster,
     SyslogBpduGuardActivation,
+    SyslogGnmiDisagreement,
     SyslogHardwareError,
     SyslogLicenseExpiry,
     SyslogProtocolError,
@@ -21,6 +24,16 @@ def _event(device: str, event_type: str, message: str, ts: int) -> SimpleNamespa
         device_address=device,
         event_type=event_type,
         detail_json=json.dumps({"message": message, "category": event_type.removeprefix("syslog_")}),
+        occurred_at_ns=ts,
+        state_change_event_id=f"{device}-{ts}",
+    )
+
+
+def _fact_event(device: str, event_type: str, detail: dict, ts: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        device_address=device,
+        event_type=event_type,
+        detail_json=json.dumps(detail),
         occurred_at_ns=ts,
         state_change_event_id=f"{device}-{ts}",
     )
@@ -104,3 +117,74 @@ def test_syslog_stp_topology_change_matches_keyword():
     )
     assert features is not None
     assert "topology change" in rule.detect(features).lower()
+
+
+def test_syslog_gnmi_disagreement_fires_for_bgp_mismatch():
+    client = MagicMock()
+    rule = SyslogGnmiDisagreement()
+    features = rule.extract_features(
+        _fact_event(
+            "leaf-bgp-a",
+            "syslog_fact_joined",
+            {
+                "fact_type": "bgp_neighbor",
+                "message": "BGP neighbor 10.1.0.1 down",
+                "fields": {"peer_address": "10.1.0.1", "new_state": "down"},
+                "join": {
+                    "status": "joined",
+                    "kind": "bgp_neighbor",
+                    "graph_state": {"peer_address": "10.1.0.1", "session_state": "established"},
+                },
+            },
+            100,
+        ),
+        client,
+    )
+    assert features is not None
+    assert "disagree on BGP state" in rule.detect(features)
+
+
+def test_orphan_interface_mention_fires_for_unresolved_interface_fact():
+    client = MagicMock()
+    rule = OrphanInterfaceMention()
+    features = rule.extract_features(
+        _fact_event(
+            "leaf-if-a",
+            "syslog_fact_orphan",
+            {
+                "fact_type": "interface_state",
+                "message": "Interface ethernet-1/99 changed state to down",
+                "fields": {"if_name": "ethernet-1/99", "new_state": "down"},
+                "join": {"status": "orphan", "kind": "interface", "reason": "no_interface_match"},
+            },
+            100,
+        ),
+        client,
+    )
+    assert features is not None
+    assert "unmanaged or unresolved interface ethernet-1/99" in rule.detect(features)
+
+
+def test_multi_source_correlation_fires_for_joined_interface_fact():
+    client = MagicMock()
+    rule = MultiSourceCorrelation()
+    features = rule.extract_features(
+        _fact_event(
+            "leaf-if-b",
+            "syslog_fact_joined",
+            {
+                "fact_type": "interface_state",
+                "message": "Interface ethernet-1/1 changed state to down",
+                "fields": {"if_name": "ethernet-1/1", "new_state": "down"},
+                "join": {
+                    "status": "joined",
+                    "kind": "interface",
+                    "graph_state": {"if_name": "ethernet-1/1", "in_errors": 3, "out_errors": 1},
+                },
+            },
+            100,
+        ),
+        client,
+    )
+    assert features is not None
+    assert "resolved syslog interface mention ethernet-1/1" in rule.detect(features)

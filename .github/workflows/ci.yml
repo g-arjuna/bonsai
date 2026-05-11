@@ -49,6 +49,9 @@ jobs:
           echo "build_seconds=${ELAPSED}" >> "$GITHUB_OUTPUT"
           echo "Build took ${ELAPSED}s"
 
+      - name: Wiring checks
+        run: bash scripts/check_wiring.sh
+
       - name: Test
         run: cargo nextest run --release
 

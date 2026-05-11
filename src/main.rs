@@ -401,12 +401,14 @@ async fn main() -> Result<()> {
 
     if cfg.signals.syslog.enabled && run_collector {
         let syslog_cfg = cfg.signals.syslog.clone();
+        let syslog_pattern_dir = cfg.layered_ingestion.syslog_patterns_path.clone();
         let syslog_targets = cfg.target.clone();
         let syslog_bus = std::sync::Arc::clone(&bus);
         let syslog_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
             if let Err(error) = bonsai::signals::syslog::run_syslog_receiver(
                 syslog_cfg,
+                syslog_pattern_dir,
                 syslog_targets,
                 syslog_bus,
                 syslog_shutdown,
@@ -442,6 +444,56 @@ async fn main() -> Result<()> {
     } else if cfg.signals.snmp.enabled {
         info!(
             "snmp receiver enabled but runtime mode has no collector role; skipping snmp receiver"
+        );
+    }
+
+    if cfg.streaming.bmp.enabled && run_collector {
+        let bmp_cfg = cfg.streaming.bmp.clone();
+        let bmp_targets = cfg.target.clone();
+        let bmp_bus = std::sync::Arc::clone(&bus);
+        let bmp_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(error) = bonsai::streaming::bmp::run_bmp_receiver(
+                bmp_cfg,
+                bmp_targets,
+                bmp_bus,
+                bmp_shutdown,
+            )
+            .await
+            {
+                warn!(%error, "BMP receiver stopped");
+            }
+        });
+    } else if cfg.streaming.bmp.enabled {
+        info!("BMP receiver enabled but runtime mode has no collector role; skipping BMP receiver");
+    }
+
+    if cfg.streaming.bgp_ls.enabled && run_collector {
+        let bgp_ls_cfg = cfg.streaming.bgp_ls.clone();
+        let bgp_ls_targets = cfg.target.clone();
+        let bgp_ls_bus = std::sync::Arc::clone(&bus);
+        let bgp_ls_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(error) = bonsai::streaming::bgp_ls::run_bgp_ls_receiver(
+                bgp_ls_cfg,
+                bgp_ls_targets,
+                bgp_ls_bus,
+                bgp_ls_shutdown,
+            )
+            .await
+            {
+                warn!(%error, "BGP-LS receiver stopped");
+            }
+        });
+    } else if cfg.streaming.bgp_ls.enabled {
+        info!(
+            "BGP-LS receiver enabled but runtime mode has no collector role; skipping BGP-LS receiver"
+        );
+    }
+
+    if cfg.streaming.pcep.enabled {
+        info!(
+            "PCEP ingest is configured but intentionally deferred in CV2 Sprint 4; no runtime receiver will be started yet"
         );
     }
 
@@ -869,6 +921,7 @@ async fn main() -> Result<()> {
                         cfg.graph_path.clone(),
                         storage_config_for_http,
                         cfg.layered_ingestion.clone(),
+                        cfg.streaming.clone(),
                         cfg.yang.library_root.clone(),
                         cfg.yang.cache_root.clone(),
                         cfg.yang.bundle_key_env.clone(),

@@ -51,9 +51,15 @@ pub enum TelemetryEvent {
     SyslogEvent {
         category: String,
     },
+    SyslogFact {
+        fact_type: String,
+    },
     SnmpTrap {
         event_type: String,
     },
+    BmpPeerState,
+    BmpRouteMonitoring,
+    BgpLsState,
     Ignored,
 }
 
@@ -268,6 +274,16 @@ impl TelemetryUpdate {
             };
         }
 
+        if self.path.starts_with("signals/syslog_fact/")
+            && let Some(fact_type) = self.path.rsplit('/').next()
+            && !fact_type.is_empty()
+            && self.value.get("fields").is_some()
+        {
+            return TelemetryEvent::SyslogFact {
+                fact_type: fact_type.to_string(),
+            };
+        }
+
         if self.path.starts_with("signals/snmp/")
             && let Some(event_type) = self.path.rsplit('/').next()
             && !event_type.is_empty()
@@ -275,6 +291,18 @@ impl TelemetryUpdate {
             return TelemetryEvent::SnmpTrap {
                 event_type: event_type.to_string(),
             };
+        }
+
+        if self.path == "streaming/bmp/peer-state" {
+            return TelemetryEvent::BmpPeerState;
+        }
+
+        if self.path == "streaming/bmp/route-monitoring" {
+            return TelemetryEvent::BmpRouteMonitoring;
+        }
+
+        if self.path.starts_with("streaming/bgp-ls/") {
+            return TelemetryEvent::BgpLsState;
         }
 
         TelemetryEvent::Ignored

@@ -36,7 +36,9 @@ recent output of each test driver. Always check this endpoint first.
   "driver_results": {
     "api": { ... },
     "event": { ... },
-    "ui": { ... }
+    "ui": { ... },
+    "smoke_synthesizer": { ... },
+    "smoke_change_detection": { ... }
   }
 }
 ```
@@ -70,8 +72,12 @@ status endpoint plus graph-level counters.
 
 ## 3. Driver result files
 
-Each driver writes its result to `runtime/driver_results/<name>.json` after a run.
-These files are also served via `/api/_test/status` under `driver_results`.
+Each driver or smoke test writes its result to `runtime/driver_results/<name>.json`
+after a run. These files are also served via `/api/_test/status` under
+`driver_results`.
+
+Sprint 2 smoke tests live under `scripts/smoke/` and write
+`runtime/driver_results/smoke_<subsystem>.json`.
 
 ### `runtime/driver_results/api.json` — API contract driver
 

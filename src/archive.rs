@@ -578,7 +578,11 @@ fn classified_event_type(update: &TelemetryUpdate) -> &'static str {
         TelemetryEvent::LldpNeighbor { .. } => "lldp_neighbor",
         TelemetryEvent::InterfaceOperStatus { .. } => "interface_oper_status",
         TelemetryEvent::SyslogEvent { .. } => "syslog_event",
+        TelemetryEvent::SyslogFact { .. } => "syslog_fact",
         TelemetryEvent::SnmpTrap { .. } => "snmp_trap",
+        TelemetryEvent::BmpPeerState => "bmp_peer_state",
+        TelemetryEvent::BmpRouteMonitoring => "bmp_route_monitoring",
+        TelemetryEvent::BgpLsState => "bgp_ls_state",
         TelemetryEvent::Ignored => "ignored",
     }
 }
