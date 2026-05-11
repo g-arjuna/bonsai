@@ -1,0 +1,32 @@
+{
+  "driver": "cloud_sync_check",
+  "ts_unix": 1778505217,
+  "status": "fail",
+  "ok": false,
+  "summary": "no sync/cloud-spike branches found on origin",
+  "checks": [
+    {
+      "name": "remote_branches_present",
+      "check": "remote_branches_present",
+      "status": "fail",
+      "ok": false
+    },
+    {
+      "name": "snapshot_tarball_present",
+      "check": "snapshot_tarball_present",
+      "status": "skip",
+      "ok": false
+    },
+    {
+      "name": "readme_present",
+      "check": "readme_present",
+      "status": "skip",
+      "ok": false
+    }
+  ],
+  "environment": {
+    "branch_prefix": "sync/cloud-spike",
+    "latest_branch": "",
+    "total_branches": 0
+  }
+}
