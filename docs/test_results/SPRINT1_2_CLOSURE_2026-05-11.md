@@ -18,17 +18,16 @@
 - `runtime/driver_results/daily.json`
 - `docs/test_results/daily_runs/2026-05-11.md`
 - `runtime/driver_results/cloud_sync_check.json`
+- `docs/test_results/e2e_netbox/20260511-fail.md`
 - `docs/test_results/e2e_output_adapters/20260511-splunk-fail.md`
 - `docs/test_results/e2e_output_adapters/20260511-elastic-fail.md`
 
-*(Note: `docs/test_results/e2e_netbox/20260511-<pass|fail>.md` was not created because the script exited prematurely)*
-
 ## Remaining Failures
-1. **Daily Check**: Failed due to `archive_verification` and `chaos_runner_status` checks failing. (Operational/Environment state mismatch).
+1. **Daily Check**: Passed on individual `archive_verification` and `chaos_runner_status` (operational fixes applied), but failed overall due to `driver_results` checks failing from previous missing or conflicting smoke/e2e states.
 2. **Cloud Sync**: Failed (`FAIL: no sync/cloud-spike branches found on origin`). (Operational failure - cloud sync hasn't occurred yet).
-3. **NetBox E2E**: Failed with `error: NetBox not reachable at http://localhost:8000`. Script exited before artifact generation. (External dependency/Script contract mismatch, as preflight reported NetBox reachable but the E2E script failed).
-4. **Splunk E2E**: Failed with `tcp connect error: Connection refused (os error 111)` connecting to `https://localhost:8088/services/collector/health`. (External dependency failure).
-5. **Elastic E2E**: Failed with `tcp connect error: Connection refused (os error 111)` connecting to `http://localhost:9200/_cluster/health`. (External dependency failure).
+3. **NetBox E2E**: Failed with `nodes_touched=0`. The enricher successfully configured but the connection test and subsequent manual run failed to touch any nodes. (External dependency/Script contract mismatch - possibly misconfigured rust HTTP host path).
+4. **Splunk E2E**: Failed with `Splunk adapter never entered running state`. (External dependency/Script contract mismatch - bonsai failed to run the adapter post-restart).
+5. **Elastic E2E**: Failed with `Elastic adapter never entered running state`. (External dependency/Script contract mismatch - bonsai failed to run the adapter post-restart).
 
 ## Action Required from Codex/Claude
-- **Yes**. Codex/Claude needs to investigate the port bindings and connection issues for the NetBox, Splunk, and Elastic output adapter e2e scripts against the external compose stack. Additionally, the daily check script needs attention regarding chaos runner and archive generation to ensure it passes the required operational thresholds.
+- **Yes**. Codex/Claude needs to investigate why the adapters (Splunk and Elastic) fail to enter a running state in Bonsai after being added/restarted, and why the NetBox enricher fails to establish a functional connection post-registration despite passing preflight connectivity checks.
