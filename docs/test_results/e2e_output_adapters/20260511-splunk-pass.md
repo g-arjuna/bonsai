@@ -7,12 +7,12 @@
 
 ## Result
 
-**FAIL**
+**PASS**
 
 ## Summary
 
-detection_injection_failed
+not_run
 
 ## Log
 
-`/tmp/bonsai-e2e-output-20260511-235007-3685920.log`
+`/tmp/bonsai-e2e-output-20260511-235408-3697105.log`

@@ -1,6 +1,6 @@
 {
   "driver": "smoke_signals_snmp",
-  "ts_unix": 1778510449,
+  "ts_unix": 1778523560,
   "base_url": "http://127.0.0.1:3000",
   "status": "pass",
   "ok": true,
@@ -21,8 +21,8 @@
     }
   ],
   "environment": {
-    "bonsai_version": "1e732a9-dirty",
-    "git_sha": "1e732a9",
+    "bonsai_version": "597f04b-dirty",
+    "git_sha": "597f04b",
     "lab": "unknown"
   }
 }

@@ -2,7 +2,7 @@
 
 **Date**: 2026-05-11
 **Operator**: Arjuna Ganesan
-**Bonsai version**: 1e732a9
+**Bonsai version**: 597f04b
 **Adapter**: elastic
 
 ## Result
@@ -11,8 +11,8 @@
 
 ## Summary
 
-doc_count=5 ecs_timestamp=true using_ephemeral=false
+not_run
 
 ## Log
 
-`/tmp/bonsai-e2e-output-20260511-201057-3202065.log`
+`/tmp/bonsai-e2e-output-20260511-235329-3694893.log`
