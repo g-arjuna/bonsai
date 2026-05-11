@@ -452,4 +452,4 @@ unic-langid-impl v0.9.6 (*)
 ```
 
 
-<!-- CI_BASELINE_SECONDS=0 last_updated=2026-04-24 -->
+<!-- CI_BASELINE_SECONDS=1412 last_updated=2026-05-11 -->
