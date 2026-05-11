@@ -1,6 +1,6 @@
 {
   "driver": "daily_check",
-  "ts_unix": 1778506554,
+  "ts_unix": 1778510468,
   "base_url": "http://127.0.0.1:3000",
   "status": "fail",
   "ok": false,
@@ -41,7 +41,7 @@
     "markdown_report": "docs/test_results/daily_runs/2026-05-11.md"
   },
   "environment": {
-    "git_sha": "f991070",
+    "git_sha": "1e732a9",
     "lab_scope": "dc",
     "date_utc": "2026-05-11"
   }

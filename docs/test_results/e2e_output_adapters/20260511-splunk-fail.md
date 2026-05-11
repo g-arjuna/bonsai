@@ -2,7 +2,7 @@
 
 **Date**: 2026-05-11
 **Operator**: Arjuna Ganesan
-**Bonsai version**: f991070
+**Bonsai version**: 1e732a9
 **Adapter**: splunk
 
 ## Result
@@ -11,8 +11,8 @@
 
 ## Summary
 
-adapter_not_running_after_restart
+events_observed=false using_ephemeral=false
 
 ## Log
 
-`/tmp/bonsai-e2e-output-20260511-190659-2940237.log`
+`/tmp/bonsai-e2e-output-20260511-201057-3202043.log`

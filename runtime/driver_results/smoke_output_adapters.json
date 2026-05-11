@@ -1,6 +1,6 @@
 {
   "driver": "smoke_output_adapters",
-  "ts_unix": 1778502186,
+  "ts_unix": 1778510448,
   "base_url": "http://127.0.0.1:3000",
   "status": "pass",
   "ok": true,
@@ -22,8 +22,8 @@
     }
   ],
   "environment": {
-    "bonsai_version": "3b212d8-dirty",
-    "git_sha": "3b212d8",
+    "bonsai_version": "1e732a9-dirty",
+    "git_sha": "1e732a9",
     "lab": "unknown"
   }
 }
