@@ -1,0 +1,29 @@
+{
+  "driver": "smoke_output_adapters",
+  "ts_unix": 1778502186,
+  "base_url": "http://127.0.0.1:3000",
+  "status": "pass",
+  "ok": true,
+  "summary": "validated output adapter list and audit surfaces",
+  "checks": [
+    {
+      "check": "adapter_list",
+      "status": "pass",
+      "adapter_count": 0,
+      "name": "adapter_list",
+      "ok": true
+    },
+    {
+      "check": "adapter_audit",
+      "status": "pass",
+      "audit_entries": 0,
+      "name": "adapter_audit",
+      "ok": true
+    }
+  ],
+  "environment": {
+    "bonsai_version": "3b212d8-dirty",
+    "git_sha": "3b212d8",
+    "lab": "unknown"
+  }
+}

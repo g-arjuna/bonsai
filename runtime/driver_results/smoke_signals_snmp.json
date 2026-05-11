@@ -1,0 +1,28 @@
+{
+  "driver": "smoke_signals_snmp",
+  "ts_unix": 1778502187,
+  "base_url": "http://127.0.0.1:3000",
+  "status": "pass",
+  "ok": true,
+  "summary": "validated snmp signal status path and archive path visibility",
+  "checks": [
+    {
+      "check": "status_endpoint",
+      "status": "pass",
+      "name": "status_endpoint",
+      "ok": true
+    },
+    {
+      "check": "archive_path",
+      "status": "warn",
+      "path": "/home/arjuna/Desktop/bonsai/runtime/signals/snmp.jsonl",
+      "name": "archive_path",
+      "ok": false
+    }
+  ],
+  "environment": {
+    "bonsai_version": "3b212d8-dirty",
+    "git_sha": "3b212d8",
+    "lab": "unknown"
+  }
+}

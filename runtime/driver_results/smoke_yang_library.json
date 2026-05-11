@@ -1,0 +1,29 @@
+{
+  "driver": "smoke_yang_library",
+  "ts_unix": 1778502186,
+  "base_url": "http://127.0.0.1:3000",
+  "status": "pass",
+  "ok": true,
+  "summary": "validated YANG catalogue list and search endpoints",
+  "checks": [
+    {
+      "check": "modules",
+      "status": "pass",
+      "module_count": 0,
+      "name": "modules",
+      "ok": true
+    },
+    {
+      "check": "search",
+      "status": "pass",
+      "query": "interface",
+      "name": "search",
+      "ok": true
+    }
+  ],
+  "environment": {
+    "bonsai_version": "3b212d8-dirty",
+    "git_sha": "3b212d8",
+    "lab": "unknown"
+  }
+}
