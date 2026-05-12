@@ -145,6 +145,16 @@ async fn main() -> Result<()> {
         "startup"
     );
 
+    // T4-1: probe runtime environment → ResourceProfile with tuning defaults.
+    let probe = bonsai::resource_profile::probe(
+        std::path::Path::new(&cfg.archive.path),
+        std::path::Path::new(if cfg.logging.file_path.is_empty() {
+            "."
+        } else {
+            &cfg.logging.file_path
+        }),
+    );
+
     let runtime_mode = cfg.runtime.parsed_mode()?;
     let run_core = runtime_mode.runs_core();
     let run_collector = runtime_mode.runs_collector();
@@ -899,6 +909,15 @@ async fn main() -> Result<()> {
             let rollback_registry = bonsai::remediation::rollback::new_rollback_registry();
             let remediation_config = cfg.remediation.clone();
             let servicenow_config = cfg.integrations.servicenow.clone();
+
+            // T4-1/T4-2/T4-3/T4-4: start the resource governor with the probed profile.
+            let governor = bonsai::resource_governor::start(
+                probe.profile,
+                probe.defaults,
+                shutdown_rx.clone(),
+            );
+            let governor_for_http = governor.clone();
+
             tokio::spawn(async move {
                 let listener = tokio::net::TcpListener::bind(http_addr)
                     .await
@@ -931,6 +950,7 @@ async fn main() -> Result<()> {
                         cfg.collector.filter.counter_forward_mode.clone(),
                         cfg.collector.filter.counter_window_secs,
                         cfg.collector.filter.counter_debounce_secs,
+                        Some(governor_for_http),
                     ),
                 )
                 .await

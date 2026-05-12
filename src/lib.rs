@@ -24,6 +24,8 @@ pub mod output;
 pub mod parser_chain;
 pub mod registry;
 pub mod remediation;
+pub mod resource_governor;
+pub mod resource_profile;
 pub mod retention;
 pub mod signals;
 pub mod store;

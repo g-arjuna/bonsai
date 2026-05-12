@@ -39,6 +39,7 @@ use crate::graph::{
     RemediationProposalRow, SiteRecord, TraceStep,
 };
 use crate::output::traits::{OutputAdapterConfig, OutputAdapterRunState, SharedAdapterRegistry};
+use crate::resource_governor::GovernorHandle;
 use crate::{
     archive, audit,
     change_detection::{self, ChangeDetectionRuntime},
@@ -581,6 +582,8 @@ pub struct AppState {
     pub counter_mode: String,
     pub counter_window_secs: u64,
     pub counter_debounce_secs: u64,
+    /// T4-5: Resource governance handle — None until governor is started (non-core modes).
+    pub governor: Option<GovernorHandle>,
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -612,6 +615,7 @@ pub fn router(
     counter_mode: String,
     counter_window_secs: u64,
     counter_debounce_secs: u64,
+    governor: Option<GovernorHandle>,
 ) -> Router {
     let state = AppState {
         store,
@@ -639,6 +643,7 @@ pub fn router(
         counter_mode,
         counter_window_secs,
         counter_debounce_secs,
+        governor,
     };
 
     // Serve the Svelte SPA from ui/dist/. Fall back to index.html so
@@ -770,6 +775,7 @@ pub fn router(
         .route("/api/operations", get(operations_handler))
         .route("/api/operations/daily-check", get(daily_check_handler))
         .route("/api/operations/weekly-trend", get(weekly_trend_handler))
+        .route("/api/governance/state", get(governance_state_handler))
         .route("/api/_test/status", get(test_status_handler))
         .route(
             "/api/_test/inject_detection",
@@ -5681,4 +5687,17 @@ async fn complete_investigation_handler(
         .await
         .map(|_| StatusCode::NO_CONTENT)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+// ── T4-5 — Governance state endpoint ─────────────────────────────────────────
+
+async fn governance_state_handler(State(state): State<AppState>) -> impl IntoResponse {
+    match &state.governor {
+        Some(g) => (StatusCode::OK, Json(serde_json::json!(g.snapshot()))).into_response(),
+        None => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "governance_not_started"})),
+        )
+            .into_response(),
+    }
 }

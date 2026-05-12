@@ -6,6 +6,7 @@
   let subscriptions = $state(null);
   let dailyCheck = $state(null);
   let weeklyTrend = $state(null);
+  let governance = $state(null);
   let loading = $state(true);
   let error = $state(null);
 
@@ -24,12 +25,13 @@
 
   async function fetchAll() {
     try {
-      const [opsRes, collRes, topoRes, dcRes, wtRes] = await Promise.all([
+      const [opsRes, collRes, topoRes, dcRes, wtRes, govRes] = await Promise.all([
         fetch('/api/operations'),
         fetch('/api/assignment/status'),
         fetch('/api/topology'),
         fetch('/api/operations/daily-check'),
         fetch('/api/operations/weekly-trend'),
+        fetch('/api/governance/state'),
       ]);
       if (!opsRes.ok) throw new Error(await opsRes.text());
       ops = await opsRes.json();
@@ -40,6 +42,7 @@
       }
       if (dcRes.ok) dailyCheck = await dcRes.json();
       if (wtRes.ok) weeklyTrend = await wtRes.json();
+      if (govRes.ok) governance = await govRes.json();
       rssSamples     = [...rssSamples,     ops.rss_bytes           ?? 0].slice(-SPARKLINE_MAX);
       archiveSamples = [...archiveSamples, ops.archive_disk_bytes  ?? 0].slice(-SPARKLINE_MAX);
       graphSamples   = [...graphSamples,   ops.graph_disk_bytes    ?? 0].slice(-SPARKLINE_MAX);
@@ -468,6 +471,57 @@
       </div>
     {/if}
 
+    <!-- ── Resource Governance ───────────────────────────────────────────── -->
+    {#if governance && governance.status !== 'governance_not_started'}
+      <div class="section-card">
+        <h3 style="margin-bottom:12px">Resource Governance</h3>
+        <div class="gov-header">
+          <span class="gov-profile">{governance.profile}</span>
+          <span class="muted" style="font-size:12px">
+            budget {governance.memory_budget_mb} MB &nbsp;·&nbsp;
+            rate {governance.rate_budget_eps?.toLocaleString()} eps
+          </span>
+        </div>
+        <div class="gov-flags" style="margin:10px 0">
+          <span class="badge {governance.memory_pressure_active ? 'critical' : 'healthy'}">
+            memory {governance.memory_pressure_active ? 'PRESSURE' : 'ok'}
+          </span>
+          <span class="badge {governance.write_pressure_active ? 'warn' : 'healthy'}">
+            writes {governance.write_pressure_active ? 'PRESSURE' : 'ok'}
+          </span>
+          <span class="badge {governance.rate_shedding_active ? 'critical' : 'healthy'}">
+            rate {governance.rate_shedding_active ? 'SHEDDING' : 'ok'}
+          </span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Counter</th>
+              <th style="text-align:right">Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="muted">Memory shrink actions</td>
+              <td style="text-align:right">{governance.memory_shrink_count ?? 0}</td>
+            </tr>
+            <tr>
+              <td class="muted">Archive flush actions</td>
+              <td style="text-align:right">{governance.memory_flush_count ?? 0}</td>
+            </tr>
+            <tr>
+              <td class="muted">Write batch expand actions</td>
+              <td style="text-align:right">{governance.write_batch_expand_count ?? 0}</td>
+            </tr>
+            <tr>
+              <td class="muted">Rate shed events</td>
+              <td style="text-align:right {governance.rate_shed_count > 0 ? '; color:var(--state-failed)' : ''}">{governance.rate_shed_count ?? 0}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    {/if}
+
   {/if}
 </div>
 
@@ -658,6 +712,29 @@
   }
 
   .ghost-link:hover { background: var(--bg-glass); }
+
+  /* ── Governance panel ────────────────────────────────────────────────────── */
+  .gov-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .gov-profile {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono-sm);
+    background: var(--bg-glass);
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    padding: 2px 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--accent-primary);
+  }
+  .gov-flags {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
 
   @media (max-width: 900px) {
     .tile-grid { grid-template-columns: repeat(2, 1fr); }
