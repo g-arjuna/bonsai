@@ -29,6 +29,7 @@ ALLOWED_ROLES = {
     "core",
     "edge",
     "host",
+    "collector",
 }
 
 
