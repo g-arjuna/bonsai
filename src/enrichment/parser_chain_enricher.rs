@@ -32,6 +32,10 @@ impl MultiSourceEnricher for ParserChainCliEnricher {
         "parser_chain_cli"
     }
 
+    fn capability_tags(&self) -> Vec<&'static str> {
+        vec!["cli"]
+    }
+
     async fn capture(
         &self,
         target: &TargetConfig,

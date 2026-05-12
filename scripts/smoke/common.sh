@@ -7,6 +7,24 @@ BASE_URL="${BASE_URL:-${1:-http://127.0.0.1:3000}}"
 RESULT_DIR="${REPO_ROOT}/runtime/driver_results"
 mkdir -p "${RESULT_DIR}"
 
+git_sha() {
+  git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo "unknown"
+}
+
+git_version() {
+  git -C "${REPO_ROOT}" describe --always --dirty --tags 2>/dev/null || echo "unknown"
+}
+
+lab_hint() {
+  if [[ -n "${BONSAI_LAB_TOPOLOGY:-}" ]]; then
+    printf '%s\n' "${BONSAI_LAB_TOPOLOGY}"
+  elif [[ -n "${LAB_TOPOLOGY:-}" ]]; then
+    printf '%s\n' "${LAB_TOPOLOGY}"
+  else
+    printf '%s\n' "unknown"
+  fi
+}
+
 api_call() {
   local method="$1"
   local path="$2"
@@ -28,15 +46,48 @@ write_result() {
   local summary="$3"
   local details_json="${4:-[]}"
   local result_file="${RESULT_DIR}/smoke_${name}.json"
+  local git_sha_value
+  local git_version_value
+  local lab_hint_value
+  git_sha_value="$(git_sha)"
+  git_version_value="$(git_version)"
+  lab_hint_value="$(lab_hint)"
 
-  python3 - <<'PY' "${result_file}" "${name}" "${status}" "${summary}" "${BASE_URL}" "${details_json}"
+  python3 - <<'PY' "${result_file}" "${name}" "${status}" "${summary}" "${BASE_URL}" "${details_json}" "${git_version_value}" "${git_sha_value}" "${lab_hint_value}"
 import json
 import sys
 import time
 from pathlib import Path
 
-result_file, name, status, summary, base_url, details_json = sys.argv[1:]
-details = json.loads(details_json)
+(
+    result_file,
+    name,
+    status,
+    summary,
+    base_url,
+    details_json,
+    git_version,
+    git_sha,
+    lab_hint,
+) = sys.argv[1:]
+raw_details = json.loads(details_json)
+details = []
+for item in raw_details:
+    if not isinstance(item, dict):
+        continue
+    normalized = dict(item)
+    check_name = normalized.get("name") or normalized.get("check") or "unnamed_check"
+    check_status = normalized.get("status")
+    if check_status is None:
+        check_status = "pass" if normalized.get("ok") else "fail"
+    ok = normalized.get("ok")
+    if ok is None:
+        ok = check_status == "pass"
+    normalized["name"] = check_name
+    normalized["check"] = check_name
+    normalized["status"] = check_status
+    normalized["ok"] = ok
+    details.append(normalized)
 payload = {
     "driver": f"smoke_{name}",
     "ts_unix": int(time.time()),
@@ -45,6 +96,11 @@ payload = {
     "ok": status == "pass",
     "summary": summary,
     "checks": details,
+    "environment": {
+        "bonsai_version": git_version,
+        "git_sha": git_sha,
+        "lab": lab_hint,
+    },
 }
 Path(result_file).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(payload, indent=2))

@@ -1,0 +1,48 @@
+{
+  "driver": "daily_check",
+  "ts_unix": 1778527808,
+  "base_url": "http://127.0.0.1:3000",
+  "status": "fail",
+  "ok": false,
+  "summary": "daily check complete; bonsai=pass archive=pass driver_results=fail chaos=pass lab=pass",
+  "checks": [
+    {
+      "name": "bonsai_status",
+      "check": "bonsai_status",
+      "status": "pass",
+      "ok": true
+    },
+    {
+      "name": "driver_results",
+      "check": "driver_results",
+      "status": "fail",
+      "ok": false
+    },
+    {
+      "name": "archive_verification",
+      "check": "archive_verification",
+      "status": "pass",
+      "ok": true
+    },
+    {
+      "name": "chaos_runner_status",
+      "check": "chaos_runner_status",
+      "status": "pass",
+      "ok": true
+    },
+    {
+      "name": "lab_health",
+      "check": "lab_health",
+      "status": "pass",
+      "ok": true
+    }
+  ],
+  "artifacts": {
+    "markdown_report": "docs/test_results/daily_runs/2026-05-11.md"
+  },
+  "environment": {
+    "git_sha": "c869f37",
+    "lab_scope": "dc",
+    "date_utc": "2026-05-11"
+  }
+}

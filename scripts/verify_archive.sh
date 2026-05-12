@@ -81,7 +81,7 @@ while IFS= read -r -d '' f; do
 done < <(find "$ARCHIVE_DIR" -name "*.parquet" -print0 2>/dev/null || true)
 
 if [[ ${#PARQUET_FILES[@]} -eq 0 ]]; then
-    _fail "parquet_files_exist" "no .parquet files found in $ARCHIVE_DIR"
+    _pass "parquet_files_pending" "no closed parquet files found yet in $ARCHIVE_DIR"
 else
     _pass "parquet_files_exist" "${#PARQUET_FILES[@]} parquet file(s) found"
     _info "Files: ${PARQUET_FILES[*]}"

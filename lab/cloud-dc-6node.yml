@@ -39,7 +39,7 @@ name: bonsai-cloud-dc
 #   bash scripts/chaos_runner.sh
 
 mgmt:
-  network: bonsai-cloud-dc-mgmt
+  network: bonsai-mgmt
   ipv4-subnet: 172.100.104.0/24
   ipv4-gw: 172.100.104.1
 

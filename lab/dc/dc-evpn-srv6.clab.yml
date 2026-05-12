@@ -26,11 +26,16 @@ name: bonsai-dc
 #   - BFD 1s intervals on all p2p uplinks
 #   - L3VPN tenant-A (all leaves) + tenant-B (leaf3, leaf4)
 #
-# Streaming tier intent (CV2 Sprint 4):
+# Streaming tier intent (CV3 Sprint 4):
 #   - BMP exporters: spines + super-spines are the preferred RIB-export points for
 #     per-prefix visibility, with leaves optional when lab scale allows.
-#   - BGP-LS source: this topology does not enable BGP-LS by default because the
-#     DC fabric is SRv6-focused; keep it gNMI+BMP-first here.
+#     Collector endpoint: host at 172.100.103.1 (bonsai-mgmt gateway), port 11019
+#     (configurable via [streaming.bmp.tcp_addr] in bonsai.toml).
+#     SR Linux BMP config (add to startup-config for each node labelled bmp: exporter):
+#       routing-policy { bmp { station bonsai { admin-state enable; station-address 172.100.103.1; station-port 11019; } } }
+#   - BGP-LS source: DC fabric is SRv6-focused — IS-IS topology is already
+#     visible via gNMI (openconfig-network-instance:network-instances/isis).
+#     Keep gNMI+BMP primary; BGP-LS via gobgp sidecar is optional for DC.
 #
 # Addressing:
 #   Mgmt: 172.100.103.0/24
@@ -47,7 +52,7 @@ name: bonsai-dc
 #   scripts/check_lab.sh --topology dc
 
 mgmt:
-  network: bonsai-dc-mgmt
+  network: bonsai-mgmt
   ipv4-subnet: 172.100.103.0/24
   ipv4-gw: 172.100.103.1
 

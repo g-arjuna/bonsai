@@ -6,8 +6,9 @@
   let incidents = $state([]);
   let loading = $state(true);
   let error = $state(null);
+  let expanded = $state(new Set());
 
-  const SEV_CLASS = { critical: 'critical', high: 'warn', warn: 'warn', warning: 'warn', medium: 'info', low: 'info', unknown: 'info' };
+  const SEV_CLASS = { critical: 'critical', high: 'warn', warn: 'warn', warning: 'warn', medium: 'info', low: 'info', unknown: 'neutral' };
 
   const SSE_REFRESH_TYPES = new Set([
     'detection_fired', 'incident_grouped', 'remediation_outcome',
@@ -28,11 +29,7 @@
     } catch {}
 
     const poll = setInterval(loadIncidents, 60_000);
-
-    return () => {
-      clearInterval(poll);
-      if (es) es.close();
-    };
+    return () => { clearInterval(poll); if (es) es.close(); };
   });
 
   async function loadIncidents() {
@@ -50,15 +47,25 @@
   }
 
   function sevClass(sev) {
-    return SEV_CLASS[sev?.toLowerCase()] ?? 'info';
+    return SEV_CLASS[sev?.toLowerCase()] ?? 'neutral';
   }
 
-  function detectionCount(incident) {
-    return 1 + (incident.cascading?.length ?? 0);
+  function detectionCount(inc) {
+    return 1 + (inc.cascading?.length ?? 0);
   }
 
-  function incidentDetections(incident) {
-    return [incident.root, ...(incident.cascading ?? [])].filter(Boolean);
+  function incidentDetections(inc) {
+    return [inc.root, ...(inc.cascading ?? [])].filter(Boolean);
+  }
+
+  function incidentKey(inc) {
+    return inc.id ?? inc.root?.id ?? JSON.stringify(inc);
+  }
+
+  function toggleExpand(key) {
+    const next = new Set(expanded);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    expanded = next;
   }
 </script>
 
@@ -68,120 +75,317 @@
       <p class="eyebrow">Closed-loop engine</p>
       <h2>Incidents</h2>
     </div>
+    {#if !loading && incidents.length > 0}
+      <span class="open-count">{incidents.length} open</span>
+    {/if}
   </div>
 
   {#if loading}
     <div class="skeleton-stack">
       {#each [1, 2, 3] as _}
-        <div class="card skeleton"></div>
+        <div class="inc-skeleton"></div>
       {/each}
     </div>
   {:else if error}
     <div class="notice error">{error}</div>
   {:else if incidents.length === 0}
     <div class="empty">
-      No incidents recorded yet. Live health changes become incidents only after DetectionEvent rows are created.
+      No incidents recorded yet. Live health changes become incidents after DetectionEvent rows are created.
     </div>
   {:else}
     <div class="incident-list">
-      {#each incidents as inc (inc.id ?? inc.root?.id)}
-        <div class="card incident-card">
-          <div class="incident-header">
-            <span class="badge {sevClass(inc.severity)}">{inc.severity ?? 'unknown'}</span>
-            <span class="incident-device">{inc.root?.device_address ?? '—'}</span>
-            <span class="incident-count">{detectionCount(inc)} event{detectionCount(inc) === 1 ? '' : 's'}</span>
-            <span class="muted" title={absoluteTime(inc.started_at_ns)}>
-              {relativeTime(inc.started_at_ns)}
-            </span>
-          </div>
+      {#each incidents as inc (incidentKey(inc))}
+        {@const key = incidentKey(inc)}
+        {@const isOpen = expanded.has(key)}
+        {@const sev = inc.severity?.toLowerCase() ?? 'unknown'}
+        {@const count = detectionCount(inc)}
 
-          <div class="incident-summary">
-            <div><strong>Root rule:</strong> <code>{inc.root?.rule_id ?? 'unknown'}</code></div>
-            <div><strong>Affected devices:</strong> {(inc.affected_devices ?? []).join(', ') || '—'}</div>
-            <div><strong>Remediation:</strong> {inc.remediation_status ?? 'none'}</div>
-            <div><strong>Window:</strong> {duration(inc.started_at_ns, inc.ended_at_ns) || 'instant'}</div>
-          </div>
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_no_noninteractive_tabindex -->
+        <article
+          class="inc-card sev-{sevClass(sev)}"
+          onclick={() => toggleExpand(key)}
+          tabindex="0"
+          onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && toggleExpand(key)}
+        >
+          <!-- Left severity stripe — no icon, color carries the signal -->
+          <div class="sev-stripe" aria-label="severity: {sev}"></div>
 
-          {#if incidentDetections(inc).length}
-            <div class="detection-timeline">
-              {#each incidentDetections(inc).slice(0, 5) as det}
-                <button class="det-row"
-                        onclick={() => det.id && navigate('/trace/' + encodeURIComponent(det.id))}
-                        disabled={!det.id}>
-                  <span class="det-ts" title={absoluteTime(det.fired_at_ns)}>{shortTime(det.fired_at_ns)}</span>
-                  <span class="det-msg">
-                    <strong>{det.device_address ?? 'device'}</strong>
-                    {det.rule_id ? ` - ${det.rule_id}` : ''}
-                  </span>
-                  {#if det.id}
-                    <span class="det-link">→ trace</span>
-                  {/if}
-                </button>
-              {/each}
-              {#if incidentDetections(inc).length > 5}
-                <div class="muted" style="font-size:12px; padding: 4px 0;">
-                  +{incidentDetections(inc).length - 5} more
-                </div>
-              {/if}
+          <div class="inc-body">
+            <!-- Primary row: device + rule + spacer + count + age -->
+            <div class="row-primary">
+              <code class="device-addr">{inc.root?.device_address ?? '—'}</code>
+              <span class="rule-id">{inc.root?.rule_id ?? 'unknown rule'}</span>
+              <span class="spacer"></span>
+              <span class="ev-count">{count} event{count !== 1 ? 's' : ''}</span>
+              <time class="inc-age" title={absoluteTime(inc.started_at_ns)}>
+                {relativeTime(inc.started_at_ns)}
+              </time>
             </div>
-          {/if}
-        </div>
+
+            <!-- Secondary row: affected summary + remediation tag + duration -->
+            <div class="row-secondary">
+              <span class="context-line">
+                {#if (inc.affected_devices ?? []).length > 1}
+                  {inc.affected_devices.length} devices affected
+                {:else}
+                  {inc.root?.device_address ?? ''}
+                {/if}
+              </span>
+              <span class="tag rem-{inc.remediation_status ?? 'none'}">
+                {inc.remediation_status ?? 'none'}
+              </span>
+              <span class="tag">
+                {duration(inc.started_at_ns, inc.ended_at_ns) || 'instant'}
+              </span>
+            </div>
+
+            <!-- Expanded: detection timeline -->
+            {#if isOpen}
+              <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+              <div class="expanded-body" role="presentation" onclick={(e) => e.stopPropagation()}>
+                {#each incidentDetections(inc).slice(0, 8) as det}
+                  <button
+                    class="det-row"
+                    onclick={() => det.id && navigate('/trace/' + encodeURIComponent(det.id))}
+                    disabled={!det.id}
+                  >
+                    <span class="det-ts">{shortTime(det.fired_at_ns)}</span>
+                    <code class="det-device">{det.device_address ?? '—'}</code>
+                    <span class="det-rule">{det.rule_id ?? ''}</span>
+                    {#if det.id}<span class="det-trace">trace →</span>{/if}
+                  </button>
+                {/each}
+                {#if incidentDetections(inc).length > 8}
+                  <div class="det-overflow">
+                    +{incidentDetections(inc).length - 8} more detections
+                  </div>
+                {/if}
+              </div>
+            {/if}
+          </div>
+
+          <!-- Chevron indicator -->
+          <div class="chevron" class:open={isOpen}>›</div>
+        </article>
       {/each}
     </div>
   {/if}
 </div>
 
 <style>
-  .skeleton-stack { display: grid; gap: 12px; }
-  .skeleton { height: 80px; background: var(--bg2); border-radius: 6px; opacity: 0.5; animation: pulse 1.5s ease-in-out infinite; }
-  @keyframes pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 0.25; } }
+  /* ── Header ──────────────────────────────────────────────────────────────── */
+  .open-count {
+    font-size: var(--text-small);
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+    align-self: flex-end;
+  }
 
-  .incident-list { display: grid; gap: 12px; }
+  /* ── Skeletons ───────────────────────────────────────────────────────────── */
+  .skeleton-stack { display: grid; gap: 6px; }
+  .inc-skeleton {
+    height: 68px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    animation: pulse var(--duration-medium) ease-in-out infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 0.2; } }
 
-  .incident-card { padding: 14px 16px; }
+  /* ── Cards ───────────────────────────────────────────────────────────────── */
+  .incident-list { display: grid; gap: 5px; }
 
-  .incident-header {
+  .inc-card {
+    display: flex;
+    align-items: stretch;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    overflow: hidden;
+    cursor: pointer;
+    transition:
+      border-color var(--duration-instant) var(--ease-out),
+      background   var(--duration-instant) var(--ease-out);
+  }
+
+  .inc-card:hover {
+    border-color: var(--border-default);
+    background: var(--bg-elevated);
+  }
+
+  .inc-card:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+  }
+
+  /* ── Severity stripe ─────────────────────────────────────────────────────── */
+  .sev-stripe {
+    width: 3px;
+    flex-shrink: 0;
+    background: var(--state-neutral);
+    transition: background var(--duration-instant) var(--ease-out);
+  }
+  .sev-critical .sev-stripe { background: var(--state-failed); }
+  .sev-warn     .sev-stripe { background: var(--state-degraded); }
+  .sev-info     .sev-stripe { background: var(--state-info); }
+
+  /* ── Card body ───────────────────────────────────────────────────────────── */
+  .inc-body {
+    flex: 1;
+    padding: 10px var(--card-pad);
+    min-width: 0;
+  }
+
+  .row-primary {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
     flex-wrap: wrap;
   }
 
-  .incident-device { font-weight: 600; }
-  .incident-count  { color: var(--muted); font-size: 12px; margin-left: auto; }
-  .incident-summary {
-    display: grid;
-    gap: 6px;
-    margin-top: 10px;
-    font-size: 13px;
-    color: var(--muted);
+  .device-addr {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: var(--tracking-mono);
   }
 
-  .detection-timeline {
+  .rule-id {
+    font-size: var(--text-small);
+    color: var(--text-secondary);
+  }
+
+  .spacer { flex: 1; min-width: 8px; }
+
+  .ev-count {
+    font-size: var(--text-small);
+    color: var(--text-tertiary);
+    white-space: nowrap;
+  }
+
+  .inc-age {
+    font-size: var(--text-small);
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  /* ── Secondary row ───────────────────────────────────────────────────────── */
+  .row-secondary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    flex-wrap: wrap;
+  }
+
+  .context-line {
+    font-size: var(--text-small);
+    color: var(--text-secondary);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tag {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    letter-spacing: 0.01em;
+  }
+
+  .rem-succeeded { color: var(--state-healthy);  border-color: rgba(52,211,153,0.2); }
+  .rem-failed    { color: var(--state-failed);   border-color: rgba(248,113,113,0.2); }
+  .rem-pending   { color: var(--state-degraded); border-color: rgba(251,191,36,0.2); }
+
+  /* ── Expanded detection list ─────────────────────────────────────────────── */
+  .expanded-body {
     margin-top: 10px;
-    border-top: 1px solid var(--border);
-    padding-top: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-subtle);
   }
 
   .det-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: 72px 1fr 1fr auto;
     gap: 10px;
     align-items: center;
-    padding: 4px 6px;
-    border-radius: 4px;
-    cursor: pointer;
-    width: 100%;
+    height: var(--row-height);
+    padding: 0 4px;
+    border-radius: 3px;
     background: transparent;
     border: none;
-    color: var(--text);
+    color: var(--text-secondary);
     text-align: left;
-    font-size: inherit;
+    font-size: var(--text-small);
     font-family: inherit;
+    width: 100%;
+    cursor: pointer;
+    transition: background var(--duration-instant) var(--ease-out);
   }
-  .det-row:hover:not(:disabled) { background: rgba(255,255,255,0.04); }
-  .det-row:disabled { cursor: default; opacity: 0.7; }
 
-  .det-ts   { color: var(--muted); font-size: 12px; min-width: 90px; font-variant-numeric: tabular-nums; }
-  .det-msg  { flex: 1; font-size: 13px; }
-  .det-link { color: var(--blue); font-size: 12px; }
+  .det-row:hover:not(:disabled) {
+    background: var(--bg-glass);
+    color: var(--text-primary);
+  }
+
+  .det-row:disabled { cursor: default; opacity: 0.55; }
+
+  .det-ts {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono-sm);
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .det-device {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono-sm);
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+  }
+
+  .det-rule {
+    font-size: var(--text-small);
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .det-trace {
+    font-size: 11px;
+    color: var(--accent-primary);
+    white-space: nowrap;
+  }
+
+  .det-overflow {
+    padding: 4px 4px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+  }
+
+  /* ── Chevron ─────────────────────────────────────────────────────────────── */
+  .chevron {
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    color: var(--text-tertiary);
+    font-size: 18px;
+    line-height: 1;
+    user-select: none;
+    transition: transform var(--duration-fast) var(--ease-out);
+    flex-shrink: 0;
+  }
+  .chevron.open { transform: rotate(90deg); }
 </style>

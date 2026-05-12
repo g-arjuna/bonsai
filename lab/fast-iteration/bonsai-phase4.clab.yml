@@ -24,7 +24,7 @@ name: bonsai-p4
 #   BGP session kill: clear bgp <peer> via gNMI Set (bonsai remediation playbook)
 
 mgmt:
-  network: bonsai-p4-mgmt
+  network: bonsai-mgmt
   ipv4-subnet: 172.100.102.0/24
   ipv4-gw: 172.100.102.1
 

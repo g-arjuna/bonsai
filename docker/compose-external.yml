@@ -108,7 +108,7 @@ services:
       SUPERUSER_EMAIL: admin@bonsai.local
       SUPERUSER_PASSWORD: bonsai-dev
       SUPERUSER_API_TOKEN: ${NETBOX_API_TOKEN:-bonsai-dev-token}
-      ALLOWED_HOSTS: "localhost 127.0.0.1 netbox"
+      ALLOWED_HOSTS: "localhost 127.0.0.1 netbox host.docker.internal"
       METRICS_ENABLED: "true"
     ports:
       - "8000:8080"

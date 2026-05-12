@@ -3,7 +3,7 @@
 
 lab:
   name: bonsai-dc
-  mgmt_network: bonsai-dc-mgmt
+  mgmt_network: bonsai-mgmt
   mgmt_subnet: 172.100.103.0/24
 
 sites:

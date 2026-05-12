@@ -7,11 +7,12 @@
   let loading = $state(true);
   let error = $state(null);
 
-  // Ring buffer — last 12 samples at 5s interval = 1 minute of history.
-  const SPARKLINE_MAX = 12;
-  let rssSamples = $state([]);
+  // Ring buffer — last 16 samples at 5s interval ≈ 80s of history
+  const SPARKLINE_MAX = 16;
+  let rssSamples     = $state([]);
   let archiveSamples = $state([]);
-  let graphSamples = $state([]);
+  let graphSamples   = $state([]);
+  let busSamples     = $state([]);
 
   onMount(() => {
     fetchAll();
@@ -33,10 +34,10 @@
         const topo = await topoRes.json();
         subscriptions = topo.devices ?? [];
       }
-      // Update sparkline ring buffers.
-      rssSamples = [...rssSamples, ops.rss_bytes ?? 0].slice(-SPARKLINE_MAX);
-      archiveSamples = [...archiveSamples, ops.archive_disk_bytes ?? 0].slice(-SPARKLINE_MAX);
-      graphSamples = [...graphSamples, ops.graph_disk_bytes ?? 0].slice(-SPARKLINE_MAX);
+      rssSamples     = [...rssSamples,     ops.rss_bytes           ?? 0].slice(-SPARKLINE_MAX);
+      archiveSamples = [...archiveSamples, ops.archive_disk_bytes  ?? 0].slice(-SPARKLINE_MAX);
+      graphSamples   = [...graphSamples,   ops.graph_disk_bytes    ?? 0].slice(-SPARKLINE_MAX);
+      busSamples     = [...busSamples,     ops.event_bus_depth     ?? 0].slice(-SPARKLINE_MAX);
       error = null;
     } catch (e) {
       error = e.message;
@@ -48,17 +49,30 @@
   function sparklinePath(samples, w, h) {
     if (samples.length < 2) return '';
     const max = Math.max(...samples, 1);
-    const pts = samples.map((v, i) => {
-      const x = (i / (samples.length - 1)) * w;
-      const y = h - (v / max) * h;
-      return `${x},${y}`;
-    });
-    return 'M' + pts.join(' L');
+    return 'M' + samples.map((v, i) =>
+      `${(i / (samples.length - 1)) * w},${h - (v / max) * h}`
+    ).join(' L');
+  }
+
+  function tileState(value, warnThreshold, critThreshold) {
+    if (critThreshold != null && value >= critThreshold) return 'failed';
+    if (warnThreshold != null && value >= warnThreshold) return 'degraded';
+    return 'healthy';
+  }
+
+  function tc(value, w, c) {
+    return 'tile tile-' + tileState(value, w, c);
+  }
+
+  function subTileClass(o) {
+    if ((o?.silent_subscriptions ?? 0) > 0) return 'tile tile-failed';
+    if ((o?.pending_subscriptions ?? 0) > 0) return 'tile tile-degraded';
+    return 'tile tile-healthy';
   }
 
   function subBadgeClass(status) {
     if (status === 'observed') return 'healthy';
-    if (status === 'pending') return 'warn';
+    if (status === 'pending')  return 'warn';
     return 'critical';
   }
 
@@ -72,6 +86,10 @@
     const m = Math.floor((secs % 3600) / 60);
     return h ? `${h}h ${m}m` : `${m}m`;
   }
+
+  function fmtMB(bytes) {
+    return Math.round((bytes ?? 0) / 1024 / 1024) + ' MB';
+  }
 </script>
 
 <div class="view">
@@ -80,13 +98,13 @@
       <p class="eyebrow">System</p>
       <h2>Operations</h2>
     </div>
-    <a href="/metrics" target="_blank" class="ghost-link">Open Prometheus metrics ↗</a>
+    <a href="/metrics" target="_blank" class="ghost-link">Prometheus metrics ↗</a>
   </div>
 
   {#if loading}
-    <div class="ops-grid">
+    <div class="tile-grid">
       {#each [1, 2, 3, 4, 5, 6] as _}
-        <div class="card skeleton"></div>
+        <div class="tile skeleton-tile"></div>
       {/each}
     </div>
   {:else if error}
@@ -95,141 +113,132 @@
     <div class="notice error">Core did not return an operations summary.</div>
   {:else}
 
-    <!-- ── Core counters ────────────────────────────────────────────────── -->
-    <div class="ops-grid">
-      <div class="card metric">
-        <span>Detection events</span>
-        <strong>{ops.detection_events ?? 0}</strong>
+    <!-- ── Six primary tiles ─────────────────────────────────────────────── -->
+    <div class="tile-grid">
+      <div class="{tc(ops.event_bus_depth ?? 0, 500, 900)}">
+        <span class="tile-label">Event bus</span>
+        <strong class="tile-value">{ops.event_bus_depth ?? 0}</strong>
+        <span class="tile-sub">{ops.event_bus_receivers ?? 0} receivers</span>
+        {#if busSamples.length > 1}
+          <svg class="sparkline" viewBox="0 0 100 20" preserveAspectRatio="none">
+            <path d={sparklinePath(busSamples, 100, 20)} />
+          </svg>
+        {/if}
       </div>
-      <div class="card metric">
-        <span>State changes</span>
-        <strong>{ops.state_change_events ?? 0}</strong>
-      </div>
-      <div class="card metric">
-        <span>Devices enabled</span>
-        <strong>{ops.enabled_device_count ?? 0} / {ops.device_count ?? 0}</strong>
-      </div>
-      <div class="card metric">
-        <span>Collectors</span>
-        <strong class="{(ops.collectors_connected ?? 0) > 0 ? '' : 'warn-text'}">
-          {ops.collectors_connected ?? 0} / {ops.collectors_total ?? 0}
-        </strong>
-      </div>
-      <div class="card metric">
-        <span>Observed subscriptions</span>
-        <strong>{ops.observed_subscriptions ?? 0}</strong>
-      </div>
-      <div class="card metric">
-        <span>Pending subscriptions</span>
-        <strong class="{(ops.pending_subscriptions ?? 0) > 0 ? 'warn-text' : ''}">
-          {ops.pending_subscriptions ?? 0}
-        </strong>
-      </div>
-      <div class="card metric">
-        <span>Silent subscriptions</span>
-        <strong class="{(ops.silent_subscriptions ?? 0) > 0 ? 'warn-text' : ''}">
-          {ops.silent_subscriptions ?? 0}
-        </strong>
-      </div>
-      <div class="card metric">
-        <span>Trusted remediations</span>
-        <strong>{ops.remediation_rows_post_cutoff ?? 0}</strong>
-      </div>
-      <div class="card metric">
-        <span>Event bus depth</span>
-        <strong class="{(ops.event_bus_depth ?? 0) > 800 ? 'warn-text' : ''}">
-          {ops.event_bus_depth ?? 0}
-        </strong>
-      </div>
-      <div class="card metric">
-        <span>Event bus receivers</span>
-        <strong>{ops.event_bus_receivers ?? 0}</strong>
-      </div>
-      <div class="card metric">
-        <span>Archive lag</span>
-        <strong class="{(ops.archive_lag_millis ?? 0) > 5000 ? 'warn-text' : ''}">
-          {ops.archive_lag_millis ?? 0} ms
-        </strong>
-      </div>
-      <div class="card metric">
-        <span>Archive buffer</span>
-        <strong>{ops.archive_buffer_rows ?? 0} rows</strong>
-      </div>
-    </div>
 
-    <!-- ── Memory and disk (live sparklines, 5s poll) ───────────────── -->
-    <div class="ops-grid" style="margin-top:12px;">
-      <div class="card metric sparkline-card">
-        <span>RSS memory</span>
-        <strong class="{(ops.memory_rss_pct_of_budget ?? 0) >= 80 ? 'warn-text' : ''}">
-          {Math.round((ops.rss_bytes ?? 0) / 1024 / 1024)} MB
-          {#if (ops.memory_budget_bytes ?? 0) > 0}
-            <small>({(ops.memory_rss_pct_of_budget ?? 0).toFixed(0)}% of {Math.round((ops.memory_budget_bytes ?? 0) / 1024 / 1024)} MB budget)</small>
-          {/if}
-        </strong>
+      <div class="{tc(ops.archive_lag_millis ?? 0, 2000, 10000)}">
+        <span class="tile-label">Archive lag</span>
+        <strong class="tile-value">{ops.archive_lag_millis ?? 0} ms</strong>
+        <span class="tile-sub">{ops.archive_buffer_rows ?? 0} rows buffered</span>
+      </div>
+
+      <div class="{tc(ops.memory_rss_pct_of_budget ?? 0, 70, 90)}">
+        <span class="tile-label">RSS memory</span>
+        <strong class="tile-value">{fmtMB(ops.rss_bytes)}</strong>
+        {#if (ops.memory_budget_bytes ?? 0) > 0}
+          <span class="tile-sub">{(ops.memory_rss_pct_of_budget ?? 0).toFixed(0)}% of {fmtMB(ops.memory_budget_bytes)} budget</span>
+        {:else}
+          <span class="tile-sub">no budget set</span>
+        {/if}
         {#if rssSamples.length > 1}
-          <svg class="sparkline" viewBox="0 0 100 24" preserveAspectRatio="none">
-            <path d={sparklinePath(rssSamples, 100, 24)} />
+          <svg class="sparkline" viewBox="0 0 100 20" preserveAspectRatio="none">
+            <path d={sparklinePath(rssSamples, 100, 20)} />
           </svg>
         {/if}
       </div>
-      <div class="card metric sparkline-card">
-        <span>Archive on disk</span>
-        <strong class="{(ops.archive_disk_pct ?? 0) >= 80 ? 'warn-text' : ''}">
-          {Math.round((ops.archive_disk_bytes ?? 0) / 1024 / 1024)} MB
-          {#if (ops.archive_disk_pct ?? 0) > 0}
-            <small>({ops.archive_disk_pct}%)</small>
-          {/if}
-        </strong>
+
+      <div class="{tc(ops.archive_disk_pct ?? 0, 70, 90)}">
+        <span class="tile-label">Archive on disk</span>
+        <strong class="tile-value">{fmtMB(ops.archive_disk_bytes)}</strong>
+        {#if (ops.archive_disk_pct ?? 0) > 0}
+          <span class="tile-sub">{ops.archive_disk_pct}% of quota</span>
+        {:else}
+          <span class="tile-sub">no quota set</span>
+        {/if}
         {#if archiveSamples.length > 1}
-          <svg class="sparkline" viewBox="0 0 100 24" preserveAspectRatio="none">
-            <path d={sparklinePath(archiveSamples, 100, 24)} />
+          <svg class="sparkline" viewBox="0 0 100 20" preserveAspectRatio="none">
+            <path d={sparklinePath(archiveSamples, 100, 20)} />
           </svg>
         {/if}
       </div>
-      <div class="card metric sparkline-card">
-        <span>Graph DB on disk</span>
-        <strong class="{(ops.graph_disk_pct ?? 0) >= 80 ? 'warn-text' : ''}">
-          {Math.round((ops.graph_disk_bytes ?? 0) / 1024 / 1024)} MB
-          {#if (ops.graph_disk_pct ?? 0) > 0}
-            <small>({ops.graph_disk_pct}%)</small>
+
+      <div class="tile tile-healthy">
+        <span class="tile-label">Detections</span>
+        <strong class="tile-value">{ops.detection_events ?? 0}</strong>
+        <span class="tile-sub">{ops.state_change_events ?? 0} state changes</span>
+      </div>
+
+      <div class="{subTileClass(ops)}">
+        <span class="tile-label">Subscriptions</span>
+        <strong class="tile-value">{ops.observed_subscriptions ?? 0}</strong>
+        <span class="tile-sub">
+          {#if (ops.silent_subscriptions ?? 0) > 0}
+            {ops.silent_subscriptions} silent
+          {:else if (ops.pending_subscriptions ?? 0) > 0}
+            {ops.pending_subscriptions} pending
+          {:else}
+            all observed
           {/if}
-        </strong>
-        {#if graphSamples.length > 1}
-          <svg class="sparkline" viewBox="0 0 100 24" preserveAspectRatio="none">
-            <path d={sparklinePath(graphSamples, 100, 24)} />
-          </svg>
-        {/if}
+        </span>
       </div>
     </div>
 
-    <!-- ── Counter ingest mode (C-9 / T1-8) ─────────────────────────── -->
+    <!-- ── Counter ingest mode ───────────────────────────────────────────── -->
     {#if ops.counter_mode}
-      <div class="card section counter-mode-card" style="margin-top:12px;">
-        <div class="counter-mode-header">
-          <span class="counter-mode-label">Counter ingest mode</span>
-          <span class="badge {ops.counter_mode === 'summary' ? 'badge-info' : ops.counter_mode === 'raw' ? 'badge-warn' : 'badge-default'}">
+      <div class="section-card counter-card">
+        <span class="section-eyebrow">Counter ingest</span>
+        <div class="counter-body">
+          <span class="badge {ops.counter_mode === 'summary' ? 'info' : ops.counter_mode === 'raw' ? 'warn' : 'healthy'}">
             {ops.counter_mode}
           </span>
-        </div>
-        <div class="counter-mode-detail">
-          {#if ops.counter_mode === 'summary'}
-            <span>Aggregating interface counters into <strong>{ops.counter_window_secs ?? 60}s</strong> windows before writing to graph.
-              Raw counter volume is reduced; summaries carry computed rate-of-change values.</span>
-          {:else if ops.counter_mode === 'raw'}
-            <span>Forwarding raw counter samples at full gNMI cadence.
-              High-volume at scale — consider switching to <code>summary</code> for &gt;50 devices.</span>
-          {:else}
-            <span>Debouncing counter updates with a <strong>{ops.counter_debounce_secs ?? 10}s</strong> minimum
-              interval per interface. Non-counter state changes (BGP, LLDP, oper-status) are always forwarded immediately.</span>
-          {/if}
+          <span class="counter-desc">
+            {#if ops.counter_mode === 'summary'}
+              Aggregating into <strong>{ops.counter_window_secs ?? 60}s</strong> windows — rate-of-change computed per window.
+            {:else if ops.counter_mode === 'raw'}
+              Forwarding raw counter samples at full gNMI cadence.
+            {:else}
+              Debouncing with a <strong>{ops.counter_debounce_secs ?? 10}s</strong> minimum interval per interface.
+            {/if}
+          </span>
         </div>
       </div>
     {/if}
 
-    <!-- ── Collector health ────────────────────────────────────────────── -->
+    <!-- ── Secondary: device/collector counts ───────────────────────────── -->
+    <div class="kv-row">
+      <div class="kv">
+        <span>Devices enabled</span>
+        <strong>{ops.enabled_device_count ?? 0} / {ops.device_count ?? 0}</strong>
+      </div>
+      <div class="kv">
+        <span>Collectors</span>
+        <strong class="{(ops.collectors_connected ?? 0) === 0 && (ops.collectors_total ?? 0) > 0 ? 'state-failed' : ''}">
+          {ops.collectors_connected ?? 0} / {ops.collectors_total ?? 0} connected
+        </strong>
+      </div>
+      <div class="kv">
+        <span>Trusted remediations</span>
+        <strong>{ops.remediation_rows_post_cutoff ?? 0}</strong>
+      </div>
+      <div class="kv">
+        <span>Archive last flush</span>
+        <strong>{ops.archive_last_flush_millis ?? 0} ms ago</strong>
+      </div>
+      <div class="kv">
+        <span>Trust cutoff</span>
+        <strong><code>{ops.cutoff_iso ?? '—'}</code></strong>
+      </div>
+      {#if (ops.unassigned_devices ?? 0) > 0}
+        <div class="kv kv-warn">
+          <span>Unassigned devices</span>
+          <strong>{ops.unassigned_devices}</strong>
+        </div>
+      {/if}
+    </div>
+
+    <!-- ── Collector health ──────────────────────────────────────────────── -->
     {#if collectors?.collectors?.length}
-      <div class="card section">
+      <div class="section-card">
         <h3>Collector health</h3>
         <table>
           <thead>
@@ -238,7 +247,7 @@
               <th>Status</th>
               <th>Devices</th>
               <th>Subscriptions</th>
-              <th>Queue depth</th>
+              <th>Queue</th>
               <th>Uptime</th>
             </tr>
           </thead>
@@ -249,12 +258,12 @@
                 <td><span class="badge {collectorBadge(c)}">{c.connected ? 'connected' : 'disconnected'}</span></td>
                 <td>{c.assigned_device_count}</td>
                 <td>
-                  <span class="badge healthy" title="observed">{c.observed_subscriptions ?? 0} obs</span>
+                  <span class="badge healthy">{c.observed_subscriptions ?? 0} obs</span>
                   {#if (c.pending_subscriptions ?? 0) > 0}
-                    <span class="badge warn" title="pending">{c.pending_subscriptions} pend</span>
+                    <span class="badge warn">{c.pending_subscriptions} pend</span>
                   {/if}
                   {#if (c.silent_subscriptions ?? 0) > 0}
-                    <span class="badge critical" title="silent">{c.silent_subscriptions} silent</span>
+                    <span class="badge critical">{c.silent_subscriptions} silent</span>
                   {/if}
                 </td>
                 <td>{c.queue_depth_updates ?? 0}</td>
@@ -271,35 +280,30 @@
       </div>
     {/if}
 
-    <!-- ── Subscriber health per device ───────────────────────────────── -->
+    <!-- ── Subscription health per device ───────────────────────────────── -->
     {#if subscriptions?.length}
-      <div class="card section">
-        <h3>Subscription health per device</h3>
+      <div class="section-card">
+        <h3>Subscription health</h3>
         <table>
           <thead>
-            <tr><th>Device</th><th>Health</th><th>BGP peers</th><th>Subscriptions</th></tr>
+            <tr><th>Device</th><th>Health</th><th>BGP peers</th><th>Role · Site</th></tr>
           </thead>
           <tbody>
             {#each subscriptions as dev}
               <tr>
                 <td>
-                  <strong>{dev.hostname || dev.address}</strong><br>
-                  <span class="muted" style="font-size:11px">{dev.address}</span>
+                  <strong>{dev.hostname || dev.address}</strong>
+                  {#if dev.hostname}<br><span class="mono-small">{dev.address}</span>{/if}
                 </td>
                 <td><span class="badge {dev.health}">{dev.health}</span></td>
                 <td>
                   {#if dev.bgp?.length}
-                    {dev.bgp.filter(b => b.state === 'established').length}/{dev.bgp.length}
-                    established
+                    {dev.bgp.filter(b => b.state === 'established').length}/{dev.bgp.length} established
                   {:else}
                     <span class="muted">—</span>
                   {/if}
                 </td>
-                <td>
-                  <span class="muted" style="font-size:12px">
-                    {dev.role || 'unknown role'} · {dev.site || 'no site'}
-                  </span>
-                </td>
+                <td class="muted">{dev.role || 'unknown'} · {dev.site || '—'}</td>
               </tr>
             {/each}
           </tbody>
@@ -307,15 +311,15 @@
       </div>
     {/if}
 
-    <!-- ── Diagnostics panels ────────────────────────────────────────── -->
-    <div class="ops-sections">
-      <div class="card">
+    <!-- ── Rule engine + Remediation outcomes ───────────────────────────── -->
+    <div class="two-col">
+      <div class="section-card">
         <h3>Rule engine activity</h3>
         {#if Object.keys(ops.rule_distribution ?? {}).length === 0}
           <div class="empty">No rule activity recorded yet.</div>
         {:else}
           <table>
-            <thead><tr><th>Rule ID</th><th>Detections</th></tr></thead>
+            <thead><tr><th>Rule</th><th>Detections</th></tr></thead>
             <tbody>
               {#each Object.entries(ops.rule_distribution ?? {}).sort((a, b) => b[1] - a[1]) as [rule, count]}
                 <tr>
@@ -328,17 +332,21 @@
         {/if}
       </div>
 
-      <div class="card">
+      <div class="section-card">
         <h3>Remediation outcomes</h3>
         {#if Object.keys(ops.status_distribution_post_cutoff ?? {}).length === 0}
-          <div class="empty">No remediation outcomes recorded yet.</div>
+          <div class="empty">No outcomes recorded yet.</div>
         {:else}
           <table>
             <thead><tr><th>Status</th><th>Count</th></tr></thead>
             <tbody>
               {#each Object.entries(ops.status_distribution_post_cutoff ?? {}) as [status, count]}
                 <tr>
-                  <td><span class="badge {status === 'succeeded' ? 'healthy' : status === 'failed' ? 'critical' : 'info'}">{status}</span></td>
+                  <td>
+                    <span class="badge {status === 'succeeded' ? 'healthy' : status === 'failed' ? 'critical' : 'info'}">
+                      {status}
+                    </span>
+                  </td>
                   <td>{count}</td>
                 </tr>
               {/each}
@@ -346,18 +354,25 @@
           </table>
         {/if}
       </div>
+    </div>
 
-      <div class="card">
-        <h3>Operator checklist</h3>
-        <div class="check-grid">
-          <div><span class="muted">Unassigned devices</span>
-            <strong class="{(ops.unassigned_devices ?? 0) > 0 ? 'warn-text' : ''}">
-              {ops.unassigned_devices ?? 0}
-            </strong>
+    <!-- ── Graph DB ──────────────────────────────────────────────────────── -->
+    <div class="section-card" style="margin-top:0">
+      <h3>Graph DB on disk</h3>
+      <div class="kv-row">
+        <div class="kv">
+          <span>Size</span>
+          <strong>{fmtMB(ops.graph_disk_bytes)}</strong>
+        </div>
+        {#if (ops.graph_disk_pct ?? 0) > 0}
+          <div class="kv">
+            <span>Quota</span>
+            <strong>{ops.graph_disk_pct}%</strong>
           </div>
-          <div><span class="muted">Trust cutoff</span> <code>{ops.cutoff_iso}</code></div>
-          <div><span class="muted">Last archive flush</span> {ops.archive_last_flush_millis ?? 0} ms ago</div>
-          <div><span class="muted">Archive compression</span> {((ops.archive_last_compression_ppm ?? 0) / 1_000_000).toFixed(2)}x</div>
+        {/if}
+        <div class="kv">
+          <span>Compression</span>
+          <strong>{((ops.archive_last_compression_ppm ?? 0) / 1_000_000).toFixed(2)}x</strong>
         </div>
       </div>
     </div>
@@ -366,28 +381,198 @@
 </div>
 
 <style>
-  @keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.2; } }
-  .skeleton { height: 90px; opacity: 0.4; animation: pulse 1.5s infinite; }
-  .ops-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 12px; }
-  .sparkline-card { display: flex; flex-direction: column; gap: 4px; }
-  .sparkline { width: 100%; height: 24px; margin-top: 4px; }
-  .sparkline path { fill: none; stroke: var(--blue, #58a6ff); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-  .ops-sections { display: grid; gap: 16px; margin-top: 16px; }
-  .section { padding: 16px; margin-top: 16px; }
-  .section h3 { margin: 0 0 12px; font-size: 14px; }
-  .check-grid { display: grid; gap: 10px; font-size: 13px; }
-  .warn-text { color: var(--yellow, #d29922); }
-  .ghost-link {
-    font-size: 12px; color: var(--blue); text-decoration: none;
-    border: 1px solid var(--border); padding: 4px 10px; border-radius: 4px;
+  /* ── Skeleton ────────────────────────────────────────────────────────────── */
+  @keyframes pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.15; } }
+  .skeleton-tile {
+    height: 96px;
+    animation: pulse 1.5s infinite;
+    background: var(--bg-surface);
   }
-  .ghost-link:hover { background: var(--bg2); }
-  .counter-mode-card { padding: 14px 16px; }
-  .counter-mode-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-  .counter-mode-label { font-size: 13px; font-weight: 600; }
-  .counter-mode-detail { font-size: 12px; color: var(--fg2); line-height: 1.5; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
-  .badge-info { background: var(--blue, #1f6feb); color: #fff; }
-  .badge-warn { background: var(--yellow, #d29922); color: #000; }
-  .badge-default { background: var(--bg3, #30363d); color: var(--fg); }
+
+  /* ── Primary tile grid (3×2) ─────────────────────────────────────────────── */
+  .tile-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+
+  .tile {
+    padding: var(--card-pad);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color var(--duration-instant) var(--ease-out);
+  }
+
+  /* Coloured left-edge per state */
+  .tile::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    border-radius: 8px 0 0 8px;
+  }
+  .tile-healthy::before  { background: var(--state-healthy); }
+  .tile-degraded::before { background: var(--state-degraded); }
+  .tile-failed::before   { background: var(--state-failed); }
+
+  .tile-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  .tile-value {
+    font-size: 1.75rem;
+    font-weight: 700;
+    letter-spacing: var(--tracking-display);
+    line-height: var(--leading-display);
+    color: var(--text-primary);
+  }
+
+  .tile-failed  .tile-value  { color: var(--state-failed); }
+  .tile-degraded .tile-value { color: var(--state-degraded); }
+
+  .tile-sub {
+    font-size: var(--text-small);
+    color: var(--text-secondary);
+  }
+
+  .sparkline {
+    width: 100%;
+    height: 20px;
+    margin-top: 6px;
+    flex-shrink: 0;
+  }
+  .sparkline path {
+    fill: none;
+    stroke: var(--accent-primary);
+    stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+    opacity: 0.6;
+  }
+
+  /* ── Counter ingest ──────────────────────────────────────────────────────── */
+  .counter-card { margin-bottom: 14px; }
+  .counter-body {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 6px;
+    flex-wrap: wrap;
+  }
+  .counter-desc {
+    font-size: var(--text-small);
+    color: var(--text-secondary);
+    line-height: var(--leading-body);
+  }
+
+  /* ── KV row ──────────────────────────────────────────────────────────────── */
+  .kv-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 24px;
+    padding: 12px var(--card-pad);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    margin-bottom: 14px;
+  }
+
+  .kv {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 120px;
+  }
+
+  .kv span {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  .kv strong {
+    font-size: var(--text-body);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .kv-warn strong { color: var(--state-degraded); }
+
+  .state-failed { color: var(--state-failed); }
+
+  /* ── Section cards ───────────────────────────────────────────────────────── */
+  .section-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: var(--card-pad);
+    margin-bottom: 14px;
+  }
+
+  .section-card h3 {
+    font-size: var(--text-heading-2);
+    font-weight: 600;
+    letter-spacing: var(--tracking-display);
+    margin-bottom: 12px;
+    color: var(--text-primary);
+  }
+
+  .section-eyebrow {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  /* ── Two-col layout ──────────────────────────────────────────────────────── */
+  .two-col {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+
+  .two-col .section-card { margin-bottom: 0; }
+
+  /* ── Helpers ─────────────────────────────────────────────────────────────── */
+  .mono-small {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono-sm);
+    color: var(--text-tertiary);
+  }
+
+  .ghost-link {
+    font-size: var(--text-small);
+    color: var(--accent-primary);
+    text-decoration: none;
+    border: 1px solid var(--border-subtle);
+    padding: 5px 10px;
+    border-radius: 5px;
+    transition: background var(--duration-instant) var(--ease-out);
+    align-self: flex-start;
+    margin-top: 6px;
+  }
+
+  .ghost-link:hover { background: var(--bg-glass); }
+
+  @media (max-width: 900px) {
+    .tile-grid { grid-template-columns: repeat(2, 1fr); }
+    .two-col   { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 500px) {
+    .tile-grid { grid-template-columns: 1fr; }
+  }
 </style>

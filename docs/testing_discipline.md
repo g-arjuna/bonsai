@@ -59,6 +59,11 @@ All smoke and driver outputs should be discoverable from:
 - filesystem: `runtime/driver_results/*.json`
 - API: `GET /api/_test/status`
 
+Daily verification should also publish:
+
+- markdown: `docs/test_results/daily_runs/<date>.md`
+- JSON: `runtime/driver_results/daily.json`
+
 Expected fields for smoke results:
 
 ```json
@@ -70,8 +75,13 @@ Expected fields for smoke results:
   "ok": true,
   "summary": "validated synthesizer endpoints",
   "checks": [
-    {"check": "recommendations", "status": "pass"}
-  ]
+    {"name": "recommendations", "check": "recommendations", "status": "pass", "ok": true}
+  ],
+  "environment": {
+    "bonsai_version": "git-describe output",
+    "git_sha": "abc1234",
+    "lab": "lab/dc/dc-evpn-srv6.clab.yml"
+  }
 }
 ```
 

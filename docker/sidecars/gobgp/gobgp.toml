@@ -1,0 +1,38 @@
+# GoBGP configuration for BGP-LS collection
+# Populated at runtime by entrypoint.sh from environment variables:
+#   GOBGP_AS           — local ASN (default 65200)
+#   GOBGP_ROUTER_ID    — local router-id (default 192.0.2.254)
+#   GOBGP_PEER_ADDRESS — BGP-LS peer address (the SP lab RR/PE)
+#   GOBGP_PEER_AS      — peer ASN (default same as GOBGP_AS for iBGP)
+
+[global.config]
+  as = ${GOBGP_AS}
+  router-id = "${GOBGP_ROUTER_ID}"
+
+[global.apply-policy.config]
+  import-policy-list = ["accept-bgp-ls"]
+  default-import-policy = "reject-route"
+  export-policy-list = []
+  default-export-policy = "reject-route"
+
+[[policy-definitions]]
+  name = "accept-bgp-ls"
+  [[policy-definitions.statements]]
+    name = "match-bgp-ls-afi"
+    [policy-definitions.statements.conditions.match-prefix-set]
+    [policy-definitions.statements.actions]
+      route-disposition = "accept-route"
+
+[[neighbors]]
+  [neighbors.config]
+    neighbor-address = "${GOBGP_PEER_ADDRESS}"
+    peer-as = ${GOBGP_PEER_AS}
+  [neighbors.transport.config]
+    passive-mode = false
+  [[neighbors.afi-safis]]
+    [neighbors.afi-safis.config]
+      # BGP-LS AFI=16388 SAFI=71
+      afi-safi-name = "ls"
+
+[grpc-server.config]
+  port = 50052

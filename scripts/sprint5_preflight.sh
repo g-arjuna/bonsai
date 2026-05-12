@@ -67,6 +67,11 @@ if curl -skf "https://localhost:8088/services/collector/health" >/dev/null 2>&1;
 else
     warn "Splunk HEC not reachable"
 fi
+if curl -sf "http://localhost:8000/api/" -H "Authorization: Token ${NETBOX_API_TOKEN:-bonsai-dev-token}" >/dev/null 2>&1; then
+    ok "NetBox reachable"
+else
+    warn "NetBox not reachable"
+fi
 if curl -sf "http://localhost:9200/_cluster/health" >/dev/null 2>&1; then
     ok "Elasticsearch reachable"
 else
@@ -86,7 +91,7 @@ fi
 
 if $START_STACK; then
     section "Starting Sprint 5 local stack"
-    docker compose -f "$COMPOSE_FILE" --profile splunk --profile elastic --profile prometheus up -d
+    docker compose -f "$COMPOSE_FILE" --profile netbox --profile splunk --profile elastic --profile prometheus up -d
 fi
 
 if $RUN_CHECKS; then

@@ -26,6 +26,9 @@ pub struct MultiSourceCapture {
 #[async_trait::async_trait]
 pub trait MultiSourceEnricher: Send + Sync {
     fn name(&self) -> &str;
+    /// Capability tags used by the registry to select enrichers for a given target.
+    /// Common tags: "gnmi", "cli", "rest", "bmp", "bgp_ls".
+    fn capability_tags(&self) -> Vec<&'static str>;
     async fn capture(
         &self,
         target: &TargetConfig,
@@ -42,6 +45,10 @@ pub struct GnmiGetConfigEnricher {
 impl MultiSourceEnricher for GnmiGetConfigEnricher {
     fn name(&self) -> &str {
         "gnmi_get_config"
+    }
+
+    fn capability_tags(&self) -> Vec<&'static str> {
+        vec!["gnmi"]
     }
 
     async fn capture(
