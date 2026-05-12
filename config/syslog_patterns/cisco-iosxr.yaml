@@ -44,6 +44,17 @@ facts:
       neighbor_id: string
       if_name: string
       new_state: string
+  - fact_type: mpls_lsp_state
+    category: protocol
+    regex: '(?i)(?:mpls|sr|segment-routing|te|rsvp).*(?:lsp|tunnel|path|te-tunnel) (?P<lsp_name>[A-Za-z0-9./:_-]+).*(?:state|to|went|changed) (?P<new_state>up|down|active|inactive|degraded)'
+    field_schema:
+      lsp_name: string
+      new_state: string
+  - fact_type: process_restart
+    category: software
+    regex: '(?i)process (?P<process_name>[A-Za-z0-9._-]+).*(?:restart(?:ed|ing)?|crash(?:ed)?|core|panic|respawn(?:ed)?)'
+    field_schema:
+      process_name: string
   - fact_type: config_change_detail
     category: auth
     regex: '(?i)(?:user|aaa user) (?P<username>[A-Za-z0-9._@-]+).*(?:commit(?:ted)?|applied).*(?:configuration|commit-buffer|config)'

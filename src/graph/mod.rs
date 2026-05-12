@@ -3122,16 +3122,21 @@ fn write_syslog_fact_event(
         ts(update.timestamp_ns),
     )?;
     let join = join_syslog_fact(conn, update, &fact)?;
-    let event_type = if join
+    let join_status = join
         .get("status")
         .and_then(JsonValue::as_str)
-        .unwrap_or("orphan")
-        == "joined"
-    {
+        .unwrap_or("orphan");
+    let event_type = if join_status == "joined" {
         "syslog_fact_joined"
     } else {
         "syslog_fact_orphan"
     };
+    metrics::counter!(
+        "bonsai_syslog_fact_join_total",
+        "fact_type" => fact_type.to_string(),
+        "status" => join_status.to_string(),
+    )
+    .increment(1);
     let detail = SyslogFactEventDetail {
         fact_type: fact_type.to_string(),
         category: fact.category,
@@ -3169,10 +3174,16 @@ fn join_syslog_fact(
     update: &TelemetryUpdate,
     fact: &SyslogFact,
 ) -> Result<JsonValue> {
-    // BFD sessions share the if_name field with interface_state facts. Route them
-    // by fact_type before the generic if_name branch to avoid hitting Interface lookup.
+    // Route by fact_type before reaching generic field-based branches to prevent
+    // ospf/isis/bfd facts from accidentally joining to Interface or BgpNeighbor nodes.
     if fact.fact_type == "bfd_session" {
         return join_bfd_fact(conn, update, fact);
+    }
+    if fact.fact_type == "ospf_neighbor" {
+        return join_ospf_fact(conn, update, fact);
+    }
+    if fact.fact_type == "isis_adjacency" {
+        return join_isis_fact(conn, update, fact);
     }
 
     if let Some(peer_address) = fact
@@ -3393,6 +3404,137 @@ fn lookup_bfd_session_by_remote(
         "session_state": read_str(&row[0]),
         "if_name": read_str(&row[1]),
         "local_discriminator": read_str(&row[2]),
+    })))
+}
+
+fn join_ospf_fact(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    fact: &SyslogFact,
+) -> Result<JsonValue> {
+    let neighbor_address = fact
+        .fields
+        .get("neighbor_address")
+        .or_else(|| fact.fields.get("neighbor"));
+    let if_name = fact.fields.get("if_name");
+
+    if let Some(addr) = neighbor_address
+        && let Some(graph_state) = lookup_ospf_neighbor_state(conn, &update.target, addr)?
+    {
+        return Ok(json!({
+            "status": "joined",
+            "kind": "ospf_neighbor",
+            "key": addr,
+            "graph_state": graph_state,
+        }));
+    }
+
+    let key = neighbor_address
+        .or(if_name)
+        .cloned()
+        .unwrap_or_default();
+    Ok(json!({
+        "status": "orphan",
+        "kind": "ospf_neighbor",
+        "key": key,
+        "reason": "no_ospf_neighbor_match",
+    }))
+}
+
+fn join_isis_fact(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    fact: &SyslogFact,
+) -> Result<JsonValue> {
+    let neighbor_id = fact
+        .fields
+        .get("neighbor_id")
+        .or_else(|| fact.fields.get("system_id"));
+    let if_name = fact.fields.get("if_name");
+
+    if let Some(nid) = neighbor_id
+        && let Some(graph_state) = lookup_isis_adjacency_state(conn, &update.target, nid)?
+    {
+        return Ok(json!({
+            "status": "joined",
+            "kind": "isis_adjacency",
+            "key": nid,
+            "graph_state": graph_state,
+        }));
+    }
+
+    let key = neighbor_id
+        .or(if_name)
+        .cloned()
+        .unwrap_or_default();
+    Ok(json!({
+        "status": "orphan",
+        "kind": "isis_adjacency",
+        "key": key,
+        "reason": "no_isis_adjacency_match",
+    }))
+}
+
+fn lookup_ospf_neighbor_state(
+    conn: &Connection<'_>,
+    device_address: &str,
+    neighbor_address: &str,
+) -> Result<Option<JsonValue>> {
+    let id = format!("{device_address}:{neighbor_address}");
+    let mut stmt = match conn.prepare(
+        "MATCH (n:OspfNeighbor {id: $id}) \
+         RETURN n.neighbor_address, n.adjacency_state, n.if_name",
+    ) {
+        Ok(s) => s,
+        // Node label doesn't exist yet — no OSPF telemetry has been written.
+        Err(e) if e.to_string().contains("does not exist") => return Ok(None),
+        Err(e) => return Err(e).context("prepare OSPF neighbor fact join lookup"),
+    };
+    let mut rows = conn
+        .execute(&mut stmt, vec![("id", Value::String(id))])
+        .context("execute OSPF neighbor fact join lookup")?;
+    let Some(row) = rows.next() else {
+        return Ok(None);
+    };
+    Ok(Some(json!({
+        "neighbor_address": read_str(&row[0]),
+        "adjacency_state": read_str(&row[1]),
+        "if_name": read_str(&row[2]),
+    })))
+}
+
+fn lookup_isis_adjacency_state(
+    conn: &Connection<'_>,
+    device_address: &str,
+    neighbor_id: &str,
+) -> Result<Option<JsonValue>> {
+    let mut stmt = match conn.prepare(
+        "MATCH (a:IsisAdjacency) \
+         WHERE a.device_address = $addr AND a.neighbor_id = $nid \
+         RETURN a.neighbor_id, a.adjacency_state, a.if_name \
+         LIMIT 1",
+    ) {
+        Ok(s) => s,
+        // Node label doesn't exist yet — no IS-IS telemetry has been written.
+        Err(e) if e.to_string().contains("does not exist") => return Ok(None),
+        Err(e) => return Err(e).context("prepare IS-IS adjacency fact join lookup"),
+    };
+    let mut rows = conn
+        .execute(
+            &mut stmt,
+            vec![
+                ("addr", Value::String(device_address.to_string())),
+                ("nid", Value::String(neighbor_id.to_string())),
+            ],
+        )
+        .context("execute IS-IS adjacency fact join lookup")?;
+    let Some(row) = rows.next() else {
+        return Ok(None);
+    };
+    Ok(Some(json!({
+        "neighbor_id": read_str(&row[0]),
+        "adjacency_state": read_str(&row[1]),
+        "if_name": read_str(&row[2]),
     })))
 }
 
@@ -4725,6 +4867,116 @@ mod tests {
         assert_eq!(detail["join"]["status"], "orphan");
         assert_eq!(detail["join"]["kind"], "bfd_session");
         assert_eq!(detail["join"]["reason"], "no_bfd_session_match");
+    }
+
+    #[tokio::test]
+    async fn syslog_ospf_fact_orphans_when_no_ospf_neighbor_in_graph() {
+        let path = temp_graph_path("syslog-fact-ospf-orphan");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
+        let mut rx = store.subscribe_events();
+        store
+            .write(TelemetryUpdate {
+                target: "spine1".to_string(),
+                vendor: "cisco_iosxr".to_string(),
+                hostname: "spine1".to_string(),
+                role: "spine".to_string(),
+                site: "dc-a".to_string(),
+                timestamp_ns: 40,
+                path: "signals/syslog_fact/ospf_neighbor".to_string(),
+                value: serde_json::to_value(SyslogFact {
+                    timestamp_ns: 40,
+                    fact_type: "ospf_neighbor".to_string(),
+                    category: "protocol".to_string(),
+                    hostname: "spine1".to_string(),
+                    source_vendor: "cisco_iosxr".to_string(),
+                    message: "OSPF neighbor 10.0.0.2 on interface GigabitEthernet0/0/0 changed to down".to_string(),
+                    raw: "raw".to_string(),
+                    transport: "udp".to_string(),
+                    peer_addr: "127.0.0.1:5514".to_string(),
+                    field_schema: std::collections::BTreeMap::from([
+                        ("neighbor_address".to_string(), "string".to_string()),
+                        ("if_name".to_string(), "string".to_string()),
+                        ("new_state".to_string(), "string".to_string()),
+                    ]),
+                    fields: std::collections::BTreeMap::from([
+                        ("neighbor_address".to_string(), "10.0.0.2".to_string()),
+                        ("if_name".to_string(), "GigabitEthernet0/0/0".to_string()),
+                        ("new_state".to_string(), "down".to_string()),
+                    ]),
+                })
+                .expect("serialize ospf syslog fact"),
+            })
+            .await
+            .expect("write ospf syslog fact");
+
+        let event = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for OSPF orphan event")
+            .expect("receive OSPF orphan event");
+        assert_eq!(event.event_type, "syslog_fact_orphan");
+        let detail: serde_json::Value =
+            serde_json::from_str(&event.detail_json).expect("detail json");
+        assert_eq!(detail["fact_type"], "ospf_neighbor");
+        assert_eq!(detail["join"]["status"], "orphan");
+        assert_eq!(detail["join"]["kind"], "ospf_neighbor");
+        assert_eq!(detail["join"]["reason"], "no_ospf_neighbor_match");
+        // Confirm if_name did NOT trigger an Interface join — ospf is routed before generic if_name branch
+        assert_ne!(detail["join"]["kind"], "interface");
+    }
+
+    #[tokio::test]
+    async fn syslog_isis_fact_orphans_when_no_isis_adjacency_in_graph() {
+        let path = temp_graph_path("syslog-fact-isis-orphan");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
+        let mut rx = store.subscribe_events();
+        store
+            .write(TelemetryUpdate {
+                target: "spine2".to_string(),
+                vendor: "juniper".to_string(),
+                hostname: "spine2".to_string(),
+                role: "spine".to_string(),
+                site: "dc-a".to_string(),
+                timestamp_ns: 50,
+                path: "signals/syslog_fact/isis_adjacency".to_string(),
+                value: serde_json::to_value(SyslogFact {
+                    timestamp_ns: 50,
+                    fact_type: "isis_adjacency".to_string(),
+                    category: "protocol".to_string(),
+                    hostname: "spine2".to_string(),
+                    source_vendor: "juniper".to_string(),
+                    message: "IS-IS adjacency with 0000.0000.0001 on ge-0/0/0 went down".to_string(),
+                    raw: "raw".to_string(),
+                    transport: "udp".to_string(),
+                    peer_addr: "127.0.0.1:5514".to_string(),
+                    field_schema: std::collections::BTreeMap::from([
+                        ("neighbor_id".to_string(), "string".to_string()),
+                        ("if_name".to_string(), "string".to_string()),
+                        ("new_state".to_string(), "string".to_string()),
+                    ]),
+                    fields: std::collections::BTreeMap::from([
+                        ("neighbor_id".to_string(), "0000.0000.0001".to_string()),
+                        ("if_name".to_string(), "ge-0/0/0".to_string()),
+                        ("new_state".to_string(), "down".to_string()),
+                    ]),
+                })
+                .expect("serialize isis syslog fact"),
+            })
+            .await
+            .expect("write isis syslog fact");
+
+        let event = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for IS-IS orphan event")
+            .expect("receive IS-IS orphan event");
+        assert_eq!(event.event_type, "syslog_fact_orphan");
+        let detail: serde_json::Value =
+            serde_json::from_str(&event.detail_json).expect("detail json");
+        assert_eq!(detail["fact_type"], "isis_adjacency");
+        assert_eq!(detail["join"]["status"], "orphan");
+        assert_eq!(detail["join"]["kind"], "isis_adjacency");
+        assert_eq!(detail["join"]["reason"], "no_isis_adjacency_match");
+        // Confirm if_name did NOT trigger an Interface join
+        assert_ne!(detail["join"]["kind"], "interface");
     }
 
     #[test]
