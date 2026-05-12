@@ -66,15 +66,22 @@ struct ArchiveWriteStats {
     closes: Vec<CloseStats>,
 }
 
+pub struct WriterPolicy {
+    pub max_idle_secs: u64,
+    pub max_file_age_secs: u64,
+}
+
 pub async fn run_archiver(
     bus: Arc<InProcessBus>,
     archive_path: PathBuf,
     flush_interval: Duration,
     max_batch_rows: usize,
     compression_level: u32,
-    writer_max_idle_secs: u64,
+    writer_policy: WriterPolicy,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
+    let writer_max_idle_secs = writer_policy.max_idle_secs;
+    let max_file_age_secs = writer_policy.max_file_age_secs;
     // BroadcastSubscriber gives true DropOldest: when the archive falls behind,
     // oldest telemetry is silently overwritten rather than stalling the bus.
     let (sub, mut rx) = crate::event_bus::BroadcastSubscriber::new("archive", 4096);
@@ -85,6 +92,8 @@ pub async fn run_archiver(
     flush_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut idle_timer = tokio::time::interval(Duration::from_secs(writer_max_idle_secs.max(60)));
     idle_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut age_timer = tokio::time::interval(Duration::from_secs(max_file_age_secs.max(60)));
+    age_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let writer = Arc::new(Mutex::new(HourlyArchiveWriter::new(
         archive_path.clone(),
         compression_level,
@@ -97,6 +106,7 @@ pub async fn run_archiver(
         max_batch_rows,
         compression_level,
         writer_max_idle_secs,
+        max_file_age_secs,
         "archive consumer started"
     );
     record_archive_lag(&buffer);
@@ -148,6 +158,9 @@ pub async fn run_archiver(
             }
             _ = idle_timer.tick() => {
                 close_idle_archive_writers(Arc::clone(&writer)).await?;
+            }
+            _ = age_timer.tick() => {
+                close_aged_archive_writers(Arc::clone(&writer), max_file_age_secs).await?;
             }
         }
     }
@@ -242,6 +255,22 @@ async fn close_idle_archive_writers(writer: Arc<Mutex<HourlyArchiveWriter>>) -> 
     })
     .await
     .context("archive idle-close panicked")??;
+    log_close_stats(stats);
+    Ok(())
+}
+
+async fn close_aged_archive_writers(
+    writer: Arc<Mutex<HourlyArchiveWriter>>,
+    max_age_secs: u64,
+) -> Result<()> {
+    let stats = tokio::task::spawn_blocking(move || {
+        let mut writer = writer
+            .lock()
+            .map_err(|_| anyhow::anyhow!("archive writer lock poisoned"))?;
+        writer.close_aged(max_age_secs)
+    })
+    .await
+    .context("archive age-rotate panicked")??;
     log_close_stats(stats);
     Ok(())
 }
@@ -369,6 +398,33 @@ impl HourlyArchiveWriter {
         Ok(stats)
     }
 
+    /// Close partition writers whose wall-clock age exceeds `max_age_secs`, regardless of idle state.
+    /// Produces visible closed Parquet files even during continuous ingest.
+    fn close_aged(&mut self, max_age_secs: u64) -> Result<Vec<CloseStats>> {
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let stale: Vec<_> = self
+            .open
+            .iter()
+            .filter(|(_, w)| now_secs.saturating_sub(w.open_time_secs) >= max_age_secs)
+            .map(|(k, _)| k.clone())
+            .collect();
+        let mut stats = Vec::with_capacity(stale.len());
+        for partition in stale {
+            if let Some(writer) = self.open.remove(&partition) {
+                warn!(
+                    target = %partition.target,
+                    age_secs = now_secs.saturating_sub(writer.open_time_secs),
+                    "archive rotating aged partition writer"
+                );
+                stats.push(writer.close()?);
+            }
+        }
+        Ok(stats)
+    }
+
     fn open_partition_writer(
         &mut self,
         partition: ArchivePartition,
@@ -393,6 +449,7 @@ struct OpenPartitionWriter {
     total_rows: usize,
     total_raw_bytes: usize,
     last_append_secs: u64,
+    open_time_secs: u64,
 }
 
 impl OpenPartitionWriter {
@@ -427,6 +484,7 @@ impl OpenPartitionWriter {
             total_rows: 0,
             total_raw_bytes: 0,
             last_append_secs: now_secs,
+            open_time_secs: now_secs,
         })
     }
 

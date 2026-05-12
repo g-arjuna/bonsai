@@ -4,6 +4,7 @@
   let ops = $state(null);
   let collectors = $state(null);
   let subscriptions = $state(null);
+  let dailyCheck = $state(null);
   let loading = $state(true);
   let error = $state(null);
 
@@ -22,10 +23,11 @@
 
   async function fetchAll() {
     try {
-      const [opsRes, collRes, topoRes] = await Promise.all([
+      const [opsRes, collRes, topoRes, dcRes] = await Promise.all([
         fetch('/api/operations'),
         fetch('/api/assignment/status'),
         fetch('/api/topology'),
+        fetch('/api/operations/daily-check'),
       ]);
       if (!opsRes.ok) throw new Error(await opsRes.text());
       ops = await opsRes.json();
@@ -34,6 +36,7 @@
         const topo = await topoRes.json();
         subscriptions = topo.devices ?? [];
       }
+      if (dcRes.ok) dailyCheck = await dcRes.json();
       rssSamples     = [...rssSamples,     ops.rss_bytes           ?? 0].slice(-SPARKLINE_MAX);
       archiveSamples = [...archiveSamples, ops.archive_disk_bytes  ?? 0].slice(-SPARKLINE_MAX);
       graphSamples   = [...graphSamples,   ops.graph_disk_bytes    ?? 0].slice(-SPARKLINE_MAX);
@@ -376,6 +379,56 @@
         </div>
       </div>
     </div>
+
+    <!-- ── Driver results (daily check) ─────────────────────────────────── -->
+    {#if dailyCheck}
+      <div class="section-card">
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+          <h3 style="margin-bottom:0">Driver Results</h3>
+          <span class="badge {dailyCheck.status === 'pass' ? 'healthy' : dailyCheck.status === 'fail' ? 'critical' : dailyCheck.status === 'pass_with_caveats' ? 'warn' : 'info'}">
+            {dailyCheck.status}
+          </span>
+        </div>
+        <div class="kv-row" style="margin-bottom:12px;">
+          <div class="kv">
+            <span>Pass</span>
+            <strong style="color:var(--state-healthy)">{dailyCheck.counts?.pass ?? 0}</strong>
+          </div>
+          <div class="kv">
+            <span>Fail</span>
+            <strong style={dailyCheck.counts?.fail > 0 ? 'color:var(--state-failed)' : ''}>{dailyCheck.counts?.fail ?? 0}</strong>
+          </div>
+          <div class="kv">
+            <span>Prereq missing</span>
+            <strong style="color:var(--state-degraded)">{dailyCheck.counts?.prereq_missing ?? 0}</strong>
+          </div>
+          <div class="kv">
+            <span>Skip</span>
+            <strong>{dailyCheck.counts?.skip ?? 0}</strong>
+          </div>
+        </div>
+        {#if dailyCheck.checks?.length}
+          <table>
+            <thead><tr><th>Check</th><th>Status</th><th>Summary</th></tr></thead>
+            <tbody>
+              {#each dailyCheck.checks as check}
+                <tr>
+                  <td><code>{check.name}</code></td>
+                  <td>
+                    <span class="badge {check.status === 'pass' ? 'healthy' : check.status === 'fail' ? 'critical' : check.status === 'prereq_missing' ? 'warn' : 'info'}">
+                      {check.status}
+                    </span>
+                  </td>
+                  <td class="muted">{check.summary || '—'}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else}
+          <div class="empty">No driver result files found.</div>
+        {/if}
+      </div>
+    {/if}
 
   {/if}
 </div>

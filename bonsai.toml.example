@@ -99,6 +99,7 @@ graph_path   = "bonsai.db"
 # max_batch_rows         = 1000
 # compression_level      = 12        # ZSTD level 1-22 (default 12; level 22 not worth CPU cost)
 # writer_max_idle_secs   = 7200      # force-close partition writers idle for >2h (prevents open-file leaks)
+# max_file_age_seconds   = 3600      # force-rotate writers after 1h wall-clock age (ensures closed files appear even during continuous ingest)
 
 # ── Signals (BV6) ────────────────────────────────────────────────────────────
 # Syslog is disabled by default. The sample UDP port avoids root privileges for

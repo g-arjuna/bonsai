@@ -768,6 +768,7 @@ pub fn router(
         .route("/api/incidents", get(incidents_handler))
         .route("/api/readiness", get(readiness_handler))
         .route("/api/operations", get(operations_handler))
+        .route("/api/operations/daily-check", get(daily_check_handler))
         .route("/api/_test/status", get(test_status_handler))
         .route("/api/trace/{id}", get(trace_handler))
         .route("/api/events", get(events_handler))
@@ -1955,6 +1956,106 @@ async fn test_status_handler(
         budget_breaches,
         external,
         driver_results: serde_json::Value::Object(driver_results),
+    }))
+}
+
+#[derive(Serialize)]
+struct DailyCheckResponse {
+    ts_unix: u64,
+    status: String,
+    counts: DailyCheckCounts,
+    checks: Vec<DailyCheckItem>,
+}
+
+#[derive(Serialize)]
+struct DailyCheckCounts {
+    pass: usize,
+    fail: usize,
+    skip: usize,
+    prereq_missing: usize,
+}
+
+#[derive(Serialize)]
+struct DailyCheckItem {
+    name: String,
+    status: String,
+    summary: String,
+}
+
+async fn daily_check_handler(
+    State(state): State<AppState>,
+) -> Result<Json<DailyCheckResponse>, (StatusCode, String)> {
+    let driver_dir = std::path::Path::new(&state.runtime_dir).join("driver_results");
+    let mut checks: Vec<DailyCheckItem> = Vec::new();
+    let mut counts = DailyCheckCounts { pass: 0, fail: 0, skip: 0, prereq_missing: 0 };
+
+    if let Ok(mut entries) = tokio::fs::read_dir(&driver_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            // Exclude daily.json — it is a derived meta-file (self-referential in aggregation)
+            if path.file_name().and_then(|n| n.to_str()) == Some("daily.json") {
+                continue;
+            }
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let (status, summary) = if let Ok(s) = tokio::fs::read_to_string(&path).await {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+                    let st = v
+                        .get("status")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let sm = v
+                        .get("summary")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    (st, sm)
+                } else {
+                    ("fail".to_string(), "invalid json".to_string())
+                }
+            } else {
+                ("fail".to_string(), "unreadable".to_string())
+            };
+
+            match status.as_str() {
+                "pass" => counts.pass += 1,
+                "fail" => counts.fail += 1,
+                "prereq_missing" => counts.prereq_missing += 1,
+                _ => counts.skip += 1,
+            }
+            checks.push(DailyCheckItem { name, status, summary });
+        }
+    }
+
+    checks.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let overall = if counts.fail > 0 {
+        "fail"
+    } else if counts.prereq_missing > 0 {
+        "pass_with_caveats"
+    } else if counts.pass == 0 {
+        "warn"
+    } else {
+        "pass"
+    };
+
+    let ts_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    Ok(Json(DailyCheckResponse {
+        ts_unix,
+        status: overall.to_string(),
+        counts,
+        checks,
     }))
 }
 

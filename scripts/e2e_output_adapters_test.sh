@@ -344,10 +344,33 @@ write_result() {
     for adapter in prometheus splunk elastic; do
         var="RESULT_${adapter^^}"
         result="${!var}"
-        [[ "${result}" == "SKIP" ]] && continue
         summary_var="SUMMARY_${adapter^^}"
         summary="${!summary_var}"
         result_file="${RESULT_DIR}/${date}-${adapter}-${result,,}.md"
+        if [[ "${result}" == "SKIP" ]]; then
+            cat > "${result_file}" <<EOF
+# Output Adapter E2E test: ${adapter}
+
+**Date**: $(date +%Y-%m-%d)
+**Operator**: $(git config user.name 2>/dev/null || echo "unknown")
+**Bonsai version**: ${bonsai_sha}
+**Adapter**: ${adapter}
+
+## Result
+
+**SKIP**
+
+## Summary
+
+Test did not run — adapter service unreachable or prerequisite not met.
+
+## Log
+
+\`${LOG_FILE}\`
+EOF
+            log "Result for ${adapter} written (skip) to: ${result_file}"
+            continue
+        fi
         cat > "${result_file}" <<EOF
 # Output Adapter E2E test: ${adapter}
 

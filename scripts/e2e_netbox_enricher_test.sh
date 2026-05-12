@@ -23,7 +23,7 @@ NETBOX_URL_BONSAI="${NETBOX_URL_BONSAI:-}"
 NETBOX_TOKEN="${NETBOX_TOKEN:-${NETBOX_API_TOKEN:-bonsai-dev-token}}"
 LOG_FILE="/tmp/bonsai-e2e-netbox-$(date +%Y%m%d-%H%M%S)-$$.log"
 DRY_RUN=false
-RESULT="PASS"
+RESULT="SKIP"
 SUMMARY_DETAIL="not_run"
 RUN_TS="$(date +%s)"
 ENRICHER_NAME="netbox-lab-test-${RUN_TS}"
@@ -326,6 +326,8 @@ PY
     ELAPSED=$((ELAPSED + 5))
     [[ ${ELAPSED} -ge ${MAX_WAIT} ]] && { fail "Enrichment did not complete within ${MAX_WAIT}s"; set_summary "enrichment_timeout=${MAX_WAIT}s"; break; }
 done
+# Reached end of all checks without an early exit — mark as pass if no fail() was called
+[[ "${RESULT}" == "SKIP" ]] && RESULT="PASS"
 write_result
 log "=== ${RESULT} ==="
 [[ "${RESULT}" == "FAIL" ]] && exit 1 || exit 0

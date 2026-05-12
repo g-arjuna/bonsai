@@ -502,7 +502,10 @@ async fn main() -> Result<()> {
         let flush_interval = Duration::from_secs(cfg.archive.flush_interval_seconds);
         let max_batch_rows = cfg.archive.max_batch_rows;
         let compression_level = cfg.archive.compression_level;
-        let writer_max_idle_secs = cfg.archive.writer_max_idle_secs;
+        let writer_policy = archive::WriterPolicy {
+            max_idle_secs: cfg.archive.writer_max_idle_secs,
+            max_file_age_secs: cfg.archive.max_file_age_seconds,
+        };
         let bus_for_archive = std::sync::Arc::clone(&bus);
         let archive_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
@@ -512,7 +515,7 @@ async fn main() -> Result<()> {
                 flush_interval,
                 max_batch_rows,
                 compression_level,
-                writer_max_idle_secs,
+                writer_policy,
                 archive_shutdown,
             )
             .await

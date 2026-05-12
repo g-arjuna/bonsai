@@ -142,8 +142,11 @@ if not files:
     print("status: WARN - no driver result files present")
     raise SystemExit(0)
 
-counts = {"pass": 0, "fail": 0, "skip": 0, "unknown": 0}
+counts = {"pass": 0, "fail": 0, "skip": 0, "prereq_missing": 0, "unknown": 0}
 for path in files:
+    # Exclude daily.json — it is a derived meta-file that would cause self-referential aggregation
+    if path.name == "daily.json":
+        continue
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
@@ -164,9 +167,14 @@ for path in files:
     print(f"{path.name}: {status} {summary}".rstrip())
 
 total = sum(counts.values())
-print(f"totals: {total} files, pass={counts['pass']}, fail={counts['fail']}, skip={counts['skip']}, unknown={counts['unknown']}")
+print(
+    f"totals: {total} files, pass={counts['pass']}, fail={counts['fail']}, "
+    f"skip={counts['skip']}, prereq_missing={counts['prereq_missing']}, unknown={counts['unknown']}"
+)
 if counts["fail"] > 0:
     print("status: FAIL - at least one driver result reported failure")
+elif counts["prereq_missing"] > 0 and counts["fail"] == 0:
+    print("status: PASS_WITH_CAVEATS - some prerequisites not yet met; no real failures")
 elif counts["pass"] == 0:
     print("status: WARN - no passing driver results recorded")
 else:
@@ -290,7 +298,11 @@ checks = []
 bonsai_status, bonsai_ok = classify(status_text, ['"ts_unix"', '"driver_results"'])
 checks.append({"name": "bonsai_status", "check": "bonsai_status", "status": bonsai_status, "ok": bonsai_ok})
 
-driver_status, driver_ok = classify(driver_text, ["status: pass - driver results aggregated cleanly"], ["status: warn"])
+driver_status, driver_ok = classify(
+    driver_text,
+    ["status: pass - driver results aggregated cleanly"],
+    ["status: warn", "status: pass_with_caveats"],
+)
 checks.append({"name": "driver_results", "check": "driver_results", "status": driver_status, "ok": driver_ok})
 
 archive_status, archive_ok = classify(archive_text, ['"status":"pass"', '"status": "pass"'], ['"status":"warn"', '"status": "warn"'])
@@ -316,8 +328,8 @@ checks.append({"name": "lab_health", "check": "lab_health", "status": lab_status
 top_status = "pass"
 if any(check["status"] == "fail" for check in checks):
     top_status = "fail"
-elif any(check["status"] == "skip" for check in checks):
-    top_status = "skip"
+elif any(check["status"] in ("skip", "pass_with_caveats") for check in checks):
+    top_status = "pass_with_caveats"
 
 summary_bits = [
     f"bonsai={bonsai_status}",

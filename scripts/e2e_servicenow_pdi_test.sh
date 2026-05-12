@@ -26,6 +26,40 @@
 
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RESULT_DIR="${REPO_ROOT}/docs/test_results/e2e_servicenow"
+RESULT_STATUS="SKIP"
+RESULT_SUMMARY="credentials not set — test did not run"
+RESULT_WRITTEN=false
+
+write_result() {
+    [[ "${RESULT_WRITTEN}" == "true" ]] && return 0
+    RESULT_WRITTEN=true
+    mkdir -p "${RESULT_DIR}"
+    local bonsai_sha date result_file
+    bonsai_sha="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
+    date="$(date +%Y%m%d)"
+    result_file="${RESULT_DIR}/${date}-${RESULT_STATUS,,}.md"
+    cat > "${result_file}" <<EOF
+# ServiceNow PDI E2E test
+
+**Date**: $(date +%Y-%m-%d)
+**Operator**: $(git config user.name 2>/dev/null || echo "unknown")
+**Bonsai version**: ${bonsai_sha}
+**Instance**: ${SNOW_INSTANCE_URL:-not set}
+
+## Result
+
+**${RESULT_STATUS}**
+
+## Summary
+
+${RESULT_SUMMARY}
+EOF
+    echo "Result written to: ${result_file}"
+}
+trap write_result EXIT
+
 # ── Arg parsing ──────────────────────────────────────────────────────────────
 
 DRY_RUN=0
@@ -294,5 +328,13 @@ fi
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
+
+if [[ $FAIL -eq 0 ]]; then
+    RESULT_STATUS="PASS"
+    RESULT_SUMMARY="${PASS} checks passed against ${SNOW_INSTANCE_URL:-unknown}"
+else
+    RESULT_STATUS="FAIL"
+    RESULT_SUMMARY="${PASS} passed, ${FAIL} failed against ${SNOW_INSTANCE_URL:-unknown}"
+fi
 
 [[ $FAIL -eq 0 ]]

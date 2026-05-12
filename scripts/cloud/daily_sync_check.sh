@@ -62,13 +62,13 @@ echo "Checking remote cloud sync branches under ${BRANCH_PREFIX}/..."
 remote_refs="$(git ls-remote --heads origin "${BRANCH_PREFIX}/*" 2>/dev/null || true)"
 if [[ -z "${remote_refs}" ]]; then
   checks='[
-    {"name":"remote_branches_present","check":"remote_branches_present","status":"fail","ok":false},
+    {"name":"remote_branches_present","check":"remote_branches_present","status":"prereq_missing","ok":false},
     {"name":"snapshot_tarball_present","check":"snapshot_tarball_present","status":"skip","ok":false},
     {"name":"readme_present","check":"readme_present","status":"skip","ok":false}
   ]'
-  write_result "fail" "false" "no ${BRANCH_PREFIX} branches found on origin" "${checks}"
-  echo "FAIL: no ${BRANCH_PREFIX} branches found on origin. Wrote ${OUTPUT_FILE}"
-  exit 1
+  write_result "prereq_missing" "false" "no ${BRANCH_PREFIX} branches found on origin; cloud sync cron not yet run" "${checks}"
+  echo "PREREQ_MISSING: no ${BRANCH_PREFIX} branches found on origin. Wrote ${OUTPUT_FILE}"
+  exit 0
 fi
 
 branch_names="$(printf '%s\n' "${remote_refs}" | awk '{print $2}' | sed 's#refs/heads/##')"

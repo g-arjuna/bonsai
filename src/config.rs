@@ -798,6 +798,10 @@ pub struct ArchiveConfig {
     /// Close idle partition writers after this many seconds of inactivity. Default: 7200 (2h).
     #[serde(default = "default_archive_writer_max_idle_secs")]
     pub writer_max_idle_secs: u64,
+    /// Force-rotate partition writers older than this many seconds regardless of idle state.
+    /// Ensures at least one closed Parquet file per interval even during continuous ingest. Default: 3600 (1h).
+    #[serde(default = "default_archive_max_file_age_secs")]
+    pub max_file_age_seconds: u64,
 }
 
 impl Default for ArchiveConfig {
@@ -809,6 +813,7 @@ impl Default for ArchiveConfig {
             max_batch_rows: default_archive_max_batch_rows(),
             compression_level: default_archive_compression_level(),
             writer_max_idle_secs: default_archive_writer_max_idle_secs(),
+            max_file_age_seconds: default_archive_max_file_age_secs(),
         }
     }
 }
@@ -1038,6 +1043,10 @@ fn default_archive_compression_level() -> u32 {
 
 fn default_archive_writer_max_idle_secs() -> u64 {
     7200
+}
+
+fn default_archive_max_file_age_secs() -> u64 {
+    3600
 }
 
 fn default_max_archive_bytes() -> u64 {

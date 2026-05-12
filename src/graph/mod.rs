@@ -3240,30 +3240,29 @@ fn join_bfd_fact(
     let if_name = fact.fields.get("if_name");
     let remote_address = fact.fields.get("remote_address");
 
-    if let Some(if_name) = if_name {
-        if let Some(graph_state) =
+    if let Some(if_name) = if_name
+        && let Some(graph_state) =
             lookup_bfd_session_by_interface(conn, &update.target, if_name)?
-        {
-            return Ok(json!({
-                "status": "joined",
-                "kind": "bfd_session",
-                "key": if_name,
-                "graph_state": graph_state,
-            }));
-        }
+    {
+        return Ok(json!({
+            "status": "joined",
+            "kind": "bfd_session",
+            "key": if_name,
+            "graph_state": graph_state,
+        }));
     }
 
-    if let Some(remote_addr) = remote_address {
-        if let Some(graph_state) =
+    if let Some(remote_addr) = remote_address
+        && let Some(graph_state) =
             lookup_bfd_session_by_remote(conn, &update.target, remote_addr)?
-        {
-            return Ok(json!({
-                "status": "joined",
-                "kind": "bfd_session",
-                "key": remote_addr,
-                "graph_state": graph_state,
-            }));
-        }
+    {
+        return Ok(json!({
+            "status": "joined",
+            "kind": "bfd_session",
+            "key": remote_addr,
+            "graph_state": graph_state,
+        }));
+
     }
 
     let key = if_name
