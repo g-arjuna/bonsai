@@ -47,6 +47,16 @@ _log() { echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*"; }
 _run() { "$DRY_RUN" && echo "[DRY-RUN] $*" || "$@"; }
 _die() { _log "ERROR: $*"; exit 1; }
 
+# ── Preflight: GITHUB_TOKEN required ─────────────────────────────────────────
+if [[ -z "$GITHUB_TOKEN" ]] && ! "$DRY_RUN"; then
+    _die "GITHUB_TOKEN is not set. Cannot push to GitHub.
+  Configure it with one of:
+    1. export GITHUB_TOKEN=<token> in ~/.bashrc (then re-login or source ~/.bashrc)
+    2. Add GITHUB_TOKEN=<token> to $ENV_FILE
+    3. Add GITHUB_TOKEN=<token> as a CRON_ENV line in /etc/cron.d/bonsai
+  Token needs: repo scope (classic PAT) or Contents: write (fine-grained)."
+fi
+
 YESTERDAY=$(date -u -d "yesterday" '+%Y-%m-%d' 2>/dev/null || date -u -v-1d '+%Y-%m-%d')
 SNAPSHOT_NAME="snapshot-$YESTERDAY"
 SNAPSHOT_DIR="$SNAPSHOTS_DIR/$SNAPSHOT_NAME"
@@ -152,9 +162,9 @@ _log "  Compressed size: ${TARSIZE_KB} KiB"
 
 # ── Push to GitHub branch ─────────────────────────────────────────────────────
 
+# GITHUB_TOKEN guard already enforced at startup; this branch is unreachable except in --dry-run.
 if [[ -z "$GITHUB_TOKEN" ]]; then
-    _log "WARN: GITHUB_TOKEN not set — skipping GitHub push"
-    _log "  Export GITHUB_TOKEN in your shell or add to crontab environment"
+    _log "WARN: GITHUB_TOKEN not set — skipping GitHub push (dry-run mode)"
     _log "  Snapshot available locally: $SNAPSHOT_TAR"
     exit 0
 fi
@@ -216,7 +226,26 @@ _run git -C "$SYNC_WORK_DIR" \
     -c user.name="bonsai-cloud-sync" \
     -c user.email="noreply@bonsai" \
     commit -m "chore: daily archive sync $YESTERDAY" || true
-_run git -C "$SYNC_WORK_DIR" push --force origin "HEAD:$BRANCH"
+
+PUSH_LOG="$(mktemp)"
+if ! _run git -C "$SYNC_WORK_DIR" push --force origin "HEAD:$BRANCH" 2>"$PUSH_LOG"; then
+    PUSH_ERR="$(cat "$PUSH_LOG")"
+    rm -f "$PUSH_LOG"
+    _log "PUSH FAILED to $BRANCH"
+    _log "--- git push stderr ---"
+    echo "$PUSH_ERR" | while IFS= read -r line; do _log "  $line"; done
+    _log "---"
+    _log "Diagnostics:"
+    _log "  REMOTE_URL  = $REMOTE_URL"
+    _log "  BRANCH      = $BRANCH"
+    _log "  TOKEN_SET   = $([ -n "$GITHUB_TOKEN" ] && echo yes || echo no)"
+    _log "  TOKEN_LEN   = ${#GITHUB_TOKEN}"
+    _log "  git version = $(git --version 2>/dev/null || echo unknown)"
+    _run git -C "$INSTALL_DIR" config --unset credential.helper || true
+    rm -rf "$SYNC_WORK_DIR"
+    _die "GitHub push failed — see diagnostics above. Snapshot preserved at: $SNAPSHOT_TAR"
+fi
+rm -f "$PUSH_LOG"
 
 # Cleanup credentials helper
 _run git -C "$INSTALL_DIR" config --unset credential.helper || true

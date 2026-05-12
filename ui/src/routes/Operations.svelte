@@ -5,6 +5,7 @@
   let collectors = $state(null);
   let subscriptions = $state(null);
   let dailyCheck = $state(null);
+  let weeklyTrend = $state(null);
   let loading = $state(true);
   let error = $state(null);
 
@@ -23,11 +24,12 @@
 
   async function fetchAll() {
     try {
-      const [opsRes, collRes, topoRes, dcRes] = await Promise.all([
+      const [opsRes, collRes, topoRes, dcRes, wtRes] = await Promise.all([
         fetch('/api/operations'),
         fetch('/api/assignment/status'),
         fetch('/api/topology'),
         fetch('/api/operations/daily-check'),
+        fetch('/api/operations/weekly-trend'),
       ]);
       if (!opsRes.ok) throw new Error(await opsRes.text());
       ops = await opsRes.json();
@@ -37,6 +39,7 @@
         subscriptions = topo.devices ?? [];
       }
       if (dcRes.ok) dailyCheck = await dcRes.json();
+      if (wtRes.ok) weeklyTrend = await wtRes.json();
       rssSamples     = [...rssSamples,     ops.rss_bytes           ?? 0].slice(-SPARKLINE_MAX);
       archiveSamples = [...archiveSamples, ops.archive_disk_bytes  ?? 0].slice(-SPARKLINE_MAX);
       graphSamples   = [...graphSamples,   ops.graph_disk_bytes    ?? 0].slice(-SPARKLINE_MAX);
@@ -427,6 +430,41 @@
         {:else}
           <div class="empty">No driver result files found.</div>
         {/if}
+      </div>
+    {/if}
+
+    <!-- ── 7-Day Trend ──────────────────────────────────────────────────── -->
+    {#if weeklyTrend?.days?.length}
+      <div class="section-card">
+        <h3 style="margin-bottom:12px">7-Day Trend</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Status</th>
+              <th style="text-align:right">Pass</th>
+              <th style="text-align:right">Fail</th>
+              <th style="text-align:right">Skip</th>
+              <th style="text-align:right">Prereq</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each weeklyTrend.days as day}
+              <tr>
+                <td><code>{day.date || '—'}</code></td>
+                <td>
+                  <span class="badge {day.status === 'pass' ? 'healthy' : day.status === 'fail' ? 'critical' : day.status === 'pass_with_caveats' ? 'warn' : 'info'}">
+                    {day.status}
+                  </span>
+                </td>
+                <td style="text-align:right; color:var(--state-healthy)">{day.pass}</td>
+                <td style="text-align:right; {day.fail > 0 ? 'color:var(--state-failed)' : ''}">{day.fail}</td>
+                <td style="text-align:right" class="muted">{day.skip}</td>
+                <td style="text-align:right; color:var(--state-degraded)">{day.prereq_missing}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
       </div>
     {/if}
 

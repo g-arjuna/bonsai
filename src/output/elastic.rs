@@ -29,7 +29,7 @@
 //!   labels.*         → bonsai-specific fields for filtering
 //!   bonsai.*         → full bonsai event payload
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -41,7 +41,7 @@ use tracing::{debug, info, warn};
 
 use crate::credentials::{CredentialVault, ResolvePurpose};
 use crate::event_bus::InProcessBus;
-use crate::graph::common::{now_ns, read_str, read_ts_ns};
+use crate::graph::common::{now_ns, read_str, read_ts_ns, ts};
 use crate::output::traits::{
     OutputAdapter, OutputAdapterAuditLog, OutputAdapterConfig, OutputReport, OutputTopic,
 };
@@ -115,13 +115,13 @@ impl OutputAdapter for ElasticAdapter {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         let mut dedup: HashMap<(String, String), i64> = HashMap::new();
-        let mut pushed: HashSet<String> = HashSet::new();
+        let mut cursor_ns: i64 = now_ns() - 120_000_000_000;
 
         loop {
             tokio::select! {
                 _ = interval.tick() => {
                     let start = Instant::now();
-                    match push_cycle(&self.config, &self.db, &creds, &audit, &mut dedup, &mut pushed).await {
+                    match push_cycle(&self.config, &self.db, &creds, &audit, &mut dedup, &mut cursor_ns).await {
                         Ok(report) if report.events_pushed > 0 => {
                             debug!(
                                 adapter = %self.config.name,
@@ -178,11 +178,12 @@ async fn push_cycle(
     creds: &Arc<CredentialVault>,
     audit: &OutputAdapterAuditLog,
     dedup: &mut HashMap<(String, String), i64>,
-    pushed: &mut HashSet<String>,
+    cursor_ns: &mut i64,
 ) -> Result<OutputReport> {
+    let since = *cursor_ns;
     let db2 = Arc::clone(db);
     let detections: Vec<DetectionRecord> =
-        tokio::task::spawn_blocking(move || query_detections(&db2))
+        tokio::task::spawn_blocking(move || query_detections(&db2, since))
             .await
             .context("spawn_blocking panicked")??;
 
@@ -208,14 +209,13 @@ async fn push_cycle(
         .unwrap_or("bonsai-detections")
         .to_string();
 
+    let mut new_cursor = *cursor_ns;
     let mut ndjson_lines: Vec<String> = Vec::new();
     let mut bytes = 0u64;
     let mut n = 0usize;
 
     for det in &detections {
-        if pushed.contains(&det.id) {
-            continue;
-        }
+        new_cursor = new_cursor.max(det.fired_at_ns);
         let dedup_key = (det.device_address.clone(), det.rule_id.clone());
         if let Some(&last_ns) = dedup.get(&dedup_key)
             && now - last_ns < dedup_window_ns
@@ -231,12 +231,12 @@ async fn push_cycle(
 
         ndjson_lines.push(action_line);
         ndjson_lines.push(doc_line);
-        pushed.insert(det.id.clone());
         dedup.insert(dedup_key, now);
         n += 1;
     }
 
     if n == 0 {
+        *cursor_ns = new_cursor;
         return Ok(OutputReport {
             adapter_name: config.name.clone(),
             ..Default::default()
@@ -257,7 +257,13 @@ async fn push_cycle(
         .post(&bulk_url)
         .header("Content-Type", "application/x-ndjson")
         .body(body);
-    let req = apply_auth(req, config, creds, audit)?;
+    let req = match apply_auth(req, config, creds, audit) {
+        Ok(r) => r,
+        Err(e) => {
+            audit.log_push(0, bytes, Some(&e.to_string()));
+            return Err(e);
+        }
+    };
 
     let resp = req
         .send()
@@ -266,6 +272,7 @@ async fn push_cycle(
 
     let status = resp.status();
     if status.is_success() {
+        *cursor_ns = new_cursor;
         audit.log_push(n, bytes, None);
         Ok(OutputReport {
             adapter_name: config.name.clone(),
@@ -342,16 +349,20 @@ fn build_ecs_doc(det: &DetectionRecord) -> JsonValue {
 
 // ── Graph query ───────────────────────────────────────────────────────────────
 
-fn query_detections(db: &Arc<Database>) -> Result<Vec<DetectionRecord>> {
+fn query_detections(db: &Arc<Database>, since_ns: i64) -> Result<Vec<DetectionRecord>> {
     let conn = Connection::new(db).context("open graph connection for Elastic")?;
-    let rows = conn
-        .query(
+    let mut stmt = conn
+        .prepare(
             "MATCH (dev:Device)-[:TRIGGERED]->(e:DetectionEvent) \
+             WHERE e.fired_at > $since_ns \
              OPTIONAL MATCH (r:Remediation)-[:RESOLVES]->(e) \
              RETURN e.id, e.device_address, dev.hostname, e.rule_id, e.severity, \
                     e.fired_at, e.features_json, r.action, r.status \
-             ORDER BY e.fired_at DESC LIMIT 500",
+             ORDER BY e.fired_at ASC LIMIT 500",
         )
+        .context("prepare detections query for Elastic")?;
+    let rows = conn
+        .execute(&mut stmt, vec![("since_ns", ts(since_ns))])
         .context("query detections for Elastic")?;
     Ok(rows
         .map(|row| DetectionRecord {

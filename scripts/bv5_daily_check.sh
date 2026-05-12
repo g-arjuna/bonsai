@@ -381,3 +381,8 @@ PY
 
 echo "Wrote $OUT_FILE"
 echo "Wrote $DAILY_JSON"
+
+# Archive a dated copy so /api/operations/weekly-trend can read the last 7 days.
+DATED_JSON="${RESULT_DIR}/daily-${DATE_UTC}.json"
+cp "$DAILY_JSON" "$DATED_JSON"
+echo "Wrote $DATED_JSON"

@@ -17,7 +17,7 @@
 //!   index            — Splunk index (default: unset, uses token default)
 //!   dedup_window_secs — suppress re-push of (device, rule) within this window (default: 300)
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -29,7 +29,7 @@ use tracing::{debug, info, warn};
 
 use crate::credentials::{CredentialVault, ResolvePurpose};
 use crate::event_bus::InProcessBus;
-use crate::graph::common::{now_ns, read_str, read_ts_ns};
+use crate::graph::common::{now_ns, read_str, read_ts_ns, ts};
 use crate::output::traits::{
     OutputAdapter, OutputAdapterAuditLog, OutputAdapterConfig, OutputReport, OutputTopic,
 };
@@ -103,13 +103,15 @@ impl OutputAdapter for SplunkHecAdapter {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         let mut dedup: HashMap<(String, String), i64> = HashMap::new();
-        let mut pushed: HashSet<String> = HashSet::new();
+        // Cursor: only fetch detections newer than this; init 120s back to catch
+        // any detection injected before this adapter started without replaying all history.
+        let mut cursor_ns: i64 = now_ns() - 120_000_000_000;
 
         loop {
             tokio::select! {
                 _ = interval.tick() => {
                     let start = Instant::now();
-                    match push_cycle(&self.config, &self.db, &creds, &audit, &mut dedup, &mut pushed).await {
+                    match push_cycle(&self.config, &self.db, &creds, &audit, &mut dedup, &mut cursor_ns).await {
                         Ok(report) if report.events_pushed > 0 => {
                             debug!(
                                 adapter = %self.config.name,
@@ -173,13 +175,20 @@ async fn push_cycle(
     creds: &Arc<CredentialVault>,
     audit: &OutputAdapterAuditLog,
     dedup: &mut HashMap<(String, String), i64>,
-    pushed: &mut HashSet<String>,
+    cursor_ns: &mut i64,
 ) -> Result<OutputReport> {
-    let token = resolve_token(config, creds, audit)?;
+    let token = match resolve_token(config, creds, audit) {
+        Ok(t) => t,
+        Err(e) => {
+            audit.log_push(0, 0, Some(&e.to_string()));
+            return Err(e);
+        }
+    };
 
+    let since = *cursor_ns;
     let db2 = Arc::clone(db);
     let detections: Vec<DetectionRecord> =
-        tokio::task::spawn_blocking(move || query_detections(&db2))
+        tokio::task::spawn_blocking(move || query_detections(&db2, since))
             .await
             .context("spawn_blocking panicked")??;
 
@@ -210,13 +219,12 @@ async fn push_cycle(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    let mut new_cursor = *cursor_ns;
     let mut hec_lines: Vec<String> = Vec::new();
     let mut bytes = 0u64;
 
     for det in &detections {
-        if pushed.contains(&det.id) {
-            continue;
-        }
+        new_cursor = new_cursor.max(det.fired_at_ns);
         let dedup_key = (det.device_address.clone(), det.rule_id.clone());
         if let Some(&last_ns) = dedup.get(&dedup_key)
             && now - last_ns < dedup_window_ns
@@ -249,11 +257,12 @@ async fn push_cycle(
         let line = serde_json::to_string(&hec).unwrap_or_default();
         bytes += line.len() as u64;
         hec_lines.push(line);
-        pushed.insert(det.id.clone());
         dedup.insert(dedup_key, now);
     }
 
     if hec_lines.is_empty() {
+        // All records were dedup-suppressed; still advance cursor to avoid re-querying them.
+        *cursor_ns = new_cursor;
         return Ok(OutputReport {
             adapter_name: config.name.clone(),
             ..Default::default()
@@ -280,6 +289,7 @@ async fn push_cycle(
 
     let status = resp.status();
     if status.is_success() {
+        *cursor_ns = new_cursor;
         audit.log_push(n, bytes, None);
         Ok(OutputReport {
             adapter_name: config.name.clone(),
@@ -302,16 +312,20 @@ async fn push_cycle(
 
 // ── Graph query ───────────────────────────────────────────────────────────────
 
-fn query_detections(db: &Arc<Database>) -> Result<Vec<DetectionRecord>> {
+fn query_detections(db: &Arc<Database>, since_ns: i64) -> Result<Vec<DetectionRecord>> {
     let conn = Connection::new(db).context("open graph connection for Splunk HEC")?;
-    let rows = conn
-        .query(
+    let mut stmt = conn
+        .prepare(
             "MATCH (dev:Device)-[:TRIGGERED]->(e:DetectionEvent) \
+             WHERE e.fired_at > $since_ns \
              OPTIONAL MATCH (r:Remediation)-[:RESOLVES]->(e) \
              RETURN e.id, e.device_address, dev.hostname, e.rule_id, e.severity, \
                     e.fired_at, e.features_json, r.action, r.status \
-             ORDER BY e.fired_at DESC LIMIT 500",
+             ORDER BY e.fired_at ASC LIMIT 500",
         )
+        .context("prepare detections query for Splunk HEC")?;
+    let rows = conn
+        .execute(&mut stmt, vec![("since_ns", ts(since_ns))])
         .context("query detections for Splunk HEC")?;
     Ok(rows
         .map(|row| DetectionRecord {

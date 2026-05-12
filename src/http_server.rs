@@ -769,7 +769,12 @@ pub fn router(
         .route("/api/readiness", get(readiness_handler))
         .route("/api/operations", get(operations_handler))
         .route("/api/operations/daily-check", get(daily_check_handler))
+        .route("/api/operations/weekly-trend", get(weekly_trend_handler))
         .route("/api/_test/status", get(test_status_handler))
+        .route(
+            "/api/_test/inject_detection",
+            post(inject_detection_handler),
+        )
         .route("/api/trace/{id}", get(trace_handler))
         .route("/api/events", get(events_handler))
         .route("/api/devices/{address}", get(device_detail_handler))
@@ -2057,6 +2062,122 @@ async fn daily_check_handler(
         counts,
         checks,
     }))
+}
+
+// ── /api/_test/inject_detection ───────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct InjectDetectionRequest {
+    device_address: String,
+    rule_id: String,
+    #[serde(default = "default_inject_severity")]
+    severity: String,
+}
+
+fn default_inject_severity() -> String {
+    "info".to_string()
+}
+
+#[derive(Serialize)]
+struct InjectDetectionResponse {
+    detection_id: String,
+    fired_at_ns: i64,
+}
+
+async fn inject_detection_handler(
+    State(state): State<AppState>,
+    Json(req): Json<InjectDetectionRequest>,
+) -> Result<Json<InjectDetectionResponse>, (StatusCode, String)> {
+    let fired_at_ns = crate::graph::common::now_ns();
+    let detection_id = state
+        .store
+        .write_detection(
+            req.device_address,
+            req.rule_id,
+            req.severity,
+            "{}".to_string(),
+            fired_at_ns,
+            String::new(),
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(InjectDetectionResponse {
+        detection_id,
+        fired_at_ns,
+    }))
+}
+
+// ── /api/operations/weekly-trend ─────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct WeeklyTrendDay {
+    date: String,
+    status: String,
+    pass: u32,
+    fail: u32,
+    skip: u32,
+    prereq_missing: u32,
+}
+
+#[derive(Serialize)]
+struct WeeklyTrendResponse {
+    days: Vec<WeeklyTrendDay>,
+}
+
+async fn weekly_trend_handler(
+    State(state): State<AppState>,
+) -> Json<WeeklyTrendResponse> {
+    let driver_dir = std::path::Path::new(&state.runtime_dir).join("driver_results");
+    let mut days: Vec<WeeklyTrendDay> = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(&driver_dir) {
+        let mut files: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name();
+                let s = name.to_string_lossy().into_owned();
+                s.starts_with("daily-") && s.ends_with(".json")
+            })
+            .collect();
+        files.sort_by_key(|e| e.file_name());
+        // Take last 7, preserving chronological order
+        let start = files.len().saturating_sub(7);
+        for entry in &files[start..] {
+            if let Ok(contents) = std::fs::read_to_string(entry.path())
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    let date = v["environment"]["date_utc"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+                    let status = v["status"].as_str().unwrap_or("unknown").to_string();
+                    let mut pass = 0u32;
+                    let mut fail = 0u32;
+                    let mut skip = 0u32;
+                    let mut prereq_missing = 0u32;
+                    if let Some(checks) = v["checks"].as_array() {
+                        for c in checks {
+                            match c["status"].as_str().unwrap_or("") {
+                                "pass" | "pass_with_caveats" => pass += 1,
+                                "fail" => fail += 1,
+                                "skip" => skip += 1,
+                                "prereq_missing" => prereq_missing += 1,
+                                _ => {}
+                            }
+                        }
+                    }
+                    days.push(WeeklyTrendDay {
+                        date,
+                        status,
+                        pass,
+                        fail,
+                        skip,
+                        prereq_missing,
+                    });
+                }
+        }
+    }
+
+    Json(WeeklyTrendResponse { days })
 }
 
 async fn events_handler(
