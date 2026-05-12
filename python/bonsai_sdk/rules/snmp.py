@@ -21,6 +21,11 @@ def _message_text(features: Features) -> str:
 class SnmpColdWarmStart(Detector):
     rule_id = "snmp_cold_warm_start"
     severity = "warn"
+    recurrence_indicators = [
+        "Check StateChangeEvent count for this device in last 5 min — rapid restarts indicate instability",
+        "Verify gNMI subscription reconnected after restart: GET /api/devices/{address} subscription_statuses",
+        "Check YANG capabilities repopulated after restart: GET /api/yang/modules?device={address}",
+    ]
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type not in {"snmp_cold_start", "snmp_warm_start"}:
@@ -35,6 +40,11 @@ class SnmpColdWarmStart(Detector):
 class SnmpAuthFailureBurst(Detector):
     rule_id = "snmp_auth_failure_burst"
     severity = "critical"
+    recurrence_indicators = [
+        "Count snmp_auth_failure_burst DetectionEvents per source IP in last 24h — cross-device pattern indicates scanning",
+        "Check if same source IP appears in auth-failure events across multiple devices (lateral movement indicator)",
+        "Review SNMPv3 credential rotation schedule — burst after credential change indicates stale client config",
+    ]
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "snmp_auth_failure":
@@ -58,6 +68,11 @@ class SnmpAuthFailureBurst(Detector):
 class SnmpEnvironmentalThresholdBreach(Detector):
     rule_id = "snmp_environmental_threshold_breach"
     severity = "critical"
+    recurrence_indicators = [
+        "Check platform health via gNMI openconfig-platform path on this device",
+        "Check for interface_down or bgp_session_down co-firing within ±5min of this detection (thermal impact cascade)",
+        "Count snmp_environmental_threshold_breach events for this device in last 24h — repeated events indicate cooling failure",
+    ]
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "snmp_environmental":
@@ -75,6 +90,11 @@ class SnmpEnvironmentalThresholdBreach(Detector):
 class SnmpFruFailure(Detector):
     rule_id = "snmp_fru_failure"
     severity = "critical"
+    recurrence_indicators = [
+        "MATCH (c:Component {device_address: $dev}) RETURN c.name, c.state — check platform component inventory via gNMI",
+        "Check for interface_down on interfaces served by the failed FRU within ±30s",
+        "Check bgp_session_down on sessions using adjacencies on the affected linecard",
+    ]
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "snmp_fru_failure":

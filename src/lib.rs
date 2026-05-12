@@ -19,6 +19,7 @@ pub mod http_server;
 pub mod ingest;
 pub mod integrations;
 pub mod mcp_client;
+pub mod mcp_server;
 pub mod memory_profile;
 pub mod output;
 pub mod parser_chain;

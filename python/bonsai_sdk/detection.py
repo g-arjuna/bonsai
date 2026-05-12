@@ -79,6 +79,9 @@ class Detector(ABC):
     remediation_action: str = ""
     # scope: 'local' (eval on collector), 'core' (eval on core), 'hybrid' (both)
     scope: str = "local"
+    # Observable patterns that signal "this is happening again". Used by the
+    # agent-friendly grounded response (T5-2) and MCP tool catalogue (T5-1).
+    recurrence_indicators: list[str] = []
 
     @abstractmethod
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:

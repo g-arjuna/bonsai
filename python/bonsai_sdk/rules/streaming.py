@@ -45,6 +45,11 @@ def _route_entries(detail: dict) -> list[dict]:
 class RouteFlapDetected(Detector):
     rule_id = "route_flap_detected"
     severity = "warn"
+    recurrence_indicators = [
+        "Count route_flap_detected DetectionEvents for this device/peer/prefix in last 1h",
+        "Check BgpNeighbor session state for the flapping peer: MATCH (n:BgpNeighbor {peer_address: $peer}) RETURN n.session_state",
+        "Check for route_leak_detected co-firing on same device within same time window",
+    ]
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "bmp_route_change":
@@ -82,6 +87,11 @@ class RouteFlapDetected(Detector):
 class UnexpectedAsPath(Detector):
     rule_id = "unexpected_as_path"
     severity = "warn"
+    recurrence_indicators = [
+        "Compare AS path in features_json against historical BMP RouteMonitoring entries for same prefix",
+        "Check bgp_session_down/flap co-fires for the peer announcing this route",
+        "Review config-history for BGP policy changes: GET /api/devices/{address}/config-history",
+    ]
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "bmp_route_change":
@@ -110,6 +120,11 @@ class UnexpectedAsPath(Detector):
 class RouteLeakDetected(Detector):
     rule_id = "route_leak_detected"
     severity = "critical"
+    recurrence_indicators = [
+        "Count route_leak_detected DetectionEvents for this device in last 24h — persistence indicates misconfigured BGP policy",
+        "Check if same private ASN appears in other leaked routes on this device within this detection window",
+        "Verify AS path against known legitimate paths via BGP-LS topology: MATCH (l:BgpLsLink {device_address: $dev}) RETURN l",
+    ]
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "bmp_route_change":
@@ -144,6 +159,11 @@ class RouteLeakDetected(Detector):
 class SrPolicyDegraded(Detector):
     rule_id = "sr_policy_degraded"
     severity = "warn"
+    recurrence_indicators = [
+        "MATCH (p:SrPolicy {device_address: $dev, name: $name}) RETURN p.status — expect active/up when healthy",
+        "Check BgpLsLink state for links along this SR policy's candidate paths",
+        "Check IS-IS/OSPF adjacency state for intermediate nodes via DetectionEvent history",
+    ]
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "sr_policy_change":
@@ -167,6 +187,11 @@ class SrPolicyDegraded(Detector):
 class SrlgRiskDetected(Detector):
     rule_id = "srlg_risk_detected"
     severity = "warn"
+    recurrence_indicators = [
+        "MATCH (l:BgpLsLink) WHERE l.srlgs_json CONTAINS $srlg RETURN l.local_router_id, l.remote_router_id — enumerate all links sharing this SRLG",
+        "Check for interface_down on any link in this SRLG within the last detection window",
+        "Review topology for diversity: are there paths not sharing this SRLG? GET /api/path?src=...&dst=...",
+    ]
 
     _last_fired: dict[str, float] = {}
 

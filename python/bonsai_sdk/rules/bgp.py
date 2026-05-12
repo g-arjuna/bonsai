@@ -27,6 +27,11 @@ class BgpSessionDown(Detector):
     severity = "critical"
     auto_remediate = True
     remediation_action = "bgp_session_bounce"
+    recurrence_indicators = [
+        "MATCH (n:BgpNeighbor {device_address: $dev, peer_address: $peer}) RETURN n.session_state — expect 'established' when healthy",
+        "Count bgp_session_down DetectionEvents for this device/peer pair in last 24h",
+        "Check gNMI subscription status for openconfig-bgp on this device (/api/devices/{address})",
+    ]
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "bgp_session_change":
@@ -50,6 +55,11 @@ class BgpSessionFlap(Detector):
     """Session has flapped ≥3 times in 5 minutes — unstable neighbour."""
     rule_id = "bgp_session_flap"
     severity = "critical"
+    recurrence_indicators = [
+        "Count bgp_session_flap DetectionEvents for this device/peer pair in last 1h — ≥2 incidents indicates chronic instability",
+        "Check for bfd_session_down co-firing within ±5s (indicates routing-layer cause, not BGP policy)",
+        "Compare peer_count_established across last 3 bgp_session_flap detections for this device",
+    ]
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "bgp_session_change":
@@ -80,6 +90,11 @@ class BgpAllPeersDown(Detector):
     """All BGP sessions on a device are gone simultaneously — likely upstream fault."""
     rule_id = "bgp_all_peers_down"
     severity = "critical"
+    recurrence_indicators = [
+        "MATCH (n:BgpNeighbor {device_address: $dev}) RETURN n.peer_address, n.session_state — all should be 'established' when healthy",
+        "Check for interface_down DetectionEvents on same device within ±30s (hardware-fault co-indicator)",
+        "Check blast radius (/api/blast-radius/{address}) — bgp_all_peers_down typically has wide downstream impact",
+    ]
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "bgp_session_change":
@@ -102,6 +117,11 @@ class BgpNeverEstablished(Detector):
     """Peer has been seen for >90s without ever reaching established state."""
     rule_id = "bgp_never_established"
     severity = "warn"
+    recurrence_indicators = [
+        "Verify path between device and peer exists: GET /api/path?src={device}&dst={peer}",
+        "Check BFD session state for this peer — bfd_session_down co-fire means underlay reachability issue",
+        "Check DetectionEvent history: if bgp_never_established fires repeatedly, peer config is likely misconfigured",
+    ]
 
     # Track when we first saw each peer
     _first_seen: dict[str, int] = {}

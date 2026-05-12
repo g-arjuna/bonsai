@@ -18,6 +18,11 @@ class BfdSessionDown(Detector):
     """Session transitions from up to down."""
     rule_id = "bfd_session_down"
     severity = "critical"
+    recurrence_indicators = [
+        "MATCH (b:BfdSession {device_address: $dev}) RETURN b.peer_address, b.state — expect 'up' when healthy",
+        "Check interface oper-status on the BFD-protected link — interface_down co-fire indicates physical cause",
+        "Check bgp_session_down DetectionEvents within ±5s of this detection — BFD down typically precedes BGP down",
+    ]
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "bfd_session_change":

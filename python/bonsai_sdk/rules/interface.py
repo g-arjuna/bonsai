@@ -23,6 +23,11 @@ class InterfaceDown(Detector):
     """Interface oper-status transitions to down."""
     rule_id = "interface_down"
     severity = "critical"
+    recurrence_indicators = [
+        "MATCH (i:Interface {device_address: $dev, name: $if}) RETURN i.oper_status — expect 'up' when healthy",
+        "Check CONNECTED_TO edge still present: MATCH (i:Interface {name: $if})-[:CONNECTED_TO]->(j:Interface) RETURN j.device_address",
+        "Check for bgp_session_down co-firing on same device within ±10s (upstream propagation indicator)",
+    ]
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "interface_oper_status_change":
@@ -45,6 +50,11 @@ class InterfaceErrorSpike(Detector):
     """Error counter rate exceeds threshold."""
     rule_id = "interface_error_spike"
     severity = "warn"
+    recurrence_indicators = [
+        "MATCH (i:Interface {device_address: $dev, name: $if}) RETURN i.in_errors, i.out_errors — compare to previous detection's features_json",
+        "Check for repeated interface_error_spike on same interface in last 1h (chronic physical-layer issue)",
+        "Cross-reference link utilization — high errors under low load indicate physical-layer fault, not congestion",
+    ]
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "bgp_session_change":
@@ -78,6 +88,11 @@ class InterfaceHighUtilization(Detector):
     """Octets rate exceeds 80% of known link capacity — placeholder threshold check."""
     rule_id = "interface_high_utilization"
     severity = "warn"
+    recurrence_indicators = [
+        "MATCH (i:Interface {device_address: $dev, name: $if}) RETURN i.in_octets, i.out_octets — rate trend since last detection",
+        "Check interface_error_spike co-fire — high util + errors = capacity problem, not just load",
+        "Check topology neighbors (/api/topology) for load-balancing or traffic-engineering change as upstream cause",
+    ]
     # Phase 4 uses a fixed 1 Gbps assumption for lab links.
     LINK_CAPACITY_BPS = 1_000_000_000
 

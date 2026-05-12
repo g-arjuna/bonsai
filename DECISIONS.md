@@ -1750,3 +1750,19 @@ healthcheck until Compose exists.
 **Why join results are emitted as state-change events instead of introducing a new detector-facing transport**: Bonsai already has one durable/broadcast path for event-driven automation: `StateChangeEvent` plus the gRPC event stream. Reusing that path keeps the Python rule engine unchanged in shape while still giving it richer cross-source context.
 
 **Join policy**: Sprint 5 joins only when the syslog fact references a graph entity Bonsai can currently resolve reliably, starting with BGP neighbors and interfaces. Device-only context is attached for debugging, but it does not count as a successful cross-source join. Facts without a resolvable graph entity become explicit orphan events so the gap is visible rather than silently dropped.
+
+---
+
+## 2026-05-12 — CV4 Sprint 5: Agent-friendly interface (T5-1 through T5-5)
+
+**Decision**: Bonsai exposes a first-class agent-consumption layer via five additions: an MCP JSON-RPC server (POST /mcp), a grounded incident endpoint (GET /api/incidents/{id}/grounded), a self-describing OpenAPI schema endpoint (GET /api/schema), recurrence indicators on every detection rule, and a natural-language reference resolution endpoint (GET /api/resolve).
+
+**T5-1 MCP server implementation choice**: Implemented as a thin Axum handler on the existing port 3000 router rather than a separate process or the `rmcp` crate. Rationale: the `rmcp` crate was not already in Cargo.toml; adding it would pull in a new dependency tree for functionality achievable directly with Axum's JSON extraction and serde_json. The MCP JSON-RPC 2.0 wire format (`initialize`, `tools/list`, `tools/call`) is simple enough that a hand-rolled handler is less risky than an external SDK. The five read-only tools (get_incident, query_devices, get_device_blast_radius, list_active_detections, query_graph) cover the primary agent consumption patterns from the backlog. `query_graph` validates queries against mutation keywords to enforce read-only semantics.
+
+**T5-2 grounded response design**: The "three-source grounding" pattern from the CNS document — topology (blast radius) + procedure (rule doc + recurrence indicators) + live state (detection features_json) — is composed read-side from existing data. No new storage. The response is self-contained: an agent receiving it has everything needed to reason about the incident without additional API calls.
+
+**T5-3 schema choice**: Static inline OpenAPI 3.0.3 JSON rather than code-generated (via utoipa/paperclip). Rationale: code generation adds a build-time dependency and macro overhead; the API surface is stable and well-understood; a static document is readable, maintainable, and fast. The schema covers all major endpoints including the new T5 endpoints.
+
+**T5-4 recurrence indicators**: Added to the Python `Detector` base class as `recurrence_indicators: list[str] = []` and populated with 3 indicators per rule across all 18 rules (bgp × 4, interface × 3, bfd × 1, topology × 1, streaming × 5, snmp × 4). Also mirrored in the Rust `RULE_CATALOGUE` static slice for use in grounded responses without Python FFI on the hot path. Test asserts every rule has ≥3 indicators.
+
+**T5-5 resolve semantics**: Substring scoring (exact=1.0, prefix=0.8, substring=0.5) over three candidate pools: device hostnames/addresses (from graph), recent detection rule_ids/ids (last 100), and static rule catalogue descriptions. Top 20 by score. Intentionally simple — the backlog explicitly says "doesn't need to be smart." The endpoint is additive; stable IDs from the resolution result can be passed directly to other API endpoints.

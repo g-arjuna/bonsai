@@ -832,6 +832,14 @@ pub fn router(
             "/api/graph/embeddings/{address}",
             get(list_embeddings_handler),
         )
+        // T5-1: MCP server (agent-friendly JSON-RPC endpoint)
+        .route("/mcp", post(crate::mcp_server::mcp_handler))
+        // T5-2: Grounded incident response
+        .route("/api/incidents/{id}/grounded", get(grounded_incident_handler))
+        // T5-3: Self-describing OpenAPI schema
+        .route("/api/schema", get(schema_handler))
+        // T5-5: Natural-language reference resolution
+        .route("/api/resolve", get(resolve_handler))
         .fallback_service(spa)
         .with_state(state)
         .layer(CorsLayer::permissive())
@@ -5700,4 +5708,354 @@ async fn governance_state_handler(State(state): State<AppState>) -> impl IntoRes
         )
             .into_response(),
     }
+}
+
+// ── T5-2 — Grounded incident response ────────────────────────────────────────
+
+async fn grounded_incident_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::mcp_server::GroundedIncidentResponse>, (StatusCode, String)> {
+    let detections = state
+        .store
+        .read_detections(500)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let det = detections
+        .into_iter()
+        .find(|d| d.id == id)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("DetectionEvent {id} not found")))?;
+
+    let device_address = det.device_address.clone();
+    let db = state.store.db();
+    let blast = tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        crate::graph::queries::blast_radius(&conn, &device_address, 2)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let meta = crate::mcp_server::rule_meta(&det.rule_id);
+    let refs = crate::mcp_server::procedural_refs(&det.device_address, &det.rule_id);
+
+    Ok(Json(crate::mcp_server::GroundedIncidentResponse {
+        detection: crate::mcp_server::DetectionSummary {
+            id: det.id,
+            device_address: det.device_address,
+            rule_id: det.rule_id,
+            severity: det.severity,
+            fired_at_ns: det.fired_at_ns,
+            features_json: det.features_json,
+            remediation_status: det.remediation_status,
+            remediation_action: det.remediation_action,
+        },
+        blast_radius: blast,
+        rule_description: meta.map(|m| m.description).unwrap_or(""),
+        recurrence_indicators: meta.map(|m| m.recurrence_indicators).unwrap_or(&[]),
+        procedural_references: refs,
+    }))
+}
+
+// ── T5-3 — Self-describing OpenAPI schema endpoint ───────────────────────────
+
+async fn schema_handler() -> Json<serde_json::Value> {
+    Json(openapi_schema())
+}
+
+fn openapi_schema() -> serde_json::Value {
+    serde_json::json!({
+        "openapi": "3.0.3",
+        "info": {
+            "title": "Bonsai Network State Engine API",
+            "version": env!("CARGO_PKG_VERSION"),
+            "description": "REST + SSE API for the Bonsai network state engine. Graph-native, gNMI-first, closed-loop detect-heal. All endpoints are read-only except mutation endpoints under /api/onboarding, /api/sites, /api/environments, /api/credentials, and /api/adapters."
+        },
+        "servers": [{ "url": "http://localhost:3000" }],
+        "paths": {
+            "/api/topology": {
+                "get": {
+                    "summary": "Network topology snapshot",
+                    "description": "Returns all devices, LLDP fabric links, management-plane links, and BGP neighbour states. Link bytes_total is the sum of in/out octets on both ends for utilisation heatmap colouring.",
+                    "responses": {
+                        "200": {
+                            "description": "Topology snapshot",
+                            "content": { "application/json": { "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "devices": { "type": "array", "items": { "$ref": "#/components/schemas/Device" }},
+                                    "links": { "type": "array", "items": { "$ref": "#/components/schemas/Link" }}
+                                }
+                            }}}
+                        }
+                    }
+                }
+            },
+            "/api/detections": {
+                "get": {
+                    "summary": "Recent detection events",
+                    "parameters": [{ "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 }}],
+                    "responses": { "200": { "description": "Detection list" }}
+                }
+            },
+            "/api/incidents": {
+                "get": {
+                    "summary": "Detections grouped into incidents by time window",
+                    "description": "Groups recent DetectionEvents into incidents using a sliding time window. Root detection is the highest-topology-degree device in the group.",
+                    "parameters": [
+                        { "name": "window_secs", "in": "query", "schema": { "type": "integer", "default": 30 }, "description": "Time window in seconds for grouping co-occurring detections" },
+                        { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 200 }}
+                    ],
+                    "responses": { "200": { "description": "Incident list" }}
+                }
+            },
+            "/api/incidents/{id}/grounded": {
+                "get": {
+                    "summary": "Grounded incident response (T5-2)",
+                    "description": "Returns a detection event enriched with topological blast radius, rule documentation, recurrence indicators, and procedural references. Three-source grounding: topology + procedure + live state.",
+                    "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Root DetectionEvent UUID" }],
+                    "responses": { "200": { "description": "Grounded incident" }, "404": { "description": "Detection not found" }}
+                }
+            },
+            "/api/blast-radius/{address}": {
+                "get": {
+                    "summary": "Blast radius from a device",
+                    "description": "Returns all devices, applications, and active detections reachable within max_hops physical network hops from the origin device.",
+                    "parameters": [
+                        { "name": "address", "in": "path", "required": true, "schema": { "type": "string" }},
+                        { "name": "max_hops", "in": "query", "schema": { "type": "integer", "default": 2, "maximum": 5 }}
+                    ],
+                    "responses": { "200": { "description": "Blast radius result" }}
+                }
+            },
+            "/api/trace/{id}": {
+                "get": {
+                    "summary": "Closed-loop trace for a detection",
+                    "description": "Returns the sequence of trigger → detection → remediation steps for a single DetectionEvent.",
+                    "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" }}],
+                    "responses": { "200": { "description": "Trace steps" }}
+                }
+            },
+            "/api/path": {
+                "get": {
+                    "summary": "Shortest topology path between two devices",
+                    "parameters": [
+                        { "name": "src", "in": "query", "required": true, "schema": { "type": "string" }},
+                        { "name": "dst", "in": "query", "required": true, "schema": { "type": "string" }}
+                    ],
+                    "responses": { "200": { "description": "Hop list and link list" }}
+                }
+            },
+            "/api/resolve": {
+                "get": {
+                    "summary": "Fuzzy reference resolution (T5-5)",
+                    "description": "Resolves a natural-language query to stable bonsai IDs. Returns candidate devices, detections, and rules ranked by match confidence. Intended for use in agent sessions to convert informal references to API-addressable IDs.",
+                    "parameters": [{ "name": "q", "in": "query", "required": true, "schema": { "type": "string" }, "description": "Query string, e.g. 'spine1', 'BGP issue', 'bgp_session_down'" }],
+                    "responses": { "200": { "description": "Resolution candidates with confidence scores" }}
+                }
+            },
+            "/api/events": {
+                "get": {
+                    "summary": "SSE live event stream",
+                    "description": "Server-Sent Events stream of all BonsaiEvents (StateChangeEvent, DetectionEvent, RemediationEvent). Each event is a JSON object with device_address, event_type, detail_json, and occurred_at_ns.",
+                    "responses": { "200": { "description": "SSE text/event-stream" }}
+                }
+            },
+            "/api/operations": {
+                "get": {
+                    "summary": "Operational health summary",
+                    "description": "Returns current counts of detection events, state change events, remediations, device counts, event bus depth, archive stats, RSS, and disk usage.",
+                    "responses": { "200": { "description": "Operations snapshot" }}
+                }
+            },
+            "/api/operations/daily-check": {
+                "get": {
+                    "summary": "Latest daily check results (T1-4)",
+                    "description": "Returns the most recent bv5_daily_check.sh result with pass/fail/skip/prereq_missing breakdowns per driver.",
+                    "responses": { "200": { "description": "Daily check result JSON" }}
+                }
+            },
+            "/api/governance/state": {
+                "get": {
+                    "summary": "Adaptive resource governance state (T4-5)",
+                    "description": "Returns current governance profile, active policies, and recent governance actions.",
+                    "responses": { "200": { "description": "Governance state" }}
+                }
+            },
+            "/api/schema": {
+                "get": {
+                    "summary": "This OpenAPI schema",
+                    "description": "Returns the OpenAPI 3 specification for all bonsai API endpoints. Enables agents to introspect bonsai without prior knowledge.",
+                    "responses": { "200": { "description": "OpenAPI 3 JSON" }}
+                }
+            },
+            "/mcp": {
+                "post": {
+                    "summary": "MCP JSON-RPC 2.0 endpoint (T5-1)",
+                    "description": "Model Context Protocol server. Supports initialize, tools/list, and tools/call. Tools: get_incident, query_devices, get_device_blast_radius, list_active_detections, query_graph.",
+                    "requestBody": {
+                        "required": true,
+                        "content": { "application/json": { "schema": {
+                            "type": "object",
+                            "properties": {
+                                "jsonrpc": { "type": "string", "enum": ["2.0"] },
+                                "id": { "description": "Request ID (any JSON value)" },
+                                "method": { "type": "string", "enum": ["initialize", "tools/list", "tools/call"] },
+                                "params": { "type": "object" }
+                            },
+                            "required": ["method"]
+                        }}}
+                    },
+                    "responses": { "200": { "description": "JSON-RPC 2.0 response" }}
+                }
+            }
+        },
+        "components": {
+            "schemas": {
+                "Device": {
+                    "type": "object",
+                    "properties": {
+                        "address": { "type": "string", "description": "Management IP address" },
+                        "hostname": { "type": "string" },
+                        "vendor": { "type": "string", "enum": ["nokia", "cisco", "juniper", "arista", "frr", "holo", "unknown"] },
+                        "role": { "type": "string" },
+                        "site": { "type": "string" },
+                        "health": { "type": "string", "enum": ["healthy", "warn", "critical"] },
+                        "bgp": { "type": "array", "items": { "$ref": "#/components/schemas/BgpSession" }}
+                    }
+                },
+                "BgpSession": {
+                    "type": "object",
+                    "properties": {
+                        "peer": { "type": "string" },
+                        "state": { "type": "string" },
+                        "peer_as": { "type": "integer" }
+                    }
+                },
+                "Link": {
+                    "type": "object",
+                    "properties": {
+                        "src_device": { "type": "string" },
+                        "src_iface": { "type": "string" },
+                        "dst_device": { "type": "string" },
+                        "dst_iface": { "type": "string" },
+                        "bytes_total": { "type": "integer", "description": "Sum of in_octets+out_octets on both ends" },
+                        "is_mgmt": { "type": "boolean", "description": "True for out-of-band management-plane links" }
+                    }
+                },
+                "DetectionEvent": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "format": "uuid" },
+                        "device_address": { "type": "string" },
+                        "rule_id": { "type": "string" },
+                        "severity": { "type": "string", "enum": ["critical", "warn", "info"] },
+                        "features_json": { "type": "string", "description": "JSON-serialized Features struct for ML training" },
+                        "fired_at_ns": { "type": "integer", "description": "Unix nanoseconds" },
+                        "remediation_id": { "type": "string" },
+                        "remediation_action": { "type": "string" },
+                        "remediation_status": { "type": "string" }
+                    }
+                }
+            }
+        }
+    })
+}
+
+// ── T5-5 — Reference resolution endpoint ─────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ResolveParams {
+    q: String,
+}
+
+async fn resolve_handler(
+    State(state): State<AppState>,
+    Query(params): Query<ResolveParams>,
+) -> Result<Json<crate::mcp_server::ResolveResponse>, (StatusCode, String)> {
+    let q = params.q.trim().to_string();
+    if q.is_empty() {
+        return Ok(Json(crate::mcp_server::ResolveResponse {
+            query: q,
+            candidates: vec![],
+        }));
+    }
+
+    let mut candidates: Vec<crate::mcp_server::ResolveCandidate> = Vec::new();
+
+    // 1. Device candidates — hostname and address substring match.
+    let db = state.store.db();
+    let q_clone = q.clone();
+    let devices: Vec<(String, String)> = tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        let rows: Vec<(String, String)> = conn
+            .query("MATCH (d:Device) RETURN d.address, d.hostname")
+            .map_err(|e| e.to_string())?
+            .map(|row| (read_str(&row[0]), read_str(&row[1])))
+            .collect();
+        Ok::<_, String>(rows)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    for (address, hostname) in devices {
+        let score = crate::mcp_server::match_score(&hostname, &q_clone)
+            .max(crate::mcp_server::match_score(&address, &q_clone));
+        if score > 0.0 {
+            candidates.push(crate::mcp_server::ResolveCandidate {
+                kind: "device",
+                id: address.clone(),
+                label: if hostname.is_empty() {
+                    address
+                } else {
+                    format!("{hostname} ({address})")
+                },
+                score,
+            });
+        }
+    }
+
+    // 2. Recent detection candidates — match against rule_id and device_address.
+    let detections = state
+        .store
+        .read_detections(100)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    for det in &detections {
+        let score = crate::mcp_server::match_score(&det.rule_id, &q)
+            .max(crate::mcp_server::match_score(&det.id, &q))
+            .max(crate::mcp_server::match_score(&det.device_address, &q));
+        if score > 0.0 {
+            candidates.push(crate::mcp_server::ResolveCandidate {
+                kind: "detection",
+                id: det.id.clone(),
+                label: format!("{} on {} ({})", det.rule_id, det.device_address, det.severity),
+                score,
+            });
+        }
+    }
+
+    // 3. Rule candidates — static catalogue, match against rule_id and description.
+    for rule in crate::mcp_server::RULE_CATALOGUE {
+        let score = crate::mcp_server::match_score(rule.rule_id, &q)
+            .max(crate::mcp_server::match_score(rule.description, &q));
+        if score > 0.0 {
+            candidates.push(crate::mcp_server::ResolveCandidate {
+                kind: "rule",
+                id: rule.rule_id.to_string(),
+                label: format!("{} — {}", rule.rule_id, rule.description),
+                score,
+            });
+        }
+    }
+
+    // Sort by descending score, limit to top 20.
+    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    candidates.truncate(20);
+
+    Ok(Json(crate::mcp_server::ResolveResponse { query: q, candidates }))
 }

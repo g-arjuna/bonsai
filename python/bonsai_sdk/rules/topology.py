@@ -14,6 +14,11 @@ class TopologyEdgeLost(Detector):
     """A CONNECTED_TO edge that existed in the previous poll cycle is now absent."""
     rule_id = "topology_edge_lost"
     severity = "warn"
+    recurrence_indicators = [
+        "MATCH (a:Interface)-[:CONNECTED_TO]->(b:Interface) RETURN a.device_address, a.name, b.device_address, b.name — verify current LLDP topology",
+        "Check interface_down DetectionEvents on both endpoint devices within ±60s of this detection",
+        "Verify gNMI LLDP subscription active on both devices: GET /api/devices/{address}",
+    ]
 
     _prev_edges: set[tuple[str, str, str, str]] = set()
 
