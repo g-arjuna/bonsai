@@ -55,7 +55,7 @@ name: bonsai-sp
 #   scripts/check_lab.sh --topology sp
 
 mgmt:
-  network: bonsai-sp-mgmt
+  network: bonsai-mgmt
   ipv4-subnet: 172.100.104.0/24
   ipv4-gw: 172.100.104.1
 
@@ -144,6 +144,37 @@ topology:
         bonsai.environment: service_provider
         bonsai.streaming.bgp_ls: source
 
+    # ── BGP-LS collector (GoBGP sidecar) ─────────────────────────────────────
+    # Peers with srl-rr1 over iBGP (AS 65100) to receive the BGP-LS RIB.
+    # The bridge script forwards parsed NLRI as JSON lines to Bonsai's
+    # BGP-LS TCP listener (port 10179 on the bonsai-mgmt bridge).
+    #
+    # To activate:
+    #   docker compose --profile streaming up -d gobgp-bgp-ls
+    # Required env (in .env or shell):
+    #   GOBGP_PEER_ADDRESS=172.100.104.14   # srl-rr1 mgmt IP
+    #   GOBGP_AS=65100
+    #   GOBGP_PEER_AS=65100
+    #   GOBGP_ROUTER_ID=10.2.0.100
+    #
+    # SR Linux RR config prerequisite (srl-rr1 startup-config):
+    #   neighbor 172.100.104.100 { peer-as 65100; afi-safi bgp-ls bgp-ls; }
+    gobgp-bgp-ls:
+      kind: linux
+      image: bonsai-gobgp:latest   # built by docker compose --profile streaming
+      mgmt-ipv4: 172.100.104.100
+      env:
+        GOBGP_AS: "65100"
+        GOBGP_PEER_AS: "65100"
+        GOBGP_PEER_ADDRESS: "172.100.104.14"
+        GOBGP_ROUTER_ID: "10.2.0.100"
+        BONSAI_BGP_LS_ADDR: "172.100.104.1"   # bonsai-mgmt gateway → host
+        BONSAI_BGP_LS_PORT: "10179"
+      labels:
+        bonsai.role: collector
+        bonsai.environment: service_provider
+        bonsai.streaming.bgp_ls: collector
+
     # ── FRR Customer Edge ─────────────────────────────────────────────────────
     frr-ce1:
       kind: linux
@@ -193,3 +224,7 @@ topology:
     - endpoints: ["frr-ce1:eth1", "srl-pe1:e1-3"]
     # ce2 eth1 ↔ pe2 e1-3  (10.2.10.18/31)
     - endpoints: ["frr-ce2:eth1", "srl-pe2:e1-3"]
+
+    # ── BGP-LS collector peering ──────────────────────────────────────────────
+    # gobgp-bgp-ls uses its mgmt interface for BGP peering; no dedicated link
+    # is needed because both gobgp and srl-rr1 share the bonsai-mgmt bridge.

@@ -19,22 +19,24 @@
   import Adapters from './routes/Adapters.svelte';
   import Explorer from './routes/Explorer.svelte';
   import Investigations from './routes/Investigations.svelte';
+  import DensityToggle from '$lib/components/DensityToggle.svelte';
 
+  // Cmd-1..9 workspace shortcuts mirror CommandPalette WORKSPACE_SHORTCUTS
   const NAV = [
-    { href: '/',              label: 'Live',         icon: '◉' },
-    { href: '/incidents',     label: 'Incidents',    icon: '⚠' },
-    { href: '/devices',       label: 'Devices',      icon: '⊡' },
-    { href: '/collectors',    label: 'Collectors',   icon: '⇄' },
-    { href: '/environments',  label: 'Environments', icon: '⬡' },
-    { href: '/profiles',      label: 'Profiles',     icon: '📋' },
-    { href: '/enrichment',    label: 'Enrichment',   icon: '⟳' },
-    { href: '/adapters',      label: 'Adapters',     icon: '⇥' },
-    { href: '/approvals',     label: 'Approvals',    icon: '✓' },
-    { href: '/sites',         label: 'Sites',        icon: '◎' },
-    { href: '/credentials',   label: 'Credentials',  icon: '⚿' },
-    { href: '/operations',    label: 'Operations',   icon: '♡' },
-    { href: '/explorer',       label: 'Explorer',       icon: '⬡' },
-    { href: '/investigations', label: 'Investigations', icon: '🔍' },
+    { href: '/',              label: 'Live',          icon: '◉', kbd: '1' },
+    { href: '/incidents',     label: 'Incidents',     icon: '⚠', kbd: '2' },
+    { href: '/devices',       label: 'Devices',       icon: '⊡', kbd: '3' },
+    { href: '/operations',    label: 'Operations',    icon: '♡', kbd: '4' },
+    { href: '/collectors',    label: 'Collectors',    icon: '⇄', kbd: '5' },
+    { href: '/enrichment',    label: 'Enrichment',    icon: '⟳', kbd: '6' },
+    { href: '/adapters',      label: 'Adapters',      icon: '⇥', kbd: '7' },
+    { href: '/approvals',     label: 'Approvals',     icon: '✓', kbd: '8' },
+    { href: '/explorer',      label: 'Explorer',      icon: '⬡', kbd: '9' },
+    { href: '/environments',  label: 'Environments',  icon: '⬡' },
+    { href: '/profiles',      label: 'Profiles',      icon: '📋' },
+    { href: '/sites',         label: 'Sites',         icon: '◎' },
+    { href: '/credentials',   label: 'Credentials',   icon: '⚿' },
+    { href: '/investigations',label: 'Investigations',icon: '🔍' },
   ];
 
   let setupChecked = $state(false);
@@ -46,9 +48,7 @@
       const r = await fetch('/api/setup/status');
       if (r.ok) {
         const data = await r.json();
-        if (data.is_first_run) {
-          showSetup = true;
-        }
+        if (data.is_first_run) showSetup = true;
       }
     } catch (_) {
       // non-fatal
@@ -62,7 +62,7 @@
     return href === '/' ? (p === '/' || p === '') : (p === href || p.startsWith(href + '/'));
   }
 
-  let traceParams = $derived(matchRoute('/trace/:id', path()));
+  let traceParams  = $derived(matchRoute('/trace/:id', path()));
   let deviceParams = $derived(matchRoute('/devices/:address', path()));
 </script>
 
@@ -76,19 +76,26 @@
            onclick={(e) => { e.preventDefault(); navigate(item.href); }}>
           <span class="nav-icon">{item.icon}</span>
           {item.label}
+          {#if item.kbd}
+            <kbd class="nav-kbd">⌘{item.kbd}</kbd>
+          {/if}
         </a>
       {/each}
     </nav>
     <div class="sidebar-footer">
-      <button class="palette-trigger" onclick={() => document.dispatchEvent(new KeyboardEvent('keydown', { ctrlKey: true, key: 'k', bubbles: true }))}>
+      <button class="palette-trigger"
+              onclick={() => document.dispatchEvent(new KeyboardEvent('keydown', { ctrlKey: true, key: 'k', bubbles: true }))}>
         <span>⌨</span> Search <kbd>Ctrl+K</kbd>
       </button>
+      <div class="density-row">
+        <DensityToggle />
+      </div>
     </div>
   </aside>
 
   <main class="main-content">
     {#if !setupChecked}
-      <!-- wait for first-run check before rendering anything -->
+      <!-- wait for first-run check -->
     {:else if showSetup && path() !== '/setup'}
       <Setup onComplete={() => { showSetup = false; }} />
     {:else if traceParams}
@@ -143,3 +150,11 @@
     </div>
   {/each}
 </div>
+
+<style>
+  .density-row {
+    margin-top: 8px;
+    display: flex;
+    justify-content: center;
+  }
+</style>

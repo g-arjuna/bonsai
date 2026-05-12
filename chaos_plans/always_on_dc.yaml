@@ -184,3 +184,27 @@ faults:
     flap_count: 3
     flap_hold_seconds: [3, 6]
     healing_delay_seconds: [1, 1]
+
+# ── Baseline diversity: protected quiet windows (T2-2) ────────────────────────
+# During these windows the chaos runner skips all injections. This ensures the
+# archive contains temporally diverse normal-state samples across weekdays and
+# times-of-day, preventing the GNN from learning "time of day predicts anomaly."
+protected_baselines:
+  - id: weekend_quiet
+    cron: "0 0 * * SUN"    # midnight UTC every Sunday
+    duration_hours: 4
+    description: "Long contiguous Sunday baseline for time-of-day diversity"
+
+  - id: midweek_quiet
+    cron: "0 2 * * WED"    # 02:00 UTC every Wednesday
+    duration_hours: 2
+    description: "Mid-week night baseline"
+
+  - id: morning_quiet
+    cron: "0 9 * * TUE"    # 09:00 UTC every Tuesday
+    duration_hours: 1
+    description: "Tuesday morning business-hours baseline"
+
+# Bonsai HTTP base URL for fault-propagation snapshots (T2-1).
+# Override with --bonsai-url when the API runs on a different host/port.
+bonsai_base_url: "http://localhost:3000"

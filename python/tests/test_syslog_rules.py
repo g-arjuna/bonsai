@@ -9,9 +9,12 @@ from bonsai_sdk.rules.syslog import (
     MultiSourceCorrelation,
     OrphanInterfaceMention,
     SyslogAuthFailureCluster,
+    SyslogBfdDisagreement,
     SyslogBpduGuardActivation,
+    SyslogConfigChangeCluster,
     SyslogGnmiDisagreement,
     SyslogHardwareError,
+    SyslogHardwareInterfaceCorrelation,
     SyslogLicenseExpiry,
     SyslogProtocolError,
     SyslogStpTopologyChange,
@@ -188,3 +191,136 @@ def test_multi_source_correlation_fires_for_joined_interface_fact():
     )
     assert features is not None
     assert "resolved syslog interface mention ethernet-1/1" in rule.detect(features)
+
+
+def test_syslog_bfd_disagreement_fires_for_state_mismatch():
+    client = MagicMock()
+    rule = SyslogBfdDisagreement()
+    features = rule.extract_features(
+        _fact_event(
+            "leaf-bfd-a",
+            "syslog_fact_joined",
+            {
+                "fact_type": "bfd_session",
+                "message": "BFD session on interface ethernet-1/1 went to down",
+                "fields": {"if_name": "ethernet-1/1", "new_state": "down"},
+                "join": {
+                    "status": "joined",
+                    "kind": "bfd_session",
+                    "graph_state": {"session_state": "up", "remote_address": "10.2.0.1"},
+                },
+            },
+            200,
+        ),
+        client,
+    )
+    assert features is not None
+    assert "disagree on BFD state" in rule.detect(features)
+    assert "ethernet-1/1" in rule.detect(features)
+
+
+def test_syslog_bfd_disagreement_silent_when_states_agree():
+    client = MagicMock()
+    rule = SyslogBfdDisagreement()
+    features = rule.extract_features(
+        _fact_event(
+            "leaf-bfd-b",
+            "syslog_fact_joined",
+            {
+                "fact_type": "bfd_session",
+                "message": "BFD session on interface ethernet-1/2 came up",
+                "fields": {"if_name": "ethernet-1/2", "new_state": "up"},
+                "join": {
+                    "status": "joined",
+                    "kind": "bfd_session",
+                    "graph_state": {"session_state": "up", "remote_address": "10.2.0.2"},
+                },
+            },
+            201,
+        ),
+        client,
+    )
+    assert features is None
+
+
+def test_syslog_config_change_cluster_fires_on_third_event():
+    client = MagicMock()
+    rule = SyslogConfigChangeCluster()
+    base_ts = time.time_ns()
+    device = "leaf-cfg-cluster-unique"
+
+    ev = lambda ts: _fact_event(
+        device,
+        "syslog_fact_orphan",
+        {
+            "fact_type": "config_change_detail",
+            "message": "User admin committed configuration",
+            "fields": {"username": "admin"},
+            "join": {"status": "orphan", "reason": "no_cross_source_match_key"},
+        },
+        ts,
+    )
+
+    assert rule.extract_features(ev(base_ts), client) is None
+    assert rule.extract_features(ev(base_ts + 1), client) is None
+    features = rule.extract_features(ev(base_ts + 2), client)
+
+    assert features is not None
+    assert features.recent_flap_count >= 3
+    msg = rule.detect(features)
+    assert "Config change cluster" in msg
+    assert device in msg
+    assert "admin" in msg
+
+
+def test_syslog_hardware_interface_correlation_fires():
+    client = MagicMock()
+    rule = SyslogHardwareInterfaceCorrelation()
+    base_ts = time.time_ns()
+    device = "leaf-hw-iface-unique"
+
+    hw_event = _event(device, "syslog_hardware", "PSU failure alarm asserted", base_ts)
+    iface_event = _fact_event(
+        device,
+        "syslog_fact_orphan",
+        {
+            "fact_type": "interface_state",
+            "message": "Interface ethernet-1/1 changed state to down",
+            "fields": {"if_name": "ethernet-1/1", "new_state": "down"},
+            "join": {"status": "orphan", "reason": "no_interface_match"},
+        },
+        base_ts + 1,
+    )
+
+    # Hardware error records in window but returns None
+    result = rule.extract_features(hw_event, client)
+    assert result is None
+
+    # Interface down after hardware error triggers correlation
+    features = rule.extract_features(iface_event, client)
+    assert features is not None
+    msg = rule.detect(features)
+    assert "ethernet-1/1" in msg
+    assert "hardware error" in msg.lower()
+
+
+def test_syslog_hardware_interface_correlation_silent_without_prior_hardware_error():
+    client = MagicMock()
+    rule = SyslogHardwareInterfaceCorrelation()
+    base_ts = time.time_ns()
+    device = "leaf-hw-iface-clean-unique"
+
+    iface_event = _fact_event(
+        device,
+        "syslog_fact_orphan",
+        {
+            "fact_type": "interface_state",
+            "message": "Interface ethernet-1/2 changed state to down",
+            "fields": {"if_name": "ethernet-1/2", "new_state": "down"},
+            "join": {"status": "orphan", "reason": "no_interface_match"},
+        },
+        base_ts,
+    )
+
+    features = rule.extract_features(iface_event, client)
+    assert features is None

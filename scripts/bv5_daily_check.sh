@@ -16,10 +16,14 @@ OUT_FILE="${OUT_FILE:-$OUT_DIR/$DATE_UTC.md}"
 API_BASE="${API_BASE:-http://127.0.0.1:3000}"
 ARCHIVE_DIR="${ARCHIVE_DIR:-$REPO_ROOT/runtime/archive}"
 LAB_SCOPE="${LAB_SCOPE:-dc}"
+RESULT_DIR="${RESULT_DIR:-$REPO_ROOT/runtime/driver_results}"
+DAILY_JSON="${DAILY_JSON:-$RESULT_DIR/daily.json}"
+ENSURE_CHAOS="${ENSURE_CHAOS:-true}"
 PYTHON="${PYTHON:-$REPO_ROOT/.venv/bin/python3}"
 [[ -x "$PYTHON" ]] || PYTHON="python3"
 
 mkdir -p "$OUT_DIR"
+mkdir -p "$RESULT_DIR"
 
 _section() {
     printf '\n## %s\n\n' "$1"
@@ -32,6 +36,12 @@ _run_block() {
     printf '```text\n'
     "$@" 2>&1 || true
     printf '\n```\n'
+}
+
+_capture_cmd() {
+    local outfile="$1"
+    shift
+    "$@" >"$outfile" 2>&1 || true
 }
 
 _chaos_summary() {
@@ -168,15 +178,194 @@ PY
     printf '# BV5 Daily Check — %s\n\n' "$DATE_UTC"
     printf 'Generated: %s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-    _run_block "Bonsai Status" curl -fsS "$API_BASE/api/_test/status"
-    _run_block "Driver Results Summary" _driver_results_summary
-    _run_block "Archive Verification" bash "$REPO_ROOT/scripts/verify_archive.sh" "$ARCHIVE_DIR" --json
-    _run_block "Chaos Runner Status" bash "$REPO_ROOT/scripts/chaos_runner.sh" --status
-    _run_block "Chaos Cycle Summary" _chaos_summary
-    _run_block "Lab Health" bash "$REPO_ROOT/scripts/check_lab.sh" "$LAB_SCOPE"
+    STATUS_TMP="$(mktemp)"
+    DRIVER_TMP="$(mktemp)"
+    ARCHIVE_TMP="$(mktemp)"
+    CHAOS_STATUS_TMP="$(mktemp)"
+    CHAOS_ENSURE_TMP="$(mktemp)"
+    CHAOS_SUMMARY_TMP="$(mktemp)"
+    LAB_TMP="$(mktemp)"
+    trap 'rm -f "$STATUS_TMP" "$DRIVER_TMP" "$ARCHIVE_TMP" "$CHAOS_STATUS_TMP" "$CHAOS_ENSURE_TMP" "$CHAOS_SUMMARY_TMP" "$LAB_TMP"' EXIT
+
+    _capture_cmd "$STATUS_TMP" curl -fsS "$API_BASE/api/_test/status"
+    _capture_cmd "$DRIVER_TMP" _driver_results_summary
+    _capture_cmd "$ARCHIVE_TMP" bash "$REPO_ROOT/scripts/verify_archive.sh" "$ARCHIVE_DIR" --json
+    if [[ "${ENSURE_CHAOS}" == "true" ]]; then
+        _capture_cmd "$CHAOS_ENSURE_TMP" bash "$REPO_ROOT/scripts/chaos_runner.sh" --ensure-running
+        printf '\nChaos ensure step output captured before status check.\n' >>"$CHAOS_ENSURE_TMP"
+    fi
+    _capture_cmd "$CHAOS_STATUS_TMP" bash "$REPO_ROOT/scripts/chaos_runner.sh" --status
+    _capture_cmd "$CHAOS_SUMMARY_TMP" _chaos_summary
+    _capture_cmd "$LAB_TMP" bash "$REPO_ROOT/scripts/check_lab.sh" "$LAB_SCOPE"
+
+    _section "Bonsai Status"
+    printf '```text\n'
+    cat "$STATUS_TMP"
+    printf '\n```\n'
+
+    _section "Driver Results Summary"
+    printf '```text\n'
+    cat "$DRIVER_TMP"
+    printf '\n```\n'
+
+    _section "Archive Verification"
+    printf '```text\n'
+    cat "$ARCHIVE_TMP"
+    printf '\n```\n'
+
+    _section "Chaos Runner Status"
+    printf '```text\n'
+    cat "$CHAOS_STATUS_TMP"
+    if [[ -s "$CHAOS_ENSURE_TMP" ]]; then
+        printf '\n'
+        cat "$CHAOS_ENSURE_TMP"
+    fi
+    printf '\n```\n'
+
+    _section "Chaos Cycle Summary"
+    printf '```text\n'
+    cat "$CHAOS_SUMMARY_TMP"
+    printf '\n```\n'
+
+    _section "Lab Health"
+    printf '```text\n'
+    cat "$LAB_TMP"
+    printf '\n```\n'
 
     _section "Operator Notes"
     printf -- '- Fill in any incidents, restarts, or known maintenance windows here.\n'
 } > "$OUT_FILE"
 
+"$PYTHON" - <<'PY' "$REPO_ROOT" "$API_BASE" "$DATE_UTC" "$OUT_FILE" "$STATUS_TMP" "$DRIVER_TMP" "$ARCHIVE_TMP" "$CHAOS_STATUS_TMP" "$CHAOS_ENSURE_TMP" "$CHAOS_SUMMARY_TMP" "$LAB_TMP" "$DAILY_JSON" "$LAB_SCOPE"
+from __future__ import annotations
+
+import json
+import sys
+import time
+from pathlib import Path
+
+(
+    repo_root,
+    base_url,
+    date_utc,
+    out_file,
+    status_file,
+    driver_file,
+    archive_file,
+    chaos_status_file,
+    chaos_ensure_file,
+    chaos_summary_file,
+    lab_file,
+    daily_json,
+    lab_scope,
+) = sys.argv[1:]
+
+
+def read_text(path: str) -> str:
+    return Path(path).read_text(encoding="utf-8").strip()
+
+
+def classify(text: str, pass_markers: list[str], warn_markers: list[str] | None = None) -> tuple[str, bool]:
+    lowered = text.lower()
+    warn_markers = warn_markers or []
+    if any(marker in lowered for marker in ("status: fail", '"status":"fail"', '"status": "fail"', "error:", "curl: ", "not running")):
+        return "fail", False
+    if any(marker in lowered for marker in warn_markers):
+        return "skip", False
+    if any(marker in lowered for marker in pass_markers):
+        return "pass", True
+    return "skip", False
+
+
+status_text = read_text(status_file)
+driver_text = read_text(driver_file)
+archive_text = read_text(archive_file)
+chaos_status_text = read_text(chaos_status_file)
+chaos_ensure_text = read_text(chaos_ensure_file)
+chaos_summary_text = read_text(chaos_summary_file)
+lab_text = read_text(lab_file)
+
+checks = []
+
+bonsai_status, bonsai_ok = classify(status_text, ['"ts_unix"', '"driver_results"'])
+checks.append({"name": "bonsai_status", "check": "bonsai_status", "status": bonsai_status, "ok": bonsai_ok})
+
+driver_status, driver_ok = classify(driver_text, ["status: pass - driver results aggregated cleanly"], ["status: warn"])
+checks.append({"name": "driver_results", "check": "driver_results", "status": driver_status, "ok": driver_ok})
+
+archive_status, archive_ok = classify(archive_text, ['"status":"pass"', '"status": "pass"'], ['"status":"warn"', '"status": "warn"'])
+checks.append({"name": "archive_verification", "check": "archive_verification", "status": archive_status, "ok": archive_ok})
+
+chaos_combined = "\n".join([chaos_status_text, chaos_ensure_text, chaos_summary_text]).lower()
+if "status: pass - recent chaos injections present" in chaos_combined or "daemon is running" in chaos_combined:
+    chaos_status, chaos_ok = "pass", True
+elif "status: warn" in chaos_combined:
+    chaos_status, chaos_ok = "skip", False
+elif "status: fail" in chaos_combined or "daemon is not running" in chaos_combined:
+    chaos_status, chaos_ok = "fail", False
+else:
+    chaos_status, chaos_ok = "skip", False
+checks.append({"name": "chaos_runner_status", "check": "chaos_runner_status", "status": chaos_status, "ok": chaos_ok})
+
+if '"overall_passed": false' in lab_text.lower() or '"passed": false' in lab_text.lower():
+    lab_status, lab_ok = "fail", False
+else:
+    lab_status, lab_ok = classify(lab_text, ['"overall_passed": true', '"passed": true'])
+checks.append({"name": "lab_health", "check": "lab_health", "status": lab_status, "ok": lab_ok})
+
+top_status = "pass"
+if any(check["status"] == "fail" for check in checks):
+    top_status = "fail"
+elif any(check["status"] == "skip" for check in checks):
+    top_status = "skip"
+
+summary_bits = [
+    f"bonsai={bonsai_status}",
+    f"archive={archive_status}",
+    f"driver_results={driver_status}",
+    f"chaos={chaos_status}",
+    f"lab={lab_status}",
+]
+
+payload = {
+    "driver": "daily_check",
+    "ts_unix": int(time.time()),
+    "base_url": base_url,
+    "status": top_status,
+    "ok": top_status == "pass",
+    "summary": f"daily check complete; {' '.join(summary_bits)}",
+    "checks": checks,
+    "artifacts": {
+        "markdown_report": out_file,
+    },
+    "environment": {
+        "git_sha": "unknown",
+        "lab_scope": "unknown",
+        "date_utc": date_utc,
+    },
+}
+
+git_head = Path(repo_root, ".git", "HEAD")
+if git_head.exists():
+    try:
+        import subprocess
+
+        payload["environment"]["git_sha"] = subprocess.check_output(
+            ["git", "-C", repo_root, "rev-parse", "--short", "HEAD"],
+            text=True,
+        ).strip()
+    except Exception:
+        pass
+
+payload["environment"]["lab_scope"] = lab_scope
+try:
+    payload["artifacts"]["markdown_report"] = str(Path(out_file).resolve().relative_to(Path(repo_root).resolve()))
+except Exception:
+    payload["artifacts"]["markdown_report"] = out_file
+
+Path(daily_json).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+print(json.dumps(payload, indent=2))
+PY
+
 echo "Wrote $OUT_FILE"
+echo "Wrote $DAILY_JSON"

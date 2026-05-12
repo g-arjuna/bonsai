@@ -3169,6 +3169,12 @@ fn join_syslog_fact(
     update: &TelemetryUpdate,
     fact: &SyslogFact,
 ) -> Result<JsonValue> {
+    // BFD sessions share the if_name field with interface_state facts. Route them
+    // by fact_type before the generic if_name branch to avoid hitting Interface lookup.
+    if fact.fact_type == "bfd_session" {
+        return join_bfd_fact(conn, update, fact);
+    }
+
     if let Some(peer_address) = fact
         .fields
         .get("peer_address")
@@ -3226,6 +3232,52 @@ fn join_syslog_fact(
     }))
 }
 
+fn join_bfd_fact(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    fact: &SyslogFact,
+) -> Result<JsonValue> {
+    let if_name = fact.fields.get("if_name");
+    let remote_address = fact.fields.get("remote_address");
+
+    if let Some(if_name) = if_name {
+        if let Some(graph_state) =
+            lookup_bfd_session_by_interface(conn, &update.target, if_name)?
+        {
+            return Ok(json!({
+                "status": "joined",
+                "kind": "bfd_session",
+                "key": if_name,
+                "graph_state": graph_state,
+            }));
+        }
+    }
+
+    if let Some(remote_addr) = remote_address {
+        if let Some(graph_state) =
+            lookup_bfd_session_by_remote(conn, &update.target, remote_addr)?
+        {
+            return Ok(json!({
+                "status": "joined",
+                "kind": "bfd_session",
+                "key": remote_addr,
+                "graph_state": graph_state,
+            }));
+        }
+    }
+
+    let key = if_name
+        .or(remote_address)
+        .cloned()
+        .unwrap_or_default();
+    Ok(json!({
+        "status": "orphan",
+        "kind": "bfd_session",
+        "key": key,
+        "reason": "no_bfd_session_match",
+    }))
+}
+
 fn lookup_bgp_neighbor_state(
     conn: &Connection<'_>,
     device_address: &str,
@@ -3278,6 +3330,70 @@ fn lookup_interface_state(
         "out_octets": value_i64(&row[4]),
         "in_pkts": value_i64(&row[5]),
         "out_pkts": value_i64(&row[6]),
+    })))
+}
+
+fn lookup_bfd_session_by_interface(
+    conn: &Connection<'_>,
+    device_address: &str,
+    if_name: &str,
+) -> Result<Option<JsonValue>> {
+    let mut stmt = conn
+        .prepare(
+            "MATCH (b:BfdSession) \
+             WHERE b.device_address = $addr AND b.if_name = $if_name \
+             RETURN b.session_state, b.remote_address, b.local_discriminator \
+             LIMIT 1",
+        )
+        .context("prepare BFD session by interface join lookup")?;
+    let mut rows = conn
+        .execute(
+            &mut stmt,
+            vec![
+                ("addr", Value::String(device_address.to_string())),
+                ("if_name", Value::String(if_name.to_string())),
+            ],
+        )
+        .context("execute BFD session by interface join lookup")?;
+    let Some(row) = rows.next() else {
+        return Ok(None);
+    };
+    Ok(Some(json!({
+        "session_state": read_str(&row[0]),
+        "remote_address": read_str(&row[1]),
+        "local_discriminator": read_str(&row[2]),
+    })))
+}
+
+fn lookup_bfd_session_by_remote(
+    conn: &Connection<'_>,
+    device_address: &str,
+    remote_address: &str,
+) -> Result<Option<JsonValue>> {
+    let mut stmt = conn
+        .prepare(
+            "MATCH (b:BfdSession) \
+             WHERE b.device_address = $addr AND b.remote_address = $remote_addr \
+             RETURN b.session_state, b.if_name, b.local_discriminator \
+             LIMIT 1",
+        )
+        .context("prepare BFD session by remote address join lookup")?;
+    let mut rows = conn
+        .execute(
+            &mut stmt,
+            vec![
+                ("addr", Value::String(device_address.to_string())),
+                ("remote_addr", Value::String(remote_address.to_string())),
+            ],
+        )
+        .context("execute BFD session by remote address join lookup")?;
+    let Some(row) = rows.next() else {
+        return Ok(None);
+    };
+    Ok(Some(json!({
+        "session_state": read_str(&row[0]),
+        "if_name": read_str(&row[1]),
+        "local_discriminator": read_str(&row[2]),
     })))
 }
 
@@ -4487,6 +4603,129 @@ mod tests {
         assert_eq!(detail["fact_type"], "interface_state");
         assert_eq!(detail["join"]["status"], "orphan");
         assert_eq!(detail["join"]["reason"], "no_interface_match");
+    }
+
+    #[tokio::test]
+    async fn syslog_bfd_fact_joins_to_known_bfd_session_by_interface() {
+        let path = temp_graph_path("syslog-fact-bfd-join");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
+
+        // Seed a BFD session via OpenConfig path: interface id = "ethernet-1/1"
+        store
+            .write(TelemetryUpdate {
+                target: "leaf3".to_string(),
+                vendor: "nokia_srl".to_string(),
+                hostname: "leaf3".to_string(),
+                role: "leaf".to_string(),
+                site: "dc-a".to_string(),
+                timestamp_ns: 20,
+                path: "bfd/interfaces/interface[id=ethernet-1/1]/peers/peer[local-discriminator=5001]/state".to_string(),
+                value: serde_json::json!({
+                    "session-state": "up",
+                    "remote-address": "10.2.0.1",
+                    "local-address": "10.2.0.2",
+                }),
+            })
+            .await
+            .expect("seed BFD session");
+
+        let mut rx = store.subscribe_events();
+        store
+            .write(TelemetryUpdate {
+                target: "leaf3".to_string(),
+                vendor: "nokia_srl".to_string(),
+                hostname: "leaf3".to_string(),
+                role: "leaf".to_string(),
+                site: "dc-a".to_string(),
+                timestamp_ns: 21,
+                path: "signals/syslog_fact/bfd_session".to_string(),
+                value: serde_json::to_value(SyslogFact {
+                    timestamp_ns: 21,
+                    fact_type: "bfd_session".to_string(),
+                    category: "protocol".to_string(),
+                    hostname: "leaf3".to_string(),
+                    source_vendor: "nokia_srl".to_string(),
+                    message: "BFD session on interface ethernet-1/1 went to down".to_string(),
+                    raw: "raw".to_string(),
+                    transport: "udp".to_string(),
+                    peer_addr: "127.0.0.1:5514".to_string(),
+                    field_schema: std::collections::BTreeMap::from([
+                        ("if_name".to_string(), "string".to_string()),
+                        ("new_state".to_string(), "string".to_string()),
+                    ]),
+                    fields: std::collections::BTreeMap::from([
+                        ("if_name".to_string(), "ethernet-1/1".to_string()),
+                        ("new_state".to_string(), "down".to_string()),
+                    ]),
+                })
+                .expect("serialize bfd syslog fact"),
+            })
+            .await
+            .expect("write bfd syslog fact");
+
+        let event = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for BFD syslog fact event")
+            .expect("receive BFD syslog fact event");
+        assert_eq!(event.event_type, "syslog_fact_joined");
+        let detail: serde_json::Value =
+            serde_json::from_str(&event.detail_json).expect("detail json");
+        assert_eq!(detail["fact_type"], "bfd_session");
+        assert_eq!(detail["join"]["status"], "joined");
+        assert_eq!(detail["join"]["kind"], "bfd_session");
+        assert_eq!(detail["join"]["graph_state"]["session_state"], "up");
+        assert_eq!(detail["join"]["graph_state"]["remote_address"], "10.2.0.1");
+    }
+
+    #[tokio::test]
+    async fn syslog_bfd_fact_orphan_for_unknown_session() {
+        let path = temp_graph_path("syslog-fact-bfd-orphan");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
+        let mut rx = store.subscribe_events();
+        store
+            .write(TelemetryUpdate {
+                target: "leaf4".to_string(),
+                vendor: "nokia_srl".to_string(),
+                hostname: "leaf4".to_string(),
+                role: "leaf".to_string(),
+                site: "dc-a".to_string(),
+                timestamp_ns: 30,
+                path: "signals/syslog_fact/bfd_session".to_string(),
+                value: serde_json::to_value(SyslogFact {
+                    timestamp_ns: 30,
+                    fact_type: "bfd_session".to_string(),
+                    category: "protocol".to_string(),
+                    hostname: "leaf4".to_string(),
+                    source_vendor: "arista".to_string(),
+                    message: "BFD peer 10.99.0.1 changed state to down".to_string(),
+                    raw: "raw".to_string(),
+                    transport: "udp".to_string(),
+                    peer_addr: "127.0.0.1:5514".to_string(),
+                    field_schema: std::collections::BTreeMap::from([
+                        ("remote_address".to_string(), "string".to_string()),
+                        ("new_state".to_string(), "string".to_string()),
+                    ]),
+                    fields: std::collections::BTreeMap::from([
+                        ("remote_address".to_string(), "10.99.0.1".to_string()),
+                        ("new_state".to_string(), "down".to_string()),
+                    ]),
+                })
+                .expect("serialize bfd orphan syslog fact"),
+            })
+            .await
+            .expect("write bfd orphan syslog fact");
+
+        let event = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for BFD orphan event")
+            .expect("receive BFD orphan event");
+        assert_eq!(event.event_type, "syslog_fact_orphan");
+        let detail: serde_json::Value =
+            serde_json::from_str(&event.detail_json).expect("detail json");
+        assert_eq!(detail["fact_type"], "bfd_session");
+        assert_eq!(detail["join"]["status"], "orphan");
+        assert_eq!(detail["join"]["kind"], "bfd_session");
+        assert_eq!(detail["join"]["reason"], "no_bfd_session_match");
     }
 
     #[test]

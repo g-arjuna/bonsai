@@ -13,6 +13,12 @@ if TYPE_CHECKING:
 _AUTH_WINDOW = WindowRegistry(window_seconds=300)
 _AUTH_THRESHOLD = 3
 
+_CONFIG_CHANGE_WINDOW = WindowRegistry(window_seconds=600)
+_CONFIG_CHANGE_THRESHOLD = 3
+
+# Tracks hardware_error events per device: maps device_address -> list[timestamp_ns]
+_HARDWARE_ERROR_WINDOW = WindowRegistry(window_seconds=60)
+
 
 def _message_text(features: Features) -> str:
     return str(features.detail.get("message", "")).lower()
@@ -255,6 +261,112 @@ class MultiSourceCorrelation(Detector):
         )
 
 
+class SyslogBfdDisagreement(Detector):
+    """Fires when a syslog bfd_session fact and graph BFD state disagree."""
+
+    rule_id = "syslog_bfd_disagreement"
+    severity = "warn"
+
+    def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
+        if event.event_type != "syslog_fact_joined":
+            return None
+        features = extract_features_for_event(event, client)
+        if _fact_type(features) != "bfd_session":
+            return None
+        fields = _fact_fields(features)
+        graph_state = _join_graph_state(features)
+        observed = _normalize_state(fields.get("new_state", ""))
+        current = _normalize_state(graph_state.get("session_state", ""))
+        if not observed or not current or observed == current:
+            return None
+        return features
+
+    def detect(self, features: Features) -> Optional[str]:
+        fields = _fact_fields(features)
+        graph_state = _join_graph_state(features)
+        key = (
+            fields.get("remote_address")
+            or fields.get("if_name")
+            or "unknown"
+        )
+        return (
+            f"Syslog and graph disagree on BFD state for {key} on "
+            f"{features.device_address}: syslog={fields.get('new_state', 'unknown')} "
+            f"graph={graph_state.get('session_state', 'unknown')}"
+        )
+
+
+class SyslogConfigChangeCluster(Detector):
+    """Fires when ≥3 config_change_detail facts arrive from the same device within 10 minutes."""
+
+    rule_id = "syslog_config_change_cluster"
+    severity = "warn"
+
+    def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
+        if event.event_type not in {"syslog_fact_joined", "syslog_fact_orphan"}:
+            return None
+        features = extract_features_for_event(event, client)
+        if _fact_type(features) != "config_change_detail":
+            return None
+        win = _CONFIG_CHANGE_WINDOW.get(f"cfg:{event.device_address}")
+        win.record(event.occurred_at_ns, "config_change")
+        count = win.count("config_change")
+        if count < _CONFIG_CHANGE_THRESHOLD:
+            return None
+        features.recent_flap_count = count
+        return features
+
+    def detect(self, features: Features) -> Optional[str]:
+        fields = _fact_fields(features)
+        username = fields.get("username", "unknown")
+        return (
+            f"Config change cluster on {features.device_address}: "
+            f"{features.recent_flap_count} commits in 10 minutes "
+            f"(last committer: {username})"
+        )
+
+
+class SyslogHardwareInterfaceCorrelation(Detector):
+    """Fires when an interface_state down fact follows a hardware_error on the same device within 60s."""
+
+    rule_id = "syslog_hardware_interface_correlation"
+    severity = "critical"
+
+    def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
+        features = extract_features_for_event(event, client)
+        fact_t = _fact_type(features)
+
+        # Record hardware errors in the window for this device
+        if event.event_type == "syslog_hardware":
+            win = _HARDWARE_ERROR_WINDOW.get(f"hw:{event.device_address}")
+            win.record(event.occurred_at_ns, "hardware_error")
+            return None
+
+        # On interface down facts, check if a hardware error preceded this
+        if event.event_type not in {"syslog_fact_joined", "syslog_fact_orphan"}:
+            return None
+        if fact_t != "interface_state":
+            return None
+        fields = _fact_fields(features)
+        if _normalize_state(fields.get("new_state", "")) not in {"down", "administratively down"}:
+            return None
+        win = _HARDWARE_ERROR_WINDOW.get(f"hw:{event.device_address}")
+        hw_count = win.count("hardware_error")
+        if hw_count == 0:
+            return None
+        features.detail["hardware_error_count_in_window"] = hw_count
+        return features
+
+    def detect(self, features: Features) -> Optional[str]:
+        fields = _fact_fields(features)
+        if_name = fields.get("if_name", "unknown-interface")
+        hw_count = features.detail.get("hardware_error_count_in_window", 1)
+        return (
+            f"Interface {if_name} on {features.device_address} went down after "
+            f"{hw_count} hardware error(s) in the last 60s — possible PSU/fan fault"
+        )
+
+
 SYSLOG_RULES: list[Detector] = [
     SyslogAuthFailureCluster(),
     SyslogHardwareError(),
@@ -264,6 +376,9 @@ SYSLOG_RULES: list[Detector] = [
     SyslogBpduGuardActivation(),
     SyslogStpTopologyChange(),
     SyslogGnmiDisagreement(),
+    SyslogBfdDisagreement(),
+    SyslogConfigChangeCluster(),
+    SyslogHardwareInterfaceCorrelation(),
     OrphanInterfaceMention(),
     MultiSourceCorrelation(),
 ]

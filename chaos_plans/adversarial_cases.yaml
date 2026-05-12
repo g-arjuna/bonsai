@@ -1,0 +1,74 @@
+# chaos_plans/adversarial_cases.yaml  (T2-3)
+#
+# Adversarial cases: scenarios that look like faults but are intentional or
+# operationally expected. The chaos runner injects these at low frequency
+# (every injection_frequency_divisor primary cycles) and labels them with
+# adversarial=true + should_not_detect=<rule_id> in the ground-truth CSV.
+#
+# GNN training value: the model learns to distinguish "fault" from "looks like
+# a fault but context says it's not." False-positive rate drops on real deployments
+# where maintenance events, operator-initiated restarts, and transient upstreams
+# all generate alert-looking signals that should be suppressed.
+#
+# Usage:
+#   python scripts/chaos_runner.py chaos_plans/always_on_dc.yaml \
+#       --adversarial-plan chaos_plans/adversarial_cases.yaml
+
+adversarial: true
+
+# One adversarial injection per this many primary-plan injections.
+injection_frequency_divisor: 8
+
+topology: bonsai-dc
+
+faults:
+
+  # ── Admin-shutdown: intentional interface maintenance ─────────────────────
+  # An operator marks an interface admin-down before replacing a transceiver or
+  # patching a cable. This triggers the same gNMI path update as an unexpected
+  # link failure but should NOT fire LinkDown/InterfaceDown alerts.
+  - type: interface_shut
+    should_not_detect: LinkDown
+    weight: 3
+    targets: [srl-leaf1, srl-leaf2]
+    interfaces: [ethernet-1/1, ethernet-1/2]
+    healing_delay_seconds: [5, 20]
+
+  - type: interface_shut
+    should_not_detect: LinkDown
+    weight: 2
+    targets: [srl-spine1, srl-spine2]
+    interfaces: [ethernet-1/1, ethernet-1/2]
+    healing_delay_seconds: [5, 15]
+
+  # ── BGP process restart: planned operator action ──────────────────────────
+  # An operator restarts the BGP process on a device (e.g., after a config
+  # change). The session drops briefly, then reconverges. Should NOT fire
+  # BgpSessionDown as an anomaly during a declared maintenance window.
+  - type: bgp_session_down
+    should_not_detect: BgpSessionDown
+    weight: 3
+    targets: [srl-leaf3, srl-leaf4]
+    peer_addresses: ["10.1.0.1", "10.1.0.3"]
+    healing_delay_seconds: [10, 30]
+
+  - type: bgp_session_down
+    should_not_detect: BgpSessionDown
+    weight: 2
+    targets: [srl-spine1]
+    peer_addresses: ["10.1.0.5", "10.1.0.6"]
+    healing_delay_seconds: [10, 25]
+
+  # ── Transient upstream route flap: external peering noise ─────────────────
+  # A brief route flap from an upstream ISP or IXP peer — real, but transient
+  # and not actionable by the operator. Two flaps with very short hold period
+  # mimics the "route withdrawn then re-announced within 10 seconds" pattern
+  # that is normal at internet peering boundaries.
+  - type: route_flap
+    should_not_detect: RouteFlapDetected
+    weight: 2
+    targets: [srl-spine1, srl-spine2]
+    peer_addresses: ["10.1.0.5", "10.1.0.6"]
+    flap_count: 2
+    flap_hold_seconds: [1, 3]
+    healing_delay_seconds: [1, 1]

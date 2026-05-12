@@ -283,7 +283,7 @@ async fn process_request(
 
     let resolved_credentials = resolve_target_credentials(&target, &credentials)?;
     let capture = capture_registry
-        .capture(&target, resolved_credentials.as_ref())
+        .capture(&target, resolved_credentials.as_ref(), None)
         .await?;
     let snapshot_id = Uuid::new_v4().to_string();
     let captured_at_ns = now_ns();

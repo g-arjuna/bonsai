@@ -17,6 +17,43 @@ facts:
     field_schema:
       if_name: string
       new_state: string
+  - fact_type: bfd_session
+    category: protocol
+    regex: '(?i)bfd.*(?:session|neighbor).*(?:interface|on) (?P<if_name>[A-Za-z0-9./:_-]+).*(?:state|to|went) (?P<new_state>up|down|admin-down|init|failing)'
+    field_schema:
+      if_name: string
+      new_state: string
+  - fact_type: bfd_session
+    category: protocol
+    regex: '(?i)bfd.*(?:peer|remote|neighbor) (?P<remote_address>\d{1,3}(?:\.\d{1,3}){3}).*(?:state|to|went) (?P<new_state>up|down|admin-down|init|failing)'
+    field_schema:
+      remote_address: string
+      new_state: string
+  - fact_type: ospf_neighbor
+    category: protocol
+    regex: '(?i)ospf.*neighbor (?P<neighbor_address>\d{1,3}(?:\.\d{1,3}){3}).*(?:interface|on) (?P<if_name>[A-Za-z0-9./:_-]+).*(?:state|to) (?P<new_state>\w+)'
+    field_schema:
+      neighbor_address: string
+      if_name: string
+      new_state: string
+  - fact_type: isis_adjacency
+    category: protocol
+    regex: '(?i)is-?is.*(?:adjacency|adj).*(?:system-id|router-id|with|peer) (?P<neighbor_id>[A-Fa-f0-9.:]+).*(?:interface|on) (?P<if_name>[A-Za-z0-9./:_-]+).*(?:state|to|went) (?P<new_state>up|down|init|failed)'
+    field_schema:
+      neighbor_id: string
+      if_name: string
+      new_state: string
+  - fact_type: mpls_lsp_state
+    category: protocol
+    regex: '(?i)(?:mpls|sr|segment-routing).*(?:lsp|path|tunnel|sr-policy) (?P<lsp_name>[A-Za-z0-9./:_-]+).*(?:state|to|went) (?P<new_state>up|down|active|inactive|degraded)'
+    field_schema:
+      lsp_name: string
+      new_state: string
+  - fact_type: config_change_detail
+    category: auth
+    regex: '(?i)(?:user|operator) (?P<username>[A-Za-z0-9._@-]+).*(?:commit(?:ted)?|applied|saved).*(?:configuration|config)'
+    field_schema:
+      username: string
   - fact_type: hardware_error
     category: hardware
     regex: '(?i)(?P<component>fan|psu|power|temperature|thermal|fru)[^\n]*(?P<status>fail(?:ed|ure)?|alarm|critical|down)'

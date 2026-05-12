@@ -5,6 +5,8 @@ x-bonsai-base: &bonsai-base
   image: bonsai:latest
   restart: unless-stopped
   env_file: .env
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   environment:
     - RUST_LOG=info,bonsai=debug
     # BONSAI_VAULT_PASSPHRASE must be set in the environment or an .env file.
@@ -27,7 +29,7 @@ services:
       - "3000:3000"
       - "50051:50051"
     networks:
-      - bonsai-p4-mgmt
+      - bonsai-mgmt
 
   bonsai-core:
     <<: *bonsai-base
@@ -42,7 +44,7 @@ services:
       - "${BONSAI_DISTRIBUTED_HTTP_PORT:-3000}:3000"
       - "${BONSAI_DISTRIBUTED_GRPC_PORT:-50051}:50051"
     networks:
-      - bonsai-p4-mgmt
+      - bonsai-mgmt
     healthcheck:
       test: ["CMD", "/usr/local/bin/healthcheck"]
       interval: 10s
@@ -62,7 +64,7 @@ services:
       - ./lab/dc/ca.pem:/app/lab/dc/ca.pem:ro
       - ./docker/tls:/app/tls:ro
     networks:
-      - bonsai-p4-mgmt
+      - bonsai-mgmt
     healthcheck:
       disable: true
 
@@ -78,7 +80,7 @@ services:
       - ./lab/dc/ca.pem:/app/lab/dc/ca.pem:ro
       - ./docker/tls:/app/tls:ro
     networks:
-      - bonsai-p4-mgmt
+      - bonsai-mgmt
     healthcheck:
       disable: true
 
@@ -111,21 +113,46 @@ services:
       - "9102:9102"
     command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "9102"]
 
-  # ── Lab-aware bonsai instances (Sprint 4 v11) ──────────────────────────────
+  # ── BGP-LS sidecar (gobgp) ──────────────────────────────────────────────────
+  # Peers with a route reflector or PE in the SP lab, collects BGP-LS NLRI,
+  # and bridges them as JSON lines to Bonsai's BGP-LS TCP listener.
   #
-  # These profiles connect bonsai to the ContainerLab DC or SP management
-  # networks created by:
-  #   containerlab deploy -t lab/dc/dc-evpn-srv6.clab.yml
-  #   containerlab deploy -t lab/sp/sp-mpls-srte.clab.yml
+  # Required env (set in .env or shell):
+  #   GOBGP_PEER_ADDRESS — IP of the SP lab RR/PE exporting BGP-LS
+  #   GOBGP_AS           — local ASN for the gobgp daemon (default 65200)
+  #   GOBGP_PEER_AS      — peer ASN (default same as GOBGP_AS for iBGP)
+  #   GOBGP_ROUTER_ID    — local router-ID (default 192.0.2.254)
   #
-  # Quick start:
-  #   containerlab deploy -t lab/dc/dc-evpn-srv6.clab.yml
-  #   docker compose --profile lab-dc up -d
+  # Usage:
+  #   docker compose --profile streaming up -d gobgp-bgp-ls
+  gobgp-bgp-ls:
+    build:
+      context: .
+      dockerfile: docker/sidecars/gobgp/Dockerfile
+    profiles: ["streaming", "lab-sp", "lab-full"]
+    environment:
+      - GOBGP_AS=${GOBGP_AS:-65200}
+      - GOBGP_ROUTER_ID=${GOBGP_ROUTER_ID:-192.0.2.254}
+      - GOBGP_PEER_ADDRESS=${GOBGP_PEER_ADDRESS:-}
+      - GOBGP_PEER_AS=${GOBGP_PEER_AS:-65200}
+      - BONSAI_BGP_LS_ADDR=host.docker.internal
+      - BONSAI_BGP_LS_PORT=${BONSAI_BGP_LS_PORT:-10179}
+    ports:
+      - "179:179"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - bonsai-mgmt
+    restart: unless-stopped
+
+  # ── Lab-aware bonsai instances (legacy profile-specific wrappers) ───────────
   #
-  # Profiles:
-  #   lab-dc    — bonsai monitoring the DC topology only (port 3000)
-  #   lab-sp    — bonsai monitoring the SP topology only (port 3001)
-  #   lab-full  — both instances simultaneously
+  # Ubuntu laptop testing should prefer the distributed core/collector path:
+  #   docker compose --profile distributed up -d bonsai-core bonsai-collector-1
+  #
+  # All Bonsai services attach to the shared external ContainerLab network
+  # `bonsai-mgmt` by default so external services stay stable regardless of
+  # which lab topology is active. Run one topology at a time on that network.
 
   bonsai-lab-dc:
     <<: *bonsai-base
@@ -139,7 +166,7 @@ services:
       - "3000:3000"
       - "50051:50051"
     networks:
-      - bonsai-dc-mgmt
+      - bonsai-mgmt
     healthcheck:
       test: ["CMD", "/usr/local/bin/healthcheck"]
       interval: 10s
@@ -159,7 +186,7 @@ services:
       - "3001:3000"
       - "50052:50051"
     networks:
-      - bonsai-sp-mgmt
+      - bonsai-mgmt
     healthcheck:
       test: ["CMD", "/usr/local/bin/healthcheck"]
       interval: 10s
@@ -168,24 +195,12 @@ services:
       retries: 5
 
 networks:
-  # ── Fast-iteration (phase 4) lab network ─────────────────────────────────
-  # The ContainerLab management network. Override CLAB_NETWORK to match your
-  # topology. Defaults to the bonsai-p4 fast-iteration lab network.
-  bonsai-p4-mgmt:
+  # Shared ContainerLab management network for Ubuntu laptop testing.
+  # Keep Bonsai, NetBox, Splunk, Elastic, and Prometheus stable; change the
+  # lab topology, not the Bonsai runtime shape.
+  bonsai-mgmt:
     external: true
-    name: ${CLAB_NETWORK:-bonsai-p4-mgmt}
-
-  # ── DC lab management network (bonsai-dc topology) ────────────────────────
-  # Created automatically by: containerlab deploy -t lab/dc/dc-evpn-srv6.clab.yml
-  bonsai-dc-mgmt:
-    external: true
-    name: ${DC_CLAB_NETWORK:-bonsai-dc-mgmt}
-
-  # ── SP lab management network (bonsai-sp topology) ────────────────────────
-  # Created automatically by: containerlab deploy -t lab/sp/sp-mpls-srte.clab.yml
-  bonsai-sp-mgmt:
-    external: true
-    name: ${SP_CLAB_NETWORK:-bonsai-sp-mgmt}
+    name: ${BONSAI_MGMT_NETWORK:-bonsai-mgmt}
 
 volumes:
   bonsai_graph_dev:

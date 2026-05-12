@@ -372,6 +372,19 @@ impl GraphEnricher for NetBoxEnricher {
             vec![]
         });
 
+        if nb_devices.is_empty()
+            && nb_vlans.is_empty()
+            && nb_prefixes.is_empty()
+            && nb_ifaces.is_empty()
+            && !warnings.is_empty()
+        {
+            anyhow::bail!(
+                "all NetBox fetches failed for {}: {}",
+                base_url,
+                warnings.join(" | ")
+            );
+        }
+
         let source = self.config.name.clone();
         let db = store.db();
         let write_lock = store.write_lock();

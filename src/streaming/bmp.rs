@@ -34,6 +34,31 @@ pub struct BmpEvent {
     pub session_state: String,
     pub route_entries: Vec<BmpRouteEntry>,
     pub raw_len: usize,
+    // PeerDown fields (RFC 7854 §4.9)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_down_reason: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_down_reason_name: Option<String>,
+    // StatisticsReport fields (RFC 7854 §4.8)
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub stats: Vec<BmpStatEntry>,
+    // Initiation fields (RFC 7854 §4.3)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sys_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sys_descr: Option<String>,
+    // Termination fields (RFC 7854 §4.5)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub termination_reason: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub termination_reason_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BmpStatEntry {
+    pub stat_type: u16,
+    pub stat_name: String,
+    pub value: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,7 +148,12 @@ fn publish_event(bus: &Arc<InProcessBus>, target_map: &BmpTargetMap, event: BmpE
     let resolved = target_map.resolve(&event);
     let path = match event.message_type.as_str() {
         "route_monitoring" => "streaming/bmp/route-monitoring",
-        _ => "streaming/bmp/peer-state",
+        "peer_up" => "streaming/bmp/peer-up",
+        "peer_down" => "streaming/bmp/peer-down",
+        "statistics_report" => "streaming/bmp/statistics",
+        "initiation" => "streaming/bmp/initiation",
+        "termination" => "streaming/bmp/termination",
+        _ => "streaming/bmp/unknown",
     };
     let value = serde_json::to_value(event).unwrap_or_default();
     bus.publish(TelemetryUpdate {
@@ -139,31 +169,26 @@ fn publish_event(bus: &Arc<InProcessBus>, target_map: &BmpTargetMap, event: BmpE
 }
 
 fn parse_bmp_message(message_type: u8, payload: &[u8], collector_peer: String) -> Result<BmpEvent> {
+    let timestamp_ns = now_ns();
+
+    // Initiation (4) and Termination (5) carry TLVs only — no per-peer header (RFC 7854 §4.3, §4.5)
+    if message_type == 4 {
+        return parse_initiation(payload, collector_peer, timestamp_ns);
+    }
+    if message_type == 5 {
+        return parse_termination(payload, collector_peer, timestamp_ns);
+    }
+
     if payload.len() < BMP_COMMON_PEER_HEADER_LEN {
         bail!("BMP payload shorter than common peer header");
     }
     let peer = parse_common_peer_header(&payload[..BMP_COMMON_PEER_HEADER_LEN])?;
     let body = &payload[BMP_COMMON_PEER_HEADER_LEN..];
-    let timestamp_ns = now_ns();
 
-    let (message_type_name, session_state, route_entries) = match message_type {
-        0 => (
-            "route_monitoring",
-            "established",
-            parse_route_monitoring(body)?,
-        ),
-        1 => ("statistics_report", "established", Vec::new()),
-        2 => ("peer_down", "down", Vec::new()),
-        3 => ("peer_up", "up", Vec::new()),
-        4 => ("initiation", "unknown", Vec::new()),
-        5 => ("termination", "down", Vec::new()),
-        other => return Err(anyhow!("unsupported BMP message type {other}")),
-    };
-
-    Ok(BmpEvent {
+    let mut event = BmpEvent {
         timestamp_ns,
         collector_peer,
-        message_type: message_type_name.to_string(),
+        message_type: String::new(),
         peer_type: peer.peer_type,
         peer_flags: peer.peer_flags,
         router_distinguisher: peer.router_distinguisher,
@@ -171,9 +196,220 @@ fn parse_bmp_message(message_type: u8, payload: &[u8], collector_peer: String) -
         peer_address: peer.peer_address,
         peer_as: peer.peer_as,
         peer_bgp_id: peer.peer_bgp_id,
-        session_state: session_state.to_string(),
-        route_entries,
+        session_state: String::new(),
+        route_entries: Vec::new(),
         raw_len: payload.len() + BMP_HEADER_LEN,
+        peer_down_reason: None,
+        peer_down_reason_name: None,
+        stats: Vec::new(),
+        sys_name: None,
+        sys_descr: None,
+        termination_reason: None,
+        termination_reason_name: None,
+    };
+
+    match message_type {
+        0 => {
+            event.message_type = "route_monitoring".to_string();
+            event.session_state = "established".to_string();
+            event.route_entries = parse_route_monitoring(body)?;
+        }
+        1 => {
+            event.message_type = "statistics_report".to_string();
+            event.session_state = "established".to_string();
+            event.stats = parse_statistics_report(body);
+        }
+        2 => {
+            event.message_type = "peer_down".to_string();
+            event.session_state = "down".to_string();
+            let (reason, reason_name) = parse_peer_down_reason(body);
+            event.peer_down_reason = Some(reason);
+            event.peer_down_reason_name = Some(reason_name);
+        }
+        3 => {
+            event.message_type = "peer_up".to_string();
+            event.session_state = "established".to_string();
+        }
+        other => return Err(anyhow!("unsupported BMP message type {other}")),
+    }
+
+    Ok(event)
+}
+
+fn parse_statistics_report(body: &[u8]) -> Vec<BmpStatEntry> {
+    if body.len() < 4 {
+        return Vec::new();
+    }
+    let count = u32::from_be_bytes([body[0], body[1], body[2], body[3]]) as usize;
+    let mut cursor = 4;
+    let mut entries = Vec::with_capacity(count.min(64));
+
+    while entries.len() < count && cursor + 4 <= body.len() {
+        let stat_type = u16::from_be_bytes([body[cursor], body[cursor + 1]]);
+        let stat_len = u16::from_be_bytes([body[cursor + 2], body[cursor + 3]]) as usize;
+        cursor += 4;
+        if cursor + stat_len > body.len() {
+            break;
+        }
+        let value_bytes = &body[cursor..cursor + stat_len];
+        cursor += stat_len;
+
+        let value = match stat_len {
+            4 if value_bytes.len() == 4 => {
+                u32::from_be_bytes(value_bytes.try_into().unwrap_or([0; 4])) as u64
+            }
+            8 if value_bytes.len() == 8 => {
+                u64::from_be_bytes(value_bytes.try_into().unwrap_or([0; 8]))
+            }
+            // Per-AFI/SAFI counters (type 9/10): 2+1+4=7 bytes; extract just the count
+            7 if value_bytes.len() == 7 => {
+                u32::from_be_bytes(value_bytes[3..7].try_into().unwrap_or([0; 4])) as u64
+            }
+            _ => 0,
+        };
+
+        entries.push(BmpStatEntry {
+            stat_type,
+            stat_name: stat_type_name(stat_type).to_string(),
+            value,
+        });
+    }
+    entries
+}
+
+fn stat_type_name(t: u16) -> &'static str {
+    match t {
+        0 => "prefixes_rejected_by_policy",
+        1 => "duplicate_prefix_advertisements",
+        2 => "duplicate_withdrawals",
+        3 => "updates_invalid_cluster_list_loop",
+        4 => "updates_invalid_as_path_loop",
+        5 => "updates_invalid_originator_id",
+        6 => "updates_invalid_as_confed_loop",
+        7 => "adj_rib_in_routes",
+        8 => "loc_rib_routes",
+        9 => "adj_rib_in_routes_per_afi_safi",
+        10 => "loc_rib_routes_per_afi_safi",
+        11 => "updates_route_refresh",
+        12 => "routes_stale_graceful_restart",
+        13 => "routes_reclaimed_graceful_restart",
+        14 => "routes_not_installed_vpn",
+        15 => "routes_filtered_adj_rib_out",
+        _ => "unknown",
+    }
+}
+
+fn parse_peer_down_reason(body: &[u8]) -> (u8, String) {
+    if body.is_empty() {
+        return (0, "unknown".to_string());
+    }
+    let reason = body[0];
+    let name = match reason {
+        1 => "local_fsm_event",
+        2 => "local_bgp_notification",
+        3 => "remote_bgp_notification",
+        4 => "remote_close_no_data",
+        5 => "peer_de_configured",
+        _ => "unknown",
+    };
+    (reason, name.to_string())
+}
+
+fn parse_initiation(payload: &[u8], collector_peer: String, timestamp_ns: i64) -> Result<BmpEvent> {
+    let mut sys_name = None;
+    let mut sys_descr = None;
+    let mut cursor = 0;
+
+    while cursor + 4 <= payload.len() {
+        let tlv_type = u16::from_be_bytes([payload[cursor], payload[cursor + 1]]);
+        let tlv_len = u16::from_be_bytes([payload[cursor + 2], payload[cursor + 3]]) as usize;
+        cursor += 4;
+        if cursor + tlv_len > payload.len() {
+            break;
+        }
+        let value = &payload[cursor..cursor + tlv_len];
+        cursor += tlv_len;
+        match tlv_type {
+            0 => sys_descr = Some(String::from_utf8_lossy(value).into_owned()),
+            1 => sys_name = Some(String::from_utf8_lossy(value).into_owned()),
+            _ => {}
+        }
+    }
+
+    Ok(BmpEvent {
+        timestamp_ns,
+        collector_peer,
+        message_type: "initiation".to_string(),
+        peer_type: 0,
+        peer_flags: 0,
+        router_distinguisher: 0,
+        router_address: String::new(),
+        peer_address: String::new(),
+        peer_as: 0,
+        peer_bgp_id: String::new(),
+        session_state: "connected".to_string(),
+        route_entries: Vec::new(),
+        raw_len: payload.len() + BMP_HEADER_LEN,
+        peer_down_reason: None,
+        peer_down_reason_name: None,
+        stats: Vec::new(),
+        sys_name,
+        sys_descr,
+        termination_reason: None,
+        termination_reason_name: None,
+    })
+}
+
+fn parse_termination(payload: &[u8], collector_peer: String, timestamp_ns: i64) -> Result<BmpEvent> {
+    let mut termination_reason = None;
+    let mut termination_reason_name = None;
+    let mut cursor = 0;
+
+    while cursor + 4 <= payload.len() {
+        let tlv_type = u16::from_be_bytes([payload[cursor], payload[cursor + 1]]);
+        let tlv_len = u16::from_be_bytes([payload[cursor + 2], payload[cursor + 3]]) as usize;
+        cursor += 4;
+        if cursor + tlv_len > payload.len() {
+            break;
+        }
+        let value = &payload[cursor..cursor + tlv_len];
+        cursor += tlv_len;
+        if tlv_type == 1 && tlv_len == 2 {
+            let code = u16::from_be_bytes([value[0], value[1]]);
+            let name = match code {
+                0 => "session_admin_closed",
+                1 => "unspecified",
+                2 => "out_of_resources",
+                3 => "redundant_connection",
+                4 => "perm_admin_closed",
+                _ => "unknown",
+            };
+            termination_reason = Some(code);
+            termination_reason_name = Some(name.to_string());
+        }
+    }
+
+    Ok(BmpEvent {
+        timestamp_ns,
+        collector_peer,
+        message_type: "termination".to_string(),
+        peer_type: 0,
+        peer_flags: 0,
+        router_distinguisher: 0,
+        router_address: String::new(),
+        peer_address: String::new(),
+        peer_as: 0,
+        peer_bgp_id: String::new(),
+        session_state: "disconnected".to_string(),
+        route_entries: Vec::new(),
+        raw_len: payload.len() + BMP_HEADER_LEN,
+        peer_down_reason: None,
+        peer_down_reason_name: None,
+        stats: Vec::new(),
+        sys_name: None,
+        sys_descr: None,
+        termination_reason,
+        termination_reason_name,
     })
 }
 
@@ -605,9 +841,10 @@ mod tests {
 
     #[test]
     fn parse_bgp_update_extracts_announced_prefix_and_attrs() {
+        // attr_len = 21 (0x15): AS_PATH(7) + NEXT_HOP(7) + LOCAL_PREF(7)
         let payload = [
             0x00, 0x00, // withdrawn len
-            0x00, 0x13, // attr len
+            0x00, 0x15, // attr len = 21
             0x40, 0x02, 0x04, 0x02, 0x01, 0xfd, 0xe8, // AS_PATH 65000
             0x40, 0x03, 0x04, 192, 0, 2, 1, // NEXT_HOP
             0x40, 0x05, 0x04, 0x00, 0x00, 0x00, 0x64, // LOCAL_PREF 100
@@ -620,5 +857,60 @@ mod tests {
         assert_eq!(entries[0].next_hop, "192.0.2.1");
         assert_eq!(entries[0].as_path, vec![65000]);
         assert_eq!(entries[0].local_pref, Some(100));
+    }
+
+    #[test]
+    fn parse_statistics_report_reads_4byte_and_8byte_counters() {
+        let body = [
+            0x00, 0x00, 0x00, 0x02, // count = 2
+            // stat 0 (prefixes rejected): type=0, len=4, value=42
+            0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x2a,
+            // stat 7 (adj-rib-in routes): type=7, len=8, value=1000
+            0x00, 0x07, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xe8,
+        ];
+        let stats = parse_statistics_report(&body);
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].stat_type, 0);
+        assert_eq!(stats[0].value, 42);
+        assert_eq!(stats[1].stat_type, 7);
+        assert_eq!(stats[1].value, 1000);
+    }
+
+    #[test]
+    fn parse_peer_down_reason_names_code_3() {
+        let body = [3u8, 0xff, 0x00]; // reason = 3 + garbage
+        let (code, name) = parse_peer_down_reason(&body);
+        assert_eq!(code, 3);
+        assert_eq!(name, "remote_bgp_notification");
+    }
+
+    #[test]
+    fn parse_initiation_extracts_sys_name_and_descr() {
+        let sys_descr = b"Nokia SR Linux";
+        let sys_name = b"srl-spine1";
+        let mut payload = Vec::new();
+        // TLV type=0 (sysDescr)
+        payload.extend_from_slice(&[0x00, 0x00]);
+        payload.extend_from_slice(&(sys_descr.len() as u16).to_be_bytes());
+        payload.extend_from_slice(sys_descr);
+        // TLV type=1 (sysName)
+        payload.extend_from_slice(&[0x00, 0x01]);
+        payload.extend_from_slice(&(sys_name.len() as u16).to_be_bytes());
+        payload.extend_from_slice(sys_name);
+
+        let event = parse_initiation(&payload, "10.0.0.1".to_string(), 0).expect("parse initiation");
+        assert_eq!(event.sys_descr.as_deref(), Some("Nokia SR Linux"));
+        assert_eq!(event.sys_name.as_deref(), Some("srl-spine1"));
+        assert_eq!(event.message_type, "initiation");
+    }
+
+    #[test]
+    fn parse_termination_extracts_reason_code() {
+        let mut payload = Vec::new();
+        // TLV type=1 (reason), len=2, code=0 (admin closed)
+        payload.extend_from_slice(&[0x00, 0x01, 0x00, 0x02, 0x00, 0x00]);
+        let event = parse_termination(&payload, "10.0.0.1".to_string(), 0).expect("parse termination");
+        assert_eq!(event.termination_reason, Some(0));
+        assert_eq!(event.termination_reason_name.as_deref(), Some("session_admin_closed"));
     }
 }
