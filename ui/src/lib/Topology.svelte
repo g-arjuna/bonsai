@@ -350,7 +350,7 @@
       .attr('font-family', "'Inter', sans-serif")
       .attr('fill', C.textTertiary)
       .attr('pointer-events', 'none')
-      .text(d => (d.role ? `${d.role} · ` : '') + (d.site || d.vendor.replace('nokia_', '').replace('cisco_', '')));
+      .text(d => d.site || d.vendor.replace('nokia_', '').replace('cisco_', ''));
 
     node.append('title').text(d =>
       `${d.hostname} — ${d.address}\nRole: ${d.role || 'unknown'}\nSite: ${d.site || '—'}\nHealth: ${d.health}\nShift+click to trace path`
