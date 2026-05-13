@@ -222,7 +222,7 @@
       .force('charge',    d3.forceManyBody().strength(-500))
       .force('y',         d3.forceY(d => tierYMap.get(d._tier) ?? H * 0.5).strength(0.85))
       .force('x',         d3.forceX(W / 2).strength(0.04))
-      .force('collision', d3.forceCollide(52));
+      .force('collision', d3.forceCollide(60));
 
     // Tier rail labels
     for (const t of usedTiers) {
@@ -286,13 +286,13 @@
       // Selection glow ring
       if (isSelected || isOnPath) {
         if (role === 'spine' || role === 'super-spine') {
-          const s = role === 'super-spine' ? 31 : 26;
+          const s = role === 'super-spine' ? 38 : 34;
           el.append('rect')
-            .attr('x', -(s + 5)).attr('y', -(s + 5))
-            .attr('width', (s + 5) * 2).attr('height', (s + 5) * 2)
+            .attr('x', -s).attr('y', -s)
+            .attr('width', s * 2).attr('height', s * 2)
             .attr('fill', 'none')
             .attr('stroke', strokeColor).attr('stroke-width', 1)
-            .attr('rx', 5).attr('opacity', 0.3);
+            .attr('rx', 6).attr('opacity', 0.3);
         } else {
           el.append('circle')
             .attr('r', 36)
@@ -303,7 +303,7 @@
       }
 
       if (role === 'spine' || role === 'super-spine') {
-        const s = role === 'super-spine' ? 26 : 22;
+        const s = role === 'super-spine' ? 32 : 28;
         el.append('rect')
           .attr('x', -s).attr('y', -s)
           .attr('width', s * 2).attr('height', s * 2)
@@ -324,7 +324,7 @@
           .attr('stroke-width', strokeW);
       } else {
         el.append('circle')
-          .attr('r', 26)
+          .attr('r', 28)
           .attr('fill', C.bgSurface)
           .attr('stroke', strokeColor)
           .attr('stroke-width', strokeW);
@@ -338,7 +338,7 @@
     // Labels
     node.append('text')
       .attr('text-anchor', 'middle').attr('dy', '-0.2em')
-      .attr('font-size', 10)
+      .attr('font-size', 9)
       .attr('font-family', "'JetBrains Mono', monospace")
       .attr('fill', C.textPrimary)
       .attr('pointer-events', 'none')
