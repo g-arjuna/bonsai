@@ -68,7 +68,8 @@
   function linkColor(link) {
     if (!link.bytes_total) return C.borderDefault;
     const t = link.bytes_total / maxBytes;
-    return d3.interpolateRdYlGn(1 - t * 0.85);
+    // Dim white → bright teal: high traffic = vivid, never red (red = failure elsewhere)
+    return d3.interpolateRgb('rgba(255,255,255,0.12)', C.accentPrimary)(t * 0.85 + 0.15);
   }
 
   async function load() {

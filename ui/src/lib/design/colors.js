@@ -33,7 +33,7 @@ export function healthColor(health) {
 export function roleStrokeColor(role, hostname) {
   const r = (role || '').toLowerCase().replace(/[-_ ]/g, '');
   const h = (hostname || '').toLowerCase();
-  if (r === 'spine' && (h.includes('super') || h.startsWith('ss'))) return C.accentMuted;
+  if (r === 'superspine' || (r === 'spine' && (h.includes('super') || h.startsWith('ss')))) return C.accentMuted;
   if (r === 'spine') return C.accentPrimary;
   if (['pe', 'rr', 'border', 'core'].includes(r)) return C.stateInfo;
   return null; // fall back to health color

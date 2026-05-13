@@ -53,7 +53,10 @@ FROM node:20-alpine AS ui-builder
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci
-COPY ui/ ./
+# Copy config files and src separately so Docker invalidates the build cache
+# when source changes (ui/dist/ is excluded via .dockerignore).
+COPY ui/index.html ui/svelte.config.js ui/vite.config.js ./
+COPY ui/src ./src
 RUN npm run build
 
 # ── Runtime: slim Debian with no curl dep — healthcheck is a compiled binary ──
