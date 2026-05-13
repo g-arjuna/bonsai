@@ -1855,6 +1855,13 @@ async fn operations_handler(
         std::path::Path::new(&state.graph_path),
         &state.storage_config,
     );
+    // Use the governor's profile-derived budget when available; the hardcoded
+    // constant is a last-resort fallback for non-governed modes.
+    let effective_rss_budget = state
+        .governor
+        .as_ref()
+        .map(|g| g.snapshot().memory_budget_mb * 1024 * 1024)
+        .unwrap_or(RSS_BUDGET_BYTES);
 
     Ok(Json(OperationsResponse {
         detection_events: readiness.detection_events,
@@ -1887,14 +1894,11 @@ async fn operations_handler(
         archive_disk_pct: disk_snapshot.archive_pct,
         graph_disk_bytes: disk_snapshot.graph_bytes,
         graph_disk_pct: disk_snapshot.graph_pct,
-        memory_budget_bytes: RSS_BUDGET_BYTES,
-        memory_rss_pct_of_budget: {
-            let budget = RSS_BUDGET_BYTES;
-            if budget > 0 {
-                (mem_snapshot.rss_bytes as f64 / budget as f64) * 100.0
-            } else {
-                0.0
-            }
+        memory_budget_bytes: effective_rss_budget,
+        memory_rss_pct_of_budget: if effective_rss_budget > 0 {
+            (mem_snapshot.rss_bytes as f64 / effective_rss_budget as f64) * 100.0
+        } else {
+            0.0
         },
         counter_mode: state.counter_mode.clone(),
         counter_window_secs: state.counter_window_secs,
@@ -1943,12 +1947,18 @@ async fn test_status_handler(
         .unwrap_or_default()
         .as_secs();
 
+    let effective_rss_budget = state
+        .governor
+        .as_ref()
+        .map(|g| g.snapshot().memory_budget_mb * 1024 * 1024)
+        .unwrap_or(RSS_BUDGET_BYTES);
+
     let mut budget_breaches: Vec<BudgetBreach> = Vec::new();
-    if mem.rss_bytes > RSS_BUDGET_BYTES {
+    if mem.rss_bytes > effective_rss_budget {
         budget_breaches.push(BudgetBreach {
             name: "rss_budget",
             current: mem.rss_bytes as f64,
-            budget: RSS_BUDGET_BYTES as f64,
+            budget: effective_rss_budget as f64,
             unit: "bytes",
         });
     }
