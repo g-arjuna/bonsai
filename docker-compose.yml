@@ -161,7 +161,7 @@ services:
       - bonsai_graph_lab_dc:/app/runtime
       - bonsai_creds_lab_dc:/app/bonsai-credentials
       - ./docker/configs/lab-dc.toml:/etc/bonsai/bonsai.toml:ro
-      - ./lab/dc/ca.pem:/app/lab/dc/ca.pem:ro
+      - ./lab/dc/clab-bonsai-dc/.tls/ca/ca.pem:/app/lab/dc/ca.pem:ro
     ports:
       - "3000:3000"
       - "50051:50051"
@@ -194,6 +194,39 @@ services:
       start_period: 15s
       retries: 5
 
+  # ── Cloud DC bonsai instance ────────────────────────────────────────────────
+  #
+  # Targets the 6-node cloud DC topology (172.100.104.0/24).
+  # Deploy sequence:
+  #   containerlab deploy -t lab/cloud-dc-6node.yml   # creates bonsai-mgmt + TLS certs
+  #   docker compose --profile cloud-dc up -d          # starts bonsai against cloud nodes
+  #
+  # Required env (set in .env or shell before compose up):
+  #   BONSAI_VAULT_PASSPHRASE — credential vault passphrase
+  #   BONSAI_CLOUD_ARCHIVE_PATH — host path for archive (default: ./runtime/archive)
+  #     On cloud VM set to: /mnt/bonsai-archive/archive
+
+  bonsai-cloud-dc:
+    <<: *bonsai-base
+    profiles: ["cloud-dc"]
+    volumes:
+      - bonsai_graph_cloud_dc:/app/runtime
+      - bonsai_creds_cloud_dc:/app/bonsai-credentials
+      - ./docker/configs/cloud-dc.toml:/etc/bonsai/bonsai.toml:ro
+      - ${BONSAI_CLOUD_ARCHIVE_PATH:-./runtime/archive}:/archive
+      - ./lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem:/app/lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem:ro
+    ports:
+      - "3000:3000"
+      - "50051:50051"
+    networks:
+      - bonsai-mgmt
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
 networks:
   # Shared ContainerLab management network for Ubuntu laptop testing.
   # Keep Bonsai, NetBox, Splunk, Elastic, and Prometheus stable; change the
@@ -213,3 +246,5 @@ volumes:
   bonsai_creds_lab_dc:
   bonsai_graph_lab_sp:
   bonsai_creds_lab_sp:
+  bonsai_graph_cloud_dc:
+  bonsai_creds_cloud_dc:

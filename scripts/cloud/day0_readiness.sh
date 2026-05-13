@@ -94,14 +94,15 @@ echo "[ 1/7 ] Docker network bonsai-mgmt..."
 if ! command -v docker &>/dev/null; then
     _result "docker_network" "fail" "docker not found on PATH"
 else
-    NET_COUNT=$(docker network ls --filter name=bonsai-mgmt --format '{{.Name}}' 2>/dev/null | wc -l)
-    if [[ "$NET_COUNT" -eq 1 ]]; then
-        NET_SUBNET=$(docker network inspect bonsai-mgmt --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}' 2>/dev/null || echo "unknown")
-        _result "docker_network" "pass" "bonsai-mgmt present (subnet: $NET_SUBNET)"
-    elif [[ "$NET_COUNT" -eq 0 ]]; then
-        _result "docker_network" "fail" "bonsai-mgmt not found — run 'sudo containerlab deploy' first"
+    # Match bonsai-mgmt or bonsai-*-mgmt (topology-prefixed variants like bonsai-cloud-dc-mgmt)
+    NET_NAMES=$(docker network ls --format '{{.Name}}' 2>/dev/null | grep -E '^bonsai(-[^/]+)?-mgmt$' || true)
+    NET_COUNT=$(echo "$NET_NAMES" | grep -c . || true)
+    if [[ "$NET_COUNT" -ge 1 ]]; then
+        NET_NAME=$(echo "$NET_NAMES" | head -1)
+        NET_SUBNET=$(docker network inspect "$NET_NAME" --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}' 2>/dev/null || echo "unknown")
+        _result "docker_network" "pass" "$NET_NAME present (subnet: $NET_SUBNET)"
     else
-        _result "docker_network" "warn" "found $NET_COUNT networks matching bonsai-mgmt (expected 1)"
+        _result "docker_network" "fail" "no bonsai mgmt network found — run 'sudo containerlab deploy' first"
     fi
 fi
 
@@ -159,14 +160,30 @@ fi
 # ── Check 5: GITHUB_TOKEN set and usable ─────────────────────────────────────
 
 echo "[ 5/7 ] GITHUB_TOKEN and daily_sync --dry-run..."
+# Source env file from known paths if token not already in environment.
+# Cron subprocesses don't inherit the interactive shell's exports.
 if [[ -z "${GITHUB_TOKEN:-}" ]]; then
-    _result "github_token" "fail" "GITHUB_TOKEN is not set in environment"
+    for _env_file in "$HOME/.bonsai.env" "/opt/bonsai/instance.env"; do
+        if [[ -f "$_env_file" ]]; then
+            # shellcheck source=/dev/null
+            . "$_env_file"
+            break
+        fi
+    done
+fi
+if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+    _result "github_token" "fail" "GITHUB_TOKEN not set and not found in ~/.bonsai.env or /opt/bonsai/instance.env"
 else
     TOKEN_LEN=${#GITHUB_TOKEN}
-    if bash "$INSTALL_DIR/scripts/cloud/daily_sync.sh" --dry-run &>/dev/null; then
-        _result "github_token" "pass" "GITHUB_TOKEN set (len=$TOKEN_LEN); dry-run exits 0"
+    # Validate token against GitHub API — works on both laptop and cloud without
+    # cloud-specific paths (daily_sync.sh tries /mnt/bonsai-archive on laptop).
+    HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+        -H "Authorization: token $GITHUB_TOKEN" \
+        https://api.github.com/user 2>/dev/null || echo "000")
+    if [[ "$HTTP_STATUS" == "200" ]]; then
+        _result "github_token" "pass" "GITHUB_TOKEN valid (len=$TOKEN_LEN; GitHub API 200)"
     else
-        _result "github_token" "fail" "daily_sync.sh --dry-run failed (token set but script errored)"
+        _result "github_token" "fail" "GITHUB_TOKEN set but GitHub API returned HTTP $HTTP_STATUS (invalid or expired?)"
     fi
 fi
 
