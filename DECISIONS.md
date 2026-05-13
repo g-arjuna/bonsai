@@ -1782,3 +1782,59 @@ healthcheck until Compose exists.
 **T6-4 syslog rule recurrence indicators**: Added 3 indicators per rule to all 13 syslog detection rules following the same pattern as Sprint 5's 18 non-syslog rules. The indicators reference the relevant graph query (e.g. `MATCH (b:BfdSession ...)` for `syslog_bfd_disagreement`), a count query for recurrence frequency, and the `/api/detections` endpoint for historical depth. These are consumed by the grounded incident endpoint and MCP `get_incident` tool when a syslog-derived rule fires.
 
 **What was not implemented**: gNMI write paths for OspfNeighbor and IsisAdjacency graph nodes. Adding those requires new OpenConfig YANG path handlers (`openconfig-ospfv2`, `openconfig-isis`) which are a separate body of work. The syslog join infrastructure is ready for them; they are deferred to a future sprint when OSPF/ISIS gNMI path coverage is the explicit goal.
+
+---
+
+## 2026-05-13 — ContainerLab TLS: always destroy --cleanup; force-recreate bonsai after redeploy
+
+**Decision**: All topology redeploy scripts (`scripts/lab/redeploy_dc.sh`, `scripts/lab/redeploy_cloud_dc.sh`) use `containerlab destroy --cleanup --graceful` before every deploy. After deploy, bonsai is force-recreated via `docker compose up -d --force-recreate`.
+
+**Root cause discovered**: `containerlab destroy` without `--cleanup` preserves the `.tls/` directory. A subsequent `containerlab deploy` reuses the existing CA keypair and only generates new node certs for new nodes. Nodes from prior deploys retain certs signed by the previous CA. Bonsai trusts one CA at a time, so the mixed-CA environment causes partial subscription failures (some nodes connect, others are silently rejected). The symptom is `observed_subscriptions` being lower than `device_count × paths_per_device` with no error visible in logs.
+
+**`--force-recreate` requirement**: The bonsai container caches its TLS config (CA cert + per-device connections) in memory at startup. Even after a topology redeploy generates a fresh CA, the running container holds the old CA in memory. Force-recreating the container flushes this cache and picks up the new CA from the bind mount.
+
+**Operational rule**: Never run `containerlab deploy` without a preceding `containerlab destroy --cleanup`. Never patch a running topology in-place if TLS is involved. The redeploy scripts are the canonical path for any topology change.
+
+---
+
+## 2026-05-13 — 7-day proof uses mode=all; distributed core+collector is the target architecture
+
+**Decision**: The CV5 7-day handoff proof runs with `mode = "all"` (single-process, core+collector in one container) on both laptop (`lab-dc` profile) and cloud (`cloud-dc` profile). This is a deliberate temporary choice. All future bringups after the proof must use the distributed `core + collector` compose profile.
+
+**Why mode=all for the proof**: Simplifies the bringup procedure to a single container per environment. Eliminates the mTLS cert generation step between core and collector. Reduces failure surface for a time-bounded demonstration focused on data collection correctness, not architecture validation.
+
+**Expected artifacts of mode=all**: `collectors_connected: 0` and `unassigned_devices: N` appear in `/api/operations`. These are display artifacts — the collector assignment subsystem is bypassed when core and collector run in the same process. Devices are subscribed and collecting; the counts are misleading, not indicative of a fault.
+
+**Target architecture**: Distributed `bonsai-core` + `bonsai-collector-1` (or two-collector) compose profile. Prerequisites: (1) run `scripts/generate_compose_tls.sh` for core↔collector mTLS, (2) fix `docker/configs/core.toml` CA cert path from `lab/dc/ca.pem` to the live bind-mount path `lab/dc/clab-bonsai-dc/.tls/ca/ca.pem`. The `core.toml` already has all 8 DC targets split across collector IDs.
+
+---
+
+## 2026-05-13 — Daily health reports auto-committed and pushed to GitHub main
+
+**Decision**: `scripts/cloud/daily_check_push.sh` wraps `bv5_daily_check.sh` and, on success, commits `docs/test_results/daily_runs/YYYY-MM-DD.md` and pushes to `main`. The cron entry at 02:30 UTC on both environments uses this wrapper instead of calling `bv5_daily_check.sh` directly.
+
+**Rationale**: Daily health reports written to `docs/test_results/daily_runs/` were local-only. During the 7-day handoff proof the operator needs to inspect each day's result without SSH access. Pushing to `main` makes reports visible on GitHub each morning. GITHUB_TOKEN is sourced from `~/.bonsai.env` (laptop) or `/opt/bonsai/instance.env` (cloud) inside the wrapper — cron subprocesses do not inherit interactive shell exports.
+
+**Idempotency**: The push is skipped if `git ls-files --others` and `git diff HEAD` both show no new content in `docs/test_results/daily_runs/`. A failed push (network, token expiry) commits locally and logs a warning; the report is not lost.
+
+---
+
+## 2026-05-13 — Laptop daily_sync uses Docker exec for parquet extraction
+
+**Decision**: On laptop, `scripts/cloud/daily_sync.sh` detects the absence of `/mnt/bonsai-archive` (the OCI block volume path, cloud-only) and enters `LAPTOP_MODE`. In this mode it stages to `runtime/sync-staging/` and extracts parquet files from the running bonsai container via `docker exec <container> tar -cf - /app/runtime/archive | tar -xf - --strip-components=3`.
+
+**Root cause**: Laptop parquet files are written to a Docker named volume (`bonsai_graph_lab_dc`) mounted at `/app/runtime/archive` inside the container. This path is not accessible on the host filesystem. The cloud OCI block volume is mounted at `/mnt/bonsai-archive/archive` on the host, which is directly readable. The sync script previously assumed the cloud layout unconditionally, causing `mkdir /mnt/bonsai-archive` to fail silently on laptop.
+
+**Container name convention**: Laptop bonsai container is `bonsai-bonsai-lab-dc-1` (overridable via `BONSAI_CONTAINER` env var). If the container is not running at sync time, parquet collection is skipped with a log warning; the ops snapshot and system snapshot are still collected and pushed.
+
+---
+
+## 2026-05-13 — API memory budget reads from governor profile; hardcoded constant is fallback only
+
+**Decision**: `memory_budget_bytes` and `memory_rss_pct_of_budget` in `/api/operations`, and the RSS budget breach check in `/api/test-status`, now read from `GovernorHandle::snapshot().memory_budget_mb` when a governor is active. The hardcoded `RSS_BUDGET_BYTES = 1.5 GiB` constant is retained as a fallback for non-governed modes only.
+
+**Root cause**: `RSS_BUDGET_BYTES` was introduced in commit `d488161` (Bv3, 2026-05-07) before the resource governor existed. It was a reasonable lab-scale ceiling at the time. CV4 Sprint 4 (`97d9e8c`, 2026-05-12) built `resource_profile.rs` and `resource_governor.rs` — probing RAM at startup and deriving a per-host budget (Tiny=256 MB through XLarge=4 GB). The `GovernorHandle` was wired into `AppState` for governance actions (cache shrink, rate shedding) but the HTTP server was not updated to read the profile budget for reporting. The constant and the governor coexisted silently.
+
+**Observed impact**: On a 47 GB RAM host (xlarge, 4 GB governor budget) the API reported 92% RSS utilisation against the 1.5 GB constant while the governor was watching against 4 GB — a false alarm with no governance action taken. On the 23 GB cloud host (large, 2 GB budget) the API reported 90% against 1.5 GB while the real figure was ~33% of 2 GB. The UI tile was amber/yellow on both environments throughout the proof period despite no actual memory pressure.
+
+**`/api/governance/state`** calls `g.snapshot()` directly and was always correct. The inconsistency between the two panels on the Operations page (tile vs. governance detail) was the visible symptom.
