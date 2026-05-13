@@ -1,0 +1,219 @@
+# chaos_plans/always_on_sp.yaml
+#
+# Always-on SP chaos plan for the bonsai-sp topology.
+# Runs in 30-minute cycles targeting SR Linux PEs + FRR P nodes.
+#
+# 8 fault families covering every critical SP protocol layer:
+#   1. PE uplink failure     — IS-IS adjacency + BFD cascade
+#   2. P-P link failure      — IS-IS reroute, SR-MPLS path change
+#   3. RR session reset      — mass BMP PeerDown cascade
+#   4. LDP session loss      — netem delay past LDP hold-time (15 s default)
+#   5. SR-TE policy degrade  — explicit path removed; fallback to IGP best-path
+#   6. BMP exporter disconnect — station admin-disable on pe2
+#   7. BFD kill → IS-IS adj  — 3-second BFD detection on backbone links
+#   8. VPN-IPv4 route flap   — BMP RouteMonitoring coverage for GNN training
+#
+# Run via:
+#   python scripts/chaos_runner.py chaos_plans/always_on_sp.yaml --fg
+#   python scripts/chaos_runner.py chaos_plans/always_on_sp.yaml --duration-hours 0.1  # quick smoke
+#
+# Custom types sr_policy_degrade and bmp_station_disable include exec_hint blocks
+# with the exact sr_cli commands the runner should execute.
+
+duration_hours: 0.5
+topology: bonsai-sp
+injection_interval_seconds: [60, 180]   # SP convergence is slower than DC
+
+faults:
+
+  # ── 1. PE uplink failure ─────────────────────────────────────────────────────
+  # Shut pe1 e1-1 (→ frr-p1). IS-IS drops adjacency, BFD detects in 3 s,
+  # SR-MPLS reroutes via remaining P paths. BMP PeerDown may follow if
+  # BGP hold-time expires during recovery.
+  - type: interface_shut
+    weight: 5
+    targets: [srl-pe1]
+    interfaces: [ethernet-1/1]
+    healing_delay_seconds: [30, 90]
+
+  - type: interface_shut
+    weight: 5
+    targets: [srl-pe2]
+    interfaces: [ethernet-1/1]   # pe2 → frr-p2
+    healing_delay_seconds: [30, 90]
+
+  - type: interface_shut
+    weight: 4
+    targets: [srl-pe3]
+    interfaces: [ethernet-1/1]   # pe3 → frr-p2 (single uplink — full isolation)
+    healing_delay_seconds: [30, 90]
+
+  # ── 2. P-P link failure ──────────────────────────────────────────────────────
+  # frr-p1 eth2 ↔ frr-p2 eth1 (10.2.10.2/31). IS-IS reroutes immediately;
+  # SR-MPLS explicit path pe1→p1→p2→pe2 becomes invalid, SR-TE policy falls
+  # back to IGP best path.
+  - type: interface_shut
+    weight: 5
+    targets: [frr-p1]
+    interfaces: [eth2]
+    healing_delay_seconds: [20, 60]
+
+  - type: netem_loss
+    weight: 4
+    targets: [frr-p1]
+    interfaces: [eth2]
+    loss_percent: [15, 50]
+    healing_delay_seconds: [30, 75]
+
+  # ── 3. RR session reset ──────────────────────────────────────────────────────
+  # Clear individual PE sessions on rr1 and rr2. Produces mass BMP PeerDown
+  # cascade visible at bonsai as a blast-radius event. PEs re-establish
+  # iBGP within BGP hold-time + reconnect timer.
+  - type: bgp_session_down
+    weight: 4
+    targets: [srl-rr1]
+    peer_addresses: ["10.2.0.1", "10.2.0.2", "10.2.0.3"]
+    healing_delay_seconds: [30, 90]
+
+  - type: bgp_session_down
+    weight: 3
+    targets: [srl-rr2]
+    peer_addresses: ["10.2.0.1", "10.2.0.2", "10.2.0.3"]
+    healing_delay_seconds: [30, 90]
+
+  # ── 4. LDP session loss via high-delay injection ──────────────────────────────
+  # 500 ms delay on P-P and P-RR links outlasts FRR's default LDP hold-down
+  # timer (15 s). LDP adjacency drops; SR-MPLS label forwarding continues via
+  # prefix SIDs but LDP-labeled paths disappear from LFIB.
+  - type: netem_delay
+    weight: 4
+    targets: [frr-p1]
+    interfaces: [eth2]
+    delay_ms: 500
+    jitter_ms: 100
+    healing_delay_seconds: [60, 120]
+
+  - type: netem_delay
+    weight: 3
+    targets: [frr-p2]
+    interfaces: [eth1]
+    delay_ms: 500
+    jitter_ms: 100
+    healing_delay_seconds: [60, 120]
+
+  # ── 5. SR-TE policy degradation ──────────────────────────────────────────────
+  # Admin-disable the bonsai-pe1-pe2 SR-TE policy on srl-pe1. Traffic falls
+  # back to IGP best-path. Bonsai detects via gNMI sr-policy state change.
+  # Runner executes exec_hint commands via `docker exec ... sr_cli`.
+  - type: sr_policy_degrade
+    weight: 4
+    targets: [srl-pe1]
+    policy_name: bonsai-pe1-pe2
+    exec_hint:
+      fault: "set / network-instance default segment-routing sr-policies policy bonsai-pe1-pe2 admin-state disable"
+      restore: "set / network-instance default segment-routing sr-policies policy bonsai-pe1-pe2 admin-state enable"
+    healing_delay_seconds: [30, 60]
+
+  # ── 6. BMP exporter disconnect ───────────────────────────────────────────────
+  # Admin-disable the BMP monitoring station on srl-pe2. Bonsai sees the TCP
+  # connection drop; all pe2 BGP sessions become "unmonitored." Exercises the
+  # BMP PeerDown + reconnect detection path in the streaming receiver.
+  - type: bmp_station_disable
+    weight: 3
+    targets: [srl-pe2]
+    station_name: bonsai-bmp
+    exec_hint:
+      fault: "set / bmp monitoring-station bonsai-bmp admin-state disable"
+      restore: "set / bmp monitoring-station bonsai-bmp admin-state enable"
+    healing_delay_seconds: [45, 90]
+
+  - type: bmp_station_disable
+    weight: 2
+    targets: [srl-rr1]
+    station_name: bonsai-bmp
+    exec_hint:
+      fault: "set / bmp monitoring-station bonsai-bmp admin-state disable"
+      restore: "set / bmp monitoring-station bonsai-bmp admin-state enable"
+    healing_delay_seconds: [45, 90]
+
+  # ── 7. BFD kill → IS-IS adjacency timeout ─────────────────────────────────────
+  # Admin-disable BFD on SR Linux subinterfaces. BFD detects failure in 3 s
+  # (3 × 1 s interval), which triggers IS-IS adjacency drop and BGP-BFD
+  # notification before the IS-IS hold-timer would expire.
+  - type: bfd_session_down
+    scenario: admin_disable_pe_uplink
+    weight: 4
+    targets: [srl-pe1]
+    subinterfaces: [ethernet-1/1.0, ethernet-1/2.0]
+    healing_delay_seconds: [20, 60]
+
+  - type: bfd_session_down
+    scenario: admin_disable_pe_uplink
+    weight: 4
+    targets: [srl-pe2]
+    subinterfaces: [ethernet-1/1.0, ethernet-1/2.0]
+    healing_delay_seconds: [20, 60]
+
+  - type: bfd_session_down
+    scenario: admin_disable_rr_uplink
+    weight: 3
+    targets: [srl-rr1]
+    subinterfaces: [ethernet-1/1.0, ethernet-1/2.0]
+    healing_delay_seconds: [20, 60]
+
+  - type: bfd_session_down
+    scenario: admin_disable_rr_uplink
+    weight: 3
+    targets: [srl-rr2]
+    subinterfaces: [ethernet-1/1.0, ethernet-1/2.0]
+    healing_delay_seconds: [20, 60]
+
+  # ── 8. VPN-IPv4 route flap ────────────────────────────────────────────────────
+  # Repeatedly bounce BGP sessions on PEs toward their RR pair. Produces rapid
+  # BMP RouteMonitoring update/withdraw cycles — critical GNN training data for
+  # distinguishing "BGP route churn" from "topology failure."
+  - type: route_flap
+    weight: 3
+    targets: [srl-pe1]
+    peer_addresses: ["10.2.0.6", "10.2.0.7"]   # rr1 + rr2 loopbacks
+    flap_count: 3
+    flap_hold_seconds: [3, 6]
+    healing_delay_seconds: [1, 1]
+
+  - type: route_flap
+    weight: 3
+    targets: [srl-pe2]
+    peer_addresses: ["10.2.0.6", "10.2.0.7"]
+    flap_count: 3
+    flap_hold_seconds: [3, 6]
+    healing_delay_seconds: [1, 1]
+
+  - type: route_flap
+    weight: 2
+    targets: [srl-pe3]
+    peer_addresses: ["10.2.0.6", "10.2.0.7"]
+    flap_count: 2
+    flap_hold_seconds: [3, 5]
+    healing_delay_seconds: [1, 1]
+
+# ── Baseline diversity — protected quiet windows ──────────────────────────────
+# SP lab quiet windows are offset from DC windows (always_on_dc.yaml) to
+# ensure the combined archive always has normal-state samples from at least
+# one topology at any given time.
+protected_baselines:
+  - id: sp_sunday_quiet
+    cron: "0 4 * * SUN"     # 04:00 UTC Sunday (DC uses midnight)
+    duration_hours: 4
+    description: "SP lab Sunday early-morning baseline — offset from DC Sunday window"
+
+  - id: sp_midweek_quiet
+    cron: "0 5 * * WED"     # 05:00 UTC Wednesday (DC uses 02:00)
+    duration_hours: 2
+    description: "SP lab mid-week baseline — offset from DC Wednesday window"
+
+  - id: sp_thursday_quiet
+    cron: "0 10 * * THU"    # 10:00 UTC Thursday — business-hours SP baseline
+    duration_hours: 1
+    description: "SP lab Thursday morning baseline for time-of-day diversity"
+
+bonsai_base_url: "http://localhost:3000"

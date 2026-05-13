@@ -386,3 +386,10 @@ echo "Wrote $DAILY_JSON"
 DATED_JSON="${RESULT_DIR}/daily-${DATE_UTC}.json"
 cp "$DAILY_JSON" "$DATED_JSON"
 echo "Wrote $DATED_JSON"
+
+# Append one line to the feature index history log (T3-2).
+FEATURE_HISTORY="$REPO_ROOT/docs/testing/FEATURE_INDEX_HISTORY.md"
+OVERALL_VERDICT="$(python3 -c "import json,sys; d=json.load(open('$DAILY_JSON')); print(d.get('status','unknown'))" 2>/dev/null || echo "unknown")"
+mkdir -p "$(dirname "$FEATURE_HISTORY")"
+echo "| $DATE_UTC | $OVERALL_VERDICT | $DATED_JSON |" >> "$FEATURE_HISTORY"
+echo "Appended to $FEATURE_HISTORY"

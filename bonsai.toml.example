@@ -209,6 +209,16 @@ graph_path   = "bonsai.db"
 # data_center      = "approve_each"
 # service_provider = "approve_each"
 
+# ── Lab management network (CV5 T2-3) ───────────────────────────────────────
+# Declares the active lab's management subnet as an explicit config key.
+# Scripts and tooling read this instead of inferring it from device addresses.
+# Invariant: network name is always "bonsai-mgmt"; only the subnet changes per lab.
+#
+# [lab]
+# topology       = "dc"                  # dc | sp | fast-iteration | cloud-dc
+# mgmt_subnet    = "172.100.103.0/24"    # IPv4 mgmt subnet for the active lab
+# mgmt_ipv6_subnet = "2001:db8:103::/64" # IPv6 mgmt subnet for the active lab
+
 # ── Nokia SR Linux — spine (TLS) ─────────────────────────────────────────────
 [[target]]
 address    = "172.100.102.11:57400"

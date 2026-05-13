@@ -13,12 +13,21 @@
 set -euo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/bonsai}"
-LOG_DIR="$INSTALL_DIR/logs"
+ARCHIVE_MOUNT="${ARCHIVE_MOUNT:-/mnt/bonsai-archive}"
+# Use archive mount for cron logs so they survive bonsai reinstalls.
+# Falls back to INSTALL_DIR/logs when archive mount is not present (laptop).
+if [[ -d "$ARCHIVE_MOUNT" ]]; then
+    LOG_DIR="$ARCHIVE_MOUNT/logs"
+else
+    LOG_DIR="$INSTALL_DIR/logs"
+fi
 CRON_TAG_SYNC="bonsai-cloud-sync"
 CRON_TAG_CHECK="bonsai-cloud-check"
 
+# LAB_SCOPE=cloud-dc ensures the daily check uses the 6-node cloud DC topology.
+# On a laptop with dc topology leave LAB_SCOPE unset (defaults to "dc").
 SYNC_LINE="0 2 * * * bash $INSTALL_DIR/scripts/cloud/daily_sync.sh >> $LOG_DIR/daily_sync.log 2>&1  # $CRON_TAG_SYNC"
-CHECK_LINE="30 2 * * * bash $INSTALL_DIR/scripts/bv5_daily_check.sh >> $LOG_DIR/daily_check.log 2>&1  # $CRON_TAG_CHECK"
+CHECK_LINE="30 2 * * * LAB_SCOPE=cloud-dc bash $INSTALL_DIR/scripts/bv5_daily_check.sh >> $LOG_DIR/daily_check.log 2>&1  # $CRON_TAG_CHECK"
 
 mkdir -p "$LOG_DIR"
 

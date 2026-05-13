@@ -103,9 +103,10 @@ impl OutputAdapter for SplunkHecAdapter {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         let mut dedup: HashMap<(String, String), i64> = HashMap::new();
-        // Cursor: only fetch detections newer than this; init 120s back to catch
-        // any detection injected before this adapter started without replaying all history.
-        let mut cursor_ns: i64 = now_ns() - 120_000_000_000;
+        let cursor_path = cursor_file_path(&self.config.name);
+        // Restore persisted cursor so a restart after a long gap doesn't silently
+        // discard queued detections (C4-N1 / T6-2). Fall back to 120s window.
+        let mut cursor_ns: i64 = load_cursor(&cursor_path).unwrap_or_else(|| now_ns() - 120_000_000_000);
 
         loop {
             tokio::select! {
@@ -113,6 +114,7 @@ impl OutputAdapter for SplunkHecAdapter {
                     let start = Instant::now();
                     match push_cycle(&self.config, &self.db, &creds, &audit, &mut dedup, &mut cursor_ns).await {
                         Ok(report) if report.events_pushed > 0 => {
+                            persist_cursor(&cursor_path, cursor_ns);
                             debug!(
                                 adapter = %self.config.name,
                                 events = report.events_pushed,
@@ -121,13 +123,16 @@ impl OutputAdapter for SplunkHecAdapter {
                                 "Splunk HEC push ok"
                             );
                         }
-                        Ok(_) => {}
+                        Ok(_) => {
+                            persist_cursor(&cursor_path, cursor_ns);
+                        }
                         Err(e) => warn!(adapter = %self.config.name, "Splunk HEC push failed: {e:#}"),
                     }
                 }
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() {
                         info!(adapter = %self.config.name, "Splunk HEC adapter shutting down");
+                        persist_cursor(&cursor_path, cursor_ns);
                         break;
                     }
                 }
@@ -387,6 +392,27 @@ pub fn build(config: &OutputAdapterConfig, db: Arc<Database>) -> Option<SplunkHe
         Some(SplunkHecAdapter::from_config(config.clone(), db))
     } else {
         None
+    }
+}
+
+// ── Cursor persistence (C4-N1 / T6-2) ────────────────────────────────────────
+
+fn cursor_file_path(adapter_name: &str) -> std::path::PathBuf {
+    let safe = adapter_name.replace(['/', '\\', ':'], "_");
+    std::path::PathBuf::from(format!("runtime/adapter_state/{safe}.cursor"))
+}
+
+fn load_cursor(path: &std::path::Path) -> Option<i64> {
+    let text = std::fs::read_to_string(path).ok()?;
+    text.trim().parse::<i64>().ok()
+}
+
+fn persist_cursor(path: &std::path::Path, cursor_ns: i64) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::write(path, cursor_ns.to_string()) {
+        tracing::warn!(path = %path.display(), error = %e, "failed to persist adapter cursor");
     }
 }
 

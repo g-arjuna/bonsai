@@ -34,7 +34,7 @@ name: bonsai-sp
 #   - SR policy degradation testing targets `bonsai-pe1-pe2` on `srl-pe1`.
 #
 # Addressing:
-#   Mgmt: 172.100.104.0/24
+#   Mgmt: 172.100.105.0/24
 #   Loopbacks: 10.2.0.x/32  (x=1 pe1 .. x=7 rr2; x=8 ce1, x=9 ce2)
 #   Backbone p2p: 10.2.10.0/27 block (/31 per link)
 #   CE-to-PE: 10.2.10.16/31 (ce1↔pe1), 10.2.10.18/31 (ce2↔pe2)
@@ -56,8 +56,9 @@ name: bonsai-sp
 
 mgmt:
   network: bonsai-mgmt
-  ipv4-subnet: 172.100.104.0/24
-  ipv4-gw: 172.100.104.1
+  ipv4-subnet: 172.100.105.0/24
+  ipv4-gw: 172.100.105.1
+  ipv6-subnet: 2001:db8:105::/64
 
 topology:
   nodes:
@@ -65,7 +66,7 @@ topology:
     srl-pe1:
       kind: nokia_srlinux
       image: ghcr.io/nokia/srlinux:latest
-      mgmt-ipv4: 172.100.104.11
+      mgmt-ipv4: 172.100.105.11
       startup-config: configs/srl-pe1.cfg
       labels:
         bonsai.role: pe
@@ -77,7 +78,7 @@ topology:
     srl-pe2:
       kind: nokia_srlinux
       image: ghcr.io/nokia/srlinux:latest
-      mgmt-ipv4: 172.100.104.12
+      mgmt-ipv4: 172.100.105.12
       startup-config: configs/srl-pe2.cfg
       labels:
         bonsai.role: pe
@@ -88,7 +89,7 @@ topology:
     srl-pe3:
       kind: nokia_srlinux
       image: ghcr.io/nokia/srlinux:latest
-      mgmt-ipv4: 172.100.104.13
+      mgmt-ipv4: 172.100.105.13
       startup-config: configs/srl-pe3.cfg
       labels:
         bonsai.role: pe
@@ -100,7 +101,7 @@ topology:
     srl-rr1:
       kind: nokia_srlinux
       image: ghcr.io/nokia/srlinux:latest
-      mgmt-ipv4: 172.100.104.14
+      mgmt-ipv4: 172.100.105.14
       startup-config: configs/srl-rr1.cfg
       labels:
         bonsai.role: rr
@@ -111,7 +112,7 @@ topology:
     srl-rr2:
       kind: nokia_srlinux
       image: ghcr.io/nokia/srlinux:latest
-      mgmt-ipv4: 172.100.104.15
+      mgmt-ipv4: 172.100.105.15
       startup-config: configs/srl-rr2.cfg
       labels:
         bonsai.role: rr
@@ -123,7 +124,7 @@ topology:
     frr-p1:
       kind: linux
       image: frrouting/frr:latest
-      mgmt-ipv4: 172.100.104.16
+      mgmt-ipv4: 172.100.105.16
       binds:
         - configs/frr-p1/daemons:/etc/frr/daemons
         - configs/frr-p1/frr.conf:/etc/frr/frr.conf
@@ -135,7 +136,7 @@ topology:
     frr-p2:
       kind: linux
       image: frrouting/frr:latest
-      mgmt-ipv4: 172.100.104.17
+      mgmt-ipv4: 172.100.105.17
       binds:
         - configs/frr-p2/daemons:/etc/frr/daemons
         - configs/frr-p2/frr.conf:/etc/frr/frr.conf
@@ -152,23 +153,23 @@ topology:
     # To activate:
     #   docker compose --profile streaming up -d gobgp-bgp-ls
     # Required env (in .env or shell):
-    #   GOBGP_PEER_ADDRESS=172.100.104.14   # srl-rr1 mgmt IP
+    #   GOBGP_PEER_ADDRESS=172.100.105.14   # srl-rr1 mgmt IP
     #   GOBGP_AS=65100
     #   GOBGP_PEER_AS=65100
     #   GOBGP_ROUTER_ID=10.2.0.100
     #
     # SR Linux RR config prerequisite (srl-rr1 startup-config):
-    #   neighbor 172.100.104.100 { peer-as 65100; afi-safi bgp-ls bgp-ls; }
+    #   neighbor 172.100.105.100 { peer-as 65100; afi-safi bgp-ls bgp-ls; }
     gobgp-bgp-ls:
       kind: linux
       image: bonsai-gobgp:latest   # built by docker compose --profile streaming
-      mgmt-ipv4: 172.100.104.100
+      mgmt-ipv4: 172.100.105.100
       env:
         GOBGP_AS: "65100"
-        GOBGP_PEER_AS: "65100"
-        GOBGP_PEER_ADDRESS: "172.100.104.14"
+        GOBGP_PEER_AS: "65200"
+        GOBGP_PEER_ADDRESS: "172.100.105.14"
         GOBGP_ROUTER_ID: "10.2.0.100"
-        BONSAI_BGP_LS_ADDR: "172.100.104.1"   # bonsai-mgmt gateway → host
+        BONSAI_BGP_LS_ADDR: "172.100.105.1"   # bonsai-mgmt gateway → host
         BONSAI_BGP_LS_PORT: "10179"
       labels:
         bonsai.role: collector
@@ -179,7 +180,7 @@ topology:
     frr-ce1:
       kind: linux
       image: frrouting/frr:latest
-      mgmt-ipv4: 172.100.104.18
+      mgmt-ipv4: 172.100.105.18
       binds:
         - configs/frr-ce1/daemons:/etc/frr/daemons
         - configs/frr-ce1/frr.conf:/etc/frr/frr.conf
@@ -190,7 +191,7 @@ topology:
     frr-ce2:
       kind: linux
       image: frrouting/frr:latest
-      mgmt-ipv4: 172.100.104.19
+      mgmt-ipv4: 172.100.105.19
       binds:
         - configs/frr-ce2/daemons:/etc/frr/daemons
         - configs/frr-ce2/frr.conf:/etc/frr/frr.conf

@@ -46,7 +46,28 @@ pub struct Config {
     #[serde(default)]
     pub streaming: StreamingConfig,
     #[serde(default)]
+    pub lab: LabConfig,
+    #[serde(default)]
     pub target: Vec<TargetConfig>,
+}
+
+// ── Lab ──────────────────────────────────────────────────────────────────────
+
+/// Active lab identity. Declares the management subnet as an explicit config
+/// key so scripts and tooling don't infer it from device addresses.
+/// All fields are optional — omitting [lab] is valid for non-lab deployments.
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct LabConfig {
+    /// Active topology identifier: "dc" | "sp" | "fast-iteration" | "cloud-dc".
+    #[serde(default)]
+    pub topology: String,
+    /// IPv4 management subnet for the active lab (e.g. "172.100.103.0/24").
+    /// ContainerLab invariant: network name is always "bonsai-mgmt".
+    #[serde(default)]
+    pub mgmt_subnet: String,
+    /// IPv6 management subnet for the active lab (e.g. "2001:db8:103::/64").
+    #[serde(default)]
+    pub mgmt_ipv6_subnet: String,
 }
 
 // ── Signals ──────────────────────────────────────────────────────────────────

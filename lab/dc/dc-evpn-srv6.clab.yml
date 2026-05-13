@@ -55,6 +55,7 @@ mgmt:
   network: bonsai-mgmt
   ipv4-subnet: 172.100.103.0/24
   ipv4-gw: 172.100.103.1
+  ipv6-subnet: 2001:db8:103::/64
 
 topology:
   nodes:

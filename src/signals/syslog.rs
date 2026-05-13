@@ -14,6 +14,7 @@ use tracing::{info, warn};
 
 use crate::config::{SyslogConfig, TargetConfig};
 use crate::event_bus::InProcessBus;
+use crate::resource_governor::GovernorHandle;
 use crate::telemetry::TelemetryUpdate;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -92,10 +93,12 @@ pub async fn run_syslog_receiver(
     targets: Vec<TargetConfig>,
     bus: Arc<InProcessBus>,
     shutdown: watch::Receiver<bool>,
+    governor: Option<GovernorHandle>,
 ) -> Result<()> {
     let archive = SyslogArchive::open(&cfg.archive_path).await?;
     let fact_extractor = Arc::new(SyslogFactExtractor::load_from_dir(&pattern_dir));
     let target_map = Arc::new(SyslogTargetMap::new(&targets));
+    let governor = governor.map(Arc::new);
     let mut tasks = Vec::new();
 
     if !cfg.udp_addr.trim().is_empty() {
@@ -111,6 +114,7 @@ pub async fn run_syslog_receiver(
             Arc::clone(&target_map),
             cfg.max_frame_bytes,
             shutdown.clone(),
+            governor.clone(),
         )));
     }
 
@@ -127,6 +131,7 @@ pub async fn run_syslog_receiver(
             Arc::clone(&target_map),
             cfg.max_frame_bytes,
             shutdown.clone(),
+            governor.clone(),
         )));
     }
 
@@ -152,6 +157,7 @@ async fn run_udp(
     target_map: Arc<SyslogTargetMap>,
     max_frame_bytes: usize,
     mut shutdown: watch::Receiver<bool>,
+    governor: Option<Arc<GovernorHandle>>,
 ) {
     let mut buf = vec![0_u8; max_frame_bytes.max(1)];
     loop {
@@ -172,6 +178,7 @@ async fn run_udp(
                             &archive,
                             &fact_extractor,
                             &target_map,
+                            governor.as_deref(),
                         )
                         .await;
                     }
@@ -190,6 +197,7 @@ async fn run_tcp(
     target_map: Arc<SyslogTargetMap>,
     max_frame_bytes: usize,
     mut shutdown: watch::Receiver<bool>,
+    governor: Option<Arc<GovernorHandle>>,
 ) {
     loop {
         tokio::select! {
@@ -204,6 +212,7 @@ async fn run_tcp(
                         let archive = archive.clone();
                         let fact_extractor = Arc::clone(&fact_extractor);
                         let target_map = Arc::clone(&target_map);
+                        let governor = governor.clone();
                         tokio::spawn(async move {
                             let mut reader = BufReader::new(stream);
                             let mut line = String::new();
@@ -224,6 +233,7 @@ async fn run_tcp(
                                             &archive,
                                             &fact_extractor,
                                             &target_map,
+                                            governor.as_deref(),
                                         ).await;
                                     }
                                     Err(error) => {
@@ -249,6 +259,7 @@ async fn handle_frame(
     archive: &SyslogArchive,
     fact_extractor: &SyslogFactExtractor,
     target_map: &SyslogTargetMap,
+    governor: Option<&GovernorHandle>,
 ) {
     if raw.is_empty() {
         return;
@@ -274,6 +285,13 @@ async fn handle_frame(
     let target_hostname = target.hostname.clone();
     let target_role = target.role.clone();
     let target_site = target.site.clone();
+
+    // Under rate shedding, skip bus publish to relieve pipeline pressure (C4-N2 / T6-1).
+    // Raw data is still archived above so no telemetry is permanently lost.
+    if governor.map_or(false, |g| g.is_shedding()) {
+        metrics::counter!("bonsai_syslog_shed_total").increment(1);
+        return;
+    }
 
     bus.publish(TelemetryUpdate {
         target: target_address.clone(),

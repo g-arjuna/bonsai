@@ -12,6 +12,7 @@ use tracing::{info, warn};
 
 use crate::config::{BmpConfig, TargetConfig};
 use crate::event_bus::InProcessBus;
+use crate::resource_governor::GovernorHandle;
 use crate::telemetry::TelemetryUpdate;
 
 const BMP_VERSION: u8 = 3;
@@ -79,9 +80,11 @@ pub async fn run_bmp_receiver(
     targets: Vec<TargetConfig>,
     bus: Arc<InProcessBus>,
     mut shutdown: watch::Receiver<bool>,
+    governor: Option<GovernorHandle>,
 ) -> Result<()> {
     let archive = JsonLineArchive::open(&cfg.archive_path).await?;
     let target_map = Arc::new(BmpTargetMap::new(&targets));
+    let governor = governor.map(Arc::new);
     let listener = TcpListener::bind(&cfg.tcp_addr)
         .await
         .with_context(|| format!("bind BMP listener at {}", cfg.tcp_addr))?;
@@ -100,6 +103,7 @@ pub async fn run_bmp_receiver(
                         let target_map = Arc::clone(&target_map);
                         let bus = Arc::clone(&bus);
                         let max_frame_bytes = cfg.max_frame_bytes;
+                        let governor = governor.clone();
                         tokio::spawn(async move {
                             loop {
                                 let mut header = [0_u8; BMP_HEADER_LEN];
@@ -128,7 +132,7 @@ pub async fn run_bmp_receiver(
                                         if let Err(error) = archive.append(&event).await {
                                             warn!(%error, "failed to archive BMP event");
                                         }
-                                        publish_event(&bus, &target_map, event);
+                                        publish_event(&bus, &target_map, event, governor.as_deref());
                                     }
                                     Err(error) => warn!(%error, peer = %peer, "failed to parse BMP message"),
                                 }
@@ -144,8 +148,12 @@ pub async fn run_bmp_receiver(
     Ok(())
 }
 
-fn publish_event(bus: &Arc<InProcessBus>, target_map: &BmpTargetMap, event: BmpEvent) {
-    let resolved = target_map.resolve(&event);
+fn publish_event(
+    bus: &Arc<InProcessBus>,
+    target_map: &BmpTargetMap,
+    event: BmpEvent,
+    governor: Option<&GovernorHandle>,
+) {
     let path = match event.message_type.as_str() {
         "route_monitoring" => "streaming/bmp/route-monitoring",
         "peer_up" => "streaming/bmp/peer-up",
@@ -155,6 +163,15 @@ fn publish_event(bus: &Arc<InProcessBus>, target_map: &BmpTargetMap, event: BmpE
         "termination" => "streaming/bmp/termination",
         _ => "streaming/bmp/unknown",
     };
+
+    // Under rate shedding, drop low-value StatisticsReport messages while preserving
+    // high-value state-change events (RouteMonitoring, PeerUp, PeerDown) (C4-N2 / T6-1).
+    if event.message_type == "statistics_report" && governor.map_or(false, |g| g.is_shedding()) {
+        metrics::counter!("bonsai_bmp_shed_total").increment(1);
+        return;
+    }
+
+    let resolved = target_map.resolve(&event);
     let value = serde_json::to_value(event).unwrap_or_default();
     bus.publish(TelemetryUpdate {
         target: resolved.address,

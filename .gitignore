@@ -99,3 +99,6 @@ CLAUDE_CODE_RESUME_PROMPT.md
 CODEX_HARVEST_RESUME_PROMPT.md
 PHASE4.md
 PHASE5_*.md
+
+# CV5 freeze dirs — contain bonsai.toml.snapshot which may have credentials
+pre_cv5_freeze_*/

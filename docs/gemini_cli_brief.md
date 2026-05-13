@@ -59,6 +59,20 @@ Use credentials only from local `bonsai.toml`, the credential vault, or environm
 - Grafana: `http://localhost:3001`
 - ServiceNow PDI: `SNOW_INSTANCE_URL`, `SNOW_USERNAME`, `SNOW_PASSWORD`
 
+## Feature Status Index (CV5)
+
+**Before asking "what's the status of feature X?" — read this first:**
+
+- **Index**: `docs/testing/FEATURE_INDEX.md` — one section per feature with implementation
+  path, test script, artefact location, current status, and last-tested date.
+- **History**: `docs/testing/FEATURE_INDEX_HISTORY.md` — one row per daily check run,
+  showing overall verdict. Use this to spot regression days.
+
+Key status values: `pass-e2e`, `pass-smoke`, `pass-unit`, `skip`, `fail`, `not-tested`, `parked`.
+
+When asked to verify a feature, find its row in the index, run the listed test script, and
+update the "Last tested" field in the index if the result changes.
+
 ## Test Commands And Ownership
 
 ### Smoke tests

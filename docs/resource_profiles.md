@@ -123,3 +123,25 @@ The probe defaults are only applied when the corresponding config key is absent 
 See `docs/operational_health_thresholds.md` for the full list of health check thresholds. Governance fires **before** the kill-switch RSS budget is hit, giving the system time to recover without operator intervention.
 
 The kill-switch (OOM protection via Bv4 budget assertion) remains active as the final backstop. Governance is the graduated degradation curve that fires first.
+
+## Boundary Behavior (C4-N4)
+
+The profile is selected by flooring effective RAM to GB thresholds. This produces a step function, not a continuous one. A VM with 1.9 GB effective RAM selects `tiny` (256 MB memory budget); a VM with 2.0 GB selects `small` (512 MB budget). The gap at the boundary is 256 MB.
+
+| Boundary | Just below | Just above | Budget jump |
+|----------|------------|------------|-------------|
+| 2 GB | `tiny` — 256 MB | `small` — 512 MB | +256 MB |
+| 6 GB | `small` — 512 MB | `medium` — 1 GB | +512 MB |
+| 14 GB | `medium` — 1 GB | `large` — 2 GB | +1 GB |
+| 30 GB | `large` — 2 GB | `xlarge` — 4 GB | +2 GB |
+
+**If your VM is within 200 MB of a boundary, pin the profile manually** to avoid surprising behavior after memory pressure causes the effective RAM to dip below the threshold:
+
+```toml
+[resource]
+profile = "small"   # pin explicitly rather than relying on auto-probe
+```
+
+The explicit override takes precedence over the probe result and will not shift across restarts as cgroup or memory pressure changes.
+
+**Why there is no hysteresis**: the probe runs once at startup and does not re-probe during runtime. Boundary oscillation during a single run is not possible. The concern is strictly across restarts on VMs that hover near a threshold (e.g., OCI Ampere free-tier VMs with 24 GB nominal RAM but significant cgroup caps from OS overhead).

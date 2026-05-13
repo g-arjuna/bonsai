@@ -470,20 +470,97 @@ async fn tool_list_active_detections(
     Ok(json!({ "detections": filtered, "count": count }))
 }
 
+/// Returns `false` if `cypher` contains a mutation keyword that should never
+/// appear in a read-only query.
+///
+/// **Hardening strategy (C4-N3 / T6-3)**:
+/// 1. Strip single-line comments (`--` and `//` style) and block comments
+///    (`/* */`) before scanning — otherwise a comment containing `SET` would
+///    produce a false-positive rejection.
+/// 2. Use word-boundary detection: keyword must be preceded by a non-word char
+///    (or start-of-string) and followed by a non-alphanumeric/non-underscore
+///    char (or end-of-string). This prevents `OFFSET` from matching `SET` and
+///    prevents variable names containing keyword substrings from tripping the gate.
+/// 3. Extended keyword list includes `DROP`, `LOAD`, and `CALL` (which can
+///    invoke write-capable procedures in Kuzu).
+///
+/// **Known limitation**: this is a best-effort text filter. A fully correct
+/// solution requires opening the lbug Connection in a read-only transaction
+/// mode. lbug 0.15.x does not expose such a mode; upgrade this check when
+/// a read-only Connection API becomes available. Until then, the gate prevents
+/// casual misuse and common injection patterns, but should not be treated as a
+/// security boundary against a determined adversary with direct API access.
 pub fn is_readonly_cypher(cypher: &str) -> bool {
-    let upper = cypher.to_uppercase();
-    for keyword in ["CREATE ", "SET ", "DELETE ", "MERGE ", "REMOVE ", "DETACH "] {
-        if upper.contains(keyword) {
-            return false;
-        }
-    }
-    // Also catch trailing keyword at end-of-string (e.g. "MATCH (n) DELETE")
-    for keyword in ["CREATE", "SET", "DELETE", "MERGE", "REMOVE", "DETACH"] {
-        if upper.trim_end() == keyword {
+    let stripped = strip_cypher_comments(cypher);
+    let upper = stripped.to_uppercase();
+
+    const MUTATION_KEYWORDS: &[&str] = &[
+        "CREATE", "SET", "DELETE", "MERGE", "REMOVE", "DETACH", "DROP", "LOAD", "CALL",
+    ];
+
+    for kw in MUTATION_KEYWORDS {
+        if contains_keyword(&upper, kw) {
             return false;
         }
     }
     true
+}
+
+/// Strip `--`, `//` single-line comments and `/* */` block comments.
+fn strip_cypher_comments(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        // Block comment
+        if i + 1 < chars.len() && chars[i] == '/' && chars[i + 1] == '*' {
+            i += 2;
+            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                i += 1;
+            }
+            i += 2; // consume */
+            continue;
+        }
+        // Line comment (-- or //)
+        if i + 1 < chars.len()
+            && ((chars[i] == '-' && chars[i + 1] == '-')
+                || (chars[i] == '/' && chars[i + 1] == '/'))
+        {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Check if `kw` appears as a whole word (word-boundary on both sides) in `upper`.
+fn contains_keyword(upper: &str, kw: &str) -> bool {
+    let mut start = 0;
+    while let Some(pos) = upper[start..].find(kw) {
+        let abs = start + pos;
+        let before_ok = abs == 0
+            || !upper
+                .chars()
+                .nth(abs.saturating_sub(1))
+                .map(|c| c.is_alphanumeric() || c == '_')
+                .unwrap_or(false);
+        let after_pos = abs + kw.len();
+        let after_ok = after_pos >= upper.len()
+            || !upper
+                .chars()
+                .nth(after_pos)
+                .map(|c| c.is_alphanumeric() || c == '_')
+                .unwrap_or(false);
+        if before_ok && after_ok {
+            return true;
+        }
+        start = abs + 1;
+    }
+    false
 }
 
 async fn tool_query_graph(state: &AppState, args: &JsonValue) -> Result<JsonValue, String> {
@@ -700,12 +777,24 @@ mod tests {
 
     #[test]
     fn readonly_cypher_rejects_mutations() {
+        // Original cases
         assert!(!is_readonly_cypher("CREATE (n:Device)"));
         assert!(!is_readonly_cypher("MATCH (n) SET n.x = 1"));
         assert!(!is_readonly_cypher("MATCH (n) DELETE n"));
         assert!(!is_readonly_cypher("MERGE (n:Device {address: '1.2.3.4'})"));
         assert!(!is_readonly_cypher("MATCH (n) DETACH DELETE n"));
         assert!(!is_readonly_cypher("MATCH (n) REMOVE n.x"));
+        // New mutation keywords
+        assert!(!is_readonly_cypher("DROP TABLE Foo"));
+        assert!(!is_readonly_cypher("CALL write_procedure()"));
+        assert!(!is_readonly_cypher("LOAD FROM 'data.csv' CREATE (n)"));
+        // Bypass attempt: mutation hidden after comment stripping
+        assert!(!is_readonly_cypher("MATCH (n) /* safe */ SET n.x = 1"));
+        assert!(!is_readonly_cypher("MATCH (n) -- comment\nSET n.x = 1"));
+        assert!(!is_readonly_cypher("MATCH (n) // comment\nCREATE (m)"));
+        // Case-insensitive
+        assert!(!is_readonly_cypher("match (n) set n.x = 1"));
+        assert!(!is_readonly_cypher("Match (n) Create (m:Foo)"));
     }
 
     #[test]
@@ -715,6 +804,12 @@ mod tests {
             "MATCH (n:BgpNeighbor {device_address: $dev}) RETURN n.session_state"
         ));
         assert!(is_readonly_cypher("MATCH (a)-[:CONNECTED_TO]->(b) RETURN a, b"));
+        // Word-boundary: OFFSET should not match SET; CREATED should not match CREATE
+        assert!(is_readonly_cypher("MATCH (n) RETURN n SKIP 0 LIMIT 10"));
+        assert!(is_readonly_cypher("MATCH (n:Device {created_at: $t}) RETURN n"));
+        // Comment-only containing a mutation keyword is stripped and allowed
+        assert!(is_readonly_cypher("MATCH (n) RETURN n -- SET is not here"));
+        assert!(is_readonly_cypher("/* CREATE */ MATCH (n) RETURN n"));
     }
 
     #[test]

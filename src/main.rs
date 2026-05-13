@@ -370,8 +370,23 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Shutdown channel and governor are created before receivers so all subsystems
+    // share the same governor handle for pressure-based control (T6-1 / C4-N2).
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let shared_governor: Option<bonsai::resource_governor::GovernorHandle> = if run_core {
+        Some(bonsai::resource_governor::start(
+            probe.profile,
+            probe.defaults,
+            shutdown_rx.clone(),
+        ))
+    } else {
+        None
+    };
+
     let coordinator = if let Some(Store::Core(ref s)) = store {
-        let coordinator_cfg = bonsai::write_coordinator::WriteCoordinatorConfig::default();
+        let mut coordinator_cfg = bonsai::write_coordinator::WriteCoordinatorConfig::default();
+        coordinator_cfg.governor = shared_governor.clone();
         Some(std::sync::Arc::new(
             bonsai::write_coordinator::WriteCoordinator::new(
                 std::sync::Arc::clone(s),
@@ -407,14 +422,13 @@ async fn main() -> Result<()> {
         });
     }
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-
     if cfg.signals.syslog.enabled && run_collector {
         let syslog_cfg = cfg.signals.syslog.clone();
         let syslog_pattern_dir = cfg.layered_ingestion.syslog_patterns_path.clone();
         let syslog_targets = cfg.target.clone();
         let syslog_bus = std::sync::Arc::clone(&bus);
         let syslog_shutdown = shutdown_rx.clone();
+        let syslog_governor = shared_governor.clone();
         tokio::spawn(async move {
             if let Err(error) = bonsai::signals::syslog::run_syslog_receiver(
                 syslog_cfg,
@@ -422,6 +436,7 @@ async fn main() -> Result<()> {
                 syslog_targets,
                 syslog_bus,
                 syslog_shutdown,
+                syslog_governor,
             )
             .await
             {
@@ -462,12 +477,14 @@ async fn main() -> Result<()> {
         let bmp_targets = cfg.target.clone();
         let bmp_bus = std::sync::Arc::clone(&bus);
         let bmp_shutdown = shutdown_rx.clone();
+        let bmp_governor = shared_governor.clone();
         tokio::spawn(async move {
             if let Err(error) = bonsai::streaming::bmp::run_bmp_receiver(
                 bmp_cfg,
                 bmp_targets,
                 bmp_bus,
                 bmp_shutdown,
+                bmp_governor,
             )
             .await
             {
@@ -910,13 +927,9 @@ async fn main() -> Result<()> {
             let remediation_config = cfg.remediation.clone();
             let servicenow_config = cfg.integrations.servicenow.clone();
 
-            // T4-1/T4-2/T4-3/T4-4: start the resource governor with the probed profile.
-            let governor = bonsai::resource_governor::start(
-                probe.profile,
-                probe.defaults,
-                shutdown_rx.clone(),
-            );
-            let governor_for_http = governor.clone();
+            // T4-1/T4-2/T4-3/T4-4: governor was started early (shared_governor) so all
+            // receivers and the write coordinator already share it.
+            let governor_for_http = shared_governor.clone();
 
             tokio::spawn(async move {
                 let listener = tokio::net::TcpListener::bind(http_addr)
@@ -950,7 +963,7 @@ async fn main() -> Result<()> {
                         cfg.collector.filter.counter_forward_mode.clone(),
                         cfg.collector.filter.counter_window_secs,
                         cfg.collector.filter.counter_debounce_secs,
-                        Some(governor_for_http),
+                        governor_for_http,
                     ),
                 )
                 .await

@@ -6,6 +6,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 use crate::graph::{GraphStore, SubscriptionStatusWrite};
+use crate::resource_governor::GovernorHandle;
 use crate::telemetry::TelemetryUpdate;
 
 static GLOBAL_QUEUE_DEPTH: AtomicUsize = AtomicUsize::new(0);
@@ -63,11 +64,14 @@ pub enum WriteRequest {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct WriteCoordinatorConfig {
     pub batch_size: usize,
     pub flush_interval: Duration,
     pub queue_capacity: usize,
+    /// When set, the coordinator consults write pressure and memory pressure flags
+    /// to expand the effective batch size under load (C4-N2 / T6-1).
+    pub governor: Option<GovernorHandle>,
 }
 
 impl Default for WriteCoordinatorConfig {
@@ -76,6 +80,7 @@ impl Default for WriteCoordinatorConfig {
             batch_size: 256,
             flush_interval: Duration::from_secs(1),
             queue_capacity: 4096,
+            governor: None,
         }
     }
 }
@@ -159,11 +164,20 @@ async fn run_coordinator(
     flush_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
+        // Under write pressure, expand batch size to 2× to make each DB write
+        // cover more rows and reduce per-write overhead (C4-N2 / T6-1).
+        let effective_batch = cfg
+            .governor
+            .as_ref()
+            .filter(|g| g.write_pressure_active())
+            .map(|_| cfg.batch_size * 2)
+            .unwrap_or(cfg.batch_size);
+
         tokio::select! {
             req = rx.recv() => match req {
                 Some(WriteRequest::Telemetry(u)) => {
                     telemetry_batch.push(u);
-                    if telemetry_batch.len() >= cfg.batch_size {
+                    if telemetry_batch.len() >= effective_batch {
                         flush_telemetry_batch(&store, &mut telemetry_batch).await;
                     }
                 }

@@ -486,18 +486,21 @@ _run sudo systemctl daemon-reload
 _run sudo systemctl enable bonsai-chaos
 _run sudo systemctl restart bonsai-chaos
 
-# ── Step 11: Daily archive sync cron ─────────────────────────────────────────
+# ── Step 11: Cron jobs (daily sync + daily check) ─────────────────────────────
 
-_step 11 "Daily archive sync cron"
+_step 11 "Cron jobs (daily sync + daily check)"
 
-CRON_ENTRY="0 3 * * * bash $INSTALL_DIR/scripts/cloud/daily_sync.sh >> $ARCHIVE_MOUNT/logs/daily_sync.log 2>&1"
-# Only add if not already present
-if ! crontab -l 2>/dev/null | grep -qF "daily_sync.sh"; then
-    (crontab -l 2>/dev/null; echo "$CRON_ENTRY") | crontab -
-    _log "  Cron installed: 03:00 UTC daily"
-else
-    _log "  Cron already present"
+# Migrate any old untagged daily_sync.sh entry added by earlier versions of this
+# script. The tagged install_cron.sh is idempotent so this migration is safe.
+EXISTING_CRON="$(crontab -l 2>/dev/null || true)"
+MIGRATED="$(echo "$EXISTING_CRON" | grep -v "daily_sync.sh" | grep -v "bv5_daily_check.sh" || true)"
+if [[ "$EXISTING_CRON" != "$MIGRATED" ]]; then
+    echo "$MIGRATED" | grep -v '^$' | crontab - 2>/dev/null || true
+    _log "  Removed old untagged cron entries (migrating to tagged format)"
 fi
+
+# Install via the canonical idempotent installer (adds bonsai-cloud-sync + bonsai-cloud-check tags)
+_run bash "$INSTALL_DIR/scripts/cloud/install_cron.sh"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 

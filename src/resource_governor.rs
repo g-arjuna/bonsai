@@ -87,6 +87,12 @@ impl GovernorHandle {
         self.inner.memory_pressure_active.load(Ordering::Relaxed)
     }
 
+    /// Returns true when write queue pressure is active (batch-size expansion mode).
+    #[inline]
+    pub fn write_pressure_active(&self) -> bool {
+        self.inner.write_pressure_active.load(Ordering::Relaxed)
+    }
+
     pub fn snapshot(&self) -> GovernanceSnapshot {
         let inn = &self.inner;
         GovernanceSnapshot {

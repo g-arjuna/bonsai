@@ -1,0 +1,215 @@
+name: bonsai-sp-xrd
+
+# SP PE-P-RR topology — full feature surface: SR-MPLS + SRv6 + RSVP-TE + PCEP + BGP-LU + BGP-LS
+#
+# Topology (logical):
+#
+#   [ce1]──[xrd-pe1]══[frr-p1]══[frr-p2]══[xrd-pe2]──[ce2]
+#                |                              |
+#             [xrd-rr1]════════════════════[xrd-pe3]
+#
+# Backbone (═══): IS-IS L2 + SR-MPLS + SRv6 locators + LDP
+# PE↔CE: eBGP, VRF-A and VRF-B
+# RR: iBGP route reflector for VPN-IPv4 + VPN-IPv6 + BGP-LU
+# PCEP: xrd-rr1 as PCE, pe1+pe2+pe3 as PCCs
+#
+# NOS selection (per T5-1 research):
+#   xrd-pe1/pe2/pe3 : Cisco XRd Control Plane 7.x (full SR-MPLS, SRv6, BGP-LU, BMP, BGP-LS)
+#   xrd-rr1         : Cisco XRd Control Plane 7.x (iBGP RR + PCE)
+#   frr-p1/p2       : FRR 9.x (P routers — IS-IS SR-MPLS forwarding; open source, no license needed)
+#   frr-ce1/ce2     : FRR 9.x (customer edge — eBGP to PE)
+#
+# Features at steady state:
+#   - IS-IS Level 2, area 49.0001, p2p on backbone links
+#   - SR-MPLS prefix SIDs (SRGB 100–999); SID per loopback
+#   - SRv6 locators (fc00:0:x::/48 per XRd node); End/End.DT4 functions
+#   - SRv6 L3VPN: VRF-A over SRv6 transport
+#   - LDP on backbone links (coexisting with SR-MPLS)
+#   - iBGP VPN-IPv4 for L3VPN + BGP-LU + BGP-LS; reflected by xrd-rr1
+#   - PCEP: xrd-rr1 as PCE server; pe1/pe2/pe3 as PCCs
+#   - SR-TE policy on pe1: explicit path pe1→p1→p2→pe2 (color 100)
+#   - Flex-Algo 128 (low-latency metric) on all XRd nodes
+#   - BMP: all XRd PEs + RR export to bonsai BMP receiver (port 11019)
+#   - BGP-LS: xrd-rr1 + PEs as BGP-LS sources; gobgp-bgp-ls sidecar collects
+#   - BFD 1s on all backbone links and BGP sessions
+#
+# PRE-REQUISITE — XRd image:
+#   Pull XRd Control Plane 7.x from software.cisco.com (free CCO account).
+#   Load: docker load -i xrd-control-plane-container-x64.dockerv2.tgz
+#   Verify: docker images | grep xrd-control-plane
+#   Tag it: docker tag <sha> ios-xr/xrd-control-plane:latest
+#
+# Host sysctl (required for XRd):
+#   sudo sysctl -w fs.inotify.max_user_instances=64000
+#   sudo sysctl -w fs.inotify.max_user_watches=64000
+#   sudo sysctl -w fs.inotify.max_queued_events=64000
+#
+# Addressing:
+#   Mgmt: 172.100.106.0/24  (separate from Variant A's 172.100.105.0/24)
+#   Loopbacks: 10.2.1.x/32  (x=1 pe1 .. x=6 rr1)
+#   Backbone p2p: 10.2.11.0/28 block (/31 per link)
+#   CE-to-PE: 10.2.11.16/31 (ce1↔pe1), 10.2.11.18/31 (ce2↔pe2)
+#   SRv6 locators: fc00:0:1::/48 (pe1), fc00:0:2::/48 (pe2), fc00:0:3::/48 (pe3), fc00:0:6::/48 (rr1)
+#
+# SR-MPLS SIDs (SRGB 100):
+#   pe1 index 1 → SID 101
+#   pe2 index 2 → SID 102
+#   pe3 index 3 → SID 103
+#   p1  index 4 → SID 104
+#   p2  index 5 → SID 105
+#   rr1 index 6 → SID 106
+#
+# Deploy:
+#   sudo sysctl -w fs.inotify.max_user_instances=64000 fs.inotify.max_user_watches=64000 fs.inotify.max_queued_events=64000
+#   containerlab deploy -t lab/sp/sp-mpls-srte-xrd.clab.yml
+#
+# Verify:
+#   scripts/check_lab.sh --topology sp-xrd
+
+mgmt:
+  network: bonsai-mgmt
+  ipv4-subnet: 172.100.106.0/24
+  ipv4-gw: 172.100.106.1
+  ipv6-subnet: 2001:db8:106::/64
+
+topology:
+  nodes:
+    # ── Cisco XRd PE nodes ────────────────────────────────────────────────────
+    xrd-pe1:
+      kind: cisco_xrd
+      image: ios-xr/xrd-control-plane:latest
+      mgmt-ipv4: 172.100.106.11
+      startup-config: configs/xrd/PE1.cfg
+      labels:
+        bonsai.role: pe
+        bonsai.environment: service_provider
+        bonsai.streaming.bmp: exporter
+        bonsai.streaming.bgp_ls: source
+        bonsai.streaming.sr_policy: bonsai-pe1-pe2
+        bonsai.streaming.srv6: enabled
+
+    xrd-pe2:
+      kind: cisco_xrd
+      image: ios-xr/xrd-control-plane:latest
+      mgmt-ipv4: 172.100.106.12
+      startup-config: configs/xrd/PE2.cfg
+      labels:
+        bonsai.role: pe
+        bonsai.environment: service_provider
+        bonsai.streaming.bmp: exporter
+        bonsai.streaming.bgp_ls: source
+        bonsai.streaming.srv6: enabled
+
+    xrd-pe3:
+      kind: cisco_xrd
+      image: ios-xr/xrd-control-plane:latest
+      mgmt-ipv4: 172.100.106.13
+      startup-config: configs/xrd/PE3.cfg
+      labels:
+        bonsai.role: pe
+        bonsai.environment: service_provider
+        bonsai.streaming.bmp: exporter
+        bonsai.streaming.bgp_ls: source
+        bonsai.streaming.srv6: enabled
+
+    # ── Cisco XRd Route Reflector + PCE ──────────────────────────────────────
+    xrd-rr1:
+      kind: cisco_xrd
+      image: ios-xr/xrd-control-plane:latest
+      mgmt-ipv4: 172.100.106.14
+      startup-config: configs/xrd/RR1.cfg
+      labels:
+        bonsai.role: rr
+        bonsai.environment: service_provider
+        bonsai.streaming.bmp: exporter
+        bonsai.streaming.bgp_ls: source
+        bonsai.streaming.pcep: pce
+
+    # ── FRR P routers (IS-IS SR-MPLS + LDP transit) ──────────────────────────
+    frr-p1:
+      kind: linux
+      image: frrouting/frr:latest
+      mgmt-ipv4: 172.100.106.15
+      binds:
+        - configs/frr-p1/daemons:/etc/frr/daemons
+        - configs/frr-p1/frr.conf:/etc/frr/frr.conf
+      labels:
+        bonsai.role: p
+        bonsai.environment: service_provider
+
+    frr-p2:
+      kind: linux
+      image: frrouting/frr:latest
+      mgmt-ipv4: 172.100.106.16
+      binds:
+        - configs/frr-p2/daemons:/etc/frr/daemons
+        - configs/frr-p2/frr.conf:/etc/frr/frr.conf
+      labels:
+        bonsai.role: p
+        bonsai.environment: service_provider
+
+    # ── BGP-LS collector (GoBGP sidecar) ─────────────────────────────────────
+    # Peers with xrd-rr1 over iBGP to receive BGP-LS NLRI (topology + SRv6 SIDs).
+    gobgp-bgp-ls:
+      kind: linux
+      image: bonsai-gobgp:latest
+      mgmt-ipv4: 172.100.106.100
+      env:
+        GOBGP_AS: "65200"
+        GOBGP_PEER_AS: "65200"
+        GOBGP_PEER_ADDRESS: "172.100.106.14"
+        GOBGP_ROUTER_ID: "10.2.1.100"
+        BONSAI_BGP_LS_ADDR: "172.100.106.1"
+        BONSAI_BGP_LS_PORT: "10179"
+      labels:
+        bonsai.role: collector
+        bonsai.environment: service_provider
+        bonsai.streaming.bgp_ls: collector
+
+    # ── FRR Customer Edge ─────────────────────────────────────────────────────
+    frr-ce1:
+      kind: linux
+      image: frrouting/frr:latest
+      mgmt-ipv4: 172.100.106.17
+      binds:
+        - configs/frr-ce1/daemons:/etc/frr/daemons
+        - configs/frr-ce1/frr.conf:/etc/frr/frr.conf
+      labels:
+        bonsai.role: ce
+        bonsai.environment: service_provider
+
+    frr-ce2:
+      kind: linux
+      image: frrouting/frr:latest
+      mgmt-ipv4: 172.100.106.18
+      binds:
+        - configs/frr-ce2/daemons:/etc/frr/daemons
+        - configs/frr-ce2/frr.conf:/etc/frr/frr.conf
+      labels:
+        bonsai.role: ce
+        bonsai.environment: service_provider
+
+  links:
+    # ── Backbone ══════════════════════════════════════════════════════════════
+    # pe1 GigE0/0/0/0 ↔ p1 eth1   (10.2.11.0/31)
+    - endpoints: ["xrd-pe1:Gi0-0-0-0", "frr-p1:eth1"]
+    # p1 eth2 ↔ p2 eth1            (10.2.11.2/31)
+    - endpoints: ["frr-p1:eth2", "frr-p2:eth1"]
+    # p2 eth2 ↔ pe2 GigE0/0/0/0   (10.2.11.4/31)
+    - endpoints: ["frr-p2:eth2", "xrd-pe2:Gi0-0-0-0"]
+    # pe3 GigE0/0/0/0 ↔ p2 eth4   (10.2.11.12/31)
+    - endpoints: ["xrd-pe3:Gi0-0-0-0", "frr-p2:eth4"]
+
+    # ── RR connectivity ───────────────────────────────────────────────────────
+    # pe1 GigE0/0/0/1 ↔ rr1 GigE0/0/0/0  (10.2.11.6/31)
+    - endpoints: ["xrd-pe1:Gi0-0-0-1", "xrd-rr1:Gi0-0-0-0"]
+    # pe2 GigE0/0/0/1 ↔ rr1 GigE0/0/0/1  (10.2.11.8/31)
+    - endpoints: ["xrd-pe2:Gi0-0-0-1", "xrd-rr1:Gi0-0-0-1"]
+    # pe3 GigE0/0/0/1 ↔ rr1 GigE0/0/0/2  (10.2.11.10/31)
+    - endpoints: ["xrd-pe3:Gi0-0-0-1", "xrd-rr1:Gi0-0-0-2"]
+
+    # ── CE ↔ PE ───────────────────────────────────────────────────────────────
+    # ce1 eth1 ↔ pe1 GigE0/0/0/2  (10.2.11.16/31)
+    - endpoints: ["frr-ce1:eth1", "xrd-pe1:Gi0-0-0-2"]
+    # ce2 eth1 ↔ pe2 GigE0/0/0/2  (10.2.11.18/31)
+    - endpoints: ["frr-ce2:eth1", "xrd-pe2:Gi0-0-0-2"]

@@ -229,8 +229,40 @@ check_sp() {
     fi
     log "  CE1 BGP state toward pe1: ${ce1_bgp}"
 
+    # SR-MPLS LFIB on frr-p1 — expect ≥6 forwarding entries (6 remote prefix SIDs)
+    local mpls_entries_p1=0
+    if node_running "$(clab_node sp frr-p1)"; then
+        local raw
+        raw=$(node_exec "$(clab_node sp frr-p1)" vtysh -c "show mpls table" 2>/dev/null || echo "__FAILED__")
+        if [[ "$raw" != "__FAILED__" ]]; then
+            mpls_entries_p1=$(echo "$raw" | { grep -c "^[0-9]" || true; })
+        fi
+    fi
+    log "  SR-MPLS LFIB entries on frr-p1: ${mpls_entries_p1}"
+
+    # SR-TE policy active on srl-pe1 — expect bonsai-pe1-pe2 showing active
+    local srte_policy_active=false
+    if node_running "$(clab_node sp srl-pe1)"; then
+        local raw
+        raw=$(node_exec "$(clab_node sp srl-pe1)" sr_cli -d "show network-instance default segment-routing sr-policies" 2>/dev/null || echo "__FAILED__")
+        if [[ "$raw" != "__FAILED__" ]] && echo "$raw" | grep -qi "active\|bonsai-pe1-pe2"; then
+            srte_policy_active=true
+        fi
+    fi
+    log "  SR-TE policy bonsai-pe1-pe2 active on pe1: ${srte_policy_active}"
+
+    # BMP station established on srl-pe1 — expect connection to bonsai at 172.100.105.1:5000
+    local bmp_established=false
+    if node_running "$(clab_node sp srl-pe1)"; then
+        local raw
+        raw=$(node_exec "$(clab_node sp srl-pe1)" sr_cli -d "show bmp monitoring-station bonsai-bmp" 2>/dev/null || echo "__FAILED__")
+        if [[ "$raw" != "__FAILED__" ]] && echo "$raw" | grep -qi "established\|connected\|active"; then
+            bmp_established=true
+        fi
+    fi
+    log "  BMP station bonsai-bmp established on pe1: ${bmp_established}"
+
     # SRv6: SP topo uses LDP/MPLS, not SRv6 — mark as N/A for summary
-    # (SRv6 assertion applies to DC topo only)
     local srv6_ok=false
 
     # Build warnings list
@@ -244,6 +276,10 @@ check_sp() {
     fi
     [[ "$ce1_bgp" != "Estab" ]] && [[ "$ce1_bgp" != "unknown" ]] && \
         warnings+=("SP CE1 BGP to pe1: state=${ce1_bgp}")
+    [[ "$mpls_entries_p1" -lt 6 ]] && \
+        warnings+=("SP frr-p1 MPLS LFIB: only ${mpls_entries_p1}/6 expected entries")
+    $srte_policy_active || warnings+=("SP pe1 SR-TE policy bonsai-pe1-pe2: not active")
+    $bmp_established || warnings+=("SP pe1 BMP station bonsai-bmp: not established (check bonsai listening on 172.100.105.1:5000)")
 
     local missing_json="[]"
     if [[ ${#missing_nodes[@]} -gt 0 ]]; then
@@ -271,12 +307,16 @@ check_sp() {
     "ldp_sessions_frr_p1": "%s",
     "bgp_vpn_established_rr1": %d,
     "ce1_bgp_state": "%s",
+    "mpls_lfib_entries_p1": %d,
+    "srte_policy_active": %s,
+    "bmp_station_established": %s,
     "evpn_routes_present": false,
     "srv6_reachability_verified": %s,
     "warnings": %s
   }' "$passed" "$nodes_up" "$nodes_total" "$missing_json" \
       "$bgp_established_rr1" "$bgp_total_rr1" \
       "$isis_adj_p1" "$ldp_sessions_p1" "$bgp_established_rr1" "$ce1_bgp" \
+      "$mpls_entries_p1" "$srte_policy_active" "$bmp_established" \
       "$srv6_ok" "$warnings_json"
 }
 
