@@ -1,0 +1,100 @@
+# docker/configs/cloud-dc.toml — Bonsai config for cloud DC 6-node topology.
+#
+# Used by: docker compose --profile cloud-dc up -d
+# Requires: containerlab deploy -t lab/cloud-dc-6node.yml (creates bonsai-mgmt network)
+# Deploy on cloud: cd /opt/bonsai && docker compose --profile cloud-dc up -d
+
+graph_path = "runtime/bonsai.db"
+api_addr   = "0.0.0.0:50051"
+
+[runtime]
+mode         = "all"
+collector_id = "cloud-dc"
+
+[archive]
+enabled                = true
+path                   = "/archive"
+flush_interval_seconds = 10
+max_batch_rows         = 1000
+compression_level      = 12
+writer_max_idle_secs   = 7200
+
+[logging]
+level          = "info"
+rotation       = "daily"
+retention_days = 7
+min_free_bytes = 5368709120
+
+[storage]
+max_archive_bytes     = 150323855360
+max_graph_bytes       = 5368709120
+check_interval_secs   = 300
+warn_threshold_pct    = 80
+
+[credentials]
+path           = "bonsai-credentials"
+passphrase_env = "BONSAI_VAULT_PASSPHRASE"
+
+# ── Cloud DC topology targets ─────────────────────────────────────────────────
+# ContainerLab cloud-dc-6node topology — bonsai-mgmt 172.100.104.0/24
+# CA cert is written to lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem after deploy.
+
+[[target]]
+address    = "172.100.104.11:57400"
+hostname   = "srl-super1"
+role       = "spine"
+site       = "cloud-dc"
+tls_domain = "clab-bonsai-cloud-dc-srl-super1"
+ca_cert    = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+
+[[target]]
+address    = "172.100.104.12:57400"
+hostname   = "srl-spine1"
+role       = "spine"
+site       = "cloud-dc"
+tls_domain = "clab-bonsai-cloud-dc-srl-spine1"
+ca_cert    = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+
+[[target]]
+address    = "172.100.104.13:57400"
+hostname   = "srl-leaf1"
+role       = "leaf"
+site       = "cloud-dc"
+tls_domain = "clab-bonsai-cloud-dc-srl-leaf1"
+ca_cert    = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+
+[[target]]
+address    = "172.100.104.14:57400"
+hostname   = "srl-leaf2"
+role       = "leaf"
+site       = "cloud-dc"
+tls_domain = "clab-bonsai-cloud-dc-srl-leaf2"
+ca_cert    = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+
+[[target]]
+address    = "172.100.104.15:57400"
+hostname   = "srl-leaf3"
+role       = "leaf"
+site       = "cloud-dc"
+tls_domain = "clab-bonsai-cloud-dc-srl-leaf3"
+ca_cert    = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
+
+[[target]]
+address    = "172.100.104.16:57400"
+hostname   = "srl-leaf4"
+role       = "leaf"
+site       = "cloud-dc"
+tls_domain = "clab-bonsai-cloud-dc-srl-leaf4"
+ca_cert    = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
+username   = "admin"
+password   = "NokiaSrl1!"
