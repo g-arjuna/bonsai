@@ -29,8 +29,34 @@ if [[ -f "$ENV_FILE" ]]; then
     # shellcheck source=/dev/null
     source "$ENV_FILE"
 fi
+
+# Auto-source GITHUB_TOKEN from known env files when not already set.
+# Cron and non-interactive subprocesses don't inherit interactive shell exports.
+if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+    for _env_file in "$HOME/.bonsai.env" "/opt/bonsai/instance.env"; do
+        if [[ -f "$_env_file" ]]; then
+            # shellcheck source=/dev/null
+            . "$_env_file"
+            break
+        fi
+    done
+fi
+
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 SYNC_BRANCH_PREFIX="sync/cloud-spike"
+
+# ── Laptop vs cloud detection ─────────────────────────────────────────────────
+# Cloud has an OCI block mount at /mnt/bonsai-archive.
+# Laptop parquet files live inside the Docker named volume (not on the host FS).
+# When the mount is absent, stage into a local directory and pull parquet from
+# the running bonsai container via docker exec.
+LAPTOP_MODE=false
+if [[ ! -d "$ARCHIVE_MOUNT" ]]; then
+    LAPTOP_MODE=true
+    ARCHIVE_MOUNT="$INSTALL_DIR/runtime/sync-staging"
+    mkdir -p "$ARCHIVE_MOUNT/archive"
+fi
+
 SNAPSHOTS_DIR="$ARCHIVE_MOUNT/snapshots"
 
 DRY_RUN=false
@@ -79,7 +105,26 @@ mkdir -p "$SNAPSHOT_DIR"
 
 # 1. Yesterday's Parquet archive files
 ARCHIVE_PARQUET_DIR="$ARCHIVE_MOUNT/archive"
-if [[ -d "$ARCHIVE_PARQUET_DIR" ]]; then
+if $LAPTOP_MODE; then
+    # On laptop, parquet lives inside the Docker named volume — not on the host FS.
+    # Pull it out via docker exec from the running bonsai container.
+    BONSAI_CONTAINER="${BONSAI_CONTAINER:-bonsai-bonsai-lab-dc-1}"
+    if docker inspect "$BONSAI_CONTAINER" &>/dev/null 2>&1; then
+        _log "  Laptop mode: extracting parquet from Docker volume ($BONSAI_CONTAINER)"
+        # Container path: /app/runtime/archive/*.parquet
+        # strip-components=3 removes app/runtime/archive → files land in ARCHIVE_PARQUET_DIR
+        # tar out /app/runtime/archive; strip-components=3 drops app/runtime/archive prefix
+        docker exec "$BONSAI_CONTAINER" tar -cf - /app/runtime/archive 2>/dev/null \
+            | tar -xf - -C "$ARCHIVE_PARQUET_DIR" --strip-components=3 2>/dev/null || true
+        PARQUET_COUNT=$(find "$ARCHIVE_PARQUET_DIR" -name "*.parquet" 2>/dev/null | wc -l)
+        _log "  Parquet files extracted: $PARQUET_COUNT"
+    else
+        _log "  Laptop mode: container $BONSAI_CONTAINER not running — skipping parquet"
+        PARQUET_COUNT=0
+    fi
+    find "$ARCHIVE_PARQUET_DIR" -name "*.parquet" \
+        -exec cp {} "$SNAPSHOT_DIR/" \; 2>/dev/null || true
+elif [[ -d "$ARCHIVE_PARQUET_DIR" ]]; then
     PARQUET_COUNT=$(find "$ARCHIVE_PARQUET_DIR" -name "*.parquet" \
         -newer "$ARCHIVE_PARQUET_DIR" -mtime -2 2>/dev/null | wc -l)
     _log "  Parquet files (last 48h): $PARQUET_COUNT"

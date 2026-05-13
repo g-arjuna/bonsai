@@ -14,20 +14,26 @@ set -euo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/bonsai}"
 ARCHIVE_MOUNT="${ARCHIVE_MOUNT:-/mnt/bonsai-archive}"
-# Use archive mount for cron logs so they survive bonsai reinstalls.
-# Falls back to INSTALL_DIR/logs when archive mount is not present (laptop).
-if [[ -d "$ARCHIVE_MOUNT" ]]; then
-    LOG_DIR="$ARCHIVE_MOUNT/logs"
-else
-    LOG_DIR="$INSTALL_DIR/logs"
-fi
 CRON_TAG_SYNC="bonsai-cloud-sync"
 CRON_TAG_CHECK="bonsai-cloud-check"
 
-# LAB_SCOPE=cloud-dc ensures the daily check uses the 6-node cloud DC topology.
-# On a laptop with dc topology leave LAB_SCOPE unset (defaults to "dc").
-SYNC_LINE="0 2 * * * bash $INSTALL_DIR/scripts/cloud/daily_sync.sh >> $LOG_DIR/daily_sync.log 2>&1  # $CRON_TAG_SYNC"
-CHECK_LINE="30 2 * * * LAB_SCOPE=cloud-dc bash $INSTALL_DIR/scripts/bv5_daily_check.sh >> $LOG_DIR/daily_check.log 2>&1  # $CRON_TAG_CHECK"
+# Detect environment: cloud has /mnt/bonsai-archive; laptop uses repo runtime dir.
+# LAB_SCOPE can be overridden: LAB_SCOPE=cloud-dc bash install_cron.sh
+if [[ -d "$ARCHIVE_MOUNT" ]] || [[ "$INSTALL_DIR" == "/opt/bonsai" ]]; then
+    LAB_SCOPE="${LAB_SCOPE:-cloud-dc}"
+    LOG_DIR="$ARCHIVE_MOUNT/logs"
+    # Cloud: daily_sync.sh auto-sources GITHUB_TOKEN from instance.env internally.
+    SYNC_LINE="0 2 * * * bash $INSTALL_DIR/scripts/cloud/daily_sync.sh >> $LOG_DIR/daily_sync.log 2>&1  # $CRON_TAG_SYNC"
+else
+    LAB_SCOPE="${LAB_SCOPE:-dc}"
+    LOG_DIR="$INSTALL_DIR/runtime/logs"
+    # Laptop: source ~/.bonsai.env before running (daily_sync.sh also auto-sources as fallback).
+    SYNC_LINE="0 2 * * * . \$HOME/.bonsai.env 2>/dev/null || true; bash $INSTALL_DIR/scripts/cloud/daily_sync.sh >> $LOG_DIR/daily_sync.log 2>&1  # $CRON_TAG_SYNC"
+fi
+
+# daily_check_push.sh: runs bv5_daily_check.sh then commits+pushes the report to GitHub.
+# It auto-sources GITHUB_TOKEN from ~/.bonsai.env or /opt/bonsai/instance.env internally.
+CHECK_LINE="30 2 * * * LAB_SCOPE=$LAB_SCOPE bash $INSTALL_DIR/scripts/cloud/daily_check_push.sh >> $LOG_DIR/daily_check.log 2>&1  # $CRON_TAG_CHECK"
 
 mkdir -p "$LOG_DIR"
 
