@@ -42,7 +42,7 @@ passphrase_env = "BONSAI_VAULT_PASSPHRASE"
 [[target]]
 address    = "172.100.104.11:57400"
 hostname   = "srl-super1"
-role       = "spine"
+role       = "super-spine"
 site       = "cloud-dc"
 tls_domain = "clab-bonsai-cloud-dc-srl-super1"
 ca_cert    = "lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"

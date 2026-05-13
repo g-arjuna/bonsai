@@ -204,9 +204,9 @@
       const tierNodes = nodes.filter(n => n._tier === t);
       const labels = new Set();
       for (const n of tierNodes) {
-        const role = (n.role || '').toLowerCase();
+        const role = (n.role || '').toLowerCase().replace(/[-_ ]/g, '');
         const hn = (n.hostname || '').toLowerCase();
-        if (role === 'spine' && (hn.includes('super') || hn.startsWith('ss'))) labels.add('Super-Spine');
+        if (role === 'superspine' || (role === 'spine' && (hn.includes('super') || hn.startsWith('ss')))) labels.add('Super-Spine');
         else if (n.role) labels.add(n.role.charAt(0).toUpperCase() + n.role.slice(1));
       }
       if (!labels.size) {
@@ -284,8 +284,8 @@
 
       // Selection glow ring
       if (isSelected || isOnPath) {
-        if (role === 'spine') {
-          const s = 26;
+        if (role === 'spine' || role === 'super-spine') {
+          const s = role === 'super-spine' ? 31 : 26;
           el.append('rect')
             .attr('x', -(s + 5)).attr('y', -(s + 5))
             .attr('width', (s + 5) * 2).attr('height', (s + 5) * 2)
@@ -301,8 +301,8 @@
         }
       }
 
-      if (role === 'spine') {
-        const s = 22;
+      if (role === 'spine' || role === 'super-spine') {
+        const s = role === 'super-spine' ? 26 : 22;
         el.append('rect')
           .attr('x', -s).attr('y', -s)
           .attr('width', s * 2).attr('height', s * 2)
@@ -349,7 +349,7 @@
       .attr('font-family', "'Inter', sans-serif")
       .attr('fill', C.textTertiary)
       .attr('pointer-events', 'none')
-      .text(d => (d.role ? `${d.role} · ` : '') + d.vendor.replace('nokia_', '').replace('cisco_', ''));
+      .text(d => (d.role ? `${d.role} · ` : '') + (d.site || d.vendor.replace('nokia_', '').replace('cisco_', '')));
 
     node.append('title').text(d =>
       `${d.hostname} — ${d.address}\nRole: ${d.role || 'unknown'}\nSite: ${d.site || '—'}\nHealth: ${d.health}\nShift+click to trace path`
