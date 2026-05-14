@@ -107,3 +107,4 @@ pre_cv5_freeze_*/
 # Older freeze snapshots may also contain local graph DB state
 pre_cv2_freeze_*/bonsai.db*
 pre_cv2_freeze_*/bonsai.db.wal*
+pre_cv2_freeze_*/local_runtime.tgz
