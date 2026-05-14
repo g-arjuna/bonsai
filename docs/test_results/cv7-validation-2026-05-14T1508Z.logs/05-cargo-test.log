@@ -1,0 +1,37 @@
+   Compiling bonsai v0.1.0 (/home/arjuna/Desktop/bonsai)
+    Finished `release` profile [optimized] target(s) in 3m 04s
+     Running unittests src/lib.rs (target/release/deps/bonsai-f76a5a98262f4a49)
+
+running 11 tests
+test sidecar_registry::tests::missing_required_is_none_during_grace_window ... ok
+test sidecar_registry::tests::heartbeat_unknown_id_returns_err ... ok
+test sidecar_registry::tests::missing_required_is_none_without_required_kinds ... ok
+test sidecar_registry::tests::parse_required_kinds_empty_input ... ok
+test sidecar_registry::tests::parse_required_kinds_handles_spaces_and_empties ... ok
+test sidecar_registry::tests::missing_required_lists_kinds_after_grace ... ok
+test sidecar_registry::tests::re_register_same_name_kind_replaces ... ok
+test sidecar_registry::tests::register_then_heartbeat_then_snapshot ... ok
+test sidecar_registry::tests::status_healthy_within_window ... ok
+test sidecar_registry::tests::status_lost_after_120s ... ok
+test sidecar_registry::tests::status_stale_after_45s ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 230 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/release/deps/bonsai-73575095f84303a5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/healthcheck.rs (target/release/deps/healthcheck-33dc8efc8ee1fc66)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/query.rs (target/release/deps/query-aa7e7d81c29e05d2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

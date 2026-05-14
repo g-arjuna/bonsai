@@ -1,0 +1,2 @@
+    $ git reset --hard origin/main
+HEAD is now at 0749e97 validation: cv7 2026-05-14T1508Z — PASS=11 WARN=1 FAIL=0

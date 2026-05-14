@@ -1,0 +1,2 @@
+    $ git reset --hard origin/main
+HEAD is now at 92a87b2 cv7 follow-ups: extend RULE_CATALOGUE (18→31), wire T4-7 gate + bonpy build into validation
