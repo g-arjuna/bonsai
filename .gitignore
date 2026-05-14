@@ -73,6 +73,11 @@ ui/node_modules/
 
 # Debug / run logs
 *.log
+# Exception: validation script's side-channel logs MUST be tracked so the
+# Mac↔Ubuntu iteration loop can see Ubuntu's build/test/inject output.
+# Without this, `*.log` would silently drop the diagnostic logs the validation
+# script captures into docs/test_results/cv7-validation-*.logs/.
+!docs/test_results/**/*.log
 runtime/
 
 # Claude Code session memory (local tooling state, not project content)

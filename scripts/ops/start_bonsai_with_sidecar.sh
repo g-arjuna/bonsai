@@ -89,10 +89,26 @@ echo "$BONSAI_PID" > "$BONSAI_PID_FILE"
 echo "  pid:     $BONSAI_PID"
 
 # ── Wait for bonsai HTTP to be reachable ──────────────────────────────────────
+# IMPORTANT: with BONSAI_REQUIRE_SIDECAR=rules, bonsai's /health intentionally
+# returns 503 "degraded" until the sidecar registers. We must NOT treat 503 as
+# failure here — the wrapper is responsible for starting the sidecar next, and
+# the sidecar's registration is what flips /health to 200. Earlier versions
+# used `curl -fsS` which rejected 503 → wrapper exited without ever starting
+# the sidecar (classic deadlock; root-caused 2026-05-14T1541Z).
+#
+# We accept any response code from /health (i.e. bonsai's HTTP server bound
+# the port). We just need to know "the server is listening". Anything from
+# 200/503 to 404 means the listener is up.
 wait_for_http() {
-  local url="$1" max_secs=30 elapsed=0
+  local url="$1" max_secs=60 elapsed=0 code
   while (( elapsed < max_secs )); do
-    if curl -fsS -o /dev/null "$url" 2>/dev/null; then return 0; fi
+    code="$(curl -sS -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || echo 000)"
+    case "$code" in
+      200|2[0-9][0-9]|5[0-9][0-9])
+        echo "$code"
+        return 0
+        ;;
+    esac
     if ! kill -0 "$BONSAI_PID" 2>/dev/null; then
       echo "${RED}bonsai died during startup${RESET} (see $BONSAI_LOG)" >&2
       return 1
@@ -104,10 +120,10 @@ wait_for_http() {
 }
 
 echo "Waiting for bonsai /health to respond on :3000…"
-if wait_for_http "http://127.0.0.1:3000/health"; then
-  echo "${GREEN}bonsai is up${RESET}"
+if HEALTH_CODE="$(wait_for_http "http://127.0.0.1:3000/health")"; then
+  echo "${GREEN}bonsai HTTP up${RESET} (/health → $HEALTH_CODE; 503 is expected before sidecar registers)"
 else
-  echo "${RED}bonsai did not bind :3000 within 30s${RESET}" >&2
+  echo "${RED}bonsai did not bind :3000 within 60s${RESET}" >&2
   echo "tail of log:" >&2
   tail -50 "$BONSAI_LOG" >&2 || true
   exit 1
