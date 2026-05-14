@@ -31,6 +31,7 @@ pub mod remediation;
 pub mod resource_governor;
 pub mod resource_profile;
 pub mod retention;
+pub mod sidecar_registry;
 pub mod signals;
 pub mod store;
 pub mod streaming;

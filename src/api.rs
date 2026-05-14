@@ -14,6 +14,7 @@ use crate::gnmi_set::gnmi_set;
 use crate::graph::{GraphStore, SiteRecord};
 use crate::ingest;
 use crate::registry::{ApiRegistry, DeviceRegistry};
+use crate::sidecar_registry::SidecarRegistry;
 use crate::store::BonsaiStore;
 
 pub const PROTOCOL_VERSION_CURRENT: u32 = 1;
@@ -69,6 +70,7 @@ pub struct BonsaiService<S: BonsaiStore> {
     bus: Arc<InProcessBus>,
     debouncer: Option<Arc<ingest::TelemetryDebouncer>>,
     collector_manager: Option<Arc<crate::assignment::CollectorManager>>,
+    sidecar_registry: Arc<SidecarRegistry>,
 }
 
 impl<S: BonsaiStore> BonsaiService<S> {
@@ -79,6 +81,7 @@ impl<S: BonsaiStore> BonsaiService<S> {
         bus: Arc<InProcessBus>,
         debouncer: Option<Arc<ingest::TelemetryDebouncer>>,
         collector_manager: Option<Arc<crate::assignment::CollectorManager>>,
+        sidecar_registry: Arc<SidecarRegistry>,
     ) -> Self {
         Self {
             store,
@@ -87,6 +90,7 @@ impl<S: BonsaiStore> BonsaiService<S> {
             bus,
             debouncer,
             collector_manager,
+            sidecar_registry,
         }
     }
 }
@@ -856,6 +860,71 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             Err(e) => Ok(Response::new(PushRemediationResponse {
                 success: false,
                 error: e.to_string(),
+            })),
+        }
+    }
+
+    // ── CV7 T4-2: Sidecar registry ────────────────────────────────────────────
+    // RegisterSidecar / SidecarHeartbeat. See src/sidecar_registry.rs and
+    // docs/architecture/sidecars.md.
+
+    async fn register_sidecar(
+        &self,
+        req: Request<RegisterSidecarRequest>,
+    ) -> Result<Response<RegisterSidecarResponse>, Status> {
+        let r = req.into_inner();
+        if r.name.trim().is_empty() {
+            return Ok(Response::new(RegisterSidecarResponse {
+                sidecar_id: String::new(),
+                error: "name is required".into(),
+            }));
+        }
+        if r.kind.trim().is_empty() {
+            return Ok(Response::new(RegisterSidecarResponse {
+                sidecar_id: String::new(),
+                error: "kind is required".into(),
+            }));
+        }
+        let sidecar_id = self
+            .sidecar_registry
+            .register(r.name.clone(), r.kind.clone(), r.version, r.capabilities, r.address)
+            .await;
+        tracing::info!(
+            sidecar_id = %sidecar_id,
+            name = %r.name,
+            kind = %r.kind,
+            "sidecar registered"
+        );
+        Ok(Response::new(RegisterSidecarResponse {
+            sidecar_id,
+            error: String::new(),
+        }))
+    }
+
+    async fn sidecar_heartbeat(
+        &self,
+        req: Request<SidecarHeartbeatRequest>,
+    ) -> Result<Response<SidecarHeartbeatResponse>, Status> {
+        let r = req.into_inner();
+        match self
+            .sidecar_registry
+            .heartbeat(
+                &r.sidecar_id,
+                r.events_in_total,
+                r.detections_out_total,
+                r.status_json,
+            )
+            .await
+        {
+            Ok(()) => Ok(Response::new(SidecarHeartbeatResponse {
+                error: String::new(),
+                reregister_required: false,
+            })),
+            // Unknown sidecar_id — bonsai was likely restarted. Ask the
+            // sidecar to re-register rather than treating this as fatal.
+            Err(()) => Ok(Response::new(SidecarHeartbeatResponse {
+                error: String::new(),
+                reregister_required: true,
             })),
         }
     }

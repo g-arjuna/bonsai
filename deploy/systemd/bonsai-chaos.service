@@ -1,0 +1,28 @@
+[Unit]
+Description=Bonsai chaos runner (Python — injects faults against the lab)
+Documentation=file:///opt/bonsai/docs/operations/chaos_runner_restart_investigation_2026-05-14.md
+After=bonsai.service
+Wants=bonsai.service
+
+[Service]
+Type=simple
+User=bonsai
+Group=bonsai
+WorkingDirectory=/opt/bonsai
+EnvironmentFile=-/etc/bonsai/chaos.env
+ExecStart=/opt/bonsai/.venv/bin/python /opt/bonsai/scripts/chaos_runner.py
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bonsai-chaos
+LimitNOFILE=65536
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+NoNewPrivileges=true
+ReadWritePaths=/opt/bonsai/runtime /opt/bonsai/logs
+
+[Install]
+WantedBy=multi-user.target

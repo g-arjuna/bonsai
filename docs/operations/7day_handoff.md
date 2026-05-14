@@ -29,6 +29,10 @@ reset an existing start file.
 | 5 | GITHUB_TOKEN set | `bash scripts/cloud/daily_sync.sh --dry-run` exits 0 |
 | 6 | Archive mount writable | write-probe to `/mnt/bonsai-archive/archive` or `runtime/archive` |
 | 7 | Feature index present | `docs/testing/FEATURE_INDEX.md` exists and is ≤ 7 days old |
+| 8 | **(CV7 T7-1) Mac is clean** | `bash scripts/dev/check_mac.sh` exits 0 — no dev artefacts leaking |
+| 9 | **(CV7 T7-1) Chaos stability** | `WALL_SECS=3600 bash scripts/smoke/smoke_chaos_stability.sh` → PASS (zero restarts in 1h) |
+| 10 | **(CV7 T7-1) Latest CI binary installed** | `cat /usr/local/lib/bonsai/current` matches `git rev-parse HEAD` (from T6-2 pull_and_install.sh) |
+| 11 | **(CV7 T7-1) Rules sidecar bound** | `curl -s :3000/api/sidecars` returns ≥ 1 entry with `kind=rules`, `status=healthy`; `/health` returns `ok` not `degraded` |
 
 Start the clock only when all checks pass. The start timestamp is recorded in
 `runtime/driver_results/handoff_start.txt`.

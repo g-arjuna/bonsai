@@ -1,5 +1,13 @@
 /target
 
+# macOS Finder droppings — never commit
+.DS_Store
+**/.DS_Store
+
+# Bonpy SPA build artefacts (built by CI; checked out by Ubuntu)
+ui-bonpy/node_modules/
+ui-bonpy/dist/
+
 # Runtime config — contains credentials, never commit
 bonsai.toml
 bonsai-core.toml

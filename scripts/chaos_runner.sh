@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
-# scripts/chaos_runner.sh — Always-on DC chaos harness.
+# scripts/chaos_runner.sh — Laptop chaos daemon. CV7 T2-3 simplified.
 #
-# Runs chaos_runner.py in 30-minute cycles indefinitely, accumulating GNN
-# training data. Restarts automatically on crash. Writes to runtime/.
+# Cloud uses systemd directly: `systemctl start bonsai-chaos.service`. This
+# script is for the Ubuntu laptop ONLY. The dual-mode systemd-scope detection
+# from CV6 is gone — one tool per environment per the CV7 guardrails.
+#
+# CV7 T3-2 hardening:
+#   • flock-based mutual exclusion (prevents the cron-race "stale pid file"
+#     restart loop observed on 2026-05-13)
+#   • main loop wraps the Python invocation so a non-zero exit doesn't kill
+#     the daemon — it logs, waits, retries
+#   • restart markers still emitted to runtime/chaos_log.jsonl for triage
 #
 # Usage:
-#   bash scripts/chaos_runner.sh              # background daemon (detaches)
-#   bash scripts/chaos_runner.sh --fg         # foreground; Ctrl-C stops cleanly
-#   bash scripts/chaos_runner.sh --stop       # kill the running daemon
-#   bash scripts/chaos_runner.sh --status     # print daemon status + recent log
-#   bash scripts/chaos_runner.sh --ensure-running
-#   bash scripts/chaos_runner.sh --dry-run    # one dry-run cycle, then exit
+#   bash scripts/chaos_runner.sh                # background daemon
+#   bash scripts/chaos_runner.sh --fg           # foreground (Ctrl-C clean exit)
+#   bash scripts/chaos_runner.sh --stop         # stop the running daemon
+#   bash scripts/chaos_runner.sh --status       # status + last 20 log lines
+#   bash scripts/chaos_runner.sh --ensure-running   # idempotent (cron-safe)
+#   bash scripts/chaos_runner.sh --dry-run      # one cycle, no real injection
 #
-# Requires: WSL with clab on PATH, .venv at repo root.
-# Chaos plan: chaos_plans/always_on_dc.yaml
+# Requires: .venv at repo root, clab on PATH, chaos plan YAML.
 
 set -euo pipefail
 
@@ -21,256 +28,173 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME_DIR="$REPO_ROOT/runtime"
 LOG_FILE="$RUNTIME_DIR/chaos_runner.log"
 PID_FILE="$RUNTIME_DIR/chaos_runner.pid"
+LOCK_FILE="$RUNTIME_DIR/chaos_runner.lock"
 CHAOS_LOG_JSONL="$RUNTIME_DIR/chaos_log.jsonl"
 PLAN="${PLAN:-$REPO_ROOT/chaos_plans/always_on_dc.yaml}"
 PYTHON="$REPO_ROOT/.venv/bin/python3"
 RUNNER="$REPO_ROOT/scripts/chaos_runner.py"
-CYCLE_PAUSE_SECS=30   # gap between consecutive 30-min cycles
-CHAOS_SYSTEMD_SERVICE="${CHAOS_SYSTEMD_SERVICE:-bonsai-chaos.service}"
-
-# Prefer the local ContainerLab Docker transport unless an operator pins SSH.
-if [[ -z "${BONSAI_FAULT_TRANSPORT:-}" ]] && command -v docker &>/dev/null; then
-    export BONSAI_FAULT_TRANSPORT="docker"
-fi
+CYCLE_PAUSE_SECS=30
 
 mkdir -p "$RUNTIME_DIR"
 
+# Default to ContainerLab docker transport on laptop unless operator pins SSH.
+if [[ -z "${BONSAI_FAULT_TRANSPORT:-}" ]] && command -v docker &>/dev/null; then
+  export BONSAI_FAULT_TRANSPORT="docker"
+fi
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 _log() { echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*" | tee -a "$LOG_FILE"; }
 _die() { _log "ERROR: $*"; exit 1; }
-_systemd_service_scope() {
-    if ! command -v systemctl &>/dev/null; then
-        return 1
-    fi
-    if systemctl --user list-unit-files "$CHAOS_SYSTEMD_SERVICE" --no-legend 2>/dev/null | grep -q "^${CHAOS_SYSTEMD_SERVICE}[[:space:]]"; then
-        echo "user"
-        return 0
-    fi
-    if systemctl list-unit-files "$CHAOS_SYSTEMD_SERVICE" --no-legend 2>/dev/null | grep -q "^${CHAOS_SYSTEMD_SERVICE}[[:space:]]"; then
-        echo "system"
-        return 0
-    fi
-    return 1
-}
-_systemd_service_installed() {
-    _systemd_service_scope >/dev/null
-}
-_systemd_service_active() {
-    local scope
-    scope="$(_systemd_service_scope)" || return 1
-    if [[ "$scope" == "user" ]]; then
-        systemctl --user is-active --quiet "$CHAOS_SYSTEMD_SERVICE"
-    else
-        systemctl is-active --quiet "$CHAOS_SYSTEMD_SERVICE"
-    fi
-}
-_systemd_service_status() {
-    local scope
-    scope="$(_systemd_service_scope)" || return 1
-    if [[ "$scope" == "user" ]]; then
-        systemctl --user status "$CHAOS_SYSTEMD_SERVICE" --no-pager -l 2>/dev/null || true
-    else
-        systemctl status "$CHAOS_SYSTEMD_SERVICE" --no-pager -l 2>/dev/null || true
-    fi
-}
-_systemd_service_start() {
-    local scope
-    scope="$(_systemd_service_scope)" || return 1
-    if [[ "$scope" == "user" ]]; then
-        systemctl --user start "$CHAOS_SYSTEMD_SERVICE"
-    else
-        sudo systemctl start "$CHAOS_SYSTEMD_SERVICE"
-    fi
-}
-_systemd_service_stop() {
-    local scope
-    scope="$(_systemd_service_scope)" || return 1
-    if [[ "$scope" == "user" ]]; then
-        systemctl --user stop "$CHAOS_SYSTEMD_SERVICE"
-    else
-        sudo systemctl stop "$CHAOS_SYSTEMD_SERVICE"
-    fi
-}
-_json_escape() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
-_write_restart_marker() {
-    local reason="$1"
-    local old_pid="${2:-}"
-    local ts
-    ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    printf '{"event_type":"restart_marker","ts":"%s","reason":"%s","old_pid":"%s","plan":"%s"}\n' \
-        "$ts" "$(_json_escape "$reason")" "$(_json_escape "$old_pid")" "$(_json_escape "$PLAN")" \
-        >> "$CHAOS_LOG_JSONL"
-}
-_preflight() {
-    [[ -f "$PYTHON" ]] || _die ".venv not found at $REPO_ROOT/.venv — activate or create it first"
-    [[ -f "$PLAN" ]]   || _die "Chaos plan not found: $PLAN"
-    [[ -f "$RUNNER" ]] || _die "chaos_runner.py not found: $RUNNER"
 
-    if ! command -v clab &>/dev/null; then
-        _log "WARNING: clab not on PATH — netem faults will be skipped"
-    fi
+_json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+_write_restart_marker() {
+  local reason="$1" old_pid="${2:-}" ts
+  ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  printf '{"event_type":"restart_marker","ts":"%s","reason":"%s","old_pid":"%s","plan":"%s"}\n' \
+    "$ts" "$(_json_escape "$reason")" "$(_json_escape "$old_pid")" "$(_json_escape "$PLAN")" \
+    >> "$CHAOS_LOG_JSONL"
 }
+
+_preflight() {
+  [[ -f "$PYTHON" ]] || _die ".venv not found at $REPO_ROOT/.venv — activate or create it first"
+  [[ -f "$PLAN" ]]   || _die "Chaos plan not found: $PLAN"
+  [[ -f "$RUNNER" ]] || _die "chaos_runner.py not found: $RUNNER"
+  if ! command -v clab &>/dev/null; then
+    _log "WARNING: clab not on PATH — netem faults will be skipped"
+  fi
+}
+
+# Refuse on Mac per dev/ops boundary.
+ENV_DETECTED="$(bash "$REPO_ROOT/scripts/dev/whichenv.sh" 2>/dev/null || echo unknown)"
+if [[ "$ENV_DETECTED" == "mac-dev" ]]; then
+  echo "Refused: chaos_runner.sh is laptop-only. See docs/operations/dev_vs_ops_boundary.md" >&2
+  exit 2
+fi
 
 # ── --stop ────────────────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--stop" ]]; then
-    if _systemd_service_installed; then
-        if _systemd_service_active; then
-            _log "Stopping systemd chaos service ($CHAOS_SYSTEMD_SERVICE)"
-            _systemd_service_stop
-        else
-            _log "systemd chaos service is not running"
-        fi
-        rm -f "$PID_FILE"
-        exit 0
-    fi
-    if [[ -f "$PID_FILE" ]]; then
-        PID=$(<"$PID_FILE")
-        if kill -0 "$PID" 2>/dev/null; then
-            _log "Sending SIGTERM to chaos_runner daemon (PID $PID)"
-            kill "$PID"
-            pkill -P "$PID" 2>/dev/null || true
-        else
-            _log "PID $PID not running — cleaning stale pid file"
-        fi
-        rm -f "$PID_FILE"
+  if [[ -f "$PID_FILE" ]]; then
+    PID="$(<"$PID_FILE")"
+    if kill -0 "$PID" 2>/dev/null; then
+      _log "Sending SIGTERM to chaos_runner daemon (PID $PID)"
+      kill "$PID"
+      pkill -P "$PID" 2>/dev/null || true
     else
-        echo "No pid file found at $PID_FILE — daemon may not be running"
+      _log "PID $PID not running — cleaning stale pid file"
     fi
-    exit 0
+    rm -f "$PID_FILE"
+  else
+    echo "No pid file found at $PID_FILE — daemon may not be running"
+  fi
+  exit 0
 fi
 
 # ── --status ──────────────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--status" ]]; then
-    systemd_active=false
-    if _systemd_service_installed; then
-        SYSTEMD_SCOPE="$(_systemd_service_scope)"
-        if _systemd_service_active; then
-            systemd_active=true
-            echo "chaos_runner service is RUNNING via ${SYSTEMD_SCOPE} systemd ($CHAOS_SYSTEMD_SERVICE)"
-        else
-            echo "chaos_runner service is NOT RUNNING via ${SYSTEMD_SCOPE} systemd ($CHAOS_SYSTEMD_SERVICE)"
-        fi
-        echo ""
-        echo "=== systemd status ==="
-        _systemd_service_status
-        echo ""
-    fi
-    if [[ -f "$PID_FILE" ]]; then
-        PID=$(<"$PID_FILE")
-        if kill -0 "$PID" 2>/dev/null; then
-            echo "chaos_runner daemon is RUNNING (PID $PID)"
-        elif [[ "$systemd_active" == "true" ]]; then
-            echo "chaos_runner daemon is managed by systemd (ignoring stale PID file $PID)"
-        else
-            echo "chaos_runner daemon is STOPPED (stale PID $PID)"
-        fi
-    elif [[ "$systemd_active" == "true" ]]; then
-        echo "chaos_runner daemon is managed by systemd (no standalone pid file expected)"
+  if [[ -f "$PID_FILE" ]]; then
+    PID="$(<"$PID_FILE")"
+    if kill -0 "$PID" 2>/dev/null; then
+      echo "chaos_runner daemon is RUNNING (PID $PID)"
     else
-        echo "chaos_runner daemon is NOT RUNNING (no pid file)"
+      echo "chaos_runner daemon is STOPPED (stale PID $PID)"
     fi
-    echo ""
-    echo "=== Last 20 log lines ==="
-    [[ -f "$LOG_FILE" ]] && tail -20 "$LOG_FILE" || echo "(no log yet)"
-    exit 0
+  else
+    echo "chaos_runner daemon is NOT RUNNING (no pid file)"
+  fi
+  echo
+  echo "=== Last 20 log lines ==="
+  [[ -f "$LOG_FILE" ]] && tail -20 "$LOG_FILE" || echo "(no log yet)"
+  exit 0
 fi
 
-# ── --ensure-running ──────────────────────────────────────────────────────────
+# ── --ensure-running (cron-safe via flock) ────────────────────────────────────
 if [[ "${1:-}" == "--ensure-running" ]]; then
-    if _systemd_service_installed; then
-        rm -f "$PID_FILE"
-        if _systemd_service_active; then
-            _log "ensure-running: systemd service already active ($CHAOS_SYSTEMD_SERVICE)"
-            exit 0
-        fi
-        _log "ensure-running: starting systemd service ($CHAOS_SYSTEMD_SERVICE)"
-        _systemd_service_start
-        exit 0
-    fi
-    if [[ -f "$PID_FILE" ]]; then
-        EXISTING_PID=$(<"$PID_FILE")
-        if kill -0 "$EXISTING_PID" 2>/dev/null; then
-            _log "ensure-running: daemon already running (PID $EXISTING_PID)"
-            exit 0
-        fi
-        _log "ensure-running: stale pid file found ($EXISTING_PID) — restarting"
-        _write_restart_marker "stale_pid" "$EXISTING_PID"
-        rm -f "$PID_FILE"
-    else
-        _log "ensure-running: no pid file found — starting daemon"
-        _write_restart_marker "missing_pid_file" ""
-    fi
-
-    _preflight
-    nohup bash "$0" --fg >/dev/null 2>&1 &
-    DAEMON_PID=$!
-    echo "$DAEMON_PID" > "$PID_FILE"
-    _log "ensure-running: daemon started in background (PID $DAEMON_PID)"
-    echo "chaos_runner daemon started (PID $DAEMON_PID)"
+  # flock prevents two cron invocations from both deciding to restart the daemon.
+  exec 9>"$LOCK_FILE"
+  if ! flock -n 9; then
+    _log "ensure-running: another invocation holds the lock — exiting cleanly"
     exit 0
+  fi
+  if [[ -f "$PID_FILE" ]]; then
+    EXISTING_PID="$(<"$PID_FILE")"
+    if kill -0 "$EXISTING_PID" 2>/dev/null; then
+      _log "ensure-running: daemon already running (PID $EXISTING_PID)"
+      exit 0
+    fi
+    _log "ensure-running: stale pid file found ($EXISTING_PID) — restarting"
+    _write_restart_marker "stale_pid" "$EXISTING_PID"
+    rm -f "$PID_FILE"
+  else
+    _log "ensure-running: no pid file found — starting daemon"
+    _write_restart_marker "missing_pid_file" ""
+  fi
+  _preflight
+  nohup bash "$0" --fg >/dev/null 2>&1 &
+  DAEMON_PID=$!
+  echo "$DAEMON_PID" > "$PID_FILE"
+  _log "ensure-running: daemon started in background (PID $DAEMON_PID)"
+  exit 0
 fi
 
-# ── Preflight checks ──────────────────────────────────────────────────────────
+# ── Main loop (foreground worker) ─────────────────────────────────────────────
 _preflight
 
 DRY_RUN_FLAG=""
 if [[ "${1:-}" == "--dry-run" ]]; then
-    DRY_RUN_FLAG="--dry-run"
-    _log "Dry-run mode — one cycle, no actual fault injection"
+  DRY_RUN_FLAG="--dry-run"
+  _log "Dry-run mode — one cycle, no actual fault injection"
 fi
 
-# ── Main loop (foreground worker) ─────────────────────────────────────────────
 _run_loop() {
-    cd "$REPO_ROOT"
-    _log "=== Chaos runner started (PID $$) ==="
-    _log "Plan: $PLAN"
-    _log "Python: $PYTHON"
-    _log "Fault transport: ${BONSAI_FAULT_TRANSPORT:-auto}"
-    _log "Log: $LOG_FILE"
+  cd "$REPO_ROOT"
+  _log "=== Chaos runner started (PID $$) ==="
+  _log "Plan: $PLAN  Python: $PYTHON  Transport: ${BONSAI_FAULT_TRANSPORT:-auto}"
 
-    CYCLE=0
-    while true; do
-        CYCLE=$((CYCLE + 1))
-        _log "--- Cycle $CYCLE start ---"
+  CYCLE=0
+  while true; do
+    CYCLE=$((CYCLE + 1))
+    _log "--- Cycle $CYCLE start ---"
 
-        # Run one 30-min plan cycle; never let a crash kill the daemon
-        if "$PYTHON" "$RUNNER" "$PLAN" $DRY_RUN_FLAG 2>&1 | tee -a "$LOG_FILE"; then
-            _log "--- Cycle $CYCLE finished cleanly ---"
-        else
-            EXIT_CODE=$?
-            _log "--- Cycle $CYCLE exited with code $EXIT_CODE — restarting after ${CYCLE_PAUSE_SECS}s ---"
-            sleep "$CYCLE_PAUSE_SECS"
-        fi
+    # CV7 T3-2: NEVER let a Python exit kill the daemon. Capture exit code,
+    # log it, write a restart marker if non-zero, sleep and retry.
+    set +e
+    "$PYTHON" "$RUNNER" "$PLAN" $DRY_RUN_FLAG 2>&1 | tee -a "$LOG_FILE"
+    EXIT_CODE=${PIPESTATUS[0]}
+    set -e
 
-        # Exit after one cycle in dry-run mode
-        [[ -n "$DRY_RUN_FLAG" ]] && { _log "Dry-run complete. Exiting."; exit 0; }
+    if (( EXIT_CODE == 0 )); then
+      _log "--- Cycle $CYCLE finished cleanly ---"
+    else
+      _log "--- Cycle $CYCLE exited with code $EXIT_CODE — recovering in ${CYCLE_PAUSE_SECS}s ---"
+      _write_restart_marker "python_exit_${EXIT_CODE}" "$$"
+    fi
 
-        _log "Pausing ${CYCLE_PAUSE_SECS}s before next cycle..."
-        sleep "$CYCLE_PAUSE_SECS"
-    done
+    [[ -n "$DRY_RUN_FLAG" ]] && { _log "Dry-run complete. Exiting."; exit 0; }
+    sleep "$CYCLE_PAUSE_SECS"
+  done
 }
 
 # ── --fg: run in foreground ────────────────────────────────────────────────────
 if [[ "${1:-}" == "--fg" || -n "$DRY_RUN_FLAG" ]]; then
-    _run_loop
-    exit 0
+  _run_loop
+  exit 0
 fi
 
 # ── Background daemon mode (default) ─────────────────────────────────────────
 if [[ -f "$PID_FILE" ]]; then
-    EXISTING_PID=$(<"$PID_FILE")
-    if kill -0 "$EXISTING_PID" 2>/dev/null; then
-        echo "chaos_runner daemon is already running (PID $EXISTING_PID)"
-        echo "Use --stop to stop it, or --status to check."
-        exit 1
-    else
-        _log "Stale pid file found ($EXISTING_PID) — removing"
-        rm -f "$PID_FILE"
-    fi
+  EXISTING_PID="$(<"$PID_FILE")"
+  if kill -0 "$EXISTING_PID" 2>/dev/null; then
+    echo "chaos_runner daemon is already running (PID $EXISTING_PID)"
+    echo "Use --stop to stop it, or --status to check."
+    exit 1
+  else
+    _log "Stale pid file found ($EXISTING_PID) — removing"
+    rm -f "$PID_FILE"
+  fi
 fi
 
-# Fork into background. The foreground worker writes its own log entries.
 nohup bash "$0" --fg >/dev/null 2>&1 &
 DAEMON_PID=$!
 echo "$DAEMON_PID" > "$PID_FILE"

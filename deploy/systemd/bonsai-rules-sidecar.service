@@ -1,0 +1,34 @@
+[Unit]
+Description=Bonsai rules sidecar (Python — evaluates detection rules, registers with bonsai)
+Documentation=file:///opt/bonsai/docs/architecture/sidecars.md
+# Atomic lifecycle: this unit starts after bonsai is up, stops when bonsai stops,
+# restarts when bonsai restarts (BindsTo).
+After=bonsai.service
+BindsTo=bonsai.service
+
+[Service]
+Type=simple
+User=bonsai
+Group=bonsai
+WorkingDirectory=/opt/bonsai
+EnvironmentFile=-/etc/bonsai/sidecar.env
+# Defaults match the laptop wrapper. Override via /etc/bonsai/sidecar.env.
+Environment=BONSAI_LOCAL_ADDR=localhost:50051
+Environment=BONSAI_CORE_ADDR=localhost:50051
+Environment=BONSAI_COLLECTOR_ID=rules-cloud
+ExecStart=/opt/bonsai/.venv/bin/python /opt/bonsai/python/collector_engine.py
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bonsai-rules-sidecar
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+NoNewPrivileges=true
+ReadWritePaths=/opt/bonsai/runtime /opt/bonsai/logs
+
+[Install]
+WantedBy=multi-user.target

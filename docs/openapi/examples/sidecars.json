@@ -1,0 +1,30 @@
+{
+  "sidecars": [
+    {
+      "sidecar_id": "8e1c4b08-2a3f-4b9d-9e2c-1234567890ab",
+      "name": "rules-local",
+      "kind": "rules",
+      "version": "0.1.0",
+      "capabilities": [
+        "bgp_session_down",
+        "bgp_session_flap",
+        "bgp_all_peers_down",
+        "bgp_never_established",
+        "bfd_session_down",
+        "interface_down",
+        "interface_error_spike",
+        "interface_high_utilization",
+        "topology_edge_lost"
+      ],
+      "address": "localhost:50051",
+      "registered_at_ns": 1715693400000000000,
+      "last_heartbeat_ns": 1715693475000000000,
+      "events_in_total": 1284,
+      "detections_out_total": 17,
+      "status_json": "",
+      "status": "healthy"
+    }
+  ],
+  "required_kinds": ["rules"],
+  "missing_required": []
+}

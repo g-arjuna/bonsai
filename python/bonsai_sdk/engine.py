@@ -52,6 +52,8 @@ class RuleEngine:
             if r.scope == "hybrid" or r.scope == run_scope
         ]
         self._stop = threading.Event()
+        # CV7 T4-3: monotonic counters surfaced via SidecarHeartbeat.
+        self.events_received_total = 0
         self._load_ml_detectors(model_dir)
 
     def _load_ml_detectors(self, model_dir: str) -> None:
@@ -86,6 +88,7 @@ class RuleEngine:
                 for event in stream:
                     if self._stop.is_set():
                         break
+                    self.events_received_total += 1
                     self._dispatch(event)
                 # stream ended cleanly (server EOF) — reconnect immediately
                 if not self._stop.is_set():

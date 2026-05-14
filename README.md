@@ -6,6 +6,12 @@ A streaming-first, graph-native network state engine for closed-loop autonomous
 network operations. Replicates the architecture described in Google's ANO framework
 paper at lab scale, using only open source primitives.
 
+> **Contributors and AI agents — read this first**:
+> [`docs/CANONICAL.md`](docs/CANONICAL.md) is the single orientation document
+> (architecture, non-negotiables, scope guardrails, where every other doc lives).
+> Environment rules: [`docs/operations/dev_vs_ops_boundary.md`](docs/operations/dev_vs_ops_boundary.md).
+> Active sprint: [`BONSAI_CONSOLIDATED_BACKLOG_CV7.md`](BONSAI_CONSOLIDATED_BACKLOG_CV7.md).
+
 ---
 
 ## The Gap This Fills

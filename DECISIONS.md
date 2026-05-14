@@ -1838,3 +1838,49 @@ healthcheck until Compose exists.
 **Observed impact**: On a 47 GB RAM host (xlarge, 4 GB governor budget) the API reported 92% RSS utilisation against the 1.5 GB constant while the governor was watching against 4 GB — a false alarm with no governance action taken. On the 23 GB cloud host (large, 2 GB budget) the API reported 90% against 1.5 GB while the real figure was ~33% of 2 GB. The UI tile was amber/yellow on both environments throughout the proof period despite no actual memory pressure.
 
 **`/api/governance/state`** calls `g.snapshot()` directly and was always correct. The inconsistency between the two panels on the Operations page (tile vs. governance detail) was the visible symptom.
+
+---
+
+## 2026-05-14 — CV7 T4: Retire Rust event-detection fastpath; sidecars are the canonical detection path; sidecar status is a first-class operational fact
+
+**Decision**: `src/event_detection.rs` (the 191-line Rust fastpath added in CV6 covering `bgp_session_down`, `bfd_session_down`, `interface_down`) is retired. Detection is the responsibility of Python sidecars exclusively. Bonsai exposes a sidecar registry — `RegisterSidecar` + `Heartbeat` gRPC RPCs, `/api/sidecars` HTTP endpoint, a "Detection Engine" UI tab — so the presence, absence, type, and health of every Python sidecar (rules, ML inference, syslog parser, future GNN trainer) is a visible operational fact. A `BONSAI_REQUIRE_SIDECAR=rules` env flag causes `/health` to return `degraded` when the required sidecar has not registered within startup grace, surfacing the "Detections: 0" failure mode the moment it occurs.
+
+**What this supersedes**:
+- 2026-04-23 sidecar decision (rule engine as standalone Python sidecar) — preserved in shape, extended with visibility.
+- 2026-04-17 "Python rejected for the core … Python is appropriate for the rules engine and ML pipeline" — preserved.
+- CV6 introduction of `src/event_detection.rs` — explicitly retired. The fastpath was a workaround for the "Detections: 0" symptom whose actual root cause was that the Python sidecar was not running and bonsai had no way to surface that.
+
+**Why retire the Rust fastpath rather than keep it as a safety net**:
+- It is parallel logic — two implementations of "BGP went down" that must be kept in semantic sync forever. The Python rule has the recurrence indicators, the auto-remediate hint, the features extraction; the Rust fastpath is a stripped subset. They will drift.
+- It masked the real bug. With the fastpath silently catching three rule_ids, the operator could observe *some* detections firing while 15 of 18 silently did nothing. The system felt healthy when it wasn't.
+- The fix it was reaching for is observability, not parallel logic. Surface the sidecar's presence and absence directly; let the single Python path own detection.
+
+**Why a sidecar registry rather than a passive liveness check**:
+- We expect multiple sidecars over time — rules today, ML inference next, syslog parser if it splits out, GNN trainer when GNN training ships. A registry typed by `kind` scales to all of these; a per-sidecar liveness flag does not.
+- The UI question is not "is *the* sidecar running" but "what is bound to bonsai right now, where, and is each one healthy." A registry answers that directly. Each `RegisterSidecar` call captures `name`, `kind`, `version`, `capabilities`, `address`, returns a `sidecar_id`. Heartbeats every 15s. Last-seen + counters surface in `/api/sidecars`.
+
+**Why read-only UI (no rule editor) in CV7**:
+- CV7's guardrail is "no new features, stabilization." A status surface is observability; a rule editor is a feature. The northstar wants the editor; CV8 is the right place.
+- A read-only view delivers the operational visibility the operator needs *now* (is the sidecar running, are rules firing, is ML loaded) without expanding scope.
+
+**Sequencing constraint**: `src/event_detection.rs` is deleted only after the new visibility + Tier-2 sidecar codification land and the Python rules-sidecar is observed catching the three retired rule_ids in a live 1-hour smoke. Deleting before that regresses to "Detections: 0" with no safety net.
+
+**Future sidecars envisioned (not built in CV7)**:
+- `ml-inference` sidecar: hosts the IsolationForest / GBT models, separate process for memory isolation.
+- `syslog-parser` sidecar: vendor regex evaluation if syslog volume warrants offload.
+- `gnn-trainer` sidecar: offline GNN training pipeline that talks to the archive, not the live bus.
+- The registry contract is designed to accept these without protocol changes — only `kind` strings are added.
+
+**Where**:
+- New ADR (this entry) in DECISIONS.md.
+- `docs/architecture/sidecars.md` replaces the deleted `docs/architecture/detection_paths.md` draft.
+- `BONSAI_CONSOLIDATED_BACKLOG_CV7.md` Tier 4 rewritten end-to-end (T4-1 through T4-7). Tier 2 amended to include the sidecar in the per-environment deployment story. Tier 5 amended to mention `sidecars.md` instead of `detection_paths.md`.
+- `proto/bonsai_service.proto` gains `RegisterSidecar`, `Heartbeat` RPCs and supporting messages.
+- `src/sidecar_registry.rs` (new) — registry state + gRPC handlers.
+- `src/http_server.rs` — `GET /api/sidecars` endpoint.
+- `ui-bonpy/` (new, see addendum below) — separate Svelte SPA for sidecar status + ML; served by bonsai HTTP at `/bonpy/`.
+- `python/collector_engine.py` — calls `RegisterSidecar` at startup; runs heartbeat thread.
+- `src/event_detection.rs` — deleted (last step of Tier 4).
+
+**Addendum 2026-05-14 (same-day clarification) — Bonpy: a second UI for Python/ML/AIOps surfaces**:
+The sidecar status surface is **not** a tab in bonsai's existing Svelte UI. It is a separate SPA called **bonpy** (a portmanteau of bonsai + python — bonsai's Python-facing companion UI). Rationale: the operator anticipates AIOps interactivity (rule editor, model retraining controls, GNN training console) growing into a real surface as the project moves past CV7. Bundling that into the bonsai UI would conflate "view of the live network graph" with "manage the Python/ML side." Separation keeps each UI focused: bonsai shows what bonsai sees, bonpy shows what Python/ML sidecars are doing. Independent build pipelines (`ui-bonpy/package.json`), independent component libraries, distinct visual identity. Both served by the same bonsai Axum HTTP server — bonsai at `/`, bonpy at `/bonpy/` — to keep ops simple (one process, one port, two paths). CV7 ships bonpy v1 as **read-only status** (sidecar registry surface, per-rule firing summary, ML model panel). Editing/interactivity is deferred to CV8+. The read-only-now / interactive-later progression matches the broader CV7 guardrail of "no new features in CV7" while reserving the architectural shape for the AIOps future.

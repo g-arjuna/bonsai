@@ -602,6 +602,23 @@ async fn main() -> Result<()> {
         &cfg.credentials.passphrase_env,
     )?);
 
+    // CV7 T4-2: sidecar registry. Tracks Python (and future) sidecar processes
+    // that bond to bonsai over gRPC. BONSAI_REQUIRE_SIDECAR=<comma-list> turns
+    // missing required kinds into a /health degraded status (T4-6).
+    let required_sidecar_kinds =
+        bonsai::sidecar_registry::SidecarRegistry::parse_required_kinds(
+            &std::env::var("BONSAI_REQUIRE_SIDECAR").unwrap_or_default(),
+        );
+    if !required_sidecar_kinds.is_empty() {
+        info!(
+            required = ?required_sidecar_kinds,
+            "BONSAI_REQUIRE_SIDECAR set — /health will be degraded until these sidecars register"
+        );
+    }
+    let sidecar_registry = std::sync::Arc::new(
+        bonsai::sidecar_registry::SidecarRegistry::new(required_sidecar_kinds),
+    );
+
     let collector_manager = if run_core {
         Some(std::sync::Arc::new(
             bonsai::assignment::CollectorManager::new(
@@ -895,6 +912,7 @@ async fn main() -> Result<()> {
         let bus_for_api = std::sync::Arc::clone(&bus);
         let store_for_api = store.clone();
         let collector_manager_for_api = collector_manager.clone();
+        let sidecar_registry_for_api = std::sync::Arc::clone(&sidecar_registry);
 
         let mut server = tonic::transport::Server::builder();
         if cfg.runtime.tls.enabled {
@@ -921,6 +939,7 @@ async fn main() -> Result<()> {
                         bus_for_api,
                         Some(std::sync::Arc::clone(&debouncer)),
                         collector_manager_for_api,
+                        sidecar_registry_for_api,
                     ))
                     .accept_compressed(CompressionEncoding::Zstd);
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {
@@ -935,6 +954,7 @@ async fn main() -> Result<()> {
                         bus_for_api,
                         Some(std::sync::Arc::clone(&debouncer)),
                         None,
+                        sidecar_registry_for_api,
                     ))
                     .accept_compressed(CompressionEncoding::Zstd);
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {
@@ -1017,6 +1037,7 @@ async fn main() -> Result<()> {
                         cfg.collector.filter.counter_window_secs,
                         cfg.collector.filter.counter_debounce_secs,
                         governor_for_http,
+                        std::sync::Arc::clone(&sidecar_registry),
                     ),
                 )
                 .await
@@ -1163,8 +1184,26 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    tokio::signal::ctrl_c().await?;
-    info!("Ctrl+C received - shutting down");
+    // CV7 T3-4: react to BOTH SIGINT (Ctrl-C) and SIGTERM (systemd / pkill /
+    // wrapper teardown). On either, propagate shutdown so the archive
+    // consumer flushes open parquet writers before exit — the CV6 archive
+    // code already handles `shutdown.changed()` correctly (src/archive.rs),
+    // it just needed both signals to reach it.
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut sigterm = signal(SignalKind::terminate())
+            .context("install SIGTERM handler")?;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => info!("SIGINT received — shutting down"),
+            _ = sigterm.recv()           => info!("SIGTERM received — shutting down"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await?;
+        info!("Ctrl+C received - shutting down");
+    }
     let _ = shutdown_tx.send(true);
     if let Some(subscriber_manager) = subscriber_manager {
         let _ = subscriber_manager.await;

@@ -201,6 +201,57 @@ class BonsaiClient:
             raise RuntimeError(f"CreateDetection error: {resp.error}")
         return resp
 
+    # ── CV7 T4-3: Sidecar registry ────────────────────────────────────────────
+    # Register this sidecar with bonsai so its presence shows in /api/sidecars
+    # and on the bonpy UI. See docs/architecture/sidecars.md.
+
+    def register_sidecar(
+        self,
+        *,
+        name: str,
+        kind: str,
+        version: str,
+        capabilities: list[str],
+        address: str = "",
+    ) -> str:
+        """Register this sidecar; returns the assigned sidecar_id (UUID).
+
+        Raises RuntimeError if bonsai rejects the registration.
+        """
+        req = pb.RegisterSidecarRequest(
+            name=name,
+            kind=kind,
+            version=version,
+            capabilities=list(capabilities),
+            address=address,
+        )
+        resp = self.stub.RegisterSidecar(req)
+        if resp.error:
+            raise RuntimeError(f"RegisterSidecar error: {resp.error}")
+        return resp.sidecar_id
+
+    def sidecar_heartbeat(
+        self,
+        *,
+        sidecar_id: str,
+        events_in_total: int,
+        detections_out_total: int,
+        status_json: str = "",
+    ) -> bool:
+        """Send a heartbeat. Returns True if bonsai still knows this sidecar_id;
+        False if the sidecar should re-register (bonsai restart, registry purge).
+        """
+        req = pb.SidecarHeartbeatRequest(
+            sidecar_id=sidecar_id,
+            events_in_total=events_in_total,
+            detections_out_total=detections_out_total,
+            status_json=status_json,
+        )
+        resp = self.stub.SidecarHeartbeat(req)
+        if resp.error:
+            raise RuntimeError(f"SidecarHeartbeat error: {resp.error}")
+        return not resp.reregister_required
+
     def create_remediation(
         self,
         detection_id: str,

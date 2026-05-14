@@ -1,0 +1,31 @@
+[Unit]
+Description=Bonsai network state engine (Rust core)
+Documentation=https://github.com/<owner>/bonsai
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bonsai
+Group=bonsai
+WorkingDirectory=/opt/bonsai
+EnvironmentFile=-/etc/bonsai/bonsai.env
+ExecStart=/usr/local/bin/bonsai
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=30
+# Allow Rust archive flush handler to fire on shutdown (CV7 T3-4).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bonsai
+LimitNOFILE=65536
+# Lock down filesystem access.
+ReadWritePaths=/opt/bonsai/runtime /opt/bonsai/logs /mnt/bonsai-archive
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

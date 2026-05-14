@@ -1,130 +1,23 @@
-# Bonsai — Network State Engine
+# CLAUDE.md — Bonsai
 
-## What This Project Is
-A streaming-first, graph-native network state engine. Ingests gNMI
-telemetry from ContainerLab (Nokia SR Linux, Cisco IOS-XRd, Juniper
-cRPD, Arista cEOS), writes to an embedded graph database, and closes
-a detect-predict-heal loop. MIT licensed, open source, personal
-learning project. Goal: replicate Google's ANO framework architecture
-at lab scale using only open source primitives.
+> **READ THIS FIRST (CV7 T1-4).** You are operating in either the Mac dev
+> environment or the Ubuntu ops environment. Run `bash scripts/dev/whichenv.sh`
+> to determine which.
+>
+> - **On Mac**: source editing, docs, and `git push` only. Do NOT run
+>   `cargo`, `pytest`, `docker`, `containerlab`, chaos, smoke, or any test
+>   target. Use `bash scripts/dev/macdev help` for the allowed operations.
+> - **On Ubuntu laptop / cloud**: do NOT modify source files except via
+>   `git pull origin main`. All testing, chaos, and smoke happens here.
+>
+> Full dev/ops boundary: [`docs/operations/dev_vs_ops_boundary.md`](docs/operations/dev_vs_ops_boundary.md).
 
-## Audience and Positioning (ADR 2026-04-24)
-**Primary target**: controller-less network environments — SP backbones, DC fabrics
-built device-direct, hyperscale/research networks, telco core, multi-vendor environments
-where no single controller owns the fabric. For these operators, bonsai replaces the
-ad-hoc Telegraf+InfluxDB+Grafana+scripts stack with a coherent graph, detect-heal loop,
-and ML pipeline.
+## Read next
 
-**Secondary target (narrow)**: multi-controller correlation — environments with multiple
-controller domains where no single controller spans the fabric. Bonsai's unified graph is
-additive here. Individual controller adapters are **demand-driven only**, not core workload.
+**[`docs/CANONICAL.md`](docs/CANONICAL.md)** is the single document that orients
+you. Architecture, non-negotiables, scope guardrails, anti-patterns, where to
+find every other doc — all there. Read it once, top to bottom, before doing
+anything else.
 
-**Anti-position**: bonsai is NOT a DNAC/NDI/Meraki Dashboard replacement inside their
-own fabrics. That is a losing position. Reject any feature work framed as "replacing" a
-controller in an environment that already has one.
-
-**Graph enrichment is the primary business-context mechanism** for the primary audience
-(no controller to do it for them). NetBox and ServiceNow enrichment is Tier 4, before
-controller adapters.
-
-## Current Phase
-Phase: 6 — UI (in progress)
-Last completed:
-- Phase 5.0 hygiene: TRIGGERED_BY edge, Prometheus /metrics, retention/registry seams, PlaybookCatalog, integration smoke test, 3 ADRs.
-- Phase 5.1: training data export (Parquet), MLDetector (IsolationForest), features_to_vector contract, wired into RuleEngine with rules-only fallback.
-- Phase 5.2: MLRemediationSelector (GBT), export_remediation_training_set(), wired into RemediationExecutor.
-- Phase 5.3 (Model B LSTM): deferred — requires weeks of failure data. Resume when DetectionEvent history is sufficient.
-- Phase 6.0: Axum HTTP server (port 3000) serving REST API + SSE + Svelte SPA.
-  - GET /api/topology — devices, LLDP links, BGP sessions, health
-  - GET /api/detections — recent DetectionEvents + Remediations
-  - GET /api/trace/:id — closed-loop trace for one DetectionEvent
-  - GET /api/events — SSE stream of live BonsaiEvents
-  - Svelte SPA: Topology (D3-force graph, zoom/pan, health colors), Events (SSE feed), Trace (timeline)
-  - Bug fix: BGP peer_as no longer clobbered to 0 on ON_CHANGE session-state updates
-Next: Phase 6.1 — Device onboarding UI.
-  - DiscoverDevice RPC: connect → Capabilities → return vendor/models/recommended paths
-  - AddDevice / RemoveDevice RPCs + ApiRegistry (runtime mutations, no restart required)
-  - Onboarding wizard in UI: address input → discovery result → path selection → add to monitoring
-  - Credentials via env var name only — never plaintext in UI or API
-
-## Architecture
-- Rust core: tokio async runtime, tonic gRPC, prost protobuf
-- Graph DB: **LadybugDB** (`lbug` crate, MIT, embedded, Cypher). Grafeo named fallback.
-  Temporal: append-only StateChangeEvent log (current); full bitemporal valid_from/valid_to deferred to T4-3.
-  Decision rationale in DECISIONS.md.
-- Python layer: REST API consumer (PyO3 later), rules engine, ML pipeline
-- Lab: ContainerLab — Holo/FRR for fast iteration, Nokia/Cisco/Juniper/Arista
-  as primary vendor targets once accounts are approved
-
-## Local Environment
-- Python dependencies are declared in `python/pyproject.toml`
-- Use a repo-local `.venv/` created from WSL for Python work
-- Run chaos tooling, `python/inject_fault.py`, and any `clab` commands from WSL because the live lab runs there
-- Keep Rust build/test/clippy on Windows with `--release` on this machine
-
-## Non-Negotiable Rules
-- No SNMP, no NETCONF — gNMI only, always
-- No async runtime other than tokio
-- Every architectural decision gets an entry in DECISIONS.md with date and rationale
-- Never add scope beyond current phase without flagging it explicitly
-- Rust code must compile before ending a session — no broken state
-- No campus/wireless, no optical transport, no Kubernetes, no RBAC — say no politely
-- Credentials (username/password) must never appear in source code or committed files — use bonsai.toml (gitignored) or env vars
-
-## Scope Guardrails (enforce these)
-IN: DC + SP topologies, gNMI/OpenConfig only, four vendor families
-    (Nokia SR Linux, Cisco IOS-XRd, Juniper cRPD/vJunosEvolved, Arista cEOS),
-    Holo/FRR as OSS references, YANG paths: interfaces/BGP/OSPF/IS-IS/LLDP/
-    platform + SP paths (openconfig-mpls, openconfig-segment-routing,
-    openconfig-network-instance), closed-loop healing via gNMI Set,
-    single-host deployment for v1.
-
-OUT: SNMP, NETCONF, campus/wireless, optical transport, Kubernetes/HA/clustering,
-     multi-tenancy/RBAC/auth beyond TLS, production WAL/replication,
-     config-writing UI (Phase 6 UI is view-only), any fifth vendor in first 6 months.
-
-## Anti-Patterns (things that will kill this project)
-- Adding SNMP/NETCONF "because a user asked"
-- Phase 6 UI growing into a product — it is a demo view, reject any admin/config/auth features
-- Deploying to Kubernetes before v0.1 runs on one laptop
-- Writing blog posts before Phase 2 works
-- Chasing more vendors before the current four work vendor-neutrally
-- Rewriting from Rust to Go because it's easier
-- Accepting scope expansions that add breadth before depth of normalization
-- Building a DNAC/NDI replacement — wrong audience, losing position
-- Adding controller adapters speculatively — demand-driven only
-- Skipping enrichment to jump to GNN — GNN without enriched graph has no business context
-- Letting "bonsai should work for every network everywhere" creep in — focus matters
-
-## File Structure
-- /src — Rust core
-- /python — Python SDK and rule engine
-- /ui — Svelte + Vite SPA (npm run build → ui/dist/ served by Axum)
-- /lab — ContainerLab topology YAMLs
-  - /lab/fast-iteration — Holo/FRR topologies (immediate use)
-  - /lab/real-vendors — Nokia/Cisco/Juniper/Arista topologies
-- DECISIONS.md — append-only decision log (never edit past entries)
-- PROJECT_KICKOFF.md — origin thesis, full roadmap, research items
-- bonsai.toml — local runtime config (gitignored; copy from bonsai.toml.example)
-- bonsai.toml.example — committed template with placeholder values
-
-## Build Commands
-```
-cargo build --release          # debug builds exceed MSVC 4GB static lib limit (lbug on Windows)
-cargo run --release
-cargo test --release
-cargo clippy --release -- -D warnings   # must pass before any commit
-```
-
-**Windows note**: `cargo build` (debug) will fail with LNK1248 because lbug's C++ static lib
-exceeds the MSVC 4GB limit in debug mode. Always use `--release` on this machine.
-
-## graphify
-
-This project has a graphify knowledge graph at graphify-out/.
-
-Rules:
-- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
-- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
-- For cross-module "how does X relate to Y" questions, prefer `graphify query "<question>"`, `graphify path "<A>" "<B>"`, or `graphify explain "<concept>"` over grep — these traverse the graph's EXTRACTED + INFERRED edges instead of scanning files
-- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
+For the active sprint backlog: [`BONSAI_CONSOLIDATED_BACKLOG_CV7.md`](BONSAI_CONSOLIDATED_BACKLOG_CV7.md).
+For decisions: [`DECISIONS.md`](DECISIONS.md).

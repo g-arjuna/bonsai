@@ -313,6 +313,36 @@ message HeartbeatAck {
   string error = 1;
 }
 
+// ── CV7 T4-2: Sidecar registry ─────────────────────────────────────────────────
+// A "sidecar" is a Python (or future Rust/other) process bound to bonsai over
+// gRPC that owns a piece of detection/ML/AIOps work. The rules sidecar
+// (python/collector_engine.py) is the first; ml-inference, syslog-parser, and
+// gnn-trainer are anticipated. See docs/architecture/sidecars.md and the
+// 2026-05-14 ADR in DECISIONS.md.
+
+message RegisterSidecarRequest {
+  string name                  = 1;  // operator-friendly name, e.g. "rules-alpha"
+  string kind                  = 2;  // "rules" | "ml-inference" | "syslog-parser" | "gnn-trainer" | other
+  string version               = 3;  // semver string emitted by the sidecar
+  repeated string capabilities = 4;  // e.g. ["bgp_session_down", "bfd_session_down", "ml_anomaly_v1"]
+  string address               = 5;  // host:port the sidecar reaches bonsai on; informational only
+}
+message RegisterSidecarResponse {
+  string sidecar_id            = 1;  // UUID; carried in subsequent SidecarHeartbeat calls
+  string error                 = 2;
+}
+
+message SidecarHeartbeatRequest {
+  string sidecar_id            = 1;
+  uint64 events_in_total       = 2;  // running totals since the sidecar process started
+  uint64 detections_out_total  = 3;
+  string status_json           = 4;  // sidecar-specific freeform JSON (rules_loaded, model paths, etc.)
+}
+message SidecarHeartbeatResponse {
+  string error                 = 1;
+  bool   reregister_required   = 2;  // true if bonsai lost the sidecar_id (e.g. bonsai restart) — sidecar should call RegisterSidecar again
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 service BonsaiGraph {
@@ -361,4 +391,10 @@ service BonsaiGraph {
 
   // Phase 4: execute a gNMI Set on a managed device (credentials stay in Rust).
   rpc PushRemediation(PushRemediationRequest) returns (PushRemediationResponse);
+
+  // CV7 T4-2: Sidecar registry. Python (or future) sidecars register themselves
+  // and emit periodic heartbeats. Surfaced via GET /api/sidecars and the bonpy UI.
+  // See docs/architecture/sidecars.md.
+  rpc RegisterSidecar(RegisterSidecarRequest)     returns (RegisterSidecarResponse);
+  rpc SidecarHeartbeat(SidecarHeartbeatRequest)   returns (SidecarHeartbeatResponse);
 }

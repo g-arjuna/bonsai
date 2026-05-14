@@ -600,6 +600,9 @@ pub struct AppState {
     pub counter_debounce_secs: u64,
     /// T4-5: Resource governance handle — None until governor is started (non-core modes).
     pub governor: Option<GovernorHandle>,
+    /// CV7 T4-2/T4-4: Sidecar registry. Shared with the gRPC service so both
+    /// surfaces see the same data. See `src/sidecar_registry.rs`.
+    pub sidecar_registry: Arc<crate::sidecar_registry::SidecarRegistry>,
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -632,6 +635,7 @@ pub fn router(
     counter_window_secs: u64,
     counter_debounce_secs: u64,
     governor: Option<GovernorHandle>,
+    sidecar_registry: Arc<crate::sidecar_registry::SidecarRegistry>,
 ) -> Router {
     let state = AppState {
         store,
@@ -660,12 +664,23 @@ pub fn router(
         counter_window_secs,
         counter_debounce_secs,
         governor,
+        sidecar_registry,
     };
 
     // Serve the Svelte SPA from ui/dist/. Fall back to index.html so
     // client-side routing works (the SPA handles /events and /trace/:id paths).
     let spa = ServeDir::new("ui/dist")
         .not_found_service(tower_http::services::ServeFile::new("ui/dist/index.html"));
+
+    // CV7 T4-5: Bonpy — a separate Svelte SPA for Python/ML/AIOps surfaces,
+    // mounted at /bonpy/ on the same Axum process. Distinct from bonsai UI;
+    // see docs/architecture/sidecars.md. If `ui-bonpy/dist/` is missing (e.g.
+    // a build that skipped the bonpy step), ServeDir returns 404 — bonsai UI
+    // still works. Index fallback enables client-side routing within bonpy.
+    let bonpy_spa = ServeDir::new("ui-bonpy/dist")
+        .not_found_service(tower_http::services::ServeFile::new(
+            "ui-bonpy/dist/index.html",
+        ));
 
     Router::new()
         .route("/api/topology", get(topology_handler))
@@ -866,6 +881,15 @@ pub fn router(
         // CV6 T1-2: Swagger UI + canonical spec endpoint
         .route("/api/docs", get(swagger_ui_handler))
         .route("/api/openapi.json", get(openapi_json_handler))
+        // CV7 T4-4: Sidecar registry surface for bonpy UI and ops scripts.
+        .route("/api/sidecars", get(sidecars_handler))
+        // CV7 T4-6: Liveness gate. Returns "ok" normally; "degraded" with the
+        // missing list when BONSAI_REQUIRE_SIDECAR is set and a required kind
+        // has not registered within the startup grace window.
+        .route("/health", get(health_handler))
+        // CV7 T4-5: mount bonpy SPA at /bonpy/. Falls back to index.html for
+        // client-side routing inside the bonpy app.
+        .nest_service("/bonpy", bonpy_spa)
         .fallback_service(spa)
         .with_state(state)
         .layer(CorsLayer::permissive())
@@ -7642,6 +7666,63 @@ async fn resolve_handler(
         query: q,
         candidates,
     }))
+}
+
+// ── CV7 T4-4: GET /api/sidecars ───────────────────────────────────────────────
+// Surfaces the in-memory sidecar registry as JSON. Consumed by the bonpy UI
+// and ops scripts. See `src/sidecar_registry.rs` and `docs/architecture/sidecars.md`.
+
+#[derive(Serialize)]
+struct SidecarsResponse {
+    sidecars: Vec<crate::sidecar_registry::SidecarSnapshot>,
+    required_kinds: Vec<String>,
+    /// `None` while no kinds are required OR while still in the startup grace
+    /// window. `Some([])` means all required kinds present. `Some([...])`
+    /// means those kinds are missing or lost.
+    missing_required: Option<Vec<String>>,
+}
+
+async fn sidecars_handler(State(state): State<AppState>) -> Json<SidecarsResponse> {
+    let sidecars = state.sidecar_registry.snapshot().await;
+    let required_kinds = state.sidecar_registry.required_kinds().await;
+    let missing_required = state.sidecar_registry.missing_required().await;
+    Json(SidecarsResponse {
+        sidecars,
+        required_kinds,
+        missing_required,
+    })
+}
+
+// ── CV7 T4-6: GET /health ─────────────────────────────────────────────────────
+// Returns 200 + JSON `{ "status": "ok" }` by default. When a required sidecar
+// is missing past the startup grace window, returns 503 + `{ "status":
+// "degraded", "missing_required_sidecars": [...] }`. This is the operational
+// "loud" surface that prevents the CV6-era "Detections: 0" silent gap.
+
+#[derive(Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    missing_required_sidecars: Option<Vec<String>>,
+}
+
+async fn health_handler(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
+    match state.sidecar_registry.missing_required().await {
+        Some(missing) if !missing.is_empty() => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(HealthResponse {
+                status: "degraded",
+                missing_required_sidecars: Some(missing),
+            }),
+        ),
+        _ => (
+            StatusCode::OK,
+            Json(HealthResponse {
+                status: "ok",
+                missing_required_sidecars: None,
+            }),
+        ),
+    }
 }
 
 #[cfg(test)]

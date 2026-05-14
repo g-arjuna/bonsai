@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# CV7 T1-3 — Mac-safe operations wrapper.
+#
+# Exposes ONLY the operations allowed on the Mac per the dev/ops boundary
+# (docs/operations/dev_vs_ops_boundary.md). Any other operation is refused
+# with a pointer to the right environment.
+#
+# Usage:
+#   macdev search <pattern>     ripgrep across the repo
+#   macdev status               git status + branch + last 5 commits
+#   macdev commit [args]        git commit (after manual git add)
+#   macdev push                 git push origin <current-branch>
+#   macdev docs-preview <path>  open a markdown file in the default app
+#   macdev whichenv             confirms current environment
+#   macdev refuse <op>          explicit refusal example
+#   macdev help                 this help
+#
+# Any unknown subcommand — especially build / test / run — is refused
+# with a clear pointer to the Ubuntu ops laptop.
+
+set -u
+
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+
+usage() {
+  cat <<EOF
+macdev — Mac-safe operations wrapper.
+
+ALLOWED:
+  macdev search <pattern>     ripgrep across the repo
+  macdev status               git status + branch + last 5 commits
+  macdev commit [args]        git commit (after manual git add)
+  macdev push                 git push origin <current-branch>
+  macdev docs-preview <path>  open a markdown file in the default app
+  macdev whichenv             confirms current environment
+  macdev refuse <op>          explicit refusal example
+  macdev help                 this help
+
+REFUSED on Mac (dev/ops boundary):
+  build, test, run, smoke, e2e, chaos, cargo, clippy, pytest, docker, clab
+
+See: docs/operations/dev_vs_ops_boundary.md
+EOF
+}
+
+refuse() {
+  local op="${1:-<unknown>}"
+  cat >&2 <<EOF
+Refused: 'macdev $op'. Mac is source-editing only.
+
+  Build → push to main → GitHub Actions (Tier 6, when live)
+  Test  → SSH to Ubuntu laptop and run scripts/ops/run_tests.sh
+  Chaos → SSH to Ubuntu laptop or cloud; never on Mac
+
+Environment confirmation: bash scripts/dev/whichenv.sh
+See: docs/operations/dev_vs_ops_boundary.md
+EOF
+  exit 2
+}
+
+# Sanity-check we're actually on a Mac. If someone runs this on the Ubuntu
+# laptop it should reject — the wrapper is Mac-only by design.
+env="$(bash "$repo_root/scripts/dev/whichenv.sh" 2>/dev/null || echo unknown)"
+if [[ "$env" != "mac-dev" ]]; then
+  printf 'macdev refuses to run outside mac-dev (detected: %s).\n' "$env" >&2
+  printf 'Use the right tooling for this environment.\n' >&2
+  printf 'See: docs/operations/dev_vs_ops_boundary.md\n' >&2
+  exit 3
+fi
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  help|-h|--help)
+    usage
+    ;;
+
+  whichenv)
+    printf 'Environment: %s\n' "$env"
+    printf 'Allowed here: source editing, docs authoring, git add/commit/push.\n'
+    printf 'NOT allowed: cargo / pytest / docker / containerlab / any test target.\n'
+    ;;
+
+  search)
+    if (( $# == 0 )); then
+      echo "Usage: macdev search <pattern> [path ...]" >&2
+      exit 1
+    fi
+    if command -v rg >/dev/null 2>&1; then
+      ( cd "$repo_root" && rg --hidden --glob '!.git/' --glob '!target/' --glob '!node_modules/' --glob '!ui/dist/' "$@" )
+    else
+      ( cd "$repo_root" && grep -RIn --exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules --exclude-dir=ui/dist "$@" . )
+    fi
+    ;;
+
+  status)
+    ( cd "$repo_root" && \
+      printf '%s\n' '── git status ──' && git status -sb && \
+      printf '\n%s\n' '── branch ──' && git rev-parse --abbrev-ref HEAD && \
+      printf '\n%s\n' '── last 5 commits ──' && git log --oneline -5 )
+    ;;
+
+  commit)
+    ( cd "$repo_root" && git commit "$@" )
+    ;;
+
+  push)
+    ( cd "$repo_root" && \
+      branch="$(git rev-parse --abbrev-ref HEAD)" && \
+      printf 'Pushing to origin/%s …\n' "$branch" && \
+      git push origin "$branch" )
+    ;;
+
+  docs-preview)
+    if (( $# == 0 )); then
+      echo "Usage: macdev docs-preview <markdown-file>" >&2
+      exit 1
+    fi
+    target="$1"
+    if [[ ! -f "$target" ]]; then
+      target_rel="$repo_root/$1"
+      if [[ -f "$target_rel" ]]; then
+        target="$target_rel"
+      else
+        printf 'No such file: %s\n' "$1" >&2
+        exit 1
+      fi
+    fi
+    open "$target"
+    ;;
+
+  refuse)
+    refuse "${1:-<example>}"
+    ;;
+
+  # Explicit refusals — common foot-guns. List them so an AI agent or human
+  # who *tries* the obvious thing gets an immediate clear message.
+  build|test|run|smoke|e2e|chaos|cargo|clippy|rustc|rustfmt|pytest|ruff|docker|clab|containerlab)
+    refuse "$cmd"
+    ;;
+
+  *)
+    printf 'Unknown subcommand: %s\n\n' "$cmd" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

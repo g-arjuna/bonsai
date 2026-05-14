@@ -1,0 +1,110 @@
+name: Build artifacts
+
+# CV7 T6-1 — Cross-compile bonsai release binaries on every push to main.
+# Uploads them as workflow artifacts so the laptop and cloud can pull and
+# install pre-built binaries instead of running `cargo build` locally.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-x86_64-linux:
+    name: bonsai x86_64-unknown-linux-gnu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: build-${{ runner.os }}-x86_64-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: cargo build --release --target x86_64-unknown-linux-gnu
+        run: cargo build --release --target x86_64-unknown-linux-gnu --bin bonsai
+
+      - name: Capture SHA + version
+        id: meta
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload bonsai (x86_64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: bonsai-x86_64-linux-${{ steps.meta.outputs.short }}
+          path: target/x86_64-unknown-linux-gnu/release/bonsai
+          retention-days: 30
+
+  build-aarch64-linux:
+    name: bonsai aarch64-unknown-linux-gnu (OCI ARM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross
+        run: cargo install cross --locked
+
+      - name: cross build --release --target aarch64-unknown-linux-gnu
+        run: cross build --release --target aarch64-unknown-linux-gnu --bin bonsai
+
+      - name: Capture SHA
+        id: meta
+        run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload bonsai (aarch64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: bonsai-aarch64-linux-${{ steps.meta.outputs.short }}
+          path: target/aarch64-unknown-linux-gnu/release/bonsai
+          retention-days: 30
+
+  build-bonpy:
+    name: bonpy SPA build (ui-bonpy/)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ui-bonpy/package-lock.json
+
+      - name: npm ci
+        working-directory: ui-bonpy
+        run: |
+          if [[ -f package-lock.json ]]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: npm run build
+        working-directory: ui-bonpy
+        run: npm run build
+
+      - name: Capture SHA
+        id: meta
+        run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload bonpy dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: bonpy-dist-${{ steps.meta.outputs.short }}
+          path: ui-bonpy/dist
+          retention-days: 30
