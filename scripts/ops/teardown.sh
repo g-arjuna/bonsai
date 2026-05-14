@@ -67,6 +67,25 @@ stop_pidfile "bonsai"        "runtime/bonsai.pid"
 pkill -f 'python.*collector_engine.py' 2>/dev/null || true
 pkill -f 'target/release/bonsai|/usr/local/bin/bonsai' 2>/dev/null || true
 
+# CV7 Tier 2: laptop = bonsai-as-process. The dockerised bonsai-lab-dc /
+# cloud-dc / dev services in docker-compose.yml all bind :3000 and conflict
+# with the native binary. Without removing them here, an orphan docker bonsai
+# can keep :3000 held across teardowns; the next start probe then sees 404s
+# from the WRONG bonsai (root-caused 2026-05-14T1704Z).
+#
+# We force-remove these container names regardless of compose-profile state.
+# -f handles the "container running but compose profile not loaded" case.
+# Containerlab nodes (clab-bonsai-dc-*) are NOT touched here — those carry
+# the test lab and are out of scope for a bonsai teardown.
+if command -v docker >/dev/null 2>&1; then
+  for c in bonsai-bonsai-lab-dc-1 bonsai-bonsai-cloud-dc-1 bonsai-bonsai-lab-sp-1 bonsai-bonsai-dev-1; do
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$c"; then
+      echo "${YELLOW}removing docker bonsai container${RESET} $c"
+      docker rm -f "$c" >/dev/null 2>&1 || true
+    fi
+  done
+fi
+
 if (( FULL == 1 )); then
   echo
   echo "${YELLOW}--full mode${RESET}"

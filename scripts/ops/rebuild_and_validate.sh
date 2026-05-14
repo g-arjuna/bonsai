@@ -371,15 +371,39 @@ fi
 section "7. teardown + start bonsai with sidecar"
 bash scripts/ops/teardown.sh >> "$RESULTS_FILE" 2>&1 || true
 
-# Sanity-check :3000 is free BEFORE starting bonsai. Orphan listeners are a
-# repeated source of confusion ("/api/sidecars returns 404 from some other
-# server"). Surface this loudly if present.
+# Sanity-check :3000 is free AFTER teardown. teardown.sh now also removes
+# the docker bonsai containers (bonsai-lab-dc, cloud-dc, etc.) per CV7
+# Tier 2 (laptop = bonsai-as-process). If :3000 is still bound here it means
+# an unknown process owns it — we must not start a second bonsai on top.
+#
+# Identify the offender by docker container name (no sudo needed) + lsof
+# (best-effort; needs sudo for non-owned sockets).
 ORPHAN_3000="$(ss -tlnp 2>/dev/null | grep -E ':3000\b' || true)"
-if [[ -n "$ORPHAN_3000" ]]; then
-  record WARN "**WARN**: something is already listening on :3000 BEFORE we started bonsai. Subsequent probes may hit the wrong process."
-  echo '```' >> "$RESULTS_FILE"
-  echo "$ORPHAN_3000" >> "$RESULTS_FILE"
-  echo '```' >> "$RESULTS_FILE"
+DOCKER_ON_3000="$(docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null | grep -E ':3000->' || true)"
+LSOF_3000="$(lsof -i :3000 -sTCP:LISTEN -P -n 2>/dev/null | tail -n +2 || true)"
+
+if [[ -n "$ORPHAN_3000" || -n "$DOCKER_ON_3000" ]]; then
+  {
+    echo
+    echo "### Pre-flight orphan check — something still owns :3000 after teardown"
+    echo
+    echo "**\`ss -tlnp\`:**"
+    echo '```'
+    echo "$ORPHAN_3000"
+    echo '```'
+    echo
+    echo "**\`docker ps\` containers publishing :3000:**"
+    echo '```'
+    [[ -n "$DOCKER_ON_3000" ]] && echo "$DOCKER_ON_3000" || echo "(no docker containers publishing :3000)"
+    echo '```'
+    echo
+    echo "**\`lsof -i :3000 -sTCP:LISTEN\` (may be empty if not run as root):**"
+    echo '```'
+    [[ -n "$LSOF_3000" ]] && echo "$LSOF_3000" || echo "(empty — try running this manually with sudo)"
+    echo '```'
+  } >> "$RESULTS_FILE"
+  record FAIL "**FAIL**: :3000 still bound after teardown — refusing to start a second bonsai on top. See dump above; identify and stop the owner manually (commonly: \`docker rm -f bonsai-bonsai-lab-dc-1\`). Aborting validation."
+  exit 1
 fi
 
 # Start in background; the wrapper itself writes to logs/bonsai.log and
