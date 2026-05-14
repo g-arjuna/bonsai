@@ -1,0 +1,2 @@
+    $ git reset --hard origin/main
+HEAD is now at 09c6073 cv7: fix sidecar startup deadlock + comprehensive validation pipeline

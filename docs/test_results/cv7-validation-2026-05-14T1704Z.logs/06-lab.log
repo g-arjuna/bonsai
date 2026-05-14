@@ -1,0 +1,27 @@
+=== DC Lab State ===
+
+ContainerLab nodes:
+clab-bonsai-dc-host4	Up About an hour
+clab-bonsai-dc-srl-super2	Up About an hour
+clab-bonsai-dc-host2	Up About an hour
+clab-bonsai-dc-srl-spine1	Up About an hour
+clab-bonsai-dc-srl-leaf2	Up About an hour
+clab-bonsai-dc-srl-leaf4	Up About an hour
+clab-bonsai-dc-srl-spine2	Up About an hour
+clab-bonsai-dc-host1	Up About an hour
+clab-bonsai-dc-srl-leaf3	Up About an hour
+clab-bonsai-dc-srl-leaf1	Up About an hour
+clab-bonsai-dc-srl-super1	Up About an hour
+clab-bonsai-dc-host3	Up About an hour
+
+Bonsai container:
+bonsai-bonsai-lab-dc-1	Up About an hour (healthy)
+
+CA cert:
+  /home/arjuna/Desktop/bonsai/lab/dc/clab-bonsai-dc/.tls/ca/ca.pem
+  SHA1 Fingerprint=C5:03:EB:A0:DE:2F:E3:EA:E5:CD:69:3F:91:EB:A6:85:3D:0A:72:C2
+  notBefore=May 14 15:38:34 2026 GMT
+  notAfter=May 14 15:38:34 2027 GMT
+
+Subscriptions:
+  observed_subscriptions=40
