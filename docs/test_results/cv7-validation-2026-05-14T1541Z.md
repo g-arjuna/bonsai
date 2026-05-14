@@ -205,3 +205,8 @@ drwxrwxr-x 12 arjuna arjuna  4096 May 14 21:11 ..
 
 ## 14. push results
 
+[main 88ba875] validation: cv7 2026-05-14T1541Z — PASS=6 WARN=3 FAIL=3
+ 1 file changed, 207 insertions(+)
+ create mode 100644 docs/test_results/cv7-validation-2026-05-14T1541Z.md
+To https://github.com/g-arjuna/bonsai.git
+   0749e97..88ba875  main -> main
