@@ -129,3 +129,8 @@ HTTP 503  body: {"status":"degraded","missing_required_sidecars":["rules"]}
 
 ## 12. push results
 
+[main f15d6ad] validation: cv7 2026-05-14T1433Z — PASS=9 WARN=2 FAIL=0
+ 1 file changed, 131 insertions(+)
+ create mode 100644 docs/test_results/cv7-validation-2026-05-14T1433Z.md
+To https://github.com/g-arjuna/bonsai.git
+   10390a4..f15d6ad  main -> main

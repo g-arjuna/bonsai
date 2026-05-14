@@ -28,6 +28,7 @@ if _version_not_supported:
 class BonsaiGraphStub(object):
     """── Service ───────────────────────────────────────────────────────────────────
 
+    ... existing rpcs ...
     """
 
     def __init__(self, channel):
@@ -36,6 +37,16 @@ class BonsaiGraphStub(object):
         Args:
             channel: A grpc.Channel.
         """
+        self.RegisterCollector = channel.unary_stream(
+                '/bonsai.v1.BonsaiGraph/RegisterCollector',
+                request_serializer=bonsai__service__pb2.CollectorIdentity.SerializeToString,
+                response_deserializer=bonsai__service__pb2.AssignmentUpdate.FromString,
+                _registered_method=True)
+        self.Heartbeat = channel.unary_unary(
+                '/bonsai.v1.BonsaiGraph/Heartbeat',
+                request_serializer=bonsai__service__pb2.CollectorStats.SerializeToString,
+                response_deserializer=bonsai__service__pb2.HeartbeatAck.FromString,
+                _registered_method=True)
         self.Query = channel.unary_unary(
                 '/bonsai.v1.BonsaiGraph/Query',
                 request_serializer=bonsai__service__pb2.QueryRequest.SerializeToString,
@@ -146,12 +157,37 @@ class BonsaiGraphStub(object):
                 request_serializer=bonsai__service__pb2.PushRemediationRequest.SerializeToString,
                 response_deserializer=bonsai__service__pb2.PushRemediationResponse.FromString,
                 _registered_method=True)
+        self.RegisterSidecar = channel.unary_unary(
+                '/bonsai.v1.BonsaiGraph/RegisterSidecar',
+                request_serializer=bonsai__service__pb2.RegisterSidecarRequest.SerializeToString,
+                response_deserializer=bonsai__service__pb2.RegisterSidecarResponse.FromString,
+                _registered_method=True)
+        self.SidecarHeartbeat = channel.unary_unary(
+                '/bonsai.v1.BonsaiGraph/SidecarHeartbeat',
+                request_serializer=bonsai__service__pb2.SidecarHeartbeatRequest.SerializeToString,
+                response_deserializer=bonsai__service__pb2.SidecarHeartbeatResponse.FromString,
+                _registered_method=True)
 
 
 class BonsaiGraphServicer(object):
     """── Service ───────────────────────────────────────────────────────────────────
 
+    ... existing rpcs ...
     """
+
+    def RegisterCollector(self, request, context):
+        """Bidirectional streaming: collector registers and receives device assignments.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Heartbeat(self, request, context):
+        """Unary: periodic heartbeat from collector to core.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
 
     def Query(self, request, context):
         """Execute a read-only Cypher query.
@@ -293,9 +329,34 @@ class BonsaiGraphServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def RegisterSidecar(self, request, context):
+        """CV7 T4-2: Sidecar registry. Python (or future) sidecars register themselves
+        and emit periodic heartbeats. Surfaced via GET /api/sidecars and the bonpy UI.
+        See docs/architecture/sidecars.md.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SidecarHeartbeat(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_BonsaiGraphServicer_to_server(servicer, server):
     rpc_method_handlers = {
+            'RegisterCollector': grpc.unary_stream_rpc_method_handler(
+                    servicer.RegisterCollector,
+                    request_deserializer=bonsai__service__pb2.CollectorIdentity.FromString,
+                    response_serializer=bonsai__service__pb2.AssignmentUpdate.SerializeToString,
+            ),
+            'Heartbeat': grpc.unary_unary_rpc_method_handler(
+                    servicer.Heartbeat,
+                    request_deserializer=bonsai__service__pb2.CollectorStats.FromString,
+                    response_serializer=bonsai__service__pb2.HeartbeatAck.SerializeToString,
+            ),
             'Query': grpc.unary_unary_rpc_method_handler(
                     servicer.Query,
                     request_deserializer=bonsai__service__pb2.QueryRequest.FromString,
@@ -406,6 +467,16 @@ def add_BonsaiGraphServicer_to_server(servicer, server):
                     request_deserializer=bonsai__service__pb2.PushRemediationRequest.FromString,
                     response_serializer=bonsai__service__pb2.PushRemediationResponse.SerializeToString,
             ),
+            'RegisterSidecar': grpc.unary_unary_rpc_method_handler(
+                    servicer.RegisterSidecar,
+                    request_deserializer=bonsai__service__pb2.RegisterSidecarRequest.FromString,
+                    response_serializer=bonsai__service__pb2.RegisterSidecarResponse.SerializeToString,
+            ),
+            'SidecarHeartbeat': grpc.unary_unary_rpc_method_handler(
+                    servicer.SidecarHeartbeat,
+                    request_deserializer=bonsai__service__pb2.SidecarHeartbeatRequest.FromString,
+                    response_serializer=bonsai__service__pb2.SidecarHeartbeatResponse.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'bonsai.v1.BonsaiGraph', rpc_method_handlers)
@@ -417,7 +488,62 @@ def add_BonsaiGraphServicer_to_server(servicer, server):
 class BonsaiGraph(object):
     """── Service ───────────────────────────────────────────────────────────────────
 
+    ... existing rpcs ...
     """
+
+    @staticmethod
+    def RegisterCollector(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/bonsai.v1.BonsaiGraph/RegisterCollector',
+            bonsai__service__pb2.CollectorIdentity.SerializeToString,
+            bonsai__service__pb2.AssignmentUpdate.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Heartbeat(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bonsai.v1.BonsaiGraph/Heartbeat',
+            bonsai__service__pb2.CollectorStats.SerializeToString,
+            bonsai__service__pb2.HeartbeatAck.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
 
     @staticmethod
     def Query(request,
@@ -1003,6 +1129,60 @@ class BonsaiGraph(object):
             '/bonsai.v1.BonsaiGraph/PushRemediation',
             bonsai__service__pb2.PushRemediationRequest.SerializeToString,
             bonsai__service__pb2.PushRemediationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RegisterSidecar(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bonsai.v1.BonsaiGraph/RegisterSidecar',
+            bonsai__service__pb2.RegisterSidecarRequest.SerializeToString,
+            bonsai__service__pb2.RegisterSidecarResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SidecarHeartbeat(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bonsai.v1.BonsaiGraph/SidecarHeartbeat',
+            bonsai__service__pb2.SidecarHeartbeatRequest.SerializeToString,
+            bonsai__service__pb2.SidecarHeartbeatResponse.FromString,
             options,
             channel_credentials,
             insecure,
