@@ -1,0 +1,2 @@
+    $ git reset --hard origin/main
+HEAD is now at d5fa6b0 cv7: teardown removes docker bonsai; pre-flight FAILs hard on :3000 conflict
