@@ -1,0 +1,10 @@
+fixture_id: juniper-junos-config-commit-adversarial
+vendor: juniper-junos
+category: config_change
+transport: udp
+raw: "<34>1 2026-05-09T12:00:00Z crpd1 mgd 123 UI_COMMIT - commit complete"
+expected_category: custom
+expected_fact_type: ""
+expected_fields: {}
+expected_signal_trigger: true
+adversarial: true

@@ -106,7 +106,8 @@ impl OutputAdapter for SplunkHecAdapter {
         let cursor_path = cursor_file_path(&self.config.name);
         // Restore persisted cursor so a restart after a long gap doesn't silently
         // discard queued detections (C4-N1 / T6-2). Fall back to 120s window.
-        let mut cursor_ns: i64 = load_cursor(&cursor_path).unwrap_or_else(|| now_ns() - 120_000_000_000);
+        let mut cursor_ns: i64 =
+            load_cursor(&cursor_path).unwrap_or_else(|| now_ns() - 120_000_000_000);
 
         loop {
             tokio::select! {

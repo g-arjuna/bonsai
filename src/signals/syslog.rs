@@ -149,6 +149,7 @@ pub async fn run_syslog_receiver(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_udp(
     socket: UdpSocket,
     bus: Arc<InProcessBus>,
@@ -189,6 +190,7 @@ async fn run_udp(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_tcp(
     listener: TcpListener,
     bus: Arc<InProcessBus>,
@@ -251,6 +253,7 @@ async fn run_tcp(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_frame(
     raw: String,
     transport: &str,
@@ -288,7 +291,7 @@ async fn handle_frame(
 
     // Under rate shedding, skip bus publish to relieve pipeline pressure (C4-N2 / T6-1).
     // Raw data is still archived above so no telemetry is permanently lost.
-    if governor.map_or(false, |g| g.is_shedding()) {
+    if governor.is_some_and(|g| g.is_shedding()) {
         metrics::counter!("bonsai_syslog_shed_total").increment(1);
         return;
     }
@@ -351,6 +354,8 @@ struct ResolvedTarget {
 struct SyslogPatternCatalog {
     #[serde(default)]
     vendor: String,
+    #[serde(default)]
+    patterns: Vec<String>,
     #[serde(default)]
     facts: Vec<SyslogFactPattern>,
 }
@@ -559,6 +564,55 @@ impl SyslogFactExtractor {
     }
 }
 
+pub fn parse_syslog_fixture(
+    pattern_dir: &str,
+    raw: &str,
+    vendor: &str,
+    transport: &str,
+    peer_addr: &str,
+    timestamp_ns: i64,
+) -> (SyslogEvent, Vec<SyslogFact>) {
+    let event = parse_syslog(raw, transport, peer_addr, timestamp_ns);
+    let extractor = SyslogFactExtractor::load_from_dir(pattern_dir);
+    let facts = extractor.extract(&event, vendor);
+    (event, facts)
+}
+
+pub fn matches_syslog_config_change_trigger(
+    pattern_dir: &str,
+    vendor: &str,
+    message: &str,
+) -> bool {
+    let Ok(entries) = std::fs::read_dir(pattern_dir) else {
+        return false;
+    };
+    let vendor = vendor.to_ascii_lowercase();
+    let message = message.to_ascii_lowercase();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(catalog) = serde_yaml::from_str::<SyslogPatternCatalog>(&raw) else {
+            continue;
+        };
+        let vendor_match = catalog.vendor.trim().is_empty()
+            || vendor.contains(&catalog.vendor.to_ascii_lowercase());
+        if vendor_match
+            && catalog
+                .patterns
+                .iter()
+                .any(|pattern| message.contains(&pattern.to_ascii_lowercase()))
+        {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn parse_syslog(raw: &str, transport: &str, peer_addr: &str, timestamp_ns: i64) -> SyslogEvent {
     let (priority, rest) = parse_priority(raw);
     let (hostname, app_name, proc_id, msg_id, message) = if rest.starts_with("1 ") {
@@ -713,6 +767,9 @@ fn now_ns() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    use serde::Deserialize;
 
     #[test]
     fn parses_rfc5424_auth_failure() {
@@ -837,6 +894,139 @@ mod tests {
                 .get("peer_address")
                 .map(String::as_str),
             Some("string")
+        );
+    }
+
+    #[test]
+    fn matches_config_change_patterns_for_vendor() {
+        let dir =
+            std::env::temp_dir().join(format!("bonsai-syslog-pattern-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp pattern dir");
+        std::fs::write(
+            dir.join("cisco-iosxr.yaml"),
+            r#"vendor: cisco-iosxr
+patterns:
+  - "configuration committed"
+facts: []
+"#,
+        )
+        .expect("write pattern file");
+
+        assert!(matches_syslog_config_change_trigger(
+            dir.to_str().expect("utf8 path"),
+            "cisco-iosxr",
+            "running configuration committed by operator"
+        ));
+        assert!(!matches_syslog_config_change_trigger(
+            dir.to_str().expect("utf8 path"),
+            "juniper-junos",
+            "running configuration committed by operator"
+        ));
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct FixtureCase {
+        fixture_id: String,
+        vendor: String,
+        raw: String,
+        expected_category: String,
+        #[serde(default)]
+        expected_fact_type: String,
+        #[serde(default)]
+        expected_fields: BTreeMap<String, String>,
+        #[serde(default)]
+        expected_signal_trigger: bool,
+        #[serde(default)]
+        adversarial: bool,
+    }
+
+    #[test]
+    fn syslog_fixture_catalog_matches_expected_fields() {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let pattern_dir = repo_root.join("config").join("syslog_patterns");
+        let fixture_dir = repo_root.join("tests").join("syslog_fixtures");
+
+        let mut fixture_count = 0usize;
+        let mut adversarial_count = 0usize;
+
+        for entry in std::fs::read_dir(&fixture_dir).expect("read fixture dir") {
+            let entry = entry.expect("fixture entry");
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("yaml") {
+                continue;
+            }
+
+            let raw = std::fs::read_to_string(&path).expect("fixture file");
+            let fixture: FixtureCase = serde_yaml::from_str(&raw).expect("fixture yaml");
+            let (event, facts) = parse_syslog_fixture(
+                pattern_dir.to_str().expect("utf8 pattern dir"),
+                &fixture.raw,
+                &fixture.vendor,
+                "udp",
+                "127.0.0.1:5514",
+                123,
+            );
+            let config_change_trigger = matches_syslog_config_change_trigger(
+                pattern_dir.to_str().expect("utf8 pattern dir"),
+                &fixture.vendor,
+                &event.message,
+            );
+
+            fixture_count += 1;
+            adversarial_count += usize::from(fixture.adversarial);
+
+            assert_eq!(
+                event.category.as_str(),
+                fixture.expected_category,
+                "fixture {} category mismatch",
+                fixture.fixture_id
+            );
+            assert_eq!(
+                config_change_trigger,
+                fixture.expected_signal_trigger,
+                "fixture {} config trigger mismatch",
+                fixture.fixture_id
+            );
+
+            if fixture.expected_fact_type.is_empty() {
+                continue;
+            }
+
+            let fact = facts
+                .iter()
+                .find(|fact| fact.fact_type == fixture.expected_fact_type)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "fixture {} missing fact type {} in {:?}",
+                        fixture.fixture_id,
+                        fixture.expected_fact_type,
+                        facts.iter().map(|fact| &fact.fact_type).collect::<Vec<_>>()
+                    )
+                });
+
+            for (key, expected_value) in &fixture.expected_fields {
+                let actual_value = fact.fields.get(key).unwrap_or_else(|| {
+                    panic!(
+                        "fixture {} missing field {} in {:?}",
+                        fixture.fixture_id,
+                        key,
+                        fact.fields
+                    )
+                });
+                assert_eq!(
+                    actual_value,
+                    expected_value,
+                    "fixture {} field {} mismatch",
+                    fixture.fixture_id,
+                    key
+                );
+            }
+        }
+
+        assert_eq!(fixture_count, 44, "expected 44 committed syslog fixtures");
+        assert!(
+            adversarial_count >= 1,
+            "expected at least one adversarial syslog fixture"
         );
     }
 }

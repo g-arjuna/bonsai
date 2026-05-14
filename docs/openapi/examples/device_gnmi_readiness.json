@@ -1,0 +1,22 @@
+{
+  "address": "172.100.103.31:57400",
+  "report": {
+    "service_status": "reachable",
+    "tls_status": "verified",
+    "encoding_support": [
+      "json_ietf",
+      "proto"
+    ],
+    "models_advertised": [
+      "openconfig-interfaces",
+      "openconfig-bgp"
+    ],
+    "known_issues": [],
+    "blockers": [],
+    "recommended_actions": [
+      "subscribe to interface counters",
+      "subscribe to BGP neighbor state"
+    ],
+    "checked_at_ns": 1747116180000000000
+  }
+}

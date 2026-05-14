@@ -1,0 +1,10 @@
+fixture_id: frr-config-commit-adversarial
+vendor: frr
+category: config_change
+transport: udp
+raw: "<34>1 2026-05-09T12:00:00Z frr-r1 mgd 123 ID47 - user netops configuration saved via vtysh write memory"
+expected_category: custom
+expected_fact_type: ""
+expected_fields: {}
+expected_signal_trigger: true
+adversarial: true

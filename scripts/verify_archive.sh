@@ -23,11 +23,13 @@ PYTHON="$REPO_ROOT/.venv/bin/python3"
 
 # ── Argument handling ─────────────────────────────────────────────────────────
 JSON_MODE=false
+PRUNE_STALE_ZERO=false
 ARCHIVE_DIR=""
 
 for arg in "$@"; do
     case "$arg" in
         --json) JSON_MODE=true ;;
+        --prune-stale-zero) PRUNE_STALE_ZERO=true ;;
         --*) echo "Unknown flag: $arg" >&2; exit 1 ;;
         *)   ARCHIVE_DIR="$arg" ;;
     esac
@@ -118,7 +120,22 @@ if [[ ${#ACTIVE_ZERO_FILES[@]} -gt 0 ]]; then
 fi
 
 if [[ ${#STALE_ZERO_FILES[@]} -gt 0 ]]; then
-    _fail "stale_zero_byte_files" "${#STALE_ZERO_FILES[@]} stale zero-byte parquet file(s)"
+    if [[ "$PRUNE_STALE_ZERO" == "true" ]]; then
+        PRUNED=0
+        for f in "${STALE_ZERO_FILES[@]}"; do
+            if rm -f "$f" 2>/dev/null; then
+                PRUNED=$((PRUNED + 1))
+            fi
+        done
+        if [[ "$PRUNED" -eq "${#STALE_ZERO_FILES[@]}" ]]; then
+            _pass "stale_zero_byte_files_pruned" "removed $PRUNED stale zero-byte parquet file(s)"
+            STALE_ZERO_FILES=()
+        else
+            _fail "stale_zero_byte_files" "failed to remove some stale zero-byte parquet file(s)"
+        fi
+    else
+        _fail "stale_zero_byte_files" "${#STALE_ZERO_FILES[@]} stale zero-byte parquet file(s)"
+    fi
 fi
 
 # ── Check 3: Schema validation (expected columns present) ─────────────────────

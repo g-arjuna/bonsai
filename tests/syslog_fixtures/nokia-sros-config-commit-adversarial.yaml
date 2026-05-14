@@ -1,0 +1,10 @@
+fixture_id: nokia-sros-config-commit-adversarial
+vendor: nokia-sros
+category: config_change
+transport: udp
+raw: "<34>1 2026-05-09T12:00:00Z sros-pe1 mgd 123 ID47 - operator netops configuration saved"
+expected_category: custom
+expected_fact_type: ""
+expected_fields: {}
+expected_signal_trigger: true
+adversarial: true

@@ -91,6 +91,7 @@ python/.coverage
 
 # Historical backlog versions and prompt/tooling artifacts (kept locally, not public)
 BONSAI_CONSOLIDATED_BACKLOG_V*.md
+BONSAI_CONSOLIDATED_BACKLOG_CV*.md
 BONSAI_CONSOLIDATED_BACKLOG_BV1.md
 BONSAI_CONSOLIDATED_BACKLOG_BV2.md
 BONSAI_CONSOLIDATED_BACKLOG_BV2_MOD.md
@@ -102,3 +103,7 @@ PHASE5_*.md
 
 # CV5 freeze dirs — contain bonsai.toml.snapshot which may have credentials
 pre_cv5_freeze_*/
+
+# Older freeze snapshots may also contain local graph DB state
+pre_cv2_freeze_*/bonsai.db*
+pre_cv2_freeze_*/bonsai.db.wal*

@@ -34,6 +34,17 @@ impl ResourceProfile {
         }
     }
 
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "tiny" => Some(Self::Tiny),
+            "small" => Some(Self::Small),
+            "medium" => Some(Self::Medium),
+            "large" => Some(Self::Large),
+            "xlarge" => Some(Self::XLarge),
+            _ => None,
+        }
+    }
+
     /// Derive the profile from available system RAM.
     fn from_ram(ram_bytes: u64) -> Self {
         let gb = ram_bytes / (1024 * 1024 * 1024);
@@ -50,40 +61,40 @@ impl ResourceProfile {
     pub fn defaults(&self) -> ProfileDefaults {
         match self {
             Self::Tiny => ProfileDefaults {
-                memory_budget_bytes: 256 * 1024 * 1024,       // 256 MB
-                lru_cache_bytes: 8 * 1024 * 1024,             // 8 MB
+                memory_budget_bytes: 256 * 1024 * 1024, // 256 MB
+                lru_cache_bytes: 8 * 1024 * 1024,       // 8 MB
                 write_coordinator_batch_size: 64,
                 event_bus_capacity: 512,
                 archive_flush_interval_secs: 30,
                 rate_budget_events_per_sec: 500,
             },
             Self::Small => ProfileDefaults {
-                memory_budget_bytes: 512 * 1024 * 1024,       // 512 MB
-                lru_cache_bytes: 32 * 1024 * 1024,            // 32 MB
+                memory_budget_bytes: 512 * 1024 * 1024, // 512 MB
+                lru_cache_bytes: 32 * 1024 * 1024,      // 32 MB
                 write_coordinator_batch_size: 128,
                 event_bus_capacity: 2048,
                 archive_flush_interval_secs: 20,
                 rate_budget_events_per_sec: 2_000,
             },
             Self::Medium => ProfileDefaults {
-                memory_budget_bytes: 1024 * 1024 * 1024,      // 1 GB
-                lru_cache_bytes: 128 * 1024 * 1024,           // 128 MB
+                memory_budget_bytes: 1024 * 1024 * 1024, // 1 GB
+                lru_cache_bytes: 128 * 1024 * 1024,      // 128 MB
                 write_coordinator_batch_size: 256,
                 event_bus_capacity: 8192,
                 archive_flush_interval_secs: 10,
                 rate_budget_events_per_sec: 10_000,
             },
             Self::Large => ProfileDefaults {
-                memory_budget_bytes: 2 * 1024 * 1024 * 1024,  // 2 GB
-                lru_cache_bytes: 512 * 1024 * 1024,           // 512 MB
+                memory_budget_bytes: 2 * 1024 * 1024 * 1024, // 2 GB
+                lru_cache_bytes: 512 * 1024 * 1024,          // 512 MB
                 write_coordinator_batch_size: 512,
                 event_bus_capacity: 16384,
                 archive_flush_interval_secs: 10,
                 rate_budget_events_per_sec: 50_000,
             },
             Self::XLarge => ProfileDefaults {
-                memory_budget_bytes: 4 * 1024 * 1024 * 1024,  // 4 GB
-                lru_cache_bytes: 1024 * 1024 * 1024,          // 1 GB
+                memory_budget_bytes: 4 * 1024 * 1024 * 1024, // 4 GB
+                lru_cache_bytes: 1024 * 1024 * 1024,         // 1 GB
                 write_coordinator_batch_size: 1024,
                 event_bus_capacity: 32768,
                 archive_flush_interval_secs: 10,

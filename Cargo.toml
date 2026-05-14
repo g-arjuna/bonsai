@@ -94,6 +94,9 @@ libc = "0.2"
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors", "fs"] }
 
+# OpenAPI spec type (CV6 T1-1 / T1-2) — swagger-ui served via bundled HTML handler
+utoipa = "5"
+
 [build-dependencies]
 tonic-build = "0.13"
 protoc-bin-vendored = "3"

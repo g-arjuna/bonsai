@@ -1,0 +1,43 @@
+{
+  "_schema_version": "0.1.0",
+  "detection_events": 285,
+  "state_change_events": 48217,
+  "remediation_rows_post_cutoff": 9,
+  "rule_distribution": {
+    "bgp_session_down": 18,
+    "interface_error_burst": 44
+  },
+  "action_distribution_post_cutoff": {
+    "clear-bgp-neighbor": 4,
+    "bounce-interface": 5
+  },
+  "status_distribution_post_cutoff": {
+    "pending": 6,
+    "approved": 3
+  },
+  "device_count": 8,
+  "enabled_device_count": 8,
+  "observed_subscriptions": 40,
+  "pending_subscriptions": 0,
+  "silent_subscriptions": 0,
+  "collectors_connected": 0,
+  "collectors_total": 0,
+  "unassigned_devices": 0,
+  "event_bus_depth": 12,
+  "event_bus_receivers": 5,
+  "archive_lag_millis": 4300,
+  "archive_buffer_rows": 94,
+  "archive_last_flush_millis": 9934,
+  "archive_last_compression_ppm": 418000,
+  "cutoff_iso": "2025-01-01T00:00:00Z",
+  "rss_bytes": 1476225024,
+  "archive_disk_bytes": 1461270,
+  "archive_disk_pct": 1,
+  "graph_disk_bytes": 29364224,
+  "graph_disk_pct": 2,
+  "memory_budget_bytes": 1610612736,
+  "memory_rss_pct_of_budget": 91.7,
+  "counter_mode": "debounced",
+  "counter_window_secs": 60,
+  "counter_debounce_secs": 15
+}

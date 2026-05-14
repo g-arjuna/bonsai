@@ -1,0 +1,12 @@
+fixture_id: juniper-junos-interface-up
+vendor: juniper-junos
+category: interface_state
+transport: udp
+raw: "<165>May  9 12:00:00 crpd1 interface ge-0/0/0 link up"
+expected_category: custom
+expected_fact_type: interface_state
+expected_fields:
+  if_name: "ge-0/0/0"
+  new_state: "up"
+expected_signal_trigger: false
+adversarial: false

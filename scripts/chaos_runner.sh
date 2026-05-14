@@ -28,15 +28,67 @@ RUNNER="$REPO_ROOT/scripts/chaos_runner.py"
 CYCLE_PAUSE_SECS=30   # gap between consecutive 30-min cycles
 CHAOS_SYSTEMD_SERVICE="${CHAOS_SYSTEMD_SERVICE:-bonsai-chaos.service}"
 
+# Prefer the local ContainerLab Docker transport unless an operator pins SSH.
+if [[ -z "${BONSAI_FAULT_TRANSPORT:-}" ]] && command -v docker &>/dev/null; then
+    export BONSAI_FAULT_TRANSPORT="docker"
+fi
+
 mkdir -p "$RUNTIME_DIR"
 
 _log() { echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*" | tee -a "$LOG_FILE"; }
 _die() { _log "ERROR: $*"; exit 1; }
+_systemd_service_scope() {
+    if ! command -v systemctl &>/dev/null; then
+        return 1
+    fi
+    if systemctl --user list-unit-files "$CHAOS_SYSTEMD_SERVICE" --no-legend 2>/dev/null | grep -q "^${CHAOS_SYSTEMD_SERVICE}[[:space:]]"; then
+        echo "user"
+        return 0
+    fi
+    if systemctl list-unit-files "$CHAOS_SYSTEMD_SERVICE" --no-legend 2>/dev/null | grep -q "^${CHAOS_SYSTEMD_SERVICE}[[:space:]]"; then
+        echo "system"
+        return 0
+    fi
+    return 1
+}
 _systemd_service_installed() {
-    command -v systemctl &>/dev/null && systemctl list-unit-files "$CHAOS_SYSTEMD_SERVICE" --no-legend 2>/dev/null | grep -q "^${CHAOS_SYSTEMD_SERVICE}[[:space:]]"
+    _systemd_service_scope >/dev/null
 }
 _systemd_service_active() {
-    command -v systemctl &>/dev/null && systemctl is-active --quiet "$CHAOS_SYSTEMD_SERVICE"
+    local scope
+    scope="$(_systemd_service_scope)" || return 1
+    if [[ "$scope" == "user" ]]; then
+        systemctl --user is-active --quiet "$CHAOS_SYSTEMD_SERVICE"
+    else
+        systemctl is-active --quiet "$CHAOS_SYSTEMD_SERVICE"
+    fi
+}
+_systemd_service_status() {
+    local scope
+    scope="$(_systemd_service_scope)" || return 1
+    if [[ "$scope" == "user" ]]; then
+        systemctl --user status "$CHAOS_SYSTEMD_SERVICE" --no-pager -l 2>/dev/null || true
+    else
+        systemctl status "$CHAOS_SYSTEMD_SERVICE" --no-pager -l 2>/dev/null || true
+    fi
+}
+_systemd_service_start() {
+    local scope
+    scope="$(_systemd_service_scope)" || return 1
+    if [[ "$scope" == "user" ]]; then
+        systemctl --user start "$CHAOS_SYSTEMD_SERVICE"
+    else
+        sudo systemctl start "$CHAOS_SYSTEMD_SERVICE"
+    fi
+}
+_systemd_service_stop() {
+    local scope
+    scope="$(_systemd_service_scope)" || return 1
+    if [[ "$scope" == "user" ]]; then
+        systemctl --user stop "$CHAOS_SYSTEMD_SERVICE"
+    else
+        sudo systemctl stop "$CHAOS_SYSTEMD_SERVICE"
+    fi
 }
 _json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -65,7 +117,7 @@ if [[ "${1:-}" == "--stop" ]]; then
     if _systemd_service_installed; then
         if _systemd_service_active; then
             _log "Stopping systemd chaos service ($CHAOS_SYSTEMD_SERVICE)"
-            sudo systemctl stop "$CHAOS_SYSTEMD_SERVICE"
+            _systemd_service_stop
         else
             _log "systemd chaos service is not running"
         fi
@@ -90,24 +142,31 @@ fi
 
 # ── --status ──────────────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--status" ]]; then
+    systemd_active=false
     if _systemd_service_installed; then
+        SYSTEMD_SCOPE="$(_systemd_service_scope)"
         if _systemd_service_active; then
-            echo "chaos_runner service is RUNNING via systemd ($CHAOS_SYSTEMD_SERVICE)"
+            systemd_active=true
+            echo "chaos_runner service is RUNNING via ${SYSTEMD_SCOPE} systemd ($CHAOS_SYSTEMD_SERVICE)"
         else
-            echo "chaos_runner service is NOT RUNNING via systemd ($CHAOS_SYSTEMD_SERVICE)"
+            echo "chaos_runner service is NOT RUNNING via ${SYSTEMD_SCOPE} systemd ($CHAOS_SYSTEMD_SERVICE)"
         fi
         echo ""
         echo "=== systemd status ==="
-        systemctl status "$CHAOS_SYSTEMD_SERVICE" --no-pager -l 2>/dev/null || true
+        _systemd_service_status
         echo ""
     fi
     if [[ -f "$PID_FILE" ]]; then
         PID=$(<"$PID_FILE")
         if kill -0 "$PID" 2>/dev/null; then
             echo "chaos_runner daemon is RUNNING (PID $PID)"
+        elif [[ "$systemd_active" == "true" ]]; then
+            echo "chaos_runner daemon is managed by systemd (ignoring stale PID file $PID)"
         else
             echo "chaos_runner daemon is STOPPED (stale PID $PID)"
         fi
+    elif [[ "$systemd_active" == "true" ]]; then
+        echo "chaos_runner daemon is managed by systemd (no standalone pid file expected)"
     else
         echo "chaos_runner daemon is NOT RUNNING (no pid file)"
     fi
@@ -120,12 +179,13 @@ fi
 # ── --ensure-running ──────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--ensure-running" ]]; then
     if _systemd_service_installed; then
+        rm -f "$PID_FILE"
         if _systemd_service_active; then
             _log "ensure-running: systemd service already active ($CHAOS_SYSTEMD_SERVICE)"
             exit 0
         fi
         _log "ensure-running: starting systemd service ($CHAOS_SYSTEMD_SERVICE)"
-        sudo systemctl start "$CHAOS_SYSTEMD_SERVICE"
+        _systemd_service_start
         exit 0
     fi
     if [[ -f "$PID_FILE" ]]; then
@@ -166,6 +226,7 @@ _run_loop() {
     _log "=== Chaos runner started (PID $$) ==="
     _log "Plan: $PLAN"
     _log "Python: $PYTHON"
+    _log "Fault transport: ${BONSAI_FAULT_TRANSPORT:-auto}"
     _log "Log: $LOG_FILE"
 
     CYCLE=0

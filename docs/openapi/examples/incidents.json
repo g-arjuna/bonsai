@@ -1,0 +1,42 @@
+{
+  "_schema_version": "0.1.0",
+  "incidents": [
+    {
+      "id": "ed0d3148-6285-4db7-bb27-8fc39d6ad20d",
+      "root": {
+        "id": "8f0f5e7a-516f-4df9-915f-c99e7be95716",
+        "device_address": "172.100.103.31",
+        "rule_id": "bgp_session_down",
+        "severity": "critical",
+        "features_json": "{\"peer\":\"172.100.103.21\",\"old_state\":\"Established\",\"new_state\":\"Idle\"}",
+        "fired_at_ns": 1747116123000000000,
+        "remediation_id": "d7c8200c-9b3f-47ca-a0d2-6d31c6c9390d",
+        "remediation_action": "clear-bgp-neighbor",
+        "remediation_status": "pending",
+        "_schema_version": "0.1.0"
+      },
+      "cascading": [
+        {
+          "id": "f4d7a794-bcf4-4268-a36b-3bd8fd4c7acf",
+          "device_address": "172.100.103.21",
+          "rule_id": "interface_error_burst",
+          "severity": "warn",
+          "features_json": "{\"interface\":\"ethernet-1/3\",\"crc_delta\":91}",
+          "fired_at_ns": 1747116125000000000,
+          "remediation_id": "",
+          "remediation_action": "",
+          "remediation_status": "pending",
+          "_schema_version": "0.1.0"
+        }
+      ],
+      "affected_devices": [
+        "172.100.103.31",
+        "172.100.103.21"
+      ],
+      "severity": "critical",
+      "started_at_ns": 1747116123000000000,
+      "ended_at_ns": 1747116125000000000,
+      "remediation_status": "pending"
+    }
+  ]
+}

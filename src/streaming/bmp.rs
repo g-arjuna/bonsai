@@ -166,7 +166,7 @@ fn publish_event(
 
     // Under rate shedding, drop low-value StatisticsReport messages while preserving
     // high-value state-change events (RouteMonitoring, PeerUp, PeerDown) (C4-N2 / T6-1).
-    if event.message_type == "statistics_report" && governor.map_or(false, |g| g.is_shedding()) {
+    if event.message_type == "statistics_report" && governor.is_some_and(|g| g.is_shedding()) {
         metrics::counter!("bonsai_bmp_shed_total").increment(1);
         return;
     }
@@ -377,7 +377,11 @@ fn parse_initiation(payload: &[u8], collector_peer: String, timestamp_ns: i64) -
     })
 }
 
-fn parse_termination(payload: &[u8], collector_peer: String, timestamp_ns: i64) -> Result<BmpEvent> {
+fn parse_termination(
+    payload: &[u8],
+    collector_peer: String,
+    timestamp_ns: i64,
+) -> Result<BmpEvent> {
     let mut termination_reason = None;
     let mut termination_reason_name = None;
     let mut cursor = 0;
@@ -915,7 +919,8 @@ mod tests {
         payload.extend_from_slice(&(sys_name.len() as u16).to_be_bytes());
         payload.extend_from_slice(sys_name);
 
-        let event = parse_initiation(&payload, "10.0.0.1".to_string(), 0).expect("parse initiation");
+        let event =
+            parse_initiation(&payload, "10.0.0.1".to_string(), 0).expect("parse initiation");
         assert_eq!(event.sys_descr.as_deref(), Some("Nokia SR Linux"));
         assert_eq!(event.sys_name.as_deref(), Some("srl-spine1"));
         assert_eq!(event.message_type, "initiation");
@@ -926,8 +931,12 @@ mod tests {
         let mut payload = Vec::new();
         // TLV type=1 (reason), len=2, code=0 (admin closed)
         payload.extend_from_slice(&[0x00, 0x01, 0x00, 0x02, 0x00, 0x00]);
-        let event = parse_termination(&payload, "10.0.0.1".to_string(), 0).expect("parse termination");
+        let event =
+            parse_termination(&payload, "10.0.0.1".to_string(), 0).expect("parse termination");
         assert_eq!(event.termination_reason, Some(0));
-        assert_eq!(event.termination_reason_name.as_deref(), Some("session_admin_closed"));
+        assert_eq!(
+            event.termination_reason_name.as_deref(),
+            Some("session_admin_closed")
+        );
     }
 }

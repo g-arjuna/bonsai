@@ -1,0 +1,12 @@
+fixture_id: cisco-iosxr-interface-down
+vendor: cisco-iosxr
+category: interface_state
+transport: udp
+raw: "<165>May  9 12:00:00 xr-pe1 Interface GigabitEthernet0/0/0/1 link down"
+expected_category: custom
+expected_fact_type: interface_state
+expected_fields:
+  if_name: "GigabitEthernet0/0/0/1"
+  new_state: "down"
+expected_signal_trigger: false
+adversarial: false

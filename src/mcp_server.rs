@@ -257,14 +257,22 @@ pub struct McpRpcError {
 
 impl McpRpcResponse {
     fn ok(id: JsonValue, result: JsonValue) -> Self {
-        McpRpcResponse { jsonrpc: "2.0", id, result: Some(result), error: None }
+        McpRpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: Some(result),
+            error: None,
+        }
     }
     fn err(id: JsonValue, code: i32, message: impl Into<String>) -> Self {
         McpRpcResponse {
             jsonrpc: "2.0",
             id,
             result: None,
-            error: Some(McpRpcError { code, message: message.into() }),
+            error: Some(McpRpcError {
+                code,
+                message: message.into(),
+            }),
         }
     }
 }
@@ -342,7 +350,10 @@ fn tool_schemas() -> JsonValue {
 // ── Tool implementations ──────────────────────────────────────────────────────
 
 async fn tool_get_incident(state: &AppState, args: &JsonValue) -> Result<JsonValue, String> {
-    let id = args["id"].as_str().ok_or("missing argument: id")?.to_string();
+    let id = args["id"]
+        .as_str()
+        .ok_or("missing argument: id")?
+        .to_string();
 
     let detections = state
         .store
@@ -417,7 +428,10 @@ async fn tool_get_device_blast_radius(
     state: &AppState,
     args: &JsonValue,
 ) -> Result<JsonValue, String> {
-    let address = args["address"].as_str().ok_or("missing argument: address")?.to_string();
+    let address = args["address"]
+        .as_str()
+        .ok_or("missing argument: address")?
+        .to_string();
     let max_hops = args["max_hops"].as_u64().unwrap_or(2).min(5) as usize;
 
     let db = state.store.db();
@@ -698,7 +712,7 @@ pub fn procedural_refs(device_address: &str, rule_id: &str) -> Vec<ProceduralRef
         ProceduralRef {
             kind: "api_endpoint",
             label: "Closed-loop trace".to_string(),
-            href: format!("/api/trace/<detection_id>"),
+            href: "/api/trace/<detection_id>".to_string(),
         },
     ]
 }
@@ -803,10 +817,14 @@ mod tests {
         assert!(is_readonly_cypher(
             "MATCH (n:BgpNeighbor {device_address: $dev}) RETURN n.session_state"
         ));
-        assert!(is_readonly_cypher("MATCH (a)-[:CONNECTED_TO]->(b) RETURN a, b"));
+        assert!(is_readonly_cypher(
+            "MATCH (a)-[:CONNECTED_TO]->(b) RETURN a, b"
+        ));
         // Word-boundary: OFFSET should not match SET; CREATED should not match CREATE
         assert!(is_readonly_cypher("MATCH (n) RETURN n SKIP 0 LIMIT 10"));
-        assert!(is_readonly_cypher("MATCH (n:Device {created_at: $t}) RETURN n"));
+        assert!(is_readonly_cypher(
+            "MATCH (n:Device {created_at: $t}) RETURN n"
+        ));
         // Comment-only containing a mutation keyword is stripped and allowed
         assert!(is_readonly_cypher("MATCH (n) RETURN n -- SET is not here"));
         assert!(is_readonly_cypher("/* CREATE */ MATCH (n) RETURN n"));

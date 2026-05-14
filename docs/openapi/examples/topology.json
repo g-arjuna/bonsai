@@ -1,0 +1,57 @@
+{
+  "_schema_version": "0.1.0",
+  "devices": [
+    {
+      "address": "172.100.103.11",
+      "hostname": "super1",
+      "vendor": "nokia",
+      "role": "super-spine",
+      "site": "lab-dc",
+      "site_id": "site-lab-dc",
+      "site_path": "global/lab-dc",
+      "health": "healthy",
+      "bgp": [
+        {
+          "peer": "172.100.103.21",
+          "state": "Established",
+          "peer_as": 65100
+        }
+      ]
+    },
+    {
+      "address": "172.100.103.31",
+      "hostname": "leaf1",
+      "vendor": "nokia",
+      "role": "leaf",
+      "site": "lab-dc",
+      "site_id": "site-lab-dc",
+      "site_path": "global/lab-dc",
+      "health": "healthy",
+      "bgp": [
+        {
+          "peer": "172.100.103.21",
+          "state": "Established",
+          "peer_as": 65101
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "src_device": "172.100.103.11",
+      "src_iface": "ethernet-1/1",
+      "dst_device": "172.100.103.21",
+      "dst_iface": "ethernet-1/1",
+      "bytes_total": 1882341,
+      "is_mgmt": false
+    },
+    {
+      "src_device": "172.100.103.31",
+      "src_iface": "mgmt0",
+      "dst_device": "172.100.103.2",
+      "dst_iface": "bonsai-mgmt",
+      "bytes_total": 0,
+      "is_mgmt": true
+    }
+  ]
+}

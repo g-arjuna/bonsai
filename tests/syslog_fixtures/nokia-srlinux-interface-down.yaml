@@ -1,0 +1,12 @@
+fixture_id: nokia-srlinux-interface-down
+vendor: nokia-srlinux
+category: interface_state
+transport: udp
+raw: "<165>May  9 12:00:00 srl-leaf1 interface ethernet-1/1 state down"
+expected_category: custom
+expected_fact_type: interface_state
+expected_fields:
+  if_name: "ethernet-1/1"
+  new_state: "down"
+expected_signal_trigger: false
+adversarial: false

@@ -1,0 +1,13 @@
+fixture_id: arista-eos-ospf-neighbor-down
+vendor: arista-eos
+category: ospf_state_change
+transport: udp
+raw: "<165>May  9 12:00:00 leaf1 OSPF neighbor 203.0.113.11 on Ethernet1 state down"
+expected_category: protocol
+expected_fact_type: ospf_neighbor
+expected_fields:
+  neighbor_address: "203.0.113.11"
+  if_name: "Ethernet1"
+  new_state: "down"
+expected_signal_trigger: false
+adversarial: false

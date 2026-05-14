@@ -97,6 +97,14 @@ Python and live lab operations are WSL-first.
 
 Setup details live in `docs/DEVELOPMENT.md`.
 
+## API Docs
+
+- Swagger UI: `http://127.0.0.1:3000/api/docs`
+- OpenAPI JSON: `http://127.0.0.1:3000/api/openapi.json`
+- Refresh live example payloads for the docs surface: `bash scripts/refresh_api_docs.sh`
+
+The docs workflow is described in `docs/openapi/README.md`.
+
 ---
 
 ## Enrichment Integrations

@@ -7,3 +7,7 @@ Tracks overall verdict over time — use this to spot regression days.
 |------------|---------|---------------------|
 | 2026-05-13 | pass_with_caveats | /home/arjuna/Desktop/bonsai/runtime/driver_results/daily-2026-05-13.json |
 | 2026-05-13 | pass_with_caveats | /home/arjuna/Desktop/bonsai/runtime/driver_results/daily-2026-05-13.json |
+| 2026-05-13 | fail | /home/arjuna/Desktop/bonsai/runtime/driver_results/daily-2026-05-13.json |
+| 2026-05-13 | fail | /home/arjuna/Desktop/bonsai/runtime/driver_results/daily-2026-05-13.json |
+| 2026-05-13 | pass_with_caveats | /home/arjuna/Desktop/bonsai/runtime/driver_results/daily-2026-05-13.json |
+| 2026-05-13 | pass_with_caveats | /home/arjuna/Desktop/bonsai/runtime/driver_results/daily-2026-05-13.json |

@@ -1,0 +1,17 @@
+{
+  "_schema_version": "0.1.0",
+  "detections": [
+    {
+      "id": "8f0f5e7a-516f-4df9-915f-c99e7be95716",
+      "device_address": "172.100.103.31",
+      "rule_id": "bgp_session_down",
+      "severity": "critical",
+      "features_json": "{\"peer\":\"172.100.103.21\",\"old_state\":\"Established\",\"new_state\":\"Idle\"}",
+      "fired_at_ns": 1747116123000000000,
+      "remediation_id": "d7c8200c-9b3f-47ca-a0d2-6d31c6c9390d",
+      "remediation_action": "clear-bgp-neighbor",
+      "remediation_status": "pending",
+      "_schema_version": "0.1.0"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+fixture_id: arista-eos-isis-adjacency-down
+vendor: arista-eos
+category: isis_state_change
+transport: udp
+raw: "<165>May  9 12:00:00 leaf1 ISIS adjacency with 49.0001.0000.0000.0011 on Ethernet1 state down"
+expected_category: protocol
+expected_fact_type: isis_adjacency
+expected_fields:
+  neighbor_id: "49.0001.0000.0000.0011"
+  if_name: "Ethernet1"
+  new_state: "down"
+expected_signal_trigger: false
+adversarial: false

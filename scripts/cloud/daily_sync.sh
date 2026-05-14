@@ -24,6 +24,7 @@ set -euo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/bonsai}"
 ARCHIVE_MOUNT="${ARCHIVE_MOUNT:-/mnt/bonsai-archive}"
+API_BASE="${API_BASE:-http://localhost:3000}"
 ENV_FILE="${CLOUD_SYNC_ENV_FILE:-$INSTALL_DIR/.cloud_sync.env}"
 if [[ -f "$ENV_FILE" ]]; then
     # shellcheck source=/dev/null
@@ -72,6 +73,13 @@ done
 _log() { echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*"; }
 _run() { "$DRY_RUN" && echo "[DRY-RUN] $*" || "$@"; }
 _die() { _log "ERROR: $*"; exit 1; }
+_maybe_sudo() {
+    if command -v sudo >/dev/null 2>&1; then
+        sudo -n "$@" 2>/dev/null || return 1
+    else
+        "$@" 2>/dev/null || return 1
+    fi
+}
 
 # ── Preflight: GITHUB_TOKEN required ─────────────────────────────────────────
 if [[ -z "$GITHUB_TOKEN" ]] && ! "$DRY_RUN"; then
@@ -108,7 +116,13 @@ ARCHIVE_PARQUET_DIR="$ARCHIVE_MOUNT/archive"
 if $LAPTOP_MODE; then
     # On laptop, parquet lives inside the Docker named volume — not on the host FS.
     # Pull it out via docker exec from the running bonsai container.
-    BONSAI_CONTAINER="${BONSAI_CONTAINER:-bonsai-bonsai-lab-dc-1}"
+    if [[ -z "${BONSAI_CONTAINER:-}" ]]; then
+        if docker inspect bonsai-bonsai-core-1 &>/dev/null 2>&1; then
+            BONSAI_CONTAINER="bonsai-bonsai-core-1"
+        else
+            BONSAI_CONTAINER="bonsai-bonsai-lab-dc-1"
+        fi
+    fi
     if docker inspect "$BONSAI_CONTAINER" &>/dev/null 2>&1; then
         _log "  Laptop mode: extracting parquet from Docker volume ($BONSAI_CONTAINER)"
         # Container path: /app/runtime/archive/*.parquet
@@ -138,7 +152,7 @@ if [[ -d "$INSTALL_DIR/chaos_runs" ]]; then
 fi
 
 # 3. Memory profile (from /api/operations)
-if curl -sf "http://localhost:3000/api/operations" > "$SNAPSHOT_DIR/operations.json" 2>/dev/null; then
+if curl -sf "$API_BASE/api/operations" > "$SNAPSHOT_DIR/operations.json" 2>/dev/null; then
     _log "  Captured operations snapshot"
 fi
 
@@ -163,9 +177,13 @@ fi
     echo ""
     echo "--- containerlab inspect ---"
     if [[ -f "$INSTALL_DIR/lab/cloud-dc-6node.yml" ]]; then
-        sudo containerlab inspect -t "$INSTALL_DIR/lab/cloud-dc-6node.yml" 2>/dev/null || true
+        _maybe_sudo containerlab inspect -t "$INSTALL_DIR/lab/cloud-dc-6node.yml" || \
+            containerlab inspect -t "$INSTALL_DIR/lab/cloud-dc-6node.yml" 2>/dev/null || \
+            echo "containerlab inspect unavailable without sudo"
     else
-        sudo containerlab inspect 2>/dev/null || true
+        _maybe_sudo containerlab inspect || \
+            containerlab inspect 2>/dev/null || \
+            echo "containerlab inspect unavailable without sudo"
     fi
     echo ""
     echo "--- chaos runner status ---"
@@ -185,7 +203,13 @@ bash "$INSTALL_DIR/scripts/verify_archive.sh" "$ARCHIVE_MOUNT/archive" --json \
     > "$SNAPSHOT_DIR/archive_verify.json" 2>/dev/null || true
 
 # 7. Bonsai build info
-"$INSTALL_DIR/target/release/bonsai" --version > "$SNAPSHOT_DIR/bonsai_version.txt" 2>/dev/null || true
+# Guard this call because some local builds can block while trying to start the
+# full runtime instead of exiting immediately on --version.
+if command -v timeout >/dev/null 2>&1; then
+    timeout 5 "$INSTALL_DIR/target/release/bonsai" --version > "$SNAPSHOT_DIR/bonsai_version.txt" 2>/dev/null || true
+else
+    "$INSTALL_DIR/target/release/bonsai" --version > "$SNAPSHOT_DIR/bonsai_version.txt" 2>/dev/null || true
+fi
 git -C "$INSTALL_DIR" rev-parse HEAD > "$SNAPSHOT_DIR/git_sha.txt" 2>/dev/null || true
 
 _log "  Snapshot dir assembled: $SNAPSHOT_DIR"
@@ -205,14 +229,19 @@ fi
 TARSIZE_KB=$(du -k "$SNAPSHOT_TAR" 2>/dev/null | cut -f1 || echo 0)
 _log "  Compressed size: ${TARSIZE_KB} KiB"
 
-# ── Push to GitHub branch ─────────────────────────────────────────────────────
-
-# GITHUB_TOKEN guard already enforced at startup; this branch is unreachable except in --dry-run.
-if [[ -z "$GITHUB_TOKEN" ]]; then
-    _log "WARN: GITHUB_TOKEN not set — skipping GitHub push (dry-run mode)"
+if "$DRY_RUN"; then
+    if [[ -z "$GITHUB_TOKEN" ]]; then
+        _log "WARN: GITHUB_TOKEN not set — skipping GitHub push (dry-run mode)"
+    else
+        _log "DRY-RUN: GitHub push would target branch $BRANCH"
+    fi
     _log "  Snapshot available locally: $SNAPSHOT_TAR"
     exit 0
 fi
+
+# ── Push to GitHub branch ─────────────────────────────────────────────────────
+
+# GITHUB_TOKEN guard already enforced at startup.
 
 _log "  Pushing to branch: $BRANCH"
 

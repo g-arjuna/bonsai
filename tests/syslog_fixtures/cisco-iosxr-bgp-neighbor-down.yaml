@@ -1,0 +1,12 @@
+fixture_id: cisco-iosxr-bgp-neighbor-down
+vendor: cisco-iosxr
+category: bgp_state_change
+transport: udp
+raw: "<165>May  9 12:00:00 xr-pe1 BGP neighbor 192.0.2.1 down"
+expected_category: protocol
+expected_fact_type: bgp_neighbor
+expected_fields:
+  peer_address: "192.0.2.1"
+  new_state: "down"
+expected_signal_trigger: false
+adversarial: false

@@ -1,0 +1,25 @@
+{
+  "address": "172.100.103.31:57400",
+  "vendor": "nokia",
+  "platform": "SR Linux",
+  "hostname": "leaf1",
+  "role_hint": "leaf",
+  "models": [
+    "openconfig-interfaces",
+    "openconfig-bgp",
+    "openconfig-lldp"
+  ],
+  "recommended_paths": [
+    {
+      "path": "/interfaces/interface/state/counters",
+      "origin": "openconfig-interfaces",
+      "reason": "baseline_counters"
+    },
+    {
+      "path": "/network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/state/session-state",
+      "origin": "openconfig-bgp",
+      "reason": "bgp_state"
+    }
+  ],
+  "warnings": []
+}

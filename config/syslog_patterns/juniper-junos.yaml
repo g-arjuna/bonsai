@@ -12,7 +12,7 @@ facts:
       peer_address: string
       new_state: string
   - fact_type: interface_state
-    category: protocol
+    category: custom
     regex: '(?i)(?:interface|ifd) (?P<if_name>[A-Za-z0-9./:_-]+).*(?:state|link).*(?P<new_state>up|down|administratively down|errdisabled)'
     field_schema:
       if_name: string

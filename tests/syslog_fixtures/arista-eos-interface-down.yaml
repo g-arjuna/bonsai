@@ -1,0 +1,12 @@
+fixture_id: arista-eos-interface-down
+vendor: arista-eos
+category: interface_state
+transport: udp
+raw: "<165>May  9 12:00:00 leaf1 Ethernet Ethernet1 link down"
+expected_category: custom
+expected_fact_type: interface_state
+expected_fields:
+  if_name: "Ethernet1"
+  new_state: "down"
+expected_signal_trigger: false
+adversarial: false

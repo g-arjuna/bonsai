@@ -1,0 +1,16 @@
+{
+  "address": "172.100.103.31:57400",
+  "report": {
+    "vendor": "nokia",
+    "role": "leaf",
+    "protocols": {
+      "gnmi": "ready",
+      "syslog": "optional"
+    },
+    "recommended_protocols": [
+      "gnmi"
+    ],
+    "warnings": [],
+    "checked_at_ns": 1747116180000000000
+  }
+}

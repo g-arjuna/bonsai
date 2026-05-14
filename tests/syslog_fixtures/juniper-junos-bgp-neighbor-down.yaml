@@ -1,0 +1,12 @@
+fixture_id: juniper-junos-bgp-neighbor-down
+vendor: juniper-junos
+category: bgp_state_change
+transport: udp
+raw: "<165>May  9 12:00:00 crpd1 BGP neighbor 198.51.100.2 down"
+expected_category: protocol
+expected_fact_type: bgp_neighbor
+expected_fields:
+  peer_address: "198.51.100.2"
+  new_state: "down"
+expected_signal_trigger: false
+adversarial: false

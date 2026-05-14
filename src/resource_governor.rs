@@ -334,10 +334,7 @@ async fn rate_governance_loop(handle: GovernorHandle, mut shutdown: watch::Recei
     let budget_eps = handle.inner.defaults.rate_budget_events_per_sec;
     let budget_per_window = budget_eps * window.as_secs();
 
-    info!(
-        budget_eps,
-        "rate governance loop started"
-    );
+    info!(budget_eps, "rate governance loop started");
 
     let mut last_counter: u64 = 0;
 

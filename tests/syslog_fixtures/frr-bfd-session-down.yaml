@@ -1,0 +1,13 @@
+fixture_id: frr-bfd-session-down
+vendor: frr
+category: bfd_session
+transport: udp
+raw: "<165>May  9 12:00:00 frr-r1 BFD session neighbor 10.10.10.2 on eth0 state down"
+expected_category: protocol
+expected_fact_type: bfd_session
+expected_fields:
+  remote_address: "10.10.10.2"
+  if_name: "eth0"
+  new_state: "down"
+expected_signal_trigger: false
+adversarial: false

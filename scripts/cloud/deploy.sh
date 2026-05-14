@@ -270,6 +270,9 @@ if [[ ! -f "$INSTALL_DIR/bonsai.toml" ]]; then
     [[ -n "$GNMI_PASSWORD" ]] || _die "GNMI_PASSWORD must be set before first cloud deploy"
     _log "  Writing cloud bonsai.toml..."
     cat > "$INSTALL_DIR/bonsai.toml" <<CONFIG
+[runtime]
+resource_profile = "xlarge"
+
 graph_path = "$ARCHIVE_MOUNT/bonsai.db"
 metrics_addr = "[::1]:9090"
 

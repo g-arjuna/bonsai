@@ -1,0 +1,24 @@
+{
+  "report": {
+    "device_address": "172.100.103.31:57400",
+    "profile_name": "dc_leaf_minimal",
+    "selected_vendor": "nokia",
+    "recommended_paths": [
+      {
+        "path": "/interfaces/interface/state/counters",
+        "origin": "openconfig-interfaces",
+        "reason": "baseline_counters"
+      },
+      {
+        "path": "/network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/state/session-state",
+        "origin": "openconfig-bgp",
+        "reason": "bgp_state"
+      }
+    ],
+    "warnings": [],
+    "rationale": [
+      "role leaf maps to dc_leaf_minimal",
+      "device advertises openconfig-bgp"
+    ]
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "bundle_version": "cv6-draft-1",
+  "generated_at": "2026-05-13T07:02:32Z",
+  "incident": {
+    "id": "ed0d3148-6285-4db7-bb27-8fc39d6ad20d",
+    "root_detection_id": "8f0f5e7a-516f-4df9-915f-c99e7be95716",
+    "rule_id": "bgp_session_down",
+    "severity": "critical",
+    "started_at_ns": 1747116123000000000,
+    "ended_at_ns": 1747116125000000000,
+    "remediation_status": "pending"
+  },
+  "topology_context": {
+    "origin_device": "172.100.103.31",
+    "origin_hostname": "leaf1",
+    "site": "lab-dc",
+    "environment": "data_center",
+    "blast_radius_hops": 2,
+    "affected_devices": [
+      "172.100.103.31",
+      "172.100.103.21",
+      "172.100.103.11"
+    ],
+    "affected_services": [
+      "tenant-red-west"
+    ]
+  },
+  "device_context": {
+    "vendor": "nokia",
+    "role": "leaf",
+    "cmdb_ci_refs": [
+      "cmdb_ci_netgear:bonsai-leaf1",
+      "cmdb_ci_service:tenant-red-west"
+    ],
+    "subscription_health": "observed"
+  },
+  "procedural_context": {
+    "rule_description": "BGP session transitioned out of Established state",
+    "recurrence_indicators": [
+      "Repeated transitions for the same peer within 15 minutes",
+      "Concurrent interface counter spikes on the local leaf"
+    ],
+    "playbook_refs": [
+      "playbook:clear-bgp-neighbor",
+      "playbook:inspect-underlay-reachability"
+    ],
+    "operator_hints": [
+      "Check underlay reachability to peer loopback",
+      "Inspect interface errors on the access-facing uplink"
+    ]
+  },
+  "anomaly_context": {
+    "gnn_score": null,
+    "adversarial_confidence": null,
+    "status": "not_available_in_cv6"
+  },
+  "execution_context": {
+    "approval_state": "pending",
+    "proposed_remediation": "clear-bgp-neighbor",
+    "trace_endpoint": "/api/trace/8f0f5e7a-516f-4df9-915f-c99e7be95716",
+    "grounded_endpoint": "/api/incidents/8f0f5e7a-516f-4df9-915f-c99e7be95716/grounded"
+  },
+  "servicenow_mapping": {
+    "event_source": "bonsai",
+    "event_class": "network.bgp.session",
+    "target_tables": [
+      "em_event",
+      "incident",
+      "cmdb_ci"
+    ]
+  }
+}

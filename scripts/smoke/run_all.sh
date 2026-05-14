@@ -11,6 +11,7 @@ scripts=(
   "smoke_output_adapters.sh"
   "smoke_servicenow_aiops.sh"
   "smoke_signals_syslog.sh"
+  "smoke_syslog_fixtures.sh"
   "smoke_signals_snmp.sh"
 )
 

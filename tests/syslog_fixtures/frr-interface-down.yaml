@@ -1,0 +1,12 @@
+fixture_id: frr-interface-down
+vendor: frr
+category: interface_state
+transport: udp
+raw: "<165>May  9 12:00:00 frr-r1 interface eth0 state down"
+expected_category: custom
+expected_fact_type: interface_state
+expected_fields:
+  if_name: "eth0"
+  new_state: "down"
+expected_signal_trigger: false
+adversarial: false

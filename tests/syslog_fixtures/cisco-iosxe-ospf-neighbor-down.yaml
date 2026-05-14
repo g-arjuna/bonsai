@@ -1,0 +1,13 @@
+fixture_id: cisco-iosxe-ospf-neighbor-down
+vendor: cisco-iosxe
+category: ospf_state_change
+transport: udp
+raw: "<165>May  9 12:00:00 xe-pe1 OSPF neighbor 198.18.0.3 on interface GigabitEthernet1 state down"
+expected_category: protocol
+expected_fact_type: ospf_neighbor
+expected_fields:
+  neighbor_address: "198.18.0.3"
+  if_name: "GigabitEthernet1"
+  new_state: "down"
+expected_signal_trigger: false
+adversarial: false

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use tracing::{info, warn};
 
 use bonsai::{
@@ -154,6 +154,19 @@ async fn main() -> Result<()> {
             &cfg.logging.file_path
         }),
     );
+    let governor_profile = if let Some(override_name) = cfg.runtime.resource_profile.as_deref() {
+        let profile = bonsai::resource_profile::ResourceProfile::from_name(override_name)
+            .ok_or_else(|| anyhow!("invalid runtime.resource_profile '{override_name}'"))?;
+        info!(
+            requested = override_name,
+            selected = profile.as_str(),
+            "resource profile override applied"
+        );
+        profile
+    } else {
+        probe.profile
+    };
+    let governor_defaults = governor_profile.defaults();
 
     let runtime_mode = cfg.runtime.parsed_mode()?;
     let run_core = runtime_mode.runs_core();
@@ -376,8 +389,8 @@ async fn main() -> Result<()> {
 
     let shared_governor: Option<bonsai::resource_governor::GovernorHandle> = if run_core {
         Some(bonsai::resource_governor::start(
-            probe.profile,
-            probe.defaults,
+            governor_profile,
+            governor_defaults,
             shutdown_rx.clone(),
         ))
     } else {
@@ -385,8 +398,10 @@ async fn main() -> Result<()> {
     };
 
     let coordinator = if let Some(Store::Core(ref s)) = store {
-        let mut coordinator_cfg = bonsai::write_coordinator::WriteCoordinatorConfig::default();
-        coordinator_cfg.governor = shared_governor.clone();
+        let coordinator_cfg = bonsai::write_coordinator::WriteCoordinatorConfig {
+            governor: shared_governor.clone(),
+            ..Default::default()
+        };
         Some(std::sync::Arc::new(
             bonsai::write_coordinator::WriteCoordinator::new(
                 std::sync::Arc::clone(s),
@@ -685,6 +700,41 @@ async fn main() -> Result<()> {
         None
     };
 
+    if runtime_mode == bonsai::config::RuntimeMode::Core
+        && let Some(subscription_plan_tx) = subscription_plan_tx.clone()
+    {
+        let registry_for_verifier = std::sync::Arc::clone(&registry);
+        let mut verifier_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            match registry_for_verifier.list_active() {
+                Ok(targets) => {
+                    for target in targets {
+                        seed_subscription_plan(target, &subscription_plan_tx).await;
+                    }
+                }
+                Err(error) => warn!(%error, "failed to seed subscription verifier targets"),
+            }
+
+            let mut change_rx = registry_for_verifier.subscribe_changes();
+            loop {
+                tokio::select! {
+                    _ = verifier_shutdown.changed() => break,
+                    maybe_change = change_rx.recv() => {
+                        let Some(change) = maybe_change else {
+                            break;
+                        };
+                        match change {
+                            RegistryChange::Added(target) | RegistryChange::Updated(target) => {
+                                seed_subscription_plan(target, &subscription_plan_tx).await;
+                            }
+                            RegistryChange::Removed(_) => {}
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     let subscriber_manager = if runtime_mode == bonsai::config::RuntimeMode::All {
         let registry = std::sync::Arc::clone(&registry);
         let credentials = std::sync::Arc::clone(&credentials);
@@ -817,6 +867,9 @@ async fn main() -> Result<()> {
 
     if let Some(ref store) = store {
         let change_detection_runtime = if run_core {
+            if let Store::Core(s) = store {
+                bonsai::event_detection::start(std::sync::Arc::clone(s));
+            }
             Some(bonsai::change_detection::ChangeDetectionRuntime::start(
                 if let Store::Core(s) = store {
                     std::sync::Arc::clone(s)
@@ -2329,6 +2382,22 @@ async fn load_ca_cert_pem(target: &TargetConfig) -> Result<Option<Vec<u8>>> {
             Ok(Some(bytes))
         }
         None => Ok(None),
+    }
+}
+
+async fn seed_subscription_plan(
+    target: TargetConfig,
+    tx: &tokio::sync::mpsc::Sender<SubscriptionPlan>,
+) {
+    if !target.enabled {
+        return;
+    }
+    let plan = subscriber::planned_subscription_plan_for_target(&target);
+    if plan.paths.is_empty() {
+        return;
+    }
+    if let Err(error) = tx.send(plan).await {
+        warn!(%error, address = %target.address, "failed to seed subscription verifier plan");
     }
 }
 

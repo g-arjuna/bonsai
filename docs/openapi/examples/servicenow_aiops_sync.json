@@ -1,0 +1,13 @@
+{
+  "success": true,
+  "error": "",
+  "stats": {
+    "devices_seen": 8,
+    "cis_created": 0,
+    "cis_updated": 8,
+    "relationships_created": 22,
+    "relationships_updated": 0,
+    "incidents_opened": 1,
+    "incidents_resolved": 0
+  }
+}

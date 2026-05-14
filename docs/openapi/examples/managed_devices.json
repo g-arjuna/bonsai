@@ -1,0 +1,41 @@
+{
+  "devices": [
+    {
+      "address": "172.100.103.31:57400",
+      "enabled": true,
+      "collector_id": "",
+      "tls_domain": "leaf1",
+      "ca_cert": "lab/dc/clab-bonsai-dc/.tls/ca/ca.pem",
+      "vendor": "nokia",
+      "credential_alias": "lab-srlinux",
+      "username_env": "",
+      "password_env": "",
+      "hostname": "leaf1",
+      "role": "leaf",
+      "site": "lab-dc",
+      "selected_paths": [
+        {
+          "path": "/interfaces/interface/state/counters",
+          "origin": "openconfig-interfaces",
+          "reason": "baseline_counters"
+        }
+      ],
+      "subscription_statuses": [
+        {
+          "path": "/interfaces/interface/state/counters",
+          "origin": "openconfig-interfaces",
+          "mode": "sample",
+          "sample_interval_ns": 10000000000,
+          "status": "observed",
+          "first_observed_at_ns": 1747116000000000000,
+          "last_observed_at_ns": 1747116180000000000,
+          "updated_at_ns": 1747116180000000000
+        }
+      ],
+      "resolution_audit": [
+        "resolved role=leaf from registry",
+        "selected dc_leaf_minimal profile"
+      ]
+    }
+  ]
+}

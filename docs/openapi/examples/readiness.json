@@ -1,0 +1,19 @@
+{
+  "_schema_version": "0.1.0",
+  "detection_events": 285,
+  "state_change_events": 48217,
+  "rule_distribution": {
+    "bgp_session_down": 18,
+    "interface_error_burst": 44
+  },
+  "cutoff_iso": "2025-01-01T00:00:00Z",
+  "remediation_rows_post_cutoff": 9,
+  "action_distribution_post_cutoff": {
+    "clear-bgp-neighbor": 4,
+    "bounce-interface": 5
+  },
+  "status_distribution_post_cutoff": {
+    "pending": 6,
+    "approved": 3
+  }
+}

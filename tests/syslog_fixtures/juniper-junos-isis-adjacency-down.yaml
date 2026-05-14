@@ -1,0 +1,13 @@
+fixture_id: juniper-junos-isis-adjacency-down
+vendor: juniper-junos
+category: isis_state_change
+transport: udp
+raw: "<165>May  9 12:00:00 crpd1 ISIS adjacency with 49.0001.1985.1100.0001 on interface ge-0/0/0 state down"
+expected_category: protocol
+expected_fact_type: isis_adjacency
+expected_fields:
+  neighbor_id: "49.0001.1985.1100.0001"
+  if_name: "ge-0/0/0"
+  new_state: "down"
+expected_signal_trigger: false
+adversarial: false

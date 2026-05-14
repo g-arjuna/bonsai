@@ -1,0 +1,16 @@
+{
+  "modules": [
+    {
+      "name": "openconfig-interfaces",
+      "revision": "2022-02-24",
+      "namespace": "http://openconfig.net/yang/interfaces",
+      "origin": "openconfig"
+    },
+    {
+      "name": "openconfig-bgp",
+      "revision": "2023-07-14",
+      "namespace": "http://openconfig.net/yang/bgp",
+      "origin": "openconfig"
+    }
+  ]
+}

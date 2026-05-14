@@ -174,8 +174,10 @@ mod tests {
             checked_at_ns: 0,
         };
         let plan = reg.capture_plan(&t, Some(&report));
-        assert!(plan[0].capability_tags().contains(&"cli"),
-            "CLI enricher should lead when gNMI is blocked");
+        assert!(
+            plan[0].capability_tags().contains(&"cli"),
+            "CLI enricher should lead when gNMI is blocked"
+        );
     }
 
     #[test]
@@ -193,8 +195,10 @@ mod tests {
             checked_at_ns: 0,
         };
         let plan = reg.capture_plan(&t, Some(&report));
-        assert!(plan[0].capability_tags().contains(&"gnmi"),
-            "gNMI enricher should lead when gNMI is reachable");
+        assert!(
+            plan[0].capability_tags().contains(&"gnmi"),
+            "gNMI enricher should lead when gNMI is reachable"
+        );
     }
 
     #[test]
@@ -203,13 +207,17 @@ mod tests {
         // IOS-XRd without TLS → CLI preferred
         let t = target("cisco-iosxr", false);
         let plan = reg.capture_plan(&t, None);
-        assert!(plan[0].capability_tags().contains(&"cli"),
-            "CLI enricher should lead for IOS-XRd without TLS when no readiness report");
+        assert!(
+            plan[0].capability_tags().contains(&"cli"),
+            "CLI enricher should lead for IOS-XRd without TLS when no readiness report"
+        );
 
         // Nokia SRL without TLS → gNMI preferred (not in vendor fallback list)
         let t2 = target("nokia-srlinux", false);
         let plan2 = reg.capture_plan(&t2, None);
-        assert!(plan2[0].capability_tags().contains(&"gnmi"),
-            "gNMI enricher should lead for Nokia SRL");
+        assert!(
+            plan2[0].capability_tags().contains(&"gnmi"),
+            "gNMI enricher should lead for Nokia SRL"
+        );
     }
 }

@@ -1,0 +1,12 @@
+fixture_id: arista-eos-bgp-neighbor-up
+vendor: arista-eos
+category: bgp_state_change
+transport: udp
+raw: "<165>May  9 12:00:00 leaf1 BGP neighbor 203.0.113.10 up"
+expected_category: protocol
+expected_fact_type: bgp_neighbor
+expected_fields:
+  peer_address: "203.0.113.10"
+  new_state: "up"
+expected_signal_trigger: false
+adversarial: false

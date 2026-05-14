@@ -1,0 +1,10 @@
+fixture_id: nokia-srlinux-config-commit-adversarial
+vendor: nokia-srlinux
+category: config_change
+transport: udp
+raw: "<34>1 2026-05-09T12:00:00Z srl-leaf1 mgd 123 ID47 - candidate configuration committed"
+expected_category: custom
+expected_fact_type: ""
+expected_fields: {}
+expected_signal_trigger: true
+adversarial: true

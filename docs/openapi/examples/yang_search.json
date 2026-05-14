@@ -1,0 +1,14 @@
+{
+  "result": {
+    "query": "bgp neighbor state",
+    "matches": [
+      {
+        "module": "openconfig-bgp",
+        "path": "/network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/state/session-state",
+        "access": "read-only",
+        "description": "Current BGP session state",
+        "known_issues": []
+      }
+    ]
+  }
+}

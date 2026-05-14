@@ -1,0 +1,33 @@
+{
+  "profiles": [
+    {
+      "name": "dc_leaf_minimal",
+      "environment": [
+        "data_center"
+      ],
+      "vendor_scope": [
+        "nokia",
+        "cisco",
+        "juniper",
+        "arista"
+      ],
+      "roles": [
+        "leaf"
+      ],
+      "description": "Minimal data-center leaf telemetry profile",
+      "rationale": "Fast onboarding profile for interface, BGP, and LLDP visibility",
+      "path_count": 5,
+      "source": "built-in"
+    }
+  ],
+  "plugins": [
+    {
+      "name": "user",
+      "version": "0.1.0",
+      "author": "operator",
+      "profile_count": 1,
+      "conflicts": []
+    }
+  ],
+  "load_errors": []
+}

@@ -1,0 +1,13 @@
+fixture_id: cisco-iosxe-isis-adjacency-down
+vendor: cisco-iosxe
+category: isis_state_change
+transport: udp
+raw: "<165>May  9 12:00:00 xe-pe1 ISIS adjacency with 49.0001.0000.0000.0021 on interface GigabitEthernet1 state down"
+expected_category: protocol
+expected_fact_type: isis_adjacency
+expected_fields:
+  neighbor_id: "49.0001.0000.0000.0021"
+  if_name: "GigabitEthernet1"
+  new_state: "down"
+expected_signal_trigger: false
+adversarial: false

@@ -39,10 +39,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
 import tomllib
+from shutil import which
 from pathlib import Path
 
 import paramiko
@@ -105,7 +107,6 @@ def _run_srl(address: str, username: str, password: str, command: str) -> str:
     SSH to SRL drops directly into the SRL CLI (not bash), so set commands
     require entering candidate mode first then committing.
     """
-    import re
     _ansi = re.compile(r'\x1b\[[0-9;?]*[a-zA-Z]|\x1b\([a-zA-Z]|\x1b[=>]|\r')
 
     client = _ssh_connect(address, username, password)
@@ -114,8 +115,15 @@ def _run_srl(address: str, username: str, password: str, command: str) -> str:
         time.sleep(1.2)
         shell.recv(8192)  # drain banner/prompt
 
-        # Exclusive candidate prevents conflicts from stale shared-candidate changes
-        for cmd in ["enter candidate exclusive", command, "commit now"]:
+        # Reset any stale candidate state first, then work in a fresh private
+        # candidate so unrelated abandoned edits cannot poison later commits.
+        for cmd in [
+            "enter candidate private",
+            "discard now",
+            "enter candidate private",
+            command,
+            "commit now",
+        ]:
             shell.send(cmd + "\n")
             time.sleep(0.8)
 
@@ -127,6 +135,7 @@ def _run_srl(address: str, username: str, password: str, command: str) -> str:
         shell.close()
         # Return last non-empty line as the status indicator
         clean = _ansi.sub("", out).strip()
+        _raise_on_srl_error(clean, command)
         last_line = next((l.strip() for l in reversed(clean.splitlines()) if l.strip()), "ok")
         return last_line
     finally:
@@ -138,15 +147,38 @@ def _run_srl_docker(hostname: str, command: str, topology: str = TOPOLOGY_NAME) 
     container = _clab_node_name(topology, hostname)
     result = subprocess.run(
         ["docker", "exec", "-i", container, "sr_cli"],
-        input=f"enter candidate exclusive\n{command}\ncommit now\n",
+        input=(
+            "enter candidate private\n"
+            "discard now\n"
+            "enter candidate private\n"
+            f"{command}\n"
+            "commit now\n"
+        ),
         capture_output=True,
         text=True,
         timeout=CMD_TIMEOUT,
     )
+    combined = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part).strip()
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+        raise RuntimeError(combined or f"docker sr_cli failed for {hostname}")
+    _raise_on_srl_error(combined, command)
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     return lines[-1] if lines else "ok"
+
+
+def _raise_on_srl_error(output: str, command: str) -> None:
+    """Raise when SR Linux accepted input but rejected the candidate/commit."""
+    lowered = output.lower()
+    error_markers = (
+        "commit failed",
+        "parsing error",
+        "unknown token",
+        "mandatory field",
+        "error in /",
+        "failed to parse",
+    )
+    if any(marker in lowered for marker in error_markers):
+        raise RuntimeError(f"SR Linux command failed: {command}\n{output.strip()}")
 
 
 def _run_xrd(address: str, username: str, password: str, commands: list[str]) -> str:
@@ -365,7 +397,10 @@ def _get_target(targets: dict, hostname: str) -> dict:
 
 
 def _use_docker_transport() -> bool:
-    return os.environ.get("BONSAI_FAULT_TRANSPORT", "").lower() == "docker"
+    configured = os.environ.get("BONSAI_FAULT_TRANSPORT", "").lower()
+    if configured in {"docker", "ssh"}:
+        return configured == "docker"
+    return which("docker") is not None
 
 
 def dispatch_bgp_down(targets: dict, hostname: str, peer: str, topology: str = TOPOLOGY_NAME) -> None:

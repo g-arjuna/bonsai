@@ -638,6 +638,9 @@ pub struct RuntimeConfig {
     /// One binary, three modes: "all" (default), "core", or "collector".
     #[serde(default = "default_runtime_mode")]
     pub mode: String,
+    /// Optional override for the auto-probed resource profile: tiny|small|medium|large|xlarge.
+    #[serde(default)]
+    pub resource_profile: Option<String>,
     /// Stable collector identity added to TelemetryIngest records.
     #[serde(default = "default_collector_id")]
     pub collector_id: String,
@@ -653,6 +656,7 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             mode: default_runtime_mode(),
+            resource_profile: None,
             collector_id: default_collector_id(),
             core_ingest_endpoint: default_core_ingest_endpoint(),
             tls: RuntimeTlsConfig::default(),

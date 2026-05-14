@@ -10,6 +10,7 @@ api_addr   = "0.0.0.0:50051"
 [runtime]
 mode         = "all"
 collector_id = "cloud-dc"
+resource_profile = "xlarge"
 
 [archive]
 enabled                = true

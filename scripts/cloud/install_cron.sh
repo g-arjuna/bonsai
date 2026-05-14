@@ -27,8 +27,8 @@ if [[ -d "$ARCHIVE_MOUNT" ]] || [[ "$INSTALL_DIR" == "/opt/bonsai" ]]; then
 else
     LAB_SCOPE="${LAB_SCOPE:-dc}"
     LOG_DIR="$INSTALL_DIR/runtime/logs"
-    # Laptop: source ~/.bonsai.env before running (daily_sync.sh also auto-sources as fallback).
-    SYNC_LINE="0 2 * * * . \$HOME/.bonsai.env 2>/dev/null || true; bash $INSTALL_DIR/scripts/cloud/daily_sync.sh >> $LOG_DIR/daily_sync.log 2>&1  # $CRON_TAG_SYNC"
+    # Laptop: target the distributed Docker deployment explicitly.
+    SYNC_LINE="0 2 * * * . \$HOME/.bonsai.env 2>/dev/null || true; API_BASE=http://127.0.0.1:3100 BONSAI_CONTAINER=bonsai-bonsai-core-1 bash $INSTALL_DIR/scripts/cloud/daily_sync.sh >> $LOG_DIR/daily_sync.log 2>&1  # $CRON_TAG_SYNC"
 fi
 
 # daily_check_push.sh: runs bv5_daily_check.sh then commits+pushes the report to GitHub.

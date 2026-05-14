@@ -3252,8 +3252,7 @@ fn join_bfd_fact(
     let remote_address = fact.fields.get("remote_address");
 
     if let Some(if_name) = if_name
-        && let Some(graph_state) =
-            lookup_bfd_session_by_interface(conn, &update.target, if_name)?
+        && let Some(graph_state) = lookup_bfd_session_by_interface(conn, &update.target, if_name)?
     {
         return Ok(json!({
             "status": "joined",
@@ -3264,8 +3263,7 @@ fn join_bfd_fact(
     }
 
     if let Some(remote_addr) = remote_address
-        && let Some(graph_state) =
-            lookup_bfd_session_by_remote(conn, &update.target, remote_addr)?
+        && let Some(graph_state) = lookup_bfd_session_by_remote(conn, &update.target, remote_addr)?
     {
         return Ok(json!({
             "status": "joined",
@@ -3273,13 +3271,9 @@ fn join_bfd_fact(
             "key": remote_addr,
             "graph_state": graph_state,
         }));
-
     }
 
-    let key = if_name
-        .or(remote_address)
-        .cloned()
-        .unwrap_or_default();
+    let key = if_name.or(remote_address).cloned().unwrap_or_default();
     Ok(json!({
         "status": "orphan",
         "kind": "bfd_session",
@@ -3429,10 +3423,7 @@ fn join_ospf_fact(
         }));
     }
 
-    let key = neighbor_address
-        .or(if_name)
-        .cloned()
-        .unwrap_or_default();
+    let key = neighbor_address.or(if_name).cloned().unwrap_or_default();
     Ok(json!({
         "status": "orphan",
         "kind": "ospf_neighbor",
@@ -3463,10 +3454,7 @@ fn join_isis_fact(
         }));
     }
 
-    let key = neighbor_id
-        .or(if_name)
-        .cloned()
-        .unwrap_or_default();
+    let key = neighbor_id.or(if_name).cloned().unwrap_or_default();
     Ok(json!({
         "status": "orphan",
         "kind": "isis_adjacency",
@@ -4539,18 +4527,10 @@ fn emit_oper_status_event(
     oper_status: &str,
     event_tx: &broadcast::Sender<BonsaiEvent>,
 ) -> Result<()> {
-    let detail = format!(
-        r#"{{"if_name":"{}","oper_status":"{}"}}"#,
-        if_name, oper_status
-    );
-    let _ = event_tx.send(BonsaiEvent {
-        device_address: u.target.clone(),
-        event_type: "interface_oper_status_change".to_string(),
-        detail_json: detail,
-        occurred_at_ns: u.timestamp_ns,
-        state_change_event_id: String::new(),
-    });
-    // Best-effort: ensure Device node exists so graph queries stay consistent.
+    let id = format!("{}:{}", u.target, if_name);
+    let normalized_oper_status = oper_status.to_ascii_lowercase();
+    let previous_oper_status = read_interface_oper_status(conn, &id)?;
+
     upsert_device(
         conn,
         &u.target,
@@ -4560,8 +4540,84 @@ fn emit_oper_status_event(
         "",
         ts(u.timestamp_ns),
     )?;
+
+    let mut stmt = conn
+        .prepare(
+            "MERGE (i:Interface {id: $id}) \
+         ON CREATE SET \
+           i.device_address = $addr, i.name = $name, \
+           i.oper_status = $oper_status, i.updated_at = $ts \
+         ON MATCH SET \
+           i.oper_status = $oper_status, i.updated_at = $ts",
+        )
+        .context("prepare interface oper-status upsert")?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(id.clone())),
+            ("addr", Value::String(u.target.clone())),
+            ("name", Value::String(if_name.to_string())),
+            ("oper_status", Value::String(normalized_oper_status.clone())),
+            ("ts", ts(u.timestamp_ns)),
+        ],
+    )
+    .context("execute interface oper-status upsert")?;
+
+    let mut edge_stmt = conn
+        .prepare(
+            "MATCH (d:Device {address: $addr}), (i:Interface {id: $id}) \
+         MERGE (d)-[:HAS_INTERFACE]->(i)",
+        )
+        .context("prepare device-interface edge")?;
+    conn.execute(
+        &mut edge_stmt,
+        vec![
+            ("addr", Value::String(u.target.clone())),
+            ("id", Value::String(id)),
+        ],
+    )
+    .context("execute device-interface edge")?;
+
+    if previous_oper_status.as_deref() == Some(normalized_oper_status.as_str()) {
+        debug!(
+            target = %u.target,
+            if_name,
+            oper_status = %normalized_oper_status,
+            "interface oper-status unchanged; event suppressed"
+        );
+        return Ok(());
+    }
+
+    let detail = serde_json::json!({
+        "if_name": if_name,
+        "old_state": previous_oper_status.clone().unwrap_or_default(),
+        "new_state": normalized_oper_status,
+        "oper_status": oper_status.to_ascii_lowercase(),
+    })
+    .to_string();
+    let _ = event_tx.send(BonsaiEvent {
+        device_address: u.target.clone(),
+        event_type: "interface_oper_status_change".to_string(),
+        detail_json: detail,
+        occurred_at_ns: u.timestamp_ns,
+        state_change_event_id: String::new(),
+    });
     debug!(target = %u.target, if_name, oper_status, "interface oper-status event emitted");
     Ok(())
+}
+
+fn read_interface_oper_status(conn: &Connection<'_>, id: &str) -> Result<Option<String>> {
+    let mut stmt = conn
+        .prepare("MATCH (i:Interface {id: $id}) RETURN i.oper_status")
+        .context("prepare interface oper-status lookup")?;
+    let rows = conn
+        .execute(&mut stmt, vec![("id", Value::String(id.to_string()))])
+        .context("execute interface oper-status lookup")?
+        .collect::<Vec<_>>();
+    Ok(rows
+        .first()
+        .map(|row| read_str(&row[0]))
+        .filter(|v| !v.is_empty()))
 }
 
 // ── diagnostic query (callable from main after startup) ──────────────────────
@@ -4889,7 +4945,9 @@ mod tests {
                     category: "protocol".to_string(),
                     hostname: "spine1".to_string(),
                     source_vendor: "cisco_iosxr".to_string(),
-                    message: "OSPF neighbor 10.0.0.2 on interface GigabitEthernet0/0/0 changed to down".to_string(),
+                    message:
+                        "OSPF neighbor 10.0.0.2 on interface GigabitEthernet0/0/0 changed to down"
+                            .to_string(),
                     raw: "raw".to_string(),
                     transport: "udp".to_string(),
                     peer_addr: "127.0.0.1:5514".to_string(),
@@ -4944,7 +5002,8 @@ mod tests {
                     category: "protocol".to_string(),
                     hostname: "spine2".to_string(),
                     source_vendor: "juniper".to_string(),
-                    message: "IS-IS adjacency with 0000.0000.0001 on ge-0/0/0 went down".to_string(),
+                    message: "IS-IS adjacency with 0000.0000.0001 on ge-0/0/0 went down"
+                        .to_string(),
                     raw: "raw".to_string(),
                     transport: "udp".to_string(),
                     peer_addr: "127.0.0.1:5514".to_string(),

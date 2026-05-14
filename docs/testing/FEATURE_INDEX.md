@@ -126,6 +126,31 @@
 
 ---
 
+### Syslog parsing coverage
+
+| Field | Value |
+|-------|-------|
+| **Description** | Fixture-driven validation of vendor syslog parsing and config-change trigger recognition. Covers Cisco IOS XR, Juniper Junos, Arista EOS, and Nokia SR Linux with both fault-like and adversarial config-change examples. |
+| **Implementation** | `src/signals/syslog.rs`, `/api/_test/syslog/parse`, `tests/syslog_fixtures/*.yaml` |
+| **Test type** | smoke |
+| **Test script** | `scripts/smoke/smoke_syslog_fixtures.sh` |
+| **Artefact** | `runtime/driver_results/smoke_syslog_fixtures.json` |
+| **Status** | `pass-smoke` |
+| **Last tested** | 2026-05-14 |
+| **Notes** | 44 fixtures total across 7 vendors. Core coverage is BGP, interface, BFD, OSPF, IS-IS, and config-change adversarial recognition where vendor patterns exist. |
+
+| Vendor | Fixture count | Coverage | Adversarial fixture |
+|-------|-------|-------|-------|
+| Cisco IOS XR | 8 | BGP up/down, interface up/down, BFD, OSPF, IS-IS, config-change trigger | Yes |
+| Cisco IOS XE | 8 | BGP up/down, interface up/down, BFD, OSPF, IS-IS, config-change trigger | Yes |
+| Juniper Junos | 8 | BGP up/down, interface up/down, BFD, OSPF, IS-IS, config-change trigger | Yes |
+| Arista EOS | 8 | BGP up/down, interface up/down, BFD, OSPF, IS-IS, config-change trigger | Yes |
+| Nokia SR Linux | 4 | BGP, interface, BFD, config-change trigger | Yes |
+| Nokia SR OS | 4 | BGP, interface, BFD, config-change trigger | Yes |
+| FRR | 4 | BGP, interface, BFD, config-change trigger | Yes |
+
+---
+
 ### SNMP trap ingestion daemon
 
 | Field | Value |

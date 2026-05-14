@@ -1,0 +1,13 @@
+fixture_id: cisco-iosxr-bfd-session-down
+vendor: cisco-iosxr
+category: bfd_session
+transport: udp
+raw: "<165>May  9 12:00:00 xr-pe1 BFD state change neighbor 192.0.2.1 on GigabitEthernet0/0/0/1 new state down"
+expected_category: protocol
+expected_fact_type: bfd_session
+expected_fields:
+  remote_address: "192.0.2.1"
+  if_name: "GigabitEthernet0/0/0/1"
+  new_state: "down"
+expected_signal_trigger: false
+adversarial: false

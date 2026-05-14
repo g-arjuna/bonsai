@@ -1,0 +1,10 @@
+fixture_id: arista-eos-config-commit-adversarial
+vendor: arista-eos
+category: config_change
+transport: udp
+raw: "<34>1 2026-05-09T12:00:00Z leaf1 Cli 123 ID47 - configuration has been changed"
+expected_category: custom
+expected_fact_type: ""
+expected_fields: {}
+expected_signal_trigger: true
+adversarial: true

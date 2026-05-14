@@ -109,6 +109,10 @@ pub async fn run_archiver(
         max_file_age_secs,
         "archive consumer started"
     );
+    prune_stale_zero_byte_parquet_files(
+        &archive_path,
+        writer_max_idle_secs.max(max_file_age_secs).max(3 * 60 * 60),
+    )?;
     record_archive_lag(&buffer);
 
     loop {
@@ -187,6 +191,65 @@ fn now_ns() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
         .unwrap_or_default()
+}
+
+fn prune_stale_zero_byte_parquet_files(archive_root: &Path, grace_secs: u64) -> Result<()> {
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut removed = 0usize;
+    let mut stack = vec![archive_root.to_path_buf()];
+
+    while let Some(path) = stack.pop() {
+        let entries = match fs::read_dir(&path) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to scan archive path '{}'", path.display()));
+            }
+        };
+        for entry in entries {
+            let entry = entry
+                .with_context(|| format!("failed to read archive entry '{}'", path.display()))?;
+            let child = entry.path();
+            if child.is_dir() {
+                stack.push(child);
+                continue;
+            }
+            if !child.extension().is_some_and(|ext| ext == "parquet") {
+                continue;
+            }
+            let metadata = fs::metadata(&child).with_context(|| {
+                format!("failed to stat archive candidate '{}'", child.display())
+            })?;
+            if metadata.len() > 0 {
+                continue;
+            }
+            let modified_secs = metadata
+                .modified()
+                .ok()
+                .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(now_secs);
+            if now_secs.saturating_sub(modified_secs) < grace_secs {
+                continue;
+            }
+            fs::remove_file(&child).with_context(|| {
+                format!(
+                    "failed to remove stale zero-byte parquet '{}'",
+                    child.display()
+                )
+            })?;
+            removed += 1;
+        }
+    }
+
+    if removed > 0 {
+        warn!(removed, path = %archive_root.display(), "pruned stale zero-byte parquet files");
+    }
+    Ok(())
 }
 
 async fn flush_buffer(

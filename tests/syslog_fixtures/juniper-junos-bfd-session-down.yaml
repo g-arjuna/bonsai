@@ -1,0 +1,13 @@
+fixture_id: juniper-junos-bfd-session-down
+vendor: juniper-junos
+category: bfd_session
+transport: udp
+raw: "<165>May  9 12:00:00 crpd1 BFD session with remote neighbor 198.51.100.2 via ge-0/0/0 state down"
+expected_category: protocol
+expected_fact_type: bfd_session
+expected_fields:
+  remote_address: "198.51.100.2"
+  if_name: "ge-0/0/0"
+  new_state: "down"
+expected_signal_trigger: false
+adversarial: false

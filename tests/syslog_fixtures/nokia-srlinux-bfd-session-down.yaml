@@ -1,0 +1,12 @@
+fixture_id: nokia-srlinux-bfd-session-down
+vendor: nokia-srlinux
+category: bfd_session
+transport: udp
+raw: "<165>May  9 12:00:00 srl-leaf1 BFD session on ethernet-1/1 state down"
+expected_category: protocol
+expected_fact_type: bfd_session
+expected_fields:
+  if_name: "ethernet-1/1"
+  new_state: "down"
+expected_signal_trigger: false
+adversarial: false

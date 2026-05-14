@@ -17,6 +17,8 @@ This is the canonical handoff brief for Gemini CLI when it is being used as Bons
 - Default ContainerLab network on this machine: `bonsai-mgmt`
 - Primary runtime config: repo-local `bonsai.toml`
 - HTTP API: `http://127.0.0.1:3000`
+- Swagger UI: `http://127.0.0.1:3000/api/docs`
+- OpenAPI JSON: `http://127.0.0.1:3000/api/openapi.json`
 - gRPC API: `http://[::1]:50051`
 - Metrics endpoint: `http://127.0.0.1:9090/metrics` when enabled
 - Runtime directory: `runtime/`
@@ -61,6 +63,12 @@ Use credentials only from local `bonsai.toml`, the credential vault, or environm
 
 ## Feature Status Index (CV5)
 
+## API Discovery
+
+- First stop for HTTP API discovery: `/api/docs`
+- Contract source for tools/agents: `/api/openapi.json`
+- Refresh live example payloads when the lab state changes: `bash scripts/refresh_api_docs.sh`
+
 **Before asking "what's the status of feature X?" — read this first:**
 
 - **Index**: `docs/testing/FEATURE_INDEX.md` — one section per feature with implementation
@@ -84,6 +92,7 @@ update the "Last tested" field in the index if the result changes.
 - `scripts/smoke/smoke_output_adapters.sh`
 - `scripts/smoke/smoke_servicenow_aiops.sh`
 - `scripts/smoke/smoke_signals_syslog.sh`
+- `scripts/smoke/smoke_syslog_fixtures.sh`
 - `scripts/smoke/smoke_signals_snmp.sh`
 
 Expected output:

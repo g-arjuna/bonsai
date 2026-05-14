@@ -1,0 +1,16 @@
+{
+  "success": true,
+  "error": "",
+  "selected_paths": [
+    {
+      "path": "/interfaces/interface/state/counters",
+      "origin": "openconfig-interfaces",
+      "reason": "baseline_counters"
+    },
+    {
+      "path": "/network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/state/session-state",
+      "origin": "openconfig-bgp",
+      "reason": "bgp_state"
+    }
+  ]
+}

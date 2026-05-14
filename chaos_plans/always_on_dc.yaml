@@ -143,44 +143,32 @@ faults:
   - type: bgp_session_down
     weight: 5
     targets: [srl-leaf1]
-    peer_addresses: ["10.1.0.2", "10.1.0.4"]
+    peer_addresses: ["10.1.0.1", "10.1.0.2"]
     healing_delay_seconds: [20, 60]
 
   - type: bgp_session_down
     weight: 5
     targets: [srl-leaf2]
-    peer_addresses: ["10.1.0.2", "10.1.0.4"]
+    peer_addresses: ["10.1.0.1", "10.1.0.2"]
     healing_delay_seconds: [20, 60]
 
   - type: bgp_session_down
     weight: 4
     targets: [srl-leaf3]
-    peer_addresses: ["10.1.0.1", "10.1.0.3"]
+    peer_addresses: ["10.1.0.1", "10.1.0.2"]
     healing_delay_seconds: [20, 60]
 
   - type: bgp_session_down
     weight: 4
     targets: [srl-leaf4]
-    peer_addresses: ["10.1.0.1", "10.1.0.3"]
+    peer_addresses: ["10.1.0.1", "10.1.0.2"]
     healing_delay_seconds: [20, 60]
-
-  - type: bgp_session_down
-    weight: 3
-    targets: [srl-spine1]
-    peer_addresses: ["10.1.0.5", "10.1.0.6", "10.1.0.7", "10.1.0.8"]
-    healing_delay_seconds: [20, 45]
-
-  - type: bgp_session_down
-    weight: 3
-    targets: [srl-spine2]
-    peer_addresses: ["10.1.0.5", "10.1.0.6", "10.1.0.7", "10.1.0.8"]
-    healing_delay_seconds: [20, 45]
 
   # ── Route flaps for BMP route-monitoring coverage ─────────────────────────
   - type: route_flap
     weight: 2
     targets: [srl-leaf1, srl-leaf2]
-    peer_addresses: ["10.1.0.2", "10.1.0.4"]
+    peer_addresses: ["10.1.0.1", "10.1.0.2"]
     flap_count: 3
     flap_hold_seconds: [3, 6]
     healing_delay_seconds: [1, 1]

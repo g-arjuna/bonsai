@@ -1,0 +1,10 @@
+fixture_id: cisco-iosxe-config-commit-adversarial
+vendor: cisco-iosxe
+category: config_change
+transport: udp
+raw: "<34>1 2026-05-09T12:00:00Z xe-pe1 mgd 123 ID47 - user netops running configuration updated from console"
+expected_category: custom
+expected_fact_type: ""
+expected_fields: {}
+expected_signal_trigger: true
+adversarial: true

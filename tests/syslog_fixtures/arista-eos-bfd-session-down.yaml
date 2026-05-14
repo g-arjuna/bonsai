@@ -1,0 +1,12 @@
+fixture_id: arista-eos-bfd-session-down
+vendor: arista-eos
+category: bfd_session
+transport: udp
+raw: "<165>May  9 12:00:00 leaf1 BFD peer 203.0.113.10 changed to down"
+expected_category: protocol
+expected_fact_type: bfd_session
+expected_fields:
+  remote_address: "203.0.113.10"
+  new_state: "down"
+expected_signal_trigger: false
+adversarial: false

@@ -12,6 +12,7 @@ use tracing::{debug, info, warn};
 const BACKOFF_INITIAL: Duration = Duration::from_secs(5);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 const BACKOFF_RESET_THRESHOLD: Duration = Duration::from_secs(60);
+const SAMPLE_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 use crate::proto::gnmi::g_nmi_client::GNmiClient;
 use crate::proto::gnmi::{
@@ -163,6 +164,9 @@ impl GnmiSubscriber {
             }
             build_subscriptions(&caps)
         };
+        let enforce_idle_timeout = subscriptions
+            .iter()
+            .any(|sub| sub.mode == SubscriptionMode::Sample as i32);
         let plan_paths = subscriptions
             .iter()
             .filter_map(subscription_expectation)
@@ -210,12 +214,30 @@ impl GnmiSubscriber {
         }
 
         loop {
-            let next_message = tokio::select! {
-                _ = shutdown.changed() => {
-                    info!(target = %target, "shutdown signal received during telemetry stream");
-                    return Ok(());
+            let next_message = if enforce_idle_timeout {
+                tokio::select! {
+                    _ = shutdown.changed() => {
+                        info!(target = %target, "shutdown signal received during telemetry stream");
+                        return Ok(());
+                    }
+                    _ = tokio::time::sleep(SAMPLE_STREAM_IDLE_TIMEOUT) => {
+                        warn!(
+                            target = %target,
+                            idle_secs = SAMPLE_STREAM_IDLE_TIMEOUT.as_secs(),
+                            "sample-based telemetry stream went idle; forcing reconnect"
+                        );
+                        break;
+                    }
+                    message = stream.message() => message,
                 }
-                message = stream.message() => message,
+            } else {
+                tokio::select! {
+                    _ = shutdown.changed() => {
+                        info!(target = %target, "shutdown signal received during telemetry stream");
+                        return Ok(());
+                    }
+                    message = stream.message() => message,
+                }
             };
 
             match next_message {
@@ -414,6 +436,30 @@ pub async fn spawn_subscriber_with_creds(
     subscribers.insert(address.clone(), (shutdown_tx, handle));
     info!(address = %address, "subscriber started");
     Ok(())
+}
+
+pub fn planned_subscription_plan_for_target(
+    target: &crate::config::TargetConfig,
+) -> SubscriptionPlan {
+    let selected_subscriptions = build_selected_subscriptions(&target.selected_paths);
+    let subscriptions = if selected_subscriptions.is_empty() {
+        let hint = target
+            .vendor
+            .as_deref()
+            .or(target.hostname.as_deref())
+            .or(target.role.as_deref());
+        build_subscriptions(&ModelCapabilities::fallback(hint))
+    } else {
+        selected_subscriptions
+    };
+
+    SubscriptionPlan {
+        target: target.address.clone(),
+        paths: subscriptions
+            .iter()
+            .filter_map(subscription_expectation)
+            .collect(),
+    }
 }
 
 // ── capabilities ──────────────────────────────────────────────────────────────

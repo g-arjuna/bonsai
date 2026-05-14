@@ -9,6 +9,7 @@ graph_path   = "bonsai.db"
 # Runtime mode (T1-2 distributed collector seam)
 # [runtime]
 # mode = "all"  # one of: all, core, collector
+# resource_profile = "large"  # optional override: tiny|small|medium|large|xlarge
 # collector_id = "local"
 # core_ingest_endpoint = "http://[::1]:50051"  # used only by collector mode
 # [runtime.tls]
