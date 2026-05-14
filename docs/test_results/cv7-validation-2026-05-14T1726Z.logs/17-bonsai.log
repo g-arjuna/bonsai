@@ -1,0 +1,1048 @@
+Error reading the log directory/files: No such file or directory (os error 2)
+[2m2026-05-14T14:40:32.017905Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m bonsai starting [3mprotocol_version[0m[2m=[0m1
+[2m2026-05-14T14:40:32.018073Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"config_load" [3melapsed_ms[0m[2m=[0m0
+[2m2026-05-14T14:40:32.018214Z[0m [32m INFO[0m [2mbonsai::resource_profile[0m[2m:[0m resource profile selected [3mprofile[0m[2m=[0m"xlarge" [3mram_gb[0m[2m=[0m46 [3meffective_ram_gb[0m[2m=[0m46 [3mcpu_cores[0m[2m=[0m8 [3mdisk_free_gb[0m[2m=[0m304 [3min_container[0m[2m=[0mfalse [3mmemory_budget_mb[0m[2m=[0m4096
+[2m2026-05-14T14:40:32.018246Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m runtime mode selected [3mmode[0m[2m=[0mAll [3mrun_core[0m[2m=[0mtrue [3mrun_collector[0m[2m=[0mtrue
+[2m2026-05-14T14:40:32.018973Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m Prometheus metrics listening [3mmetrics_addr[0m[2m=[0m[::1]:9090
+[2m2026-05-14T14:40:32.030489Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LadybugDB opened [3mpath[0m[2m=[0m"bonsai.db" [3mbuffer_pool_mib[0m[2m=[0m768
+[2m2026-05-14T14:40:32.369109Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph schema initialised
+[2m2026-05-14T14:40:32.369181Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"schema_init" [3melapsed_ms[0m[2m=[0m338
+[2m2026-05-14T14:40:32.375854Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"backfill" [3melapsed_ms[0m[2m=[0m6
+[2m2026-05-14T14:40:32.375875Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph store opened [3mpath[0m[2m=[0m"bonsai.db"
+[2m2026-05-14T14:40:32.375892Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"graph_open" [3melapsed_ms[0m[2m=[0m356
+[2m2026-05-14T14:40:32.375979Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor started [3mbudget_mb[0m[2m=[0m4096 [3msoft_mb[0m[2m=[0m3276 [3mhard_mb[0m[2m=[0m3891
+[2m2026-05-14T14:40:32.375993Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor started
+[2m2026-05-14T14:40:32.376005Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop started [3mbudget_eps[0m[2m=[0m200000
+[2m2026-05-14T14:40:32.376046Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler started [3minterval_secs[0m[2m=[0m60 [3moutput_path[0m[2m=[0m"none"
+[2m2026-05-14T14:40:32.376049Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard started [3mcheck_interval_secs[0m[2m=[0m300 [3mmax_archive_gb[0m[2m=[0m60 [3mmax_graph_gb[0m[2m=[0m5 [3mwarn_threshold_pct[0m[2m=[0m80
+[2m2026-05-14T14:40:32.376050Z[0m [32m INFO[0m [2mbonsai::write_coordinator[0m[2m:[0m write coordinator started [3mbatch_size[0m[2m=[0m256 [3mflush_interval[0m[2m=[0m1s
+[2m2026-05-14T14:40:32.376134Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive consumer started [3mpath[0m[2m=[0mruntime/archive [3mflush_interval_seconds[0m[2m=[0m10 [3mmax_batch_rows[0m[2m=[0m1000 [3mcompression_level[0m[2m=[0m12 [3mwriter_max_idle_secs[0m[2m=[0m7200 [3mmax_file_age_secs[0m[2m=[0m3600
+[2m2026-05-14T14:40:32.377229Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m archive disk check [3mpct[0m[2m=[0m0 [3marchive_gb[0m[2m=[0m"0.00"
+[2m2026-05-14T14:40:32.377272Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m214 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m2 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T14:40:33.611037Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m BONSAI_REQUIRE_SIDECAR set — /health will be degraded until these sidecars register [3mrequired[0m[2m=[0m["rules"]
+[2m2026-05-14T14:40:33.611076Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m credential vault unlocked [3mpath[0m[2m=[0mbonsai-credentials
+[2m2026-05-14T14:40:34.062543Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m registry site labels synced into graph
+[2m2026-05-14T14:40:34.097585Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m migrated sites to default environment [3mcount[0m[2m=[0m1
+[2m2026-05-14T14:40:34.097738Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m environment migration complete [3mcount[0m[2m=[0m1
+[2m2026-05-14T14:40:34.100947Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T14:40:34.101033Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T14:40:34.101328Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T14:40:34.101370Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T14:40:34.101439Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T14:40:34.101479Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T14:40:34.101558Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T14:40:34.101617Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T14:40:34.101636Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m gRPC API and telemetry ingest server listening [3mapi_addr[0m[2m=[0m[::1]:50051 [3mingest_compression[0m[2m=[0m"zstd" [3mmtls[0m[2m=[0mfalse
+[2m2026-05-14T14:40:34.101654Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m HTTP UI server listening [3mhttp_addr[0m[2m=[0m0.0.0.0:3000
+[2m2026-05-14T14:40:34.101797Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_evpn
+[2m2026-05-14T14:40:34.101911Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_p_sr_te
+[2m2026-05-14T14:40:34.102028Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_evpn_leaf
+[2m2026-05-14T14:40:34.102133Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_peering_edge
+[2m2026-05-14T14:40:34.102226Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_distribution
+[2m2026-05-14T14:40:34.102363Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_border_standard
+[2m2026-05-14T14:40:34.102449Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_core
+[2m2026-05-14T14:40:34.102537Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_access
+[2m2026-05-14T14:40:34.102626Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mhomelab_router
+[2m2026-05-14T14:40:34.102686Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_wlc
+[2m2026-05-14T14:40:34.102840Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_superspine_standard
+[2m2026-05-14T14:40:34.103059Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_l3vpn
+[2m2026-05-14T14:40:34.103183Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_full
+[2m2026-05-14T14:40:34.103297Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mhomelab_switch
+[2m2026-05-14T14:40:34.103433Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_rr_basic
+[2m2026-05-14T14:40:34.103630Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_leaf_minimal
+[2m2026-05-14T14:40:34.103740Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_p_core
+[2m2026-05-14T14:40:34.103934Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_spine_standard
+[2m2026-05-14T14:40:34.103971Z[0m [32m INFO[0m [2mbonsai::enrichment[0m[2m:[0m enricher configs loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T14:40:34.103984Z[0m [32m INFO[0m [2mbonsai::output::traits[0m[2m:[0m output adapter configs loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T14:40:34.103998Z[0m [32m INFO[0m [2mbonsai::remediation::trust[0m[2m:[0m trust state records loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T14:40:34.104012Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"ready" [3melapsed_ms[0m[2m=[0m2086
+[2m2026-05-14T14:40:34.112996Z[0m [32m INFO[0m [2mbonsai::retention[0m[2m:[0m retention: pruned StateChangeEvents by age [3mdeleted[0m[2m=[0m0
+[2m2026-05-14T14:40:35.298513Z[0m [32m INFO[0m [2mbonsai::api[0m[2m:[0m sidecar registered [3msidecar_id[0m[2m=[0m7d9ad6b6-7c59-475d-9e61-28008831471d [3mname[0m[2m=[0mrules-local [3mkind[0m[2m=[0mrules
+[2m2026-05-14T14:41:32.377042Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m253 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m4 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T14:42:32.377311Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m253 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m4 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T14:42:48.031559Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T14:42:48.031615Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T14:42:48.031644Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T14:42:48.031645Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T14:42:48.031701Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T14:42:48.031732Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T14:42:48.031751Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T14:42:48.031743Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T14:42:48.031789Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T14:42:48.031570Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T14:42:48.031817Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T14:42:48.031861Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T14:42:48.031678Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T14:42:48.031827Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T14:42:48.031657Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T14:42:48.031920Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T14:43:10.101428Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m SIGTERM received — shutting down
+[2m2026-05-14T14:43:10.101464Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber manager received shutdown
+[2m2026-05-14T14:43:10.101479Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler stopped
+[2m2026-05-14T14:43:10.101489Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor stopped
+[2m2026-05-14T14:43:10.101499Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor stopped
+[2m2026-05-14T14:43:10.101503Z[0m [32m INFO[0m [2mbonsai::subscription_status[0m[2m:[0m subscription verifier received shutdown
+[2m2026-05-14T14:43:10.101503Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop stopped
+[2m2026-05-14T14:43:10.101518Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T14:43:10.101509Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard stopped
+[2m2026-05-14T14:43:10.101532Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T14:43:10.101559Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T14:43:10.101571Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T14:43:10.101606Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive consumer stopping: shutdown signal received
+[2m2026-05-14T14:43:10.101620Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T14:43:10.101635Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T14:43:10.101660Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T14:43:10.101668Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T14:43:10.101682Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T14:43:10.101689Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T14:43:10.101705Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T14:43:10.101713Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T14:43:10.101727Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T14:43:10.101739Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T14:43:10.101751Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T14:43:10.101758Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T14:43:10.102695Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"devices" [3mcount[0m[2m=[0mInt64(8)
+[2m2026-05-14T14:43:10.103027Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"interfaces" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:43:10.103309Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bgp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:43:10.103564Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bfd-sessions" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:43:10.103840Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"lldp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:43:10.107403Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"connected-to" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:43:10.108161Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"state-change-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:43:10.108472Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"detection-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:43:10.108713Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediations" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:43:10.108943Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediation-trust-marks" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:43:10.109190Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"subscription-status" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:43:10.109209Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m bonsai stopped
+[2m2026-05-14T14:53:43.700706Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m bonsai starting [3mprotocol_version[0m[2m=[0m1
+[2m2026-05-14T14:53:43.700888Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"config_load" [3melapsed_ms[0m[2m=[0m0
+[2m2026-05-14T14:53:43.701010Z[0m [32m INFO[0m [2mbonsai::resource_profile[0m[2m:[0m resource profile selected [3mprofile[0m[2m=[0m"xlarge" [3mram_gb[0m[2m=[0m46 [3meffective_ram_gb[0m[2m=[0m46 [3mcpu_cores[0m[2m=[0m8 [3mdisk_free_gb[0m[2m=[0m304 [3min_container[0m[2m=[0mfalse [3mmemory_budget_mb[0m[2m=[0m4096
+[2m2026-05-14T14:53:43.701039Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m runtime mode selected [3mmode[0m[2m=[0mAll [3mrun_core[0m[2m=[0mtrue [3mrun_collector[0m[2m=[0mtrue
+[2m2026-05-14T14:53:43.701720Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m Prometheus metrics listening [3mmetrics_addr[0m[2m=[0m[::1]:9090
+[2m2026-05-14T14:53:43.806026Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LadybugDB opened [3mpath[0m[2m=[0m"bonsai.db" [3mbuffer_pool_mib[0m[2m=[0m768
+[2m2026-05-14T14:53:44.091777Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph schema initialised
+[2m2026-05-14T14:53:44.091847Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"schema_init" [3melapsed_ms[0m[2m=[0m285
+[2m2026-05-14T14:53:44.098924Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"backfill" [3melapsed_ms[0m[2m=[0m7
+[2m2026-05-14T14:53:44.098956Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph store opened [3mpath[0m[2m=[0m"bonsai.db"
+[2m2026-05-14T14:53:44.099016Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"graph_open" [3melapsed_ms[0m[2m=[0m397
+[2m2026-05-14T14:53:44.099079Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor started
+[2m2026-05-14T14:53:44.099069Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor started [3mbudget_mb[0m[2m=[0m4096 [3msoft_mb[0m[2m=[0m3276 [3mhard_mb[0m[2m=[0m3891
+[2m2026-05-14T14:53:44.099099Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop started [3mbudget_eps[0m[2m=[0m200000
+[2m2026-05-14T14:53:44.099153Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler started [3minterval_secs[0m[2m=[0m60 [3moutput_path[0m[2m=[0m"none"
+[2m2026-05-14T14:53:44.099134Z[0m [32m INFO[0m [2mbonsai::write_coordinator[0m[2m:[0m write coordinator started [3mbatch_size[0m[2m=[0m256 [3mflush_interval[0m[2m=[0m1s
+[2m2026-05-14T14:53:44.099178Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard started [3mcheck_interval_secs[0m[2m=[0m300 [3mmax_archive_gb[0m[2m=[0m60 [3mmax_graph_gb[0m[2m=[0m5 [3mwarn_threshold_pct[0m[2m=[0m80
+[2m2026-05-14T14:53:44.099208Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive consumer started [3mpath[0m[2m=[0mruntime/archive [3mflush_interval_seconds[0m[2m=[0m10 [3mmax_batch_rows[0m[2m=[0m1000 [3mcompression_level[0m[2m=[0m12 [3mwriter_max_idle_secs[0m[2m=[0m7200 [3mmax_file_age_secs[0m[2m=[0m3600
+[2m2026-05-14T14:53:44.100426Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m archive disk check [3mpct[0m[2m=[0m0 [3marchive_gb[0m[2m=[0m"0.00"
+[2m2026-05-14T14:53:44.100431Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m217 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m2 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T14:53:45.218551Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m BONSAI_REQUIRE_SIDECAR set — /health will be degraded until these sidecars register [3mrequired[0m[2m=[0m["rules"]
+[2m2026-05-14T14:53:45.218591Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m credential vault unlocked [3mpath[0m[2m=[0mbonsai-credentials
+[2m2026-05-14T14:53:45.684410Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m registry site labels synced into graph
+[2m2026-05-14T14:53:45.702565Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T14:53:45.702700Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T14:53:45.702784Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T14:53:45.702854Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T14:53:45.702889Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T14:53:45.702929Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T14:53:45.703045Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T14:53:45.703178Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T14:53:45.703553Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m gRPC API and telemetry ingest server listening [3mapi_addr[0m[2m=[0m[::1]:50051 [3mingest_compression[0m[2m=[0m"zstd" [3mmtls[0m[2m=[0mfalse
+[2m2026-05-14T14:53:45.703578Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m HTTP UI server listening [3mhttp_addr[0m[2m=[0m0.0.0.0:3000
+[2m2026-05-14T14:53:45.703809Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_evpn
+[2m2026-05-14T14:53:45.704029Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_p_sr_te
+[2m2026-05-14T14:53:45.704252Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_evpn_leaf
+[2m2026-05-14T14:53:45.704396Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_peering_edge
+[2m2026-05-14T14:53:45.704520Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_distribution
+[2m2026-05-14T14:53:45.704647Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_border_standard
+[2m2026-05-14T14:53:45.704749Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_core
+[2m2026-05-14T14:53:45.704837Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_access
+[2m2026-05-14T14:53:45.704940Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mhomelab_router
+[2m2026-05-14T14:53:45.705026Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_wlc
+[2m2026-05-14T14:53:45.705187Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_superspine_standard
+[2m2026-05-14T14:53:45.705336Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_l3vpn
+[2m2026-05-14T14:53:45.705408Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_full
+[2m2026-05-14T14:53:45.705473Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mhomelab_switch
+[2m2026-05-14T14:53:45.705550Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_rr_basic
+[2m2026-05-14T14:53:45.705656Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_leaf_minimal
+[2m2026-05-14T14:53:45.705720Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_p_core
+[2m2026-05-14T14:53:45.705832Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_spine_standard
+[2m2026-05-14T14:53:45.705862Z[0m [32m INFO[0m [2mbonsai::enrichment[0m[2m:[0m enricher configs loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T14:53:45.705874Z[0m [32m INFO[0m [2mbonsai::output::traits[0m[2m:[0m output adapter configs loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T14:53:45.705883Z[0m [32m INFO[0m [2mbonsai::remediation::trust[0m[2m:[0m trust state records loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T14:53:45.705894Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"ready" [3melapsed_ms[0m[2m=[0m2005
+[2m2026-05-14T14:53:45.713195Z[0m [32m INFO[0m [2mbonsai::retention[0m[2m:[0m retention: pruned StateChangeEvents by age [3mdeleted[0m[2m=[0m0
+[2m2026-05-14T14:53:45.912517Z[0m [32m INFO[0m [2mbonsai::api[0m[2m:[0m sidecar registered [3msidecar_id[0m[2m=[0m6dc5f7f8-62cd-4843-bff8-74a57ab44c96 [3mname[0m[2m=[0mrules-local [3mkind[0m[2m=[0mrules
+[2m2026-05-14T14:54:44.100614Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m249 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m4 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T14:55:44.101222Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m250 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m4 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T14:55:58.559799Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T14:55:58.559880Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T14:55:58.559909Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T14:55:58.559948Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T14:55:58.560231Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T14:55:58.560267Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T14:55:58.560305Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T14:55:58.560306Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T14:55:58.560319Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T14:55:58.560330Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T14:55:58.560350Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T14:55:58.560362Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T14:55:58.560362Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T14:55:58.560382Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T14:55:58.560359Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T14:55:58.560471Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T14:56:21.785527Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m SIGTERM received — shutting down
+[2m2026-05-14T14:56:21.785567Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber manager received shutdown
+[2m2026-05-14T14:56:21.785574Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor stopped
+[2m2026-05-14T14:56:21.785582Z[0m [32m INFO[0m [2mbonsai::subscription_status[0m[2m:[0m subscription verifier received shutdown
+[2m2026-05-14T14:56:21.785594Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler stopped
+[2m2026-05-14T14:56:21.785595Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard stopped
+[2m2026-05-14T14:56:21.785603Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop stopped
+[2m2026-05-14T14:56:21.785608Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor stopped
+[2m2026-05-14T14:56:21.785630Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T14:56:21.785646Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T14:56:21.785672Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T14:56:21.785682Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T14:56:21.785697Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T14:56:21.785702Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T14:56:21.785702Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive consumer stopping: shutdown signal received
+[2m2026-05-14T14:56:21.785716Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T14:56:21.785721Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T14:56:21.785746Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T14:56:21.785753Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T14:56:21.785763Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T14:56:21.785770Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T14:56:21.785781Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T14:56:21.785789Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T14:56:21.785801Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T14:56:21.785807Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T14:56:21.786613Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"devices" [3mcount[0m[2m=[0mInt64(8)
+[2m2026-05-14T14:56:21.786934Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"interfaces" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:56:21.787201Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bgp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:56:21.787446Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bfd-sessions" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:56:21.787699Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"lldp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:56:21.790585Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"connected-to" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:56:21.791264Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"state-change-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:56:21.791564Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"detection-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:56:21.791823Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediations" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:56:21.792081Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediation-trust-marks" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:56:21.792339Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"subscription-status" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T14:56:21.792355Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m bonsai stopped
+[2m2026-05-14T15:15:21.987412Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m bonsai starting [3mprotocol_version[0m[2m=[0m1
+[2m2026-05-14T15:15:21.987593Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"config_load" [3melapsed_ms[0m[2m=[0m0
+[2m2026-05-14T15:15:21.987714Z[0m [32m INFO[0m [2mbonsai::resource_profile[0m[2m:[0m resource profile selected [3mprofile[0m[2m=[0m"xlarge" [3mram_gb[0m[2m=[0m46 [3meffective_ram_gb[0m[2m=[0m46 [3mcpu_cores[0m[2m=[0m8 [3mdisk_free_gb[0m[2m=[0m304 [3min_container[0m[2m=[0mfalse [3mmemory_budget_mb[0m[2m=[0m4096
+[2m2026-05-14T15:15:21.987735Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m runtime mode selected [3mmode[0m[2m=[0mAll [3mrun_core[0m[2m=[0mtrue [3mrun_collector[0m[2m=[0mtrue
+[2m2026-05-14T15:15:21.988403Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m Prometheus metrics listening [3mmetrics_addr[0m[2m=[0m[::1]:9090
+[2m2026-05-14T15:15:22.088391Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LadybugDB opened [3mpath[0m[2m=[0m"bonsai.db" [3mbuffer_pool_mib[0m[2m=[0m768
+[2m2026-05-14T15:15:22.372957Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph schema initialised
+[2m2026-05-14T15:15:22.373019Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"schema_init" [3melapsed_ms[0m[2m=[0m284
+[2m2026-05-14T15:15:22.380221Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"backfill" [3melapsed_ms[0m[2m=[0m7
+[2m2026-05-14T15:15:22.380248Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph store opened [3mpath[0m[2m=[0m"bonsai.db"
+[2m2026-05-14T15:15:22.380266Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"graph_open" [3melapsed_ms[0m[2m=[0m391
+[2m2026-05-14T15:15:22.380349Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor started
+[2m2026-05-14T15:15:22.380342Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor started [3mbudget_mb[0m[2m=[0m4096 [3msoft_mb[0m[2m=[0m3276 [3mhard_mb[0m[2m=[0m3891
+[2m2026-05-14T15:15:22.380394Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler started [3minterval_secs[0m[2m=[0m60 [3moutput_path[0m[2m=[0m"none"
+[2m2026-05-14T15:15:22.380422Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard started [3mcheck_interval_secs[0m[2m=[0m300 [3mmax_archive_gb[0m[2m=[0m60 [3mmax_graph_gb[0m[2m=[0m5 [3mwarn_threshold_pct[0m[2m=[0m80
+[2m2026-05-14T15:15:22.380400Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop started [3mbudget_eps[0m[2m=[0m200000
+[2m2026-05-14T15:15:22.380404Z[0m [32m INFO[0m [2mbonsai::write_coordinator[0m[2m:[0m write coordinator started [3mbatch_size[0m[2m=[0m256 [3mflush_interval[0m[2m=[0m1s
+[2m2026-05-14T15:15:22.380452Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive consumer started [3mpath[0m[2m=[0mruntime/archive [3mflush_interval_seconds[0m[2m=[0m10 [3mmax_batch_rows[0m[2m=[0m1000 [3mcompression_level[0m[2m=[0m12 [3mwriter_max_idle_secs[0m[2m=[0m7200 [3mmax_file_age_secs[0m[2m=[0m3600
+[2m2026-05-14T15:15:22.381545Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m archive disk check [3mpct[0m[2m=[0m0 [3marchive_gb[0m[2m=[0m"0.00"
+[2m2026-05-14T15:15:22.381594Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m217 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m2 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T15:15:23.548305Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m BONSAI_REQUIRE_SIDECAR set — /health will be degraded until these sidecars register [3mrequired[0m[2m=[0m["rules"]
+[2m2026-05-14T15:15:23.548345Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m credential vault unlocked [3mpath[0m[2m=[0mbonsai-credentials
+[2m2026-05-14T15:15:23.994289Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m registry site labels synced into graph
+[2m2026-05-14T15:15:24.012209Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T15:15:24.012324Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T15:15:24.012362Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T15:15:24.012411Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T15:15:24.012476Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T15:15:24.012532Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T15:15:24.012568Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T15:15:24.012606Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T15:15:24.013071Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m gRPC API and telemetry ingest server listening [3mapi_addr[0m[2m=[0m[::1]:50051 [3mingest_compression[0m[2m=[0m"zstd" [3mmtls[0m[2m=[0mfalse
+[2m2026-05-14T15:15:24.013092Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m HTTP UI server listening [3mhttp_addr[0m[2m=[0m0.0.0.0:3000
+[2m2026-05-14T15:15:24.013262Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_evpn
+[2m2026-05-14T15:15:24.013378Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_p_sr_te
+[2m2026-05-14T15:15:24.013496Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_evpn_leaf
+[2m2026-05-14T15:15:24.013604Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_peering_edge
+[2m2026-05-14T15:15:24.013685Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_distribution
+[2m2026-05-14T15:15:24.013799Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_border_standard
+[2m2026-05-14T15:15:24.013876Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_core
+[2m2026-05-14T15:15:24.013951Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_access
+[2m2026-05-14T15:15:24.014038Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mhomelab_router
+[2m2026-05-14T15:15:24.014098Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_wlc
+[2m2026-05-14T15:15:24.014230Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_superspine_standard
+[2m2026-05-14T15:15:24.014366Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_l3vpn
+[2m2026-05-14T15:15:24.014443Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_full
+[2m2026-05-14T15:15:24.014538Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mhomelab_switch
+[2m2026-05-14T15:15:24.014711Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_rr_basic
+[2m2026-05-14T15:15:24.014903Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_leaf_minimal
+[2m2026-05-14T15:15:24.015070Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_p_core
+[2m2026-05-14T15:15:24.015205Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_spine_standard
+[2m2026-05-14T15:15:24.015259Z[0m [32m INFO[0m [2mbonsai::enrichment[0m[2m:[0m enricher configs loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T15:15:24.015270Z[0m [32m INFO[0m [2mbonsai::output::traits[0m[2m:[0m output adapter configs loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T15:15:24.015282Z[0m [32m INFO[0m [2mbonsai::remediation::trust[0m[2m:[0m trust state records loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T15:15:24.015292Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"ready" [3melapsed_ms[0m[2m=[0m2027
+[2m2026-05-14T15:15:24.022374Z[0m [32m INFO[0m [2mbonsai::retention[0m[2m:[0m retention: pruned StateChangeEvents by age [3mdeleted[0m[2m=[0m0
+[2m2026-05-14T15:15:25.214137Z[0m [32m INFO[0m [2mbonsai::api[0m[2m:[0m sidecar registered [3msidecar_id[0m[2m=[0m3f759a61-7c12-4b2c-8689-4d517bd3d2c1 [3mname[0m[2m=[0mrules-local [3mkind[0m[2m=[0mrules
+[2m2026-05-14T15:16:22.381725Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m250 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m4 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T15:17:22.382053Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m250 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m4 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T15:17:36.991527Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T15:17:36.991530Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T15:17:36.991587Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T15:17:36.991592Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T15:17:36.991525Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T15:17:36.991614Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T15:17:36.991615Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T15:17:36.991625Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T15:17:36.991535Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T15:17:36.991651Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T15:17:36.991668Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T15:17:36.991563Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T15:17:36.991688Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T15:17:36.991692Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T15:17:36.991552Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T15:17:36.991735Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T15:18:00.093117Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m SIGTERM received — shutting down
+[2m2026-05-14T15:18:00.093174Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber manager received shutdown
+[2m2026-05-14T15:18:00.093180Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor stopped
+[2m2026-05-14T15:18:00.093197Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard stopped
+[2m2026-05-14T15:18:00.093195Z[0m [32m INFO[0m [2mbonsai::subscription_status[0m[2m:[0m subscription verifier received shutdown
+[2m2026-05-14T15:18:00.093206Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop stopped
+[2m2026-05-14T15:18:00.093210Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler stopped
+[2m2026-05-14T15:18:00.093220Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor stopped
+[2m2026-05-14T15:18:00.093230Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T15:18:00.093245Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T15:18:00.093275Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T15:18:00.093287Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T15:18:00.093310Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T15:18:00.093319Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T15:18:00.093341Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T15:18:00.093350Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T15:18:00.093366Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive consumer stopping: shutdown signal received
+[2m2026-05-14T15:18:00.093370Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T15:18:00.093382Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T15:18:00.093410Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T15:18:00.093420Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T15:18:00.093452Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T15:18:00.093461Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T15:18:00.093479Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T15:18:00.093487Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T15:18:00.094359Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"devices" [3mcount[0m[2m=[0mInt64(8)
+[2m2026-05-14T15:18:00.094703Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"interfaces" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:18:00.094958Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bgp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:18:00.095215Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bfd-sessions" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:18:00.095484Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"lldp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:18:00.098320Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"connected-to" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:18:00.098938Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"state-change-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:18:00.099200Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"detection-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:18:00.099452Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediations" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:18:00.099695Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediation-trust-marks" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:18:00.099938Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"subscription-status" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:18:00.099954Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m bonsai stopped
+[2m2026-05-14T15:41:37.535556Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m bonsai starting [3mprotocol_version[0m[2m=[0m1
+[2m2026-05-14T15:41:37.535866Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"config_load" [3melapsed_ms[0m[2m=[0m0
+[2m2026-05-14T15:41:37.536025Z[0m [32m INFO[0m [2mbonsai::resource_profile[0m[2m:[0m resource profile selected [3mprofile[0m[2m=[0m"xlarge" [3mram_gb[0m[2m=[0m46 [3meffective_ram_gb[0m[2m=[0m46 [3mcpu_cores[0m[2m=[0m8 [3mdisk_free_gb[0m[2m=[0m304 [3min_container[0m[2m=[0mfalse [3mmemory_budget_mb[0m[2m=[0m4096
+[2m2026-05-14T15:41:37.536055Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m runtime mode selected [3mmode[0m[2m=[0mAll [3mrun_core[0m[2m=[0mtrue [3mrun_collector[0m[2m=[0mtrue
+[2m2026-05-14T15:41:37.536795Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m Prometheus metrics listening [3mmetrics_addr[0m[2m=[0m[::1]:9090
+[2m2026-05-14T15:41:37.707876Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LadybugDB opened [3mpath[0m[2m=[0m"bonsai.db" [3mbuffer_pool_mib[0m[2m=[0m768
+[2m2026-05-14T15:41:38.059906Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph schema initialised
+[2m2026-05-14T15:41:38.059969Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"schema_init" [3melapsed_ms[0m[2m=[0m351
+[2m2026-05-14T15:41:38.067549Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"backfill" [3melapsed_ms[0m[2m=[0m7
+[2m2026-05-14T15:41:38.067592Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph store opened [3mpath[0m[2m=[0m"bonsai.db"
+[2m2026-05-14T15:41:38.067617Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"graph_open" [3melapsed_ms[0m[2m=[0m530
+[2m2026-05-14T15:41:38.067673Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor started [3mbudget_mb[0m[2m=[0m4096 [3msoft_mb[0m[2m=[0m3276 [3mhard_mb[0m[2m=[0m3891
+[2m2026-05-14T15:41:38.067686Z[0m [32m INFO[0m [2mbonsai::write_coordinator[0m[2m:[0m write coordinator started [3mbatch_size[0m[2m=[0m256 [3mflush_interval[0m[2m=[0m1s
+[2m2026-05-14T15:41:38.067758Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard started [3mcheck_interval_secs[0m[2m=[0m300 [3mmax_archive_gb[0m[2m=[0m60 [3mmax_graph_gb[0m[2m=[0m5 [3mwarn_threshold_pct[0m[2m=[0m80
+[2m2026-05-14T15:41:38.067676Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor started
+[2m2026-05-14T15:41:38.067765Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler started [3minterval_secs[0m[2m=[0m60 [3moutput_path[0m[2m=[0m"none"
+[2m2026-05-14T15:41:38.067684Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop started [3mbudget_eps[0m[2m=[0m200000
+[2m2026-05-14T15:41:38.067816Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive consumer started [3mpath[0m[2m=[0mruntime/archive [3mflush_interval_seconds[0m[2m=[0m10 [3mmax_batch_rows[0m[2m=[0m1000 [3mcompression_level[0m[2m=[0m12 [3mwriter_max_idle_secs[0m[2m=[0m7200 [3mmax_file_age_secs[0m[2m=[0m3600
+[2m2026-05-14T15:41:38.068863Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m archive disk check [3mpct[0m[2m=[0m0 [3marchive_gb[0m[2m=[0m"0.00"
+[2m2026-05-14T15:41:38.068932Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m217 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m2 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T15:41:39.763208Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m BONSAI_REQUIRE_SIDECAR set — /health will be degraded until these sidecars register [3mrequired[0m[2m=[0m["rules"]
+[2m2026-05-14T15:41:39.763266Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m credential vault unlocked [3mpath[0m[2m=[0mbonsai-credentials
+[2m2026-05-14T15:41:40.347396Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m registry site labels synced into graph
+[2m2026-05-14T15:41:40.380246Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T15:41:40.380383Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T15:41:40.380680Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T15:41:40.381048Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T15:41:40.381271Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T15:41:40.381575Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T15:41:40.381699Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T15:41:40.382198Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m gRPC API and telemetry ingest server listening [3mapi_addr[0m[2m=[0m[::1]:50051 [3mingest_compression[0m[2m=[0m"zstd" [3mmtls[0m[2m=[0mfalse
+[2m2026-05-14T15:41:40.382220Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m HTTP UI server listening [3mhttp_addr[0m[2m=[0m0.0.0.0:3000
+[2m2026-05-14T15:41:40.382306Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T15:41:40.382509Z[0m [33m WARN[0m [2mbonsai[0m[2m:[0m gRPC core server error [3merror[0m[2m=[0mtransport error
+[2m2026-05-14T15:41:40.382531Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_evpn
+[2m2026-05-14T15:41:40.382754Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_p_sr_te
+[2m2026-05-14T15:41:40.383053Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_evpn_leaf
+[2m2026-05-14T15:41:40.383614Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_peering_edge
+[2m2026-05-14T15:41:40.383906Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_distribution
+[2m2026-05-14T15:41:40.384306Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_border_standard
+[2m2026-05-14T15:41:40.385007Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_core
+[2m2026-05-14T15:41:40.385991Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_access
+[2m2026-05-14T15:41:40.386264Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mhomelab_router
+[2m2026-05-14T15:41:40.386504Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_wlc
+[2m2026-05-14T15:41:40.387127Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_superspine_standard
+[2m2026-05-14T15:41:40.387372Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T15:41:40.387394Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T15:41:40.387504Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_l3vpn
+[2m2026-05-14T15:41:40.387942Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T15:41:40.388069Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T15:41:40.388273Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_full
+[2m2026-05-14T15:41:40.388321Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T15:41:40.388341Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T15:41:40.388439Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mhomelab_switch
+[2m2026-05-14T15:41:40.388741Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_rr_basic
+[2m2026-05-14T15:41:40.389040Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_leaf_minimal
+[2m2026-05-14T15:41:40.389202Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_p_core
+[2m2026-05-14T15:41:40.389439Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_spine_standard
+[2m2026-05-14T15:41:40.389503Z[0m [32m INFO[0m [2mbonsai::enrichment[0m[2m:[0m enricher configs loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T15:41:40.389518Z[0m [32m INFO[0m [2mbonsai::output::traits[0m[2m:[0m output adapter configs loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T15:41:40.389537Z[0m [32m INFO[0m [2mbonsai::remediation::trust[0m[2m:[0m trust state records loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T15:41:40.389557Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"ready" [3melapsed_ms[0m[2m=[0m2853
+
+thread 'tokio-rt-worker' (706761) panicked at src/main.rs:1010:22:
+failed to bind HTTP port 3000: Os { code: 98, kind: AddrInUse, message: "Address already in use" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[2m2026-05-14T15:41:40.390675Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T15:41:40.390734Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T15:41:40.390766Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T15:41:40.390821Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T15:41:40.390825Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T15:41:40.390846Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T15:41:40.391255Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T15:41:40.391338Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T15:41:40.393037Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T15:41:40.393101Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T15:41:40.402912Z[0m [32m INFO[0m [2mbonsai::retention[0m[2m:[0m retention: pruned StateChangeEvents by age [3mdeleted[0m[2m=[0m0
+[2m2026-05-14T15:41:45.395034Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T15:41:45.395094Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T15:41:45.395290Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T15:41:45.395326Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T15:41:45.396458Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T15:41:45.396512Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T15:41:45.398243Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T15:41:45.398286Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T15:41:45.400040Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T15:41:45.400096Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T15:41:45.400570Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T15:41:45.400593Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T15:41:45.401273Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T15:41:45.401303Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T15:41:45.401926Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T15:41:45.401954Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T15:41:56.707062Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T15:41:56.707121Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T15:41:56.707702Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T15:41:56.707767Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T15:41:56.707912Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T15:41:56.707928Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T15:41:56.707938Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T15:41:56.708034Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T15:41:56.708049Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T15:41:56.708205Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T15:41:56.708237Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T15:41:56.708402Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T15:41:56.707958Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T15:41:56.708426Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T15:41:56.709054Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T15:41:56.709097Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T15:42:07.091935Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m SIGTERM received — shutting down
+[2m2026-05-14T15:42:07.092007Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor stopped
+[2m2026-05-14T15:42:07.092021Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor stopped
+[2m2026-05-14T15:42:07.092030Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler stopped
+[2m2026-05-14T15:42:07.092032Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard stopped
+[2m2026-05-14T15:42:07.092049Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber manager received shutdown
+[2m2026-05-14T15:42:07.092069Z[0m [32m INFO[0m [2mbonsai::subscription_status[0m[2m:[0m subscription verifier received shutdown
+[2m2026-05-14T15:42:07.092052Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop stopped
+[2m2026-05-14T15:42:07.092077Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T15:42:07.092093Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T15:42:07.092110Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T15:42:07.092121Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T15:42:07.092125Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive consumer stopping: shutdown signal received
+[2m2026-05-14T15:42:07.092136Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T15:42:07.092154Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T15:42:07.092167Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T15:42:07.092178Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T15:42:07.092185Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T15:42:07.092194Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T15:42:07.092201Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T15:42:07.092207Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T15:42:07.092214Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T15:42:07.092230Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T15:42:07.092236Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T15:42:07.092242Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T15:42:07.093831Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"devices" [3mcount[0m[2m=[0mInt64(8)
+[2m2026-05-14T15:42:07.094634Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"interfaces" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:42:07.095194Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bgp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:42:07.095649Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bfd-sessions" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:42:07.099704Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"lldp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:42:07.110127Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"connected-to" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:42:07.111037Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"state-change-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:42:07.114170Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"detection-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:42:07.114684Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediations" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:42:07.119689Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediation-trust-marks" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:42:07.124765Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"subscription-status" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T15:42:07.124801Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m bonsai stopped
+[2m2026-05-14T17:04:58.705102Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m bonsai starting [3mprotocol_version[0m[2m=[0m1
+[2m2026-05-14T17:04:58.705385Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"config_load" [3melapsed_ms[0m[2m=[0m0
+[2m2026-05-14T17:04:58.705561Z[0m [32m INFO[0m [2mbonsai::resource_profile[0m[2m:[0m resource profile selected [3mprofile[0m[2m=[0m"xlarge" [3mram_gb[0m[2m=[0m46 [3meffective_ram_gb[0m[2m=[0m46 [3mcpu_cores[0m[2m=[0m8 [3mdisk_free_gb[0m[2m=[0m304 [3min_container[0m[2m=[0mfalse [3mmemory_budget_mb[0m[2m=[0m4096
+[2m2026-05-14T17:04:58.705611Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m runtime mode selected [3mmode[0m[2m=[0mAll [3mrun_core[0m[2m=[0mtrue [3mrun_collector[0m[2m=[0mtrue
+[2m2026-05-14T17:04:58.706354Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m Prometheus metrics listening [3mmetrics_addr[0m[2m=[0m[::1]:9090
+[2m2026-05-14T17:04:58.847830Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LadybugDB opened [3mpath[0m[2m=[0m"bonsai.db" [3mbuffer_pool_mib[0m[2m=[0m768
+[2m2026-05-14T17:04:59.234836Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph schema initialised
+[2m2026-05-14T17:04:59.234884Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"schema_init" [3melapsed_ms[0m[2m=[0m386
+[2m2026-05-14T17:04:59.243309Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"backfill" [3melapsed_ms[0m[2m=[0m8
+[2m2026-05-14T17:04:59.243339Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph store opened [3mpath[0m[2m=[0m"bonsai.db"
+[2m2026-05-14T17:04:59.243370Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"graph_open" [3melapsed_ms[0m[2m=[0m536
+[2m2026-05-14T17:04:59.243437Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor started
+[2m2026-05-14T17:04:59.243455Z[0m [32m INFO[0m [2mbonsai::write_coordinator[0m[2m:[0m write coordinator started [3mbatch_size[0m[2m=[0m256 [3mflush_interval[0m[2m=[0m1s
+[2m2026-05-14T17:04:59.243460Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop started [3mbudget_eps[0m[2m=[0m200000
+[2m2026-05-14T17:04:59.243429Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor started [3mbudget_mb[0m[2m=[0m4096 [3msoft_mb[0m[2m=[0m3276 [3mhard_mb[0m[2m=[0m3891
+[2m2026-05-14T17:04:59.243500Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler started [3minterval_secs[0m[2m=[0m60 [3moutput_path[0m[2m=[0m"none"
+[2m2026-05-14T17:04:59.243501Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard started [3mcheck_interval_secs[0m[2m=[0m300 [3mmax_archive_gb[0m[2m=[0m60 [3mmax_graph_gb[0m[2m=[0m5 [3mwarn_threshold_pct[0m[2m=[0m80
+[2m2026-05-14T17:04:59.243581Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive consumer started [3mpath[0m[2m=[0mruntime/archive [3mflush_interval_seconds[0m[2m=[0m10 [3mmax_batch_rows[0m[2m=[0m1000 [3mcompression_level[0m[2m=[0m12 [3mwriter_max_idle_secs[0m[2m=[0m7200 [3mmax_file_age_secs[0m[2m=[0m3600
+[2m2026-05-14T17:04:59.244629Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m archive disk check [3mpct[0m[2m=[0m0 [3marchive_gb[0m[2m=[0m"0.00"
+[2m2026-05-14T17:04:59.244657Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m221 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m2 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T17:05:00.717440Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m BONSAI_REQUIRE_SIDECAR set — /health will be degraded until these sidecars register [3mrequired[0m[2m=[0m["rules"]
+[2m2026-05-14T17:05:00.717494Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m credential vault unlocked [3mpath[0m[2m=[0mbonsai-credentials
+[2m2026-05-14T17:05:01.348246Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m registry site labels synced into graph
+[2m2026-05-14T17:05:01.371239Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T17:05:01.371328Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T17:05:01.371574Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T17:05:01.371773Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T17:05:01.371828Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T17:05:01.371929Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T17:05:01.372071Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T17:05:01.372158Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T17:05:01.372692Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m gRPC API and telemetry ingest server listening [3mapi_addr[0m[2m=[0m[::1]:50051 [3mingest_compression[0m[2m=[0m"zstd" [3mmtls[0m[2m=[0mfalse
+[2m2026-05-14T17:05:01.372736Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m HTTP UI server listening [3mhttp_addr[0m[2m=[0m0.0.0.0:3000
+[2m2026-05-14T17:05:01.372886Z[0m [33m WARN[0m [2mbonsai[0m[2m:[0m gRPC core server error [3merror[0m[2m=[0mtransport error
+[2m2026-05-14T17:05:01.373169Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_evpn
+[2m2026-05-14T17:05:01.373677Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_p_sr_te
+[2m2026-05-14T17:05:01.373944Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_evpn_leaf
+[2m2026-05-14T17:05:01.374430Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_peering_edge
+[2m2026-05-14T17:05:01.374729Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_distribution
+[2m2026-05-14T17:05:01.374957Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_border_standard
+[2m2026-05-14T17:05:01.375123Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_core
+[2m2026-05-14T17:05:01.375343Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_access
+[2m2026-05-14T17:05:01.375582Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mhomelab_router
+[2m2026-05-14T17:05:01.375751Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_wlc
+[2m2026-05-14T17:05:01.375995Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_superspine_standard
+[2m2026-05-14T17:05:01.376404Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_l3vpn
+[2m2026-05-14T17:05:01.376613Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_full
+[2m2026-05-14T17:05:01.376824Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mhomelab_switch
+[2m2026-05-14T17:05:01.377019Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_rr_basic
+[2m2026-05-14T17:05:01.377338Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_leaf_minimal
+[2m2026-05-14T17:05:01.377504Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_p_core
+[2m2026-05-14T17:05:01.377864Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_spine_standard
+[2m2026-05-14T17:05:01.377920Z[0m [32m INFO[0m [2mbonsai::enrichment[0m[2m:[0m enricher configs loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T17:05:01.377942Z[0m [32m INFO[0m [2mbonsai::output::traits[0m[2m:[0m output adapter configs loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T17:05:01.377960Z[0m [32m INFO[0m [2mbonsai::remediation::trust[0m[2m:[0m trust state records loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T17:05:01.377986Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"ready" [3melapsed_ms[0m[2m=[0m2672
+
+thread 'tokio-rt-worker' (767563) panicked at src/main.rs:1010:22:
+failed to bind HTTP port 3000: Os { code: 98, kind: AddrInUse, message: "Address already in use" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[2m2026-05-14T17:05:01.378701Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T17:05:01.379055Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:05:01.379261Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T17:05:01.379287Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:05:01.379566Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T17:05:01.379595Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:05:01.380185Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T17:05:01.380217Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:05:01.380239Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T17:05:01.380324Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:05:01.381368Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T17:05:01.381556Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:05:01.381973Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T17:05:01.382016Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:05:01.382043Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T17:05:01.382063Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:05:01.391296Z[0m [32m INFO[0m [2mbonsai::retention[0m[2m:[0m retention: pruned StateChangeEvents by age [3mdeleted[0m[2m=[0m0
+[2m2026-05-14T17:05:06.385426Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T17:05:06.385530Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:05:06.387726Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T17:05:06.387751Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T17:05:06.387773Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:05:06.387774Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:05:06.387733Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T17:05:06.387832Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:05:06.388434Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T17:05:06.388490Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:05:06.388748Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T17:05:06.388780Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:05:06.388911Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T17:05:06.388911Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T17:05:06.388936Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:05:06.388936Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:05:16.391636Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T17:05:16.391694Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:05:16.394089Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T17:05:16.394137Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:05:16.394490Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T17:05:16.394516Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:05:16.394845Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T17:05:16.394880Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:05:16.395205Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T17:05:16.395236Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:05:16.395419Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T17:05:16.395450Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:05:16.396059Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T17:05:16.396086Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:05:16.396358Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T17:05:16.396380Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:05:36.397599Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T17:05:36.397655Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:05:36.401361Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T17:05:36.401409Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:05:36.401476Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T17:05:36.401505Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:05:36.402289Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T17:05:36.402336Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:05:36.402678Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T17:05:36.402707Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:05:36.403532Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T17:05:36.403562Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:05:36.404106Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T17:05:36.404134Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:05:36.405392Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T17:05:36.405427Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:05:59.244540Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m253 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m4 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T17:06:16.403239Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T17:06:16.403274Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:06:16.408076Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T17:06:16.408152Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:06:16.408890Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T17:06:16.408935Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:06:16.409311Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T17:06:16.409336Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:06:16.409450Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T17:06:16.409477Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:06:16.410740Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T17:06:16.410786Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:06:16.411851Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T17:06:16.411890Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:06:16.412473Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T17:06:16.412494Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:06:58.447158Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m SIGTERM received — shutting down
+[2m2026-05-14T17:06:58.447223Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard stopped
+[2m2026-05-14T17:06:58.447237Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor stopped
+[2m2026-05-14T17:06:58.447254Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler stopped
+[2m2026-05-14T17:06:58.447264Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber manager received shutdown
+[2m2026-05-14T17:06:58.447267Z[0m [32m INFO[0m [2mbonsai::subscription_status[0m[2m:[0m subscription verifier received shutdown
+[2m2026-05-14T17:06:58.447282Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor stopped
+[2m2026-05-14T17:06:58.447303Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop stopped
+[2m2026-05-14T17:06:58.447284Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T17:06:58.447330Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T17:06:58.447342Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T17:06:58.447352Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T17:06:58.447360Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T17:06:58.447368Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T17:06:58.447376Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T17:06:58.447387Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T17:06:58.447395Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T17:06:58.447403Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T17:06:58.447409Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T17:06:58.447416Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T17:06:58.447423Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T17:06:58.447431Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T17:06:58.447462Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T17:06:58.447470Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive consumer stopping: shutdown signal received
+[2m2026-05-14T17:06:58.447473Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T17:06:58.449105Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"devices" [3mcount[0m[2m=[0mInt64(8)
+[2m2026-05-14T17:06:58.449889Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"interfaces" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:06:58.450599Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bgp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:06:58.451190Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bfd-sessions" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:06:58.451647Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"lldp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:06:58.456206Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"connected-to" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:06:58.457133Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"state-change-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:06:58.457783Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"detection-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:06:58.458556Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediations" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:06:58.459300Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediation-trust-marks" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:06:58.459822Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"subscription-status" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:06:58.459849Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m bonsai stopped
+[2m2026-05-14T17:22:49.758370Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m bonsai starting [3mprotocol_version[0m[2m=[0m1
+[2m2026-05-14T17:22:49.758651Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"config_load" [3melapsed_ms[0m[2m=[0m0
+[2m2026-05-14T17:22:49.758849Z[0m [32m INFO[0m [2mbonsai::resource_profile[0m[2m:[0m resource profile selected [3mprofile[0m[2m=[0m"xlarge" [3mram_gb[0m[2m=[0m46 [3meffective_ram_gb[0m[2m=[0m46 [3mcpu_cores[0m[2m=[0m8 [3mdisk_free_gb[0m[2m=[0m304 [3min_container[0m[2m=[0mfalse [3mmemory_budget_mb[0m[2m=[0m4096
+[2m2026-05-14T17:22:49.758893Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m runtime mode selected [3mmode[0m[2m=[0mAll [3mrun_core[0m[2m=[0mtrue [3mrun_collector[0m[2m=[0mtrue
+[2m2026-05-14T17:22:49.759721Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m Prometheus metrics listening [3mmetrics_addr[0m[2m=[0m[::1]:9090
+[2m2026-05-14T17:22:49.936035Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LadybugDB opened [3mpath[0m[2m=[0m"bonsai.db" [3mbuffer_pool_mib[0m[2m=[0m768
+[2m2026-05-14T17:22:50.161508Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph schema initialised
+[2m2026-05-14T17:22:50.161647Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"schema_init" [3melapsed_ms[0m[2m=[0m225
+[2m2026-05-14T17:22:50.171366Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"backfill" [3melapsed_ms[0m[2m=[0m9
+[2m2026-05-14T17:22:50.171401Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph store opened [3mpath[0m[2m=[0m"bonsai.db"
+[2m2026-05-14T17:22:50.171425Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"graph_open" [3melapsed_ms[0m[2m=[0m411
+[2m2026-05-14T17:22:50.171489Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor started [3mbudget_mb[0m[2m=[0m4096 [3msoft_mb[0m[2m=[0m3276 [3mhard_mb[0m[2m=[0m3891
+[2m2026-05-14T17:22:50.171496Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor started
+[2m2026-05-14T17:22:50.171549Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler started [3minterval_secs[0m[2m=[0m60 [3moutput_path[0m[2m=[0m"none"
+[2m2026-05-14T17:22:50.171513Z[0m [32m INFO[0m [2mbonsai::write_coordinator[0m[2m:[0m write coordinator started [3mbatch_size[0m[2m=[0m256 [3mflush_interval[0m[2m=[0m1s
+[2m2026-05-14T17:22:50.171512Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop started [3mbudget_eps[0m[2m=[0m200000
+[2m2026-05-14T17:22:50.171568Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard started [3mcheck_interval_secs[0m[2m=[0m300 [3mmax_archive_gb[0m[2m=[0m60 [3mmax_graph_gb[0m[2m=[0m5 [3mwarn_threshold_pct[0m[2m=[0m80
+[2m2026-05-14T17:22:50.171619Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive consumer started [3mpath[0m[2m=[0mruntime/archive [3mflush_interval_seconds[0m[2m=[0m10 [3mmax_batch_rows[0m[2m=[0m1000 [3mcompression_level[0m[2m=[0m12 [3mwriter_max_idle_secs[0m[2m=[0m7200 [3mmax_file_age_secs[0m[2m=[0m3600
+[2m2026-05-14T17:22:50.172723Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m archive disk check [3mpct[0m[2m=[0m0 [3marchive_gb[0m[2m=[0m"0.00"
+[2m2026-05-14T17:22:50.172767Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m221 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m2 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T17:22:51.674096Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m BONSAI_REQUIRE_SIDECAR set — /health will be degraded until these sidecars register [3mrequired[0m[2m=[0m["rules"]
+[2m2026-05-14T17:22:51.674158Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m credential vault unlocked [3mpath[0m[2m=[0mbonsai-credentials
+[2m2026-05-14T17:22:52.137380Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m registry site labels synced into graph
+[2m2026-05-14T17:22:52.161244Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T17:22:52.161420Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T17:22:52.161519Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T17:22:52.161661Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T17:22:52.162014Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T17:22:52.162290Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T17:22:52.162548Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T17:22:52.162626Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m gRPC API and telemetry ingest server listening [3mapi_addr[0m[2m=[0m[::1]:50051 [3mingest_compression[0m[2m=[0m"zstd" [3mmtls[0m[2m=[0mfalse
+[2m2026-05-14T17:22:52.162649Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m HTTP UI server listening [3mhttp_addr[0m[2m=[0m0.0.0.0:3000
+[2m2026-05-14T17:22:52.162993Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_evpn
+[2m2026-05-14T17:22:52.162997Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T17:22:52.163269Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_p_sr_te
+[2m2026-05-14T17:22:52.163559Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_evpn_leaf
+[2m2026-05-14T17:22:52.164493Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_peering_edge
+[2m2026-05-14T17:22:52.164836Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_distribution
+[2m2026-05-14T17:22:52.165209Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_border_standard
+[2m2026-05-14T17:22:52.165617Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_core
+[2m2026-05-14T17:22:52.165859Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_access
+[2m2026-05-14T17:22:52.166079Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mhomelab_router
+[2m2026-05-14T17:22:52.166355Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_wlc
+[2m2026-05-14T17:22:52.167068Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_superspine_standard
+[2m2026-05-14T17:22:52.167686Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_l3vpn
+[2m2026-05-14T17:22:52.167907Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_full
+[2m2026-05-14T17:22:52.168069Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mhomelab_switch
+[2m2026-05-14T17:22:52.168285Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_rr_basic
+[2m2026-05-14T17:22:52.169011Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_leaf_minimal
+[2m2026-05-14T17:22:52.169256Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_p_core
+[2m2026-05-14T17:22:52.169596Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_spine_standard
+[2m2026-05-14T17:22:52.169723Z[0m [32m INFO[0m [2mbonsai::enrichment[0m[2m:[0m enricher configs loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T17:22:52.169815Z[0m [32m INFO[0m [2mbonsai::output::traits[0m[2m:[0m output adapter configs loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T17:22:52.169842Z[0m [32m INFO[0m [2mbonsai::remediation::trust[0m[2m:[0m trust state records loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T17:22:52.169866Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"ready" [3melapsed_ms[0m[2m=[0m2411
+[2m2026-05-14T17:22:52.170422Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T17:22:52.170469Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:22:52.170994Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T17:22:52.171035Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:22:52.171214Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T17:22:52.171720Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T17:22:52.171763Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:22:52.171247Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:22:52.172428Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T17:22:52.172468Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:22:52.172510Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T17:22:52.172531Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:22:52.172797Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T17:22:52.172836Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:22:52.174581Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T17:22:52.174630Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:22:52.184996Z[0m [32m INFO[0m [2mbonsai::retention[0m[2m:[0m retention: pruned StateChangeEvents by age [3mdeleted[0m[2m=[0m0
+[2m2026-05-14T17:22:53.118929Z[0m [32m INFO[0m [2mbonsai::api[0m[2m:[0m sidecar registered [3msidecar_id[0m[2m=[0mac95ad4c-c0a6-4612-8954-2d308abbca29 [3mname[0m[2m=[0mrules-local [3mkind[0m[2m=[0mrules
+[2m2026-05-14T17:22:57.176807Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T17:22:57.176849Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:22:57.177894Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T17:22:57.177936Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:22:57.177894Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T17:22:57.177960Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:22:57.178908Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T17:22:57.178945Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:22:57.179191Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T17:22:57.179221Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:22:57.179349Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T17:22:57.179367Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:22:57.181005Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T17:22:57.181034Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:22:57.181694Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T17:22:57.181718Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:23:07.183486Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T17:23:07.183548Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:23:07.183494Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T17:23:07.183574Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:23:07.185414Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T17:23:07.185454Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:23:07.185700Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T17:23:07.185731Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T17:23:07.185734Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:23:07.185744Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:23:07.186701Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T17:23:07.186743Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:23:07.188113Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T17:23:07.188153Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:23:07.189203Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T17:23:07.189228Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:23:27.190861Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T17:23:27.190915Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:23:27.191393Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T17:23:27.191424Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:23:27.192544Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T17:23:27.192592Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:23:27.193530Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T17:23:27.193568Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:23:27.194545Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T17:23:27.194577Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:23:27.194799Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T17:23:27.194825Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:23:27.194838Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T17:23:27.194858Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:23:27.196188Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T17:23:27.196221Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:23:50.172866Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m257 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m4 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T17:24:07.201513Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T17:24:07.202143Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:24:07.204387Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T17:24:07.204437Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:24:07.207061Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T17:24:07.207115Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:24:07.208505Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T17:24:07.208561Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:24:07.208979Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T17:24:07.209039Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:24:07.209568Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T17:24:07.209605Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:24:07.210918Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T17:24:07.210966Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:24:07.211512Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T17:24:07.211559Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:24:50.173465Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m257 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m4 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T17:25:07.208233Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T17:25:07.208284Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:25:07.211562Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T17:25:07.211597Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:25:07.211814Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T17:25:07.211838Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:25:07.215312Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T17:25:07.215342Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T17:25:07.215356Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:25:07.215330Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T17:25:07.215366Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:25:07.215383Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:25:07.216416Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T17:25:07.216453Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:25:07.218615Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T17:25:07.218646Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:25:31.039073Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m SIGTERM received — shutting down
+[2m2026-05-14T17:25:31.039123Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber manager received shutdown
+[2m2026-05-14T17:25:31.039134Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor stopped
+[2m2026-05-14T17:25:31.039189Z[0m [32m INFO[0m [2mbonsai::subscription_status[0m[2m:[0m subscription verifier received shutdown
+[2m2026-05-14T17:25:31.039204Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor stopped
+[2m2026-05-14T17:25:31.039231Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard stopped
+[2m2026-05-14T17:25:31.039205Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T17:25:31.039258Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop stopped
+[2m2026-05-14T17:25:31.039271Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T17:25:31.039248Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler stopped
+[2m2026-05-14T17:25:31.039290Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T17:25:31.039303Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T17:25:31.039315Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T17:25:31.039332Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T17:25:31.039342Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T17:25:31.039354Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive consumer stopping: shutdown signal received
+[2m2026-05-14T17:25:31.039361Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T17:25:31.039388Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T17:25:31.039406Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T17:25:31.039420Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T17:25:31.039431Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T17:25:31.039442Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T17:25:31.039457Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T17:25:31.039468Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T17:25:31.039492Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T17:25:31.041021Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"devices" [3mcount[0m[2m=[0mInt64(8)
+[2m2026-05-14T17:25:31.041628Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"interfaces" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:25:31.042096Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bgp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:25:31.042575Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bfd-sessions" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:25:31.042992Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"lldp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:25:31.047283Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"connected-to" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:25:31.048176Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"state-change-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:25:31.048699Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"detection-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:25:31.049138Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediations" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:25:31.049526Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediation-trust-marks" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:25:31.049920Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"subscription-status" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:25:31.049966Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m bonsai stopped
+[2m2026-05-14T17:30:23.138981Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m bonsai starting [3mprotocol_version[0m[2m=[0m1
+[2m2026-05-14T17:30:23.139200Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"config_load" [3melapsed_ms[0m[2m=[0m0
+[2m2026-05-14T17:30:23.139327Z[0m [32m INFO[0m [2mbonsai::resource_profile[0m[2m:[0m resource profile selected [3mprofile[0m[2m=[0m"xlarge" [3mram_gb[0m[2m=[0m46 [3meffective_ram_gb[0m[2m=[0m46 [3mcpu_cores[0m[2m=[0m8 [3mdisk_free_gb[0m[2m=[0m304 [3min_container[0m[2m=[0mfalse [3mmemory_budget_mb[0m[2m=[0m4096
+[2m2026-05-14T17:30:23.139353Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m runtime mode selected [3mmode[0m[2m=[0mAll [3mrun_core[0m[2m=[0mtrue [3mrun_collector[0m[2m=[0mtrue
+[2m2026-05-14T17:30:23.140025Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m Prometheus metrics listening [3mmetrics_addr[0m[2m=[0m[::1]:9090
+[2m2026-05-14T17:30:23.312238Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LadybugDB opened [3mpath[0m[2m=[0m"bonsai.db" [3mbuffer_pool_mib[0m[2m=[0m768
+[2m2026-05-14T17:30:23.535035Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph schema initialised
+[2m2026-05-14T17:30:23.535075Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"schema_init" [3melapsed_ms[0m[2m=[0m222
+[2m2026-05-14T17:30:23.542387Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"backfill" [3melapsed_ms[0m[2m=[0m7
+[2m2026-05-14T17:30:23.542421Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph store opened [3mpath[0m[2m=[0m"bonsai.db"
+[2m2026-05-14T17:30:23.542443Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"graph_open" [3melapsed_ms[0m[2m=[0m402
+[2m2026-05-14T17:30:23.542506Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor started [3mbudget_mb[0m[2m=[0m4096 [3msoft_mb[0m[2m=[0m3276 [3mhard_mb[0m[2m=[0m3891
+[2m2026-05-14T17:30:23.542529Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop started [3mbudget_eps[0m[2m=[0m200000
+[2m2026-05-14T17:30:23.542531Z[0m [32m INFO[0m [2mbonsai::write_coordinator[0m[2m:[0m write coordinator started [3mbatch_size[0m[2m=[0m256 [3mflush_interval[0m[2m=[0m1s
+[2m2026-05-14T17:30:23.542515Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor started
+[2m2026-05-14T17:30:23.542575Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler started [3minterval_secs[0m[2m=[0m60 [3moutput_path[0m[2m=[0m"none"
+[2m2026-05-14T17:30:23.542603Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard started [3mcheck_interval_secs[0m[2m=[0m300 [3mmax_archive_gb[0m[2m=[0m60 [3mmax_graph_gb[0m[2m=[0m5 [3mwarn_threshold_pct[0m[2m=[0m80
+[2m2026-05-14T17:30:23.542670Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive consumer started [3mpath[0m[2m=[0mruntime/archive [3mflush_interval_seconds[0m[2m=[0m10 [3mmax_batch_rows[0m[2m=[0m1000 [3mcompression_level[0m[2m=[0m12 [3mwriter_max_idle_secs[0m[2m=[0m7200 [3mmax_file_age_secs[0m[2m=[0m3600
+[2m2026-05-14T17:30:23.543793Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m archive disk check [3mpct[0m[2m=[0m0 [3marchive_gb[0m[2m=[0m"0.00"
+[2m2026-05-14T17:30:23.543815Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m221 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m2 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T17:30:24.829379Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m BONSAI_REQUIRE_SIDECAR set — /health will be degraded until these sidecars register [3mrequired[0m[2m=[0m["rules"]
+[2m2026-05-14T17:30:24.829422Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m credential vault unlocked [3mpath[0m[2m=[0mbonsai-credentials
+[2m2026-05-14T17:30:25.238342Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m registry site labels synced into graph
+[2m2026-05-14T17:30:25.256883Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T17:30:25.256985Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T17:30:25.257127Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T17:30:25.257387Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T17:30:25.257475Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T17:30:25.257586Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T17:30:25.257698Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T17:30:25.257752Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber started [3maddress[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T17:30:25.258085Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m gRPC API and telemetry ingest server listening [3mapi_addr[0m[2m=[0m[::1]:50051 [3mingest_compression[0m[2m=[0m"zstd" [3mmtls[0m[2m=[0mfalse
+[2m2026-05-14T17:30:25.258116Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m HTTP UI server listening [3mhttp_addr[0m[2m=[0m0.0.0.0:3000
+[2m2026-05-14T17:30:25.258338Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_evpn
+[2m2026-05-14T17:30:25.258520Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_p_sr_te
+[2m2026-05-14T17:30:25.258796Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_evpn_leaf
+[2m2026-05-14T17:30:25.259080Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_peering_edge
+[2m2026-05-14T17:30:25.259229Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_distribution
+[2m2026-05-14T17:30:25.259447Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_border_standard
+[2m2026-05-14T17:30:25.259636Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_core
+[2m2026-05-14T17:30:25.259779Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_access
+[2m2026-05-14T17:30:25.259996Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mhomelab_router
+[2m2026-05-14T17:30:25.260132Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mcampus_wlc
+[2m2026-05-14T17:30:25.260373Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_superspine_standard
+[2m2026-05-14T17:30:25.260647Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_l3vpn
+[2m2026-05-14T17:30:25.260822Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_pe_full
+[2m2026-05-14T17:30:25.260956Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mhomelab_switch
+[2m2026-05-14T17:30:25.261158Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_rr_basic
+[2m2026-05-14T17:30:25.261562Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_leaf_minimal
+[2m2026-05-14T17:30:25.261782Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0msp_p_core
+[2m2026-05-14T17:30:25.262027Z[0m [32m INFO[0m [2mbonsai::catalogue[0m[2m:[0m loaded built-in catalogue profile [3mname[0m[2m=[0mdc_spine_standard
+[2m2026-05-14T17:30:25.262101Z[0m [32m INFO[0m [2mbonsai::enrichment[0m[2m:[0m enricher configs loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T17:30:25.262128Z[0m [32m INFO[0m [2mbonsai::output::traits[0m[2m:[0m output adapter configs loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T17:30:25.262171Z[0m [32m INFO[0m [2mbonsai::remediation::trust[0m[2m:[0m trust state records loaded [3mcount[0m[2m=[0m0
+[2m2026-05-14T17:30:25.262202Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m startup [3mphase[0m[2m=[0m"ready" [3melapsed_ms[0m[2m=[0m2123
+[2m2026-05-14T17:30:25.264094Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T17:30:25.264143Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:30:25.265796Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T17:30:25.265986Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:30:25.267383Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T17:30:25.267435Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:30:25.267591Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T17:30:25.267619Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:30:25.268974Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T17:30:25.269029Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T17:30:25.269106Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:30:25.269118Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:30:25.270059Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T17:30:25.270105Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:30:25.270601Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T17:30:25.270633Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-14T17:30:25.276037Z[0m [32m INFO[0m [2mbonsai::retention[0m[2m:[0m retention: pruned StateChangeEvents by age [3mdeleted[0m[2m=[0m0
+[2m2026-05-14T17:30:26.423822Z[0m [32m INFO[0m [2mbonsai::api[0m[2m:[0m sidecar registered [3msidecar_id[0m[2m=[0m1a23c497-716b-42c3-b8fc-16ba0887de98 [3mname[0m[2m=[0mrules-local [3mkind[0m[2m=[0mrules
+[2m2026-05-14T17:30:30.271852Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T17:30:30.271901Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:30:30.272820Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T17:30:30.272845Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:30:30.273097Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T17:30:30.273119Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:30:30.273848Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T17:30:30.273882Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:30:30.275470Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T17:30:30.275504Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:30:30.276423Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T17:30:30.276449Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:30:30.276677Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T17:30:30.276693Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:30:30.278577Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T17:30:30.278601Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m10s
+[2m2026-05-14T17:30:40.278535Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T17:30:40.278579Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:30:40.278812Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T17:30:40.278838Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:30:40.279663Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T17:30:40.279705Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:30:40.281742Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T17:30:40.281780Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:30:40.282606Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T17:30:40.282636Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:30:40.282917Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T17:30:40.282947Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:30:40.282949Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T17:30:40.282962Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:30:40.283980Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T17:30:40.284010Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m20s
+[2m2026-05-14T17:31:00.283948Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T17:31:00.283948Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T17:31:00.283995Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:31:00.284008Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:31:00.284978Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T17:31:00.285082Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:31:00.287394Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T17:31:00.287427Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:31:00.288378Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T17:31:00.288411Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:31:00.289869Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T17:31:00.289898Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:31:00.289954Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T17:31:00.289976Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:31:00.290849Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T17:31:00.290880Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m40s
+[2m2026-05-14T17:31:23.543709Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m258 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m4 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T17:31:40.291373Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T17:31:40.291404Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T17:31:40.291440Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:31:40.291444Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:31:40.292345Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T17:31:40.292383Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:31:40.293746Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T17:31:40.293752Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T17:31:40.293780Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:31:40.293786Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:31:40.295911Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T17:31:40.295914Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T17:31:40.295949Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:31:40.295956Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:31:40.296892Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T17:31:40.296919Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:32:23.543091Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m258 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m4 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-05-14T17:32:40.297117Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.13:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.13:57400
+[2m2026-05-14T17:32:40.297117Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.11:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.11:57400
+[2m2026-05-14T17:32:40.297173Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.13:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:32:40.297177Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.11:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:32:40.298154Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.12:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.12:57400
+[2m2026-05-14T17:32:40.298202Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:32:40.299322Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.14:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.14:57400
+[2m2026-05-14T17:32:40.299437Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.14:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:32:40.300212Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.15:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.15:57400
+[2m2026-05-14T17:32:40.300255Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:32:40.301817Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.16:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.16:57400
+[2m2026-05-14T17:32:40.301846Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.16:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:32:40.302079Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.17:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.17:57400
+[2m2026-05-14T17:32:40.302099Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.17:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:32:40.303744Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m subscription failed [3mtarget[0m[2m=[0m172.100.103.18:57400 [3merror[0m[2m=[0mfailed to connect to https://172.100.103.18:57400
+[2m2026-05-14T17:32:40.303768Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.18:57400 [3mdelay[0m[2m=[0m60s
+[2m2026-05-14T17:33:04.413975Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m SIGTERM received — shutting down
+[2m2026-05-14T17:33:04.414029Z[0m [32m INFO[0m [2mbonsai::subscription_status[0m[2m:[0m subscription verifier received shutdown
+[2m2026-05-14T17:33:04.414048Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard stopped
+[2m2026-05-14T17:33:04.414055Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor stopped
+[2m2026-05-14T17:33:04.414069Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop stopped
+[2m2026-05-14T17:33:04.414082Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor stopped
+[2m2026-05-14T17:33:04.414091Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler stopped
+[2m2026-05-14T17:33:04.414099Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive consumer stopping: shutdown signal received
+[2m2026-05-14T17:33:04.414057Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m subscriber manager received shutdown
+[2m2026-05-14T17:33:04.414142Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T17:33:04.414165Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-14T17:33:04.414176Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T17:33:04.414183Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-14T17:33:04.414195Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T17:33:04.414210Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-14T17:33:04.414221Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T17:33:04.414229Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-14T17:33:04.414236Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T17:33:04.414242Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.16:57400
+[2m2026-05-14T17:33:04.414249Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T17:33:04.414255Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-14T17:33:04.414261Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T17:33:04.414268Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-14T17:33:04.414275Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T17:33:04.414282Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-14T17:33:04.415336Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"devices" [3mcount[0m[2m=[0mInt64(8)
+[2m2026-05-14T17:33:04.415883Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"interfaces" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:33:04.416440Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bgp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:33:04.417183Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bfd-sessions" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:33:04.418013Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"lldp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:33:04.422848Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"connected-to" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:33:04.423888Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"state-change-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:33:04.424338Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"detection-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:33:04.424736Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediations" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:33:04.425176Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediation-trust-marks" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:33:04.425595Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"subscription-status" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-14T17:33:04.425620Z[0m [32m INFO[0m [2mbonsai[0m[2m:[0m bonsai stopped

@@ -1,0 +1,99 @@
+[2026-05-14T13:15:12Z] === Chaos runner started (PID 549293) ===
+[2026-05-14T13:15:12Z] Plan: /home/arjuna/Desktop/bonsai/chaos_plans/always_on_dc.yaml
+[2026-05-14T13:15:12Z] Python: /home/arjuna/Desktop/bonsai/.venv/bin/python3
+[2026-05-14T13:15:12Z] Fault transport: docker
+[2026-05-14T13:15:12Z] Log: /home/arjuna/Desktop/bonsai/runtime/chaos_runner.log
+[2026-05-14T13:15:12Z] --- Cycle 1 start ---
+2026-05-14 18:45:13,097 [INFO] Chaos run 20260514T131513Z starting — duration=0.5h  targets=['srl-super1', 'srl-super2', 'srl-spine1', 'srl-spine2', 'srl-leaf1', 'srl-leaf2', 'srl-leaf3', 'srl-leaf4']  dry_run=False  snapshots=chaos_runs/20260514T131513Z/snapshots
+2026-05-14 18:45:13,135 [INFO] [INJECT] netem_loss  host=srl-leaf4  iface=e1-1  loss=6.0%
+  [netem error] ERROR  
+          
+  Error response from daemon: No such container: clab-bonsai-dc-srl-leaf4.
+2026-05-14 18:45:13,158 [INFO]   holding fault for 41s  [primary]
+2026-05-14 18:45:54,161 [INFO] [HEAL] netem_clear  host=srl-leaf4  iface=e1-1
+  [netem error] ERROR  
+          
+  Error response from daemon: No such container: clab-bonsai-dc-srl-leaf4.
+2026-05-14 18:45:54,177 [INFO] Ground-truth CSV written: chaos_runs/20260514T131513Z/injections.csv  (1 rows)
+2026-05-14 18:45:54,177 [INFO]   next injection in 89s  (29 min remaining)
+2026-05-14 18:47:23,179 [INFO] [INJECT] interface_shut  host=srl-spine2  iface=ethernet-1/1
+2026-05-14 18:47:23,189 [ERROR] [INJECT ERROR] interface_shut: Error response from daemon: No such container: clab-bonsai-dc-srl-spine2
+2026-05-14 18:47:23,189 [INFO]   next injection in 97s  (28 min remaining)
+2026-05-14 18:49:00,190 [INFO] [INJECT] netem_loss  host=srl-leaf3  iface=e1-1  loss=7.0%
+  [netem error] ERROR  
+          
+  Error response from daemon: No such container: clab-bonsai-dc-srl-leaf3.
+2026-05-14 18:49:00,207 [INFO]   holding fault for 55s  [primary]
+2026-05-14 18:49:55,209 [INFO] [HEAL] netem_clear  host=srl-leaf3  iface=e1-1
+  [netem error] ERROR  
+          
+  Error response from daemon: No such container: clab-bonsai-dc-srl-leaf3.
+2026-05-14 18:49:55,226 [INFO] Ground-truth CSV written: chaos_runs/20260514T131513Z/injections.csv  (2 rows)
+2026-05-14 18:49:55,226 [INFO]   next injection in 107s  (25 min remaining)
+[2026-05-14T13:21:24Z] === Chaos runner started (PID 553517) ===
+[2026-05-14T13:21:24Z] Plan: /home/arjuna/Desktop/bonsai/chaos_plans/always_on_dc.yaml
+[2026-05-14T13:21:24Z] Python: /home/arjuna/Desktop/bonsai/.venv/bin/python3
+[2026-05-14T13:21:24Z] Fault transport: docker
+[2026-05-14T13:21:24Z] Log: /home/arjuna/Desktop/bonsai/runtime/chaos_runner.log
+[2026-05-14T13:21:24Z] --- Cycle 1 start ---
+2026-05-14 18:51:25,038 [INFO] Chaos run 20260514T132125Z starting — duration=0.5h  targets=['srl-super1', 'srl-super2', 'srl-spine1', 'srl-spine2', 'srl-leaf1', 'srl-leaf2', 'srl-leaf3', 'srl-leaf4']  dry_run=False  snapshots=chaos_runs/20260514T132125Z/snapshots
+2026-05-14 18:51:25,065 [INFO] [INJECT] interface_shut  host=srl-leaf2  iface=ethernet-1/1
+2026-05-14 18:51:25,075 [ERROR] [INJECT ERROR] interface_shut: Error response from daemon: No such container: clab-bonsai-dc-srl-leaf2
+2026-05-14 18:51:25,075 [INFO]   next injection in 47s  (30 min remaining)
+2026-05-14 18:52:12,076 [INFO] [INJECT] netem_loss  host=srl-spine1  iface=e1-2  loss=2.0%
+  [netem error] ERROR  
+          
+  Error response from daemon: No such container: clab-bonsai-dc-srl-spine1.
+2026-05-14 18:52:12,094 [INFO]   holding fault for 63s  [primary]
+2026-05-14 18:53:15,097 [INFO] [HEAL] netem_clear  host=srl-spine1  iface=e1-2
+  [netem error] ERROR  
+          
+  Error response from daemon: No such container: clab-bonsai-dc-srl-spine1.
+2026-05-14 18:53:15,113 [INFO] Ground-truth CSV written: chaos_runs/20260514T132125Z/injections.csv  (1 rows)
+2026-05-14 18:53:15,113 [INFO]   next injection in 57s  (28 min remaining)
+2026-05-14 18:54:12,115 [INFO] [INJECT] bgp_session_down  host=srl-leaf3  peer=10.1.0.1
+2026-05-14 18:54:12,125 [ERROR] [INJECT ERROR] bgp_session_down: Error response from daemon: No such container: clab-bonsai-dc-srl-leaf3
+2026-05-14 18:54:12,125 [INFO]   next injection in 67s  (27 min remaining)
+2026-05-14 18:55:19,126 [INFO] [INJECT] bfd_session_down  host=srl-leaf3  subinterface=ethernet-1/2.0  scenario=admin_disable_leaf_uplink
+2026-05-14 18:55:19,136 [ERROR] [INJECT ERROR] bfd_session_down: Error response from daemon: No such container: clab-bonsai-dc-srl-leaf3
+2026-05-14 18:55:19,136 [INFO]   next injection in 87s  (26 min remaining)
+2026-05-14 18:56:46,137 [INFO] [INJECT] bfd_session_down  host=srl-spine1  subinterface=ethernet-1/2.0  scenario=admin_disable_spine_downlink
+2026-05-14 18:56:46,147 [ERROR] [INJECT ERROR] bfd_session_down: Error response from daemon: No such container: clab-bonsai-dc-srl-spine1
+2026-05-14 18:56:46,147 [INFO]   next injection in 81s  (25 min remaining)
+2026-05-14 18:58:07,149 [INFO] [INJECT] bfd_session_down  host=srl-spine2  subinterface=ethernet-1/3.0  scenario=admin_disable_spine_downlink
+2026-05-14 18:58:07,159 [ERROR] [INJECT ERROR] bfd_session_down: Error response from daemon: No such container: clab-bonsai-dc-srl-spine2
+2026-05-14 18:58:07,159 [INFO]   next injection in 112s  (23 min remaining)
+2026-05-14 18:59:59,160 [INFO] [INJECT] bgp_session_down  host=srl-leaf3  peer=10.1.0.2
+2026-05-14 18:59:59,170 [ERROR] [INJECT ERROR] bgp_session_down: Error response from daemon: No such container: clab-bonsai-dc-srl-leaf3
+2026-05-14 18:59:59,170 [INFO]   next injection in 74s  (21 min remaining)
+2026-05-14 19:01:13,171 [INFO] [INJECT] route_flap  host=srl-leaf1  peer=10.1.0.2  flap_count=3  hold=5s
+2026-05-14 19:01:13,181 [ERROR] [INJECT ERROR] route_flap: Error response from daemon: No such container: clab-bonsai-dc-srl-leaf1
+2026-05-14 19:01:13,181 [INFO]   next injection in 75s  (20 min remaining)
+2026-05-14 19:02:28,182 [INFO] [INJECT] netem_loss  host=srl-leaf4  iface=e1-2  loss=8.0%
+  [netem error] ERROR  
+          
+  Error response from daemon: No such container: clab-bonsai-dc-srl-leaf4.
+2026-05-14 19:02:28,200 [INFO]   holding fault for 83s  [primary]
+2026-05-14 19:03:51,204 [INFO] [HEAL] netem_clear  host=srl-leaf4  iface=e1-2
+  [netem error] ERROR  
+          
+  Error response from daemon: No such container: clab-bonsai-dc-srl-leaf4.
+2026-05-14 19:03:51,220 [INFO] Ground-truth CSV written: chaos_runs/20260514T132125Z/injections.csv  (2 rows)
+2026-05-14 19:03:51,220 [INFO]   next injection in 63s  (18 min remaining)
+2026-05-14 19:04:54,222 [INFO] [INJECT] netem_loss  host=srl-leaf4  iface=e1-2  loss=13.0%
+  [netem error] ERROR  
+          
+  Error response from daemon: No such container: clab-bonsai-dc-srl-leaf4.
+2026-05-14 19:04:54,239 [INFO]   holding fault for 73s  [primary]
+2026-05-14 19:06:07,243 [INFO] [HEAL] netem_clear  host=srl-leaf4  iface=e1-2
+  [netem error] ERROR  
+          
+  Error response from daemon: No such container: clab-bonsai-dc-srl-leaf4.
+2026-05-14 19:06:07,260 [INFO] Ground-truth CSV written: chaos_runs/20260514T132125Z/injections.csv  (3 rows)
+2026-05-14 19:06:07,260 [INFO]   next injection in 74s  (15 min remaining)
+2026-05-14 19:07:21,261 [INFO] [INJECT] interface_shut  host=srl-leaf2  iface=ethernet-1/1
+2026-05-14 19:07:21,271 [ERROR] [INJECT ERROR] interface_shut: Error response from daemon: No such container: clab-bonsai-dc-srl-leaf2
+2026-05-14 19:07:21,271 [INFO]   next injection in 111s  (14 min remaining)
+2026-05-14 19:09:12,272 [INFO] [INJECT] bgp_session_down  host=srl-leaf1  peer=10.1.0.2
+2026-05-14 19:09:12,281 [ERROR] [INJECT ERROR] bgp_session_down: Error response from daemon: No such container: clab-bonsai-dc-srl-leaf1
+2026-05-14 19:09:12,281 [INFO]   next injection in 108s  (12 min remaining)
