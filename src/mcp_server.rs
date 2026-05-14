@@ -220,9 +220,143 @@ pub static RULE_CATALOGUE: &[RuleMeta] = &[
             "Check bgp_session_down on sessions using adjacencies on the affected linecard",
         ],
     },
+    // ── CV7 follow-up: syslog + correlation rules (13 entries).
+    // Reconciled with python/bonsai_sdk/rules/syslog.py so /api/sidecars
+    // capabilities match the canonical catalogue. Surfaced in grounded
+    // incident responses for rule_ids fired by the rules sidecar.
+    RuleMeta {
+        rule_id: "syslog_auth_failure_cluster",
+        description: "≥3 syslog authentication-failure events from the same device in 5 minutes.",
+        severity: "warn",
+        recurrence_indicators: &[
+            "Count syslog_auth StateChangeEvents for this device in last 24h — expect 0 when healthy",
+            "MATCH (d:Device {address: $dev}) RETURN d.address — check device is still reachable",
+            "Check /api/detections?device={address}&rule=syslog_auth_failure_cluster for prior detections in last 7 days",
+        ],
+    },
+    RuleMeta {
+        rule_id: "syslog_hardware_error",
+        description: "Syslog hardware-category message contains failure/error/alarm/critical/down tokens.",
+        severity: "critical",
+        recurrence_indicators: &[
+            "Count syslog_hardware StateChangeEvents for this device in last 24h — expect 0 when healthy",
+            "MATCH (d:Device {address: $dev}) RETURN d.address, d.vendor — check device is still reachable",
+            "Check /api/detections?device={address}&rule=syslog_hardware_error for prior hardware errors in last 7 days",
+        ],
+    },
+    RuleMeta {
+        rule_id: "syslog_software_crash",
+        description: "Syslog software-category message contains crash/panic/core/restart tokens.",
+        severity: "critical",
+        recurrence_indicators: &[
+            "Count syslog_software StateChangeEvents for this device in last 24h — pattern of crashes suggests systemic instability",
+            "MATCH (d:Device {address: $dev}) RETURN d.address, d.vendor — check device uptime via gNMI /system/state/boot-time",
+            "Check /api/detections?device={address}&rule=syslog_software_crash for prior crash events in last 30 days",
+        ],
+    },
+    RuleMeta {
+        rule_id: "syslog_license_expiry",
+        description: "Syslog license-category message contains expire/expired/expiry/license tokens.",
+        severity: "warn",
+        recurrence_indicators: &[
+            "Count syslog_license StateChangeEvents for this device in last 7 days — repeated warnings indicate expiry approaching",
+            "MATCH (d:Device {address: $dev}) RETURN d.vendor — license format varies by vendor; check vendor portal",
+            "Check /api/detections?device={address}&rule=syslog_license_expiry for first occurrence date to estimate urgency",
+        ],
+    },
+    RuleMeta {
+        rule_id: "syslog_protocol_error",
+        description: "Syslog protocol-category message indicates down/flap/lost/reset/mismatch.",
+        severity: "warn",
+        recurrence_indicators: &[
+            "Count syslog_protocol StateChangeEvents for this device in last 1h — flapping indicates instability",
+            "MATCH (n:BgpNeighbor {device_address: $dev}) RETURN n.peer_address, n.session_state — correlate with BGP state",
+            "Check /api/detections?device={address}&rule=syslog_protocol_error for recurrence frequency",
+        ],
+    },
+    RuleMeta {
+        rule_id: "syslog_bpduguard_activation",
+        description: "BPDUGuard activated on an interface — port disabled by spanning-tree.",
+        severity: "critical",
+        recurrence_indicators: &[
+            "Count syslog_protocol BPDUGuard events for this device in last 24h — repeated activations suggest upstream loop or misconfigured device",
+            "MATCH (i:Interface {device_address: $dev}) RETURN i.name, i.in_pkts — identify the affected port",
+            "Check /api/detections?device={address}&rule=syslog_bpduguard_activation for prior activations on same device",
+        ],
+    },
+    RuleMeta {
+        rule_id: "syslog_stp_topology_change",
+        description: "Spanning-tree topology change reported in syslog.",
+        severity: "warn",
+        recurrence_indicators: &[
+            "Count syslog_protocol STP topology-change events for this device in last 1h — multiple changes indicate instability",
+            "MATCH (i:Interface {device_address: $dev}) RETURN i.name, i.in_pkts, i.out_pkts — check for interface flap correlation",
+            "Check /api/detections?device={address}&rule=syslog_stp_topology_change for recurrence pattern",
+        ],
+    },
+    RuleMeta {
+        rule_id: "syslog_gnmi_disagreement",
+        description: "Syslog BGP state disagrees with the gNMI-derived graph state for the same neighbour.",
+        severity: "warn",
+        recurrence_indicators: &[
+            "MATCH (n:BgpNeighbor {device_address: $dev, peer_address: $peer}) RETURN n.session_state — expect 'established' when healthy",
+            "Count syslog_fact_joined bgp_neighbor disagreement events for this peer in last 24h",
+            "Check /api/detections?device={address}&rule=syslog_gnmi_disagreement for recurrence — persistent disagreement may indicate stale gNMI subscription",
+        ],
+    },
+    RuleMeta {
+        rule_id: "syslog_bfd_disagreement",
+        description: "Syslog BFD state disagrees with the gNMI-derived graph state for the same session.",
+        severity: "warn",
+        recurrence_indicators: &[
+            "MATCH (b:BfdSession {device_address: $dev}) RETURN b.remote_address, b.session_state, b.if_name — expect 'up' when healthy",
+            "Count syslog_fact_joined bfd_session disagreement events for this device in last 24h",
+            "Check /api/detections?device={address}&rule=syslog_bfd_disagreement — persistent disagreement may indicate gNMI path misconfiguration for BFD",
+        ],
+    },
+    RuleMeta {
+        rule_id: "syslog_config_change_cluster",
+        description: "≥3 config_change_detail facts arrived from the same device within 10 minutes.",
+        severity: "warn",
+        recurrence_indicators: &[
+            "Count syslog config_change_detail facts for this device in last 1h — cluster in short window signals automation gone wrong",
+            "MATCH (d:Device {address: $dev}) RETURN d.address, d.vendor — check if device is under active maintenance window",
+            "Check /api/detections?device={address}&rule=syslog_config_change_cluster for prior change clusters to identify automation frequency",
+        ],
+    },
+    RuleMeta {
+        rule_id: "syslog_hardware_interface_correlation",
+        description: "Interface_state down fact follows a hardware_error on the same device within 60s.",
+        severity: "critical",
+        recurrence_indicators: &[
+            "Count syslog_hardware StateChangeEvents for this device in last 1h — repeated hardware errors without interface recovery indicate physical fault",
+            "MATCH (i:Interface {device_address: $dev}) RETURN i.name, i.in_errors, i.out_errors — check error counters on affected interfaces",
+            "Check /api/detections?device={address}&rule=syslog_hardware_interface_correlation for prior correlations — PSU/fan faults recur until replaced",
+        ],
+    },
+    RuleMeta {
+        rule_id: "orphan_interface_mention",
+        description: "Syslog references an interface name not present in the gNMI-managed graph state.",
+        severity: "warn",
+        recurrence_indicators: &[
+            "MATCH (i:Interface {device_address: $dev}) RETURN i.name — verify syslog interface name matches gNMI subscription naming convention",
+            "Count syslog_fact_orphan interface_state events for this device in last 24h — repeated orphans suggest monitoring gap",
+            "Check /api/devices/{address} to confirm subscription paths cover the interface mentioned in syslog",
+        ],
+    },
+    RuleMeta {
+        rule_id: "multi_source_correlation",
+        description: "Successful join of a syslog fact (bgp_neighbor or interface_state) with current graph state.",
+        severity: "info",
+        recurrence_indicators: &[
+            "Count syslog_fact_joined events for this device in last 24h — rising join rate validates telemetry pipeline health",
+            "MATCH (d:Device {address: $dev}) RETURN d.address, d.vendor — check device is active and subscriptions are running",
+            "Check /api/detections?device={address}&rule=multi_source_correlation to verify cross-source coverage is stable",
+        ],
+    },
 ];
 
-/// Lookup a rule by ID. O(n) over the catalogue (18 rules, negligible cost).
+/// Lookup a rule by ID. O(n) over the catalogue (31 rules, negligible cost).
 pub fn rule_meta(rule_id: &str) -> Option<&'static RuleMeta> {
     RULE_CATALOGUE.iter().find(|r| r.rule_id == rule_id)
 }
