@@ -48,7 +48,67 @@ pub struct Config {
     #[serde(default)]
     pub lab: LabConfig,
     #[serde(default)]
+    pub gnn: GnnConfig,
+    #[serde(default)]
     pub target: Vec<TargetConfig>,
+}
+
+// ── GNN (D5-T4 DV1) ─────────────────────────────────────────────────────────
+
+/// GNN inference mode configuration.
+/// Set `inference_mode = "production"` after reviewing the 7-day calibration
+/// score distribution. During calibration, scores are persisted to the
+/// `gnn_calibration_scores` table but do not flow to the Detection table.
+#[derive(Deserialize, Clone, Debug)]
+pub struct GnnConfig {
+    /// ``"calibration"`` — scores accumulate but no detections fire.
+    /// ``"production"`` — scores above threshold produce Detection rows.
+    /// Default: ``"calibration"``.
+    #[serde(default = "default_gnn_inference_mode")]
+    pub inference_mode: String,
+
+    /// Anomaly score threshold above which a node is considered anomalous
+    /// (production mode only). Default: 0.5.
+    #[serde(default = "default_gnn_threshold")]
+    pub threshold: f64,
+
+    /// Minimum number of calibration-phase score samples before the operator
+    /// can safely transition to production. Advisory only — bonsai does not
+    /// block the transition. Default: 1000.
+    #[serde(default = "default_gnn_min_calibration_samples")]
+    pub min_calibration_samples: usize,
+}
+
+impl Default for GnnConfig {
+    fn default() -> Self {
+        Self {
+            inference_mode: default_gnn_inference_mode(),
+            threshold: default_gnn_threshold(),
+            min_calibration_samples: default_gnn_min_calibration_samples(),
+        }
+    }
+}
+
+impl GnnConfig {
+    pub fn is_calibration_mode(&self) -> bool {
+        self.inference_mode.to_ascii_lowercase() == "calibration"
+    }
+
+    pub fn is_production_mode(&self) -> bool {
+        self.inference_mode.to_ascii_lowercase() == "production"
+    }
+}
+
+fn default_gnn_inference_mode() -> String {
+    "calibration".to_string()
+}
+
+fn default_gnn_threshold() -> f64 {
+    0.5
+}
+
+fn default_gnn_min_calibration_samples() -> usize {
+    1000
 }
 
 // ── Lab ──────────────────────────────────────────────────────────────────────

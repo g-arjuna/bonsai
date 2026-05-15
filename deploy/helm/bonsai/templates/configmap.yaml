@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bonsai.fullname" . }}-config
+  labels:
+    {{- include "bonsai.labels" . | nindent 4 }}
+data:
+  bonsai.toml: |
+    graph_path = "/data/graph/{{ .Values.config.graphPath }}"
+
+    [runtime]
+    mode = {{ .Values.config.runtimeMode | quote }}
+
+    api_addr     = {{ .Values.config.apiAddr | quote }}
+    metrics_addr = {{ .Values.config.metricsAddr | quote }}
+
+    [logging]
+    level = {{ .Values.config.logLevel | quote }}
+    file_path = "/data/logs/bonsai.log"
+    rotation = "daily"
+    retention_days = 7
+
+    [archive]
+    enabled = {{ .Values.config.archiveEnabled }}
+    path = "/data/archive"
+
+    [retention]
+    enabled = true
+    max_age_hours = {{ .Values.config.retentionMaxAgeHours }}
+
+    [gnn]
+    inference_mode = {{ .Values.config.gnnInferenceMode | quote }}
+
+    {{- if .Values.config.requireSidecar }}
+    # BONSAI_REQUIRE_SIDECAR is set via env var — see deployment template
+    {{- end }}

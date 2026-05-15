@@ -1,0 +1,19 @@
+apiVersion: v2
+name: bonsai
+description: Bonsai — streaming-first graph-native network state engine
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - network-observability
+  - gnmi
+  - openconfig
+  - graph-database
+  - anomaly-detection
+maintainers:
+  - name: bonsai-operator
+home: https://github.com/arjuna-ganesan/bonsai
+sources:
+  - https://github.com/arjuna-ganesan/bonsai
+annotations:
+  bonsai/modes: "single,ha,fleet"

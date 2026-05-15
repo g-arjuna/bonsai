@@ -1,0 +1,28 @@
+# values-ha.yaml — HA-core mode override
+# Usage: helm template bonsai . -f values-ha.yaml
+# Suitable for: production-like lab with replicated bonsai-core StatefulSet
+
+mode: ha
+haReplicas: 2
+
+config:
+  runtimeMode: "core"
+
+persistence:
+  enabled: true
+  storageClass: ""
+  archive:
+    size: 50Gi
+  graph:
+    size: 10Gi
+
+resources:
+  requests:
+    cpu: "1"
+    memory: "1Gi"
+  limits:
+    cpu: "4"
+    memory: "4Gi"
+
+sidecar:
+  enabled: true

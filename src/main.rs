@@ -882,6 +882,9 @@ async fn main() -> Result<()> {
         }
     }
 
+    // D1-T1 (DV1): HTTP task handle — tracked so an unexpected HTTP exit triggers shutdown.
+    let mut http_task: Option<tokio::task::JoinHandle<()>> = None;
+
     if let Some(ref store) = store {
         let change_detection_runtime = if run_core {
             if let Store::Core(s) = store {
@@ -1004,12 +1007,17 @@ async fn main() -> Result<()> {
             // receivers and the write coordinator already share it.
             let governor_for_http = shared_governor.clone();
 
-            tokio::spawn(async move {
-                let listener = tokio::net::TcpListener::bind(http_addr)
-                    .await
-                    .expect("failed to bind HTTP port 3000");
-                axum::serve(
-                    listener,
+            // D1-T1 (DV1): bind the listener on the main task so a port-conflict fails
+            // startup with a clear error instead of silently panicking the spawned task
+            // and leaving bonsai alive with a dead HTTP server.
+            let http_listener = tokio::net::TcpListener::bind(http_addr)
+                .await
+                .with_context(|| format!("failed to bind HTTP port at {http_addr}"))?;
+            info!(addr = %http_addr, "HTTP listener bound");
+
+            http_task = Some(tokio::spawn(async move {
+                if let Err(error) = axum::serve(
+                    http_listener,
                     bonsai::http_server::router(
                         http_store,
                         registry_for_http,
@@ -1041,8 +1049,10 @@ async fn main() -> Result<()> {
                     ),
                 )
                 .await
-                .expect("HTTP server error");
-            });
+                {
+                    warn!(%error, "HTTP server exited with error");
+                }
+            }));
 
             // Start enabled output adapters as background tasks.
             {
@@ -1189,20 +1199,38 @@ async fn main() -> Result<()> {
     // consumer flushes open parquet writers before exit — the CV6 archive
     // code already handles `shutdown.changed()` correctly (src/archive.rs),
     // it just needed both signals to reach it.
+    // D1-T1 (DV1): also react to the HTTP task completing — if axum::serve
+    // returns, the listener closed and the process should exit rather than
+    // running headless.
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
         let mut sigterm = signal(SignalKind::terminate())
             .context("install SIGTERM handler")?;
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => info!("SIGINT received — shutting down"),
-            _ = sigterm.recv()           => info!("SIGTERM received — shutting down"),
+        if let Some(http) = http_task {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => info!("SIGINT received — shutting down"),
+                _ = sigterm.recv()           => info!("SIGTERM received — shutting down"),
+                _ = http                     => info!("HTTP server task ended — shutting down"),
+            }
+        } else {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => info!("SIGINT received — shutting down"),
+                _ = sigterm.recv()           => info!("SIGTERM received — shutting down"),
+            }
         }
     }
     #[cfg(not(unix))]
     {
-        tokio::signal::ctrl_c().await?;
-        info!("Ctrl+C received - shutting down");
+        if let Some(http) = http_task {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => info!("Ctrl+C received - shutting down"),
+                _ = http                     => info!("HTTP server task ended — shutting down"),
+            }
+        } else {
+            tokio::signal::ctrl_c().await?;
+            info!("Ctrl+C received - shutting down");
+        }
     }
     let _ = shutdown_tx.send(true);
     if let Some(subscriber_manager) = subscriber_manager {

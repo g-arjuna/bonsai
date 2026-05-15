@@ -1,0 +1,27 @@
+# values-single.yaml — single-node mode override
+# Usage: helm template bonsai . -f values-single.yaml
+# Suitable for: small lab, proof-of-concept, single-device demo
+
+mode: single
+replicaCount: 1
+
+config:
+  runtimeMode: "all"
+
+persistence:
+  enabled: true
+  archive:
+    size: 10Gi
+  graph:
+    size: 2Gi
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "256Mi"
+  limits:
+    cpu: "1"
+    memory: "1Gi"
+
+sidecar:
+  enabled: false

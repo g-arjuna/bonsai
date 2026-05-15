@@ -1,0 +1,116 @@
+{{- if eq .Values.mode "ha" }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "bonsai.fullname" . }}
+  labels:
+    {{- include "bonsai.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "bonsai.fullname" . }}
+  replicas: {{ .Values.haReplicas }}
+  selector:
+    matchLabels:
+      {{- include "bonsai.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "bonsai.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "bonsai.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: bonsai
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "bonsai.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--config=/etc/bonsai/bonsai.toml"
+          env:
+            - name: BONSAI_VAULT_PASSPHRASE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bonsai.secretName" . }}
+                  key: BONSAI_VAULT_PASSPHRASE
+          ports:
+            - name: http
+              containerPort: {{ .Values.ports.http }}
+              protocol: TCP
+            - name: grpc
+              containerPort: {{ .Values.ports.grpc }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.ports.metrics }}
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/bonsai
+              readOnly: true
+            - name: archive
+              mountPath: /data/archive
+            - name: graph
+              mountPath: /data/graph
+            - name: logs
+              mountPath: /data/logs
+        {{- if .Values.sidecar.enabled }}
+        - name: bonsai-sidecar
+          image: {{ include "bonsai.sidecarImage" . }}
+          imagePullPolicy: {{ .Values.sidecar.image.pullPolicy }}
+          env:
+            - name: BONSAI_GRPC_ADDR
+              value: "localhost:{{ .Values.ports.grpc }}"
+            {{- with .Values.sidecar.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.sidecar.resources | nindent 12 }}
+        {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "bonsai.fullname" . }}-config
+        - name: logs
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: archive
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.archive.size }}
+    - metadata:
+        name: graph
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.graph.size }}
+{{- end }}

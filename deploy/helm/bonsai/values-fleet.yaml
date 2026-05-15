@@ -1,0 +1,35 @@
+# values-fleet.yaml — collector-fleet mode override
+# Usage: helm template bonsai . -f values-fleet.yaml
+# Suitable for: large topology where collectors scale horizontally
+
+mode: fleet
+replicaCount: 1        # bonsai-core: single Deployment
+collectorReplicas: 3   # collector fleet: 3 replicas
+
+config:
+  runtimeMode: "core"
+
+persistence:
+  enabled: true
+  archive:
+    size: 100Gi
+  graph:
+    size: 20Gi
+
+resources:
+  requests:
+    cpu: "1"
+    memory: "1Gi"
+  limits:
+    cpu: "4"
+    memory: "4Gi"
+
+sidecar:
+  enabled: true
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"

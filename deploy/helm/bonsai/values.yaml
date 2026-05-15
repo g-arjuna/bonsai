@@ -1,0 +1,133 @@
+# bonsai Helm chart — default values
+# Override per mode using:
+#   -f deploy/helm/bonsai/values-single.yaml   (single-node, default)
+#   -f deploy/helm/bonsai/values-ha.yaml        (HA-core StatefulSet)
+#   -f deploy/helm/bonsai/values-fleet.yaml     (collector fleet)
+
+# ── Deployment mode ────────────────────────────────────────────────────────────
+# one of: single | ha | fleet
+mode: single
+
+# ── Image ──────────────────────────────────────────────────────────────────────
+image:
+  repository: bonsai
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# ── Replica counts ─────────────────────────────────────────────────────────────
+# single: replicaCount is always 1 (ignored for StatefulSet in ha mode)
+replicaCount: 1
+
+# ha mode: number of StatefulSet replicas
+haReplicas: 2
+
+# fleet mode: collector deployment replica count
+collectorReplicas: 3
+
+# ── Ports ──────────────────────────────────────────────────────────────────────
+ports:
+  http: 3000
+  grpc: 50051
+  metrics: 9090
+
+# ── Service ────────────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  http:
+    port: 3000
+  grpc:
+    port: 50051
+
+# ── Persistence ────────────────────────────────────────────────────────────────
+persistence:
+  enabled: true
+  storageClass: ""          # "" uses the cluster default StorageClass
+  archive:
+    size: 20Gi
+  graph:
+    size: 5Gi
+
+# ── Config (bonsai.toml) ───────────────────────────────────────────────────────
+# Keys here map to the [bonsai.toml] sections.
+# Credentials must be provided via the secrets section below — never inline.
+config:
+  graphPath: "bonsai.db"
+  runtimeMode: "all"          # all | core | collector
+  apiAddr: "[::1]:50051"
+  metricsAddr: "[::1]:9090"
+  logLevel: "info"
+  archiveEnabled: false
+  retentionMaxAgeHours: 168   # 7 days
+  gnnInferenceMode: "calibration"
+  requireSidecar: ""           # set to "rules" to require sidecar before /health=ok
+
+# ── Secrets ────────────────────────────────────────────────────────────────────
+# Provide credentials as a Kubernetes Secret. The chart mounts it as environment
+# variables. Vault integration is out of scope for v0.1; use flat values here.
+secrets:
+  # Name of an existing Secret in the same namespace. Leave empty to have the
+  # chart create a minimal placeholder (no actual credentials set).
+  existingSecret: ""
+  # Keys expected in the secret (used when existingSecret is empty):
+  credentialPassphrase: ""    # BONSAI_VAULT_PASSPHRASE
+
+# ── Rules sidecar (fleet mode + optional in single/ha) ───────────────────────
+sidecar:
+  enabled: false              # set true to co-deploy the Python rules sidecar
+  image:
+    repository: bonsai-sidecar
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  env: []                      # extra environment variables for the sidecar
+
+# ── Resource requests/limits ───────────────────────────────────────────────────
+resources:
+  requests:
+    cpu: "500m"
+    memory: "512Mi"
+  limits:
+    cpu: "2"
+    memory: "2Gi"
+
+# ── Node selector / tolerations / affinity ────────────────────────────────────
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ── Pod security context ───────────────────────────────────────────────────────
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# ── Service account ────────────────────────────────────────────────────────────
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# ── Health probes ──────────────────────────────────────────────────────────────
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 3000
+  initialDelaySeconds: 30
+  periodSeconds: 15
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 3000
+  initialDelaySeconds: 15
+  periodSeconds: 10
+  failureThreshold: 3

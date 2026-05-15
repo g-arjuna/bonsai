@@ -15,8 +15,9 @@ Cisco IOS-XRd, Juniper cRPD, Arista cEOS), writes to an embedded graph database
 learning project. Goal: replicate Google's ANO framework architecture at lab
 scale using only open source primitives.
 
-**Current phase**: Phase 6 — UI in progress. CV7 sprint is consolidation, not
-features. Detail in [`BONSAI_CONSOLIDATED_BACKLOG_CV7.md`](../BONSAI_CONSOLIDATED_BACKLOG_CV7.md).
+**Current phase**: Phase 6 — UI in progress. DV1 sprint is active (operational
+fixes + feature development interleaved). Detail in
+[`BONSAI_CONSOLIDATED_BACKLOG_DV1.md`](../BONSAI_CONSOLIDATED_BACKLOG_DV1.md).
 
 ---
 
@@ -168,7 +169,8 @@ enrichment is Tier 4, before controller adapters.
 
 | You want to | Look at |
 |---|---|
-| Current sprint backlog | [`BONSAI_CONSOLIDATED_BACKLOG_CV7.md`](../BONSAI_CONSOLIDATED_BACKLOG_CV7.md) |
+| Current sprint backlog | [`BONSAI_CONSOLIDATED_BACKLOG_DV1.md`](../BONSAI_CONSOLIDATED_BACKLOG_DV1.md) |
+| Prior sprint backlog (CV7) | [`BONSAI_CONSOLIDATED_BACKLOG_CV7.md`](../BONSAI_CONSOLIDATED_BACKLOG_CV7.md) |
 | Earlier sprint backlogs | [`docs/backlog_archive/`](backlog_archive/) |
 | Architecture decisions | [`DECISIONS.md`](../DECISIONS.md) |
 | Project origin / thesis | [`PROJECT_KICKOFF.md`](../PROJECT_KICKOFF.md) |
@@ -190,6 +192,9 @@ enrichment is Tier 4, before controller adapters.
 | Retired docs / older test results | [`docs/archive/`](archive/) |
 | Build performance notes | [`docs/build_performance.md`](build_performance.md) |
 | Graphify knowledge graph | [`graphify-out/GRAPH_REPORT.md`](../graphify-out/GRAPH_REPORT.md) |
+| **Code review discipline** | [`docs/review_discipline.md`](review_discipline.md) — start here for any AI code review |
+| **Playbooks (detection + remediation)** | [`playbooks/library/`](../playbooks/library/) — 9 YAML playbooks; [`playbooks/DAY2_OPERATIONS_MATRIX.md`](../playbooks/DAY2_OPERATIONS_MATRIX.md); [`playbooks/SOURCE_STRATEGY.md`](../playbooks/SOURCE_STRATEGY.md) |
+| Sprint progress history (stale — superseded by DV1 backlog) | [`memory/project_sprint_progress.md`](../memory/project_sprint_progress.md) |
 
 ---
 

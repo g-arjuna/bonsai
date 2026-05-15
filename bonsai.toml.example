@@ -6,6 +6,15 @@
 # Run lab/fast-iteration/deploy-p4.sh to generate p4-ca.pem and bring up nodes.
 
 graph_path   = "bonsai.db"
+
+# ── GNN inference mode (D5-T4 DV1) ───────────────────────────────────────────
+# During calibration (default), GNN scores accumulate in gnn_calibration_scores
+# but no Detection rows are created. Review the 7-day score distribution, then
+# flip to production.
+# [gnn]
+# inference_mode = "calibration"   # "calibration" | "production"
+# threshold = 0.5                  # anomaly score threshold (production only)
+# min_calibration_samples = 1000   # advisory minimum before switching to prod
 # Runtime mode (T1-2 distributed collector seam)
 # [runtime]
 # mode = "all"  # one of: all, core, collector
