@@ -151,7 +151,7 @@ else
   exit 1
 fi
 
-"$PY" python/collector_engine.py >> "$SIDECAR_LOG" 2>&1 &
+PYTHONUNBUFFERED=1 "$PY" python/collector_engine.py >> "$SIDECAR_LOG" 2>&1 &
 SIDECAR_PID=$!
 echo "$SIDECAR_PID" > "$SIDECAR_PID_FILE"
 echo "  pid:     $SIDECAR_PID"

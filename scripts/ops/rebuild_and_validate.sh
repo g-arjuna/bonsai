@@ -513,6 +513,30 @@ fi
 # Parse /api/topology and report counts of devices / BGP neighbours / LLDP
 # edges. PASS = any data present. WARN = empty (no lab, or lab still
 # converging). This is the "is the graph populated?" sanity check.
+#
+# When --with-lab: poll for up to 150s waiting for BGP sessions to appear.
+# CA cert is refreshed by redeploy_dc.sh; subscribers connect within a few
+# seconds of bonsai start. BGP needs an additional 60-90s to converge.
+if (( WITH_LAB == 1 )); then
+  echo "waiting up to 150s for BGP sessions to converge (CA cert + BGP convergence)..." >> "$RESULTS_FILE"
+  BGP_WAIT_SECS=0
+  while (( BGP_WAIT_SECS < 150 )); do
+    _TOPO_CHECK="$(curl -fsS http://127.0.0.1:3000/api/topology 2>/dev/null || true)"
+    _BGP_NOW="$(echo "$_TOPO_CHECK" | python3 -c "
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    print(sum(len(dev.get('bgp',[])) for dev in d.get('devices',[])))
+except: print(0)" 2>/dev/null || echo 0)"
+    if (( _BGP_NOW > 0 )); then
+      echo "  BGP sessions appeared after ${BGP_WAIT_SECS}s: ${_BGP_NOW} total" >> "$RESULTS_FILE"
+      break
+    fi
+    sleep 10
+    BGP_WAIT_SECS=$(( BGP_WAIT_SECS + 10 ))
+  done
+fi
+
 section "13. graph baseline (counts from /api/topology)"
 TOPO_JSON="$(curl -fsS http://127.0.0.1:3000/api/topology 2>/dev/null || true)"
 COUNTS="$(echo "$TOPO_JSON" | python3 -c "
@@ -522,8 +546,11 @@ try:
 except Exception:
     print('parse_error', 0, 0, 0); sys.exit(0)
 devices = len(d.get('devices', []) or d.get('nodes', []))
-bgp = len(d.get('bgp_neighbors', []) or d.get('neighbors', []) or d.get('bgp', []))
-lldp = len(d.get('lldp_neighbors', []) or d.get('links', []) or d.get('lldp', []))
+# BGP is per-device: devices[].bgp[]. Fall back to top-level keys for older schemas.
+bgp = sum(len(dev.get('bgp', [])) for dev in d.get('devices', []))
+bgp = bgp or len(d.get('bgp_neighbors', [])) or len(d.get('neighbors', []))
+# LLDP links are top-level in the current schema.
+lldp = len(d.get('links', [])) or len(d.get('lldp_neighbors', [])) or len(d.get('lldp', []))
 print('ok', devices, bgp, lldp)
 " 2>/dev/null || echo "parse_error 0 0 0")"
 read -r CSTATUS DEVS BGP LLDP <<<"$COUNTS"
@@ -552,13 +579,22 @@ fi
 section "14. T4-7 gate: fault injection round-trip"
 
 BGP_TARGET="$(echo "$TOPO_JSON" | python3 -c "
-import json, sys
+import json, sys, re
 try:
     d = json.load(sys.stdin)
 except Exception:
     sys.exit(0)
 candidates = []
-for n in d.get('bgp_neighbors', []) + d.get('neighbors', []) + d.get('bgp', []):
+# Current schema: BGP sessions are per-device in devices[].bgp[].
+for device in d.get('devices', []):
+    dev_addr = device.get('address', '')
+    for n in device.get('bgp', []):
+        peer = n.get('peer', '')
+        state = (n.get('state') or '').lower()
+        if dev_addr and peer and state in ('established', 'up'):
+            candidates.append((dev_addr, peer))
+# Legacy fallback for older top-level schemas.
+for n in d.get('bgp_neighbors', []) + d.get('neighbors', []):
     dev = n.get('device_address') or n.get('device') or n.get('source')
     peer = n.get('peer_address') or n.get('peer')
     state = (n.get('session_state') or n.get('state') or '').lower()
@@ -566,7 +602,6 @@ for n in d.get('bgp_neighbors', []) + d.get('neighbors', []) + d.get('bgp', []):
         candidates.append((dev, peer))
 if not candidates:
     sys.exit(0)
-import re
 clab_match = next((c for c in candidates if re.search(r'srl|spine|leaf|pe|p1|p2', c[0], re.I)), None)
 dev, peer = clab_match or candidates[0]
 print(dev, peer)

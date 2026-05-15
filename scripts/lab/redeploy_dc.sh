@@ -120,6 +120,15 @@ if [[ ! -f "$CA_CERT" ]]; then
 fi
 CA_FP=$(openssl x509 -in "$CA_CERT" -noout -fingerprint 2>/dev/null | cut -d= -f2)
 echo "      CA cert generated: $CA_FP"
+
+# Copy fresh CA cert to the canonical path that bonsai.toml references.
+# lab/dc/ca.pem is gitignored and must be refreshed on every clab deploy
+# because --cleanup wipes the old .tls/ dir and generates a new CA keypair.
+# Without this copy the native bonsai process (and docker bind-mount) will
+# use a stale CA and every gNMI subscriber will fail TLS for the entire run.
+DST_CA="$REPO_ROOT/lab/dc/ca.pem"
+cp "$CA_CERT" "$DST_CA"
+echo "      CA cert → lab/dc/ca.pem ($(wc -c < "$DST_CA") bytes)"
 echo ""
 
 # ── Step 3: verify all node certs match the new CA ────────────────────────────
