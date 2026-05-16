@@ -1,0 +1,2 @@
+    $ git reset --hard origin/main
+HEAD is now at 7b61327 fix: inject_fault.py — resolve mgmt IP to hostname before dispatch
