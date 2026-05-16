@@ -1,0 +1,14 @@
+[18:51:21] BGP DOWN: 172.100.103.11:57400 peer 10.1.0.2
+Traceback (most recent call last):
+  File "/home/arjuna/Desktop/bonsai/python/inject_fault.py", line 620, in <module>
+    main()
+  File "/home/arjuna/Desktop/bonsai/python/inject_fault.py", line 568, in main
+    dispatch_bgp_down(targets, args.hostname, args.peer, args.topology)
+  File "/home/arjuna/Desktop/bonsai/python/inject_fault.py", line 417, in dispatch_bgp_down
+    srl_bgp_disable_docker(hostname, peer, topology)
+  File "/home/arjuna/Desktop/bonsai/python/inject_fault.py", line 215, in srl_bgp_disable_docker
+    out = _run_srl_docker(hostname, cmd, topology)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/arjuna/Desktop/bonsai/python/inject_fault.py", line 163, in _run_srl_docker
+    raise RuntimeError(combined or f"docker sr_cli failed for {hostname}")
+RuntimeError: Error response from daemon: No such container: clab-bonsai-p4-172.100.103.11:57400
