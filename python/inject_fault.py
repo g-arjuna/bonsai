@@ -51,7 +51,7 @@ import paramiko
 
 
 CONFIG_PATH   = "bonsai.toml"
-TOPOLOGY_NAME = "bonsai-p4"          # clab topology name for netem commands
+TOPOLOGY_NAME = "bonsai-dc"          # clab topology name for netem commands
 SSH_TIMEOUT   = 10                    # seconds
 CMD_TIMEOUT   = 15                    # seconds for SSH channel read
 
