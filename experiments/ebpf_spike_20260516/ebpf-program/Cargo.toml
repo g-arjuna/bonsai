@@ -1,0 +1,17 @@
+[package]
+name = "ebpf-drop-counter-ebpf"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "ebpf_drop_counter"
+crate-type = ["cdylib"]
+
+[dependencies]
+aya-bpf = "0.1"
+aya-log-ebpf = "0.1"
+
+[profile.release]
+lto = true
+opt-level = 3
+panic = "abort"
