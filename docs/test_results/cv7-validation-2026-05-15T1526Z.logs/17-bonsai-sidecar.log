@@ -1,0 +1,9 @@
+Bonsai Collector Rule Engine
+  local collector: localhost:50051
+  core ingest:     localhost:50051
+  sidecar name:    rules-local (kind=rules)
+[collector-engine] core forwarder starting, core=localhost:50051
+[collector-engine] connected to core at localhost:50051
+[collector-engine] connected to local collector at localhost:50051
+[collector-engine] registered as sidecar c867660a-d1ae-47e9-a7fa-9da59f51c01c
+[engine] no ML models found for scope 'local' in 'models' — running rules-only mode

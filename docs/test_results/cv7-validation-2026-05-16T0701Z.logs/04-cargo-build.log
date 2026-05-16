@@ -1,0 +1,8 @@
+   Compiling bonsai v0.1.0 (/home/arjuna/Desktop/bonsai)
+error: unexpected closing delimiter: `}`
+   --> src/http_server/swagger_ui.rs:406:1
+    |
+406 | }
+    | ^ unexpected closing delimiter
+
+error: could not compile `bonsai` (lib) due to 1 previous error

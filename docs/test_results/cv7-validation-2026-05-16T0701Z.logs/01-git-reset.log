@@ -1,0 +1,2 @@
+    $ git reset --hard origin/main
+HEAD is now at 3cb2c5c D2-T1: add event_detection_retirement_gate.sh

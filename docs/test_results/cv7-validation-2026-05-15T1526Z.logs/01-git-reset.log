@@ -1,0 +1,2 @@
+    $ git reset --hard origin/main
+HEAD is now at 0ba7300 DV1 Batch 1+2+3: HTTP bind fix, doc consolidation, GNN scaffolding, Helm chart
