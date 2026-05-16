@@ -258,9 +258,9 @@ while (( $(date +%s) < SMOKE_END )); do
 
   sleep 5
 
-  # 2. BFD fault (best-effort — may not be supported by inject_fault.py for all vendors)
-  log "  [bfd] inject bfd-flap $BFD_NODE (hold=${FAULT_HOLD_SECS}s)"
-  $PY python/inject_fault.py bfd-flap "$BFD_NODE" \
+  # 2. BFD fault — srl-leaf1 ethernet-1/1.0 (from chaos plan; bfd-flap needs hostname+subinterface)
+  log "  [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=${FAULT_HOLD_SECS}s)"
+  $PY python/inject_fault.py bfd-flap srl-leaf1 ethernet-1/1.0 \
     --hold "$FAULT_HOLD_SECS" \
     >> "$LOG_DIR/faults.log" 2>&1 \
     && log "  [bfd] injected ok" \
@@ -268,15 +268,13 @@ while (( $(date +%s) < SMOKE_END )); do
 
   sleep 5
 
-  # 3. Interface fault (skip if no target found)
-  if [[ -n "$IF_TARGET" ]]; then
-    log "  [iface] inject if-down $IF_NODE / $IF_NAME (hold=${FAULT_HOLD_SECS}s)"
-    $PY python/inject_fault.py if-down "$IF_NODE" "$IF_NAME" \
-      --hold "$FAULT_HOLD_SECS" \
-      >> "$LOG_DIR/faults.log" 2>&1 \
-      && log "  [iface] injected ok" \
-      || log "  [iface] inject FAILED (see $LOG_DIR/faults.log) — continuing"
-  fi
+  # 3. Interface fault — srl-leaf1 ethernet-1/1 (iface-flap, not if-down)
+  log "  [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=${FAULT_HOLD_SECS}s)"
+  $PY python/inject_fault.py iface-flap srl-leaf1 ethernet-1/1 \
+    --hold "$FAULT_HOLD_SECS" \
+    >> "$LOG_DIR/faults.log" 2>&1 \
+    && log "  [iface] injected ok" \
+    || log "  [iface] inject FAILED (see $LOG_DIR/faults.log) — continuing"
 
   # Poll detections for new rule_id hits after each cycle
   sleep "$DETECTION_WAIT_SECS"
