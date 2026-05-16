@@ -1,4 +1,3 @@
-use axum::response::IntoResponse;
 /// Phase 6 HTTP API + SSE server (Axum).
 ///
 /// Runs on port 3000 alongside the Tonic gRPC server (port 50051).
@@ -12,53 +11,39 @@ use axum::response::IntoResponse;
 ///   GET /api/events            — SSE stream of live BonsaiEvents
 ///   GET / (and assets/*)       — Svelte SPA static files from ui/dist/
 use std::collections::HashMap;
-use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 use axum::{
-    Json, Router,
-    extract::{Path, Query, State},
+    Router,
     http::StatusCode,
-    response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
 };
-use futures::stream::{Stream, StreamExt};
+
 use lbug::{Connection, Value};
 use serde::{Deserialize, Serialize};
-use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use tower_http::{cors::CorsLayer, services::ServeDir};
 
-use crate::assignment::{CollectorManager, CollectorStatus};
+use crate::assignment::CollectorManager;
 use crate::catalogue::CatalogueState;
-use crate::enrichment::{EnricherConfig, SharedEnricherRegistry};
-use crate::gnmi_set::gnmi_set;
+use crate::enrichment::SharedEnricherRegistry;
 use crate::graph::{
-    DetectionRow, EnvironmentRecord, GraphStore, REMEDIATION_TRUST_CUTOFF_ISO,
-    RemediationProposalRow, SiteRecord, TraceStep,
+    DetectionRow, GraphStore, SiteRecord, TraceStep,
 };
-use crate::output::traits::{OutputAdapterConfig, OutputAdapterRunState, SharedAdapterRegistry};
+use crate::output::traits::SharedAdapterRegistry;
 use crate::resource_governor::GovernorHandle;
 use crate::{
-    archive, audit,
-    change_detection::{self, ChangeDetectionRuntime},
+    change_detection::ChangeDetectionRuntime,
     config::{
-        AssignmentRule, LayeredIngestionConfig, RemediationConfig, SelectedSubscriptionPath,
-        ServiceNowConfig, StorageConfig, StreamingConfig, TargetConfig,
+        LayeredIngestionConfig, RemediationConfig, SelectedSubscriptionPath,
+        ServiceNowConfig, StorageConfig, StreamingConfig,
     },
-    credentials::{CredentialSummary, CredentialVault, ResolvePurpose, ResolvedCredential},
-    discovery::{self, DiscoveryInput},
-    disk_guard, event_bus, memory_profile,
-    registry::{ApiRegistry, DeviceRegistry, RegistryChange},
+    credentials::CredentialVault, memory_profile,
+    registry::ApiRegistry,
     remediation::{
-        SharedRollbackRegistry, SharedTrustStore, TrustKey, TrustState, check_graduation,
+        SharedRollbackRegistry, SharedTrustStore,
     },
-    signals::syslog::{SyslogEvent, SyslogFact},
-    store::BonsaiStore,
-    streaming::{self, StreamingReadinessReport},
-    synthesizer,
-    yang::YangLibrary,
 };
 
 mod mcp_routes;

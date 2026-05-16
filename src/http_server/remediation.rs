@@ -131,24 +131,21 @@ pub(super) struct InvestigationDetailResponse {
     investigation: crate::graph::InvestigationRecord,
     tool_calls: Vec<crate::graph::ToolCallRecord>,
 }
-use std::collections::HashMap;
-use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use axum::{Json, extract::{Path, Query, State}, http::StatusCode, response::IntoResponse};
 use lbug::{Connection, Value};
 
 use super::AppState;
 use super::{default_proposal_status, default_verify_wait_secs, default_limit, default_trigger, now_ns};
-use crate::registry::PathOverride;
 use crate::audit;
-use crate::config::{RemediationConfig, ServiceNowConfig, StorageConfig, TargetConfig};
-use crate::credentials::{CredentialSummary, CredentialVault, ResolvePurpose, ResolvedCredential};
+use crate::config::TargetConfig;
+use crate::credentials::{CredentialVault, ResolvePurpose, ResolvedCredential};
 use crate::gnmi_set::gnmi_set;
-use crate::graph::{GraphStore, RemediationProposalRow, REMEDIATION_TRUST_CUTOFF_ISO, TraceStep};
+use crate::graph::RemediationProposalRow;
 use crate::remediation::{
-    SharedRollbackRegistry, SharedTrustStore, TrustKey, TrustState, check_graduation,
+    TrustKey, TrustState, check_graduation,
 };
-use crate::store::BonsaiStore;
+
 
 pub(super) async fn approvals_list_handler(
     State(state): State<AppState>,

@@ -23,7 +23,7 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 
-use super::{CONFIG_PATH, GRAPH_PATH_DEFAULT, REGISTRY_PATH};
+use super::{GRAPH_PATH_DEFAULT, REGISTRY_PATH};
 
 fn config_path() -> String {
     super::config_path()
