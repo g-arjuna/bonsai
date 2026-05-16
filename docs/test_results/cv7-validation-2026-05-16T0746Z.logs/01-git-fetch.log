@@ -1,0 +1,4 @@
+    $ git fetch origin main
+From https://github.com/g-arjuna/bonsai
+ * branch            main       -> FETCH_HEAD
+   3fdfb24..79b05ea  main       -> origin/main

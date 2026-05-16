@@ -1,0 +1,2 @@
+    $ git reset --hard origin/main
+HEAD is now at 79b05ea fix: repair three split extraction errors causing build failure
