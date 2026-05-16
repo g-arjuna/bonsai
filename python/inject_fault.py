@@ -390,10 +390,15 @@ def netem_clear(node_name: str, iface: str, topology: str = TOPOLOGY_NAME) -> No
 # ── dispatch ──────────────────────────────────────────────────────────────────
 
 def _get_target(targets: dict, hostname: str) -> dict:
-    if hostname not in targets:
-        sys.exit(f"ERROR: hostname '{hostname}' not found in bonsai.toml — "
-                 f"available: {list(targets)}")
-    return targets[hostname]
+    if hostname in targets:
+        return targets[hostname]
+    # Topology API returns mgmt IP — try matching by address (strip port)
+    addr_bare = hostname.split(":")[0]
+    for t in targets.values():
+        if t["address"] == addr_bare:
+            return t
+    sys.exit(f"ERROR: hostname '{hostname}' not found in bonsai.toml — "
+             f"available: {list(targets)}")
 
 
 def _use_docker_transport() -> bool:
