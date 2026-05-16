@@ -1,0 +1,21 @@
+fixture_id: arista-eos-show-isis-adjacency
+vendor: arista-eos
+command: "show isis adjacency"
+raw: |
+  IS-IS Instance: default VRF: default
+
+    System ID         Type Interface          SNPA              State Hold time   Circuit ID
+    srl-spine1        L2   Ethernet1          P2P               UP    29          0C
+    srl-spine2        L2   Ethernet2          P2P               UP    28          0D
+    srl-leaf3         L2   Ethernet3          P2P               INIT  10          0E
+expected_parsed:
+  adjacencies:
+    - system_id: "srl-spine1"
+      level: "L2"
+      interface: "Ethernet1"
+      state: "UP"
+    - system_id: "srl-spine2"
+      level: "L2"
+      state: "UP"
+    - system_id: "srl-leaf3"
+      state: "INIT"

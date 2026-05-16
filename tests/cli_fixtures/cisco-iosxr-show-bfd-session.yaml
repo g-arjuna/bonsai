@@ -1,0 +1,24 @@
+fixture_id: cisco-iosxr-show-bfd-session
+vendor: cisco-iosxr
+command: "show bfd session"
+raw: |
+  IPv4:
+  -------------------------------------------------------------------------------
+  LocalAddr      NeighborAddr    State     Holdown(mult) DemandPoll Echo     Auth
+  -------------------------------------------------------------------------------
+  10.1.0.1       10.1.0.2        UP        150 (3  )     No         0ms      None
+  10.1.0.5       10.1.0.6        UP        150 (3  )     No         0ms      None
+  10.1.0.9       10.1.0.10       DOWN      0   (3  )     No         0ms      None
+
+  IPv4 sessions up: 2, down: 1, unknown: 0
+expected_parsed:
+  sessions:
+    - local_addr: "10.1.0.1"
+      neighbor_addr: "10.1.0.2"
+      state: "UP"
+    - local_addr: "10.1.0.5"
+      neighbor_addr: "10.1.0.6"
+      state: "UP"
+    - local_addr: "10.1.0.9"
+      neighbor_addr: "10.1.0.10"
+      state: "DOWN"

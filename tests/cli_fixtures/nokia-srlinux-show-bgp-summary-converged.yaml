@@ -1,0 +1,26 @@
+fixture_id: nokia-srlinux-show-bgp-summary-converged
+vendor: nokia-srlinux
+command: "show bgp summary"
+raw: |
+  ---------------------------------------------------------------
+  BGP is enabled and up in network-instance "default"
+  Global AS number  : 65001
+  BGP identifier    : 10.0.0.11
+  ---------------------------------------------------------------
+  Group       : ibgp-spines
+  ---------------------------------------------------------------
+  Neighbor                    AS    MsgRcvd  MsgSent     Up/Down State/PfxRcd
+  10.0.0.12                65001       1234     1230  00:45:12         42
+  10.0.0.13                65001       5678     5670  01:12:00         18
+expected_parsed:
+  router_id: "10.0.0.11"
+  local_as: 65001
+  neighbors:
+    - peer: "10.0.0.12"
+      remote_as: 65001
+      uptime: "00:45:12"
+      prefixes_received: 42
+    - peer: "10.0.0.13"
+      remote_as: 65001
+      uptime: "01:12:00"
+      prefixes_received: 18

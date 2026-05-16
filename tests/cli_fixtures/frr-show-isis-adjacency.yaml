@@ -1,0 +1,19 @@
+fixture_id: frr-show-isis-adjacency
+vendor: frr
+command: "show isis neighbor"
+raw: |-
+  Area default:
+    System Id           Interface   L  State        Holdtime SNPA
+    srl-spine1          eth0        2  Up            29       p2p
+    srl-spine2          eth1        2  Up            28       p2p
+    srl-leaf3           eth2        2  Initializing  10       p2p
+expected_parsed:
+  adjacencies:
+    - system_id: "srl-spine1"
+      interface: "eth0"
+      level: "2"
+      state: "Up"
+    - system_id: "srl-spine2"
+      state: "Up"
+    - system_id: "srl-leaf3"
+      state: "Initializing"

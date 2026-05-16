@@ -1,0 +1,33 @@
+fixture_id: frr-show-bfd-peer
+vendor: frr
+command: "show bfd peer"
+raw: |-
+  BFD Peer:
+      peer 10.1.0.2 local-address 10.1.0.1 interface eth0 vrf default
+      ID: 1234567
+      Remote ID: 2345678
+      Active mode
+      Status: up
+      Uptime: 1 hour(s), 5 minute(s), 10 second(s)
+      Diagnostics: ok
+      Remote diagnostics: ok
+      Peer Type: configured
+      RTT min/avg/max: 0/0/0 usec
+  BFD Peer:
+      peer 10.1.0.6 local-address 10.1.0.5 interface eth1 vrf default
+      ID: 3456789
+      Remote ID: 0
+      Active mode
+      Status: down
+      Diagnostics: ok
+      Remote diagnostics: ok
+expected_parsed:
+  peers:
+    - local_addr: "10.1.0.1"
+      peer: "10.1.0.2"
+      interface: "eth0"
+      status: "up"
+    - local_addr: "10.1.0.5"
+      peer: "10.1.0.6"
+      interface: "eth1"
+      status: "down"

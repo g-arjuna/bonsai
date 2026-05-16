@@ -1,0 +1,28 @@
+fixture_id: arista-eos-show-ip-route
+vendor: arista-eos
+command: "show ip route"
+raw: |
+  VRF: default
+  Codes: C - connected, S - static, K - kernel,
+         O - OSPF, IA - OSPF inter area, E1 - OSPF external type 1,
+         E2 - OSPF external type 2, N1 - OSPF NSSA external type 1,
+         N2 - OSPF NSSA external type2, B - BGP, B I - iBGP, B E - eBGP,
+         R - RIP, I L1 - IS-IS level 1, I L2 - IS-IS level 2, A B - BGP Aggregate,
+         A O - OSPF Summary, NG - Nexthop Group Static Route
+
+  Gateway of last resort is not set
+
+   C        10.1.0.0/30 is directly connected, Ethernet1
+   C        10.1.0.4/30 is directly connected, Ethernet2
+   B I      192.168.10.0/24 [200/0] via 10.0.0.11, Ethernet1
+   B I      192.168.20.0/24 [200/0] via 10.0.0.12, Ethernet2
+expected_parsed:
+  routes:
+    - prefix: "10.1.0.0/30"
+      protocol: "C"
+    - prefix: "192.168.10.0/24"
+      protocol: "B I"
+      next_hop: "10.0.0.11"
+    - prefix: "192.168.20.0/24"
+      protocol: "B I"
+      next_hop: "10.0.0.12"

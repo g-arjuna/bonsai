@@ -1,0 +1,32 @@
+fixture_id: frr-show-lldp-neighbors
+vendor: frr
+command: "show lldp neighbors"
+raw: |-
+  -------------------------------------------------------------------------------
+  LLDP neighbors:
+  -------------------------------------------------------------------------------
+  Interface:    eth0, via: LLDP, RX: 12, TX: 12
+    Chassis:
+      ChassisID:    mac 00:50:56:a0:11:01
+      SysName:      srl-spine1
+      SysDescr:     SR Linux
+    Port:
+      PortID:       local ethernet-1/3
+      PortDescr:    ethernet-1/3
+  -------------------------------------------------------------------------------
+  Interface:    eth1, via: LLDP, RX: 10, TX: 10
+    Chassis:
+      ChassisID:    mac 00:50:56:a0:11:02
+      SysName:      srl-spine2
+      SysDescr:     SR Linux
+    Port:
+      PortID:       local ethernet-1/3
+      PortDescr:    ethernet-1/3
+  -------------------------------------------------------------------------------
+expected_parsed:
+  neighbors:
+    - local_interface: "eth0"
+      neighbor_name: "srl-spine1"
+      neighbor_port: "ethernet-1/3"
+    - local_interface: "eth1"
+      neighbor_name: "srl-spine2"

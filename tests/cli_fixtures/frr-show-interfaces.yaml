@@ -1,0 +1,30 @@
+fixture_id: frr-show-interfaces
+vendor: frr
+command: "show interface"
+raw: |-
+  Interface eth0 is up, line protocol is up
+    Link ups:       1    last: 2026/05/15 09:00:00.00
+    Link downs:     0    last: (never)
+    vrf: default
+    index 2 metric 0 mtu 9000 speed 10000
+    flags: <UP,BROADCAST,RUNNING,MULTICAST>
+    Type: Ethernet
+    HWaddr: 00:50:56:a0:00:01
+    inet 10.1.0.1/30
+    inet6 fe80::250:56ff:fea0:1/64
+  Interface eth1 is down, line protocol is down
+    Link ups:       0    last: (never)
+    Link downs:     1    last: 2026/05/16 08:00:00.00
+    vrf: default
+    index 3 metric 0 mtu 9000 speed 10000
+    flags: <BROADCAST,MULTICAST>
+    Type: Ethernet
+    HWaddr: 00:50:56:a0:00:02
+expected_parsed:
+  interfaces:
+    - name: "eth0"
+      admin_state: "up"
+      oper_state: "up"
+    - name: "eth1"
+      admin_state: "down"
+      oper_state: "down"

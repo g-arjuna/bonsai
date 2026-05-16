@@ -1,0 +1,20 @@
+fixture_id: cisco-iosxr-show-bgp-summary-neighbor-down
+vendor: cisco-iosxr
+command: "show bgp summary"
+raw: |
+  BGP router identifier 10.0.0.1, local AS number 65001
+
+  Neighbor        Spk    AS MsgRcvd MsgSent   TblVer  InQ OutQ  Up/Down  St/PfxRcd
+  10.0.0.2          0 65002    1234    1230        4    0    0 00:23:45         42
+  10.0.0.3          0 65003       0       5        0    0    0 00:00:15       Idle
+expected_parsed:
+  router_id: "10.0.0.1"
+  local_as: 65001
+  neighbors:
+    - peer: "10.0.0.2"
+      remote_as: 65002
+      prefixes_received: 42
+    - peer: "10.0.0.3"
+      remote_as: 65003
+      session_state: "Idle"
+      prefixes_received: 0

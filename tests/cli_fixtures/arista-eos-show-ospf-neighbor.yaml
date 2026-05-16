@@ -1,0 +1,17 @@
+fixture_id: arista-eos-show-ospf-neighbor
+vendor: arista-eos
+command: "show ip ospf neighbor"
+raw: |
+  Neighbor ID     Instance VRF      Pri State                  Dead Time   Address         Interface
+  10.0.0.11       1        default  1   FULL/DR                00:00:35    10.1.0.1        Ethernet1
+  10.0.0.12       1        default  1   FULL/BDR               00:00:38    10.1.0.5        Ethernet2
+  10.0.0.13       1        default  0   2WAY/DROTHER           00:00:32    10.1.0.9        Ethernet3
+expected_parsed:
+  neighbors:
+    - neighbor_id: "10.0.0.11"
+      state: "FULL"
+      dead_time: "00:00:35"
+    - neighbor_id: "10.0.0.12"
+      state: "FULL"
+    - neighbor_id: "10.0.0.13"
+      state: "2WAY"

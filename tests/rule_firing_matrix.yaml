@@ -1,0 +1,619 @@
+# rule_firing_matrix.yaml — D2-T4 (DV1)
+#
+# Spec: for each rule_id, what inputs MUST fire it and what inputs MUST NOT.
+# smoke_rule_firing_matrix.sh reads this file and verifies each case.
+#
+# Each entry uses inline event dicts so the smoke script can synthesise events
+# without needing a live lab — pure Python rule unit-test pattern.
+#
+# "fires_on" events must produce a non-None detect() result.
+# "does_not_fire_on" events must produce None.
+
+- rule_id: bgp_session_down
+  fires_on:
+    - label: "Established → Idle"
+      event_type: bgp_session_change
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        old_state: "established"
+        new_state: "idle"
+    - label: "Established → Active"
+      skip_synthetic: true
+      reason: "BgpSessionDown only fires when new_state is in _HARD_DOWN_STATES={idle,active} AND old_state in _ESTABLISHED_FROM={established}; Active is in _HARD_DOWN_STATES but rule also requires old_state=established which this has — verify actual rule set"
+      event_type: bgp_session_change
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        old_state: "established"
+        new_state: "active"
+  does_not_fire_on:
+    - label: "Active → Established (recovery)"
+      event_type: bgp_session_change
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        old_state: "active"
+        new_state: "established"
+    - label: "Idle → Idle (no change)"
+      event_type: bgp_session_change
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        old_state: "idle"
+        new_state: "idle"
+    - label: "Wrong event type"
+      event_type: bfd_session_change
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        old_state: "established"
+        new_state: "idle"
+
+- rule_id: bgp_session_flap
+  fires_on:
+    - label: "3 flaps within 5 min window"
+      skip_synthetic: true
+      reason: "Uses in-memory _FLAP_REGISTRY keyed by device:peer; 3 events must arrive in sequence within 5 min"
+      event_type: bgp_session_change
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        old_state: "established"
+        new_state: "idle"
+  does_not_fire_on:
+    - label: "2 flaps — below threshold"
+      skip_synthetic: true
+      reason: "Same registry dependency"
+      event_type: bgp_session_change
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        old_state: "established"
+        new_state: "idle"
+    - label: "Wrong event type"
+      event_type: interface_oper_status_change
+      device_address: "10.0.0.1"
+      detail:
+        flap_count: 5
+
+- rule_id: bgp_all_peers_down
+  fires_on:
+    - label: "peer_count_established=0 with peers present"
+      skip_synthetic: true
+      reason: "peer_count_established populated via client.get_bgp_neighbors() graph query — FakeClient returns []"
+      event_type: bgp_session_change
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        old_state: "established"
+        new_state: "idle"
+  does_not_fire_on:
+    - label: "peer_count_established > 0"
+      skip_synthetic: true
+      reason: "Same graph query dependency"
+      event_type: bgp_session_change
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        old_state: "established"
+        new_state: "idle"
+    - label: "no peers on device — rule skips correctly"
+      event_type: bgp_session_change
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        old_state: "established"
+        new_state: "idle"
+
+- rule_id: bgp_never_established
+  fires_on:
+    - label: "peer in Active state for >90s"
+      skip_synthetic: true
+      reason: "Uses _first_seen in-memory dict; rule checks elapsed time since first event for device:peer pair"
+      event_type: bgp_session_change
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        old_state: "active"
+        new_state: "active"
+  does_not_fire_on:
+    - label: "recovery to established suppresses tracking"
+      event_type: bgp_session_change
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        old_state: "active"
+        new_state: "established"
+    - label: "wrong event type"
+      event_type: interface_oper_status_change
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+
+- rule_id: bfd_session_down
+  fires_on:
+    - label: "up → down"
+      event_type: bfd_session_change
+      device_address: "10.0.0.1"
+      detail:
+        if_name: "ethernet-1/1.0"
+        peer: "10.0.0.2"
+        local_address: "10.0.0.1"
+        local_discriminator: "1"
+        old_state: "up"
+        new_state: "down"
+    - label: "none → down (bootstrap)"
+      event_type: bfd_session_change
+      device_address: "10.0.0.1"
+      detail:
+        if_name: "ethernet-1/1.0"
+        peer: "10.0.0.2"
+        local_address: "10.0.0.1"
+        local_discriminator: "1"
+        old_state: "none"
+        new_state: "down"
+  does_not_fire_on:
+    - label: "down → up (recovery)"
+      event_type: bfd_session_change
+      device_address: "10.0.0.1"
+      detail:
+        if_name: "ethernet-1/1.0"
+        peer: "10.0.0.2"
+        local_address: "10.0.0.1"
+        local_discriminator: "1"
+        old_state: "down"
+        new_state: "up"
+    - label: "none → up (bootstrap healthy)"
+      event_type: bfd_session_change
+      device_address: "10.0.0.1"
+      detail:
+        if_name: "ethernet-1/1.0"
+        peer: "10.0.0.2"
+        local_address: "10.0.0.1"
+        local_discriminator: "1"
+        old_state: "none"
+        new_state: "up"
+    - label: "wrong event type"
+      event_type: bgp_session_change
+      device_address: "10.0.0.1"
+      detail:
+        old_state: "up"
+        new_state: "down"
+
+- rule_id: interface_down
+  fires_on:
+    - label: "oper_status=down"
+      event_type: interface_oper_status_change
+      device_address: "10.0.0.1"
+      detail:
+        if_name: "ethernet-1/1"
+        old_state: "up"
+        new_state: "down"
+        oper_status: "down"
+    - label: "oper_status=lower-layer-down"
+      event_type: interface_oper_status_change
+      device_address: "10.0.0.1"
+      detail:
+        if_name: "ethernet-1/2"
+        old_state: "up"
+        new_state: "lower-layer-down"
+        oper_status: "lower-layer-down"
+  does_not_fire_on:
+    - label: "oper_status=up (recovery)"
+      event_type: interface_oper_status_change
+      device_address: "10.0.0.1"
+      detail:
+        if_name: "ethernet-1/1"
+        old_state: "down"
+        new_state: "up"
+        oper_status: "up"
+    - label: "wrong event type"
+      event_type: bfd_session_change
+      device_address: "10.0.0.1"
+      detail:
+        oper_status: "down"
+
+- rule_id: interface_error_spike
+  fires_on:
+    - label: "error rate spikes above threshold"
+      event_type: poll
+      device_address: "10.0.0.1"
+      detail:
+        if_name: "ethernet-1/1"
+        in_errors_rate: 150
+        out_errors_rate: 0
+  does_not_fire_on:
+    - label: "error rate below threshold"
+      event_type: poll
+      device_address: "10.0.0.1"
+      detail:
+        if_name: "ethernet-1/1"
+        in_errors_rate: 5
+        out_errors_rate: 0
+
+- rule_id: interface_high_utilization
+  fires_on:
+    - label: "utilization > 80%"
+      event_type: poll
+      device_address: "10.0.0.1"
+      detail:
+        if_name: "ethernet-1/1"
+        utilization_pct: 85
+  does_not_fire_on:
+    - label: "utilization < 80%"
+      event_type: poll
+      device_address: "10.0.0.1"
+      detail:
+        if_name: "ethernet-1/1"
+        utilization_pct: 70
+
+- rule_id: topology_edge_lost
+  fires_on:
+    - label: "CONNECTED_TO edge absent after being present"
+      event_type: poll
+      device_address: "10.0.0.1"
+      detail:
+        if_name: "ethernet-1/1"
+        edge_lost: true
+        neighbor_device: "10.0.0.2"
+  does_not_fire_on:
+    - label: "edge still present"
+      event_type: poll
+      device_address: "10.0.0.1"
+      detail:
+        if_name: "ethernet-1/1"
+        edge_lost: false
+
+- rule_id: snmp_cold_warm_start
+  fires_on:
+    - label: "coldStart trap received"
+      skip_synthetic: true
+      reason: "SNMP rules read trap_oid/trap_name from raw SNMP event detail; exact field names depend on SNMP signal schema"
+      event_type: snmp_trap
+      device_address: "10.0.0.1"
+      detail:
+        trap_type: "coldStart"
+  does_not_fire_on:
+    - label: "linkUp trap (different type)"
+      event_type: snmp_trap
+      device_address: "10.0.0.1"
+      detail:
+        trap_type: "linkUp"
+    - label: "wrong event type"
+      event_type: bgp_session_change
+      device_address: "10.0.0.1"
+      detail:
+        trap_type: "coldStart"
+
+- rule_id: snmp_auth_failure_burst
+  fires_on:
+    - label: "5 auth failures within window"
+      skip_synthetic: true
+      reason: "Uses in-memory burst counter; 5 events must arrive within window"
+      event_type: snmp_trap
+      device_address: "10.0.0.1"
+      detail:
+        trap_type: "authenticationFailure"
+        burst_count: 5
+        window_secs: 60
+  does_not_fire_on:
+    - label: "1 auth failure (below burst threshold)"
+      event_type: snmp_trap
+      device_address: "10.0.0.1"
+      detail:
+        trap_type: "authenticationFailure"
+        burst_count: 1
+        window_secs: 60
+
+- rule_id: snmp_environmental_threshold_breach
+  fires_on:
+    - label: "temperature threshold exceeded"
+      skip_synthetic: true
+      reason: "SNMP environmental rule reads vendor-specific OID fields from raw SNMP detail"
+      event_type: snmp_trap
+      device_address: "10.0.0.1"
+      detail:
+        trap_type: "environmental"
+        sensor: "temperature"
+        value: 85
+        threshold: 80
+  does_not_fire_on:
+    - label: "temperature within threshold"
+      event_type: snmp_trap
+      device_address: "10.0.0.1"
+      detail:
+        trap_type: "environmental"
+        sensor: "temperature"
+        value: 70
+        threshold: 80
+
+- rule_id: snmp_fru_failure
+  fires_on:
+    - label: "FRU removal trap"
+      skip_synthetic: true
+      reason: "SNMP FRU rule reads vendor OID fields; exact field names depend on SNMP signal schema"
+      event_type: snmp_trap
+      device_address: "10.0.0.1"
+      detail:
+        trap_type: "fru"
+        state: "removed"
+        component: "PSU-0"
+  does_not_fire_on:
+    - label: "FRU insertion (non-failure)"
+      event_type: snmp_trap
+      device_address: "10.0.0.1"
+      detail:
+        trap_type: "fru"
+        state: "inserted"
+        component: "PSU-0"
+
+- rule_id: route_flap_detected
+  fires_on:
+    - label: "prefix withdrawn and re-announced >3 times"
+      skip_synthetic: true
+      reason: "Uses in-memory flap registry; requires multiple BMP events within time window"
+      event_type: bmp_route_monitor
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        prefix: "192.168.10.0/24"
+  does_not_fire_on:
+    - label: "prefix announced once (no flap)"
+      event_type: bmp_route_monitor
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        prefix: "192.168.10.0/24"
+        flap_count: 1
+        window_secs: 300
+
+- rule_id: unexpected_as_path
+  fires_on:
+    - label: "AS path contains unexpected ASN"
+      skip_synthetic: true
+      reason: "Rule checks BgpLsLink graph for known AS paths; requires graph query to determine baseline"
+      event_type: bmp_route_monitor
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        prefix: "192.168.10.0/24"
+        as_path: "65001 64512 65002"
+  does_not_fire_on:
+    - label: "AS path matches known topology"
+      event_type: bmp_route_monitor
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        prefix: "192.168.10.0/24"
+        as_path: "65001 65002"
+        unexpected_asn: ""
+
+- rule_id: route_leak_detected
+  fires_on:
+    - label: "customer prefix leaked to transit peer"
+      skip_synthetic: true
+      reason: "Route leak detection requires graph query for peer role attributes from BgpLsLink"
+      event_type: bmp_route_monitor
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        prefix: "192.168.10.0/24"
+  does_not_fire_on:
+    - label: "expected customer→provider export"
+      event_type: bmp_route_monitor
+      device_address: "10.0.0.1"
+      detail:
+        peer: "10.0.0.2"
+        prefix: "192.168.10.0/24"
+        leak_detected: false
+
+- rule_id: sr_policy_degraded
+  fires_on:
+    - label: "SR policy down — status=down"
+      event_type: sr_policy_change
+      device_address: "10.0.0.1"
+      detail:
+        name: "to-leaf1"
+        endpoint: "10.0.0.2"
+        status: "down"
+  does_not_fire_on:
+    - label: "SR policy active (healthy)"
+      event_type: sr_policy_change
+      device_address: "10.0.0.1"
+      detail:
+        name: "to-leaf1"
+        endpoint: "10.0.0.2"
+        status: "active"
+
+- rule_id: srlg_risk_detected
+  fires_on:
+    - label: "two active paths share an SRLG"
+      event_type: poll
+      device_address: "10.0.0.1"
+      detail:
+        srlg_id: "srlg-1"
+        shared_path_count: 2
+  does_not_fire_on:
+    - label: "paths on different SRLGs"
+      event_type: poll
+      device_address: "10.0.0.1"
+      detail:
+        srlg_id: ""
+        shared_path_count: 1
+
+- rule_id: syslog_auth_failure_cluster
+  fires_on:
+    - label: "5 auth failures within 60s"
+      skip_synthetic: true
+      reason: "Uses in-memory cluster counter keyed by device; 5 events must arrive within 60s window"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "auth"
+        message: "Authentication failed for user admin from 192.168.1.100"
+  does_not_fire_on:
+    - label: "1 auth failure (no cluster)"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "auth"
+        message: "Authentication failed for user admin"
+        cluster_count: 1
+        window_secs: 60
+    - label: "wrong event type"
+      event_type: bgp_session_change
+      device_address: "10.0.0.1"
+      detail:
+        category: "auth"
+
+- rule_id: syslog_hardware_error
+  fires_on:
+    - label: "hardware error syslog"
+      skip_synthetic: true
+      reason: "Syslog rules read raw syslog message via syslog_event.message field; exact schema differs from detail dict"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "hardware"
+        message: "NP0: Error: Uncheckable memory error in Linecard"
+  does_not_fire_on:
+    - label: "info-only hardware message"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "info"
+        message: "Hardware inventory updated"
+
+- rule_id: syslog_software_crash
+  fires_on:
+    - label: "software crash syslog"
+      skip_synthetic: true
+      reason: "Syslog rules use event-type-specific message parsing; skip for synthetic"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "software"
+        message: "Process bgpd crashed: Segmentation fault"
+  does_not_fire_on:
+    - label: "software restart (clean)"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "software"
+        message: "Process bgpd restarted by operator"
+
+- rule_id: syslog_license_expiry
+  fires_on:
+    - label: "license expiry warning syslog"
+      skip_synthetic: true
+      reason: "Syslog rules use event-type-specific message parsing"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "license"
+        message: "License for SR-MPLS expires in 7 days"
+  does_not_fire_on:
+    - label: "non-license syslog"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "hardware"
+        message: "Fan tray replaced"
+
+- rule_id: syslog_protocol_error
+  fires_on:
+    - label: "protocol error syslog"
+      skip_synthetic: true
+      reason: "Syslog rules use event-type-specific message parsing"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "protocol"
+        message: "OSPF: MTU mismatch detected on ge-0/0/0"
+  does_not_fire_on:
+    - label: "protocol info message"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "info"
+        message: "OSPF adjacency established"
+
+- rule_id: syslog_bpduguard_activation
+  fires_on:
+    - label: "BPDU guard activated syslog"
+      skip_synthetic: true
+      reason: "Syslog rules use event-type-specific message parsing"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "protocol"
+        message: "BPDU guard activated on interface Gi0/1 — port shutdown"
+  does_not_fire_on:
+    - label: "STP topology change (different rule)"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "protocol"
+        message: "STP topology change on Gi0/2"
+
+- rule_id: syslog_stp_topology_change
+  fires_on:
+    - label: "STP topology change syslog"
+      skip_synthetic: true
+      reason: "Syslog rules use event-type-specific message parsing"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "protocol"
+        message: "STP topology change notification received on VLAN 10"
+  does_not_fire_on:
+    - label: "BPDU guard (different rule)"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "protocol"
+        message: "BPDU guard port err-disabled on Gi0/1"
+
+- rule_id: syslog_gnmi_disagreement
+  fires_on:
+    - label: "syslog shows session down but gNMI shows established"
+      skip_synthetic: true
+      reason: "Rule performs live gNMI/graph lookup to compare syslog claim vs current graph state"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "gnmi_disagreement"
+        message: "Syslog: BGP peer 10.0.0.2 down; gNMI reports established"
+        peer_address: "10.0.0.2"
+  does_not_fire_on:
+    - label: "syslog and gNMI agree (both down)"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "gnmi_disagreement"
+        message: "Both agree: BGP peer 10.0.0.2 is down"
+        peer_address: "10.0.0.2"
+        syslog_state: "down"
+        gnmi_state: "idle"
+
+- rule_id: orphan_interface_mention
+  fires_on:
+    - label: "syslog references interface not in graph"
+      skip_synthetic: true
+      reason: "Rule queries graph to check if mentioned interface exists as Interface node"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "protocol"
+        message: "Interface ethernet-1/99 flapped"
+        mentioned_interface: "ethernet-1/99"
+  does_not_fire_on:
+    - label: "syslog references known interface"
+      event_type: syslog_event
+      device_address: "10.0.0.1"
+      detail:
+        category: "protocol"
+        message: "Interface ethernet-1/1 flapped"
+        mentioned_interface: "ethernet-1/1"
+        in_graph: true

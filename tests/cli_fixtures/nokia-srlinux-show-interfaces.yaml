@@ -1,0 +1,26 @@
+fixture_id: nokia-srlinux-show-interfaces
+vendor: nokia-srlinux
+command: "show interface"
+raw: |
+  ===========================================================================================
+  Interface Name   Admin State   Oper State  Speed     MTU    Port-Type
+  -------------------------------------------------------------------------------------------
+  ethernet-1/1     enable        up          10G       9232   port
+  ethernet-1/2     enable        up          10G       9232   port
+  ethernet-1/3     disable       down        10G       9232   port
+  mgmt0            enable        up          1G        1514   mgmt
+  ===========================================================================================
+expected_parsed:
+  interfaces:
+    - name: "ethernet-1/1"
+      admin_state: "enable"
+      oper_state: "up"
+    - name: "ethernet-1/2"
+      admin_state: "enable"
+      oper_state: "up"
+    - name: "ethernet-1/3"
+      admin_state: "disable"
+      oper_state: "down"
+    - name: "mgmt0"
+      admin_state: "enable"
+      oper_state: "up"

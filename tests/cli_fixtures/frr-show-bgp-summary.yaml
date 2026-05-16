@@ -1,0 +1,27 @@
+fixture_id: frr-show-bgp-summary
+vendor: frr
+command: "show bgp summary"
+raw: |-
+  IPv4 Unicast Summary (VRF default):
+  BGP router identifier 10.0.0.31, local AS number 65003 vrf-id 0
+  BGP table version 5
+  RIB entries 8, using 1504 bytes of memory
+  Peers 2, using 43 KiB of memory
+
+  Neighbor        V         AS   MsgRcvd   MsgSent   TblVer  InQ OutQ  Up/Down State/PfxRcd   PfxSnt Desc
+  10.0.0.11       4      65001      1234      1230        5    0    0 00:30:00           42       10 N/A
+  10.0.0.12       4      65001       456       452        5    0    0 01:00:00           18        8 N/A
+
+  Total number of neighbors 2
+expected_parsed:
+  router_id: "10.0.0.31"
+  local_as: 65003
+  neighbors:
+    - peer: "10.0.0.11"
+      remote_as: 65001
+      uptime: "00:30:00"
+      prefixes_received: 42
+    - peer: "10.0.0.12"
+      remote_as: 65001
+      uptime: "01:00:00"
+      prefixes_received: 18

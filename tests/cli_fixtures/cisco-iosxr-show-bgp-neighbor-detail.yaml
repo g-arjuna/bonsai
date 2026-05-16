@@ -1,0 +1,35 @@
+fixture_id: cisco-iosxr-show-bgp-neighbor-detail
+vendor: cisco-iosxr
+command: "show bgp neighbor 10.0.0.2"
+raw: |-
+  BGP neighbor is 10.0.0.2, remote AS 65002, external link
+  Remote router ID 10.0.0.2
+   BGP state = Established, up for 00:23:45
+   Last read 00:00:15, last write 00:00:06, hold time is 180, keepalive interval is 60 seconds
+   Neighbor sessions:
+     1 active, is not multisession capable (disabled)
+   Neighbor capabilities:
+     Route refresh: advertised and received(old and new)
+     Prefix ORF capability (received):
+       Sent 1
+   Address tracking is enabled, the RIB does have a route to the peer address
+   Connections established 1; dropped 0
+   Last reset 00:00:00
+   Local host: 10.0.0.1, Local port: 64444
+   Foreign host: 10.0.0.2, Foreign port: 179
+
+   For Address Family: IPv4 Unicast
+   BGP table version 4, neighbor version 4/0
+   Output queue size : 0
+   Index 1, Advertise bit 0
+   1 update-group member
+   Sent      Rcvd
+   Prefixes Current:     10        42    (Consumes 5040 bytes)
+   Prefixes Total:       10        42
+   Implicit Withdraw:     0         0
+expected_parsed:
+  neighbor: "10.0.0.2"
+  remote_as: 65002
+  session_state: "Established"
+  uptime: "00:23:45"
+  prefixes_received: 42

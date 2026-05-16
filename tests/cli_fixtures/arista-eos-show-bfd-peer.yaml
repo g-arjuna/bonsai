@@ -1,0 +1,21 @@
+fixture_id: arista-eos-show-bfd-peer
+vendor: arista-eos
+command: "show bfd peers"
+raw: |
+  VRF name: default
+  -----------------
+  DstAddr       MyDisc    YourDisc  Interface    Type          LastUp       LastDown
+  10.1.0.2      3799972970 2918477726 Ethernet1   normal        05/15/26 10:00  NA
+  10.1.0.6      1234567890 9876543210 Ethernet2   normal        05/15/26 09:00  NA
+
+      LastDiag    State
+      No Diagnostic  Up
+      No Diagnostic  Up
+expected_parsed:
+  peers:
+    - dst_addr: "10.1.0.2"
+      interface: "Ethernet1"
+      state: "Up"
+    - dst_addr: "10.1.0.6"
+      interface: "Ethernet2"
+      state: "Up"

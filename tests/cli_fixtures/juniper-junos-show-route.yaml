@@ -1,0 +1,29 @@
+fixture_id: juniper-junos-show-route
+vendor: juniper-junos
+command: "show route"
+raw: |
+  inet.0: 8 destinations, 8 routes (8 active, 0 holddown, 0 hidden)
+  + = Active Route, - = Last Active, * = Both
+
+  10.0.0.1/32        *[Direct/0] 1d 00:30:00
+                      > via lo0.0
+  10.1.0.0/30        *[Direct/0] 1d 00:30:00
+                      > via ge-0/0/0.0
+  192.168.10.0/24    *[BGP/170] 00:45:00, localpref 100
+                      AS path: 65001 I, validation-state: unverified
+                      > to 10.1.0.2 via ge-0/0/0.0
+  192.168.20.0/24    *[BGP/170] 00:30:00, localpref 100
+                      AS path: 65001 I, validation-state: unverified
+                      > to 10.1.0.6 via ge-0/0/1.0
+expected_parsed:
+  routes:
+    - prefix: "10.0.0.1/32"
+      protocol: "Direct"
+    - prefix: "10.1.0.0/30"
+      protocol: "Direct"
+    - prefix: "192.168.10.0/24"
+      protocol: "BGP"
+      next_hop: "10.1.0.2"
+    - prefix: "192.168.20.0/24"
+      protocol: "BGP"
+      next_hop: "10.1.0.6"

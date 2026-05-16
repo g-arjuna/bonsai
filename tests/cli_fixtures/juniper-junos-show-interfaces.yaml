@@ -1,0 +1,26 @@
+fixture_id: juniper-junos-show-interfaces
+vendor: juniper-junos
+command: "show interfaces"
+raw: |
+  Physical interface: ge-0/0/0, Enabled, Physical link is Up
+    Interface index: 128, SNMP ifIndex: 528
+    Type: Ethernet-CCC, Link-level type: Ethernet, MTU: 1514
+    Current address: 00:50:56:a0:00:01, Hardware address: 00:50:56:a0:00:01
+    Last flapped   : 2026-05-15 09:00:00 UTC (1d 00:30:00 ago)
+    Traffic statistics:
+     Input  bytes  :            12345678
+     Output bytes  :            12000000
+
+  Physical interface: ge-0/0/1, Enabled, Physical link is Down
+    Interface index: 129, SNMP ifIndex: 529
+    Type: Ethernet-CCC, Link-level type: Ethernet, MTU: 1514
+    Current address: 00:50:56:a0:00:02, Hardware address: 00:50:56:a0:00:02
+    Last flapped   : 2026-05-16 08:00:00 UTC (1:30:00 ago)
+expected_parsed:
+  interfaces:
+    - name: "ge-0/0/0"
+      admin_state: "Enabled"
+      oper_state: "Up"
+    - name: "ge-0/0/1"
+      admin_state: "Enabled"
+      oper_state: "Down"

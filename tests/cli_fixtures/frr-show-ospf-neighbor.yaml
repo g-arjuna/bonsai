@@ -1,0 +1,17 @@
+fixture_id: frr-show-ospf-neighbor
+vendor: frr
+command: "show ip ospf neighbor"
+raw: |-
+  Neighbor ID     Pri State           Dead Time Address         Interface            RXmtL RqstL DBsmL
+  10.0.0.11         1 Full/DR           38.865s 10.1.0.1        eth0:10.1.0.2            0     0     0
+  10.0.0.12         1 Full/BDR          37.220s 10.1.0.5        eth1:10.1.0.6            0     0     0
+  10.0.0.13         0 2-Way/DROther     36.100s 10.1.0.9        eth2:10.1.0.10           0     0     0
+expected_parsed:
+  neighbors:
+    - neighbor_id: "10.0.0.11"
+      state: "Full"
+      dead_time: "38.865s"
+    - neighbor_id: "10.0.0.12"
+      state: "Full"
+    - neighbor_id: "10.0.0.13"
+      state: "2-Way"

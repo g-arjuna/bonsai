@@ -1,0 +1,31 @@
+fixture_id: nokia-srlinux-show-bgp-neighbor-detail
+vendor: nokia-srlinux
+command: "show bgp neighbor 10.0.0.12"
+raw: |
+  -----------------------------------------------------------------------
+  BGP neighbor summary for network-instance "default"
+  Group                 : ibgp-spines
+  Neighbor              : 10.0.0.12
+  -----------------------------------------------------------------------
+  Peer AS               : 65001
+  Peer address          : 10.0.0.12
+  BGP state             : Established
+  Last state change     : 00:45:12 ago
+  Hold time             : 90
+  Keepalive time        : 30
+  Configured hold time  : 90
+  Configured keepalive  : 30
+  Negotiated hold time  : 90
+  Negotiated keepalive  : 30
+
+  Received messages     : 1234
+  Sent messages         : 1230
+  Received prefixes     : 42
+  Active prefixes       : 42
+  Received path attrs   : 42
+expected_parsed:
+  neighbor: "10.0.0.12"
+  remote_as: 65001
+  session_state: "Established"
+  hold_time: 90
+  received_prefixes: 42

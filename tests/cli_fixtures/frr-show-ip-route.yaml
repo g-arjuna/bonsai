@@ -1,0 +1,25 @@
+fixture_id: frr-show-ip-route
+vendor: frr
+command: "show ip route"
+raw: |-
+  Codes: K - kernel route, C - connected, S - static, R - RIP,
+         O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,
+         T - Table, v - VNC, V - VNC-Direct, A - Babel, D - SHARP,
+         F - PBR, f - OpenFabric,
+         > - selected route, * - FIB route, q - queued, r - rejected, b - backup
+
+  K>* 0.0.0.0/0 [0/100] via 192.168.1.1, eth0, 00:30:00
+  C>* 10.1.0.0/30 is directly connected, eth0, 00:30:00
+  C>* 10.1.0.4/30 is directly connected, eth1, 00:30:00
+  B>* 192.168.10.0/24 [20/0] via 10.0.0.11, eth0, weight 1, 00:25:00
+  B>* 192.168.20.0/24 [20/0] via 10.0.0.12, eth1, weight 1, 00:20:00
+expected_parsed:
+  routes:
+    - prefix: "10.1.0.0/30"
+      protocol: "C"
+    - prefix: "192.168.10.0/24"
+      protocol: "B"
+      next_hop: "10.0.0.11"
+    - prefix: "192.168.20.0/24"
+      protocol: "B"
+      next_hop: "10.0.0.12"

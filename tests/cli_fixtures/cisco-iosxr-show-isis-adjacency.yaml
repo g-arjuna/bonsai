@@ -1,0 +1,25 @@
+fixture_id: cisco-iosxr-show-isis-adjacency
+vendor: cisco-iosxr
+command: "show isis adjacency"
+raw: |
+  IS-IS 1 Level-2 adjacencies:
+  System Id      Interface        SNPA           State Hold Changed  NSF IPv4 IPv6
+                                                                         BFD  BFD
+  srl-spine1     Gi0/0/0/0        *PtoP*         Up    29   00:12:34 Yes None None
+  srl-spine2     Gi0/0/0/1        *PtoP*         Up    28   00:45:01 Yes None None
+  srl-leaf3      Gi0/0/0/2        *PtoP*         Init  10   00:00:05 No  None None
+
+  Total adjacency count: 3
+expected_parsed:
+  adjacencies:
+    - system_id: "srl-spine1"
+      interface: "Gi0/0/0/0"
+      state: "Up"
+      hold_time: 29
+    - system_id: "srl-spine2"
+      interface: "Gi0/0/0/1"
+      state: "Up"
+      hold_time: 28
+    - system_id: "srl-leaf3"
+      interface: "Gi0/0/0/2"
+      state: "Init"

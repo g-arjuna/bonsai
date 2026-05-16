@@ -1,0 +1,18 @@
+fixture_id: juniper-junos-show-bfd-session
+vendor: juniper-junos
+command: "show bfd session"
+raw: |-
+  Address                  State       Interface  Detect-Time  Tx-Interval  Mult
+  10.1.0.2                 Up          ge-0/0/0   0.900        0.300        3
+  10.1.0.6                 Up          ge-0/0/1   0.900        0.300        3
+  10.1.0.10                Down        ge-0/0/2   0.000        0.300        3
+  3 sessions, 2 clients
+expected_parsed:
+  sessions:
+    - address: "10.1.0.2"
+      state: "Up"
+      interface: "ge-0/0/0"
+    - address: "10.1.0.6"
+      state: "Up"
+    - address: "10.1.0.10"
+      state: "Down"

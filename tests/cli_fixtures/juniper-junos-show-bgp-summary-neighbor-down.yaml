@@ -1,0 +1,22 @@
+fixture_id: juniper-junos-show-bgp-summary-neighbor-down
+vendor: juniper-junos
+command: "show bgp summary"
+raw: |
+  Groups: 1 Peers: 2 Down peers: 1
+  Table          Tot Paths  Act Paths Suppressed    History Damp State    Pending
+  inet.0
+                        42         42          0          0          0          0
+
+  Peer                     AS      InPkt     OutPkt    OutQ   Flaps Last Up/Dwn State|#Active/Received/Accepted/Damped...
+  10.0.0.1              65001       1234       1230       0       0    45:12 Establ
+    inet.0: 42/42/42/0
+  10.0.0.2              65001          0          3       0       1     0:05 Idle
+expected_parsed:
+  down_peers: 1
+  neighbors:
+    - peer: "10.0.0.1"
+      session_state: "Establ"
+      prefixes_received: 42
+    - peer: "10.0.0.2"
+      session_state: "Idle"
+      prefixes_received: 0

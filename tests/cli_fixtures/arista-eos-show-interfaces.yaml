@@ -1,0 +1,24 @@
+fixture_id: arista-eos-show-interfaces
+vendor: arista-eos
+command: "show interfaces"
+raw: |
+  Ethernet1 is up, line protocol is up (connected)
+    Hardware is Ethernet, address is 001c.7300.0001 (bia 001c.7300.0001)
+    Internet address is 10.1.0.1/30
+    MTU 9214 bytes, BW 10000000 kbit/sec, DLY 10 usec
+       reliability 255/255, txload 1/255, rxload 1/255
+    5 minute input rate 1000 bps, 2 packets/sec
+    5 minute output rate 1000 bps, 2 packets/sec
+       1234 packets input, 98765 bytes, 0 no buffer
+       1230 packets output, 97000 bytes, 0 underruns
+  Ethernet2 is administratively down, line protocol is down (notconnect)
+    Hardware is Ethernet, address is 001c.7300.0002 (bia 001c.7300.0002)
+    MTU 9214 bytes, BW 10000000 kbit/sec
+expected_parsed:
+  interfaces:
+    - name: "Ethernet1"
+      admin_state: "up"
+      oper_state: "up"
+    - name: "Ethernet2"
+      admin_state: "administratively down"
+      oper_state: "down"

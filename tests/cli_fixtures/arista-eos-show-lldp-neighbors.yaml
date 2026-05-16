@@ -1,0 +1,21 @@
+fixture_id: arista-eos-show-lldp-neighbors
+vendor: arista-eos
+command: "show lldp neighbors"
+raw: |
+  Last table change time   : 0:12:34 ago
+  Number of table inserts  : 4
+  Number of table deletes  : 0
+  Number of table drops    : 0
+  Number of table age-outs : 0
+
+  Port       Neighbor Device ID          Neighbor Port ID    TTL
+  Et1        srl-spine1                  ethernet-1/3        120
+  Et2        srl-spine2                  ethernet-1/3        120
+expected_parsed:
+  neighbors:
+    - local_interface: "Et1"
+      neighbor_device_id: "srl-spine1"
+      neighbor_port_id: "ethernet-1/3"
+    - local_interface: "Et2"
+      neighbor_device_id: "srl-spine2"
+      neighbor_port_id: "ethernet-1/3"

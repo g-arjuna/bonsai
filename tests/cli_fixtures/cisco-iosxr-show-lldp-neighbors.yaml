@@ -1,0 +1,21 @@
+fixture_id: cisco-iosxr-show-lldp-neighbors
+vendor: cisco-iosxr
+command: "show lldp neighbors"
+raw: |
+  Capability codes:
+        (R) Router, (B) Bridge, (T) Telephone, (C) DOCSIS Cable Device
+        (W) WLAN Access Point, (P) Repeater, (S) Station, (O) Other
+
+  Device ID       Local Intf          Hold-time  Capability     Port ID
+  srl-spine1      Gi0/0/0/0           120        B, R           ethernet-1/3
+  srl-spine2      Gi0/0/0/1           120        B, R           ethernet-1/3
+
+  Total entries displayed: 2
+expected_parsed:
+  neighbors:
+    - device_id: "srl-spine1"
+      local_interface: "Gi0/0/0/0"
+      port_id: "ethernet-1/3"
+    - device_id: "srl-spine2"
+      local_interface: "Gi0/0/0/1"
+      port_id: "ethernet-1/3"

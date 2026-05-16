@@ -1,0 +1,17 @@
+fixture_id: arista-eos-show-bgp-summary-neighbor-down
+vendor: arista-eos
+command: "show bgp summary"
+raw: |
+  BGP summary information for VRF default
+  Router identifier 10.0.0.21, local AS number 65002
+    Description              Neighbor V AS           MsgRcvd   MsgSent  InQ OutQ  Up/Down State   PfxRcd PfxAcc
+    spine1                   10.0.0.11 4 65001           1234      1230    0    0 00:30:00 Estab   42     42
+    spine2                   10.0.0.12 4 65001              0         3    0    0 00:00:05 Idle    0      0
+expected_parsed:
+  neighbors:
+    - peer: "10.0.0.11"
+      session_state: "Estab"
+      prefixes_received: 42
+    - peer: "10.0.0.12"
+      session_state: "Idle"
+      prefixes_received: 0

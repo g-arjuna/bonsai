@@ -1,0 +1,18 @@
+fixture_id: juniper-junos-show-ospf-neighbor
+vendor: juniper-junos
+command: "show ospf neighbor"
+raw: |
+  Address          Interface              State           ID               Pri  Dead
+  10.1.0.2         ge-0/0/0.0             Full            10.0.0.2         128    35
+  10.1.0.6         ge-0/0/1.0             Full            10.0.0.3         128    38
+  10.1.0.10        ge-0/0/2.0             ExStart         10.0.0.4           1    32
+expected_parsed:
+  neighbors:
+    - address: "10.1.0.2"
+      interface: "ge-0/0/0.0"
+      state: "Full"
+      neighbor_id: "10.0.0.2"
+    - address: "10.1.0.6"
+      state: "Full"
+    - address: "10.1.0.10"
+      state: "ExStart"

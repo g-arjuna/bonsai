@@ -1,0 +1,20 @@
+fixture_id: nokia-srlinux-show-bgp-summary-neighbor-down
+vendor: nokia-srlinux
+command: "show bgp summary"
+raw: |
+  ---------------------------------------------------------------
+  BGP is enabled and up in network-instance "default"
+  Global AS number  : 65001
+  BGP identifier    : 10.0.0.11
+  ---------------------------------------------------------------
+  Neighbor                    AS    MsgRcvd  MsgSent     Up/Down State/PfxRcd
+  10.0.0.12                65001       1234     1230  00:45:12         42
+  10.0.0.13                65001          0        2  00:00:03       Idle
+expected_parsed:
+  router_id: "10.0.0.11"
+  neighbors:
+    - peer: "10.0.0.12"
+      prefixes_received: 42
+    - peer: "10.0.0.13"
+      session_state: "Idle"
+      prefixes_received: 0

@@ -1,0 +1,30 @@
+fixture_id: cisco-iosxr-show-interfaces
+vendor: cisco-iosxr
+command: "show interfaces"
+raw: |
+  GigabitEthernet0/0/0/0 is up, line protocol is up
+    Hardware is GigabitEthernet, address is 0011.2233.4400 (bia 0011.2233.4400)
+    Internet address is 10.1.0.1/30
+    MTU 1514 bytes, BW 1000000 Kbit/sec, DLY 10 usec
+       reliability 255/255, txload 1/255, rxload 1/255
+    Input/output data rate is disabled.
+    Last input 00:00:00, output 00:00:00, output hang never
+    Last clearing of "show interface" counters never
+    5 minute input rate 1000 bits/sec, 2 packets/sec
+    5 minute output rate 1000 bits/sec, 2 packets/sec
+       1234 packets input, 98765 bytes, 0 total input drops
+       0 drops for unrecognized upper-level protocol
+       Received 10 broadcast packets, 0 multicast packets
+       1230 packets output, 97000 bytes, 0 total output drops
+       Output 8 broadcast packets, 0 multicast packets
+  GigabitEthernet0/0/0/1 is administratively down, line protocol is down
+    Hardware is GigabitEthernet, address is 0011.2233.4401 (bia 0011.2233.4401)
+    MTU 1514 bytes, BW 1000000 Kbit/sec
+expected_parsed:
+  interfaces:
+    - name: "GigabitEthernet0/0/0/0"
+      admin_state: "up"
+      oper_state: "up"
+    - name: "GigabitEthernet0/0/0/1"
+      admin_state: "administratively down"
+      oper_state: "down"

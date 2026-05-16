@@ -1,0 +1,25 @@
+fixture_id: cisco-iosxr-show-ospf-neighbor
+vendor: cisco-iosxr
+command: "show ospf neighbor"
+raw: |
+  * Indicates MADJ interface
+  # Indicates Neighbor awaiting BFD session up
+
+  Neighbors for OSPF 1
+
+  Neighbor ID     Pri   State           Dead Time   Address         Interface
+  10.0.0.2        1     FULL/DR         00:00:35    10.1.0.2        Gi0/0/0/0
+  10.0.0.3        1     FULL/BDR        00:00:38    10.1.0.6        Gi0/0/0/1
+  10.0.0.4        0     2WAY/DROTHER    00:00:32    10.1.0.10       Gi0/0/0/2
+
+  Total neighbor count: 3
+expected_parsed:
+  neighbors:
+    - neighbor_id: "10.0.0.2"
+      state: "FULL"
+      dead_time: "00:00:35"
+      address: "10.1.0.2"
+    - neighbor_id: "10.0.0.3"
+      state: "FULL"
+    - neighbor_id: "10.0.0.4"
+      state: "2WAY"

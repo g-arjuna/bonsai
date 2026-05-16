@@ -1,0 +1,20 @@
+fixture_id: nokia-srlinux-show-lldp-neighbors
+vendor: nokia-srlinux
+command: "show system lldp neighbor"
+raw: |
+  +-------------------------------------------------------------------------------------+
+  | LLDP Neighbors                                                                      |
+  +--------------+---------------------+------------------------------+----------------+
+  | Interface    | Neighbor Sys Name   | Neighbor Port ID             | TTL            |
+  +--------------+---------------------+------------------------------+----------------+
+  | ethernet-1/1 | srl-spine1          | ethernet-1/3                 | 120            |
+  | ethernet-1/2 | srl-spine2          | ethernet-1/3                 | 120            |
+  +--------------+---------------------+------------------------------+----------------+
+expected_parsed:
+  neighbors:
+    - local_interface: "ethernet-1/1"
+      neighbor_name: "srl-spine1"
+      neighbor_port: "ethernet-1/3"
+    - local_interface: "ethernet-1/2"
+      neighbor_name: "srl-spine2"
+      neighbor_port: "ethernet-1/3"
