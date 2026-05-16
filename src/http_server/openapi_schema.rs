@@ -1562,3 +1562,51 @@ fn openapi_schema() -> serde_json::Value {
 }
 
 fn load_openapi_example(name: &str) -> serde_json::Value {
+    let live_path = std::path::Path::new("docs")
+        .join("openapi")
+        .join("examples")
+        .join("live")
+        .join(format!("{name}.json"));
+
+    if let Ok(raw) = std::fs::read_to_string(&live_path)
+        && let Ok(value) = serde_json::from_str(&raw)
+    {
+        return value;
+    }
+
+    let raw = match name {
+        "topology" => include_str!("../docs/openapi/examples/topology.json"),
+        "detections" => include_str!("../docs/openapi/examples/detections.json"),
+        "incidents" => include_str!("../docs/openapi/examples/incidents.json"),
+        "readiness" => include_str!("../docs/openapi/examples/readiness.json"),
+        "operations" => include_str!("../docs/openapi/examples/operations.json"),
+        "grounded_incident" => include_str!("../docs/openapi/examples/grounded_incident.json"),
+        "managed_devices" => include_str!("../docs/openapi/examples/managed_devices.json"),
+        "onboarding_discover" => include_str!("../docs/openapi/examples/onboarding_discover.json"),
+        "device_detail" => include_str!("../docs/openapi/examples/device_detail.json"),
+        "device_gnmi_readiness" => {
+            include_str!("../docs/openapi/examples/device_gnmi_readiness.json")
+        }
+        "device_streaming_readiness" => {
+            include_str!("../docs/openapi/examples/device_streaming_readiness.json")
+        }
+        "device_recommendations" => {
+            include_str!("../docs/openapi/examples/device_recommendations.json")
+        }
+        "apply_selected_paths" => {
+            include_str!("../docs/openapi/examples/apply_selected_paths.json")
+        }
+        "setup_status" => include_str!("../docs/openapi/examples/setup_status.json"),
+        "yang_modules" => include_str!("../docs/openapi/examples/yang_modules.json"),
+        "yang_search" => include_str!("../docs/openapi/examples/yang_search.json"),
+        "profiles" => include_str!("../docs/openapi/examples/profiles.json"),
+        "save_custom_profile" => include_str!("../docs/openapi/examples/save_custom_profile.json"),
+        "servicenow_test" => include_str!("../docs/openapi/examples/servicenow_test.json"),
+        "servicenow_aiops_sync" => {
+            include_str!("../docs/openapi/examples/servicenow_aiops_sync.json")
+        }
+        _ => "{}",
+    };
+
+    serde_json::from_str(raw).unwrap_or_else(|_| serde_json::json!({}))
+}

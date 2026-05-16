@@ -10,7 +10,7 @@ use bonsai::{
     archive, catalogue, config,
     config::TargetConfig,
     config::{resolve_buffer_pool_collector, resolve_buffer_pool_core},
-    credentials::CredentialVault,
+    credentials::{CredentialVault, ResolvePurpose, ResolvedCredential},
     event_bus::InProcessBus,
     graph, ingest,
     registry::{ApiRegistry, DeviceRegistry, RegistryChange},
@@ -1218,7 +1218,6 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     info!("bonsai stopped");
     Ok(())
 }
-}
 
 fn server_tls_config(tls: &config::RuntimeTlsConfig) -> Result<ServerTlsConfig> {
     let cert_path = required_tls_path(tls.cert.as_deref(), "runtime.tls.cert")?;
@@ -1241,15 +1240,6 @@ fn required_tls_path<'a>(value: Option<&'a str>, field: &str) -> Result<&'a str>
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| anyhow::anyhow!("{field} is required when runtime.tls.enabled = true"))
 }
-
-use bonsai::{
-    credentials::{CredentialVault, ResolvePurpose, ResolvedCredential},
-    config::TargetConfig,
-    event_bus::InProcessBus,
-    ingest,
-    subscriber::{self, SubscriberHandleMap},
-    subscription_status::SubscriptionPlan,
-};
 
 // ── Subscriber lifecycle ──────────────────────────────────────────────────────
 
