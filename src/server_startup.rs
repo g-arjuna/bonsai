@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use tracing::{info, warn};
 
 use bonsai::{
@@ -72,7 +72,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
 
         // T2-4: Pre-flight disk space check.
         if log_cfg.min_free_bytes > 0 {
-            server_startup::preflight_disk_check(log_dir, log_cfg.min_free_bytes)?
+            preflight_disk_check(log_dir, log_cfg.min_free_bytes)?
         }
 
         let file_appender = RollingFileAppender::builder()
@@ -85,7 +85,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
         // T2-3: Log volume layer — count every event.
-        let log_volume_layer = server_startup::LogVolumeLayer;
+        let log_volume_layer = LogVolumeLayer;
 
         tracing_subscriber::registry()
             .with(filter)
@@ -701,7 +701,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             match registry_for_verifier.list_active() {
                 Ok(targets) => {
                     for target in targets {
-                        server_startup::seed_subscription_plan(target, &subscription_plan_tx).await;
+                        seed_subscription_plan(target, &subscription_plan_tx).await;
                     }
                 }
                 Err(error) => warn!(%error, "failed to seed subscription verifier targets"),
@@ -717,7 +717,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         };
                         match change {
                             RegistryChange::Added(target) | RegistryChange::Updated(target) => {
-                                server_startup::seed_subscription_plan(target, &subscription_plan_tx).await;
+                                seed_subscription_plan(target, &subscription_plan_tx).await;
                             }
                             RegistryChange::Removed(_) => {}
                         }
@@ -745,7 +745,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                             info!(address = %target.address, "subscriber disabled by registry");
                             continue;
                         }
-                        if let Err(error) = server_startup::spawn_subscriber(
+                        if let Err(error) = spawn_subscriber(
                             target,
                             &credentials,
                             &bus,
@@ -776,13 +776,13 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
 
                         match change {
                             RegistryChange::Added(target) => {
-                                if let Err(error) = server_startup::spawn_subscriber(target, &credentials, &bus, Some(std::sync::Arc::clone(&debouncer_for_subs)), subscription_plan_tx.as_ref(), &mut subscribers).await {
+                                if let Err(error) = spawn_subscriber(target, &credentials, &bus, Some(std::sync::Arc::clone(&debouncer_for_subs)), subscription_plan_tx.as_ref(), &mut subscribers).await {
                                     warn!(%error, "failed to start subscriber for added device");
                                 }
                             }
                             RegistryChange::Updated(target) => {
                                 if target.enabled {
-                                    if let Err(error) = server_startup::restart_subscriber(target, &credentials, &bus, Some(std::sync::Arc::clone(&debouncer_for_subs)), subscription_plan_tx.as_ref(), &mut subscribers).await {
+                                    if let Err(error) = restart_subscriber(target, &credentials, &bus, Some(std::sync::Arc::clone(&debouncer_for_subs)), subscription_plan_tx.as_ref(), &mut subscribers).await {
                                         warn!(%error, "failed to restart subscriber for updated device");
                                     }
                                 } else {

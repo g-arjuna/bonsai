@@ -9,7 +9,7 @@ use bonsai::{
     },
     audit, catalogue, config,
     config::TargetConfig,
-    registry::ApiRegistry,
+    registry::{ApiRegistry, DeviceRegistry},
 };
 
 use super::{CONFIG_PATH, REGISTRY_PATH};
