@@ -387,6 +387,7 @@ impl GraphStore {
                 id                  STRING,\
                 device_address      STRING,\
                 name                STRING,\
+                oper_status         STRING,\
                 in_pkts             INT64,\
                 out_pkts            INT64,\
                 in_octets           INT64,\

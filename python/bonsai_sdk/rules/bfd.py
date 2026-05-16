@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from ..client import BonsaiClient
 
 
-_DOWN_STATES = {"down"}
+_DOWN_STATES = {"down", "admin_down"}  # admin_down: SR Linux BFD admin-disable
 _UP_STATES = {"up"}
 _FIRE_FROM_STATES = {"up", "none"}  # "none" = bootstrap: bonsai started while session was already down
 

@@ -35,7 +35,7 @@ _CLIENT = _FakeClient()
 
 
 class TestBfdSessionDownBootstrap(unittest.TestCase):
-    """BFD rule must fire when old_state is 'none' (bootstrap) and new_state is 'down'."""
+    """BFD rule must fire when old_state is 'none' (bootstrap) and new_state is 'down' or 'admin_down'."""
 
     def setUp(self):
         from bonsai_sdk.rules.bfd import BfdSessionDown
@@ -68,6 +68,37 @@ class TestBfdSessionDownBootstrap(unittest.TestCase):
         })
         f = self.rule.extract_features(ev, _CLIENT)
         self.assertIsNotNone(f, "none→down must produce features (bootstrap case)")
+        reason = self.rule.detect(f)
+        self.assertIsNotNone(reason)
+
+    def test_up_to_admin_down_fires(self):
+        """SR Linux BFD admin-disable transitions to admin_down, not down."""
+        ev = _make_event("bfd_session_change", "10.0.0.1", {
+            "if_name": "ethernet-1/1.0",
+            "peer": "10.0.0.2",
+            "local_address": "10.0.0.1",
+            "local_discriminator": "1",
+            "old_state": "up",
+            "new_state": "admin_down",
+        })
+        f = self.rule.extract_features(ev, _CLIENT)
+        self.assertIsNotNone(f, "up→admin_down must produce features")
+        reason = self.rule.detect(f)
+        self.assertIsNotNone(reason)
+        self.assertIn("admin_down", reason)
+
+    def test_none_to_admin_down_fires(self):
+        """Bootstrap: session observed for first time already admin-disabled."""
+        ev = _make_event("bfd_session_change", "10.0.0.1", {
+            "if_name": "ethernet-1/1.0",
+            "peer": "10.0.0.2",
+            "local_address": "10.0.0.1",
+            "local_discriminator": "1",
+            "old_state": "none",
+            "new_state": "admin_down",
+        })
+        f = self.rule.extract_features(ev, _CLIENT)
+        self.assertIsNotNone(f, "none→admin_down must produce features")
         reason = self.rule.detect(f)
         self.assertIsNotNone(reason)
 
