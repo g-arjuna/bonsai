@@ -1,0 +1,310 @@
+Bonsai Collector Rule Engine
+  local collector: localhost:50051
+  core ingest:     localhost:50051
+  sidecar name:    rules-local (kind=rules)
+[collector-engine] core forwarder starting, core=localhost:50051
+[collector-engine] connected to core at localhost:50051
+[collector-engine] connected to local collector at localhost:50051
+[collector-engine] registered as sidecar c867660a-d1ae-47e9-a7fa-9da59f51c01c
+[engine] no ML models found for scope 'local' in 'models' — running rules-only mode
+Bonsai Collector Rule Engine
+  local collector: localhost:50051
+  core ingest:     localhost:50051
+  sidecar name:    rules-local (kind=rules)
+[collector-engine] core forwarder starting, core=localhost:50051
+[collector-engine] connected to local collector at localhost:50051[collector-engine] connected to core at localhost:50051
+
+[collector-engine] registered as sidecar 8cec02d1-63d7-4750-8ffa-f691fcf41ae9
+[engine] no ML models found for scope 'local' in 'models' — running rules-only mode
+[00:26:39] LOCAL DETECTION: bgp_all_peers_down on 172.100.103.17:57400
+[00:27:32] LOCAL DETECTION: bgp_session_down on 172.100.103.16:57400
+[00:31:24] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[00:31:24] LOCAL DETECTION: bgp_session_down on 172.100.103.16:57400
+[00:33:44] LOCAL DETECTION: bgp_session_down on 172.100.103.18:57400
+[00:45:26] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[00:45:26] LOCAL DETECTION: bgp_all_peers_down on 172.100.103.15:57400
+[00:46:09] LOCAL DETECTION: bgp_all_peers_down on 172.100.103.15:57400
+[00:47:12] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[00:47:12] LOCAL DETECTION: bgp_session_down on 172.100.103.18:57400
+[00:50:49] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[00:50:49] LOCAL DETECTION: bgp_session_down on 172.100.103.18:57400
+[01:02:54] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[01:02:54] LOCAL DETECTION: bgp_session_down on 172.100.103.16:57400
+[02:08:31] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[02:08:32] LOCAL DETECTION: bgp_session_down on 172.100.103.16:57400
+[02:17:40] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[02:17:40] LOCAL DETECTION: bgp_session_down on 172.100.103.16:57400
+[02:23:04] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[02:23:04] LOCAL DETECTION: bgp_session_down on 172.100.103.18:57400
+[02:30:08] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[02:30:08] LOCAL DETECTION: bgp_session_down on 172.100.103.16:57400
+[02:51:03] LOCAL DETECTION: bgp_session_down on 172.100.103.18:57400
+[02:52:52] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[02:52:52] LOCAL DETECTION: bgp_session_down on 172.100.103.16:57400
+[02:57:09] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[02:57:09] LOCAL DETECTION: bgp_session_down on 172.100.103.17:57400
+[03:07:54] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[03:07:54] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[03:10:05] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[03:10:05] LOCAL DETECTION: bgp_session_down on 172.100.103.16:57400
+[03:23:05] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[03:23:05] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[03:29:39] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[03:29:39] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[03:34:45] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[03:34:45] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[03:49:55] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[03:49:55] LOCAL DETECTION: bgp_session_down on 172.100.103.17:57400
+[03:51:44] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[03:51:44] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[04:07:33] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[04:07:33] LOCAL DETECTION: bgp_session_down on 172.100.103.18:57400
+[04:40:22] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[04:40:22] LOCAL DETECTION: bgp_session_down on 172.100.103.17:57400
+[04:59:25] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[04:59:25] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[05:01:20] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[05:01:20] LOCAL DETECTION: bgp_session_down on 172.100.103.17:57400
+[05:03:58] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[05:03:59] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[05:08:29] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[05:08:29] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[05:15:48] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[05:15:49] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[05:15:54] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[05:15:54] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[05:16:00] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[05:16:00] LOCAL DETECTION: bgp_session_flap on 172.100.103.12:57400
+[05:16:00] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[05:16:01] LOCAL DETECTION: bgp_session_flap on 172.100.103.15:57400
+[05:27:01] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[05:27:01] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[05:28:34] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[05:28:34] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[05:34:13] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[05:34:13] LOCAL DETECTION: bgp_session_down on 172.100.103.16:57400
+[05:56:49] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[05:56:49] LOCAL DETECTION: bgp_session_down on 172.100.103.17:57400
+[06:00:51] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[06:00:51] LOCAL DETECTION: bgp_session_down on 172.100.103.18:57400
+[06:09:19] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[06:09:19] LOCAL DETECTION: bgp_session_down on 172.100.103.16:57400
+[06:13:16] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[06:13:16] LOCAL DETECTION: bgp_session_down on 172.100.103.16:57400
+[06:19:42] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[06:19:42] LOCAL DETECTION: bgp_session_down on 172.100.103.16:57400
+[06:26:14] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[06:26:14] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[06:34:53] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[06:34:53] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[06:42:33] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[06:42:33] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[06:44:36] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[06:44:36] LOCAL DETECTION: bgp_session_down on 172.100.103.16:57400
+[07:03:51] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[07:03:51] LOCAL DETECTION: bgp_session_down on 172.100.103.17:57400
+[07:24:00] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[07:24:00] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[07:24:05] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[07:24:05] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[07:24:11] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[07:24:11] LOCAL DETECTION: bgp_session_flap on 172.100.103.11:57400
+[07:24:11] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[07:24:12] LOCAL DETECTION: bgp_session_flap on 172.100.103.15:57400
+[08:04:57] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[08:04:58] LOCAL DETECTION: bgp_session_down on 172.100.103.17:57400
+[08:39:14] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[08:39:14] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[08:49:21] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[08:49:21] LOCAL DETECTION: bgp_session_down on 172.100.103.15:57400
+[08:57:16] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[08:57:16] LOCAL DETECTION: bgp_session_down on 172.100.103.16:57400
+[09:03:59] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[09:03:59] LOCAL DETECTION: bgp_session_down on 172.100.103.17:57400
+Bonsai Collector Rule Engine
+  local collector: localhost:50051
+  core ingest:     localhost:50051
+  sidecar name:    rules-local (kind=rules)
+[collector-engine] core forwarder starting, core=localhost:50051
+[collector-engine] connected to core at localhost:50051[collector-engine] connected to local collector at localhost:50051
+
+[collector-engine] registered as sidecar 10f22c4c-1014-4be8-9e36-f177d4bd16f5
+[engine] no ML models found for scope 'local' in 'models' — running rules-only mode
+Bonsai Collector Rule Engine
+  local collector: localhost:50051
+  core ingest:     localhost:50051
+  sidecar name:    rules-local (kind=rules)
+[collector-engine] core forwarder starting, core=localhost:50051
+[collector-engine] connected to core at localhost:50051[collector-engine] connected to local collector at localhost:50051
+
+[collector-engine] registered as sidecar 5f41ad12-c1f3-4639-94a1-f3c0d7437a50
+[engine] no ML models found for scope 'local' in 'models' — running rules-only mode
+Bonsai Collector Rule Engine
+  local collector: localhost:50051
+  core ingest:     localhost:50051
+  sidecar name:    rules-local (kind=rules)
+[collector-engine] core forwarder starting, core=localhost:50051
+[collector-engine] connected to local collector at localhost:50051[collector-engine] connected to core at localhost:50051
+
+[collector-engine] registered as sidecar d7c6038e-2408-47ff-9fb2-bf5ea1711a6f
+[engine] no ML models found for scope 'local' in 'models' — running rules-only mode
+[18:50:53] LOCAL DETECTION: bgp_all_peers_down on 172.100.103.15:57400
+[18:51:06] LOCAL DETECTION: bgp_all_peers_down on 172.100.103.15:57400
+Bonsai Collector Rule Engine
+  local collector: localhost:50051
+  core ingest:     localhost:50051
+  sidecar name:    rules-local (kind=rules)
+[collector-engine] core forwarder starting, core=localhost:50051
+[collector-engine] connected to local collector at localhost:50051[collector-engine] connected to core at localhost:50051
+
+[collector-engine] registered as sidecar 211fc2c1-c515-4f93-b91d-421901b13112
+[engine] no ML models found for scope 'local' in 'models' — running rules-only mode
+[18:59:36] LOCAL DETECTION: bgp_all_peers_down on 172.100.103.18:57400
+Bonsai Collector Rule Engine
+  local collector: localhost:50051
+  core ingest:     localhost:50051
+  sidecar name:    rules-local (kind=rules)
+[collector-engine] core forwarder starting, core=localhost:50051
+[collector-engine] connected to local collector at localhost:50051[collector-engine] connected to core at localhost:50051
+
+[collector-engine] registered as sidecar f789df50-09bb-4563-a13f-b8c971650af9
+[engine] no ML models found for scope 'local' in 'models' — running rules-only mode
+[19:13:19] LOCAL DETECTION: bgp_all_peers_down on 172.100.103.16:57400
+[19:13:39] LOCAL DETECTION: bgp_all_peers_down on 172.100.103.16:57400
+[19:13:52] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[19:13:54] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+Bonsai Collector Rule Engine
+  local collector: localhost:50051
+  core ingest:     localhost:50051
+  sidecar name:    rules-local (kind=rules)
+[collector-engine] core forwarder starting, core=localhost:50051
+[collector-engine] connected to local collector at localhost:50051[collector-engine] connected to core at localhost:50051
+
+[collector-engine] registered as sidecar e987a169-dbf1-484a-a663-fdba3f16a7dc
+[engine] no ML models found for scope 'local' in 'models' — running rules-only mode
+[21:02:29] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:02:29] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:02:49] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:02:49] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:03:22] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:03:22] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:04:34] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:04:34] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:04:55] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:04:55] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:05:29] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:05:29] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:07:34] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:07:34] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:07:55] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:07:55] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:08:31] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:08:31] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:10:34] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:10:34] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:10:54] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:10:55] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:11:30] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:11:30] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:13:33] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:13:33] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:13:54] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:13:54] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:14:26] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:14:28] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:16:34] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:16:34] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:16:55] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:16:55] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:17:30] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:17:30] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:19:34] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:19:34] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:19:55] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:19:55] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:20:29] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:20:29] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:22:34] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:22:34] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:22:54] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:22:54] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:23:29] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:23:29] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:25:33] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:25:33] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:25:54] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:25:54] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:26:28] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:26:28] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:28:33] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:28:33] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:28:54] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:28:54] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:29:30] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:29:30] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:31:33] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:31:33] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:31:54] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:31:54] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:32:29] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:32:29] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:34:34] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:34:34] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:34:55] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:34:55] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:35:29] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:35:29] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:37:34] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:37:34] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:37:55] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:37:55] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:38:30] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:38:30] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:40:34] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:40:34] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:40:55] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:40:55] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:41:30] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:41:30] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:43:34] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:43:34] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:43:55] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:43:55] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:44:30] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:44:30] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:46:34] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:46:34] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:46:55] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:46:55] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:47:29] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:47:30] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:49:33] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:49:33] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:49:54] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:49:54] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:50:26] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:50:28] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:52:34] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:52:34] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:52:55] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:52:55] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:53:29] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:53:29] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:55:33] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:55:33] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:55:54] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:55:54] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:56:30] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:56:30] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[21:58:34] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[21:58:34] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[21:58:55] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[21:58:55] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[21:59:30] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[21:59:30] LOCAL DETECTION: interface_down on 172.100.103.13:57400
+[22:01:33] LOCAL DETECTION: bgp_session_down on 172.100.103.12:57400
+[22:01:33] LOCAL DETECTION: bgp_session_down on 172.100.103.11:57400
+[22:01:54] LOCAL DETECTION: bfd_session_down on 172.100.103.12:57400
+[22:01:54] LOCAL DETECTION: bfd_session_down on 172.100.103.11:57400
+[22:02:26] LOCAL DETECTION: interface_down on 172.100.103.15:57400
+[22:02:28] LOCAL DETECTION: interface_down on 172.100.103.13:57400

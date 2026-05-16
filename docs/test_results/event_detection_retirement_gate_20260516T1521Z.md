@@ -85,3 +85,234 @@ Baseline: events_in_total=47  detections_out_total=0
   [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=20s)
   [bfd] injected ok
   [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=20s)
+  [iface] injected ok
+  sidecar: events_in=257  detections_out=30  Δdetections=30
+  ✓ bfd_session_down seen in /api/detections
+  ✓ interface_down seen in /api/detections
+  ✓ bgp_session_down seen in /api/detections
+--- Cycle 6  elapsed=845s  remaining=2755s ---
+  [bgp] inject bgp-flap 172.100.103.11:57400 → 10.1.0.2 (hold=20s)
+  [bgp] injected ok
+  [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=20s)
+  [bfd] injected ok
+  [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=20s)
+  [iface] injected ok
+  sidecar: events_in=289  detections_out=36  Δdetections=36
+  ✓ bfd_session_down seen in /api/detections
+  ✓ interface_down seen in /api/detections
+  ✓ bgp_session_down seen in /api/detections
+--- Cycle 7  elapsed=1025s  remaining=2575s ---
+  [bgp] inject bgp-flap 172.100.103.11:57400 → 10.1.0.2 (hold=20s)
+  [bgp] injected ok
+  [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=20s)
+  [bfd] injected ok
+  [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=20s)
+  [iface] injected ok
+  sidecar: events_in=321  detections_out=42  Δdetections=42
+  ✓ bfd_session_down seen in /api/detections
+  ✓ interface_down seen in /api/detections
+  ✓ bgp_session_down seen in /api/detections
+--- Cycle 8  elapsed=1205s  remaining=2395s ---
+  [bgp] inject bgp-flap 172.100.103.11:57400 → 10.1.0.2 (hold=20s)
+  [bgp] injected ok
+  [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=20s)
+  [bfd] injected ok
+  [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=20s)
+  [iface] injected ok
+  sidecar: events_in=353  detections_out=48  Δdetections=48
+  ✓ bfd_session_down seen in /api/detections
+  ✓ interface_down seen in /api/detections
+  ✓ bgp_session_down seen in /api/detections
+--- Cycle 9  elapsed=1385s  remaining=2215s ---
+  [bgp] inject bgp-flap 172.100.103.11:57400 → 10.1.0.2 (hold=20s)
+  [bgp] injected ok
+  [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=20s)
+  [bfd] injected ok
+  [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=20s)
+  [iface] injected ok
+  sidecar: events_in=385  detections_out=54  Δdetections=54
+  ✓ bfd_session_down seen in /api/detections
+  ✓ interface_down seen in /api/detections
+  ✓ bgp_session_down seen in /api/detections
+--- Cycle 10  elapsed=1565s  remaining=2035s ---
+  [bgp] inject bgp-flap 172.100.103.11:57400 → 10.1.0.2 (hold=20s)
+  [bgp] injected ok
+  [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=20s)
+  [bfd] injected ok
+  [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=20s)
+  [iface] injected ok
+  sidecar: events_in=417  detections_out=60  Δdetections=60
+  ✓ bfd_session_down seen in /api/detections
+  ✓ interface_down seen in /api/detections
+  ✓ bgp_session_down seen in /api/detections
+--- Cycle 11  elapsed=1745s  remaining=1855s ---
+  [bgp] inject bgp-flap 172.100.103.11:57400 → 10.1.0.2 (hold=20s)
+  [bgp] injected ok
+  [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=20s)
+  [bfd] injected ok
+  [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=20s)
+  [iface] injected ok
+  sidecar: events_in=449  detections_out=66  Δdetections=66
+  ✓ bfd_session_down seen in /api/detections
+  ✓ interface_down seen in /api/detections
+  ✓ bgp_session_down seen in /api/detections
+--- Cycle 12  elapsed=1925s  remaining=1675s ---
+  [bgp] inject bgp-flap 172.100.103.11:57400 → 10.1.0.2 (hold=20s)
+  [bgp] injected ok
+  [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=20s)
+  [bfd] injected ok
+  [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=20s)
+  [iface] injected ok
+  sidecar: events_in=481  detections_out=72  Δdetections=72
+  ✓ bfd_session_down seen in /api/detections
+  ✓ interface_down seen in /api/detections
+  ✓ bgp_session_down seen in /api/detections
+--- Cycle 13  elapsed=2105s  remaining=1495s ---
+  [bgp] inject bgp-flap 172.100.103.11:57400 → 10.1.0.2 (hold=20s)
+  [bgp] injected ok
+  [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=20s)
+  [bfd] injected ok
+  [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=20s)
+  [iface] injected ok
+  sidecar: events_in=513  detections_out=78  Δdetections=78
+  ✓ bfd_session_down seen in /api/detections
+  ✓ interface_down seen in /api/detections
+  ✓ bgp_session_down seen in /api/detections
+--- Cycle 14  elapsed=2285s  remaining=1315s ---
+  [bgp] inject bgp-flap 172.100.103.11:57400 → 10.1.0.2 (hold=20s)
+  [bgp] injected ok
+  [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=20s)
+  [bfd] injected ok
+  [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=20s)
+  [iface] injected ok
+  sidecar: events_in=545  detections_out=84  Δdetections=84
+  ✓ bfd_session_down seen in /api/detections
+  ✓ interface_down seen in /api/detections
+  ✓ bgp_session_down seen in /api/detections
+--- Cycle 15  elapsed=2465s  remaining=1135s ---
+  [bgp] inject bgp-flap 172.100.103.11:57400 → 10.1.0.2 (hold=20s)
+  [bgp] injected ok
+  [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=20s)
+  [bfd] injected ok
+  [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=20s)
+  [iface] injected ok
+  sidecar: events_in=577  detections_out=90  Δdetections=90
+  ✓ bfd_session_down seen in /api/detections
+  ✓ interface_down seen in /api/detections
+  ✓ bgp_session_down seen in /api/detections
+--- Cycle 16  elapsed=2645s  remaining=955s ---
+  [bgp] inject bgp-flap 172.100.103.11:57400 → 10.1.0.2 (hold=20s)
+  [bgp] injected ok
+  [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=20s)
+  [bfd] injected ok
+  [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=20s)
+  [iface] injected ok
+  sidecar: events_in=609  detections_out=96  Δdetections=96
+  ✓ bfd_session_down seen in /api/detections
+  ✓ interface_down seen in /api/detections
+  ✓ bgp_session_down seen in /api/detections
+--- Cycle 17  elapsed=2825s  remaining=775s ---
+  [bgp] inject bgp-flap 172.100.103.11:57400 → 10.1.0.2 (hold=20s)
+  [bgp] injected ok
+  [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=20s)
+  [bfd] injected ok
+  [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=20s)
+  [iface] injected ok
+  sidecar: events_in=641  detections_out=102  Δdetections=102
+  ✓ bfd_session_down seen in /api/detections
+  ✓ interface_down seen in /api/detections
+  ✓ bgp_session_down seen in /api/detections
+--- Cycle 18  elapsed=3005s  remaining=595s ---
+  [bgp] inject bgp-flap 172.100.103.11:57400 → 10.1.0.2 (hold=20s)
+  [bgp] injected ok
+  [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=20s)
+  [bfd] injected ok
+  [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=20s)
+  [iface] injected ok
+  sidecar: events_in=673  detections_out=108  Δdetections=108
+  ✓ bfd_session_down seen in /api/detections
+  ✓ interface_down seen in /api/detections
+  ✓ bgp_session_down seen in /api/detections
+--- Cycle 19  elapsed=3185s  remaining=415s ---
+  [bgp] inject bgp-flap 172.100.103.11:57400 → 10.1.0.2 (hold=20s)
+  [bgp] injected ok
+  [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=20s)
+  [bfd] injected ok
+  [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=20s)
+  [iface] injected ok
+  sidecar: events_in=705  detections_out=114  Δdetections=114
+  ✓ bfd_session_down seen in /api/detections
+  ✓ interface_down seen in /api/detections
+  ✓ bgp_session_down seen in /api/detections
+--- Cycle 20  elapsed=3365s  remaining=235s ---
+  [bgp] inject bgp-flap 172.100.103.11:57400 → 10.1.0.2 (hold=20s)
+  [bgp] injected ok
+  [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=20s)
+  [bfd] injected ok
+  [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=20s)
+  [iface] injected ok
+  sidecar: events_in=737  detections_out=120  Δdetections=120
+  ✓ bfd_session_down seen in /api/detections
+  ✓ interface_down seen in /api/detections
+  ✓ bgp_session_down seen in /api/detections
+--- Cycle 21  elapsed=3545s  remaining=55s ---
+  [bgp] inject bgp-flap 172.100.103.11:57400 → 10.1.0.2 (hold=20s)
+  [bgp] injected ok
+  [bfd] inject bfd-flap srl-leaf1 ethernet-1/1.0 (hold=20s)
+  [bfd] injected ok
+  [iface] inject iface-flap srl-leaf1 ethernet-1/1 (hold=20s)
+  [iface] injected ok
+  sidecar: events_in=769  detections_out=126  Δdetections=126
+  ✓ bfd_session_down seen in /api/detections
+  ✓ interface_down seen in /api/detections
+  ✓ bgp_session_down seen in /api/detections
+
+Smoke complete at: Sat May 16 04:34:32 PM UTC 2026
+
+## Gate evaluation
+
+Final sidecar counters:
+  events_in_total:      769  (Δ +722)
+  detections_out_total: 126  (Δ +126)
+
+Rule_id coverage:
+  ✓ bgp_session_down — SEEN
+  ✓ bfd_session_down — SEEN
+  ✓ interface_down — SEEN
+
+**GATE: CLOSED** — all three rule_ids observed, sidecar counter ticked.
+
+## Teardown
+
+bonsai + sidecar stopped.
+
+## Delete src/event_detection.rs
+
+- deleted src/event_detection.rs
+- removed 'pub mod event_detection;' from src/lib.rs
+- removed event_detection::start() call from src/server_startup.rs
+
+## cargo build --release (post-deletion verification)
+
+   |
+36 | use serde_json::Value;
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `SharedAdapterRegistry`
+  --> src/http_server/outputs.rs:39:73
+   |
+39 | use crate::output::traits::{OutputAdapterConfig, OutputAdapterRunState, SharedAdapterRegistry};
+   |                                                                         ^^^^^^^^^^^^^^^^^^^^^
+
+warning: `bonsai` (lib) generated 27 warnings (run `cargo fix --lib -p bonsai` to apply 27 suggestions)
+error[E0433]: cannot find `event_detection` in `bonsai`
+   --> src/server_startup.rs:866:25
+    |
+866 |                 bonsai::event_detection::start(std::sync::Arc::clone(s));
+    |                         ^^^^^^^^^^^^^^^ could not find `event_detection` in `bonsai`
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `bonsai` (bin "bonsai") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+**FAIL**: cargo build failed — see /home/arjuna/Desktop/bonsai/docs/test_results/event_detection_retirement_gate_20260516T1521Z.logs/post_deletion_build.log
+Manual fix required. Partial commit will NOT be pushed.
