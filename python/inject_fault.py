@@ -389,14 +389,20 @@ def netem_clear(node_name: str, iface: str, topology: str = TOPOLOGY_NAME) -> No
 
 # ── dispatch ──────────────────────────────────────────────────────────────────
 
+def _resolve_hostname(targets: dict, hostname_or_addr: str) -> str:
+    """Return canonical bonsai.toml hostname, resolving by mgmt IP if needed."""
+    if hostname_or_addr in targets:
+        return hostname_or_addr
+    addr_bare = hostname_or_addr.split(":")[0]
+    for name, t in targets.items():
+        if t["address"] == addr_bare:
+            return name
+    return hostname_or_addr  # fallback — will fail at _get_target with clear error
+
+
 def _get_target(targets: dict, hostname: str) -> dict:
     if hostname in targets:
         return targets[hostname]
-    # Topology API returns mgmt IP — try matching by address (strip port)
-    addr_bare = hostname.split(":")[0]
-    for t in targets.values():
-        if t["address"] == addr_bare:
-            return t
     sys.exit(f"ERROR: hostname '{hostname}' not found in bonsai.toml — "
              f"available: {list(targets)}")
 
@@ -557,6 +563,8 @@ def main() -> None:
 
     args = ap.parse_args()
     targets = _load_targets(args.config)
+    # Normalize hostname arg: topology API gives mgmt IP, toml uses hostnames
+    args.hostname = _resolve_hostname(targets, args.hostname)
 
     if args.cmd == "bgp-down":
         dispatch_bgp_down(targets, args.hostname, args.peer, args.topology)
