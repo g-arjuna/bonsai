@@ -1,0 +1,17 @@
+[32musing release-built target/release/bonsai[0m
+[1mStarting bonsai[0m
+  log:     logs/bonsai.log
+  pidfile: runtime/bonsai.pid
+  require: rules
+  pid:     1384878
+Waiting for bonsai /health to respond on :3000…
+[32mbonsai HTTP up[0m (/health → 200; 503 is expected before sidecar registers)
+[1mStarting rules sidecar[0m
+  log:     logs/bonsai-sidecar.log
+  pidfile: runtime/bonsai-sidecar.pid
+  pid:     1384977
+
+[32mboth started in background.[0m
+  tail -f logs/bonsai.log
+  tail -f logs/bonsai-sidecar.log
+  scripts/ops/teardown.sh   # to stop

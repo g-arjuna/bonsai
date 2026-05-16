@@ -1,0 +1,60 @@
+[32musing release-built target/release/bonsai[0m
+[1mStarting bonsai[0m
+  log:     logs/bonsai.log
+  pidfile: runtime/bonsai.pid
+  require: rules
+  pid:     1375548
+Waiting for bonsai /health to respond on :3000…
+[31mbonsai died during startup[0m (see logs/bonsai.log)
+[31mbonsai did not bind :3000 within 60s[0m
+tail of log:
+[2m2026-05-16T13:46:31.285153Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.12:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-16T13:46:31.285185Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-16T13:46:31.285221Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.12:57400
+[2m2026-05-16T13:46:31.285237Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-16T13:46:31.285248Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.18:57400
+[2m2026-05-16T13:46:31.285261Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-16T13:46:31.285858Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.11:57400
+[2m2026-05-16T13:46:31.285939Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-16T13:46:31.285960Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.17:57400
+[2m2026-05-16T13:46:31.286183Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-16T13:46:31.286529Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.14:57400
+[2m2026-05-16T13:46:31.286587Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received during telemetry stream [3mtarget[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-16T13:46:31.286610Z[0m [33m WARN[0m [2mbonsai::subscriber[0m[2m:[0m reconnecting [3mtarget[0m[2m=[0m172.100.103.15:57400 [3mdelay[0m[2m=[0m5s
+[2m2026-05-16T13:46:31.286623Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-16T13:46:31.286954Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.15:57400
+[2m2026-05-16T13:46:31.286995Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m shutdown signal received [3mtarget[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-16T13:46:31.287233Z[0m [32m INFO[0m [2mbonsai::subscriber[0m[2m:[0m subscriber stopped [3maddress[0m[2m=[0m172.100.103.13:57400
+[2m2026-05-16T13:46:31.289602Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive flush appended parquet row group [3mpath[0m[2m=[0mruntime/archive/2026/05/16/172.100.103.14_57400__hour-13__part-03.parquet [3mrows[0m[2m=[0m65 [3mtotal_rows[0m[2m=[0m1411 [3mfile_bytes[0m[2m=[0m0 [3mraw_bytes[0m[2m=[0m11945 [3mtotal_raw_bytes[0m[2m=[0m289092 [3mcompression_ratio[0m[2m=[0m0.0
+[2m2026-05-16T13:46:31.289738Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive flush appended parquet row group [3mpath[0m[2m=[0mruntime/archive/2026/05/16/172.100.103.13_57400__hour-13__part-03.parquet [3mrows[0m[2m=[0m36 [3mtotal_rows[0m[2m=[0m1383 [3mfile_bytes[0m[2m=[0m0 [3mraw_bytes[0m[2m=[0m9654 [3mtotal_raw_bytes[0m[2m=[0m281094 [3mcompression_ratio[0m[2m=[0m0.0
+[2m2026-05-16T13:46:31.289762Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive flush appended parquet row group [3mpath[0m[2m=[0mruntime/archive/2026/05/16/172.100.103.18_57400__hour-13__part-03.parquet [3mrows[0m[2m=[0m45 [3mtotal_rows[0m[2m=[0m1335 [3mfile_bytes[0m[2m=[0m0 [3mraw_bytes[0m[2m=[0m8226 [3mtotal_raw_bytes[0m[2m=[0m246054 [3mcompression_ratio[0m[2m=[0m0.0
+[2m2026-05-16T13:46:31.289777Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive flush appended parquet row group [3mpath[0m[2m=[0mruntime/archive/2026/05/16/172.100.103.11_57400__hour-13__part-03.parquet [3mrows[0m[2m=[0m64 [3mtotal_rows[0m[2m=[0m2211 [3mfile_bytes[0m[2m=[0m0 [3mraw_bytes[0m[2m=[0m9754 [3mtotal_raw_bytes[0m[2m=[0m459787 [3mcompression_ratio[0m[2m=[0m0.0
+[2m2026-05-16T13:46:31.289803Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive flush appended parquet row group [3mpath[0m[2m=[0mruntime/archive/2026/05/16/172.100.103.15_57400__hour-13__part-03.parquet [3mrows[0m[2m=[0m19 [3mtotal_rows[0m[2m=[0m1233 [3mfile_bytes[0m[2m=[0m0 [3mraw_bytes[0m[2m=[0m4438 [3mtotal_raw_bytes[0m[2m=[0m229608 [3mcompression_ratio[0m[2m=[0m0.0
+[2m2026-05-16T13:46:31.289819Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive flush appended parquet row group [3mpath[0m[2m=[0mruntime/archive/2026/05/16/172.100.103.17_57400__hour-13__part-03.parquet [3mrows[0m[2m=[0m69 [3mtotal_rows[0m[2m=[0m1330 [3mfile_bytes[0m[2m=[0m0 [3mraw_bytes[0m[2m=[0m12184 [3mtotal_raw_bytes[0m[2m=[0m244677 [3mcompression_ratio[0m[2m=[0m0.0
+[2m2026-05-16T13:46:31.289832Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive flush appended parquet row group [3mpath[0m[2m=[0mruntime/archive/2026/05/16/172.100.103.16_57400__hour-13__part-03.parquet [3mrows[0m[2m=[0m82 [3mtotal_rows[0m[2m=[0m1490 [3mfile_bytes[0m[2m=[0m0 [3mraw_bytes[0m[2m=[0m14256 [3mtotal_raw_bytes[0m[2m=[0m271748 [3mcompression_ratio[0m[2m=[0m0.0
+[2m2026-05-16T13:46:31.289845Z[0m [32m INFO[0m [2mbonsai::archive[0m[2m:[0m archive flush appended parquet row group [3mpath[0m[2m=[0mruntime/archive/2026/05/16/172.100.103.12_57400__hour-13__part-03.parquet [3mrows[0m[2m=[0m48 [3mtotal_rows[0m[2m=[0m2117 [3mfile_bytes[0m[2m=[0m0 [3mraw_bytes[0m[2m=[0m7754 [3mtotal_raw_bytes[0m[2m=[0m442716 [3mcompression_ratio[0m[2m=[0m0.0
+[2m2026-05-16T13:46:31.291812Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"devices" [3mcount[0m[2m=[0mInt64(8)
+[2m2026-05-16T13:46:31.294649Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"interfaces" [3mcount[0m[2m=[0mInt64(36)
+[2m2026-05-16T13:46:31.296332Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bgp-neighbors" [3mcount[0m[2m=[0mInt64(26)
+[2m2026-05-16T13:46:31.297838Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bfd-sessions" [3mcount[0m[2m=[0mInt64(134)
+[2m2026-05-16T13:46:31.299058Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"lldp-neighbors" [3mcount[0m[2m=[0mInt64(394)
+[2m2026-05-16T13:46:31.305923Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"connected-to" [3mcount[0m[2m=[0mInt64(24)
+[2m2026-05-16T13:46:31.307102Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"state-change-events" [3mcount[0m[2m=[0mInt64(954)
+[2m2026-05-16T13:46:31.307732Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"detection-events" [3mcount[0m[2m=[0mInt64(400)
+[2m2026-05-16T13:46:31.308303Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediations" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-16T13:46:31.308946Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediation-trust-marks" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-05-16T13:46:31.310027Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"subscription-status" [3mcount[0m[2m=[0mInt64(40)
+[2m2026-05-16T13:46:31.310084Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m bonsai stopped
+[2m2026-05-16T15:18:45.828969Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m bonsai starting [3mprotocol_version[0m[2m=[0m1
+[2m2026-05-16T15:18:45.829257Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m startup [3mphase[0m[2m=[0m"config_load" [3melapsed_ms[0m[2m=[0m0
+[2m2026-05-16T15:18:45.829485Z[0m [32m INFO[0m [2mbonsai::resource_profile[0m[2m:[0m resource profile selected [3mprofile[0m[2m=[0m"xlarge" [3mram_gb[0m[2m=[0m46 [3meffective_ram_gb[0m[2m=[0m46 [3mcpu_cores[0m[2m=[0m8 [3mdisk_free_gb[0m[2m=[0m316 [3min_container[0m[2m=[0mfalse [3mmemory_budget_mb[0m[2m=[0m4096
+[2m2026-05-16T15:18:45.829536Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m runtime mode selected [3mmode[0m[2m=[0mAll [3mrun_core[0m[2m=[0mtrue [3mrun_collector[0m[2m=[0mtrue
+[2m2026-05-16T15:18:45.830787Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m Prometheus metrics listening [3mmetrics_addr[0m[2m=[0m[::1]:9090
+Error: graph open failed
+
+Caused by:
+    0: failed to open LadybugDB
+    1: IO exception: Could not set lock on file : /home/arjuna/Desktop/bonsai/bonsai.db
+       See the docs: https://docs.ladybugdb.com/concurrency for more information.
+    2: IO exception: Could not set lock on file : /home/arjuna/Desktop/bonsai/bonsai.db
+       See the docs: https://docs.ladybugdb.com/concurrency for more information.
