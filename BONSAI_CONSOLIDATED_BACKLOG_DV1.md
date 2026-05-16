@@ -295,7 +295,7 @@ src/tls_helpers.rs           (TLS config builders)
 - `cargo test --release` still passes.
 - No public API change.
 
-### D3-T2 (DV1) — Split `http_server.rs`
+### D3-T2 (DV1) — Split `http_server.rs` ✅ DONE 2026-05-16
 
 **Current state**: 7,779 lines. One file with the router, all handlers, schema strings, OpenAPI generation, example payload embedding, helper types.
 
