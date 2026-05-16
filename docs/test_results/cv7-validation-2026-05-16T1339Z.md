@@ -412,3 +412,19 @@ drwxrwxr-x 23 arjuna arjuna     4096 May 16 19:09 ..
 
 ## 18. push results
 
+[main af290dd] validation: cv7 2026-05-16T1339Z — PASS=16 WARN=1 FAIL=0
+ 12 files changed, 48334 insertions(+)
+ create mode 100644 docs/test_results/cv7-validation-2026-05-16T1339Z.logs/01-git-fetch.log
+ create mode 100644 docs/test_results/cv7-validation-2026-05-16T1339Z.logs/01-git-reset.log
+ create mode 100644 docs/test_results/cv7-validation-2026-05-16T1339Z.logs/02-gen-protos.log
+ create mode 100644 docs/test_results/cv7-validation-2026-05-16T1339Z.logs/03-bonpy-build.log
+ create mode 100644 docs/test_results/cv7-validation-2026-05-16T1339Z.logs/04-cargo-build.log
+ create mode 100644 docs/test_results/cv7-validation-2026-05-16T1339Z.logs/05-cargo-test.log
+ create mode 100644 docs/test_results/cv7-validation-2026-05-16T1339Z.logs/06-lab.log
+ create mode 100644 docs/test_results/cv7-validation-2026-05-16T1339Z.logs/14-inject_fault.log
+ create mode 100644 docs/test_results/cv7-validation-2026-05-16T1339Z.logs/17-bonsai-sidecar.log
+ create mode 100644 docs/test_results/cv7-validation-2026-05-16T1339Z.logs/17-bonsai.log
+ create mode 100644 docs/test_results/cv7-validation-2026-05-16T1339Z.logs/17-chaos.log
+ create mode 100644 docs/test_results/cv7-validation-2026-05-16T1339Z.md
+To https://github.com/g-arjuna/bonsai.git
+   f564750..af290dd  main -> main

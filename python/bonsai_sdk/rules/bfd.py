@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 _DOWN_STATES = {"down"}
 _UP_STATES = {"up"}
+_FIRE_FROM_STATES = {"up", "none"}  # "none" = bootstrap: bonsai started while session was already down
 
 
 class BfdSessionDown(Detector):
@@ -30,7 +31,7 @@ class BfdSessionDown(Detector):
         f = extract_features_for_event(event, client)
         new_state = f.new_state.lower()
         old_state = f.old_state.lower()
-        if new_state not in _DOWN_STATES or old_state not in _UP_STATES:
+        if new_state not in _DOWN_STATES or old_state not in _FIRE_FROM_STATES:
             return None
         f.old_state = old_state
         f.new_state = new_state
