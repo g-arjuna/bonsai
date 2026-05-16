@@ -1,0 +1,106 @@
+
+=== DC Lab Full Redeploy ===
+    Topology : /home/arjuna/Desktop/bonsai/lab/dc/dc-evpn-srv6.clab.yml
+    2026-05-16T12:50:43Z
+
+[1/4] Destroying existing DC topology...
+      Done.
+
+[2/4] Deploying DC topology (fresh CA + node certs)...
+18:22:44 INFO Containerlab started version=0.75.0
+18:22:45 INFO Parsing & checking topology file=dc-evpn-srv6.clab.yml
+18:22:45 INFO Creating docker network name=bonsai-mgmt IPv4 subnet=172.100.103.0/24 IPv6 subnet=2001:db8:103::/64 MTU=0
+18:22:45 INFO Creating lab directory path=/home/arjuna/Desktop/bonsai/lab/dc/clab-bonsai-dc
+18:22:45 INFO Creating container name=host2
+18:22:45 INFO Creating container name=host1
+18:22:45 INFO Creating container name=host3
+18:22:45 INFO Creating container name=srl-spine1
+18:22:45 INFO Creating container name=srl-super2
+18:22:45 INFO Creating container name=srl-leaf1
+18:22:45 INFO Creating container name=srl-super1
+18:22:45 INFO Creating container name=srl-leaf4
+18:22:45 INFO Creating container name=srl-spine2
+18:22:46 INFO Creating container name=srl-leaf2
+18:22:46 INFO Running postdeploy actions kind=nokia_srlinux node=srl-super2
+18:22:46 INFO Created link: srl-super2:e1-1 ▪┄┄▪ srl-spine1:e1-2
+18:22:46 INFO Created link: srl-super1:e1-1 ▪┄┄▪ srl-spine1:e1-1
+18:22:46 INFO Running postdeploy actions kind=nokia_srlinux node=srl-super1
+18:22:46 INFO Created link: srl-spine1:e1-3 ▪┄┄▪ srl-leaf1:e1-1
+18:22:46 INFO Creating container name=host4
+18:22:46 INFO Created link: srl-leaf1:e1-3 ▪┄┄▪ host1:eth1
+18:22:46 INFO Running postdeploy actions kind=nokia_srlinux node=srl-leaf1
+18:22:46 INFO Created link: srl-spine1:e1-6 ▪┄┄▪ srl-leaf4:e1-1
+18:22:46 INFO Running postdeploy actions kind=nokia_srlinux node=srl-spine1
+18:22:46 INFO Running postdeploy actions kind=nokia_srlinux node=srl-leaf4
+18:22:46 INFO Created link: srl-super1:e1-2 ▪┄┄▪ srl-spine2:e1-1
+18:22:46 INFO Created link: srl-super2:e1-2 ▪┄┄▪ srl-spine2:e1-2
+18:22:46 INFO Created link: srl-spine2:e1-3 ▪┄┄▪ srl-leaf1:e1-2
+18:22:47 INFO Created link: srl-spine1:e1-4 ▪┄┄▪ srl-leaf2:e1-1
+18:22:47 INFO Created link: srl-spine2:e1-4 ▪┄┄▪ srl-leaf2:e1-2
+18:22:47 INFO Created link: srl-spine2:e1-6 ▪┄┄▪ srl-leaf4:e1-2
+18:22:47 INFO Running postdeploy actions kind=nokia_srlinux node=srl-spine2
+18:22:47 INFO Created link: srl-leaf4:e1-3 ▪┄┄▪ host4:eth1
+18:22:47 INFO Created link: srl-leaf2:e1-3 ▪┄┄▪ host2:eth1
+18:22:47 INFO Running postdeploy actions kind=nokia_srlinux node=srl-leaf2
+18:22:47 INFO Creating container name=srl-leaf3
+18:22:48 INFO Created link: srl-spine1:e1-5 ▪┄┄▪ srl-leaf3:e1-1
+18:22:48 INFO Created link: srl-spine2:e1-5 ▪┄┄▪ srl-leaf3:e1-2
+18:22:48 INFO Created link: srl-leaf3:e1-3 ▪┄┄▪ host3:eth1
+18:22:48 INFO Running postdeploy actions kind=nokia_srlinux node=srl-leaf3
+18:24:15 INFO Adding host entries path=/etc/hosts
+18:24:15 INFO Adding SSH config for nodes path=/etc/ssh/ssh_config.d/clab-bonsai-dc.conf
+[1m╭[0m[1m───────────────────────────[0m[1m┬[0m[1m──────────────────────────────[0m[1m┬[0m[1m─────────[0m[1m┬[0m[1m─────────────────[0m[1m╮[0m
+[1m│[0m[1m            Name           [0m[1m│[0m[1m          Kind/Image          [0m[1m│[0m[1m  State  [0m[1m│[0m[1m  IPv4/6 Address [0m[1m│[0m
+[1m├[0m[1m───────────────────────────[0m[1m┼[0m[1m──────────────────────────────[0m[1m┼[0m[1m─────────[0m[1m┼[0m[1m─────────────────[0m[1m┤[0m
+│ clab-bonsai-dc-host1      │ linux                        │ running │ 172.100.103.21  │
+│                           │ alpine:latest                │         │ 2001:db8:103::3 │
+├───────────────────────────┼──────────────────────────────┼─────────┼─────────────────┤
+│ clab-bonsai-dc-host2      │ linux                        │ running │ 172.100.103.22  │
+│                           │ alpine:latest                │         │ 2001:db8:103::6 │
+├───────────────────────────┼──────────────────────────────┼─────────┼─────────────────┤
+│ clab-bonsai-dc-host3      │ linux                        │ running │ 172.100.103.23  │
+│                           │ alpine:latest                │         │ 2001:db8:103::2 │
+├───────────────────────────┼──────────────────────────────┼─────────┼─────────────────┤
+│ clab-bonsai-dc-host4      │ linux                        │ running │ 172.100.103.24  │
+│                           │ alpine:latest                │         │ 2001:db8:103::c │
+├───────────────────────────┼──────────────────────────────┼─────────┼─────────────────┤
+│ clab-bonsai-dc-srl-leaf1  │ nokia_srlinux                │ running │ 172.100.103.15  │
+│                           │ ghcr.io/nokia/srlinux:latest │         │ 2001:db8:103::8 │
+├───────────────────────────┼──────────────────────────────┼─────────┼─────────────────┤
+│ clab-bonsai-dc-srl-leaf2  │ nokia_srlinux                │ running │ 172.100.103.16  │
+│                           │ ghcr.io/nokia/srlinux:latest │         │ 2001:db8:103::b │
+├───────────────────────────┼──────────────────────────────┼─────────┼─────────────────┤
+│ clab-bonsai-dc-srl-leaf3  │ nokia_srlinux                │ running │ 172.100.103.17  │
+│                           │ ghcr.io/nokia/srlinux:latest │         │ 2001:db8:103::d │
+├───────────────────────────┼──────────────────────────────┼─────────┼─────────────────┤
+│ clab-bonsai-dc-srl-leaf4  │ nokia_srlinux                │ running │ 172.100.103.18  │
+│                           │ ghcr.io/nokia/srlinux:latest │         │ 2001:db8:103::9 │
+├───────────────────────────┼──────────────────────────────┼─────────┼─────────────────┤
+│ clab-bonsai-dc-srl-spine1 │ nokia_srlinux                │ running │ 172.100.103.13  │
+│                           │ ghcr.io/nokia/srlinux:latest │         │ 2001:db8:103::5 │
+├───────────────────────────┼──────────────────────────────┼─────────┼─────────────────┤
+│ clab-bonsai-dc-srl-spine2 │ nokia_srlinux                │ running │ 172.100.103.14  │
+│                           │ ghcr.io/nokia/srlinux:latest │         │ 2001:db8:103::a │
+├───────────────────────────┼──────────────────────────────┼─────────┼─────────────────┤
+│ clab-bonsai-dc-srl-super1 │ nokia_srlinux                │ running │ 172.100.103.11  │
+│                           │ ghcr.io/nokia/srlinux:latest │         │ 2001:db8:103::7 │
+├───────────────────────────┼──────────────────────────────┼─────────┼─────────────────┤
+│ clab-bonsai-dc-srl-super2 │ nokia_srlinux                │ running │ 172.100.103.12  │
+│                           │ ghcr.io/nokia/srlinux:latest │         │ 2001:db8:103::4 │
+╰───────────────────────────┴──────────────────────────────┴─────────┴─────────────────╯
+
+      CA cert generated: 35:6B:B1:1E:74:C8:6A:59:01:63:BD:C8:2B:22:CA:59:73:9E:56:BC
+      CA cert → lab/dc/ca.pem (1285 bytes)
+
+[3/4] Verifying node TLS certs against new CA...
+  PASS  clab-bonsai-dc-srl-super1 (172.100.103.11)
+  PASS  clab-bonsai-dc-srl-super2 (172.100.103.12)
+  PASS  clab-bonsai-dc-srl-spine1 (172.100.103.13)
+  PASS  clab-bonsai-dc-srl-spine2 (172.100.103.14)
+  PASS  clab-bonsai-dc-srl-leaf1 (172.100.103.15)
+  PASS  clab-bonsai-dc-srl-leaf2 (172.100.103.16)
+  PASS  clab-bonsai-dc-srl-leaf3 (172.100.103.17)
+  PASS  clab-bonsai-dc-srl-leaf4 (172.100.103.18)
+
+--topo-only: skipping bonsai restart.
+Run: docker compose --profile lab-dc up -d --force-recreate

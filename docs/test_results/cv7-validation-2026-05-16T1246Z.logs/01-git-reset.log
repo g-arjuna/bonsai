@@ -1,0 +1,2 @@
+    $ git reset --hard origin/main
+HEAD is now at 85924dd fix: binary build errors in server_startup.rs and cli.rs

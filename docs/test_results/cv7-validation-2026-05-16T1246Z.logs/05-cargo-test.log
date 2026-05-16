@@ -1,0 +1,378 @@
+   Compiling bonsai v0.1.0 (/home/arjuna/Desktop/bonsai)
+warning: unused import: `axum::response::IntoResponse`
+ --> src/http_server/mod.rs:1:5
+  |
+1 | use axum::response::IntoResponse;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::convert::Infallible`
+  --> src/http_server/mod.rs:15:5
+   |
+15 | use std::convert::Infallible;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Event`, `Json`, `KeepAlive`, `Path`, `Query`, `Sse`, and `State`
+  --> src/http_server/mod.rs:21:5
+   |
+21 |     Json, Router,
+   |     ^^^^
+22 |     extract::{Path, Query, State},
+   |               ^^^^  ^^^^^  ^^^^^
+23 |     http::StatusCode,
+24 |     response::sse::{Event, KeepAlive, Sse},
+   |                     ^^^^^  ^^^^^^^^^  ^^^
+
+warning: unused import: `Stream`
+  --> src/http_server/mod.rs:27:23
+   |
+27 | use futures::stream::{Stream, StreamExt};
+   |                       ^^^^^^
+
+warning: unused imports: `BroadcastStream` and `ReceiverStream`
+  --> src/http_server/mod.rs:30:30
+   |
+30 | use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
+   |                              ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^
+
+warning: unused import: `CollectorStatus`
+  --> src/http_server/mod.rs:33:43
+   |
+33 | use crate::assignment::{CollectorManager, CollectorStatus};
+   |                                           ^^^^^^^^^^^^^^^
+
+warning: unused import: `EnricherConfig`
+  --> src/http_server/mod.rs:35:25
+   |
+35 | use crate::enrichment::{EnricherConfig, SharedEnricherRegistry};
+   |                         ^^^^^^^^^^^^^^
+
+warning: unused import: `crate::gnmi_set::gnmi_set`
+  --> src/http_server/mod.rs:36:5
+   |
+36 | use crate::gnmi_set::gnmi_set;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `EnvironmentRecord`, `REMEDIATION_TRUST_CUTOFF_ISO`, and `RemediationProposalRow`
+  --> src/http_server/mod.rs:38:19
+   |
+38 |     DetectionRow, EnvironmentRecord, GraphStore, REMEDIATION_TRUST_CUTOFF_ISO,
+   |                   ^^^^^^^^^^^^^^^^^              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+39 |     RemediationProposalRow, SiteRecord, TraceStep,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `OutputAdapterConfig` and `OutputAdapterRunState`
+  --> src/http_server/mod.rs:41:29
+   |
+41 | use crate::output::traits::{OutputAdapterConfig, OutputAdapterRunState, SharedAdapterRegistry};
+   |                             ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `AssignmentRule`, `CredentialSummary`, `DeviceRegistry`, `DiscoveryInput`, `RegistryChange`, `ResolvePurpose`, `ResolvedCredential`, `StreamingReadinessReport`, `SyslogEvent`, `SyslogFact`, `TargetConfig`, `TrustKey`, `TrustState`, `archive`, `audit`, `check_graduation`, `disk_guard`, `event_bus`, `self`, `self`, `self`, `store::BonsaiStore`, `synthesizer`, and `yang::YangLibrary`
+  --> src/http_server/mod.rs:44:5
+   |
+44 |     archive, audit,
+   |     ^^^^^^^  ^^^^^
+45 |     change_detection::{self, ChangeDetectionRuntime},
+   |                        ^^^^
+46 |     config::{
+47 |         AssignmentRule, LayeredIngestionConfig, RemediationConfig, SelectedSubscriptionPath,
+   |         ^^^^^^^^^^^^^^
+48 |         ServiceNowConfig, StorageConfig, StreamingConfig, TargetConfig,
+   |                                                           ^^^^^^^^^^^^
+49 |     },
+50 |     credentials::{CredentialSummary, CredentialVault, ResolvePurpose, ResolvedCredential},
+   |                   ^^^^^^^^^^^^^^^^^                   ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^
+51 |     discovery::{self, DiscoveryInput},
+   |                 ^^^^  ^^^^^^^^^^^^^^
+52 |     disk_guard, event_bus, memory_profile,
+   |     ^^^^^^^^^^  ^^^^^^^^^
+53 |     registry::{ApiRegistry, DeviceRegistry, RegistryChange},
+   |                             ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^
+54 |     remediation::{
+55 |         SharedRollbackRegistry, SharedTrustStore, TrustKey, TrustState, check_graduation,
+   |                                                   ^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^^^^^^^^^
+56 |     },
+57 |     signals::syslog::{SyslogEvent, SyslogFact},
+   |                       ^^^^^^^^^^^  ^^^^^^^^^^
+58 |     store::BonsaiStore,
+   |     ^^^^^^^^^^^^^^^^^^
+59 |     streaming::{self, StreamingReadinessReport},
+   |                 ^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^
+60 |     synthesizer,
+   |     ^^^^^^^^^^^
+61 |     yang::YangLibrary,
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `build_site_path_by_id`, `now_ns`, `option_string`, and `resolve_site_metadata`
+   --> src/http_server/device.rs:203:37
+    |
+203 |     read_str, read_i64, read_ts_ns, option_string, now_ns,
+    |                                     ^^^^^^^^^^^^^  ^^^^^^
+204 |     compute_health, build_site_path_by_id, resolve_site_metadata,
+    |                     ^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `LayeredIngestionConfig`, `StorageConfig`, and `StreamingConfig`
+   --> src/http_server/device.rs:207:21
+    |
+207 | use crate::config::{LayeredIngestionConfig, SelectedSubscriptionPath, StorageConfig, StreamingConfig, TargetConfig};
+    |                     ^^^^^^^^^^^^^^^^^^^^^^                            ^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+
+warning: unused import: `SharedEnricherRegistry`
+   --> src/http_server/device.rs:210:41
+    |
+210 | use crate::enrichment::{EnricherConfig, SharedEnricherRegistry};
+    |                                         ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `SiteRecord`
+   --> src/http_server/device.rs:211:32
+    |
+211 | use crate::graph::{GraphStore, SiteRecord};
+    |                                ^^^^^^^^^^
+
+warning: unused import: `crate::registry::ApiRegistry`
+   --> src/http_server/device.rs:212:5
+    |
+212 | use crate::registry::ApiRegistry;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::audit`
+   --> src/http_server/device.rs:215:5
+    |
+215 | use crate::audit;
+    |     ^^^^^^^^^^^^
+
+warning: unused import: `ChangeDetectionRuntime`
+   --> src/http_server/device.rs:218:38
+    |
+218 | use crate::{change_detection::{self, ChangeDetectionRuntime}, synthesizer};
+    |                                      ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+ --> src/http_server/managed_devices.rs:2:5
+  |
+2 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused imports: `SiteRecord as SiteJsonRec`, `build_site_path_by_id`, `read_i64`, and `resolve_site_metadata`
+  --> src/http_server/managed_devices.rs:13:30
+   |
+13 |     SitesResponse, SiteJson, SiteRecord as SiteJsonRec, SiteSummaryResponse, SiteHealthJson,
+   |                              ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+16 |     read_str, read_i64, option_string, read_subscription_statuses, read_trust_mark_impact,
+   |               ^^^^^^^^
+17 |     build_site_path_by_id, resolve_site_metadata, compute_health,
+   |     ^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `SelectedSubscriptionPath` and `StorageConfig`
+  --> src/http_server/managed_devices.rs:19:21
+   |
+19 | use crate::config::{StorageConfig, TargetConfig, SelectedSubscriptionPath};
+   |                     ^^^^^^^^^^^^^                ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `GraphStore` and `REMEDIATION_TRUST_CUTOFF_ISO`
+  --> src/http_server/managed_devices.rs:22:20
+   |
+22 | use crate::graph::{GraphStore, SiteRecord, REMEDIATION_TRUST_CUTOFF_ISO};
+   |                    ^^^^^^^^^^              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `StreamingReadinessReport` and `self`
+  --> src/http_server/managed_devices.rs:24:24
+   |
+24 | use crate::streaming::{self, StreamingReadinessReport};
+   |                        ^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `audit` and `synthesizer`
+  --> src/http_server/managed_devices.rs:25:13
+   |
+25 | use crate::{synthesizer, audit};
+   |             ^^^^^^^^^^^  ^^^^^
+
+warning: unused import: `std::sync::Arc`
+   --> src/http_server/governance.rs:113:5
+    |
+113 | use std::sync::Arc;
+    |     ^^^^^^^^^^^^^^
+
+warning: unused import: `CollectorManager`
+   --> src/http_server/governance.rs:119:25
+    |
+119 | use crate::assignment::{CollectorManager, CollectorStatus};
+    |                         ^^^^^^^^^^^^^^^^
+
+warning: unused imports: `GraphStore` and `SiteRecord`
+   --> src/http_server/governance.rs:121:39
+    |
+121 | use crate::graph::{EnvironmentRecord, GraphStore, SiteRecord};
+    |                                       ^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused import: `ApiRegistry`
+   --> src/http_server/governance.rs:122:23
+    |
+122 | use crate::registry::{ApiRegistry, DeviceRegistry};
+    |                       ^^^^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+ --> src/http_server/observability.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `Value`
+  --> src/http_server/observability.rs:10:24
+   |
+10 | use lbug::{Connection, Value};
+   |                        ^^^^^
+
+warning: unused imports: `option_string`, `read_trust_mark_impact`, and `read_ts_ns`
+  --> src/http_server/observability.rs:24:25
+   |
+24 |     read_str, read_i64, read_ts_ns, read_subscription_statuses, read_trust_mark_impact,
+   |                         ^^^^^^^^^^                              ^^^^^^^^^^^^^^^^^^^^^^
+25 |     option_string, now_ns, build_site_path_by_id, resolve_site_metadata, compute_health,
+   |     ^^^^^^^^^^^^^
+
+warning: unused imports: `GraphStore`, `SiteRecord`, and `TraceStep`
+  --> src/http_server/observability.rs:29:34
+   |
+29 | use crate::graph::{DetectionRow, GraphStore, SiteRecord, TraceStep, REMEDIATION_TRUST_CUTOFF_ISO};
+   |                                  ^^^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused import: `ApiRegistry`
+  --> src/http_server/observability.rs:30:23
+   |
+30 | use crate::registry::{ApiRegistry, DeviceRegistry, RegistryChange};
+   |                       ^^^^^^^^^^^
+
+warning: unused import: `StorageConfig`
+  --> src/http_server/observability.rs:31:21
+   |
+31 | use crate::config::{StorageConfig, TargetConfig};
+   |                     ^^^^^^^^^^^^^
+
+warning: unused import: `streaming`
+  --> src/http_server/observability.rs:32:61
+   |
+32 | use crate::{event_bus, disk_guard, memory_profile, archive, streaming};
+   |                                                             ^^^^^^^^^
+
+warning: unused import: `std::collections::HashMap`
+   --> src/http_server/remediation.rs:134:5
+    |
+134 | use std::collections::HashMap;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+   --> src/http_server/remediation.rs:135:5
+    |
+135 | use std::sync::Arc;
+    |     ^^^^^^^^^^^^^^
+
+warning: unused import: `crate::registry::PathOverride`
+   --> src/http_server/remediation.rs:142:5
+    |
+142 | use crate::registry::PathOverride;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `RemediationConfig`, `ServiceNowConfig`, and `StorageConfig`
+   --> src/http_server/remediation.rs:144:21
+    |
+144 | use crate::config::{RemediationConfig, ServiceNowConfig, StorageConfig, TargetConfig};
+    |                     ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^
+
+warning: unused import: `CredentialSummary`
+   --> src/http_server/remediation.rs:145:26
+    |
+145 | use crate::credentials::{CredentialSummary, CredentialVault, ResolvePurpose, ResolvedCredential};
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `GraphStore`, `REMEDIATION_TRUST_CUTOFF_ISO`, and `TraceStep`
+   --> src/http_server/remediation.rs:147:20
+    |
+147 | use crate::graph::{GraphStore, RemediationProposalRow, REMEDIATION_TRUST_CUTOFF_ISO, TraceStep};
+    |                    ^^^^^^^^^^                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused imports: `SharedRollbackRegistry` and `SharedTrustStore`
+   --> src/http_server/remediation.rs:149:5
+    |
+149 |     SharedRollbackRegistry, SharedTrustStore, TrustKey, TrustState, check_graduation,
+    |     ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^
+
+warning: unused import: `http::StatusCode`
+  --> src/http_server/outputs.rs:35:34
+   |
+35 | use axum::{Json, extract::State, http::StatusCode};
+   |                                  ^^^^^^^^^^^^^^^^
+
+warning: unused import: `serde_json::Value`
+  --> src/http_server/outputs.rs:36:5
+   |
+36 | use serde_json::Value;
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `SharedAdapterRegistry`
+  --> src/http_server/outputs.rs:39:73
+   |
+39 | use crate::output::traits::{OutputAdapterConfig, OutputAdapterRunState, SharedAdapterRegistry};
+   |                                                                         ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::store::BonsaiStore`
+   --> src/http_server/remediation.rs:151:5
+    |
+151 | use crate::store::BonsaiStore;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `StreamExt`
+  --> src/http_server/mod.rs:27:31
+   |
+27 | use futures::stream::{Stream, StreamExt};
+   |                               ^^^^^^^^^
+
+warning: `bonsai` (lib test) generated 47 warnings (47 duplicates)
+warning: `bonsai` (lib) generated 47 warnings (run `cargo fix --lib -p bonsai` to apply 45 suggestions)
+warning: unused import: `CONFIG_PATH`
+  --> src/server_startup.rs:26:13
+   |
+26 | use super::{CONFIG_PATH, GRAPH_PATH_DEFAULT, REGISTRY_PATH};
+   |             ^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `bonsai` (bin "bonsai" test) generated 1 warning (run `cargo fix --bin "bonsai" -p bonsai --tests` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 3m 53s
+     Running unittests src/lib.rs (target/release/deps/bonsai-f76a5a98262f4a49)
+
+running 11 tests
+test sidecar_registry::tests::missing_required_is_none_without_required_kinds ... ok
+test sidecar_registry::tests::missing_required_is_none_during_grace_window ... ok
+test sidecar_registry::tests::heartbeat_unknown_id_returns_err ... ok
+test sidecar_registry::tests::parse_required_kinds_empty_input ... ok
+test sidecar_registry::tests::parse_required_kinds_handles_spaces_and_empties ... ok
+test sidecar_registry::tests::missing_required_lists_kinds_after_grace ... ok
+test sidecar_registry::tests::re_register_same_name_kind_replaces ... ok
+test sidecar_registry::tests::register_then_heartbeat_then_snapshot ... ok
+test sidecar_registry::tests::status_healthy_within_window ... ok
+test sidecar_registry::tests::status_lost_after_120s ... ok
+test sidecar_registry::tests::status_stale_after_45s ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 230 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/release/deps/bonsai-73575095f84303a5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/healthcheck.rs (target/release/deps/healthcheck-33dc8efc8ee1fc66)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/query.rs (target/release/deps/query-aa7e7d81c29e05d2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
