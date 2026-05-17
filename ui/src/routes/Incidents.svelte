@@ -111,22 +111,31 @@
           <div class="sev-stripe" aria-label="severity: {sev}"></div>
 
           <div class="inc-body">
-            <!-- Primary row: device + rule + spacer + count + age -->
+            <!-- Primary row: device + rule pills + spacer + count + age -->
             <div class="row-primary">
               <code class="device-addr">{inc.root?.device_address ?? '—'}</code>
-              <span class="rule-id">{inc.root?.rule_id ?? 'unknown rule'}</span>
+              <span class="rule-pills">
+                {#each (inc.rule_ids?.length ? inc.rule_ids : [inc.root?.rule_id ?? 'unknown']) as rid}
+                  <span class="rule-pill">{rid}</span>
+                {/each}
+              </span>
               <span class="spacer"></span>
-              <span class="ev-count">{count} event{count !== 1 ? 's' : ''}</span>
+              <span class="ev-count">{inc.event_count ?? count} event{(inc.event_count ?? count) !== 1 ? 's' : ''}</span>
               <time class="inc-age" title={absoluteTime(inc.started_at_ns)}>
                 {relativeTime(inc.started_at_ns)}
               </time>
             </div>
 
-            <!-- Secondary row: affected summary + remediation tag + duration -->
+            <!-- Secondary row: clubbing rationale + remediation tag + duration -->
             <div class="row-secondary">
-              <span class="context-line">
-                {#if (inc.affected_devices ?? []).length > 1}
-                  {inc.affected_devices.length} devices affected
+              <span
+                class="context-line"
+                title={inc.co_fire_signature ?? ''}
+              >
+                {#if (inc.device_count ?? (inc.affected_devices ?? []).length) > 1}
+                  {inc.device_count ?? inc.affected_devices.length} devices · {inc.co_fire_signature ?? ''}
+                {:else if inc.co_fire_signature}
+                  {inc.co_fire_signature}
                 {:else}
                   {inc.root?.device_address ?? ''}
                 {/if}
@@ -138,6 +147,14 @@
                 {duration(inc.started_at_ns, inc.ended_at_ns) || 'instant'}
               </span>
             </div>
+            <!-- Config correlation hint (D2-4 T5) -->
+            {#if (inc.rule_ids ?? []).includes('config_caused_fault')}
+              {@const cfDet = incidentDetections(inc).find(d => d?.rule_id === 'config_caused_fault')}
+              {@const lagMs = cfDet?.features_json ? (() => { try { return JSON.parse(cfDet.features_json)?.detail?.config_lag_ms; } catch { return null; } })() : null}
+              <div class="config-hint">
+                ⚙ Config change preceded this incident{lagMs != null ? ` by ${lagMs}ms` : ''} — possible operator-caused fault
+              </div>
+            {/if}
 
             <!-- Expanded: detection timeline -->
             {#if isOpen}
@@ -251,9 +268,23 @@
     letter-spacing: var(--tracking-mono);
   }
 
-  .rule-id {
-    font-size: var(--text-small);
+  .rule-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+  }
+
+  .rule-pill {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
     color: var(--text-secondary);
+    white-space: nowrap;
+    letter-spacing: 0.01em;
   }
 
   .spacer { flex: 1; min-width: 8px; }
@@ -388,4 +419,15 @@
     flex-shrink: 0;
   }
   .chevron.open { transform: rotate(90deg); }
+
+  /* ── Config correlation hint (D2-4 T5) ──────────────────────────────────── */
+  .config-hint {
+    margin-top: 6px;
+    padding: 5px 10px;
+    background: rgba(77,208,200,0.08);
+    border-left: 2px solid #4dd0c8;
+    border-radius: 3px;
+    font-size: var(--text-small);
+    color: #4dd0c8;
+  }
 </style>

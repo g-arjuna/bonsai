@@ -1,0 +1,39 @@
+vendor: frr
+description: >
+  FRRouting (FRR) state string mappings. Used in fast-iteration lab
+  (lab/fast-iteration/). FRR exposes gNMI via a native OpenConfig shim.
+  Reference: FRR OpenConfig YANG implementation.
+applies_to:
+  software_version_pattern: "FRRouting*"
+
+state_mappings:
+
+  bfd_oper_state:
+    yang_path: "openconfig-bfd:bfd/sessions/session/state/oper-state"
+    semantic_states:
+      UP:         ["up"]
+      DOWN:       ["down"]
+      ADMIN_DOWN: ["admin_down", "admin-down"]
+    treat_as_down: ["DOWN", "ADMIN_DOWN"]
+    treat_as_up:   ["UP"]
+    # TODO: verify FRR BFD state strings via gNMI trace
+
+  interface_oper_status:
+    yang_path: "openconfig-interfaces:interfaces/interface/state/oper-status"
+    semantic_states:
+      UP:   ["up"]
+      DOWN: ["down"]
+    treat_as_down: ["DOWN"]
+    treat_as_up:   ["UP"]
+
+  bgp_session_state:
+    yang_path: "openconfig-bgp:bgp/neighbors/neighbor/state/session-state"
+    semantic_states:
+      ESTABLISHED:  ["established", "Established"]
+      ACTIVE:       ["active", "Active"]
+      IDLE:         ["idle", "Idle"]
+      OPEN_SENT:    ["opensent", "OpenSent"]
+      OPEN_CONFIRM: ["openconfirm", "OpenConfirm"]
+      CONNECT:      ["connect", "Connect"]
+    treat_as_down: ["IDLE", "ACTIVE", "OPEN_SENT", "OPEN_CONFIRM", "CONNECT"]
+    treat_as_up:   ["ESTABLISHED"]

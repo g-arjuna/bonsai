@@ -372,6 +372,16 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         None
     };
 
+    // D2-10 T5: Register the debounce-cache shrink callback on the governor so that
+    // govern_memory_soft (50%) and govern_memory_hard (25%) actually reduce RSS by
+    // evicting entries from the three ShardedLruCaches, not just emitting a metric.
+    if let Some(ref gov) = shared_governor {
+        let debouncer_for_gov = std::sync::Arc::clone(&debouncer);
+        gov.register_memory_pressure_callback(move |pct| {
+            debouncer_for_gov.shrink_debounce_caches(pct);
+        });
+    }
+
     let coordinator = if let Some(Store::Core(ref s)) = store {
         let coordinator_cfg = bonsai::write_coordinator::WriteCoordinatorConfig {
             governor: shared_governor.clone(),

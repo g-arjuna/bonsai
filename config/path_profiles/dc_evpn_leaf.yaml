@@ -85,3 +85,37 @@ paths:
     required_models: ["openconfig-bfd"]
     optional: true
     rationale: "OpenConfig BFD for fast failure detection on underlay."
+
+# ── Config-state paths (D2-4 T1) ─────────────────────────────────────────────
+config_paths:
+  - path: "interface[name=*]/admin-state"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    rationale: "SR Linux interface admin-state — leaf downlink admin-disable drops hosts from fabric."
+  - path: "network-instance[name=*]/protocols/bgp/neighbor[peer-address=*]/admin-state"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    rationale: "SR Linux BGP neighbor admin-state across all VRFs — covers both underlay and EVPN overlay sessions."
+  - path: "tunnel-interface[name=*]/vxlan-interface[index=*]/ingress-vni"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    optional: true
+    rationale: "SR Linux VxLAN ingress-VNI configuration — VNI change on a leaf silently drops cross-leaf traffic."
+  - path: "interfaces/interface/config"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    optional: true
+    rationale: "OpenConfig interface config for non-SRL vendors."
+  - path: "network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/config"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-bgp"]
+    optional: true
+    rationale: "OpenConfig BGP neighbor config — EVPN session peer removal or timer change."

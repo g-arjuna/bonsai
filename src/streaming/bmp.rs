@@ -164,9 +164,10 @@ fn publish_event(
         _ => "streaming/bmp/unknown",
     };
 
-    // Under rate shedding, drop low-value StatisticsReport messages while preserving
-    // high-value state-change events (RouteMonitoring, PeerUp, PeerDown) (C4-N2 / T6-1).
-    if event.message_type == "statistics_report" && governor.is_some_and(|g| g.is_shedding()) {
+    // Under rate shedding or memory pressure, drop low-value StatisticsReport messages
+    // while preserving high-value state-change events (RouteMonitoring, PeerUp, PeerDown).
+    // D2-10 T5: should_shed() covers both rate_shedding_active and memory_pressure_active.
+    if event.message_type == "statistics_report" && governor.is_some_and(|g| g.should_shed()) {
         metrics::counter!("bonsai_bmp_shed_total").increment(1);
         return;
     }

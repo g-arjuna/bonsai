@@ -89,6 +89,33 @@ RESULTS_FILE="$RESULTS_DIR/cv7-validation-$DATE.md"
 LOG_DIR="$RESULTS_DIR/cv7-validation-$DATE.logs"
 mkdir -p "$RESULTS_DIR" "$LOG_DIR"
 
+# ── Log retention policy (D2-1 T2) ───────────────────────────────────────────
+# Keep the last LOG_RETENTION_COUNT .logs directories; archive older ones to
+# docs/test_results/archive/ as gzip tarballs (~10-20 MB each compressed).
+# Default: 10 runs. Override with LOG_RETENTION_COUNT env var.
+LOG_RETENTION_COUNT="${LOG_RETENTION_COUNT:-10}"
+ARCHIVE_DIR="$RESULTS_DIR/archive"
+mkdir -p "$ARCHIVE_DIR"
+# Collect existing .logs dirs sorted oldest-first.
+_LOG_DIRS_SORTED=()
+while IFS= read -r -d '' _d; do
+  _LOG_DIRS_SORTED+=("$_d")
+done < <(find "$RESULTS_DIR" -maxdepth 1 -name '*.logs' -type d -print0 | sort -z)
+_EXCESS=$(( ${#_LOG_DIRS_SORTED[@]} - LOG_RETENTION_COUNT ))
+if (( _EXCESS > 0 )); then
+  for (( _i=0; _i<_EXCESS; _i++ )); do
+    _OLD="${_LOG_DIRS_SORTED[$_i]}"
+    _TARBALL="$ARCHIVE_DIR/$(basename "$_OLD").tar.gz"
+    if tar -czf "$_TARBALL" -C "$(dirname "$_OLD")" "$(basename "$_OLD")" 2>/dev/null; then
+      rm -rf "$_OLD"
+      echo "[retention] archived $(basename "$_OLD") → archive/" >&2
+    else
+      echo "[retention] WARN: could not archive $_OLD — skipping removal" >&2
+    fi
+  done
+fi
+unset _LOG_DIRS_SORTED _EXCESS _i _OLD _TARBALL
+
 # Defensive: if the script is interrupted mid-flight (e.g. between step 7
 # (start bonsai) and step 17 (teardown)), leave the environment clean for
 # the next iteration. The trap runs teardown.sh on any exit path.

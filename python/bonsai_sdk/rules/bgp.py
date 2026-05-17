@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Optional
 
 from ..detection import Detector, Features
 from ..ml_detector import extract_features_for_event
+from ..state_mapping import is_down, is_up
 from ..window import WindowRegistry
 
 if TYPE_CHECKING:
@@ -14,11 +15,10 @@ _FLAP_REGISTRY = WindowRegistry(window_seconds=300)
 _FLAP_THRESHOLD = 3  # flaps in 5 min before firing BgpSessionFlap
 
 
-# Only fire when a session that WAS established drops to idle.
-# active->idle is just the BGP retry timer cycling — normal reconnection behavior.
-# opensent/openconfirm are establishment steps. Only established->idle is a true loss.
-_HARD_DOWN_STATES = {"idle"}
-_ESTABLISHED_FROM = {"established"}
+# BgpSessionDown fires only on established->down transitions.
+# active/idle cycling during reconnection is normal; only the loss of an
+# established session is a true fault. The state_mapping adapter translates
+# vendor strings to semantic DOWN/ESTABLISHED via the YAML registry.
 
 
 class BgpSessionDown(Detector):
@@ -37,12 +37,16 @@ class BgpSessionDown(Detector):
         if event.event_type != "bgp_session_change":
             return None
         f = extract_features_for_event(event, client)
-        if f.new_state not in _HARD_DOWN_STATES or f.old_state not in _ESTABLISHED_FROM:
+        vendor = client.device_vendor(f.device_address)
+        if not is_down(vendor, "bgp_session_state", f.new_state):
             return None
+        if not is_up(vendor, "bgp_session_state", f.old_state):
+            return None
+        f.vendor = vendor
         return f
 
     def detect(self, features: Features) -> Optional[str]:
-        if features.new_state in _HARD_DOWN_STATES:
+        if is_down(features.vendor, "bgp_session_state", features.new_state):
             return (
                 f"BGP peer {features.peer_address} on {features.device_address} "
                 f"transitioned {features.old_state} -> {features.new_state} "
@@ -65,9 +69,11 @@ class BgpSessionFlap(Detector):
         if event.event_type != "bgp_session_change":
             return None
         f = extract_features_for_event(event, client)
-        # Only count established->idle as a flap - retry cycles don't count.
-        if f.new_state not in _HARD_DOWN_STATES or f.old_state not in _ESTABLISHED_FROM:
+        vendor = client.device_vendor(f.device_address)
+        # Only count established->down transitions as flaps; retry cycles don't count.
+        if not is_down(vendor, "bgp_session_state", f.new_state) or not is_up(vendor, "bgp_session_state", f.old_state):
             return None
+        f.vendor = vendor
         key  = f"{event.device_address}:{f.peer_address}"
         win  = _FLAP_REGISTRY.get(key)
         win.record(event.occurred_at_ns, "bgp_session_change")

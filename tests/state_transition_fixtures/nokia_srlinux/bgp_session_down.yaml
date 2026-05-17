@@ -1,0 +1,63 @@
+vendor: nokia_srl
+rule_id: bgp_session_down
+description: >
+  SR Linux BGP session state transition fixtures. BgpSessionDown fires ONLY
+  on established->idle (true session loss). active/idle cycling during normal
+  reconnection must NOT fire — it is BGP retry timer behaviour.
+
+fixtures:
+  - id: srl_bgp_established_to_idle
+    description: "Nominal: established session drops to idle — must fire"
+    event_type: bgp_session_change
+    old_state: "established"
+    new_state: "idle"
+    expect_fires: true
+
+  - id: srl_bgp_active_to_idle
+    description: "Reconnect cycling: active->idle — must NOT fire (not a true established loss)"
+    event_type: bgp_session_change
+    old_state: "active"
+    new_state: "idle"
+    expect_fires: false
+
+  - id: srl_bgp_idle_to_active
+    description: "Reconnect attempt: idle->active — must NOT fire"
+    event_type: bgp_session_change
+    old_state: "idle"
+    new_state: "active"
+    expect_fires: false
+
+  - id: srl_bgp_established_to_active
+    description: "Session reset to active (TCP retry) — must fire (established was lost)"
+    event_type: bgp_session_change
+    old_state: "established"
+    new_state: "active"
+    expect_fires: true
+
+  - id: srl_bgp_idle_to_established
+    description: "Recovery: idle->established — must NOT fire"
+    event_type: bgp_session_change
+    old_state: "idle"
+    new_state: "established"
+    expect_fires: false
+
+  - id: srl_bgp_opensent_to_established
+    description: "Normal bring-up: opensent->established — must NOT fire"
+    event_type: bgp_session_change
+    old_state: "opensent"
+    new_state: "established"
+    expect_fires: false
+
+  - id: srl_bgp_openconfirm_to_established
+    description: "Normal bring-up: openconfirm->established — must NOT fire"
+    event_type: bgp_session_change
+    old_state: "openconfirm"
+    new_state: "established"
+    expect_fires: false
+
+  - id: srl_bgp_wrong_event_type
+    description: "Non-BGP event type — must NOT fire"
+    event_type: bfd_session_change
+    old_state: "established"
+    new_state: "idle"
+    expect_fires: false

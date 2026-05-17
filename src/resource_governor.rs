@@ -13,7 +13,7 @@
 ///
 /// Every action emits a `bonsai_governance_action_total` counter so operators
 /// can observe when the governor fires.
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -32,6 +32,8 @@ pub struct GovernorHandle {
     inner: Arc<GovernorInner>,
 }
 
+type MemoryPressureCallback = Box<dyn Fn(usize) + Send + Sync>;
+
 struct GovernorInner {
     profile: ResourceProfile,
     defaults: ProfileDefaults,
@@ -46,6 +48,9 @@ struct GovernorInner {
     rate_shedding_active: AtomicBool,
     // Inbound event counter — incremented by ingest callers via `record_event`.
     inbound_event_counter: AtomicU64,
+    // Optional callback invoked under memory pressure with the target shrink pct.
+    // Registered post-construction by server_startup once the debouncer exists.
+    memory_pressure_callback: Mutex<Option<MemoryPressureCallback>>,
 }
 
 impl GovernorHandle {
@@ -62,6 +67,7 @@ impl GovernorHandle {
                 write_pressure_active: AtomicBool::new(false),
                 rate_shedding_active: AtomicBool::new(false),
                 inbound_event_counter: AtomicU64::new(0),
+                memory_pressure_callback: Mutex::new(None),
             }),
         }
     }
@@ -85,6 +91,26 @@ impl GovernorHandle {
     #[inline]
     pub fn memory_pressure_active(&self) -> bool {
         self.inner.memory_pressure_active.load(Ordering::Relaxed)
+    }
+
+    /// Register a callback to invoke when memory pressure transitions to active.
+    /// `cb` receives the suggested shrink percentage (50 for soft, 25 for hard).
+    /// Call this from server_startup once the debouncer Arc is available.
+    pub fn register_memory_pressure_callback(&self, cb: impl Fn(usize) + Send + Sync + 'static) {
+        *self.inner.memory_pressure_callback.lock().unwrap() = Some(Box::new(cb));
+    }
+
+    /// Returns true when either rate shedding OR memory pressure is active.
+    ///
+    /// Ingest paths (syslog, BMP counters) should check this single flag to
+    /// decide whether to drop low-priority bus publishes. Memory pressure
+    /// shedding is the mechanism by which the governor actually reduces RSS:
+    /// not publishing to the bus means the downstream graph write is avoided,
+    /// which is where the bulk of allocation pressure originates.
+    #[inline]
+    pub fn should_shed(&self) -> bool {
+        self.inner.rate_shedding_active.load(Ordering::Relaxed)
+            || self.inner.memory_pressure_active.load(Ordering::Relaxed)
     }
 
     /// Returns true when write queue pressure is active (batch-size expansion mode).
@@ -226,6 +252,9 @@ fn govern_memory_soft(handle: &GovernorHandle, rss: u64, budget: u64) {
         action = "memory_soft",
         "governance: soft memory pressure action"
     );
+    if let Some(cb) = handle.inner.memory_pressure_callback.lock().unwrap().as_ref() {
+        cb(50);
+    }
 }
 
 fn govern_memory_hard(handle: &GovernorHandle, rss: u64, budget: u64) {
@@ -254,6 +283,9 @@ fn govern_memory_hard(handle: &GovernorHandle, rss: u64, budget: u64) {
     // The archive rotation is primarily driven by max_file_age_secs (T1-3) already set to
     // 3600s; under hard memory pressure we don't have a direct flush RPC today, so we
     // emit the metric and let the governor flag drive ingest shedding as relief.
+    if let Some(cb) = handle.inner.memory_pressure_callback.lock().unwrap().as_ref() {
+        cb(25);
+    }
 }
 
 // ── T4-4 — Write pressure governance ─────────────────────────────────────────

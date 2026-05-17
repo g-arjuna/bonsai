@@ -144,6 +144,14 @@ pub(super) struct IncidentJson {
     started_at_ns: i64,
     ended_at_ns: i64,
     remediation_status: String,
+    /// Deduplicated sorted list of rule_ids that fired in this incident.
+    rule_ids: Vec<String>,
+    /// Human-readable clubbing rationale: "2 rule types, 3 devices, 5s window".
+    co_fire_signature: String,
+    /// Number of distinct devices involved.
+    device_count: usize,
+    /// Total detection event count (root + cascading).
+    event_count: usize,
 }
 
 #[derive(Serialize)]
@@ -892,6 +900,29 @@ pub(super) async fn read_subscription_statuses(
         }
 
         Ok::<_, String>(by_device)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
+pub(super) async fn read_device_vendors(
+    db: Arc<lbug::Database>,
+) -> Result<HashMap<String, String>, (StatusCode, String)> {
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        let rows = conn
+            .query("MATCH (d:Device) WHERE d.vendor <> '' RETURN d.address, d.vendor")
+            .map_err(|e| e.to_string())?;
+        let mut map: HashMap<String, String> = HashMap::new();
+        for row in rows {
+            let addr = read_str(&row[0]);
+            let vendor = read_str(&row[1]);
+            if !addr.is_empty() && !vendor.is_empty() {
+                map.insert(addr, vendor);
+            }
+        }
+        Ok::<_, String>(map)
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?

@@ -79,3 +79,30 @@ paths:
     mode: ON_CHANGE
     required_models: ["openconfig-lldp"]
     rationale: "OpenConfig LLDP topology evidence."
+
+# ── Config-state paths (D2-4 T1) ─────────────────────────────────────────────
+config_paths:
+  - path: "interface[name=*]/admin-state"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    rationale: "SR Linux interface admin-state — spine link admin-disable is the most common cause of DC fabric split."
+  - path: "network-instance[name=default]/protocols/bgp/neighbor[peer-address=*]/admin-state"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    rationale: "SR Linux BGP neighbor admin-state — operator disable of a spine BGP session drops leaf reachability."
+  - path: "interfaces/interface/config"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    optional: true
+    rationale: "OpenConfig interface config — admin-status change for non-SRL vendors."
+  - path: "network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/config"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-bgp"]
+    optional: true
+    rationale: "OpenConfig BGP neighbor config — peer removal or timer change on spine affects all downstream leaves."

@@ -37,6 +37,9 @@ class Features:
     if_name: str = ""
     oper_status: str = ""
 
+    # Vendor identifier (normalised; populated by extract_features via state_mapping)
+    vendor: str = ""
+
     # Raw timestamp
     occurred_at_ns: int = 0
     # UUID of the StateChangeEvent that triggered this detection; empty for poll-based rules

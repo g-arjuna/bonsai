@@ -53,7 +53,7 @@
         <div class="event-row">
           <span class="ts">{fmt(ev.occurred_at_ns)}</span>
           <div class="body">
-            <span class="badge info">{ev.event_type}</span>
+            <span class="badge {ev.event_type === 'config_change_event' ? 'config' : 'info'}">{ev.event_type}</span>
             <strong style="margin-left:8px">{ev.device_address}</strong>
             {#if ev.state_change_event_id}
               <button
@@ -63,9 +63,19 @@
                 View trace →
               </button>
             {/if}
-            <div style="color:var(--muted); font-size:12px; margin-top:4px; font-family:monospace; white-space:pre-wrap; word-break:break-all;">
-              {ev.detail_json}
-            </div>
+            {#if ev.event_type === 'config_change_event'}
+              {@const d = (() => { try { return JSON.parse(ev.detail_json ?? '{}'); } catch { return {}; } })()}
+              <div style="color:var(--teal,#4dd0c8); font-size:12px; margin-top:4px; font-family:monospace;">
+                {d.yang_path ?? ''}{d.new_value !== undefined ? ` → ${JSON.stringify(d.new_value)}` : ''}
+                {#if d.previous_value !== undefined && d.previous_value !== null}
+                  <span style="color:var(--muted)"> (was {JSON.stringify(d.previous_value)})</span>
+                {/if}
+              </div>
+            {:else}
+              <div style="color:var(--muted); font-size:12px; margin-top:4px; font-family:monospace; white-space:pre-wrap; word-break:break-all;">
+                {ev.detail_json}
+              </div>
+            {/if}
           </div>
         </div>
       {/each}

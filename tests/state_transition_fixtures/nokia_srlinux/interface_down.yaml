@@ -1,0 +1,48 @@
+vendor: nokia_srl
+rule_id: interface_down
+description: >
+  SR Linux interface oper-status transition fixtures. Covers nominal down,
+  the lower-layer-down quirk (DV1 F-11), and false-positive guard cases.
+
+fixtures:
+  - id: srl_iface_up_to_down
+    description: "Nominal: interface goes operationally down — must fire"
+    event_type: interface_oper_status_change
+    oper_status: "down"
+    expect_fires: true
+
+  - id: srl_iface_up_to_lower_layer_down
+    description: "F-11 quirk: SR Linux emits 'lower-layer-down' when physical carrier lost — must fire"
+    event_type: interface_oper_status_change
+    oper_status: "lower-layer-down"
+    expect_fires: true
+
+  - id: srl_iface_down_to_up
+    description: "Recovery: interface comes back up — must NOT fire"
+    event_type: interface_oper_status_change
+    oper_status: "up"
+    expect_fires: false
+
+  - id: srl_iface_testing
+    description: "Testing state during maintenance — must NOT fire"
+    event_type: interface_oper_status_change
+    oper_status: "testing"
+    expect_fires: false
+
+  - id: srl_iface_dormant
+    description: "Dormant (unused standby) — must NOT fire"
+    event_type: interface_oper_status_change
+    oper_status: "dormant"
+    expect_fires: false
+
+  - id: srl_iface_unknown
+    description: "Unknown state (sensor gap) — must NOT fire (avoid false alarm)"
+    event_type: interface_oper_status_change
+    oper_status: "unknown"
+    expect_fires: false
+
+  - id: srl_iface_wrong_event_type
+    description: "Non-interface event type — must NOT fire"
+    event_type: bfd_session_change
+    oper_status: "down"
+    expect_fires: false

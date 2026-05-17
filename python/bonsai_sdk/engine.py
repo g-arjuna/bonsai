@@ -11,7 +11,10 @@ from .detection import Detection, Detector, Features
 from .ml_detector import MLDetector
 from .rules.bfd import BFD_RULES
 from .rules.bgp import BGP_RULES
+from .rules.config import CONFIG_RULES
 from .rules.interface import INTERFACE_RULES, InterfaceErrorSpike, InterfaceHighUtilization
+from .rules.optical import OPTICAL_RULES
+from .rules.rack import RACK_RULES
 from .rules.snmp import SNMP_RULES
 from .rules.streaming import STREAMING_RULES, SrlgRiskDetected
 from .rules.syslog import SYSLOG_RULES
@@ -48,7 +51,7 @@ class RuleEngine:
         self._dry_run      = dry_run or os.environ.get("BONSAI_DRY_RUN", "0") == "1"
         self._run_scope    = run_scope
         self._rules: list[Detector] = [
-            r for r in (BFD_RULES + BGP_RULES + INTERFACE_RULES + SYSLOG_RULES + SNMP_RULES + STREAMING_RULES)
+            r for r in (BFD_RULES + BGP_RULES + CONFIG_RULES + INTERFACE_RULES + OPTICAL_RULES + RACK_RULES + SYSLOG_RULES + SNMP_RULES + STREAMING_RULES)
             if r.scope == "hybrid" or r.scope == run_scope
         ]
         self._stop = threading.Event()

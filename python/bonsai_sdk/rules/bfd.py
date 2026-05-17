@@ -5,14 +5,13 @@ from typing import TYPE_CHECKING, Optional
 
 from ..detection import Detector, Features
 from ..ml_detector import extract_features_for_event
+from ..state_mapping import is_down, is_up
 
 if TYPE_CHECKING:
     from ..client import BonsaiClient
 
 
-_DOWN_STATES = {"down", "admin_down"}  # admin_down: SR Linux BFD admin-disable
-_UP_STATES = {"up"}
-_FIRE_FROM_STATES = {"up", "none"}  # "none" = bootstrap: bonsai started while session was already down
+_FIRE_FROM_NONE = "none"  # bootstrap sentinel: bonsai started while session was already down
 
 
 class BfdSessionDown(Detector):
@@ -29,16 +28,20 @@ class BfdSessionDown(Detector):
         if event.event_type != "bfd_session_change":
             return None
         f = extract_features_for_event(event, client)
+        vendor = client.device_vendor(f.device_address)
         new_state = f.new_state.lower()
         old_state = f.old_state.lower()
-        if new_state not in _DOWN_STATES or old_state not in _FIRE_FROM_STATES:
+        if not is_down(vendor, "bfd_oper_state", new_state):
             return None
+        if not (is_up(vendor, "bfd_oper_state", old_state) or old_state == _FIRE_FROM_NONE):
+            return None
+        f.vendor = vendor
         f.old_state = old_state
         f.new_state = new_state
         return f
 
     def detect(self, features: Features) -> Optional[str]:
-        if features.new_state in _DOWN_STATES:
+        if is_down(features.vendor, "bfd_oper_state", features.new_state):
             peer = f" peer {features.peer_address}" if features.peer_address else ""
             iface = f" on {features.if_name}" if features.if_name else ""
             return (

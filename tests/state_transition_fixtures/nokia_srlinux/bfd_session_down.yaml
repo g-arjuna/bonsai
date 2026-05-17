@@ -1,0 +1,69 @@
+vendor: nokia_srl
+rule_id: bfd_session_down
+description: >
+  SR Linux BFD state transition fixtures. Covers nominal down transitions,
+  the admin_down quirk discovered in F-11 (DV1), and bootstrap (none) case.
+
+fixtures:
+  - id: srl_bfd_up_to_down
+    description: "Nominal: session was up, transitions to down — must fire"
+    event_type: bfd_session_change
+    old_state: "up"
+    new_state: "down"
+    expect_fires: true
+
+  - id: srl_bfd_up_to_admin_down
+    description: "F-11 quirk: SR Linux BFD admin-disable emits 'admin_down' — must fire"
+    event_type: bfd_session_change
+    old_state: "up"
+    new_state: "admin_down"
+    expect_fires: true
+
+  - id: srl_bfd_none_to_down
+    description: "Bootstrap: bonsai started while BFD was already down — must fire once"
+    event_type: bfd_session_change
+    old_state: "none"
+    new_state: "down"
+    expect_fires: true
+
+  - id: srl_bfd_none_to_admin_down
+    description: "Bootstrap + admin_down: bonsai started while admin-disabled — must fire once"
+    event_type: bfd_session_change
+    old_state: "none"
+    new_state: "admin_down"
+    expect_fires: true
+
+  - id: srl_bfd_down_to_up
+    description: "Recovery: session comes back up — must NOT fire"
+    event_type: bfd_session_change
+    old_state: "down"
+    new_state: "up"
+    expect_fires: false
+
+  - id: srl_bfd_init_to_up
+    description: "Normal bring-up: init -> up — must NOT fire"
+    event_type: bfd_session_change
+    old_state: "init"
+    new_state: "up"
+    expect_fires: false
+
+  - id: srl_bfd_admin_down_to_up
+    description: "Admin re-enable: admin_down -> up — must NOT fire"
+    event_type: bfd_session_change
+    old_state: "admin_down"
+    new_state: "up"
+    expect_fires: false
+
+  - id: srl_bfd_active_to_down
+    description: "Non-established -> down (not in FIRE_FROM set) — must NOT fire"
+    event_type: bfd_session_change
+    old_state: "active"
+    new_state: "down"
+    expect_fires: false
+
+  - id: srl_bfd_wrong_event_type
+    description: "Non-BFD event type — must NOT fire"
+    event_type: bgp_session_change
+    old_state: "up"
+    new_state: "down"
+    expect_fires: false

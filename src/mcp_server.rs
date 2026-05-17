@@ -633,17 +633,34 @@ async fn tool_list_active_detections(
 ///    invoke write-capable procedures in Kuzu).
 ///
 /// **Known limitation**: this is a best-effort text filter. A fully correct
-/// solution requires opening the lbug Connection in a read-only transaction
-/// mode. lbug 0.15.x does not expose such a mode; upgrade this check when
-/// a read-only Connection API becomes available. Until then, the gate prevents
-/// casual misuse and common injection patterns, but should not be treated as a
-/// security boundary against a determined adversary with direct API access.
+/// solution requires opening the lbug `Connection` in a read-only transaction
+/// mode. lbug 0.15.x does not expose such a mode.
+///
+/// **Upgrade path (D2-11 T1)**: watch for `lbug::Connection::new_read_only(&db)`
+/// or an equivalent in the lbug changelog. When that API lands, replace the
+/// `tool_query_graph` body with:
+/// ```rust
+/// let conn = Connection::new_read_only(&db).map_err(|e| e.to_string())?;
+/// let result = conn.query(&cypher)...
+/// ```
+/// and remove the `is_readonly_cypher()` pre-filter (keep it as defence-in-depth).
+/// Until then the text gate prevents casual misuse and common injection patterns,
+/// but must NOT be treated as a security boundary against a determined adversary
+/// with direct API access.
 pub fn is_readonly_cypher(cypher: &str) -> bool {
     let stripped = strip_cypher_comments(cypher);
     let upper = stripped.to_uppercase();
 
     const MUTATION_KEYWORDS: &[&str] = &[
-        "CREATE", "SET", "DELETE", "MERGE", "REMOVE", "DETACH", "DROP", "LOAD", "CALL",
+        "CREATE", "SET", "DELETE", "MERGE", "REMOVE", "DETACH",
+        "DROP", "LOAD", "CALL",
+        // Additional Kuzu write-capable keywords not in the original list (D2-11 T1):
+        "COPY",    // COPY FROM imports data
+        "FOREACH", // FOREACH can execute write sub-clauses
+        "ALTER",   // ALTER TABLE schema mutation
+        "RENAME",  // RENAME TABLE/COLUMN
+        "IMPORT",  // IMPORT DATABASE
+        "EXPORT",  // EXPORT DATABASE (not a write, but leaks schema)
     ];
 
     for kw in MUTATION_KEYWORDS {
@@ -936,6 +953,13 @@ mod tests {
         assert!(!is_readonly_cypher("DROP TABLE Foo"));
         assert!(!is_readonly_cypher("CALL write_procedure()"));
         assert!(!is_readonly_cypher("LOAD FROM 'data.csv' CREATE (n)"));
+        // D2-11 T1 additions
+        assert!(!is_readonly_cypher("COPY Device FROM 'devices.csv'"));
+        assert!(!is_readonly_cypher("FOREACH (x IN [1,2,3] | CREATE (n))"));
+        assert!(!is_readonly_cypher("ALTER TABLE Device ADD col INT"));
+        assert!(!is_readonly_cypher("RENAME TABLE Device TO Node"));
+        assert!(!is_readonly_cypher("IMPORT DATABASE '/tmp/db'"));
+        assert!(!is_readonly_cypher("EXPORT DATABASE '/tmp/out'"));
         // Bypass attempt: mutation hidden after comment stripping
         assert!(!is_readonly_cypher("MATCH (n) /* safe */ SET n.x = 1"));
         assert!(!is_readonly_cypher("MATCH (n) -- comment\nSET n.x = 1"));

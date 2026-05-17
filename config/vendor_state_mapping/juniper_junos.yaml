@@ -1,0 +1,40 @@
+vendor: juniper_junos
+description: >
+  Juniper Junos state string mappings. Populated as cRPD lab work materialises.
+  Reference: Junos YANG models (openconfig + native junos-* augments).
+applies_to:
+  software_version_pattern: "Junos*"
+
+state_mappings:
+
+  bfd_oper_state:
+    yang_path: "openconfig-bfd:bfd/sessions/session/state/oper-state"
+    semantic_states:
+      UP:         ["up"]
+      DOWN:       ["down"]
+      ADMIN_DOWN: ["admindown", "admin_down"]
+      INIT:       ["init"]
+    treat_as_down: ["DOWN", "ADMIN_DOWN"]
+    treat_as_up:   ["UP"]
+    # TODO: verify on cRPD; Junos uses OpenConfig BFD with native augments
+
+  interface_oper_status:
+    yang_path: "openconfig-interfaces:interfaces/interface/state/oper-status"
+    semantic_states:
+      UP:   ["up"]
+      DOWN: ["down"]
+    treat_as_down: ["DOWN"]
+    treat_as_up:   ["UP"]
+    # TODO: populate additional Junos-specific states as encountered
+
+  bgp_session_state:
+    yang_path: "openconfig-bgp:bgp/neighbors/neighbor/state/session-state"
+    semantic_states:
+      ESTABLISHED:  ["established"]
+      ACTIVE:       ["active"]
+      IDLE:         ["idle"]
+      OPEN_SENT:    ["opensent"]
+      OPEN_CONFIRM: ["openconfirm"]
+      CONNECT:      ["connect"]
+    treat_as_down: ["IDLE", "ACTIVE", "OPEN_SENT", "OPEN_CONFIRM", "CONNECT"]
+    treat_as_up:   ["ESTABLISHED"]

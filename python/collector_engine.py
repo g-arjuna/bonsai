@@ -107,12 +107,15 @@ def _gather_capabilities() -> list[str]:
     try:
         from bonsai_sdk.rules.bgp import BGP_RULES
         from bonsai_sdk.rules.bfd import BFD_RULES
+        from bonsai_sdk.rules.config import CONFIG_RULES
         from bonsai_sdk.rules.interface import INTERFACE_RULES
+        from bonsai_sdk.rules.optical import OPTICAL_RULES
+        from bonsai_sdk.rules.rack import RACK_RULES
         from bonsai_sdk.rules.snmp import SNMP_RULES
         from bonsai_sdk.rules.streaming import STREAMING_RULES
         from bonsai_sdk.rules.syslog import SYSLOG_RULES
         from bonsai_sdk.rules.topology import TOPOLOGY_RULES
-        for rule in BGP_RULES + BFD_RULES + INTERFACE_RULES + SNMP_RULES + STREAMING_RULES + SYSLOG_RULES:
+        for rule in BGP_RULES + BFD_RULES + CONFIG_RULES + INTERFACE_RULES + OPTICAL_RULES + RACK_RULES + SNMP_RULES + STREAMING_RULES + SYSLOG_RULES:
             caps.append(rule.rule_id)
         # TOPOLOGY_RULES is a class with class-level evaluate_topology; expose its rule_id explicitly.
         caps.append("topology_edge_lost")

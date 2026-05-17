@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Optional
 
 from ..detection import Detector, Features
 from ..ml_detector import extract_features_for_event
+from ..state_mapping import is_down
 
 if TYPE_CHECKING:
     from ..client import BonsaiClient
@@ -33,9 +34,11 @@ class InterfaceDown(Detector):
         if event.event_type != "interface_oper_status_change":
             return None
         f = extract_features_for_event(event, client)
+        vendor = client.device_vendor(f.device_address)
         status = f.oper_status.lower()
-        if status not in ("down", "lower-layer-down"):
+        if not is_down(vendor, "interface_oper_status", status):
             return None
+        f.vendor = vendor
         f.oper_status = status
         return f
 

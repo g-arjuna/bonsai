@@ -37,3 +37,25 @@ paths:
     mode: ON_CHANGE
     required_models: ["openconfig-segment-routing"]
     rationale: "Segment-routing state when advertised."
+
+# ── Config-state paths (D2-4 T1) ─────────────────────────────────────────────
+config_paths:
+  - path: "interface[name=*]/admin-state"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    rationale: "SR Linux interface admin-state — P-core interface admin-disable causes cascading IGP/transport failures."
+  - path: "network-instance[name=default]/protocols/isis/instance[name=*]/admin-state"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    optional: true
+    rationale: "SR Linux IS-IS instance admin-state — IS-IS disable on a P-core causes full topology disruption."
+  - path: "interfaces/interface/config"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    optional: true
+    rationale: "OpenConfig interface config — admin-status change is the primary config cause of P-core incidents."

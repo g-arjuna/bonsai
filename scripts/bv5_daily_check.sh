@@ -420,6 +420,23 @@ except Exception:
 
 Path(daily_json).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(payload, indent=2))
+
+# Write individual per-check JSON files so the Operations dashboard driver_results
+# panel can surface each check as its own row. Files are named <check>.json and
+# sit alongside daily.json in runtime/driver_results/.
+driver_dir = Path(daily_json).parent
+for item in checks:
+    check_name = item.get("check") or item.get("name") or "unknown"
+    check_file = driver_dir / f"{check_name}.json"
+    check_payload = {
+        "driver": check_name,
+        "ts_unix": payload["ts_unix"],
+        "status": item["status"],
+        "ok": item["ok"],
+        "summary": f"{item['name']}: {item['status']}",
+        "environment": payload["environment"],
+    }
+    check_file.write_text(json.dumps(check_payload, indent=2) + "\n", encoding="utf-8")
 PY
 
 echo "Wrote $OUT_FILE"

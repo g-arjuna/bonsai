@@ -13,8 +13,8 @@ use super::{
     SitesResponse, SiteJson, SiteRecord as SiteJsonRec, SiteSummaryResponse, SiteHealthJson,
     SiteSubscriptionSummaryJson, SiteDeviceJson, SiteMutationResponse, RemoveSiteRequest,
     MutationResponse, OnboardingDiscoveryRequest, BgpJson,
-    read_str, read_i64, option_string, read_subscription_statuses, read_trust_mark_impact,
-    build_site_path_by_id, resolve_site_metadata, compute_health,
+    read_str, read_i64, option_string, read_subscription_statuses, read_device_vendors,
+    read_trust_mark_impact, build_site_path_by_id, resolve_site_metadata, compute_health,
 };
 use crate::config::{StorageConfig, TargetConfig, SelectedSubscriptionPath};
 use crate::credentials::{CredentialSummary, CredentialVault, ResolvePurpose, ResolvedCredential};
@@ -32,11 +32,21 @@ pub(super) async fn managed_devices_handler(
         .list_active()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let statuses = read_subscription_statuses(state.store.db()).await?;
+    let graph_vendors = read_device_vendors(state.store.db()).await.unwrap_or_default();
 
     let overrides = state.registry.list_overrides().unwrap_or_default();
     let devices = targets
         .into_iter()
-        .map(|target| managed_device_json(target, &statuses, &overrides))
+        .map(|mut target| {
+            // D2-10 T3: back-fill vendor from the Device graph node when the
+            // registry entry lacks it (devices onboarded without --vendor flag).
+            if target.vendor.as_deref().unwrap_or_default().is_empty() {
+                if let Some(v) = graph_vendors.get(&target.address) {
+                    target.vendor = Some(v.clone());
+                }
+            }
+            managed_device_json(target, &statuses, &overrides)
+        })
         .collect();
 
     Ok(Json(ManagedDevicesResponse { devices }))

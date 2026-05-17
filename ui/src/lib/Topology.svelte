@@ -10,6 +10,9 @@
   let topology = $state({ devices: [], links: [] });
   let svgEl = $state(null);
 
+  // Incident overlay: addresses of devices with open incidents, mapped to worst severity.
+  let incidentDevices = $state(new Map());  // address -> 'critical' | 'warn'
+
   let layerFilter    = $state('combined');
   let siteFilter     = $state('');
   let showMgmt       = $state(false);
@@ -74,9 +77,24 @@
 
   async function load() {
     try {
-      const r = await fetch('/api/topology');
-      if (!r.ok) throw new Error(await r.text());
-      topology = await r.json();
+      const [topoRes, incRes] = await Promise.all([
+        fetch('/api/topology'),
+        fetch('/api/incidents'),
+      ]);
+      if (!topoRes.ok) throw new Error(await topoRes.text());
+      topology = await topoRes.json();
+      if (incRes.ok) {
+        const incData = await incRes.json();
+        const map = new Map();
+        for (const inc of incData.incidents ?? []) {
+          const sev = inc.severity?.toLowerCase() ?? 'warn';
+          for (const addr of inc.affected_devices ?? []) {
+            const cur = map.get(addr);
+            if (!cur || sev === 'critical') map.set(addr, sev);
+          }
+        }
+        incidentDevices = map;
+      }
       error = null;
     } catch (e) {
       error = e.message;
@@ -273,15 +291,31 @@
       const isTraceSrc  = traceSrc === d.address;
       const isTraceDst  = traceDst === d.address;
 
-      // Stroke: path > selected > role-based > health
-      const roleColor   = roleStrokeColor(d.role, d.hostname);
-      const hColor      = healthColor(d.health);
+      // Stroke: path > selected > incident-overlay > role-based > health
+      const roleColor    = roleStrokeColor(d.role, d.hostname);
+      const hColor       = healthColor(d.health);
+      const incidentSev  = incidentDevices.get(d.address);
+      const incidentColor =
+        incidentSev === 'critical' ? C.stateFailed :
+        incidentSev === 'warn'     ? C.stateDegraded :
+        null;
       const strokeColor =
-        isOnPath   ? C.accentPrimary :
-        isSelected ? C.accentPrimary :
-        roleColor  ? roleColor :
+        isOnPath      ? C.accentPrimary :
+        isSelected    ? C.accentPrimary :
+        incidentColor ? incidentColor :
+        roleColor     ? roleColor :
         hColor;
-      const strokeW     = isSelected || isOnPath ? 3 : 2;
+      const strokeW     = isSelected || isOnPath ? 3 : incidentColor ? 2.5 : 2;
+
+      // Incident glow ring (behind selection ring)
+      if (incidentColor && !isSelected && !isOnPath) {
+        el.append('circle')
+          .attr('r', 36)
+          .attr('fill', 'none')
+          .attr('stroke', incidentColor)
+          .attr('stroke-width', 1.5)
+          .attr('opacity', 0.4);
+      }
 
       // Selection glow ring
       if (isSelected || isOnPath) {
@@ -352,9 +386,11 @@
       .attr('pointer-events', 'none')
       .text(d => d.site || d.vendor.replace('nokia_', '').replace('cisco_', ''));
 
-    node.append('title').text(d =>
-      `${d.hostname} — ${d.address}\nRole: ${d.role || 'unknown'}\nSite: ${d.site || '—'}\nHealth: ${d.health}\nShift+click to trace path`
-    );
+    node.append('title').text(d => {
+      const inc = incidentDevices.get(d.address);
+      const incLine = inc ? `\nIncident: ${inc} (open)` : '';
+      return `${d.hostname} — ${d.address}\nRole: ${d.role || 'unknown'}\nSite: ${d.site || '—'}\nHealth: ${d.health}${incLine}\nShift+click to trace path`;
+    });
 
     node.on('click', (ev, d) => handleNodeClick(ev, d.address));
 

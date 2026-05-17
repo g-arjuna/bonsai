@@ -1,0 +1,44 @@
+vendor: nokia_srl
+description: >
+  Nokia SR Linux state string mappings. Extracted from F-11 diagnosis (DV1)
+  where bfd admin_down and interface lower-layer-down were not matching the
+  hand-coded down-state sets in bfd.py and interface.py.
+applies_to:
+  software_version_pattern: "SRLinux-*"
+
+state_mappings:
+
+  bfd_oper_state:
+    yang_path: "openconfig-bfd:bfd/sessions/session/state/oper-state"
+    semantic_states:
+      UP:          ["up"]
+      DOWN:        ["down"]
+      ADMIN_DOWN:  ["admin_down"]
+      INIT:        ["init"]
+    treat_as_down: ["DOWN", "ADMIN_DOWN"]
+    treat_as_up:   ["UP"]
+
+  interface_oper_status:
+    yang_path: "openconfig-interfaces:interfaces/interface/state/oper-status"
+    semantic_states:
+      UP:               ["up"]
+      DOWN:             ["down"]
+      LOWER_LAYER_DOWN: ["lower-layer-down"]
+      TESTING:          ["testing"]
+      DORMANT:          ["dormant"]
+      NOT_PRESENT:      ["not-present"]
+      UNKNOWN:          ["unknown"]
+    treat_as_down: ["DOWN", "LOWER_LAYER_DOWN"]
+    treat_as_up:   ["UP"]
+
+  bgp_session_state:
+    yang_path: "openconfig-bgp:bgp/neighbors/neighbor/state/session-state"
+    semantic_states:
+      ESTABLISHED:  ["established"]
+      ACTIVE:       ["active"]
+      IDLE:         ["idle"]
+      OPEN_SENT:    ["opensent", "open-sent"]
+      OPEN_CONFIRM: ["openconfirm", "open-confirm"]
+      CONNECT:      ["connect"]
+    treat_as_down: ["IDLE", "ACTIVE", "OPEN_SENT", "OPEN_CONFIRM", "CONNECT"]
+    treat_as_up:   ["ESTABLISHED"]

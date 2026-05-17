@@ -13,6 +13,8 @@
   let devices = $state([]);
   let loading = $state(true);
   let selected = $state(null);
+  // incident overlay: address -> worst severity of open incidents
+  let incidentMap = $state(new Map());
 
   $effect(() => {
     selected = selectedAddress;
@@ -23,16 +25,36 @@
   async function loadDevices() {
     loading = true;
     try {
-      const response = await fetch('/api/onboarding/devices');
-      if (!response.ok) throw new Error(await response.text());
-      const data = await response.json();
+      const [devRes, incRes] = await Promise.all([
+        fetch('/api/onboarding/devices'),
+        fetch('/api/incidents'),
+      ]);
+      if (!devRes.ok) throw new Error(await devRes.text());
+      const data = await devRes.json();
       devices = data.devices ?? [];
+      if (incRes.ok) {
+        const incData = await incRes.json();
+        const map = new Map();
+        for (const inc of incData.incidents ?? []) {
+          const sev = inc.severity?.toLowerCase() ?? 'warn';
+          for (const addr of inc.affected_devices ?? []) {
+            const cur = map.get(addr);
+            if (!cur || sev === 'critical') map.set(addr, sev);
+          }
+        }
+        incidentMap = map;
+      }
     } catch (error) {
       toast(error.message, 'error');
       devices = [];
     } finally {
       loading = false;
     }
+  }
+
+  function incidentSevClass(address) {
+    const sev = incidentMap.get(address);
+    return sev === 'critical' ? 'critical' : sev === 'warn' ? 'warn' : null;
   }
 
   function openDevice(address) {
@@ -83,10 +105,15 @@
               <td>{device.role || '—'}</td>
               <td>{device.site || '—'}</td>
               <td>{device.collector_id || 'unassigned'}</td>
-              <td>
+              <td style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
                 <span class="badge {device.enabled ? 'healthy' : 'critical'}">
                   {device.enabled ? 'enabled' : 'disabled'}
                 </span>
+                {#if incidentSevClass(device.address)}
+                  <span class="badge {incidentSevClass(device.address)}">
+                    {incidentMap.get(device.address)} incident
+                  </span>
+                {/if}
               </td>
             </tr>
           {/each}

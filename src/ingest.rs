@@ -56,6 +56,17 @@ impl<V> ShardedLruCache<V> {
         (h.finish() as usize) % CACHE_SHARDS
     }
 
+    /// Shrink each shard's capacity to `pct` percent of its current capacity,
+    /// evicting the LRU entries. Called by the resource governor under memory pressure.
+    fn shrink_to_pct(&self, pct: usize) {
+        let pct = pct.clamp(10, 90);
+        for shard in &self.shards {
+            let mut cache = shard.lock().unwrap();
+            let new_cap = ((cache.cap().get() * pct) / 100).max(64);
+            cache.resize(NonZeroUsize::new(new_cap).unwrap());
+        }
+    }
+
     /// Atomic check-then-update within a single shard lock.
     /// Returns `true` if `skip_if(existing)` held — caller should drop the update.
     /// Returns `false` and inserts `new_value` if the predicate did not hold or the key was absent.
@@ -129,6 +140,22 @@ impl TelemetryDebouncer {
             last_state_write: ShardedLruCache::new(state_shard_cap),
             state_debounce_window: Duration::from_secs(state_debounce_secs),
         }
+    }
+
+    /// Shrink all three debounce caches to `pct` percent of current capacity,
+    /// evicting LRU entries. Called by the resource governor under soft/hard memory pressure.
+    /// Soft pressure: shrink to 50%. Hard pressure: shrink to 25%.
+    pub fn shrink_debounce_caches(&self, pct: usize) {
+        self.last_counter_write.shrink_to_pct(pct);
+        self.last_oper_status_write.shrink_to_pct(pct);
+        self.last_state_write.shrink_to_pct(pct);
+        tracing::info!(pct, "ingest: debounce caches shrunk under memory pressure");
+        metrics::counter!(
+            "bonsai_governance_action_total",
+            "action" => "debounce_cache_shrink",
+            "reason" => "memory_pressure",
+        )
+        .increment(1);
     }
 
     pub fn should_drop(&self, update: &TelemetryUpdate) -> bool {

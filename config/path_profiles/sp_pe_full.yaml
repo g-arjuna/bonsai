@@ -48,3 +48,53 @@ paths:
     mode: ON_CHANGE
     required_models: ["openconfig-segment-routing"]
     rationale: "Segment-routing state when the model is advertised."
+
+# ── Config-state paths (D2-4 T1) ─────────────────────────────────────────────
+# Subscribed separately in ON_CHANGE mode. Changes produce config_change_event
+# on the bus and are stored as ConfigSnapshot graph nodes.
+config_paths:
+  - path: "network-instance[name=default]/protocols/bgp/neighbor[peer-address=*]/admin-state"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    rationale: "SR Linux BGP neighbor admin-state — operator enable/disable is the most common config cause of BGP session loss."
+  - path: "interface[name=*]/admin-state"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    rationale: "SR Linux interface admin-state — admin-disable is a common config cause of interface-down incidents."
+  - path: "network-instance[name=default]/protocols/bgp/global/as-number"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    optional: true
+    rationale: "SR Linux BGP AS-number — ASN change would break all sessions; track as config change event."
+  - path: "routing-policy/policy[name=*]/statement[name=*]/action"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    optional: true
+    rationale: "SR Linux routing-policy actions — policy changes can silently black-hole prefixes."
+  - path: "network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/config"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_any_models: ["openconfig-bgp"]
+    optional: true
+    rationale: "OpenConfig BGP neighbor config — peer removal or MD5 key change precedes session loss."
+  - path: "interfaces/interface/config"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-interfaces"]
+    optional: true
+    rationale: "OpenConfig interface config — admin-status change is the most common config precursor for interface-down."
+  - path: "Cisco-IOS-XR-ipv4-bgp-cfg:bgp/instance/instance-as/four-byte-as/default-vrf/bgp-entity/neighbors/neighbor"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["Cisco-IOS-XR-ipv4-bgp-cfg"]
+    vendor_only: ["cisco_xrd"]
+    optional: true
+    rationale: "IOS-XR BGP neighbor config — covers XR-specific BGP configuration paths."

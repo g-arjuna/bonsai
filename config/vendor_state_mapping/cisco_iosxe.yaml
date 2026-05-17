@@ -1,0 +1,37 @@
+vendor: cisco_iosxe
+description: >
+  Cisco IOS-XE state string mappings. Populated as IOS-XE lab work materialises.
+  Reference: Cisco-IOS-XE-* YANG models (native + OpenConfig).
+applies_to:
+  software_version_pattern: "IOS-XE*"
+
+state_mappings:
+
+  bfd_oper_state:
+    yang_path: "Cisco-IOS-XE-bfd-oper:bfd-state/sessions/session/status"
+    semantic_states:
+      UP:         ["up"]
+      DOWN:       ["down"]
+      ADMIN_DOWN: ["admindown", "admin-down"]
+    treat_as_down: ["DOWN", "ADMIN_DOWN"]
+    treat_as_up:   ["UP"]
+    # TODO: populate as IOS-XE encountered in lab
+
+  interface_oper_status:
+    yang_path: "Cisco-IOS-XE-interfaces-oper:interfaces/interface/oper-status"
+    semantic_states:
+      UP:   ["if-oper-state-ready", "up"]
+      DOWN: ["if-oper-state-no-pass", "down"]
+    treat_as_down: ["DOWN"]
+    treat_as_up:   ["UP"]
+    # TODO: populate full if-oper-state-* enumeration
+
+  bgp_session_state:
+    yang_path: "Cisco-IOS-XE-bgp-oper:bgp-state-data/neighbors/neighbor/bgp-neighbor-counters/sent/state"
+    semantic_states:
+      ESTABLISHED:  ["established"]
+      ACTIVE:       ["active"]
+      IDLE:         ["idle"]
+    treat_as_down: ["IDLE", "ACTIVE"]
+    treat_as_up:   ["ESTABLISHED"]
+    # TODO: populate full state enumeration for IOS-XE

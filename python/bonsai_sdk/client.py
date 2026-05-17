@@ -101,6 +101,30 @@ class BonsaiClient:
 
     # ── typed RPCs ────────────────────────────────────────────────────────────
 
+    # Cache: device_address -> vendor string. Avoids a graph round-trip per event.
+    _vendor_cache: dict[str, str]
+
+    def device_vendor(self, device_address: str) -> str:
+        """Return the vendor string for a device (e.g. 'nokia_srl').
+
+        Queries the graph on first call per address; subsequent calls are served
+        from an in-process cache. Returns empty string if the device is unknown.
+        Used by detection rules to resolve the correct vendor state mapping.
+        """
+        if not hasattr(self, "_vendor_cache"):
+            self._vendor_cache = {}
+        if device_address in self._vendor_cache:
+            return self._vendor_cache[device_address]
+        try:
+            rows = self.query(
+                f"MATCH (d:Device {{address: '{device_address}'}}) RETURN d.vendor LIMIT 1"
+            )
+            vendor = (rows[0][0] or "") if rows else ""
+        except Exception:
+            vendor = ""
+        self._vendor_cache[device_address] = vendor
+        return vendor
+
     def query(self, cypher: str) -> list[list]:
         """Execute a raw Cypher query; returns a list of rows (each row is a list)."""
         resp = self.stub.Query(pb.QueryRequest(cypher=cypher))
@@ -351,6 +375,38 @@ class BonsaiClient:
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"HTTP {exc.code} {path}: {body}") from exc
+
+    # ── device metadata helpers (D2-5 T2) ────────────────────────────────────
+
+    def device_vendor(self, address: str) -> str:
+        """Return the vendor string for a device (e.g. 'nokia_srl'). Returns '' on miss."""
+        try:
+            data = self._http_json("GET", f"/api/devices/{address}")
+            return data.get("vendor", "")
+        except Exception:
+            return ""
+
+    def device_rack(self, address: str) -> str:
+        """Return the rack attribute for a device. Returns '' if not set or unknown."""
+        try:
+            data = self._http_json("GET", f"/api/devices/{address}")
+            return data.get("rack", "")
+        except Exception:
+            return ""
+
+    def devices_in_rack(self, rack: str) -> list[str]:
+        """Return device addresses belonging to a rack label.
+
+        Uses /api/devices?rack=<rack> when that query param is supported (D2-5 T1).
+        Falls back to scanning all devices if the param is not available yet.
+        Returns [] on any error.
+        """
+        try:
+            data = self._http_json("GET", f"/api/devices?rack={rack}")
+            devices = data.get("devices", [])
+            return [d.get("address", "") for d in devices if d.get("rack") == rack]
+        except Exception:
+            return []
 
     def detection_ingest(self, events: Generator[pb.DetectionEventIngest, None, None]):
         """Client-streaming: push locally-evaluated detections to core."""

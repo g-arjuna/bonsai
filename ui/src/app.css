@@ -222,6 +222,7 @@ code, pre, kbd, samp {
 .badge.warn     { background: rgba(251,191,36,0.12);  color: var(--state-degraded); }
 .badge.critical { background: rgba(248,113,113,0.12); color: var(--state-failed); }
 .badge.info     { background: rgba(96,165,250,0.12);  color: var(--state-info); }
+.badge.config   { background: rgba(77,208,200,0.15);  color: #4dd0c8; }
 
 /* ── Tables ───────────────────────────────────────────────── */
 table { width: 100%; border-collapse: collapse; }

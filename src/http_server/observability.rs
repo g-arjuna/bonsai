@@ -532,8 +532,11 @@ pub(super) async fn daily_check_handler(
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
-            // Exclude daily.json — it is a derived meta-file (self-referential in aggregation)
-            if path.file_name().and_then(|n| n.to_str()) == Some("daily.json") {
+            // Exclude daily.json and dated copies (daily-YYYY-MM-DD.json) — they are derived
+            // meta-aggregates, not individual driver results. Individual drivers write their
+            // own <driver_name>.json files alongside daily.json.
+            let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if fname == "daily.json" || fname.starts_with("daily-") {
                 continue;
             }
             let name = path
@@ -824,6 +827,39 @@ pub(super) fn group_into_incidents(
                 .collect();
             affected_devices.sort();
 
+            let event_count = 1 + group.len();
+            let device_count = affected_devices.len();
+
+            let mut rule_ids: Vec<String> = std::iter::once(&root)
+                .chain(group.iter())
+                .map(|d| d.rule_id.clone())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+            rule_ids.sort();
+
+            let window_secs_actual = if event_count > 1 {
+                (ended_at_ns - started_at_ns).max(0) / 1_000_000_000
+            } else {
+                0
+            };
+            let co_fire_signature = if rule_ids.len() > 1 {
+                format!(
+                    "{} rule types, {} device{}, {}s window",
+                    rule_ids.len(),
+                    device_count,
+                    if device_count == 1 { "" } else { "s" },
+                    window_secs_actual,
+                )
+            } else {
+                format!(
+                    "{}, {} event{}",
+                    rule_ids.first().map(|s| s.as_str()).unwrap_or("unknown"),
+                    event_count,
+                    if event_count == 1 { "" } else { "s" },
+                )
+            };
+
             IncidentJson {
                 id,
                 root,
@@ -833,6 +869,10 @@ pub(super) fn group_into_incidents(
                 started_at_ns,
                 ended_at_ns,
                 remediation_status,
+                rule_ids,
+                co_fire_signature,
+                device_count,
+                event_count,
             }
         })
         .collect();

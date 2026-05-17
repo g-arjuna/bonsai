@@ -289,9 +289,12 @@ async fn handle_frame(
     let target_role = target.role.clone();
     let target_site = target.site.clone();
 
-    // Under rate shedding, skip bus publish to relieve pipeline pressure (C4-N2 / T6-1).
-    // Raw data is still archived above so no telemetry is permanently lost.
-    if governor.is_some_and(|g| g.is_shedding()) {
+    // Under rate shedding or memory pressure, skip bus publish to relieve pipeline
+    // pressure. Raw data is still archived above so no telemetry is permanently lost.
+    // Memory pressure shedding (D2-10 T5): `should_shed()` covers both rate_shedding_active
+    // and memory_pressure_active so the governor flag actually reduces RSS by avoiding
+    // downstream graph writes, not just emitting a metric.
+    if governor.is_some_and(|g| g.should_shed()) {
         metrics::counter!("bonsai_syslog_shed_total").increment(1);
         return;
     }

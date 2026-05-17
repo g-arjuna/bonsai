@@ -15,9 +15,8 @@ Cisco IOS-XRd, Juniper cRPD, Arista cEOS), writes to an embedded graph database
 learning project. Goal: replicate Google's ANO framework architecture at lab
 scale using only open source primitives.
 
-**Current phase**: Phase 6 — UI in progress. DV1 sprint is active (operational
-fixes + feature development interleaved). Detail in
-[`BONSAI_CONSOLIDATED_BACKLOG_DV1.md`](../BONSAI_CONSOLIDATED_BACKLOG_DV1.md).
+**Current phase**: Phase 6 — UI in progress. DV2 sprint is active (D2-1 through D2-11). Detail in
+[`BONSAI_CONSOLIDATED_BACKLOG_DV2.md`](../BONSAI_CONSOLIDATED_BACKLOG_DV2.md).
 
 ---
 
@@ -169,7 +168,8 @@ enrichment is Tier 4, before controller adapters.
 
 | You want to | Look at |
 |---|---|
-| Current sprint backlog | [`BONSAI_CONSOLIDATED_BACKLOG_DV1.md`](../BONSAI_CONSOLIDATED_BACKLOG_DV1.md) |
+| Current sprint backlog | [`BONSAI_CONSOLIDATED_BACKLOG_DV2.md`](../BONSAI_CONSOLIDATED_BACKLOG_DV2.md) |
+| Prior sprint backlog (DV1) | [`BONSAI_CONSOLIDATED_BACKLOG_DV1.md`](../BONSAI_CONSOLIDATED_BACKLOG_DV1.md) |
 | Prior sprint backlog (CV7) | [`BONSAI_CONSOLIDATED_BACKLOG_CV7.md`](../BONSAI_CONSOLIDATED_BACKLOG_CV7.md) |
 | Earlier sprint backlogs | [`docs/backlog_archive/`](backlog_archive/) |
 | Architecture decisions | [`DECISIONS.md`](../DECISIONS.md) |
@@ -188,6 +188,12 @@ enrichment is Tier 4, before controller adapters.
 | Archive format | [`docs/archive_format.md`](archive_format.md) |
 | Collector↔core protocol | [`docs/collector_core_protocol.md`](collector_core_protocol.md) |
 | Sidecars (detection runtime) | [`docs/architecture/sidecars.md`](architecture/sidecars.md) |
+| Schema-driven vendor state detection | [`docs/architecture/schema_driven_detection.md`](architecture/schema_driven_detection.md) |
+| Investigations (AI-assisted sessions) | [`docs/architecture/investigations.md`](architecture/investigations.md) |
+| Adapter cursor cold-start behaviour | [`docs/architecture/adapter_cursor_cold_start.md`](architecture/adapter_cursor_cold_start.md) |
+| Config-State Lane (config change detection) | [`docs/architecture/config_state_lane.md`](architecture/config_state_lane.md) |
+| Optical real-deployment scoping | [`docs/research/optical_real_deployment_2026-05-17.md`](research/optical_real_deployment_2026-05-17.md) |
+| App dependency matrix scoping | [`docs/research/app_dependency_matrix_2026-05-17.md`](research/app_dependency_matrix_2026-05-17.md) |
 | Bonpy UI (Python/ML status, separate from bonsai UI) | `http://localhost:3000/bonpy/` (when running); code at [`ui-bonpy/`](../ui-bonpy/) |
 | Retired docs / older test results | [`docs/archive/`](archive/) |
 | Build performance notes | [`docs/build_performance.md`](build_performance.md) |

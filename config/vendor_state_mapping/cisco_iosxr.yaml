@@ -1,0 +1,41 @@
+vendor: cisco_iosxr
+description: >
+  Cisco IOS-XR state string mappings. Populated as XRd lab work materialises.
+  Reference: Cisco-IOS-XR-* YANG models.
+applies_to:
+  software_version_pattern: "IOS XR*"
+
+state_mappings:
+
+  bfd_oper_state:
+    yang_path: "Cisco-IOS-XR-ip-bfd-oper:bfd/session-details/session-detail/status-information/status-brief-information/async-interval-multiplier/state"
+    semantic_states:
+      UP:         ["up"]
+      DOWN:       ["down"]
+      ADMIN_DOWN: ["admin-down"]
+      INIT:       ["init"]
+    treat_as_down: ["DOWN", "ADMIN_DOWN"]
+    treat_as_up:   ["UP"]
+    # TODO: verify dash vs underscore variants on running XRd
+
+  interface_oper_status:
+    yang_path: "Cisco-IOS-XR-pfi-im-cmd-oper:interfaces/interface-xr/interface/state"
+    semantic_states:
+      UP:   ["up"]
+      DOWN: ["down"]
+    treat_as_down: ["DOWN"]
+    treat_as_up:   ["UP"]
+    # TODO: populate additional states (admin-down, err-disabled) as encountered
+
+  bgp_session_state:
+    yang_path: "Cisco-IOS-XR-ipv4-bgp-oper:bgp/instances/instance/instance-active/default-vrf/neighbors/neighbor/connection-state"
+    semantic_states:
+      ESTABLISHED:  ["bgp-st-estab", "established"]
+      ACTIVE:       ["bgp-st-active", "active"]
+      IDLE:         ["bgp-st-idle", "idle"]
+      OPEN_SENT:    ["bgp-st-opensent", "open-sent"]
+      OPEN_CONFIRM: ["bgp-st-openconfirm", "open-confirm"]
+      CONNECT:      ["bgp-st-connect", "connect"]
+    treat_as_down: ["IDLE", "ACTIVE", "OPEN_SENT", "OPEN_CONFIRM", "CONNECT"]
+    treat_as_up:   ["ESTABLISHED"]
+    # TODO: verify bgp-st-* prefix presence on XRd 7.x
