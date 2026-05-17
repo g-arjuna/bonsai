@@ -72,9 +72,8 @@ command -v containerlab &>/dev/null || { echo -e "${RED}ERROR: containerlab not 
 
 # ── Step 1: destroy ───────────────────────────────────────────────────────────
 
-echo -e "${BOLD}[1/4] Stopping bonsai and destroying cloud-dc topology...${RESET}"
+echo -e "${BOLD}[1/4] Destroying cloud-dc topology...${RESET}"
 cd "$REPO_ROOT"
-docker compose --profile "$COMPOSE_PROFILE" stop 2>/dev/null || true
 containerlab destroy -t "$TOPO_FILE" --cleanup --graceful 2>/dev/null || true
 echo "      Done."
 echo ""
