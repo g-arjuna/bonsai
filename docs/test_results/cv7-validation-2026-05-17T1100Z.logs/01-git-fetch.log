@@ -1,0 +1,2 @@
+    $ git fetch origin main
+error: cannot open '.git/FETCH_HEAD': Read-only file system

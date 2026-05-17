@@ -142,6 +142,7 @@ stop_pid() {
 if (( RESTART_CHAOS_ONLY == 1 )); then
   stop_pid "chaos" "$CHAOS_PID_FILE"
   pkill -f 'chaos_harness/run.py' 2>/dev/null || true
+  bash scripts/chaos_runner.sh --stop >/dev/null 2>&1 || true
   # fall through to chaos startup below
 fi
 
@@ -157,6 +158,7 @@ if (( RESTART_CHAOS_ONLY == 0 )); then
   pkill -f 'python.*collector_engine.py' 2>/dev/null || true
   pkill -f 'target/release/bonsai'       2>/dev/null || true
   pkill -f 'chaos_harness/run.py'        2>/dev/null || true
+  bash scripts/chaos_runner.sh --stop >/dev/null 2>&1 || true
 
   # ── Remove stale docker bonsai containers (frees port 3000) ─────────────────
   # These containers are left over from old docker compose workflows.
@@ -274,18 +276,17 @@ if (( NO_CHAOS == 0 )); then
   fi
 
   if (( NO_CHAOS == 0 )); then
-    log "starting chaos daemon (plan=$(basename "$CHAOS_PLAN") duration=${THIRTY_DAYS_SECS}s)..."
-    if [[ -x "${PY:-}" ]] || command -v python3 >/dev/null 2>&1; then
-      _PY="${PY:-python3}"
-      PYTHONUNBUFFERED=1 "$_PY" tests/chaos_harness/run.py \
-        --plan "$CHAOS_PLAN" \
-        --duration "$THIRTY_DAYS_SECS" \
-        >> "$CHAOS_LOG" 2>&1 &
-      CHAOS_PID=$!
-      echo "$CHAOS_PID" > "$CHAOS_PID_FILE"
-      log "chaos pid=$CHAOS_PID  log=$CHAOS_LOG"
+    log "starting chaos daemon via scripts/chaos_runner.sh (plan=$(basename "$CHAOS_PLAN"))..."
+    if PLAN="$CHAOS_PLAN" bash scripts/chaos_runner.sh >/dev/null 2>&1; then
+      if [[ -f runtime/chaos_runner.pid ]]; then
+        CHAOS_PID="$(cat runtime/chaos_runner.pid 2>/dev/null || true)"
+        if [[ -n "$CHAOS_PID" ]]; then
+          echo "$CHAOS_PID" > "$CHAOS_PID_FILE"
+        fi
+      fi
+      log "chaos pid=${CHAOS_PID:-unknown}  log=$CHAOS_LOG"
     else
-      warn "no python — cannot start chaos daemon"
+      warn "chaos_runner.sh failed to start — check runtime/chaos_runner.log"
     fi
   fi
 fi

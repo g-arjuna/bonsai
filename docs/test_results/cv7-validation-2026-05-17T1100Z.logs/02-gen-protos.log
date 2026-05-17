@@ -1,0 +1,3 @@
+    $ .venv/bin/python python/gen_protos.py
+Running: /home/arjuna/Desktop/bonsai/.venv/bin/python -m grpc_tools.protoc -I/home/arjuna/Desktop/bonsai/proto --python_out=/home/arjuna/Desktop/bonsai/python/generated --grpc_python_out=/home/arjuna/Desktop/bonsai/python/generated /home/arjuna/Desktop/bonsai/proto/bonsai_service.proto
+Stubs written to /home/arjuna/Desktop/bonsai/python/generated

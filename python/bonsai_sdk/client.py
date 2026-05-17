@@ -104,6 +104,16 @@ class BonsaiClient:
     # Cache: device_address -> vendor string. Avoids a graph round-trip per event.
     _vendor_cache: dict[str, str]
 
+    def _query_device_scalar(self, device_address: str, field: str) -> str:
+        """Return a scalar Device property via graph query, or '' if not found."""
+        if field not in {"vendor", "rack"}:
+            raise ValueError(f"unsupported device field lookup: {field}")
+        rows = self.query(
+            f"MATCH (d:Device {{address: {json.dumps(device_address)}}}) "
+            f"RETURN d.{field} LIMIT 1"
+        )
+        return (rows[0][0] or "") if rows else ""
+
     def device_vendor(self, device_address: str) -> str:
         """Return the vendor string for a device (e.g. 'nokia_srl').
 
@@ -116,10 +126,7 @@ class BonsaiClient:
         if device_address in self._vendor_cache:
             return self._vendor_cache[device_address]
         try:
-            rows = self.query(
-                f"MATCH (d:Device {{address: '{device_address}'}}) RETURN d.vendor LIMIT 1"
-            )
-            vendor = (rows[0][0] or "") if rows else ""
+            vendor = self._query_device_scalar(device_address, "vendor")
         except Exception:
             vendor = ""
         self._vendor_cache[device_address] = vendor
@@ -378,19 +385,10 @@ class BonsaiClient:
 
     # ── device metadata helpers (D2-5 T2) ────────────────────────────────────
 
-    def device_vendor(self, address: str) -> str:
-        """Return the vendor string for a device (e.g. 'nokia_srl'). Returns '' on miss."""
-        try:
-            data = self._http_json("GET", f"/api/devices/{address}")
-            return data.get("vendor", "")
-        except Exception:
-            return ""
-
     def device_rack(self, address: str) -> str:
         """Return the rack attribute for a device. Returns '' if not set or unknown."""
         try:
-            data = self._http_json("GET", f"/api/devices/{address}")
-            return data.get("rack", "")
+            return self._query_device_scalar(address, "rack")
         except Exception:
             return ""
 

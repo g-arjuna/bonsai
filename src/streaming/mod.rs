@@ -386,6 +386,8 @@ mod tests {
                 enabled: true,
                 ..Default::default()
             },
+            netflow: crate::config::NetflowConfig::default(),
+            otlp: crate::config::OtlpConfig::default(),
             pcep: crate::config::PcepConfig::default(),
         };
 

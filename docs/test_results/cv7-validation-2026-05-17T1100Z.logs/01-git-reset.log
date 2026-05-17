@@ -1,0 +1,2 @@
+    $ git reset --hard origin/main
+fatal: Unable to create '/home/arjuna/Desktop/bonsai/.git/index.lock': Read-only file system
