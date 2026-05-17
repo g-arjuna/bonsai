@@ -862,9 +862,6 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
 
     if let Some(ref store) = store {
         let change_detection_runtime = if run_core {
-            if let Store::Core(s) = store {
-                bonsai::event_detection::start(std::sync::Arc::clone(s));
-            }
             Some(bonsai::change_detection::ChangeDetectionRuntime::start(
                 if let Store::Core(s) = store {
                     std::sync::Arc::clone(s)
