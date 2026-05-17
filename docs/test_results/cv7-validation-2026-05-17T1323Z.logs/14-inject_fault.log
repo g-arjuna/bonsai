@@ -1,0 +1,5 @@
+[18:53:41] BGP DOWN: srl-super1 peer 10.1.0.2
+  SRL BGP disable 10.1.0.2: All changes have been committed. Leaving candidate mode.
+  holding down for 10s...
+[18:53:53] BGP UP: srl-super1 peer 10.1.0.2
+  SRL BGP enable 10.1.0.2: All changes have been committed. Leaving candidate mode.

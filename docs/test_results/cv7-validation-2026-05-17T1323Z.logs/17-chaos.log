@@ -1,0 +1,332 @@
+[2026-05-17T11:38:22Z] ensure-running: no pid file found — starting daemon
+[2026-05-17T11:38:22Z] ensure-running: daemon started in background (PID 1863204)
+[2026-05-17T11:42:05Z] === Chaos runner started (PID 1865717) ===
+[2026-05-17T11:42:05Z] Plan: /home/arjuna/Desktop/bonsai/chaos_plans/always_on_dc.yaml  Python: /home/arjuna/Desktop/bonsai/.venv/bin/python3  Transport: docker
+[2026-05-17T11:42:05Z] --- Cycle 1 start ---
+2026-05-17 17:12:05,892 [INFO] Chaos run 20260517T114205Z starting — duration=0.5h  targets=['srl-super1', 'srl-super2', 'srl-spine1', 'srl-spine2', 'srl-leaf1', 'srl-leaf2', 'srl-leaf3', 'srl-leaf4']  dry_run=False  snapshots=chaos_runs/20260517T114205Z/snapshots
+2026-05-17 17:12:06,044 [INFO] [INJECT] interface_shut  host=srl-spine1  iface=ethernet-1/1
+2026-05-17 17:12:08,159 [INFO]   holding fault for 41s  [primary]
+[2026-05-17T11:42:28Z] === Chaos runner started (PID 1866385) ===
+[2026-05-17T11:42:28Z] Plan: /home/arjuna/Desktop/bonsai/chaos_plans/always_on_dc.yaml  Python: /home/arjuna/Desktop/bonsai/.venv/bin/python3  Transport: docker
+[2026-05-17T11:42:28Z] --- Cycle 1 start ---
+2026-05-17 17:12:29,239 [INFO] Chaos run 20260517T114229Z starting — duration=0.5h  targets=['srl-super1', 'srl-super2', 'srl-spine1', 'srl-spine2', 'srl-leaf1', 'srl-leaf2', 'srl-leaf3', 'srl-leaf4']  dry_run=False  snapshots=chaos_runs/20260517T114229Z/snapshots
+2026-05-17 17:12:29,379 [INFO] [INJECT] bfd_session_down  host=srl-leaf1  subinterface=ethernet-1/1.0  scenario=admin_disable_leaf_uplink
+2026-05-17 17:12:31,121 [INFO]   holding fault for 42s  [primary]
+2026-05-17 17:12:49,259 [INFO] [HEAL] interface_up  host=srl-spine1  iface=ethernet-1/1
+2026-05-17 17:12:51,220 [INFO] Ground-truth CSV written: chaos_runs/20260517T114205Z/injections.csv  (1 rows)
+2026-05-17 17:12:51,220 [INFO]   next injection in 61s  (29 min remaining)
+2026-05-17 17:13:13,161 [INFO] [HEAL] bfd_session_up  host=srl-leaf1  subinterface=ethernet-1/1.0
+2026-05-17 17:13:14,533 [INFO] Ground-truth CSV written: chaos_runs/20260517T114229Z/injections.csv  (1 rows)
+2026-05-17 17:13:14,533 [INFO]   next injection in 47s  (29 min remaining)
+2026-05-17 17:13:52,271 [INFO] [INJECT] interface_shut  host=srl-leaf3  iface=ethernet-1/2
+2026-05-17 17:13:55,250 [INFO]   holding fault for 34s  [primary]
+2026-05-17 17:14:01,552 [INFO] [INJECT] bgp_session_down  host=srl-leaf2  peer=10.1.0.2
+2026-05-17 17:14:03,024 [INFO]   holding fault for 51s  [primary]
+2026-05-17 17:14:29,400 [INFO] [HEAL] interface_up  host=srl-leaf3  iface=ethernet-1/2
+2026-05-17 17:14:30,792 [INFO] Ground-truth CSV written: chaos_runs/20260517T114205Z/injections.csv  (2 rows)
+2026-05-17 17:14:30,792 [INFO]   next injection in 117s  (28 min remaining)
+2026-05-17 17:14:54,061 [INFO] [HEAL] bgp_session_up  host=srl-leaf2  peer=10.1.0.2
+2026-05-17 17:14:56,051 [INFO] Ground-truth CSV written: chaos_runs/20260517T114229Z/injections.csv  (2 rows)
+2026-05-17 17:14:56,051 [INFO]   next injection in 51s  (28 min remaining)
+2026-05-17 17:15:47,076 [INFO] [INJECT] bfd_session_down  host=srl-spine1  subinterface=ethernet-1/2.0  scenario=admin_disable_spine_downlink
+2026-05-17 17:15:48,306 [INFO]   holding fault for 37s  [primary]
+2026-05-17 17:16:25,346 [INFO] [HEAL] bfd_session_up  host=srl-spine1  subinterface=ethernet-1/2.0
+2026-05-17 17:16:26,691 [INFO] Ground-truth CSV written: chaos_runs/20260517T114229Z/injections.csv  (3 rows)
+2026-05-17 17:16:26,691 [INFO]   next injection in 57s  (26 min remaining)
+2026-05-17 17:16:27,819 [INFO] [INJECT] netem_loss  host=srl-spine2  iface=e1-2  loss=6.0%
+2026-05-17 17:16:27,868 [INFO]   holding fault for 37s  [primary]
+2026-05-17 17:17:04,927 [INFO] [HEAL] netem_clear  host=srl-spine2  iface=e1-2
+2026-05-17 17:17:04,967 [INFO] Ground-truth CSV written: chaos_runs/20260517T114205Z/injections.csv  (3 rows)
+2026-05-17 17:17:04,967 [INFO]   next injection in 99s  (25 min remaining)
+2026-05-17 17:17:23,722 [INFO] [INJECT] interface_shut  host=srl-leaf2  iface=ethernet-1/1
+2026-05-17 17:17:25,018 [INFO]   holding fault for 56s  [primary]
+2026-05-17 17:18:21,164 [INFO] [HEAL] interface_up  host=srl-leaf2  iface=ethernet-1/1
+2026-05-17 17:18:22,447 [INFO] Ground-truth CSV written: chaos_runs/20260517T114229Z/injections.csv  (4 rows)
+2026-05-17 17:18:22,448 [INFO]   next injection in 52s  (24 min remaining)
+2026-05-17 17:18:43,993 [INFO] [INJECT] bfd_session_down  host=srl-spine1  subinterface=ethernet-1/4.0  scenario=admin_disable_spine_downlink
+2026-05-17 17:18:45,233 [INFO]   holding fault for 40s  [primary]
+2026-05-17 17:19:14,474 [INFO] [INJECT] bfd_session_down  host=srl-super1  subinterface=ethernet-1/1.0  scenario=admin_disable_super_spine
+2026-05-17 17:19:15,794 [INFO]   holding fault for 26s  [primary]
+2026-05-17 17:19:25,300 [INFO] [HEAL] bfd_session_up  host=srl-spine1  subinterface=ethernet-1/4.0
+2026-05-17 17:19:26,578 [INFO] Ground-truth CSV written: chaos_runs/20260517T114205Z/injections.csv  (4 rows)
+2026-05-17 17:19:26,578 [INFO]   next injection in 119s  (23 min remaining)
+2026-05-17 17:19:41,822 [INFO] [HEAL] bfd_session_up  host=srl-super1  subinterface=ethernet-1/1.0
+2026-05-17 17:19:43,112 [INFO] Ground-truth CSV written: chaos_runs/20260517T114229Z/injections.csv  (5 rows)
+2026-05-17 17:19:43,112 [INFO]   next injection in 79s  (23 min remaining)
+2026-05-17 17:21:02,131 [INFO] [INJECT] interface_shut  host=srl-leaf1  iface=ethernet-1/2
+2026-05-17 17:21:03,468 [INFO]   holding fault for 45s  [primary]
+2026-05-17 17:21:25,606 [INFO] [INJECT] netem_loss  host=srl-spine1  iface=e1-1  loss=7.0%
+2026-05-17 17:21:25,648 [INFO]   holding fault for 39s  [primary]
+2026-05-17 17:21:48,527 [INFO] [HEAL] interface_up  host=srl-leaf1  iface=ethernet-1/2
+2026-05-17 17:21:49,886 [INFO] Ground-truth CSV written: chaos_runs/20260517T114229Z/injections.csv  (6 rows)
+2026-05-17 17:21:49,886 [INFO]   next injection in 99s  (21 min remaining)
+2026-05-17 17:22:04,705 [INFO] [HEAL] netem_clear  host=srl-spine1  iface=e1-1
+2026-05-17 17:22:04,741 [INFO] Ground-truth CSV written: chaos_runs/20260517T114205Z/injections.csv  (5 rows)
+2026-05-17 17:22:04,741 [INFO]   next injection in 110s  (20 min remaining)
+2026-05-17 17:23:28,905 [INFO] [INJECT] interface_shut  host=srl-spine2  iface=ethernet-1/1
+2026-05-17 17:23:30,317 [INFO]   holding fault for 34s  [primary]
+2026-05-17 17:23:54,770 [INFO] [INJECT] bgp_session_down  host=srl-leaf3  peer=10.1.0.2
+2026-05-17 17:23:56,246 [INFO]   holding fault for 45s  [primary]
+2026-05-17 17:24:04,357 [INFO] [HEAL] interface_up  host=srl-spine2  iface=ethernet-1/1
+2026-05-17 17:24:05,675 [INFO] Ground-truth CSV written: chaos_runs/20260517T114229Z/injections.csv  (7 rows)
+2026-05-17 17:24:05,675 [INFO]   next injection in 54s  (18 min remaining)
+2026-05-17 17:24:41,309 [INFO] [HEAL] bgp_session_up  host=srl-leaf3  peer=10.1.0.2
+2026-05-17 17:24:42,790 [INFO] Ground-truth CSV written: chaos_runs/20260517T114205Z/injections.csv  (6 rows)
+2026-05-17 17:24:42,790 [INFO]   next injection in 111s  (17 min remaining)
+2026-05-17 17:24:59,698 [INFO] [INJECT] bfd_session_down  host=srl-leaf1  subinterface=ethernet-1/2.0  scenario=admin_disable_leaf_uplink
+2026-05-17 17:25:01,001 [INFO]   holding fault for 56s  [primary]
+2026-05-17 17:25:57,056 [INFO] [HEAL] bfd_session_up  host=srl-leaf1  subinterface=ethernet-1/2.0
+2026-05-17 17:25:59,097 [INFO] Ground-truth CSV written: chaos_runs/20260517T114229Z/injections.csv  (8 rows)
+2026-05-17 17:25:59,098 [INFO]   next injection in 97s  (17 min remaining)
+2026-05-17 17:26:33,819 [INFO] [INJECT] bgp_session_down  host=srl-leaf1  peer=10.1.0.1
+2026-05-17 17:26:35,309 [INFO]   holding fault for 36s  [primary]
+[2026-05-17T11:56:51Z] --- Cycle 1 exited with code 143 — recovering in 30s ---
+[2026-05-17T11:57:21Z] --- Cycle 2 start ---
+2026-05-17 17:27:22,095 [INFO] Chaos run 20260517T115722Z starting — duration=0.5h  targets=['srl-super1', 'srl-super2', 'srl-spine1', 'srl-spine2', 'srl-leaf1', 'srl-leaf2', 'srl-leaf3', 'srl-leaf4']  dry_run=False  snapshots=chaos_runs/20260517T115722Z/snapshots
+2026-05-17 17:27:22,194 [INFO] [INJECT] interface_shut  host=srl-leaf3  iface=ethernet-1/1
+2026-05-17 17:27:23,731 [INFO]   holding fault for 21s  [primary]
+2026-05-17 17:27:44,857 [INFO] [HEAL] interface_up  host=srl-leaf3  iface=ethernet-1/1
+2026-05-17 17:27:46,995 [INFO] Ground-truth CSV written: chaos_runs/20260517T115722Z/injections.csv  (1 rows)
+2026-05-17 17:27:46,995 [INFO]   next injection in 72s  (30 min remaining)
+2026-05-17 17:28:59,021 [INFO] [INJECT] bfd_session_down  host=srl-leaf1  subinterface=ethernet-1/2.0  scenario=admin_disable_leaf_uplink
+2026-05-17 17:29:00,377 [INFO]   holding fault for 44s  [primary]
+2026-05-17 17:29:44,431 [INFO] [HEAL] bfd_session_up  host=srl-leaf1  subinterface=ethernet-1/2.0
+2026-05-17 17:29:46,199 [INFO] Ground-truth CSV written: chaos_runs/20260517T115722Z/injections.csv  (2 rows)
+2026-05-17 17:29:46,199 [INFO]   next injection in 68s  (28 min remaining)
+2026-05-17 17:30:54,230 [INFO] [INJECT] bgp_session_down  host=srl-leaf3  peer=10.1.0.2
+2026-05-17 17:30:55,729 [INFO]   holding fault for 32s  [primary]
+2026-05-17 17:31:27,828 [INFO] [HEAL] bgp_session_up  host=srl-leaf3  peer=10.1.0.2
+2026-05-17 17:31:29,814 [INFO] Ground-truth CSV written: chaos_runs/20260517T115722Z/injections.csv  (3 rows)
+2026-05-17 17:31:29,815 [INFO]   next injection in 103s  (26 min remaining)
+2026-05-17 17:33:12,836 [INFO] [INJECT] netem_loss  host=srl-leaf4  iface=e1-1  loss=15.0%
+2026-05-17 17:33:12,881 [INFO]   holding fault for 70s  [primary]
+2026-05-17 17:34:23,052 [INFO] [HEAL] netem_clear  host=srl-leaf4  iface=e1-1
+2026-05-17 17:34:23,093 [INFO] Ground-truth CSV written: chaos_runs/20260517T115722Z/injections.csv  (4 rows)
+2026-05-17 17:34:23,093 [INFO]   next injection in 81s  (23 min remaining)
+2026-05-17 17:35:44,122 [INFO] [INJECT] bgp_session_down  host=srl-leaf3  peer=10.1.0.1
+2026-05-17 17:35:45,666 [INFO]   holding fault for 30s  [primary]
+2026-05-17 17:36:15,715 [INFO] [HEAL] bgp_session_up  host=srl-leaf3  peer=10.1.0.1
+2026-05-17 17:36:17,178 [INFO] Ground-truth CSV written: chaos_runs/20260517T115722Z/injections.csv  (5 rows)
+2026-05-17 17:36:17,178 [INFO]   next injection in 104s  (21 min remaining)
+2026-05-17 17:38:01,217 [INFO] [INJECT] bgp_session_down  host=srl-leaf1  peer=10.1.0.1
+2026-05-17 17:38:03,067 [INFO]   holding fault for 45s  [primary]
+2026-05-17 17:38:48,160 [INFO] [HEAL] bgp_session_up  host=srl-leaf1  peer=10.1.0.1
+2026-05-17 17:38:49,646 [INFO] Ground-truth CSV written: chaos_runs/20260517T115722Z/injections.csv  (6 rows)
+2026-05-17 17:38:49,646 [INFO]   next injection in 70s  (19 min remaining)
+2026-05-17 17:39:59,649 [INFO] [INJECT] netem_loss  host=srl-leaf4  iface=e1-1  loss=14.0%
+  [netem error] ERROR  
+          
+  Error response from daemon: No such container: clab-bonsai-dc-srl-leaf4.
+2026-05-17 17:39:59,679 [INFO]   holding fault for 38s  [primary]
+2026-05-17 17:40:37,682 [INFO] [HEAL] netem_clear  host=srl-leaf4  iface=e1-1
+  [netem error] ERROR  
+          
+  Error response from daemon: No such container: clab-bonsai-dc-srl-leaf4.
+2026-05-17 17:40:37,735 [INFO] Ground-truth CSV written: chaos_runs/20260517T115722Z/injections.csv  (7 rows)
+2026-05-17 17:40:37,735 [INFO]   next injection in 88s  (17 min remaining)
+2026-05-17 17:42:05,740 [INFO] [INJECT] bgp_session_down  host=srl-leaf4  peer=10.1.0.1
+2026-05-17 17:42:15,335 [ERROR] [INJECT ERROR] bgp_session_down: 12:12:08.692 [WARNING] (MainThread) Failed to contact the AAA server. Further communication will be blackholed until connection succeeds
+At line 1: Error: Server is not running
+2026-05-17 17:42:15,336 [INFO]   next injection in 111s  (15 min remaining)
+2026-05-17 17:44:06,343 [INFO] [INJECT] bgp_session_down  host=srl-leaf4  peer=10.1.0.1
+2026-05-17 17:44:14,078 [ERROR] [INJECT ERROR] bgp_session_down: Nothing to discard. Leaving candidate mode.
+At line 5: Error: There is a commit already in progress (cannot start another commit)
+2026-05-17 17:44:14,078 [INFO]   next injection in 70s  (13 min remaining)
+[2026-05-17T12:16:09Z] === Chaos runner started (PID 1962808) ===
+[2026-05-17T12:16:09Z] Plan: /home/arjuna/Desktop/bonsai/chaos_plans/always_on_dc.yaml  Python: /home/arjuna/Desktop/bonsai/.venv/bin/python3  Transport: docker
+[2026-05-17T12:16:09Z] --- Cycle 1 start ---
+2026-05-17 17:46:09,753 [INFO] Chaos run 20260517T121609Z starting — duration=0.5h  targets=['srl-super1', 'srl-super2', 'srl-spine1', 'srl-spine2', 'srl-leaf1', 'srl-leaf2', 'srl-leaf3', 'srl-leaf4']  dry_run=False  snapshots=chaos_runs/20260517T121609Z/snapshots
+2026-05-17 17:46:09,885 [INFO] [INJECT] bfd_session_down  host=srl-super2  subinterface=ethernet-1/1.0  scenario=admin_disable_super_spine
+2026-05-17 17:46:11,674 [INFO]   holding fault for 23s  [primary]
+2026-05-17 17:46:34,774 [INFO] [HEAL] bfd_session_up  host=srl-super2  subinterface=ethernet-1/1.0
+2026-05-17 17:46:37,768 [INFO] Ground-truth CSV written: chaos_runs/20260517T121609Z/injections.csv  (1 rows)
+2026-05-17 17:46:37,768 [INFO]   next injection in 107s  (30 min remaining)
+2026-05-17 17:48:24,803 [INFO] [INJECT] netem_loss  host=srl-spine2  iface=e1-1  loss=4.0%
+2026-05-17 17:48:24,881 [INFO]   holding fault for 48s  [primary]
+2026-05-17 17:49:13,035 [INFO] [HEAL] netem_clear  host=srl-spine2  iface=e1-1
+2026-05-17 17:49:13,083 [INFO] Ground-truth CSV written: chaos_runs/20260517T121609Z/injections.csv  (2 rows)
+2026-05-17 17:49:13,083 [INFO]   next injection in 73s  (27 min remaining)
+2026-05-17 17:50:26,109 [INFO] [INJECT] interface_shut  host=srl-leaf4  iface=ethernet-1/2
+2026-05-17 17:50:27,556 [INFO]   holding fault for 43s  [primary]
+2026-05-17 17:51:10,599 [INFO] [HEAL] interface_up  host=srl-leaf4  iface=ethernet-1/2
+2026-05-17 17:51:12,036 [INFO] Ground-truth CSV written: chaos_runs/20260517T121609Z/injections.csv  (3 rows)
+2026-05-17 17:51:12,036 [INFO]   next injection in 67s  (25 min remaining)
+2026-05-17 17:52:19,060 [INFO] [INJECT] bgp_session_down  host=srl-leaf1  peer=10.1.0.1
+2026-05-17 17:52:20,642 [INFO]   holding fault for 48s  [primary]
+2026-05-17 17:53:08,696 [INFO] [HEAL] bgp_session_up  host=srl-leaf1  peer=10.1.0.1
+2026-05-17 17:53:10,845 [INFO] Ground-truth CSV written: chaos_runs/20260517T121609Z/injections.csv  (4 rows)
+2026-05-17 17:53:10,845 [INFO]   next injection in 92s  (23 min remaining)
+2026-05-17 17:54:42,878 [INFO] [INJECT] interface_shut  host=srl-leaf4  iface=ethernet-1/2
+2026-05-17 17:54:44,089 [INFO]   holding fault for 38s  [primary]
+2026-05-17 17:55:22,151 [INFO] [HEAL] interface_up  host=srl-leaf4  iface=ethernet-1/2
+2026-05-17 17:55:23,397 [INFO] Ground-truth CSV written: chaos_runs/20260517T121609Z/injections.csv  (5 rows)
+2026-05-17 17:55:23,397 [INFO]   next injection in 105s  (21 min remaining)
+2026-05-17 17:57:08,418 [INFO] [INJECT] interface_shut  host=srl-leaf2  iface=ethernet-1/2
+2026-05-17 17:57:09,748 [INFO]   holding fault for 46s  [primary]
+2026-05-17 17:57:55,814 [INFO] [HEAL] interface_up  host=srl-leaf2  iface=ethernet-1/2
+2026-05-17 17:57:57,483 [INFO] Ground-truth CSV written: chaos_runs/20260517T121609Z/injections.csv  (6 rows)
+2026-05-17 17:57:57,484 [INFO]   next injection in 58s  (18 min remaining)
+2026-05-17 17:58:55,525 [INFO] [INJECT] netem_loss  host=srl-leaf2  iface=e1-1  loss=5.0%
+2026-05-17 17:58:55,620 [INFO]   holding fault for 69s  [primary]
+2026-05-17 18:00:04,797 [INFO] [HEAL] netem_clear  host=srl-leaf2  iface=e1-1
+2026-05-17 18:00:04,883 [INFO] Ground-truth CSV written: chaos_runs/20260517T121609Z/injections.csv  (7 rows)
+2026-05-17 18:00:04,883 [INFO]   next injection in 111s  (16 min remaining)
+2026-05-17 18:01:55,919 [INFO] [INJECT] interface_shut  host=srl-spine1  iface=ethernet-1/1
+2026-05-17 18:01:58,180 [INFO]   holding fault for 39s  [primary]
+2026-05-17 18:02:37,270 [INFO] [HEAL] interface_up  host=srl-spine1  iface=ethernet-1/1
+2026-05-17 18:02:40,603 [INFO] Ground-truth CSV written: chaos_runs/20260517T121609Z/injections.csv  (8 rows)
+2026-05-17 18:02:40,604 [INFO]   next injection in 86s  (13 min remaining)
+2026-05-17 18:04:06,755 [INFO] [INJECT] interface_shut  host=srl-leaf2  iface=ethernet-1/2
+2026-05-17 18:04:10,492 [INFO]   holding fault for 42s  [primary]
+2026-05-17 18:04:52,930 [INFO] [HEAL] interface_up  host=srl-leaf2  iface=ethernet-1/2
+2026-05-17 18:04:56,688 [INFO] Ground-truth CSV written: chaos_runs/20260517T121609Z/injections.csv  (9 rows)
+2026-05-17 18:04:56,689 [INFO]   next injection in 74s  (11 min remaining)
+2026-05-17 18:06:10,872 [INFO] [INJECT] bfd_session_down  host=srl-spine2  subinterface=ethernet-1/1.0  scenario=admin_disable_spine_downlink
+2026-05-17 18:06:14,451 [INFO]   holding fault for 24s  [primary]
+2026-05-17 18:06:38,648 [INFO] [HEAL] bfd_session_up  host=srl-spine2  subinterface=ethernet-1/1.0
+2026-05-17 18:06:41,727 [INFO] Ground-truth CSV written: chaos_runs/20260517T121609Z/injections.csv  (10 rows)
+2026-05-17 18:06:41,728 [INFO]   next injection in 102s  (9 min remaining)
+2026-05-17 18:08:23,844 [INFO] [INJECT] interface_shut  host=srl-leaf2  iface=ethernet-1/2
+2026-05-17 18:08:27,054 [INFO]   holding fault for 36s  [primary]
+2026-05-17 18:09:03,313 [INFO] [HEAL] interface_up  host=srl-leaf2  iface=ethernet-1/2
+2026-05-17 18:09:06,978 [INFO] Ground-truth CSV written: chaos_runs/20260517T121609Z/injections.csv  (11 rows)
+2026-05-17 18:09:06,982 [INFO]   next injection in 99s  (7 min remaining)
+2026-05-17 18:10:46,025 [INFO] [INJECT] netem_loss  host=srl-leaf4  iface=e1-2  loss=3.0%
+2026-05-17 18:10:46,112 [INFO]   holding fault for 58s  [primary]
+2026-05-17 18:11:44,485 [INFO] [HEAL] netem_clear  host=srl-leaf4  iface=e1-2
+2026-05-17 18:11:45,149 [INFO] Ground-truth CSV written: chaos_runs/20260517T121609Z/injections.csv  (12 rows)
+2026-05-17 18:11:45,150 [INFO]   next injection in 118s  (4 min remaining)
+2026-05-17 18:13:43,191 [INFO] [INJECT] netem_loss  host=srl-spine1  iface=e1-2  loss=4.0%
+2026-05-17 18:13:43,272 [INFO]   holding fault for 32s  [primary]
+2026-05-17 18:14:15,365 [INFO] [HEAL] netem_clear  host=srl-spine1  iface=e1-2
+2026-05-17 18:14:15,442 [INFO] Ground-truth CSV written: chaos_runs/20260517T121609Z/injections.csv  (13 rows)
+2026-05-17 18:14:15,442 [INFO]   next injection in 55s  (2 min remaining)
+2026-05-17 18:15:10,477 [INFO] [INJECT] netem_loss  host=srl-leaf1  iface=e1-1  loss=7.0%
+2026-05-17 18:15:10,553 [INFO]   holding fault for 75s  [primary]
+2026-05-17 18:16:09,920 [INFO] [HEAL] netem_clear  host=srl-leaf1  iface=e1-1
+2026-05-17 18:16:09,963 [INFO] Ground-truth CSV written: chaos_runs/20260517T121609Z/injections.csv  (14 rows)
+2026-05-17 18:16:09,970 [INFO] Ground-truth CSV written: chaos_runs/20260517T121609Z/injections.csv  (14 rows)
+2026-05-17 18:16:09,970 [INFO] Chaos run complete.  14 injections.  CSV: chaos_runs/20260517T121609Z/injections.csv
+[17:46:09] BFD DOWN: srl-super2 ethernet-1/1.0
+  SRL BFD disable ethernet-1/1.0: All changes have been committed. Leaving candidate mode.
+[17:46:34] BFD UP: srl-super2 ethernet-1/1.0
+  SRL BFD enable ethernet-1/1.0: All changes have been committed. Leaving candidate mode.
+  netem: clab tools netem set --name bonsai-dc --node clab-bonsai-dc-srl-spine2 --interface e1-1 --loss 4
+  netem loss 4% applied to srl-spine2:e1-1
+  netem: clab tools netem reset --name bonsai-dc --node clab-bonsai-dc-srl-spine2 --interface e1-1
+  netem cleared on srl-spine2:e1-1
+[17:50:26] IFACE DOWN: srl-leaf4 ethernet-1/2
+  SRL interface down ethernet-1/2: All changes have been committed. Leaving candidate mode.
+[17:51:10] IFACE UP: srl-leaf4 ethernet-1/2
+  SRL interface up ethernet-1/2: All changes have been committed. Leaving candidate mode.
+[17:52:19] BGP DOWN: srl-leaf1 peer 10.1.0.1
+  SRL BGP disable 10.1.0.1: All changes have been committed. Leaving candidate mode.
+[17:53:08] BGP UP: srl-leaf1 peer 10.1.0.1
+  SRL BGP enable 10.1.0.1: All changes have been committed. Leaving candidate mode.
+[17:54:42] IFACE DOWN: srl-leaf4 ethernet-1/2
+  SRL interface down ethernet-1/2: All changes have been committed. Leaving candidate mode.
+[17:55:22] IFACE UP: srl-leaf4 ethernet-1/2
+  SRL interface up ethernet-1/2: All changes have been committed. Leaving candidate mode.
+[17:57:08] IFACE DOWN: srl-leaf2 ethernet-1/2
+  SRL interface down ethernet-1/2: All changes have been committed. Leaving candidate mode.
+[17:57:55] IFACE UP: srl-leaf2 ethernet-1/2
+  SRL interface up ethernet-1/2: All changes have been committed. Leaving candidate mode.
+  netem: clab tools netem set --name bonsai-dc --node clab-bonsai-dc-srl-leaf2 --interface e1-1 --loss 5
+  netem loss 5% applied to srl-leaf2:e1-1
+  netem: clab tools netem reset --name bonsai-dc --node clab-bonsai-dc-srl-leaf2 --interface e1-1
+  netem cleared on srl-leaf2:e1-1
+[18:01:55] IFACE DOWN: srl-spine1 ethernet-1/1
+  SRL interface down ethernet-1/1: All changes have been committed. Leaving candidate mode.
+[18:02:37] IFACE UP: srl-spine1 ethernet-1/1
+  SRL interface up ethernet-1/1: All changes have been committed. Leaving candidate mode.
+[18:04:06] IFACE DOWN: srl-leaf2 ethernet-1/2
+  SRL interface down ethernet-1/2: All changes have been committed. Leaving candidate mode.
+[18:04:52] IFACE UP: srl-leaf2 ethernet-1/2
+  SRL interface up ethernet-1/2: All changes have been committed. Leaving candidate mode.
+[18:06:10] BFD DOWN: srl-spine2 ethernet-1/1.0
+  SRL BFD disable ethernet-1/1.0: All changes have been committed. Leaving candidate mode.
+[18:06:38] BFD UP: srl-spine2 ethernet-1/1.0
+  SRL BFD enable ethernet-1/1.0: All changes have been committed. Leaving candidate mode.
+[18:08:23] IFACE DOWN: srl-leaf2 ethernet-1/2
+  SRL interface down ethernet-1/2: All changes have been committed. Leaving candidate mode.
+[18:09:03] IFACE UP: srl-leaf2 ethernet-1/2
+  SRL interface up ethernet-1/2: All changes have been committed. Leaving candidate mode.
+  netem: clab tools netem set --name bonsai-dc --node clab-bonsai-dc-srl-leaf4 --interface e1-2 --loss 3
+  netem loss 3% applied to srl-leaf4:e1-2
+  netem: clab tools netem reset --name bonsai-dc --node clab-bonsai-dc-srl-leaf4 --interface e1-2
+  netem cleared on srl-leaf4:e1-2
+  netem: clab tools netem set --name bonsai-dc --node clab-bonsai-dc-srl-spine1 --interface e1-2 --loss 4
+  netem loss 4% applied to srl-spine1:e1-2
+  netem: clab tools netem reset --name bonsai-dc --node clab-bonsai-dc-srl-spine1 --interface e1-2
+  netem cleared on srl-spine1:e1-2
+  netem: clab tools netem set --name bonsai-dc --node clab-bonsai-dc-srl-leaf1 --interface e1-1 --loss 7
+  netem loss 7% applied to srl-leaf1:e1-1
+  netem: clab tools netem reset --name bonsai-dc --node clab-bonsai-dc-srl-leaf1 --interface e1-1
+  netem cleared on srl-leaf1:e1-1
+[2026-05-17T12:46:10Z] --- Cycle 1 finished cleanly ---
+[2026-05-17T12:46:40Z] --- Cycle 2 start ---
+2026-05-17 18:16:40,401 [INFO] Chaos run 20260517T124640Z starting — duration=0.5h  targets=['srl-super1', 'srl-super2', 'srl-spine1', 'srl-spine2', 'srl-leaf1', 'srl-leaf2', 'srl-leaf3', 'srl-leaf4']  dry_run=False  snapshots=chaos_runs/20260517T124640Z/snapshots
+2026-05-17 18:16:40,488 [INFO] [INJECT] netem_loss  host=srl-spine2  iface=e1-4  loss=10.0%
+2026-05-17 18:16:40,531 [INFO]   holding fault for 42s  [primary]
+2026-05-17 18:17:22,585 [INFO] [HEAL] netem_clear  host=srl-spine2  iface=e1-4
+2026-05-17 18:17:22,625 [INFO] Ground-truth CSV written: chaos_runs/20260517T124640Z/injections.csv  (1 rows)
+2026-05-17 18:17:22,626 [INFO]   next injection in 95s  (29 min remaining)
+2026-05-17 18:18:57,648 [INFO] [INJECT] bfd_session_down  host=srl-leaf2  subinterface=ethernet-1/1.0  scenario=admin_disable_leaf_uplink
+2026-05-17 18:18:58,921 [INFO]   holding fault for 28s  [primary]
+2026-05-17 18:19:26,944 [INFO] [HEAL] bfd_session_up  host=srl-leaf2  subinterface=ethernet-1/1.0
+2026-05-17 18:19:28,285 [INFO] Ground-truth CSV written: chaos_runs/20260517T124640Z/injections.csv  (2 rows)
+2026-05-17 18:19:28,285 [INFO]   next injection in 65s  (27 min remaining)
+2026-05-17 18:20:33,318 [INFO] [INJECT] bgp_session_down  host=srl-leaf1  peer=10.1.0.1
+2026-05-17 18:20:34,653 [INFO]   holding fault for 32s  [primary]
+2026-05-17 18:21:06,707 [INFO] [HEAL] bgp_session_up  host=srl-leaf1  peer=10.1.0.1
+2026-05-17 18:21:08,128 [INFO] Ground-truth CSV written: chaos_runs/20260517T124640Z/injections.csv  (3 rows)
+2026-05-17 18:21:08,128 [INFO]   next injection in 81s  (26 min remaining)
+2026-05-17 18:22:29,156 [INFO] [INJECT] netem_loss  host=srl-spine1  iface=e1-2  loss=3.0%
+2026-05-17 18:22:29,195 [INFO]   holding fault for 37s  [primary]
+2026-05-17 18:23:06,240 [INFO] [HEAL] netem_clear  host=srl-spine1  iface=e1-2
+2026-05-17 18:23:06,277 [INFO] Ground-truth CSV written: chaos_runs/20260517T124640Z/injections.csv  (4 rows)
+2026-05-17 18:23:06,277 [INFO]   next injection in 71s  (24 min remaining)
+2026-05-17 18:24:17,298 [INFO] [INJECT] route_flap  host=srl-leaf2  peer=10.1.0.2  flap_count=3  hold=5s
+2026-05-17 18:24:45,524 [INFO]   holding fault for 1s  [primary]
+2026-05-17 18:24:46,525 [INFO] Ground-truth CSV written: chaos_runs/20260517T124640Z/injections.csv  (5 rows)
+2026-05-17 18:24:46,525 [INFO]   next injection in 99s  (22 min remaining)
+2026-05-17 18:26:25,545 [INFO] [INJECT] bgp_session_down  host=srl-leaf1  peer=10.1.0.1
+2026-05-17 18:26:27,029 [INFO]   holding fault for 30s  [primary]
+2026-05-17 18:26:57,071 [INFO] [HEAL] bgp_session_up  host=srl-leaf1  peer=10.1.0.1
+2026-05-17 18:26:58,763 [INFO] Ground-truth CSV written: chaos_runs/20260517T124640Z/injections.csv  (6 rows)
+2026-05-17 18:26:58,763 [INFO]   next injection in 102s  (20 min remaining)
+2026-05-17 18:28:40,789 [INFO] [INJECT] bgp_session_down  host=srl-leaf4  peer=10.1.0.1
+2026-05-17 18:28:42,102 [INFO]   holding fault for 44s  [primary]
+2026-05-17 18:29:26,158 [INFO] [HEAL] bgp_session_up  host=srl-leaf4  peer=10.1.0.1
+2026-05-17 18:29:27,604 [INFO] Ground-truth CSV written: chaos_runs/20260517T124640Z/injections.csv  (7 rows)
+2026-05-17 18:29:27,604 [INFO]   next injection in 52s  (17 min remaining)
+2026-05-17 18:30:19,636 [INFO] [INJECT] netem_loss  host=srl-spine2  iface=e1-3  loss=3.0%
+2026-05-17 18:30:19,678 [INFO]   holding fault for 44s  [primary]
+2026-05-17 18:31:03,722 [INFO] [HEAL] netem_clear  host=srl-spine2  iface=e1-3
+2026-05-17 18:31:03,762 [INFO] Ground-truth CSV written: chaos_runs/20260517T124640Z/injections.csv  (8 rows)
+2026-05-17 18:31:03,762 [INFO]   next injection in 102s  (16 min remaining)
+2026-05-17 18:32:45,785 [INFO] [INJECT] netem_loss  host=srl-spine2  iface=e1-2  loss=2.0%
+2026-05-17 18:32:45,833 [INFO]   holding fault for 71s  [primary]
+2026-05-17 18:33:56,914 [INFO] [HEAL] netem_clear  host=srl-spine2  iface=e1-2
+2026-05-17 18:33:57,083 [INFO] Ground-truth CSV written: chaos_runs/20260517T124640Z/injections.csv  (9 rows)
+2026-05-17 18:33:57,083 [INFO]   next injection in 55s  (13 min remaining)
+2026-05-17 18:34:52,126 [INFO] [INJECT] interface_shut  host=srl-leaf4  iface=ethernet-1/2
+2026-05-17 18:34:55,092 [INFO]   holding fault for 51s  [primary]
+2026-05-17 18:35:46,148 [INFO] [HEAL] interface_up  host=srl-leaf4  iface=ethernet-1/2
+2026-05-17 18:35:47,839 [INFO] Ground-truth CSV written: chaos_runs/20260517T124640Z/injections.csv  (10 rows)
+2026-05-17 18:35:47,839 [INFO]   next injection in 84s  (11 min remaining)
+2026-05-17 18:37:11,872 [INFO] [INJECT] netem_loss  host=srl-leaf1  iface=e1-1  loss=5.0%
+2026-05-17 18:37:11,914 [INFO]   holding fault for 35s  [primary]
+2026-05-17 18:37:46,979 [INFO] [HEAL] netem_clear  host=srl-leaf1  iface=e1-1
+2026-05-17 18:37:47,020 [INFO] Ground-truth CSV written: chaos_runs/20260517T124640Z/injections.csv  (11 rows)
+2026-05-17 18:37:47,020 [INFO]   next injection in 71s  (9 min remaining)
+2026-05-17 18:38:58,051 [INFO] [INJECT] bfd_session_down  host=srl-leaf1  subinterface=ethernet-1/2.0  scenario=admin_disable_leaf_uplink
+2026-05-17 18:38:59,098 [INFO]   holding fault for 31s  [primary]
+2026-05-17 18:39:30,160 [INFO] [HEAL] bfd_session_up  host=srl-leaf1  subinterface=ethernet-1/2.0
+2026-05-17 18:39:31,349 [INFO] Ground-truth CSV written: chaos_runs/20260517T124640Z/injections.csv  (12 rows)
+2026-05-17 18:39:31,350 [INFO]   next injection in 109s  (7 min remaining)
+2026-05-17 18:41:20,394 [INFO] [INJECT] netem_loss  host=srl-leaf3  iface=e1-1  loss=15.0%
+2026-05-17 18:41:20,447 [INFO]   holding fault for 30s  [primary]
+2026-05-17 18:41:50,468 [INFO] [HEAL] netem_clear  host=srl-leaf3  iface=e1-1
+2026-05-17 18:41:50,510 [INFO] Ground-truth CSV written: chaos_runs/20260517T124640Z/injections.csv  (13 rows)
+2026-05-17 18:41:50,510 [INFO]   next injection in 57s  (5 min remaining)

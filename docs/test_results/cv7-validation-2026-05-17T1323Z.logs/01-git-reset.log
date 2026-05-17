@@ -1,0 +1,2 @@
+    $ git reset --hard origin/main
+HEAD is now at dc831d6 docs: fix corrupted gnn_30day_archive_run.md — rewrite clean
