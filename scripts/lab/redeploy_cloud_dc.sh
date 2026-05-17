@@ -1,19 +1,16 @@
 #!/usr/bin/env bash
 # scripts/lab/redeploy_cloud_dc.sh — Full destroy+deploy of the cloud DC topology.
 #
-# Cloud equivalent of scripts/lab/redeploy_dc.sh.
+# IMPORTANT: This script manages ContainerLab topology ONLY.
+# Bonsai is always run as a native process (never via docker compose).
+# After this script: bash scripts/ops/start_30day_run.sh
+#
 # Run on the cloud VM (opc@150.136.208.16) or via:
 #   ssh opc@150.136.208.16 "cd /opt/bonsai && bash scripts/lab/redeploy_cloud_dc.sh"
 #
-# WHY full destroy --cleanup:
-#   Same cert split-brain issue as laptop DC. ContainerLab reuses the existing
-#   CA cert if .tls/ directory is present. --cleanup removes it so the next
-#   deploy generates a fresh CA that signs ALL nodes consistently.
-#
 # Usage:
-#   bash scripts/lab/redeploy_cloud_dc.sh              # full redeploy + restart bonsai
-#   bash scripts/lab/redeploy_cloud_dc.sh --topo-only  # topology only, skip bonsai restart
-#   bash scripts/lab/redeploy_cloud_dc.sh --check      # verify state without redeploying
+#   bash scripts/lab/redeploy_cloud_dc.sh        # deploy topology + copy CA cert
+#   bash scripts/lab/redeploy_cloud_dc.sh --check  # verify state without redeploying
 
 set -euo pipefail
 
@@ -21,18 +18,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TOPO_FILE="$REPO_ROOT/lab/cloud-dc-6node.yml"
 CA_CERT="$REPO_ROOT/lab/clab-bonsai-cloud-dc/.tls/ca/ca.pem"
-COMPOSE_PROFILE="cloud-dc"
-BONSAI_CONTAINER="bonsai-bonsai-cloud-dc-1"
 API_BASE="${API_BASE:-http://127.0.0.1:3000}"
 
-TOPO_ONLY=false
 CHECK_ONLY=false
 for arg in "$@"; do
     case "$arg" in
-        --topo-only) TOPO_ONLY=true ;;
-        --check)     CHECK_ONLY=true ;;
+        --check)  CHECK_ONLY=true ;;
         --help|-h)
-            echo "Usage: $0 [--topo-only] [--check]"
+            echo "Usage: $0 [--check]"
             exit 0
             ;;
         *) echo "Unknown argument: $arg" >&2; exit 1 ;;
@@ -52,9 +45,6 @@ if $CHECK_ONLY; then
     echo ""
     echo "ContainerLab nodes:"
     docker ps --filter "name=clab-bonsai-cloud-dc" --format "  {{.Names}}\t{{.Status}}" 2>/dev/null || echo "  (none)"
-    echo ""
-    echo "Bonsai container:"
-    docker ps --filter "name=$BONSAI_CONTAINER" --format "  {{.Names}}\t{{.Status}}" 2>/dev/null || echo "  not running"
     echo ""
     echo "CA cert:"
     if [[ -f "$CA_CERT" ]]; then
@@ -126,27 +116,10 @@ done
 [[ "$TLS_FAIL" -gt 0 ]] && echo -e "\n  ${YELLOW}$TLS_FAIL node(s) still booting — bonsai retries automatically.${RESET}"
 echo ""
 
-$TOPO_ONLY && { echo "--topo-only: skipping bonsai restart."; exit 0; }
-
-# ── Step 4: force-recreate bonsai ─────────────────────────────────────────────
-
-echo -e "${BOLD}[4/4] Force-recreating bonsai-cloud-dc...${RESET}"
-docker compose --profile "$COMPOSE_PROFILE" up -d --force-recreate
-echo ""
-
-echo "Waiting for bonsai API (up to 60s)..."
-for i in $(seq 1 12); do
-    curl -sf --max-time 3 "$API_BASE/api/operations" &>/dev/null && break
-    sleep 5
-done
-
-OBS=$(curl -sf --max-time 5 "$API_BASE/api/operations" 2>/dev/null | \
-    python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('observed_subscriptions',0))" 2>/dev/null || echo "?")
-
-echo -e "${GREEN}=== Cloud redeploy complete ===${RESET}"
+echo -e "${GREEN}=== Topology redeploy complete ===${RESET}"
 echo "  CA: $CA_FP"
 echo "  TLS OK: $TLS_OK/$((TLS_OK+TLS_FAIL)) nodes at deploy time"
-echo "  observed_subscriptions (current): $OBS"
 echo ""
-echo "  Recheck in 2min: curl -s http://127.0.0.1:3000/api/operations | python3 -m json.tool"
+echo "  SRL nodes take 60-90s to fully boot."
+echo "  Next step: bash scripts/ops/start_30day_run.sh"
 echo ""

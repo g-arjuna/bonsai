@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
 # scripts/lab/redeploy_dc.sh — Full destroy+deploy of the DC lab topology.
 #
+# IMPORTANT: This script manages ContainerLab topology ONLY.
+# Bonsai is always run as a native process (never via docker compose).
+# Start bonsai after this script finishes: bash scripts/ops/start_30day_run.sh
+#
 # WHY full destroy instead of rolling update:
 #   ContainerLab generates a fresh CA keypair on each deploy. A partial/rolling
 #   update reconfigures existing nodes but does NOT regenerate their TLS certs.
 #   This causes cert split-brain: some nodes present certs from the old CA, some
-#   from the new CA, and bonsai can only trust one CA at a time. Symptoms: only
-#   a subset of nodes get active gNMI subscriptions; topology appears disconnected.
-#
-#   Always destroy first → fresh CA → all nodes get matching certs → bonsai
-#   force-recreated so it reads the new CA cert via bind mount.
+#   from the new CA, and bonsai can only trust one CA at a time.
 #
 # Usage:
-#   bash scripts/lab/redeploy_dc.sh              # full redeploy + restart bonsai
-#   bash scripts/lab/redeploy_dc.sh --topo-only  # topology only, skip bonsai restart
-#   bash scripts/lab/redeploy_dc.sh --check      # verify state without redeploying
+#   bash scripts/lab/redeploy_dc.sh        # deploy topology + copy CA cert
+#   bash scripts/lab/redeploy_dc.sh --check  # verify state without redeploying
 
 set -euo pipefail
 
@@ -22,20 +21,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TOPO_FILE="$REPO_ROOT/lab/dc/dc-evpn-srv6.clab.yml"
 CA_CERT="$REPO_ROOT/lab/dc/clab-bonsai-dc/.tls/ca/ca.pem"
-COMPOSE_PROFILE="lab-dc"
-BONSAI_CONTAINER="bonsai-bonsai-lab-dc-1"
 API_BASE="${API_BASE:-http://127.0.0.1:3000}"
 
-TOPO_ONLY=false
 CHECK_ONLY=false
 for arg in "$@"; do
     case "$arg" in
-        --topo-only) TOPO_ONLY=true ;;
-        --check)     CHECK_ONLY=true ;;
+        --check)  CHECK_ONLY=true ;;
         --help|-h)
-            echo "Usage: $0 [--topo-only] [--check]"
-            echo "  --topo-only  Deploy topology only; do not restart bonsai"
-            echo "  --check      Show current state without redeploying"
+            echo "Usage: $0 [--check]"
+            echo "  --check  Show current state without redeploying"
             exit 0
             ;;
         *) echo "Unknown argument: $arg" >&2; exit 1 ;;
@@ -55,9 +49,6 @@ if $CHECK_ONLY; then
     echo ""
     echo "ContainerLab nodes:"
     docker ps --filter "name=clab-bonsai-dc" --format "  {{.Names}}\t{{.Status}}" 2>/dev/null || echo "  (docker unavailable)"
-    echo ""
-    echo "Bonsai container:"
-    docker ps --filter "name=$BONSAI_CONTAINER" --format "  {{.Names}}\t{{.Status}}" 2>/dev/null || echo "  not running"
     echo ""
     echo "CA cert:"
     if [[ -f "$CA_CERT" ]]; then
@@ -171,43 +162,10 @@ if [[ "$TLS_FAIL" -gt 0 ]]; then
 fi
 echo ""
 
-if $TOPO_ONLY; then
-    echo -e "${YELLOW}--topo-only: skipping bonsai restart.${RESET}"
-    echo "Run: docker compose --profile $COMPOSE_PROFILE up -d --force-recreate"
-    exit 0
-fi
-
-# ── Step 4: force-recreate bonsai so it reads new CA from bind mount ──────────
-
-echo -e "${BOLD}[4/4] Force-recreating bonsai container (flush cached TLS config)...${RESET}"
-cd "$REPO_ROOT"
-
-# Stop first so subscriptions drain cleanly
-docker compose --profile "$COMPOSE_PROFILE" stop 2>/dev/null || true
-
-# Force-recreate picks up the new CA cert via bind mount
-docker compose --profile "$COMPOSE_PROFILE" up -d --force-recreate
-
+echo -e "${GREEN}=== Topology redeploy complete ===${RESET}"
+echo "  CA fingerprint : $CA_FP"
+echo "  TLS verified   : $TLS_OK/$((TLS_OK+TLS_FAIL)) nodes at deploy time"
 echo ""
-
-# ── Wait for subscriptions ────────────────────────────────────────────────────
-
-echo "Waiting for bonsai API to come up (up to 60s)..."
-for i in $(seq 1 12); do
-    if curl -sf --max-time 3 "$API_BASE/api/operations" &>/dev/null; then
-        break
-    fi
-    sleep 5
-done
-
-OBS=$(curl -sf --max-time 5 "$API_BASE/api/operations" 2>/dev/null | \
-    python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('observed_subscriptions',0))" 2>/dev/null || echo "?")
-echo ""
-echo -e "${GREEN}=== Redeploy complete ===${RESET}"
-echo "  CA fingerprint      : $CA_FP"
-echo "  TLS verified        : $TLS_OK/$((TLS_OK+TLS_FAIL)) nodes"
-echo "  observed_subscriptions (current): $OBS"
-echo ""
-echo "  Note: SRL nodes take 60–90s to fully converge. Re-check subscriptions"
-echo "  in 2 minutes: curl -s http://127.0.0.1:3000/api/operations | python3 -m json.tool"
+echo "  SRL nodes take 60-90s to fully boot."
+echo "  Next step: bash scripts/ops/start_30day_run.sh"
 echo ""
