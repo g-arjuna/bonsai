@@ -2380,6 +2380,9 @@ fn write_blocking(
         TelemetryEvent::SnmpTrap { event_type } => {
             write_signal_state_change_event(conn, update, &event_type, event_tx)
         }
+        TelemetryEvent::ConfigChange { yang_path, new_value } => {
+            write_config_change_event(conn, update, &yang_path, &new_value, event_tx)
+        }
         TelemetryEvent::BmpPeerState => write_bmp_peer_state(conn, update, event_tx),
         TelemetryEvent::BmpRouteMonitoring => write_bmp_route_monitoring(conn, update, event_tx),
         TelemetryEvent::BgpLsState => write_bgp_ls_state(conn, update, event_tx),
@@ -2407,6 +2410,77 @@ fn write_blocking(
         ),
         TelemetryEvent::Ignored => Ok(()),
     }
+}
+
+fn write_config_change_event(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    yang_path: &str,
+    new_value: &serde_json::Value,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+) -> Result<()> {
+    let now = ts(update.timestamp_ns);
+    upsert_device(conn, &update.target, &update.vendor, &update.hostname, "", "", now.clone())?;
+
+    let id = format!(
+        "{}::{}::{}",
+        update.target,
+        yang_path,
+        update.timestamp_ns
+    );
+    let new_val_str = new_value.to_string();
+    let mut stmt = conn
+        .prepare(
+            "MERGE (c:ConfigChange {id: $id}) \
+             ON CREATE SET c.device_address = $addr, c.source = 'gnmi_realtime', \
+               c.trigger = $yang_path, c.summary = $new_val, \
+               c.previous_snapshot_id = '', c.current_snapshot_id = '', \
+               c.previous_hash = '', c.current_hash = '', \
+               c.added_lines = 0, c.removed_lines = 0, c.changed_at = $ts \
+             ON MATCH SET c.summary = $new_val, c.changed_at = $ts",
+        )
+        .context("prepare ConfigChange upsert")?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(id.clone())),
+            ("addr", Value::String(update.target.clone())),
+            ("yang_path", Value::String(yang_path.to_string())),
+            ("new_val", Value::String(new_val_str.clone())),
+            ("ts", now),
+        ],
+    )
+    .context("execute ConfigChange upsert")?;
+
+    let mut edge = conn
+        .prepare(
+            "MATCH (d:Device {address: $addr}), (c:ConfigChange {id: $id}) \
+             MERGE (d)-[:HAS_CONFIG_CHANGE]->(c)",
+        )
+        .context("prepare HAS_CONFIG_CHANGE merge")?;
+    conn.execute(
+        &mut edge,
+        vec![
+            ("addr", Value::String(update.target.clone())),
+            ("id", Value::String(id)),
+        ],
+    )
+    .context("execute HAS_CONFIG_CHANGE merge")?;
+
+    let evt = BonsaiEvent {
+        device_address: update.target.clone(),
+        event_type: "config_change_event".to_string(),
+        detail_json: serde_json::json!({
+            "yang_path": yang_path,
+            "new_value": new_value,
+            "previous_value": null,
+        })
+        .to_string(),
+        occurred_at_ns: update.timestamp_ns,
+        state_change_event_id: String::new(),
+    };
+    let _ = event_tx.send(evt);
+    Ok(())
 }
 
 fn write_otlp_span(

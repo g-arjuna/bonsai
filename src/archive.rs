@@ -704,6 +704,7 @@ fn classified_event_type(update: &TelemetryUpdate) -> &'static str {
         TelemetryEvent::BmpPeerState => "bmp_peer_state",
         TelemetryEvent::BmpRouteMonitoring => "bmp_route_monitoring",
         TelemetryEvent::BgpLsState => "bgp_ls_state",
+        TelemetryEvent::ConfigChange { .. } => "config_change",
         TelemetryEvent::OtlpSpan { .. } => "otlp_span",
         TelemetryEvent::NetflowRecord { .. } => "netflow_record",
         TelemetryEvent::Ignored => "ignored",

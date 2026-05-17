@@ -251,6 +251,7 @@ fn path_matches_update(
         TelemetryEvent::SyslogEvent { .. } => false,
         TelemetryEvent::SyslogFact { .. } => false,
         TelemetryEvent::SnmpTrap { .. } => false,
+        TelemetryEvent::ConfigChange { .. } => false,
         TelemetryEvent::BmpPeerState => false,
         TelemetryEvent::BmpRouteMonitoring => false,
         TelemetryEvent::BgpLsState => false,

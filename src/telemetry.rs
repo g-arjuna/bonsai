@@ -57,6 +57,11 @@ pub enum TelemetryEvent {
     SnmpTrap {
         event_type: String,
     },
+    /// gNMI ON_CHANGE notification on a subscribed config_path (admin-state, ingress-vni, etc.)
+    ConfigChange {
+        yang_path: String,
+        new_value: serde_json::Value,
+    },
     BmpPeerState,
     BmpRouteMonitoring,
     BgpLsState,
@@ -302,6 +307,20 @@ impl TelemetryUpdate {
         {
             return TelemetryEvent::SnmpTrap {
                 event_type: event_type.to_string(),
+            };
+        }
+
+        // Detect config-path subscriptions by known config leaf/container names.
+        // These match paths from the config_paths: sections of path profiles.
+        let leaf = self.path.rsplit('/').next().unwrap_or("");
+        if matches!(
+            leaf,
+            "admin-state" | "ingress-vni" | "config" | "as-number" | "action"
+        ) && !self.value.as_object().map(|o| o.is_empty()).unwrap_or(false)
+        {
+            return TelemetryEvent::ConfigChange {
+                yang_path: self.path.clone(),
+                new_value: self.value.clone(),
             };
         }
 
