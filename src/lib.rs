@@ -25,6 +25,7 @@ pub mod mcp_server;
 pub mod memory_profile;
 pub mod output;
 pub mod parser_chain;
+pub mod reconciler;
 pub mod registry;
 pub mod remediation;
 pub mod resource_governor;

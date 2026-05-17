@@ -60,6 +60,18 @@ pub enum TelemetryEvent {
     BmpPeerState,
     BmpRouteMonitoring,
     BgpLsState,
+    OtlpSpan {
+        service_name: String,
+        peer_address: String,
+    },
+    NetflowRecord {
+        src_address: String,
+        dst_address: String,
+        dst_port: i64,
+        protocol: String,
+        bytes_per_sec: f64,
+        packets_per_sec: f64,
+    },
     Ignored,
 }
 
@@ -290,6 +302,69 @@ impl TelemetryUpdate {
         {
             return TelemetryEvent::SnmpTrap {
                 event_type: event_type.to_string(),
+            };
+        }
+
+        if self.path == "streaming/otlp/span" {
+            let service_name = self
+                .value
+                .get("service_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let peer_address = self
+                .value
+                .get("peer_address")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            return TelemetryEvent::OtlpSpan {
+                service_name,
+                peer_address,
+            };
+        }
+
+        if self.path == "streaming/netflow/flow" {
+            let src_address = self
+                .value
+                .get("src_address")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let dst_address = self
+                .value
+                .get("dst_address")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let dst_port = self
+                .value
+                .get("dst_port")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let protocol = self
+                .value
+                .get("protocol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let bytes_per_sec = self
+                .value
+                .get("bytes_per_sec")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let packets_per_sec = self
+                .value
+                .get("packets_per_sec")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            return TelemetryEvent::NetflowRecord {
+                src_address,
+                dst_address,
+                dst_port,
+                protocol,
+                bytes_per_sec,
+                packets_per_sec,
             };
         }
 

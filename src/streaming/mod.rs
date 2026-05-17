@@ -1,5 +1,7 @@
 pub mod bgp_ls;
 pub mod bmp;
+pub mod netflow;
+pub mod otlp;
 
 use serde::{Deserialize, Serialize};
 

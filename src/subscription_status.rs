@@ -254,6 +254,8 @@ fn path_matches_update(
         TelemetryEvent::BmpPeerState => false,
         TelemetryEvent::BmpRouteMonitoring => false,
         TelemetryEvent::BgpLsState => false,
+        TelemetryEvent::OtlpSpan { .. } => false,
+        TelemetryEvent::NetflowRecord { .. } => false,
         TelemetryEvent::Ignored => false,
     }
 }

@@ -39,6 +39,7 @@ struct NbDevice {
     serial: String,
     primary_ip: Option<NbIp>,
     site: Option<NbNested>,
+    rack: Option<NbNested>,
     device_type: Option<NbDeviceType>,
     platform: Option<NbNested>,
     status: Option<NbStatus>,
@@ -534,6 +535,18 @@ fn write_to_graph(
             if let Some(site) = &dev.site {
                 props.push(("netbox_site", site.name.clone()));
                 props.push(("netbox_site_slug", site.slug.clone()));
+            }
+
+            if let Some(rack) = &dev.rack {
+                let site_name = dev.site.as_ref().map(|s| s.name.as_str()).unwrap_or("");
+                if let Err(e) = with_write_retry(|| {
+                    crate::graph::common::upsert_rack(&conn, &rack.name, site_name, &addr, now_ns)
+                }) {
+                    warnings.push(format!("rack {} for {addr}: {e:#}", rack.name));
+                } else {
+                    nodes += 1;
+                    edges += 1;
+                }
             }
 
             for (key, value) in props {

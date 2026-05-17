@@ -231,6 +231,10 @@ pub struct StreamingConfig {
     pub bgp_ls: BgpLsConfig,
     #[serde(default)]
     pub pcep: PcepConfig,
+    #[serde(default)]
+    pub otlp: OtlpConfig,
+    #[serde(default)]
+    pub netflow: NetflowConfig,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -301,6 +305,47 @@ impl Default for PcepConfig {
             max_frame_bytes: default_pcep_max_frame_bytes(),
         }
     }
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct OtlpConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_otlp_http_addr")]
+    pub http_addr: String,
+}
+
+impl Default for OtlpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            http_addr: default_otlp_http_addr(),
+        }
+    }
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct NetflowConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_netflow_udp_addr")]
+    pub udp_addr: String,
+}
+
+impl Default for NetflowConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            udp_addr: default_netflow_udp_addr(),
+        }
+    }
+}
+
+fn default_otlp_http_addr() -> String {
+    "0.0.0.0:4318".to_string()
+}
+fn default_netflow_udp_addr() -> String {
+    "0.0.0.0:2055".to_string()
 }
 
 fn default_bmp_tcp_addr() -> String {

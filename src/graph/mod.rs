@@ -17,7 +17,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use self::common::{now_ns, read_str, read_ts_ns, ts, upsert_device};
+use self::common::{now_ns, read_str, read_ts_ns, ts, upsert_app_flow, upsert_device};
 use crate::config::TargetConfig;
 use crate::signals::syslog::SyslogFact;
 use crate::store::BonsaiStore;
@@ -2383,8 +2383,95 @@ fn write_blocking(
         TelemetryEvent::BmpPeerState => write_bmp_peer_state(conn, update, event_tx),
         TelemetryEvent::BmpRouteMonitoring => write_bmp_route_monitoring(conn, update, event_tx),
         TelemetryEvent::BgpLsState => write_bgp_ls_state(conn, update, event_tx),
+        TelemetryEvent::OtlpSpan {
+            service_name,
+            peer_address,
+        } => write_otlp_span(conn, update, &service_name, &peer_address, event_tx),
+        TelemetryEvent::NetflowRecord {
+            src_address,
+            dst_address,
+            dst_port,
+            protocol,
+            bytes_per_sec,
+            packets_per_sec,
+        } => write_netflow_record(
+            conn,
+            update,
+            &src_address,
+            &dst_address,
+            dst_port,
+            &protocol,
+            bytes_per_sec,
+            packets_per_sec,
+            event_tx,
+        ),
         TelemetryEvent::Ignored => Ok(()),
     }
+}
+
+fn write_otlp_span(
+    _conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    service_name: &str,
+    peer_address: &str,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+) -> Result<()> {
+    let evt = BonsaiEvent {
+        device_address: update.target.clone(),
+        event_type: "otlp_span_event".to_string(),
+        detail_json: serde_json::json!({
+            "service_name": service_name,
+            "peer_address": peer_address,
+        })
+        .to_string(),
+        occurred_at_ns: update.timestamp_ns,
+        state_change_event_id: String::new(),
+    };
+    let _ = event_tx.send(evt);
+    Ok(())
+}
+
+fn write_netflow_record(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    src_address: &str,
+    dst_address: &str,
+    dst_port: i64,
+    protocol: &str,
+    bytes_per_sec: f64,
+    packets_per_sec: f64,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+) -> Result<()> {
+    let id = format!("{src_address}:{dst_address}:{dst_port}:{protocol}");
+    upsert_app_flow(
+        conn,
+        &id,
+        src_address,
+        dst_address,
+        dst_port,
+        protocol,
+        bytes_per_sec,
+        packets_per_sec,
+        update.timestamp_ns,
+    )?;
+    let evt = BonsaiEvent {
+        device_address: update.target.clone(),
+        event_type: "app_flow_event".to_string(),
+        detail_json: serde_json::json!({
+            "flow_id": id,
+            "src_address": src_address,
+            "dst_address": dst_address,
+            "dst_port": dst_port,
+            "protocol": protocol,
+            "bytes_per_sec": bytes_per_sec,
+            "packets_per_sec": packets_per_sec,
+        })
+        .to_string(),
+        occurred_at_ns: update.timestamp_ns,
+        state_change_event_id: String::new(),
+    };
+    let _ = event_tx.send(evt);
+    Ok(())
 }
 
 fn write_interface_summary(

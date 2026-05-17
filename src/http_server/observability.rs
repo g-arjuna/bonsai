@@ -975,3 +975,83 @@ pub(super) async fn list_embeddings_handler(
         .map(|embeddings| Json(EmbeddingsResponse { embeddings }))
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
+
+#[derive(serde::Deserialize)]
+pub(super) struct InjectChannelState {
+    pub(super) name: String,
+    pub(super) rx_power_dbm: f64,
+    pub(super) tx_power_dbm: f64,
+    pub(super) osnr_db: f64,
+    pub(super) pre_fec_ber: f64,
+    pub(super) laser_bias_ma: f64,
+    pub(super) temperature_c: f64,
+}
+
+#[derive(serde::Deserialize)]
+pub(super) struct InjectEventBody {
+    pub(super) device_address: String,
+    pub(super) event_type: String,
+    pub(super) occurred_at_ns: i64,
+    #[serde(default)]
+    pub(super) channels: Vec<InjectChannelState>,
+}
+
+pub(super) async fn events_inject_handler(
+    State(state): State<AppState>,
+    Json(body): Json<InjectEventBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    match body.event_type.as_str() {
+        "optical_channel_state" => {
+            let InjectEventBody {
+                device_address,
+                occurred_at_ns,
+                channels,
+                ..
+            } = body;
+            let channel_count = channels.len();
+            let db = state.store.db();
+            let device_address_cl = device_address.clone();
+            tokio::task::spawn_blocking(move || {
+                let conn = lbug::Connection::new(&db).map_err(|e| e.to_string())?;
+                for ch in &channels {
+                    let id = format!("{}::{}", device_address_cl, ch.name);
+                    crate::graph::common::upsert_optical_channel(
+                        &conn,
+                        &id,
+                        &device_address_cl,
+                        &ch.name,
+                        ch.rx_power_dbm,
+                        ch.tx_power_dbm,
+                        ch.osnr_db,
+                        ch.pre_fec_ber,
+                        ch.laser_bias_ma,
+                        ch.temperature_c,
+                        occurred_at_ns,
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+                Ok::<_, String>(())
+            })
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+            state.store.publish_event(crate::graph::BonsaiEvent {
+                device_address: device_address.clone(),
+                event_type: "optical_channel_state".to_string(),
+                detail_json: serde_json::json!({
+                    "device_address": device_address,
+                    "channel_count": channel_count,
+                })
+                .to_string(),
+                occurred_at_ns,
+                state_change_event_id: String::new(),
+            });
+            Ok(StatusCode::NO_CONTENT)
+        }
+        other => Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("unsupported event_type: {other}"),
+        )),
+    }
+}

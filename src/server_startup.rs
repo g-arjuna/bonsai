@@ -524,6 +524,41 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         );
     }
 
+    if cfg.streaming.otlp.enabled && run_collector {
+        let otlp_cfg = cfg.streaming.otlp.clone();
+        let otlp_bus = std::sync::Arc::clone(&bus);
+        let otlp_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(error) =
+                bonsai::streaming::otlp::run_otlp_receiver(otlp_cfg, otlp_bus, otlp_shutdown)
+                    .await
+            {
+                warn!(%error, "OTLP receiver stopped");
+            }
+        });
+    } else if cfg.streaming.otlp.enabled {
+        info!("OTLP receiver enabled but runtime mode has no collector role; skipping");
+    }
+
+    if cfg.streaming.netflow.enabled && run_collector {
+        let netflow_cfg = cfg.streaming.netflow.clone();
+        let netflow_bus = std::sync::Arc::clone(&bus);
+        let netflow_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(error) = bonsai::streaming::netflow::run_netflow_receiver(
+                netflow_cfg,
+                netflow_bus,
+                netflow_shutdown,
+            )
+            .await
+            {
+                warn!(%error, "Netflow receiver stopped");
+            }
+        });
+    } else if cfg.streaming.netflow.enabled {
+        info!("Netflow receiver enabled but runtime mode has no collector role; skipping");
+    }
+
     if cfg.archive.enabled && (run_collector || run_core) {
         let archive_root = std::path::PathBuf::from(&cfg.archive.path);
         let flush_interval = Duration::from_secs(cfg.archive.flush_interval_seconds);
@@ -1129,6 +1164,18 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 creds_for_snow,
                 shutdown_rx.clone(),
             );
+        }
+
+        if run_core {
+            let store_for_reconciler = if let Store::Core(s) = store {
+                std::sync::Arc::clone(s)
+            } else {
+                unreachable!()
+            };
+            let reconciler_shutdown = shutdown_rx.clone();
+            tokio::spawn(async move {
+                bonsai::reconciler::run_reconciler(store_for_reconciler, reconciler_shutdown).await;
+            });
         }
 
         if run_core && cfg.retention.enabled {
