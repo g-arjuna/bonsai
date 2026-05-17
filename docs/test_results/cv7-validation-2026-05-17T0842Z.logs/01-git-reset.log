@@ -1,0 +1,2 @@
+    $ git reset --hard origin/main
+HEAD is now at 4788107 DV2 mac-side complete: schema-driven detection, config lane, UI honesty, substrate/optical stubs, ubuntu backlog doc
