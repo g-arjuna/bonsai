@@ -277,16 +277,19 @@ if (( NO_CHAOS == 0 )); then
 
   if (( NO_CHAOS == 0 )); then
     log "starting chaos daemon via scripts/chaos_runner.sh (plan=$(basename "$CHAOS_PLAN"))..."
-    if PLAN="$CHAOS_PLAN" bash scripts/chaos_runner.sh >/dev/null 2>&1; then
-      if [[ -f runtime/chaos_runner.pid ]]; then
-        CHAOS_PID="$(cat runtime/chaos_runner.pid 2>/dev/null || true)"
-        if [[ -n "$CHAOS_PID" ]]; then
-          echo "$CHAOS_PID" > "$CHAOS_PID_FILE"
-        fi
+    PLAN="$CHAOS_PLAN" bash scripts/chaos_runner.sh 2>/dev/null || true
+    # chaos_runner.sh writes its own pidfile at runtime/chaos_runner.pid
+    sleep 2
+    if [[ -f runtime/chaos_runner.pid ]]; then
+      CHAOS_PID="$(cat runtime/chaos_runner.pid 2>/dev/null || true)"
+      if [[ -n "$CHAOS_PID" ]] && kill -0 "$CHAOS_PID" 2>/dev/null; then
+        echo "$CHAOS_PID" > "$CHAOS_PID_FILE"
+        log "chaos running pid=$CHAOS_PID  log=runtime/chaos_runner.log"
+      else
+        warn "chaos_runner.sh started but pid=$CHAOS_PID not alive — check runtime/chaos_runner.log"
       fi
-      log "chaos pid=${CHAOS_PID:-unknown}  log=$CHAOS_LOG"
     else
-      warn "chaos_runner.sh failed to start — check runtime/chaos_runner.log"
+      warn "chaos_runner.sh: no pidfile at runtime/chaos_runner.pid — check runtime/chaos_runner.log"
     fi
   fi
 fi
@@ -300,9 +303,10 @@ echo ""
 [[ -f "$SIDECAR_PID_FILE" ]] && echo "  sidecar : pid=$(cat $SIDECAR_PID_FILE)   log=$SIDECAR_LOG"
 [[ -f "$CHAOS_PID_FILE"   ]] && echo "  chaos   : pid=$(cat $CHAOS_PID_FILE)   log=$CHAOS_LOG"
 echo ""
-echo "  UI   : http://localhost:3000/"
-echo "  Check: bash scripts/ops/start_30day_run.sh --status"
-echo "  Stop : bash scripts/ops/teardown.sh"
+echo "  UI     : http://localhost:3000/"
+echo "  Status : bash scripts/ops/run_status.sh"
+echo "  Watch  : bash scripts/ops/run_status.sh --watch"
+echo "  Stop   : bash scripts/ops/teardown.sh"
 echo ""
 echo "  IMPORTANT: Do NOT run docker compose for bonsai."
 echo "  ContainerLab (clab-bonsai-dc-*) is the only thing using docker."

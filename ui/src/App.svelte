@@ -41,6 +41,7 @@
 
   let setupChecked = $state(false);
   let showSetup    = $state(false);
+  let healthInfo   = $state(null);
 
   import { onMount } from 'svelte';
   onMount(async () => {
@@ -55,6 +56,16 @@
     } finally {
       setupChecked = true;
     }
+
+    const pollHealth = async () => {
+      try {
+        const hr = await fetch('/health');
+        if (hr.ok || hr.status === 503) healthInfo = await hr.json();
+      } catch (_) { /* non-fatal */ }
+    };
+    pollHealth();
+    const hi = setInterval(pollHealth, 30_000);
+    return () => clearInterval(hi);
   });
 
   function isActive(href) {
@@ -90,6 +101,12 @@
       <div class="density-row">
         <DensityToggle />
       </div>
+      {#if healthInfo}
+        <div class="version-badge" title="status: {healthInfo.status}  build: {healthInfo.build_ts}">
+          <span class="version-dot version-dot--{healthInfo.status === 'ok' ? 'ok' : healthInfo.status === 'degraded' ? 'degraded' : 'unknown'}"></span>
+          <span class="version-text">v{healthInfo.version} · {healthInfo.git_sha}</span>
+        </div>
+      {/if}
     </div>
   </aside>
 
@@ -156,5 +173,30 @@
     margin-top: 8px;
     display: flex;
     justify-content: center;
+  }
+  .version-badge {
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    opacity: 0.65;
+    padding: 0 6px;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .version-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .version-dot--ok       { background: #4caf50; }
+  .version-dot--degraded { background: #f59e0b; }
+  .version-dot--unknown  { background: #6b7280; }
+  .version-text {
+    font-family: monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 </style>

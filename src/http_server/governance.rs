@@ -106,6 +106,9 @@ pub(super) struct SidecarsResponse {
 #[derive(Serialize)]
 pub(super) struct HealthResponse {
     status: &'static str,
+    version: &'static str,
+    git_sha: &'static str,
+    build_ts: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     missing_required_sidecars: Option<Vec<String>>,
 }
@@ -405,6 +408,9 @@ pub(super) async fn health_handler(State(state): State<AppState>) -> (StatusCode
             StatusCode::SERVICE_UNAVAILABLE,
             Json(HealthResponse {
                 status: "degraded",
+                version: env!("CARGO_PKG_VERSION"),
+                git_sha: env!("BONSAI_GIT_SHA"),
+                build_ts: env!("BONSAI_BUILD_TS"),
                 missing_required_sidecars: Some(missing),
             }),
         ),
@@ -412,6 +418,9 @@ pub(super) async fn health_handler(State(state): State<AppState>) -> (StatusCode
             StatusCode::OK,
             Json(HealthResponse {
                 status: "ok",
+                version: env!("CARGO_PKG_VERSION"),
+                git_sha: env!("BONSAI_GIT_SHA"),
+                build_ts: env!("BONSAI_BUILD_TS"),
                 missing_required_sidecars: None,
             }),
         ),

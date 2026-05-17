@@ -89,9 +89,8 @@ rsync -avz ubuntu@<cloud-vm-ip>:/opt/bonsai/runtime/archive.precv5-*/ \
 
 ## Known Gotchas (learned 2026-05-12)
 
-**SSH user is `opc`, not `ubuntu`** — the cloud VM uses Oracle Linux, not Ubuntu.
-Always SSH as `opc@<ip>`. The `BONSAI_SSH_USER` variable in `scripts/cloud/instance.env`
-is now set correctly.
+**SSH user is `ubuntu`** — the cloud VM is Ubuntu 22.04 ARM (OCI Always Free).
+Always SSH as `ubuntu@<cloud-vm-ip>`.
 
 **bonsai.service has `Restart=on-failure`** — killing the process with `kill -9` looks
 like a crash and systemd restarts it after 10 seconds. The correct sequence is:

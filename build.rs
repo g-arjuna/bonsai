@@ -1,7 +1,36 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // ── Bake git SHA + build timestamp into the binary ───────────────────────
+    // Accessible at runtime via env!("BONSAI_GIT_SHA") and env!("BONSAI_BUILD_TS").
+    // Used by /health to expose version info for operational tracking.
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/refs");
+
+    let git_sha = Command::new("git")
+        .args(["rev-parse", "--short=8", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let build_ts = std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|_| "reproducible".to_string())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| format!("{}", d.as_secs()))
+                .unwrap_or_else(|_| "0".to_string())
+        });
+
+    println!("cargo:rustc-env=BONSAI_GIT_SHA={git_sha}");
+    println!("cargo:rustc-env=BONSAI_BUILD_TS={build_ts}");
+
     // SAFETY: build scripts are single-threaded at this point
     unsafe { std::env::set_var("PROTOC", protoc_bin_vendored::protoc_bin_path().unwrap()) };
 

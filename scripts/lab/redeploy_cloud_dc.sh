@@ -5,8 +5,8 @@
 # Bonsai is always run as a native process (never via docker compose).
 # After this script: bash scripts/ops/start_30day_run.sh
 #
-# Run on the cloud VM (opc@150.136.208.16) or via:
-#   ssh opc@150.136.208.16 "cd /opt/bonsai && bash scripts/lab/redeploy_cloud_dc.sh"
+# Run on the cloud VM (Ubuntu ARM OCI instance) directly, or via:
+#   ssh ubuntu@<cloud-vm-ip> "cd /opt/bonsai && bash scripts/lab/redeploy_cloud_dc.sh"
 #
 # Usage:
 #   bash scripts/lab/redeploy_cloud_dc.sh        # deploy topology + copy CA cert
