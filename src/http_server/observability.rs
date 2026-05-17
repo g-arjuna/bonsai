@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use axum::{
     Json, extract::{Path, Query, State}, http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
 };
 use futures::stream::{Stream, StreamExt};
-use lbug::{Connection, Value};
+use lbug::Connection;
 use serde_json;
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 
@@ -21,15 +20,15 @@ use super::{
     IncidentJson, IncidentsResponse, IncidentsParams,
     SsePayload, EmbeddingsResponse, UpsertEmbeddingsBody,
     ExplorerQueryBody,
-    read_str, read_i64, read_ts_ns, read_subscription_statuses, read_trust_mark_impact,
-    option_string, now_ns, build_site_path_by_id, resolve_site_metadata, compute_health,
+    read_str, read_i64, read_subscription_statuses,
+    now_ns, build_site_path_by_id, resolve_site_metadata, compute_health,
     CreateSavedQueryBody,
     API_SCHEMA_VERSION, RSS_BUDGET_BYTES, COORDINATOR_QUEUE_BUDGET_PCT,
 };
-use crate::graph::{DetectionRow, GraphStore, SiteRecord, TraceStep, REMEDIATION_TRUST_CUTOFF_ISO};
-use crate::registry::{ApiRegistry, DeviceRegistry, RegistryChange};
-use crate::config::{StorageConfig, TargetConfig};
-use crate::{event_bus, disk_guard, memory_profile, archive, streaming};
+use crate::graph::{DetectionRow, REMEDIATION_TRUST_CUTOFF_ISO};
+use crate::registry::{DeviceRegistry, RegistryChange};
+use crate::config::TargetConfig;
+use crate::{event_bus, disk_guard, memory_profile, archive};
 
 pub(super) async fn topology_handler(
     State(state): State<AppState>,

@@ -6,7 +6,7 @@ use axum::{Router, Json, extract::State, http::StatusCode, routing::post};
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::config::OtlpConfig;
 use crate::event_bus::InProcessBus;

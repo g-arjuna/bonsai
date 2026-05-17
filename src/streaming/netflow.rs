@@ -324,7 +324,7 @@ fn decode_record(
         (end_ns, end_ns)
     };
 
-    let proto_name = protocol_name(protocol);
+    let _proto_name = protocol_name(protocol);
 
     Some(FlowRecord {
         src_address,

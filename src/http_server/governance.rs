@@ -110,16 +110,15 @@ pub(super) struct HealthResponse {
     missing_required_sidecars: Option<Vec<String>>,
 }
 use std::collections::HashMap;
-use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use axum::{Json, response::IntoResponse, extract::State, http::StatusCode};
 
 use super::AppState;
 use super::{SubscriptionStatusJson, read_subscription_statuses};
-use crate::assignment::{CollectorManager, CollectorStatus};
+use crate::assignment::CollectorStatus;
 use crate::config::AssignmentRule;
-use crate::graph::{EnvironmentRecord, GraphStore, SiteRecord};
-use crate::registry::{ApiRegistry, DeviceRegistry};
+use crate::graph::EnvironmentRecord;
+use crate::registry::DeviceRegistry;
 
 pub(super) async fn assignment_rules_handler(
     State(state): State<AppState>,

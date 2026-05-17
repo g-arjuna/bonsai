@@ -200,22 +200,20 @@ use lbug::{Connection, Value};
 
 use super::AppState;
 use super::{
-    read_str, read_i64, read_ts_ns, option_string, now_ns,
-    compute_health, build_site_path_by_id, resolve_site_metadata,
+    read_str, read_i64, read_ts_ns,
+    compute_health,
     BgpJson, read_subscription_statuses, SubscriptionStatusJson,
 };
-use crate::config::{LayeredIngestionConfig, SelectedSubscriptionPath, StorageConfig, StreamingConfig, TargetConfig};
+use crate::config::{SelectedSubscriptionPath, TargetConfig};
 use crate::credentials::{CredentialVault, ResolvePurpose, ResolvedCredential};
 use crate::discovery::{self, DiscoveryInput};
-use crate::enrichment::{EnricherConfig, SharedEnricherRegistry};
-use crate::graph::{GraphStore, SiteRecord};
-use crate::registry::ApiRegistry;
+use crate::enrichment::EnricherConfig;
+use crate::graph::GraphStore;
 use crate::streaming::{self, StreamingReadinessReport};
 use crate::yang::YangLibrary;
-use crate::audit;
 use crate::store::BonsaiStore;
 use crate::graph::DetectionRow;
-use crate::{change_detection::{self, ChangeDetectionRuntime}, synthesizer};
+use crate::{change_detection::{self}, synthesizer};
 
 pub(super) async fn device_detail_handler(
     State(state): State<AppState>,

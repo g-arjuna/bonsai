@@ -32,11 +32,10 @@ pub(super) struct AdapterAuditResponse {
 }
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
-use axum::{Json, extract::State, http::StatusCode};
-use serde_json::Value;
+use axum::{Json, extract::State};
 
 use super::AppState;
-use crate::output::traits::{OutputAdapterConfig, OutputAdapterRunState, SharedAdapterRegistry};
+use crate::output::traits::{OutputAdapterConfig, OutputAdapterRunState};
 
 pub(super) async fn adapter_list_handler(State(state): State<AppState>) -> Json<AdapterListResponse> {
     let audit_dir = std::path::Path::new(&state.runtime_dir).join("audit");
