@@ -89,6 +89,19 @@ CA_FP=$(openssl x509 -in "$CA_CERT" -noout -fingerprint 2>/dev/null | cut -d= -f
 echo "      CA cert: $CA_FP"
 echo ""
 
+# ── Step 2b: wait for SRL boot, then reconfigure to inject CA certs ───────────
+# SRL nodes take 60-90s to boot. clab's postdeploy cert injection runs
+# immediately at container start and silently fails if SRL isn't ready.
+# --reconfigure re-runs postdeploy on the already-running containers.
+
+echo -e "${BOLD}[2b/4] Waiting 100s for SRL nodes to fully boot...${RESET}"
+sleep 100
+echo "      Re-running clab postdeploy (cert injection) on running nodes..."
+cd "$REPO_ROOT"
+containerlab deploy -t "$TOPO_FILE" --reconfigure 2>/dev/null || true
+echo "      Reconfigure done."
+echo ""
+
 # ── Step 3: verify TLS (non-fatal — nodes may still be booting) ───────────────
 
 echo -e "${BOLD}[3/4] Checking node TLS (warnings only — SRL takes 60–90s)...${RESET}"
