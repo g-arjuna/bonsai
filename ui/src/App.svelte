@@ -13,9 +13,8 @@
   import CommandPalette from '$lib/CommandPalette.svelte';
   import Environments from './routes/Environments.svelte';
   import Profiles from './routes/Profiles.svelte';
-  import Enrichment from './routes/Enrichment.svelte';
+  import Integrations from './routes/Integrations.svelte';
   import Approvals from './routes/Approvals.svelte';
-  import Adapters from './routes/Adapters.svelte';
   import Explorer from './routes/Explorer.svelte';
   import Investigations from './routes/Investigations.svelte';
   import Settings from './routes/Settings.svelte';
@@ -28,15 +27,14 @@
     { href: '/devices',       label: 'Devices',       icon: '⊡', kbd: '3' },
     { href: '/operations',    label: 'Operations',    icon: '♡', kbd: '4' },
     { href: '/collectors',    label: 'Collectors',    icon: '⇄', kbd: '5' },
-    { href: '/enrichment',    label: 'Enrichment',    icon: '⟳', kbd: '6' },
-    { href: '/adapters',      label: 'Adapters',      icon: '⇥', kbd: '7' },
-    { href: '/approvals',     label: 'Approvals',     icon: '✓', kbd: '8' },
-    { href: '/explorer',      label: 'Explorer',      icon: '⬡', kbd: '9' },
+    { href: '/integrations',  label: 'Integrations',  icon: '⇌', kbd: '6' },
+    { href: '/approvals',     label: 'Approvals',     icon: '✓', kbd: '7' },
+    { href: '/explorer',      label: 'Explorer',      icon: '⬡', kbd: '8' },
+    { href: '/investigations',label: 'Investigations',icon: '🔍', kbd: '9' },
     { href: '/environments',  label: 'Environments',  icon: '⬡' },
     { href: '/profiles',      label: 'Profiles',      icon: '📋' },
     { href: '/sites',         label: 'Sites',         icon: '◎' },
     { href: '/credentials',   label: 'Credentials',   icon: '⚿' },
-    { href: '/investigations',label: 'Investigations',icon: '🔍' },
     { href: '/settings',      label: 'Settings',      icon: '⚙' },
   ];
 
@@ -78,21 +76,58 @@
   let deviceParams = $derived(matchRoute('/devices/:address', path()));
 </script>
 
+<a href="#main-content" class="skip-to-main">Skip to main content</a>
 <div class="app-shell">
-  <aside class="sidebar">
-    <div class="sidebar-brand">bonsai</div>
-    <nav>
-      {#each NAV as item}
-        <a href={'#' + item.href}
-           class:active={isActive(item.href)}
-           onclick={(e) => { e.preventDefault(); navigate(item.href); }}>
-          <span class="nav-icon">{item.icon}</span>
-          {item.label}
-          {#if item.kbd}
-            <kbd class="nav-kbd">⌘{item.kbd}</kbd>
-          {/if}
-        </a>
-      {/each}
+  <aside class="sidebar" aria-label="Application navigation">
+    <div class="sidebar-brand" aria-label="Bonsai">bonsai</div>
+    <nav aria-label="Primary navigation">
+      <div class="nav-group" role="group" aria-label="Monitoring">
+        <span class="nav-group-label">Monitor</span>
+        {#each NAV.slice(0, 5) as item}
+          <a href={'#' + item.href}
+             class:active={isActive(item.href)}
+             aria-current={isActive(item.href) ? 'page' : undefined}
+             onclick={(e) => { e.preventDefault(); navigate(item.href); }}>
+            <span class="nav-icon" aria-hidden="true">{item.icon}</span>
+            {item.label}
+            {#if item.kbd}
+              <kbd class="nav-kbd" aria-label="Shortcut Command {item.kbd}">⌘{item.kbd}</kbd>
+            {/if}
+          </a>
+        {/each}
+      </div>
+      <div class="nav-divider" role="separator"></div>
+      <div class="nav-group" role="group" aria-label="Operations">
+        <span class="nav-group-label">Operate</span>
+        {#each NAV.slice(5, 9) as item}
+          <a href={'#' + item.href}
+             class:active={isActive(item.href)}
+             aria-current={isActive(item.href) ? 'page' : undefined}
+             onclick={(e) => { e.preventDefault(); navigate(item.href); }}>
+            <span class="nav-icon" aria-hidden="true">{item.icon}</span>
+            {item.label}
+            {#if item.kbd}
+              <kbd class="nav-kbd" aria-label="Shortcut Command {item.kbd}">⌘{item.kbd}</kbd>
+            {/if}
+          </a>
+        {/each}
+      </div>
+      <div class="nav-divider" role="separator"></div>
+      <div class="nav-group" role="group" aria-label="Configuration">
+        <span class="nav-group-label">Configure</span>
+        {#each NAV.slice(9) as item}
+          <a href={'#' + item.href}
+             class:active={isActive(item.href)}
+             aria-current={isActive(item.href) ? 'page' : undefined}
+             onclick={(e) => { e.preventDefault(); navigate(item.href); }}>
+            <span class="nav-icon" aria-hidden="true">{item.icon}</span>
+            {item.label}
+            {#if item.kbd}
+              <kbd class="nav-kbd">⌘{item.kbd}</kbd>
+            {/if}
+          </a>
+        {/each}
+      </div>
     </nav>
     <div class="sidebar-footer">
       <button class="palette-trigger"
@@ -111,7 +146,7 @@
     </div>
   </aside>
 
-  <main class="main-content">
+  <main id="main-content" class="main-content" tabindex="-1">
     {#if !isFirstRunChecked}
       <!-- wait for first-run check -->
     {:else if isFirstRun}
@@ -140,10 +175,8 @@
       <Credentials />
     {:else if path() === '/operations'}
       <Operations />
-    {:else if path() === '/enrichment'}
-      <Enrichment />
-    {:else if path() === '/adapters'}
-      <Adapters />
+    {:else if path() === '/integrations'}
+      <Integrations />
     {:else if path() === '/approvals'}
       <Approvals />
     {:else if path() === '/explorer'}

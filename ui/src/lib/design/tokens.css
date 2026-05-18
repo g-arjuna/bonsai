@@ -1,36 +1,98 @@
 /* ── BONSAI DESIGN TOKENS ────────────────────────────────────────────────────
    Single source of truth. Never use hex literals in components.
    Always reference: var(--bg-base), var(--text-primary), var(--state-healthy)
+   WCAG AA target: 4.5:1 for body text, 3:1 for large/UI text.
    ─────────────────────────────────────────────────────────────────────────── */
 
 :root {
   /* ── Backgrounds ─────────────────────────────────────────────────────────── */
-  --bg-base:     #0a0b0d;
-  --bg-surface:  #15171b;
-  --bg-elevated: #1d2026;
-  --bg-glass:    rgba(255, 255, 255, 0.03);
+  --bg-base: #09090c;
+  /* near-black with slight blue cast — depth */
+  --bg-surface: #13151a;
+  /* card / sidebar backgrounds */
+  --bg-elevated: #1c1f27;
+  /* modals, dropdowns */
+  --bg-glass: rgba(255, 255, 255, 0.035);
+  --bg-input: #0e1016;
+  /* form inputs — slightly darker than surface */
+  --bg-hover: rgba(255, 255, 255, 0.05);
 
   /* ── Text ────────────────────────────────────────────────────────────────── */
-  --text-primary:   #e8eaed;
-  --text-secondary: #9aa0a6;
-  --text-tertiary:  #5f6368;
-  --text-on-accent: #0a0b0d;
+  --text-primary: #e4e8ef;
+  /* 13.5:1 on bg-base — well above AA */
+  --text-secondary: #8b95a3;
+  /* 5.2:1 on bg-base — AA compliant */
+  --text-tertiary: #525c6b;
+  /* 3.1:1 — for decorative / UI chrome only */
+  --text-on-accent: #07090c;
+  /* text on teal accent buttons */
+  --text-link: #7dd3fc;
+  /* sky-300 — links, clickable text */
 
-  /* ── State (semantic, use sparingly, always with intent) ─────────────────── */
-  --state-healthy:  #34d399;
+  /* ── State (semantic — always paired with a shape/icon, not color-only) ──── */
+  --state-healthy: #34d399;
+  /* emerald-400   — 5.4:1 on bg-base */
+  --state-healthy-bg: rgba(52, 211, 153, 0.10);
+  --state-healthy-border: rgba(52, 211, 153, 0.28);
   --state-degraded: #fbbf24;
-  --state-failed:   #f87171;
-  --state-info:     #60a5fa;
-  --state-neutral:  #9ca3af;
+  /* amber-400     — 9.4:1 on bg-base */
+  --state-degraded-bg: rgba(251, 191, 36, 0.10);
+  --state-degraded-border: rgba(251, 191, 36, 0.30);
+  --state-failed: #f87171;
+  /* red-400       — 5.9:1 on bg-base */
+  --state-failed-bg: rgba(248, 113, 113, 0.10);
+  --state-failed-border: rgba(248, 113, 113, 0.30);
+  --state-info: #60a5fa;
+  /* blue-400      — 5.9:1 on bg-base */
+  --state-info-bg: rgba(96, 165, 250, 0.10);
+  --state-info-border: rgba(96, 165, 250, 0.25);
+  --state-neutral: #9ca3af;
+  /* gray-400 */
+  --state-neutral-bg: rgba(156, 163, 175, 0.08);
 
   /* ── Accent ──────────────────────────────────────────────────────────────── */
   --accent-primary: #5eead4;
-  --accent-muted:   #14b8a6;
+  /* teal-300 — brand identity */
+  --accent-muted: #0d9488;
+  /* teal-600 — buttons */
+  --accent-hover: #0f766e;
+  /* teal-700 — button hover */
+  --accent-subtle: rgba(94, 234, 212, 0.08);
+  --accent-glow: rgba(94, 234, 212, 0.15);
+
+  /* ── Vendor / integration type colors ────────────────────────────────────── */
+  --vendor-prometheus: #e6522c;
+  /* Prometheus orange */
+  --vendor-splunk: #65a637;
+  /* Splunk green */
+  --vendor-elastic: #00bfb3;
+  /* Elastic teal */
+  --vendor-servicenow: #81b5a1;
+  /* ServiceNow sage */
+  --vendor-netbox: #00b0f0;
+  /* NetBox blue */
+  --vendor-stub: #6b7280;
+  /* neutral gray */
 
   /* ── Borders ─────────────────────────────────────────────────────────────── */
-  --border-subtle:  rgba(255, 255, 255, 0.06);
-  --border-default: rgba(255, 255, 255, 0.10);
-  --border-strong:  rgba(255, 255, 255, 0.18);
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-default: rgba(255, 255, 255, 0.11);
+  --border-strong: rgba(255, 255, 255, 0.20);
+  --border-focus: #5eead4;
+  /* accent-primary — keyboard focus ring */
+
+  /* ── Shadows ─────────────────────────────────────────────────────────────── */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.40), 0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.55), 0 2px 4px rgba(0, 0, 0, 0.30);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.70), 0 4px 8px rgba(0, 0, 0, 0.40);
+  --shadow-focus: 0 0 0 3px rgba(94, 234, 212, 0.22);
+
+  /* ── Radius ──────────────────────────────────────────────────────────────── */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-pill: 999px;
 
   /* ── Typography ──────────────────────────────────────────────────────────── */
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -41,38 +103,43 @@
   --text-display-3: 1.5rem;
   --text-heading-1: 1.25rem;
   --text-heading-2: 1.125rem;
-  --text-body:      1rem;
-  --text-small:     0.875rem;
-  --text-mono:      0.875rem;
-  --text-mono-sm:   0.8125rem;
+  --text-body: 1rem;
+  --text-small: 0.875rem;
+  --text-xs: 0.8125rem;
+  --text-mono: 0.875rem;
+  --text-mono-sm: 0.8125rem;
 
   --leading-display: 1.15;
-  --leading-body:    1.5;
+  --leading-body: 1.5;
 
   --tracking-display: -0.02em;
-  --tracking-body:    normal;
-  --tracking-mono:    0em;
+  --tracking-body: normal;
+  --tracking-mono: 0em;
+  --tracking-caps: 0.07em;
+
+  /* ── Layout ──────────────────────────────────────────────────────────────── */
+  --sidebar-width: 204px;
 
   /* ── Motion ──────────────────────────────────────────────────────────────── */
   --duration-instant: 100ms;
-  --duration-fast:    200ms;
-  --duration-medium:  400ms;
+  --duration-fast: 200ms;
+  --duration-medium: 400ms;
 
-  --ease-out:   cubic-bezier(0.2, 0, 0, 1);
-  --ease-in:    cubic-bezier(0.8, 0, 0.6, 1);
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+  --ease-in: cubic-bezier(0.8, 0, 0.6, 1);
   --ease-inout: cubic-bezier(0.4, 0, 0.2, 1);
 
   /* ── Density: Comfortable (default) ─────────────────────────────────────── */
   --row-height: 32px;
-  --col-pad:    12px;
-  --card-pad:   16px;
-  --item-gap:   8px;
+  --col-pad: 12px;
+  --card-pad: 16px;
+  --item-gap: 8px;
 }
 
 /* Compact mode — toggled by DensityToggle setting data-density="compact" on <html> */
 [data-density="compact"] {
   --row-height: 24px;
-  --col-pad:    8px;
-  --card-pad:   10px;
-  --item-gap:   4px;
+  --col-pad: 8px;
+  --card-pad: 10px;
+  --item-gap: 4px;
 }

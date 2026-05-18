@@ -4,7 +4,7 @@
    All existing components reference the old names (--bg, --text, etc.).
    These aliases ensure they continue to work while new workspaces use the
    canonical token names directly.
-   ─────────────────────────────────────────────────────────────────────── */
+   ─────────────────────────────────────────────────────────────────────────── */
 :root {
   --bg: var(--bg-base);
   --bg2: var(--bg-surface);
@@ -15,7 +15,11 @@
   --yellow: var(--state-degraded);
   --red: var(--state-failed);
   --blue: var(--state-info);
-  --accent: var(--accent-muted);
+  --accent: var(--accent-primary);
+  --surface: var(--bg-surface);
+  --surface2: var(--bg-elevated);
+  --hover: var(--bg-hover);
+  --input-bg: var(--bg-input);
 }
 
 * {
@@ -48,6 +52,70 @@ samp {
   letter-spacing: var(--tracking-mono);
 }
 
+/* ── Skip-to-main (accessibility) ────────────────────────── */
+.skip-to-main {
+  position: absolute;
+  left: -9999px;
+  top: auto;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  z-index: 9999;
+}
+
+.skip-to-main:focus {
+  left: 0;
+  top: 0;
+  width: auto;
+  height: auto;
+  padding: 8px 16px;
+  background: var(--accent-primary);
+  color: var(--text-on-accent);
+  font-weight: 700;
+  font-size: 14px;
+  border-radius: 0 0 var(--radius-md) 0;
+  outline: none;
+}
+
+/* ── Global focus ring (keyboard nav visibility) ──────────── */
+:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+a:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 3px;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-focus);
+}
+
+/* ── Custom scrollbar (webkit) ────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: var(--radius-pill);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-default) transparent;
+}
+
 /* ── Layout shell ─────────────────────────────────────────── */
 .app-shell {
   display: flex;
@@ -55,7 +123,7 @@ samp {
 }
 
 .sidebar {
-  width: 200px;
+  width: var(--sidebar-width, 204px);
   flex-shrink: 0;
   background: var(--bg-surface);
   border-right: 1px solid var(--border-subtle);
@@ -65,45 +133,81 @@ samp {
   top: 0;
   height: 100vh;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .sidebar-brand {
-  font-weight: 700;
+  font-weight: 800;
   font-size: 15px;
   color: var(--accent-primary);
   padding: 18px 16px 14px;
   border-bottom: 1px solid var(--border-subtle);
   letter-spacing: var(--tracking-display);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-brand::before {
+  content: '🌿';
+  font-size: 14px;
+  opacity: 0.85;
 }
 
 .sidebar nav {
   display: flex;
   flex-direction: column;
-  padding: 6px 0;
+  padding: 8px 0 4px;
+  flex: 1;
+}
+
+.nav-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-group-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  padding: 10px 14px 4px;
+  user-select: none;
+}
+
+.nav-divider {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 6px 12px;
 }
 
 .sidebar nav a {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 14px;
+  gap: 9px;
+  padding: 7px 14px;
   color: var(--text-secondary);
   text-decoration: none;
   border-left: 2px solid transparent;
   font-size: var(--text-small);
-  transition: color var(--duration-instant) var(--ease-out),
-    background var(--duration-instant) var(--ease-out);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  transition:
+    color var(--duration-instant) var(--ease-out),
+    background var(--duration-instant) var(--ease-out),
+    border-left-color var(--duration-instant) var(--ease-out);
 }
 
 .sidebar nav a:hover {
   color: var(--text-primary);
-  background: var(--bg-glass);
+  background: var(--bg-hover);
 }
 
 .sidebar nav a.active {
-  color: var(--text-primary);
-  background: rgba(94, 234, 212, 0.06);
+  color: var(--accent-primary);
+  background: var(--accent-subtle);
   border-left-color: var(--accent-primary);
+  font-weight: 500;
 }
 
 .nav-icon {
@@ -489,24 +593,49 @@ tr:hover td {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
-  border: 1px solid var(--border-subtle);
-  border-radius: 5px;
-  background: var(--bg-base);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
   color: var(--text-primary);
-  padding: 8px 10px;
+  padding: 7px 10px;
   outline: none;
   font-family: var(--font-sans);
   font-size: var(--text-small);
-  transition: border-color var(--duration-instant) var(--ease-out),
+  transition:
+    border-color var(--duration-instant) var(--ease-out),
     box-shadow var(--duration-instant) var(--ease-out);
 }
 
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+input:hover:not(:disabled),
+select:hover:not(:disabled),
+textarea:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
 input:focus,
-select:focus {
-  border-color: var(--accent-primary);
-  box-shadow: 0 0 0 3px rgba(94, 234, 212, 0.12);
+select:focus,
+textarea:focus {
+  border-color: var(--border-focus);
+  box-shadow: var(--shadow-focus);
+  outline: none;
+}
+
+input:disabled,
+select:disabled,
+textarea:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .span-2 {
@@ -515,36 +644,63 @@ select:focus {
 
 button {
   border: 1px solid var(--accent-muted);
-  border-radius: 5px;
+  border-radius: var(--radius-md);
   background: var(--accent-muted);
   color: var(--text-on-accent);
-  padding: 8px 13px;
+  padding: 7px 14px;
   cursor: pointer;
-  font-weight: 700;
+  font-weight: 600;
   font-size: var(--text-small);
   font-family: var(--font-sans);
-  transition: filter var(--duration-instant) var(--ease-out);
+  line-height: 1.4;
+  transition:
+    background var(--duration-instant) var(--ease-out),
+    border-color var(--duration-instant) var(--ease-out),
+    box-shadow var(--duration-instant) var(--ease-out);
+  white-space: nowrap;
 }
 
-button:hover {
-  filter: brightness(1.1);
+button:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 button:disabled {
-  opacity: 0.45;
+  opacity: 0.40;
   cursor: not-allowed;
 }
 
 button.ghost {
   background: transparent;
   border-color: var(--border-default);
+  color: var(--text-secondary);
+}
+
+button.ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+button.secondary {
+  background: var(--bg-elevated);
+  border-color: var(--border-default);
   color: var(--text-primary);
 }
 
+button.secondary:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
 button.danger {
-  background: rgba(248, 113, 113, 0.10);
-  border-color: rgba(248, 113, 113, 0.35);
+  background: var(--state-failed-bg);
+  border-color: var(--state-failed-border);
   color: var(--state-failed);
+}
+
+button.danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.18);
 }
 
 .actions {
