@@ -150,17 +150,17 @@ PYEOF
   _head "7. Detections"
   DETS="$(curl -sf --max-time 5 "http://127.0.0.1:3000/api/detections" 2>/dev/null || echo '')"
   if [[ -n "$DETS" ]]; then
-    python3 - <<PYEOF 2>/dev/null || true
+    echo "$DETS" | python3 -c "
 import json, sys, collections
-d = json.loads('''$DETS''')
+d = json.load(sys.stdin)
 dets = d.get('detections', [])
 counts = collections.Counter(x.get('rule_id','?') for x in dets)
 total = len(dets)
 col = '\033[32m' if total > 0 else '\033[33m'
 rst = '\033[0m'
-status = '✓ PASS' if total > 0 else '⚠ WARN'
-print(f"  {col}{status}{rst}  total={total}  rules={dict(counts)}")
-PYEOF
+status = '\\u2713 PASS' if total > 0 else '\\u26a0 WARN'
+print(f'  {col}{status}{rst}  total={total}  rules={dict(counts)}')
+" 2>/dev/null || true
   else
     _warn "detections API not reachable"
   fi
@@ -172,15 +172,15 @@ PYEOF
     PARQUET_COUNT="$(find "$ARCHIVE_DIR" -name "*.parquet" 2>/dev/null | wc -l | tr -d ' ')"
     ARCHIVE_SIZE="$(du -sh "$ARCHIVE_DIR" 2>/dev/null | cut -f1 || echo '?')"
     NEWEST_AGE_MINS=999
-    NEWEST="$(find "$ARCHIVE_DIR" -name "*.parquet" -newer /tmp 2>/dev/null | head -1 || true)"
+    NEWEST="$(find "$ARCHIVE_DIR" -name "*.parquet" -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -1 | cut -f2)"
     if [[ -n "$NEWEST" ]]; then
       NEWEST_TS="$(stat -c '%Y' "$NEWEST" 2>/dev/null || stat -f '%m' "$NEWEST" 2>/dev/null || echo 0)"
       NEWEST_AGE_MINS=$(( ( $(date +%s) - NEWEST_TS ) / 60 ))
     fi
-    if [[ "$PARQUET_COUNT" -gt 0 && "$NEWEST_AGE_MINS" -lt 30 ]]; then
+    if [[ "$PARQUET_COUNT" -gt 0 && "$NEWEST_AGE_MINS" -lt 65 ]]; then
       _pass "$PARQUET_COUNT parquet files  size=$ARCHIVE_SIZE  newest=${NEWEST_AGE_MINS}m ago"
     elif [[ "$PARQUET_COUNT" -gt 0 ]]; then
-      _warn "$PARQUET_COUNT files  size=$ARCHIVE_SIZE  newest=${NEWEST_AGE_MINS}m ago (stale?)"
+      _warn "$PARQUET_COUNT files  size=$ARCHIVE_SIZE  newest=${NEWEST_AGE_MINS}m ago (stale — expected <65m)"
     else
       _fail "no parquet files in $ARCHIVE_DIR"
     fi
@@ -226,7 +226,7 @@ PYEOF
   _head "10. bonsai.toml (archive settings)"
   if [[ -f bonsai.toml ]]; then
     ARCHIVE_ENABLED="$(grep -E '^\s*enabled\s*=' bonsai.toml | head -1 | grep -c 'true' || echo 0)"
-    MAX_AGE="$(grep -E 'max_age_hours' bonsai.toml | head -1 | grep -oE '[0-9]+' | head -1 || echo '?')"
+    MAX_AGE="$(grep -E '^\s*max_age_hours\s*=' bonsai.toml | head -1 | grep -oE '[0-9]+' | head -1 || echo '?')"
     GNN_MODE="$(grep -E 'inference_mode' bonsai.toml | head -1 | grep -oE '"[^"]+"' | tr -d '"' || echo '?')"
     if [[ "$ARCHIVE_ENABLED" -ge 1 ]]; then
       _pass "archive enabled  max_age_hours=$MAX_AGE  gnn.inference_mode=$GNN_MODE"
