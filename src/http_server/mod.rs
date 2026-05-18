@@ -18,7 +18,7 @@ use tokio::sync::RwLock;
 use axum::{
     Router,
     http::StatusCode,
-    routing::{get, post},
+    routing::{get, patch, post},
 };
 
 use lbug::{Connection, Value};
@@ -56,15 +56,17 @@ mod outputs;
 mod test_endpoints;
 mod schema;
 mod schema_components;
+mod settings;
 
 use mcp_routes::{openapi_json_handler, resolve_handler, schema_handler, swagger_ui_handler};
 use remediation::{approvals_approve_handler, approvals_create_handler, approvals_list_handler, approvals_reject_handler, approvals_rollback_handler, trust_list_handler, trust_graduate_handler, snow_integration_test_handler, servicenow_aiops_sync_handler, list_overrides, add_override, remove_override, list_investigations_handler, create_investigation_handler, get_investigation_handler, list_tool_calls_handler, complete_investigation_handler, grounded_incident_handler};
-use observability::{topology_handler, path_handler, blast_radius_handler, detections_handler, trace_handler, readiness_handler, operations_handler, test_status_handler, daily_check_handler, weekly_trend_handler, events_handler, incidents_handler, graph_insights_handler, explorer_query_handler, list_saved_queries_handler, create_saved_query_handler, delete_saved_query_handler, upsert_embeddings_handler, list_embeddings_handler, events_inject_handler};
-use device::{device_detail_handler, device_enrichment_handler, device_config_history_handler, device_gnmi_readiness_handler, device_streaming_readiness_handler, device_recommendations_handler, yang_modules_handler, yang_search_handler, apply_device_selected_paths_handler, device_reparse_handler, profiles_handler, save_custom_profile_handler, enrichment_list_handler, enrichment_upsert_handler, enrichment_remove_handler, enrichment_test_handler, enrichment_run_handler, enrichment_audit_handler};
+use observability::{topology_handler, path_handler, blast_radius_handler, detections_handler, trace_handler, readiness_handler, operations_handler, test_status_handler, daily_check_handler, weekly_trend_handler, events_handler, events_history_handler, incidents_handler, graph_insights_handler, explorer_query_handler, list_saved_queries_handler, create_saved_query_handler, delete_saved_query_handler, upsert_embeddings_handler, list_embeddings_handler, events_inject_handler};
+use device::{device_detail_handler, device_enrichment_handler, device_config_history_handler, device_gnmi_readiness_handler, device_streaming_readiness_handler, device_recommendations_handler, yang_modules_handler, yang_search_handler, apply_device_selected_paths_handler, device_reparse_handler, profiles_handler, save_custom_profile_handler, enrichment_list_handler, enrichment_upsert_handler, enrichment_remove_handler, enrichment_test_handler, enrichment_run_handler, enrichment_audit_handler, netbox_import_handler};
 use managed_devices::{managed_devices_handler, discover_handler, credentials_handler, add_credential_handler, update_credential_handler, remove_credential_handler, test_credential_handler, add_managed_device_handler, add_managed_device_with_paths_handler, sites_handler, upsert_site_handler, site_summary_handler, remove_site_handler, remove_managed_device_handler, bulk_managed_device_action_handler, remove_impact_handler};
 use governance::{assignment_override_handler, assignment_rules_handler, assignment_status_handler, collectors_handler, create_environment_handler, environments_handler, governance_state_handler, health_handler, remove_environment_handler, assign_site_environment_handler, update_environment_handler, set_assignment_rules_handler, setup_status_handler, sidecars_handler};
 use outputs::{adapter_audit_handler, adapter_list_handler, adapter_remove_handler, adapter_test_handler, adapter_upsert_handler};
 use test_endpoints::{inject_detection_handler, parse_syslog_fixture_handler};
+use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler};
 
 // ── JSON response types ───────────────────────────────────────────────────────
 
@@ -74,6 +76,20 @@ pub(super) struct TopologyResponse {
     schema_version: String,
     devices: Vec<DeviceJson>,
     links: Vec<LinkJson>,
+    host_endpoints: Vec<HostEndpointJson>,
+}
+
+/// A HostEndpoint node (server, VM, container endpoint learned via NetBox, LLDP, or NetFlow).
+#[derive(Serialize)]
+pub(super) struct HostEndpointJson {
+    pub id: String,
+    pub ip: String,
+    pub mac: String,
+    pub hostname: String,
+    pub kind: String,
+    /// Device address of the switch interface this host is connected to (via CONNECTED_TO).
+    pub connected_to_device: String,
+    pub connected_to_iface: String,
 }
 
 #[derive(Serialize)]
@@ -134,6 +150,23 @@ pub(super) struct TraceResponse {
     steps: Vec<TraceStep>,
 }
 
+/// One signal in the correlation chain: a StateChangeEvent that triggered the root detection.
+#[derive(Serialize, Clone)]
+pub(super) struct CorrelationStep {
+    pub state_change_event_id: String,
+    pub event_type: String,
+    pub source_type: String,
+    pub device_address: String,
+    pub occurred_at_ns: i64,
+}
+
+/// Lightweight blast-radius summary attached to each incident.
+#[derive(Serialize, Clone)]
+pub(super) struct BlastRadiusSummary {
+    pub device_count: usize,
+    pub app_count: usize,
+}
+
 #[derive(Serialize)]
 pub(super) struct IncidentJson {
     id: String,
@@ -152,6 +185,10 @@ pub(super) struct IncidentJson {
     device_count: usize,
     /// Total detection event count (root + cascading).
     event_count: usize,
+    /// Ordered chain of StateChangeEvents that triggered the root detection.
+    correlation_chain: Vec<CorrelationStep>,
+    /// Lightweight blast-radius for the root device (reachable devices + apps).
+    blast_radius_summary: Option<BlastRadiusSummary>,
 }
 
 #[derive(Serialize)]
@@ -511,6 +548,7 @@ pub(super) struct SsePayload {
     detail_json: String,
     occurred_at_ns: i64,
     state_change_event_id: String,
+    source_type: String,
 }
 
 // ── Query params ──────────────────────────────────────────────────────────────
@@ -519,6 +557,30 @@ pub(super) struct SsePayload {
 pub(super) struct DetectionsParams {
     #[serde(default = "default_limit")]
     limit: u32,
+}
+
+#[derive(Deserialize)]
+pub(super) struct EventsHistoryParams {
+    pub source: Option<String>,
+    pub device: Option<String>,
+    pub site: Option<String>,
+    #[serde(default = "default_limit")]
+    pub limit: u32,
+}
+
+#[derive(Serialize)]
+pub(super) struct EventsHistoryResponse {
+    pub events: Vec<EventHistoryItem>,
+}
+
+#[derive(Serialize)]
+pub(super) struct EventHistoryItem {
+    pub id: String,
+    pub device_address: String,
+    pub event_type: String,
+    pub source_type: String,
+    pub detail_json: String,
+    pub occurred_at_ns: i64,
 }
 
 pub(super) fn default_limit() -> u32 {
@@ -552,6 +614,7 @@ pub struct AppState {
     pub storage_config: StorageConfig,
     pub layered_ingestion: LayeredIngestionConfig,
     pub streaming: StreamingConfig,
+    pub signals: crate::config::SignalsConfig,
     pub yang_library_root: String,
     pub yang_cache_root: String,
     pub yang_bundle_key_env: String,
@@ -564,6 +627,8 @@ pub struct AppState {
     /// CV7 T4-2/T4-4: Sidecar registry. Shared with the gRPC service so both
     /// surfaces see the same data. See `src/sidecar_registry.rs`.
     pub sidecar_registry: Arc<crate::sidecar_registry::SidecarRegistry>,
+    pub receiver_supervisor: crate::receiver_supervisor::SharedReceiverSupervisor,
+    pub event_bus: std::sync::Arc<crate::event_bus::InProcessBus>,
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -589,6 +654,7 @@ pub fn router(
     storage_config: StorageConfig,
     layered_ingestion: LayeredIngestionConfig,
     streaming: StreamingConfig,
+    signals: crate::config::SignalsConfig,
     yang_library_root: String,
     yang_cache_root: String,
     yang_bundle_key_env: String,
@@ -597,6 +663,8 @@ pub fn router(
     counter_debounce_secs: u64,
     governor: Option<GovernorHandle>,
     sidecar_registry: Arc<crate::sidecar_registry::SidecarRegistry>,
+    receiver_supervisor: crate::receiver_supervisor::SharedReceiverSupervisor,
+    event_bus: std::sync::Arc<crate::event_bus::InProcessBus>,
 ) -> Router {
     let state = AppState {
         store,
@@ -618,6 +686,7 @@ pub fn router(
         storage_config,
         layered_ingestion,
         streaming,
+        signals,
         yang_library_root,
         yang_cache_root,
         yang_bundle_key_env,
@@ -626,6 +695,8 @@ pub fn router(
         counter_debounce_secs,
         governor,
         sidecar_registry,
+        receiver_supervisor,
+        event_bus,
     };
 
     // Serve the Svelte SPA from ui/dist/. Fall back to index.html so
@@ -650,6 +721,7 @@ pub fn router(
         .merge(governance_routes())
         .merge(remediation_routes())
         .merge(adapter_and_schema_routes())
+        .merge(settings_routes())
         .route("/mcp", post(crate::mcp_server::mcp_handler))
         .nest_service("/bonpy", bonpy_spa)
         .fallback_service(spa)
@@ -672,6 +744,7 @@ fn observability_routes() -> Router<AppState> {
         .route("/api/operations/weekly-trend", get(weekly_trend_handler))
         .route("/api/trace/{id}", get(trace_handler))
         .route("/api/events", get(events_handler))
+        .route("/api/events/history", get(events_history_handler))
         .route("/api/events/inject", post(events_inject_handler))
         .route("/api/graph/insights", get(graph_insights_handler))
         .route("/api/explorer/query", post(explorer_query_handler))
@@ -702,6 +775,7 @@ fn device_routes() -> Router<AppState> {
         .route("/api/enrichment/test", post(enrichment_test_handler))
         .route("/api/enrichment/run", post(enrichment_run_handler))
         .route("/api/enrichment/audit", get(enrichment_audit_handler))
+        .route("/api/enrichment/netbox/import", post(netbox_import_handler))
 }
 
 fn managed_device_routes() -> Router<AppState> {
@@ -766,6 +840,15 @@ fn adapter_and_schema_routes() -> Router<AppState> {
         .route("/api/_test/status", get(test_status_handler))
         .route("/api/_test/inject_detection", post(inject_detection_handler))
         .route("/api/_test/syslog/parse", post(parse_syslog_fixture_handler))
+}
+
+fn settings_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/settings/streaming",
+            get(get_streaming_settings_handler).patch(patch_streaming_settings_handler),
+        )
+        .route("/api/receivers/status", get(get_receiver_status_handler))
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────

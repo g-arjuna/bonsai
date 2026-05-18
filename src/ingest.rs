@@ -3,7 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -346,7 +346,11 @@ pub async fn run_core_forwarder(
     collector_id: String,
     collector_config: CollectorConfig,
     tls_config: RuntimeTlsConfig,
-    mut shutdown: tokio::sync::watch::Receiver<bool>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+    queue_depth_counter: Arc<AtomicU64>,
+    queue_bytes_counter: Arc<AtomicU64>,
+    queue_max_bytes_counter: Arc<AtomicU64>,
+    diag_state: Option<crate::collector::diagnostic_server::DiagnosticState>,
 ) {
     let queue = match CollectorQueue::open(collector_config.queue.clone()) {
         Ok(queue) => Arc::new(queue),
@@ -376,7 +380,12 @@ pub async fn run_core_forwarder(
         collector_id.clone(),
         Arc::clone(&queue),
         shutdown.clone(),
+        queue_depth_counter,
+        queue_bytes_counter,
+        queue_max_bytes_counter,
+        diag_state,
     ));
+    let mut shutdown = shutdown;
 
     loop {
         if *shutdown.borrow() {
@@ -672,6 +681,10 @@ async fn log_queue_status(
     collector_id: String,
     queue: Arc<CollectorQueue>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
+    queue_depth_counter: Arc<AtomicU64>,
+    queue_bytes_counter: Arc<AtomicU64>,
+    queue_max_bytes_counter: Arc<AtomicU64>,
+    diag_state: Option<crate::collector::diagnostic_server::DiagnosticState>,
 ) {
     let interval_seconds = queue.log_interval_seconds();
     if interval_seconds == 0 {
@@ -684,7 +697,15 @@ async fn log_queue_status(
             _ = shutdown.changed() => return,
             _ = interval.tick() => {
                 match queue.stats() {
-                    Ok(stats) => log_queue_stats(&collector_id, &stats),
+                    Ok(stats) => {
+                        log_queue_stats(&collector_id, &stats);
+                        queue_depth_counter.store(stats.pending_records, Ordering::Relaxed);
+                        queue_bytes_counter.store(stats.data_file_bytes, Ordering::Relaxed);
+                        queue_max_bytes_counter.store(stats.max_bytes, Ordering::Relaxed);
+                        if let Some(ref ds) = diag_state {
+                            ds.update_queue_depth(stats.pending_records);
+                        }
+                    }
                     Err(error) => warn!(%collector_id, %error, "failed to read collector queue status"),
                 }
             }
@@ -1099,6 +1120,31 @@ fn log_queue_stats(collector_id: &str, stats: &QueueStats) {
     }
 }
 
+/// Reads the resident set size of the current process in bytes.
+/// Uses /proc/self/status on Linux. Returns 0 on unsupported platforms.
+fn read_process_memory_bytes() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+            for line in status.lines() {
+                if line.starts_with("VmRSS:") {
+                    let kb: u64 = line
+                        .split_whitespace()
+                        .nth(1)
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0);
+                    return kb * 1024;
+                }
+            }
+        }
+        0
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        0
+    }
+}
+
 fn now_unix_ns() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1435,6 +1481,11 @@ pub async fn run_collector_manager(
     bus: Arc<InProcessBus>,
     subscription_plan_tx: Option<mpsc::Sender<SubscriptionPlan>>,
     mut shutdown: watch::Receiver<bool>,
+    queue_depth_counter: Arc<AtomicU64>,
+    queue_bytes_counter: Arc<AtomicU64>,
+    queue_max_bytes_counter: Arc<AtomicU64>,
+    diag_state: Option<crate::collector::diagnostic_server::DiagnosticState>,
+    supervisor: Option<crate::receiver_supervisor::SharedReceiverSupervisor>,
 ) -> Result<()> {
     let collector_id = cfg.collector_id.clone();
     let hostname = hostname::get()
@@ -1442,6 +1493,7 @@ pub async fn run_collector_manager(
         .and_then(|h| h.into_string().ok())
         .unwrap_or_else(|| "unknown".to_string());
 
+    let startup_instant = Instant::now();
     let mut subscribers: crate::subscriber::SubscriberHandleMap = HashMap::new();
 
     loop {
@@ -1470,7 +1522,12 @@ pub async fn run_collector_manager(
         };
 
         let mut stream = match client.register_collector(req).await {
-            Ok(s) => s.into_inner(),
+            Ok(s) => {
+                if let Some(ref ds) = diag_state {
+                    ds.mark_registered();
+                }
+                s.into_inner()
+            }
             Err(error) => {
                 warn!(%error, %collector_id, "failed to register collector; retrying in 5s");
                 tokio::select! {
@@ -1510,11 +1567,66 @@ pub async fn run_collector_manager(
                     }
                 }
                 _ = heartbeat_interval.tick() => {
+                    let sub_count = subscribers.len() as u32;
+                    let queue_depth = queue_depth_counter.load(Ordering::Relaxed);
+                    let queue_bytes = queue_bytes_counter.load(Ordering::Relaxed);
+                    let queue_max = queue_max_bytes_counter.load(Ordering::Relaxed);
+                    let queue_utilization_pct = if queue_max > 0 {
+                        (queue_bytes as f32 / queue_max as f32) * 100.0
+                    } else {
+                        0.0_f32
+                    };
+                    let uptime = startup_instant.elapsed().as_secs() as i64;
+                    let memory_used_bytes = read_process_memory_bytes();
+
+                    // Snapshot receiver statuses from the supervisor.
+                    let receiver_snapshots: Vec<crate::api::pb::CollectorReceiverStatus> =
+                        if let Some(ref sup) = supervisor {
+                            let guard = sup.read().await;
+                            guard.status_snapshot().into_iter().map(|s| {
+                                crate::api::pb::CollectorReceiverStatus {
+                                    name: s.name,
+                                    state: format!("{:?}", s.state).to_lowercase(),
+                                    addr: s.addr,
+                                    packet_count: s.packet_count,
+                                    error_count: s.error_count,
+                                    last_error: s.last_error.unwrap_or_default(),
+                                }
+                            }).collect()
+                        } else {
+                            vec![]
+                        };
+
+                    // Push receiver statuses into DiagnosticState.
+                    if let Some(ref ds) = diag_state {
+                        let entries: Vec<crate::collector::diagnostic_server::ReceiverStatusEntry> =
+                            receiver_snapshots.iter().map(|r| {
+                                crate::collector::diagnostic_server::ReceiverStatusEntry {
+                                    name: r.name.clone(),
+                                    state: r.state.clone(),
+                                    addr: r.addr.clone(),
+                                    packet_count: r.packet_count,
+                                    error_count: r.error_count,
+                                    last_error: if r.last_error.is_empty() { None } else { Some(r.last_error.clone()) },
+                                }
+                            }).collect();
+                        ds.update_stats(queue_depth, sub_count, Vec::new());
+                        ds.update_receiver_statuses(entries);
+                    }
+
                     let stats = CollectorStats {
                         collector_id: collector_id.clone(),
-                        queue_depth_updates: 0,
-                        subscription_count: subscribers.len() as u32,
-                        uptime_secs: 0,
+                        queue_depth_updates: queue_depth,
+                        subscription_count: sub_count,
+                        uptime_secs: uptime,
+                        queue_bytes,
+                        queue_utilization_pct,
+                        active_subscribers: sub_count,
+                        failed_subscribers: 0,
+                        memory_used_bytes,
+                        recent_warn_count: 0,
+                        recent_error_count: 0,
+                        receiver_statuses: receiver_snapshots,
                     };
                     if let Err(error) = client.heartbeat(stats).await {
                         warn!(%error, "failed to send heartbeat");

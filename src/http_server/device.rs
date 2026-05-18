@@ -1140,6 +1140,219 @@ pub(super) async fn enrichment_audit_handler(State(state): State<AppState>) -> J
     let entries = read_recent_enrichment_audit(&audit_dir, 100);
     Json(EnrichmentAuditResponse { entries })
 }
+// ── NetBox import endpoint (D3-2 T2 / D3-4 T2) ───────────────────────────────
+
+#[derive(Debug, serde::Deserialize)]
+pub(super) struct NetboxImportRequest {
+    pub url: String,
+    pub token: String,
+    /// Optional site slug to filter devices (empty = all active devices)
+    #[serde(default)]
+    pub site_slug: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(super) struct NetboxImportCandidate {
+    pub name: String,
+    pub address: String,
+    pub site: String,
+    pub role: String,
+    pub vendor: String,
+    pub platform: String,
+    pub status: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(super) struct NetboxImportResponse {
+    pub candidates: Vec<NetboxImportCandidate>,
+    pub netbox_version: String,
+    pub warnings: Vec<String>,
+}
+
+pub(super) async fn netbox_import_handler(
+    Json(req): Json<NetboxImportRequest>,
+) -> Result<Json<NetboxImportResponse>, (axum::http::StatusCode, String)> {
+    let base = req.url.trim_end_matches('/').to_string();
+    let token = req.token.trim().to_string();
+    if base.is_empty() || token.is_empty() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "url and token are required".to_string(),
+        ));
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Auto-detect NetBox version
+    let version_url = format!("{base}/api/");
+    let nb_version = match client
+        .get(&version_url)
+        .header("Authorization", format!("Token {token}"))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            resp.json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|v| {
+                    v.get("netbox-version")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_else(|| "unknown".to_string())
+        }
+        Ok(resp) => {
+            return Err((
+                axum::http::StatusCode::BAD_GATEWAY,
+                format!("NetBox /api/ returned {}", resp.status()),
+            ));
+        }
+        Err(e) => {
+            return Err((
+                axum::http::StatusCode::BAD_GATEWAY,
+                format!("Cannot reach NetBox at {base}: {e}"),
+            ));
+        }
+    };
+
+    // Fetch active devices — same endpoint for both 3.x and 4.x
+    let mut devices_url = format!("{base}/api/dcim/devices/?status=active&limit=200");
+    if !req.site_slug.trim().is_empty() {
+        devices_url.push_str(&format!("&site={}", req.site_slug.trim()));
+    }
+
+    let mut warnings: Vec<String> = Vec::new();
+    let mut candidates: Vec<NetboxImportCandidate> = Vec::new();
+    let mut offset: usize = 0;
+
+    loop {
+        let page_url = format!("{devices_url}&offset={offset}");
+        let resp = client
+            .get(&page_url)
+            .header("Authorization", format!("Token {token}"))
+            .send()
+            .await
+            .map_err(|e| (axum::http::StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+        if !resp.status().is_success() {
+            return Err((
+                axum::http::StatusCode::BAD_GATEWAY,
+                format!("NetBox dcim/devices returned {}", resp.status()),
+            ));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct NbPage {
+            results: Vec<NbDeviceImport>,
+        }
+        #[derive(serde::Deserialize)]
+        struct NbDeviceImport {
+            name: Option<String>,
+            primary_ip: Option<NbIpImport>,
+            site: Option<NbNestedImport>,
+            role: Option<NbNestedImport>,
+            device_type: Option<NbDeviceTypeImport>,
+            platform: Option<NbNestedImport>,
+            status: Option<NbStatusImport>,
+        }
+        #[derive(serde::Deserialize)]
+        struct NbIpImport {
+            address: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct NbNestedImport {
+            name: String,
+            #[serde(default)]
+            slug: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct NbDeviceTypeImport {
+            #[serde(default)]
+            #[allow(dead_code)]
+            model: String,
+            manufacturer: Option<NbNestedImport>,
+        }
+        #[derive(serde::Deserialize)]
+        struct NbStatusImport {
+            value: String,
+        }
+
+        let page: NbPage = resp
+            .json()
+            .await
+            .map_err(|e| (axum::http::StatusCode::BAD_GATEWAY, format!("parse error: {e}")))?;
+
+        let fetched = page.results.len();
+
+        for dev in page.results {
+            let name = dev.name.unwrap_or_default();
+            // Strip the prefix length from primary IP (e.g. "10.0.0.1/32" → "10.0.0.1")
+            let raw_ip = dev
+                .primary_ip
+                .as_ref()
+                .map(|ip| ip.address.split('/').next().unwrap_or("").to_string())
+                .unwrap_or_default();
+
+            if raw_ip.is_empty() {
+                warnings.push(format!("device '{name}' has no primary IP — skipped"));
+                continue;
+            }
+
+            let site = dev
+                .site
+                .as_ref()
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
+            let role = dev
+                .role
+                .as_ref()
+                .map(|r| r.slug.clone())
+                .unwrap_or_default();
+            let vendor = dev
+                .device_type
+                .as_ref()
+                .and_then(|dt| dt.manufacturer.as_ref())
+                .map(|m| m.name.clone())
+                .unwrap_or_default();
+            let platform = dev
+                .platform
+                .as_ref()
+                .map(|p| p.slug.clone())
+                .unwrap_or_default();
+            let status = dev
+                .status
+                .as_ref()
+                .map(|s| s.value.clone())
+                .unwrap_or_else(|| "active".to_string());
+
+            candidates.push(NetboxImportCandidate {
+                name,
+                address: raw_ip,
+                site,
+                role,
+                vendor,
+                platform,
+                status,
+            });
+        }
+
+        if fetched < 200 {
+            break;
+        }
+        offset += 200;
+    }
+
+    Ok(Json(NetboxImportResponse {
+        candidates,
+        netbox_version: nb_version,
+        warnings,
+    }))
+}
+
 pub(super) fn read_recent_enrichment_audit(
     audit_dir: &std::path::Path,
     limit: usize,

@@ -17,6 +17,34 @@ x-bonsai-base: &bonsai-base
     - ./lab/fast-iteration/p4-ca.pem:/app/lab/fast-iteration/p4-ca.pem:ro
 
 services:
+  # ── Standalone profile ─────────────────────────────────────────────────────
+  #
+  # No ContainerLab required. Runs bonsai core + UI on a plain Docker bridge
+  # network. Add devices via the UI onboarding wizard after startup.
+  #
+  # Usage:
+  #   cp .env.example .env && echo 'BONSAI_VAULT_PASSPHRASE=changeme' >> .env
+  #   docker compose --profile standalone up -d
+  #   open http://localhost:3000
+  bonsai-standalone:
+    <<: *bonsai-base
+    profiles: ["standalone"]
+    volumes:
+      - bonsai_graph_dev:/app/runtime
+      - bonsai_creds_dev:/app/bonsai-credentials
+      - ./docker/configs/standalone.toml:/etc/bonsai/bonsai.toml:ro
+    ports:
+      - "3000:3000"
+      - "50051:50051"
+    networks:
+      - bonsai-internal
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
   bonsai-all:
     <<: *bonsai-base
     profiles: ["dev"]
@@ -228,6 +256,11 @@ services:
       retries: 5
 
 networks:
+  # Plain bridge network for standalone / non-lab deployments.
+  # Created automatically by Docker Compose — no ContainerLab required.
+  bonsai-internal:
+    driver: bridge
+
   # Shared ContainerLab management network for Ubuntu laptop testing.
   # Keep Bonsai, NetBox, Splunk, Elastic, and Prometheus stable; change the
   # lab topology, not the Bonsai runtime shape.

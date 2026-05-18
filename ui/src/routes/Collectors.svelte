@@ -84,6 +84,19 @@
     if (!total) return '—';
     return `${Math.round(((col.observed_subscriptions ?? 0) / total) * 100)}%`;
   }
+
+  function queueColor(pct) {
+    if (pct >= 80) return 'danger';
+    if (pct >= 50) return 'warn';
+    return 'ok';
+  }
+
+  function fmtBytes(bytes) {
+    if (!bytes) return '0 B';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
 </script>
 
 <div class="view">
@@ -173,6 +186,56 @@
             <div><span class="muted">Heartbeat</span> <span title={absoluteTime(col.last_heartbeat_ns)}>{col.last_heartbeat_ns ? relativeTime(col.last_heartbeat_ns) : '—'}</span></div>
           </div>
 
+          {#if (col.queue_utilization_pct ?? 0) > 0 || (col.queue_bytes ?? 0) > 0}
+            <div class="health-row">
+              <div class="health-label">Queue</div>
+              <div class="queue-bar-wrap" title="{(col.queue_utilization_pct ?? 0).toFixed(1)}% used · {fmtBytes(col.queue_bytes ?? 0)}">
+                <div class="queue-bar queue-bar--{queueColor(col.queue_utilization_pct ?? 0)}"
+                     style="width: {Math.min(col.queue_utilization_pct ?? 0, 100)}%">
+                </div>
+              </div>
+              <span class="health-val muted">{(col.queue_utilization_pct ?? 0).toFixed(1)}%</span>
+            </div>
+          {/if}
+
+          {#if (col.failed_subscribers ?? 0) > 0 || (col.active_subscribers ?? 0) > 0}
+            <div class="health-row">
+              <div class="health-label">Subs</div>
+              <span class="sub-chip sub-chip--ok">{col.active_subscribers ?? 0} active</span>
+              {#if (col.failed_subscribers ?? 0) > 0}
+                <span class="sub-chip sub-chip--err">{col.failed_subscribers} failed</span>
+              {/if}
+            </div>
+          {/if}
+
+          {#if (col.memory_used_mb ?? 0) > 0 || (col.recent_warn_count ?? 0) > 0 || (col.recent_error_count ?? 0) > 0}
+            <div class="health-row health-row--chips">
+              {#if (col.memory_used_mb ?? 0) > 0}
+                <span class="metric-chip" title="Resident memory">
+                  Mem: {col.memory_used_mb} MB
+                </span>
+              {/if}
+              {#if (col.recent_warn_count ?? 0) > 0}
+                <span class="metric-chip metric-chip--warn">⚠ {col.recent_warn_count}</span>
+              {/if}
+              {#if (col.recent_error_count ?? 0) > 0}
+                <span class="metric-chip metric-chip--err">✕ {col.recent_error_count}</span>
+              {/if}
+            </div>
+          {/if}
+
+          {#if col.streaming_status && Object.keys(col.streaming_status).length > 0}
+            <div class="streaming-row">
+              <span class="muted small" style="margin-right:6px;">Receivers:</span>
+              {#each Object.entries(col.streaming_status) as [name, rx]}
+                <span class="rx-badge rx-badge--{rx.enabled ? 'on' : 'off'}"
+                      title="{name.toUpperCase()} · {rx.protocol.toUpperCase()} · {rx.addr}">
+                  {name}
+                </span>
+              {/each}
+            </div>
+          {/if}
+
           {#if col.assigned_targets?.length}
             <div class="target-list">
               {#each col.assigned_targets as target}
@@ -231,6 +294,27 @@
   .target-chip { padding: 3px 7px; background: #0b1118; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; }
   .target-chip.danger-outline { border-color: rgba(248,81,73,0.4); }
   .override-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; }
+  .streaming-row { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .rx-badge { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; letter-spacing: 0.04em; text-transform: uppercase; cursor: default; }
+  .rx-badge--on  { background: #1a3a2e; color: #34d399; border: 1px solid #34d39944; }
+  .rx-badge--off { background: #1a1a1a; color: #6b7280; border: 1px solid #2d2d44; }
+
+  .health-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; }
+  .health-row + .health-row { margin-top: 6px; border-top: none; padding-top: 0; }
+  .health-row--chips { flex-wrap: wrap; }
+  .health-label { color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; font-size: 10px; min-width: 38px; }
+  .health-val { font-size: 11px; min-width: 36px; text-align: right; }
+  .queue-bar-wrap { flex: 1; background: #1a1a2e; border-radius: 3px; height: 6px; overflow: hidden; }
+  .queue-bar { height: 100%; border-radius: 3px; transition: width 0.4s; }
+  .queue-bar--ok   { background: #34d399; }
+  .queue-bar--warn { background: #f59e0b; }
+  .queue-bar--danger { background: #f87171; }
+  .sub-chip { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .sub-chip--ok  { background: #1a3a2e; color: #34d399; border: 1px solid #34d39944; }
+  .sub-chip--err { background: #3a1a1a; color: #f87171; border: 1px solid #f8717144; }
+  .metric-chip { padding: 2px 7px; border-radius: 4px; font-size: 11px; background: #1a1a2e; color: var(--muted); border: 1px solid var(--border); }
+  .metric-chip--warn { color: #f59e0b; background: #2a1e0a; border-color: #f59e0b44; }
+  .metric-chip--err  { color: #f87171; background: #2a1010; border-color: #f8717144; }
 
   @media (max-width: 800px) {
     .collector-stats, .collector-detail-grid, .override-form { grid-template-columns: 1fr; }

@@ -73,9 +73,10 @@ fn handle_packet(
         bail!("packet too short");
     }
     let version = u16::from_be_bytes([pkt[0], pkt[1]]);
+    let exporter_ip = peer.ip().to_string();
     match version {
-        9 => parse_v9(pkt, peer, templates, bus),
-        10 => parse_ipfix(pkt, peer, templates, bus),
+        9 => parse_v9(pkt, peer, templates, bus, &exporter_ip),
+        10 => parse_ipfix(pkt, peer, templates, bus, &exporter_ip),
         v => bail!("unsupported netflow version {v}"),
     }
 }
@@ -87,6 +88,7 @@ fn parse_v9(
     peer: SocketAddr,
     templates: &mut HashMap<SocketAddr, TemplateCache>,
     bus: &Arc<InProcessBus>,
+    exporter_ip: &str,
 ) -> Result<()> {
     // v9 header: version(2) count(2) sys_uptime(4) unix_secs(4) seq(4) source_id(4) = 20 bytes
     if pkt.len() < 20 {
@@ -120,7 +122,7 @@ fn parse_v9(
                 // Data FlowSet
                 if let Some(fields) = source_cache.get(&template_id).cloned() {
                     emit_flows_v9(
-                        flowset_data, &fields, sys_uptime_ms, unix_secs, source_id, bus,
+                        flowset_data, &fields, sys_uptime_ms, unix_secs, source_id, bus, exporter_ip,
                     );
                 }
             }
@@ -157,6 +159,7 @@ fn emit_flows_v9(
     unix_secs: u64,
     _source_id: u32,
     bus: &Arc<InProcessBus>,
+    exporter_ip: &str,
 ) {
     let record_len: usize = fields.iter().map(|(_, l)| *l as usize).sum();
     if record_len == 0 {
@@ -166,7 +169,7 @@ fn emit_flows_v9(
     while offset + record_len <= data.len() {
         let record = &data[offset..offset + record_len];
         if let Some(flow) = decode_record(record, fields, sys_uptime_ms, unix_secs) {
-            publish_flow(flow, bus);
+            publish_flow(flow, bus, exporter_ip);
         }
         offset += record_len;
     }
@@ -179,6 +182,7 @@ fn parse_ipfix(
     peer: SocketAddr,
     templates: &mut HashMap<SocketAddr, TemplateCache>,
     bus: &Arc<InProcessBus>,
+    exporter_ip: &str,
 ) -> Result<()> {
     // IPFIX header: version(2) length(2) export_time(4) seq(4) domain_id(4) = 16 bytes
     if pkt.len() < 16 {
@@ -210,7 +214,7 @@ fn parse_ipfix(
             template_id if template_id >= 256 => {
                 if let Some(fields) = source_cache.get(&template_id).cloned() {
                     // IPFIX uses export_time as unix seconds (no uptime offset needed)
-                    emit_flows_v9(set_data, &fields, 0, export_time, domain_id, bus);
+                    emit_flows_v9(set_data, &fields, 0, export_time, domain_id, bus, exporter_ip);
                 }
             }
             _ => {}
@@ -339,7 +343,7 @@ fn decode_record(
     })
 }
 
-fn publish_flow(flow: FlowRecord, bus: &Arc<InProcessBus>) {
+fn publish_flow(flow: FlowRecord, bus: &Arc<InProcessBus>, exporter_ip: &str) {
     let duration_secs = {
         let dur = flow.flow_end_ns - flow.flow_start_ns;
         if dur <= 0 { 1.0 } else { dur as f64 / 1_000_000_000.0 }
@@ -349,6 +353,7 @@ fn publish_flow(flow: FlowRecord, bus: &Arc<InProcessBus>) {
     let proto_str = protocol_name(flow.protocol);
 
     let value = serde_json::json!({
+        "exporter_address": exporter_ip,
         "src_address": flow.src_address,
         "dst_address": flow.dst_address,
         "src_port": flow.src_port,
@@ -368,7 +373,7 @@ fn publish_flow(flow: FlowRecord, bus: &Arc<InProcessBus>) {
         .unwrap_or(0);
 
     bus.publish(TelemetryUpdate {
-        target: flow.src_address,
+        target: exporter_ip.to_string(),
         vendor: String::new(),
         hostname: String::new(),
         role: String::new(),

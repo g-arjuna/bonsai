@@ -21,6 +21,7 @@ use crate::credentials::{CredentialVault, ResolvePurpose};
 use crate::enrichment::EnricherAuditLog;
 use crate::enrichment::EnrichmentSchedule;
 use crate::enrichment::{EnricherConfig, EnrichmentReport, EnrichmentWriteSurface, GraphEnricher};
+use crate::graph::common::{link_host_endpoint_to_interface, upsert_host_endpoint, upsert_location};
 use crate::mcp_client::{EnricherTransport, McpClient};
 use crate::store::BonsaiStore;
 
@@ -40,9 +41,24 @@ struct NbDevice {
     primary_ip: Option<NbIp>,
     site: Option<NbNested>,
     rack: Option<NbNested>,
+    /// NetBox sub-site location (AZ, pod, building, floor, room).
+    location: Option<NbNested>,
     device_type: Option<NbDeviceType>,
     platform: Option<NbNested>,
     status: Option<NbStatus>,
+    /// Device role — used to classify HostEndpoints vs network devices.
+    role: Option<NbNested>,
+    /// Free-form custom fields — written as netbox_cf_<key> EnrichmentProperty nodes.
+    #[serde(default)]
+    custom_fields: serde_json::Value,
+}
+
+/// Lightweight shape for an interface's connected_endpoints entry (NetBox 4.x).
+/// In NetBox 3.x this field is called `connected_endpoint` (singular) — handled via serde alias.
+#[derive(Debug, Deserialize)]
+struct NbInterfaceConnected {
+    device: NbInterfaceDevice,
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,6 +121,10 @@ struct NbInterface {
     description: String,
     untagged_vlan: Option<NbVlanRef>,
     tagged_vlans: Vec<NbVlanRef>,
+    /// connected_endpoints (NetBox 4.x) / connected_endpoint (NetBox 3.x).
+    /// Carries the peer device/interface info for a connected host.
+    #[serde(default)]
+    connected_endpoints: Vec<NbInterfaceConnected>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,6 +197,30 @@ impl Transport {
                     .call("netbox:interfaces_list", serde_json::json!({}))
                     .await?;
                 serde_json::from_value(val).context("parse MCP interfaces response")
+            }
+        }
+    }
+
+    /// Fetch devices that match any of the given role slugs (Track B3).
+    /// Returns an empty list (not an error) when the role filter yields no results.
+    async fn get_devices_by_roles(
+        &self,
+        base_url: &str,
+        token: &str,
+        role_slugs: &[String],
+    ) -> Result<Vec<NbDevice>> {
+        if role_slugs.is_empty() {
+            return Ok(vec![]);
+        }
+        match self {
+            Transport::Rest(client) => {
+                let role_param = role_slugs.join(",");
+                let endpoint = format!("dcim/devices/?role={role_param}");
+                paginate_rest::<NbDevice>(client, base_url, &endpoint, token).await
+            }
+            Transport::Mcp(_mcp) => {
+                // MCP transport does not support role-filtered device queries yet.
+                Ok(vec![])
             }
         }
     }
@@ -293,12 +337,22 @@ impl GraphEnricher for NetBoxEnricher {
     fn writes_to(&self) -> EnrichmentWriteSurface {
         EnrichmentWriteSurface {
             property_namespace: "netbox_".to_string(),
-            owned_labels: vec!["VLAN".to_string(), "Prefix".to_string()],
+            owned_labels: vec![
+                "VLAN".to_string(),
+                "Prefix".to_string(),
+                "Rack".to_string(),
+                "Location".to_string(),
+                "HostEndpoint".to_string(),
+            ],
             owned_edge_types: vec![
                 "HAS_ENRICHMENT_PROPERTY".to_string(),
                 "ACCESS_VLAN".to_string(),
                 "TRUNK_VLAN".to_string(),
                 "HAS_PREFIX".to_string(),
+                "RACK_MEMBER".to_string(),
+                "IN_LOCATION".to_string(),
+                "IN_SITE".to_string(),
+                "CONNECTED_TO".to_string(),
             ],
         }
     }
@@ -336,8 +390,23 @@ impl GraphEnricher for NetBoxEnricher {
 
         let transport = self.build_transport()?;
 
+        // endpoint_roles: configurable list of NetBox role slugs that identify
+        // non-network endpoints (servers, APs, phones, etc.) to model as HostEndpoint
+        // nodes. Defaults are arch-agnostic; operators can override via
+        //   [enrichers.extra]  endpoint_roles = "server,ap,phone,cpe,printer"
+        let endpoint_roles: Vec<String> = self
+            .config
+            .extra
+            .get("endpoint_roles")
+            .and_then(|v| v.as_str())
+            .unwrap_or("server,ap,phone,cpe,printer,workstation")
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
         // Fetch all NetBox data with bounded concurrency (semaphore limits in-flight requests)
-        let (devices_res, vlans_res, prefixes_res, ifaces_res) = tokio::join!(
+        let (devices_res, vlans_res, prefixes_res, ifaces_res, endpoints_res) = tokio::join!(
             async {
                 let _p = sem.acquire().await.expect("sem");
                 transport.get_devices(&base_url, token).await
@@ -353,6 +422,10 @@ impl GraphEnricher for NetBoxEnricher {
             async {
                 let _p = sem.acquire().await.expect("sem");
                 transport.get_interfaces(&base_url, token).await
+            },
+            async {
+                let _p = sem.acquire().await.expect("sem");
+                transport.get_devices_by_roles(&base_url, token, &endpoint_roles).await
             },
         );
 
@@ -370,6 +443,11 @@ impl GraphEnricher for NetBoxEnricher {
         });
         let nb_ifaces = ifaces_res.unwrap_or_else(|e| {
             warnings.push(format!("failed to fetch interfaces: {e:#}"));
+            vec![]
+        });
+        let nb_endpoints = endpoints_res.unwrap_or_else(|e| {
+            // Endpoint fetch failure is non-fatal — HostEndpoints are always optional.
+            warnings.push(format!("failed to fetch endpoint devices (non-fatal): {e:#}"));
             vec![]
         });
 
@@ -390,15 +468,31 @@ impl GraphEnricher for NetBoxEnricher {
         let db = store.db();
         let write_lock = store.write_lock();
 
+        // P3: build a site-name → site-id map from devices for location resolution.
+        // This mirrors what sync_sites_from_targets does so Location nodes can find
+        // their parent Site without an extra round-trip to the graph.
+        let site_id_map: std::collections::HashMap<String, String> = nb_devices
+            .iter()
+            .filter_map(|d| d.site.as_ref())
+            .map(|s| (s.name.clone(), crate::graph::site_id_from_name(&s.name)))
+            .collect();
+
         let (nodes_touched, edges_created, write_warnings) =
             tokio::task::spawn_blocking(move || {
                 let _guard = write_lock.lock().expect("write lock poisoned");
+                // P3: backfill LOCATED_AT for any existing devices whose site string
+                // was set but whose LOCATED_AT edge was never written (pre-fix DBs).
+                let conn_bf = lbug::Connection::new(&db).context("backfill connection")?;
+                backfill_located_at(&conn_bf, &site_id_map)?;
+                drop(conn_bf);
+
                 write_to_graph(
                     &db,
                     &nb_devices,
                     &nb_vlans,
                     &nb_prefixes,
                     &nb_ifaces,
+                    &nb_endpoints,
                     &source,
                 )
             })
@@ -463,6 +557,7 @@ fn write_to_graph(
     vlans: &[NbVlan],
     prefixes: &[NbPrefix],
     ifaces: &[NbInterface],
+    endpoints: &[NbDevice],
     source: &str,
 ) -> Result<(usize, usize, Vec<String>)> {
     let conn = Connection::new(db).context("open graph connection")?;
@@ -537,8 +632,9 @@ fn write_to_graph(
                 props.push(("netbox_site_slug", site.slug.clone()));
             }
 
+            let site_name = dev.site.as_ref().map(|s| s.name.as_str()).unwrap_or("");
+
             if let Some(rack) = &dev.rack {
-                let site_name = dev.site.as_ref().map(|s| s.name.as_str()).unwrap_or("");
                 if let Err(e) = with_write_retry(|| {
                     crate::graph::common::upsert_rack(&conn, &rack.name, site_name, &addr, now_ns)
                 }) {
@@ -546,6 +642,60 @@ fn write_to_graph(
                 } else {
                     nodes += 1;
                     edges += 1;
+                }
+            }
+
+            // P2: Location node (AZ / pod / building / floor)
+            if let Some(loc) = &dev.location {
+                // Derive the site_id the same way sync_sites_from_targets does.
+                let site_id = if site_name.is_empty() {
+                    String::new()
+                } else {
+                    crate::graph::site_id_from_name(site_name)
+                };
+                if !site_id.is_empty() {
+                    let kind = loc.slug
+                        .split('-')
+                        .next()
+                        .unwrap_or("other")
+                        .to_string();
+                    let addr2 = addr.clone();
+                    let loc_name = loc.name.clone();
+                    let sid = site_id.clone();
+                    let src = source.clone();
+                    if let Err(e) = with_write_retry(|| {
+                        upsert_location(&conn, &loc_name, &kind, &sid, &addr2, &src, now_ns)
+                    }) {
+                        warnings.push(format!("location {} for {addr}: {e:#}", loc.name));
+                    } else {
+                        nodes += 1;
+                        edges += 2; // IN_LOCATION + IN_SITE
+                    }
+                }
+            }
+
+            // P1: custom_fields — write each top-level scalar as netbox_cf_<key>
+            if let Some(cf_map) = dev.custom_fields.as_object() {
+                for (cf_key, cf_val) in cf_map {
+                    let str_val = match cf_val {
+                        serde_json::Value::String(s) => s.clone(),
+                        serde_json::Value::Number(n) => n.to_string(),
+                        serde_json::Value::Bool(b) => b.to_string(),
+                        _ => continue, // skip nulls and nested objects
+                    };
+                    if str_val.is_empty() { continue; }
+                    let key = format!("netbox_cf_{cf_key}");
+                    let id = format!("{addr}:{key}");
+                    let addr2 = addr.clone();
+                    let src2 = source.clone();
+                    if let Err(e) = with_write_retry(|| {
+                        upsert_enrichment_property(&conn, &id, &addr2, &key, &str_val, &src2, now_ns)
+                    }) {
+                        warnings.push(format!("device {addr} custom_field {cf_key}: {e:#}"));
+                    } else {
+                        nodes += 1;
+                        edges += 1;
+                    }
                 }
             }
 
@@ -617,6 +767,99 @@ fn write_to_graph(
                 Ok(()) => edges += 1,
                 Err(e) => {
                     warnings.push(format!("HAS_PREFIX {dev_name} → {}: {e:#}", prefix.prefix))
+                }
+            }
+        }
+    }
+
+    // Track B3: HostEndpoint pass — devices with endpoint roles become HostEndpoint nodes.
+    // The ifaces list is searched to find which switch interface the endpoint plugs into.
+    // Build a map: device_name → Vec<(iface_name, connected_device_name, connected_if_name)>
+    // from the interfaces that have connected_endpoints populated.
+    let host_iface_map: std::collections::HashMap<String, Vec<(String, String)>> = {
+        let mut m: std::collections::HashMap<String, Vec<(String, String)>> =
+            std::collections::HashMap::new();
+        for iface in ifaces {
+            for ce in &iface.connected_endpoints {
+                if let Some(dev_name) = &ce.device.name {
+                    // peer device_name → (switch device address, switch interface id)
+                    let sw_name = iface
+                        .device
+                        .name
+                        .as_deref()
+                        .unwrap_or("");
+                    let sw_iface_id = format!("{sw_name}:{}", iface.name);
+                    m.entry(dev_name.clone())
+                        .or_default()
+                        .push((sw_iface_id, ce.name.clone()));
+                }
+            }
+        }
+        m
+    };
+
+    for ep in endpoints {
+        let ip = match ep.primary_ip.as_ref() {
+            Some(ip) => ip.address.split('/').next().unwrap_or("").to_string(),
+            None => continue, // no IP — cannot create a useful HostEndpoint
+        };
+        if ip.is_empty() {
+            continue;
+        }
+
+        let kind = ep
+            .role
+            .as_ref()
+            .map(|r| r.slug.as_str())
+            .unwrap_or("unknown");
+        let hostname = ep.name.as_deref().unwrap_or("");
+        let vendor = ep
+            .device_type
+            .as_ref()
+            .and_then(|dt| dt.manufacturer.as_ref())
+            .map(|m| m.name.as_str())
+            .unwrap_or("");
+        let rack_id = ep
+            .rack
+            .as_ref()
+            .map(|r| format!("rack:{}:{}", ep.site.as_ref().map(|s| s.name.as_str()).unwrap_or(""), r.name))
+            .unwrap_or_default();
+        let site_id = ep
+            .site
+            .as_ref()
+            .map(|s| crate::graph::site_id_from_name(&s.name))
+            .unwrap_or_default();
+
+        if let Err(e) = with_write_retry(|| {
+            upsert_host_endpoint(
+                &conn,
+                &ip,
+                kind,
+                hostname,
+                "",
+                vendor,
+                &rack_id,
+                &site_id,
+                source,
+                now_ns,
+            )
+        }) {
+            warnings.push(format!("HostEndpoint {ip} ({hostname}): {e:#}"));
+        } else {
+            nodes += 1;
+        }
+
+        // Wire CONNECTED_TO edges using the connected_endpoints map.
+        if let Some(connections) = ep.name.as_ref().and_then(|n| host_iface_map.get(n)) {
+            for (sw_iface_id, _ce_if_name) in connections {
+                if let Err(e) =
+                    with_write_retry(|| link_host_endpoint_to_interface(&conn, &ip, sw_iface_id))
+                {
+                    warnings.push(format!(
+                        "CONNECTED_TO {ip} → {sw_iface_id}: {e:#}"
+                    ));
+                } else {
+                    edges += 1;
                 }
             }
         }
@@ -827,6 +1070,79 @@ fn link_interface_vlan(
         ],
     )
     .context("execute link_interface_vlan")?;
+    Ok(())
+}
+
+/// P3: Backfill LOCATED_AT edges for all devices that have a non-empty `site`
+/// property but no outgoing LOCATED_AT edge. Safe to re-run; MERGE is idempotent.
+/// `site_id_map` is site_name → site_id, built from the NetBox device payload.
+fn backfill_located_at(
+    conn: &Connection<'_>,
+    site_id_map: &std::collections::HashMap<String, String>,
+) -> Result<()> {
+    // Find devices with a site string but no LOCATED_AT edge.
+    let mut stmt = conn
+        .prepare(
+            "MATCH (d:Device) \
+             WHERE d.site <> '' \
+             AND NOT (d)-[:LOCATED_AT]->(:Site) \
+             RETURN d.address, d.site",
+        )
+        .context("prepare backfill_located_at query")?;
+    let rows: Vec<(String, String)> = conn
+        .execute(&mut stmt, vec![])
+        .context("execute backfill_located_at query")?
+        .map(|row| {
+            let addr = match &row[0] { lbug::Value::String(s) => s.clone(), _ => String::new() };
+            let site = match &row[1] { lbug::Value::String(s) => s.clone(), _ => String::new() };
+            (addr, site)
+        })
+        .filter(|(a, s)| !a.is_empty() && !s.is_empty())
+        .collect();
+
+    for (addr, site_name) in rows {
+        let site_id = site_id_map
+            .get(&site_name)
+            .cloned()
+            .unwrap_or_else(|| crate::graph::site_id_from_name(&site_name));
+        // Upsert the Site node (may not exist yet) then link.
+        let now = crate::graph::common::ts(crate::graph::common::now_ns());
+        // upsert_site_record lives in graph/mod.rs and is not pub — write inline.
+        let mut s_stmt = conn
+            .prepare(
+                "MERGE (s:Site {id: $id}) \
+                 ON CREATE SET s.name = $name, s.parent_id = '', s.kind = 'unknown', \
+                               s.lat = 0.0, s.lon = 0.0, s.metadata_json = '{}', s.updated_at = $ts \
+                 ON MATCH SET s.updated_at = $ts",
+            )
+            .context("prepare backfill Site upsert")?;
+        conn.execute(
+            &mut s_stmt,
+            vec![
+                ("id",   Value::String(site_id.clone())),
+                ("name", Value::String(site_name.clone())),
+                ("ts",   now),
+            ],
+        )
+        .context("execute backfill Site upsert")?;
+
+        let mut link = conn
+            .prepare(
+                "MATCH (d:Device {address: $addr}), (s:Site {id: $sid}) \
+                 MERGE (d)-[:LOCATED_AT]->(s)",
+            )
+            .context("prepare backfill LOCATED_AT")?;
+        conn.execute(
+            &mut link,
+            vec![
+                ("addr", Value::String(addr.clone())),
+                ("sid",  Value::String(site_id)),
+            ],
+        )
+        .context("execute backfill LOCATED_AT")?;
+
+        debug!(address = %addr, site = %site_name, "backfilled LOCATED_AT");
+    }
     Ok(())
 }
 

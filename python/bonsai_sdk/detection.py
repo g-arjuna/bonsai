@@ -42,8 +42,12 @@ class Features:
 
     # Raw timestamp
     occurred_at_ns: int = 0
-    # UUID of the StateChangeEvent that triggered this detection; empty for poll-based rules
+    # UUID of the primary StateChangeEvent that triggered this detection; empty for poll-based rules
     state_change_event_id: str = ""
+    # All StateChangeEvent UUIDs that contributed (multi-source correlation).
+    # Populated by the rule engine when a CorrelationBuffer slot is fused.
+    # Falls back to [state_change_event_id] when only one source contributed.
+    source_event_ids: list = field(default_factory=list)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -67,6 +71,16 @@ class Detection:
     reason: str            # human-readable explanation
     auto_remediate: bool = False
     remediation_action: str = ""   # e.g. "bgp_soft_clear"
+
+    @property
+    def effective_source_event_ids(self) -> list[str]:
+        """Return all contributing StateChangeEvent IDs, or the single primary if no multi-source list."""
+        ids = self.features.source_event_ids
+        if ids:
+            return ids
+        if self.features.state_change_event_id:
+            return [self.features.state_change_event_id]
+        return []
 
 
 class Detector(ABC):

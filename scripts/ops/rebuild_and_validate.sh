@@ -600,9 +600,8 @@ else
 fi
 
 # ── 14. T4-7 gate: fault injection round-trip ─────────────────────────────────
-# Proves the Python sidecar catches the three rule_ids the Rust fastpath
-# currently double-handles. If this passes, src/event_detection.rs is safe
-# to delete in the next Mac iteration.
+# Proves the Python sidecar catches the three rule_ids.
+# Note: src/event_detection.rs has been removed (retired DV3 D3-9 T1).
 section "14. T4-7 gate: fault injection round-trip"
 
 BGP_TARGET="$(echo "$TOPO_JSON" | python3 -c "
@@ -773,7 +772,7 @@ echo "  FAIL: $FAIL_COUNT"
   echo
   if (( FAIL_COUNT == 0 )); then
     if (( WARN_COUNT == 0 )); then
-      echo "**Verdict**: full pipeline green. T4-7 gate closed if step 14 PASS; otherwise lab steps are clean and T4-7 is the only blocker for deleting src/event_detection.rs."
+      echo "**Verdict**: full pipeline green. T4-7 gate closed if step 14 PASS. (src/event_detection.rs already removed.)"
     else
       echo "**Verdict**: no failures; warnings above are mostly skip-reasons (no lab, no --with-chaos, etc.). T4-1 through T4-6 validated; T4-7 needs --with-lab to close."
     fi

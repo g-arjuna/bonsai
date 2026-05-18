@@ -44,6 +44,8 @@ pub(super) async fn inject_detection_handler(
             req.rule_id,
             req.severity,
             "{}".to_string(),
+            "[]".to_string(),
+            0,
             fired_at_ns,
             String::new(),
         )

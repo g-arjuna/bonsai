@@ -40,15 +40,43 @@ class EventWindow:
 
 
 class WindowRegistry:
-    """Per-device-peer sliding windows, created on demand."""
+    """Per-device-peer sliding windows, created on demand.
 
-    def __init__(self, window_seconds: float = 300.0):
+    Bounded by max_entries to prevent unbounded memory growth under device
+    churn. When the cap is reached, the oldest-inserted key is evicted (FIFO
+    approximation using dict insertion order, Python 3.7+).
+    Stale windows (all entries aged out) are also pruned lazily on access
+    and eagerly via evict_stale().
+    """
+
+    def __init__(self, window_seconds: float = 300.0, max_entries: int = 4096):
         self._windows: dict[str, EventWindow] = {}
         self._lock = threading.Lock()
         self._window_seconds = window_seconds
+        self._max_entries = max_entries
 
     def get(self, key: str) -> EventWindow:
         with self._lock:
             if key not in self._windows:
+                if len(self._windows) >= self._max_entries:
+                    oldest_key = next(iter(self._windows))
+                    del self._windows[oldest_key]
                 self._windows[key] = EventWindow(self._window_seconds)
             return self._windows[key]
+
+    def evict_stale(self) -> int:
+        """Remove windows whose sliding window has fully expired. Returns eviction count."""
+        now_ns = time.time_ns()
+        stale: list[str] = []
+        with self._lock:
+            for key, window in self._windows.items():
+                window._prune(now_ns)
+                if not window._entries:
+                    stale.append(key)
+            for key in stale:
+                del self._windows[key]
+        return len(stale)
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._windows)

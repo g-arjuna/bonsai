@@ -202,6 +202,12 @@ class SrlgRiskDetected(Detector):
         return None
 
     @classmethod
+    def _evict_last_fired(cls, now: float) -> None:
+        expired = [k for k, t in cls._last_fired.items() if now - t > _SRLG_RISK_COOLDOWN_SECS]
+        for k in expired:
+            del cls._last_fired[k]
+
+    @classmethod
     def evaluate_graph(cls, client: "BonsaiClient") -> list[tuple[str, str]]:
         rows = client.query(
             "MATCH (l:BgpLsLink) "
@@ -229,6 +235,7 @@ class SrlgRiskDetected(Detector):
 
         results: list[tuple[str, str]] = []
         now = time.time()
+        cls._evict_last_fired(now)
         for (device, srlg), links in srlg_index.items():
             unique_links = sorted(set(links))
             if len(unique_links) < 2:

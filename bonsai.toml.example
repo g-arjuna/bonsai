@@ -1,265 +1,576 @@
-# bonsai.toml — runtime configuration
-# Copy to bonsai.toml, fill in credentials, keep out of git (it is gitignored).
-# Never commit credentials.
+# bonsai.toml — reference configuration
 #
-# Phase 4 lab: bonsai-p4 (3x SRL + 1x XRd, mgmt 172.100.102.x)
-# Run lab/fast-iteration/deploy-p4.sh to generate p4-ca.pem and bring up nodes.
+# Copy this file to bonsai.toml and edit before starting bonsai.
+# All sections are optional unless marked REQUIRED.
+# All defaults match the values shown in the comments.
+#
+# Quick start (no lab):
+#   cp bonsai.toml.example bonsai.toml
+#   # Set BONSAI_VAULT_PASSPHRASE in your environment.
+#   # Add at least one [[target]] block below.
+#   ./bonsai  (or: docker compose --profile standalone up -d)
 
-graph_path   = "bonsai.db"
+# ── REQUIRED ─────────────────────────────────────────────────────────────────
 
-# ── GNN inference mode (D5-T4 DV1) ───────────────────────────────────────────
-# During calibration (default), GNN scores accumulate in gnn_calibration_scores
-# but no Detection rows are created. Review the 7-day score distribution, then
-# flip to production.
-# [gnn]
-# inference_mode = "calibration"   # "calibration" | "production"
-# threshold = 0.5                  # anomaly score threshold (production only)
-# min_calibration_samples = 1000   # advisory minimum before switching to prod
-# Runtime mode (T1-2 distributed collector seam)
-# [runtime]
-# mode = "all"  # one of: all, core, collector
-# resource_profile = "large"  # optional override: tiny|small|medium|large|xlarge
-# collector_id = "local"
-# core_ingest_endpoint = "http://[::1]:50051"  # used only by collector mode
+# Path to the lbug graph database file.
+# Created on first start. Use an absolute path in production.
+graph_path = "runtime/bonsai.db"
+
+# ── Listen Addresses ─────────────────────────────────────────────────────────
+#
+# HTTP UI and REST API server (browser/curl). Default: "0.0.0.0:3000".
+# Also controlled by BONSAI_HTTP_PORT env var in the container healthcheck.
+# Changing this requires a process restart.
+# http_addr = "0.0.0.0:3000"
+#
+# gRPC API server (collector→core channel + CLI tools). Default: "[::1]:50051".
+# Use "0.0.0.0:50051" in Docker or distributed deployments.
+# Changing this requires a process restart.
+# api_addr = "[::1]:50051"
+#
+# Prometheus /metrics HTTP listener. Default: "[::1]:9090". Set to "" to disable.
+# metrics_addr = "[::1]:9090"
+#
+# Signal receiver addresses (require restart; ports < 1024 need root or
+# cap_net_bind_service):
+#   [signals.syslog]  udp_addr = "0.0.0.0:5514"  tcp_addr = "0.0.0.0:6514"
+#   [signals.snmp]    udp_addr = "0.0.0.0:9162"
+#   [streaming.bmp]   tcp_addr = "0.0.0.0:5000"
+#   [streaming.bgp_ls]tcp_addr = "127.0.0.1:15071"
+#   [streaming.pcep]  tcp_addr = "0.0.0.0:4189"
+#   [streaming.otlp]  http_addr= "0.0.0.0:4318"
+#   [streaming.netflow]udp_addr= "0.0.0.0:2055"
+
+# ── [runtime] ────────────────────────────────────────────────────────────────
+
+[runtime]
+# One binary, three modes:
+#   "all"       — runs both the core (graph, API, change detection) and the
+#                 local collector (gNMI subscriber). Single-machine default.
+#   "core"      — core only (graph + API). Used in distributed deployments.
+#   "collector" — collector only (gNMI subscriber, forwards to a remote core).
+# Default: "all"
+mode = "all"
+
+# Stable identifier for this collector instance.
+# Stored on every TelemetryIngest record — use something meaningful in
+# distributed setups (e.g. "site-a-collector-1").
+# Default: "local"
+collector_id = "local"
+
+# Core gRPC endpoint used when mode = "collector".
+# Must point at the bonsai core's api_addr.
+# Default: "http://[::1]:50051"
+# core_ingest_endpoint = "http://[::1]:50051"
+
+# Optional resource profile override: tiny|small|medium|large|xlarge.
+# Auto-detected from system RAM by default.
+# resource_profile = "medium"
+
+# [runtime.tls] — mTLS for the distributed collector-core channel.
+# Only needed when mode = "collector" and the core requires TLS.
 # [runtime.tls]
-# enabled = false
-# ca_cert = "config/tls/ca.pem"
-# cert = "config/tls/core.pem"       # core cert in core/all mode; collector cert in collector mode
-# key = "config/tls/core-key.pem"
-# server_name = "bonsai-core.local"  # collector-side verification name; must match core SAN
-#
-# all: current single-process behavior; subscribes to devices and runs graph/API/UI.
-# core: graph/API/UI plus TelemetryIngest server; no local gNMI subscribers.
-# collector: local gNMI subscribers plus optional collector-local archive; forwards
-# decoded telemetry to the core ingest endpoint.
-# api_addr     = "[::1]:50051"   # gRPC API (default shown)
-# metrics_addr = "[::1]:9090"    # Prometheus /metrics HTTP (set to "" to disable)
-#
-# [collector.queue]
-# path = "runtime/collector-queue"
-# max_bytes = 1073741824       # 1 GiB; oldest unacked records are dropped above this
-# max_age_hours = 24           # 0 disables age-based drops
-# drain_batch_size = 1000      # records per reconnect replay stream
-# log_interval_seconds = 30    # periodic queue size visibility; 0 disables
-
-# Local credential vault (T1-1). Set BONSAI_VAULT_PASSPHRASE before starting
-# Bonsai to unlock alias-based credentials. Secrets are encrypted in vault.age;
-# metadata.json stores alias names and timestamps only.
-# [credentials]
-# path = "bonsai-credentials"
-# passphrase_env = "BONSAI_VAULT_PASSPHRASE"
-
-# ── Layered ingestion (CV1 Sprint 2 baseline) ───────────────────────────────
-# Encrypted-at-rest config snapshots captured via gNMI Get(CONFIG). Manual
-# re-parse is available from the device drawer; a weekly scheduled verification
-# queue runs automatically when enabled.
-# [layered_ingestion]
 # enabled = true
-# config_store_path = "runtime/config-store"
-# config_store_passphrase_env = "BONSAI_VAULT_PASSPHRASE"
-# change_detection_schedule_interval_secs = 3600
-# change_detection_reparse_interval_secs = 604800
-# history_limit = 25
-# default_gnmi_get_paths = []   # empty means "request the full config tree"
-# gnmi_known_issues_path = "config/gnmi_known_issues/default.yaml"
-# syslog_patterns_path = "config/syslog_patterns"
-#
-# [layered_ingestion.parser_chain]
-# consensus_mode = false
-# CLI capture uses `scripts/cli_capture.py` plus Paramiko from the repo-local
-# Python environment. When `target.vendor` is absent, Bonsai falls back to
-# hostname inference (`xrd-*`, `srl-*`, `ceos-*`, `crpd-*`, `vjunos-*`, `frr-*`).
-# priorities."cisco-iosxr::show bgp summary" = ["pyats_genie", "ntc_templates", "bonsai_native"]
-# priorities."cisco-iosxr::show bgp neighbors" = ["pyats_genie", "ntc_templates", "bonsai_native"]
-# priorities."cisco-nxos::*" = ["pyats_genie", "suzieq_native", "ntc_templates"]
-# priorities."arista-eos::*" = ["suzieq_native", "pyats_genie", "ntc_templates"]
-# priorities."juniper-junos::*" = ["pyats_genie", "ntc_templates", "bonsai_native"]
-# priorities."nokia-srlinux::*" = ["bonsai_native"]
-# priorities."frr::*" = ["bonsai_native"]
-#
-# [layered_ingestion.parser_chain.sidecars]
-# pyats_url = "http://127.0.0.1:9101"
-# native_url = "http://127.0.0.1:9102"
+# ca_cert = "config/tls/ca.pem"          # CA that signed both core and collector certs
+# cert    = "config/tls/collector.pem"   # This process's certificate chain
+# key     = "config/tls/collector-key.pem"
+# server_name = "bonsai-core.local"      # SNI name on the core's certificate
 
-# ── YANG library lifecycle (CV1 Sprint 4) ───────────────────────────────────
-# The local YANG catalogue stores imported/synced modules and the Bonsai path
-# index derived from them. Signed bundle workflows use a shared secret key env
-# var so internet-connected workstations can prepare bundles for restricted
-# environments.
-# [yang]
-# library_root = "runtime/yang_catalogue"
-# cache_root = "runtime/yang_cache"
-# bundle_key_env = "BONSAI_YANG_BUNDLE_KEY"
+# ── [graph] ──────────────────────────────────────────────────────────────────
 
-# ── Graph database (v12 T0-1) ─────────────────────────────────────────────────
-# LadybugDB buffer pool is capped by default to avoid the ~80% RAM grab.
-# Default: min(2 GiB, 25% of RAM) for core; min(256 MiB, 10%) for collector.
-# Override here if you have more RAM to spare or run on a constrained device.
-# [graph]
-# buffer_pool_bytes = 536870912    # 512 MiB default; fits within 1.5 GiB RSS budget for 8-12 node labs
+[graph]
+# LadybugDB buffer pool size in bytes.
+# Auto-detected: min(2 GiB, 25 % of RAM) for core; min(256 MiB, 10 %) for collector.
+# Uncomment to override. Use larger values on dedicated servers.
+# buffer_pool_bytes = 2147483648   # 2 GiB
 
-# ── Event bus (T1-1) ──────────────────────────────────────────────────────────
-# [event_bus]
-# capacity              = 512    # broadcast channel depth; default reduced from 2048 in v12
-# counter_debounce_secs = 10     # min interval between interface counter graph writes
-# [archive]
-# enabled                = true     # write telemetry updates to parquet for cold storage
-# path                   = "archive"
-# flush_interval_seconds = 10
-# max_batch_rows         = 1000
-# compression_level      = 12        # ZSTD level 1-22 (default 12; level 22 not worth CPU cost)
-# writer_max_idle_secs   = 7200      # force-close partition writers idle for >2h (prevents open-file leaks)
-# max_file_age_seconds   = 3600      # force-rotate writers after 1h wall-clock age (ensures closed files appear even during continuous ingest)
+# ── [credentials] ────────────────────────────────────────────────────────────
 
-# ── Signals (BV6) ────────────────────────────────────────────────────────────
-# Syslog is disabled by default. The sample UDP port avoids root privileges for
-# local development; deployments can use 0.0.0.0:514 and TCP 6514.
-# [signals.syslog]
-# enabled          = false
-# udp_addr         = "0.0.0.0:5514"
-# tcp_addr         = "0.0.0.0:6514"
-# archive_path     = "runtime/signals/syslog.jsonl"
-# max_frame_bytes  = 8192
-#
-# SNMP trap receiver uses an unprivileged default port for development.
-# Real deployments can bind 0.0.0.0:162 if the process has permission.
-# [signals.snmp]
-# enabled          = false
-# udp_addr         = "0.0.0.0:9162"
-# archive_path     = "runtime/signals/snmp.jsonl"
-# max_frame_bytes  = 8192
+[credentials]
+# Directory containing the encrypted credential vault (vault.age + metadata.json).
+# Default: "bonsai-credentials"
+path = "bonsai-credentials"
 
-# ── Modern streaming protocols (CV2 Sprint 4) ───────────────────────────────
-# BMP is a native TCP receiver in bonsai-core. Devices export BMP directly to
-# the collector using RFC 7854. This is the preferred standards-based path for
-# per-prefix BGP visibility in mixed-vendor networks.
-# [streaming.bmp]
-# enabled          = false
-# tcp_addr         = "0.0.0.0:5000"
-# archive_path     = "runtime/streaming/bmp.jsonl"
-# max_frame_bytes  = 65535
-#
-# BGP-LS is ingested through a GoBGP-style sidecar that forwards normalized
-# JSON lines to Bonsai. The contract is intentionally vendor-neutral even though
-# the sidecar itself may be fed by vendor-specific control-plane sessions.
-# [streaming.bgp_ls]
-# enabled          = false
-# tcp_addr         = "127.0.0.1:15071"
-# archive_path     = "runtime/streaming/bgp_ls.jsonl"
-# max_frame_bytes  = 65535
-#
-# PCEP remains deferred until the SP lab is validated. The config section exists
-# now so the readiness report can describe the future seam without claiming the
-# runtime parser is already complete.
-# [streaming.pcep]
-# enabled          = false
-# tcp_addr         = "0.0.0.0:4189"
-# archive_path     = "runtime/streaming/pcep.jsonl"
-# max_frame_bytes  = 65535
+# Environment variable that holds the vault passphrase.
+# The passphrase must be present in the environment at startup.
+# Best practice: use an EnvironmentFile in systemd (600 permissions), not
+# inline Environment= (visible in /proc/<pid>/environ).
+# Default: "BONSAI_VAULT_PASSPHRASE"
+passphrase_env = "BONSAI_VAULT_PASSPHRASE"
 
-# ── Retention (v11 T4-3) ─────────────────────────────────────────────────────
-# Enabled by default to bound graph memory and WAL size.
-# [retention]
-# enabled                  = true    # enable hourly prune pass (default: true)
-# max_age_hours            = 24      # delete events older than N hours (default: 24)
-# max_state_change_events  = 10000   # hard cap on total events; 0 = unlimited (default: 10000)
+# ── [retention] ──────────────────────────────────────────────────────────────
 
-# ── Storage caps (v11 T4-5) ──────────────────────────────────────────────────
-# [storage]
-# max_archive_bytes     = 10737418240   # 10 GB archive cap (0 = unlimited)
-# max_graph_bytes       = 5368709120    # 5 GB graph cap (0 = unlimited)
-# check_interval_secs   = 300           # how often to check disk usage
-# warn_threshold_pct    = 80            # warn when usage reaches this % of cap
+[retention]
+# Enable periodic pruning of old StateChangeEvents. Default: true
+enabled = true
 
-# ── ServiceNow integration (T2-1) ─────────────────────────────────────────────
-# Primary dev/test target: your reserved PDI (https://devXXXXXX.service-now.com).
-# Production deployments: use scoped roles (itil + event_creator), NOT admin creds.
-# Credential is stored in the vault under `credential_alias` — NEVER inline here.
-#
-# [integrations.servicenow]
-# enabled           = false
-# instance_url      = "https://devXXXXXX.service-now.com"
-# credential_alias  = "servicenow-pdi"   # set with: bonsai credentials set servicenow-pdi
-# em_push_enabled   = false              # push DetectionEvents to Event Management
-#
-# [integrations.servicenow.event_filter]
-# min_severity       = "warning"   # "critical" | "warning" | "info"
-# min_age_secs       = 60          # only push detections older than N seconds (debounce transients)
-# dedup_window_secs  = 300         # suppress same (device, rule) re-push within N seconds
-#
-# [integrations.servicenow.aiops]
-# enabled                    = false
-# poll_interval_secs         = 120
-# active_window_secs         = 900
-# correlation_window_secs    = 30
-# incident_table             = "incident"
-# open_state                 = "1"   # ServiceNow "New"
-# resolved_state             = "6"   # ServiceNow "Resolved"
-# assignment_group_fallback  = ""
-# max_blast_radius_hops      = 2
-# auto_clear                 = true
-# playbook_bridge_enabled    = true
+# Delete StateChangeEvents older than this many hours. Default: 24
+max_age_hours = 24
 
-# ── Human-in-the-loop remediation trust (Sprint 4) ────────────────────────────
-# [remediation]
-# rollback_window_secs = 60
-#
-# [remediation.graduation]
-# consecutive_approvals_required = 10
-#
-# [remediation.defaults]
-# home_lab         = "auto_silent"
-# data_center      = "auto_with_notification"
-# service_provider = "approve_each"
-# campus_wired     = "auto_with_notification"
-# campus_wireless  = "approve_each"
-#
-# Optional per-rule overrides. Unspecified archetypes inherit the global default.
+# Hard cap on total StateChangeEvents kept. 0 = unlimited. Default: 10000
+max_state_change_events = 10000
+
+# ── [archive] ────────────────────────────────────────────────────────────────
+
+[archive]
+# Enable the Parquet archive consumer.
+# Required for GNN training data accumulation.
+# Default: false
+enabled = false
+
+# Root directory for Parquet archive output. Default: "archive"
+path = "archive"
+
+# Flush in-memory buffer to disk every N seconds. Default: 10
+flush_interval_seconds = 10
+
+# Also flush when the in-memory batch reaches this row count. Default: 1000
+max_batch_rows = 1000
+
+# ZSTD compression level. 1 = fastest, 22 = best. Default: 12
+compression_level = 12
+
+# Close idle partition writers after N seconds of inactivity. Default: 7200 (2h)
+writer_max_idle_secs = 7200
+
+# Force-rotate partition writers older than N seconds.
+# Ensures at least one closed Parquet file per interval even under continuous ingest.
+# Default: 3600 (1h)
+max_file_age_seconds = 3600
+
+# ── [storage] ────────────────────────────────────────────────────────────────
+
+[storage]
+# Maximum bytes the archive directory may use before aggressive retention kicks in.
+# 0 = unlimited. Default: 10737418240 (10 GB)
+max_archive_bytes = 10737418240
+
+# Maximum bytes the graph database directory may use.
+# 0 = unlimited. Default: 5368709120 (5 GB)
+max_graph_bytes = 5368709120
+
+# How often (seconds) to check disk usage. Default: 300 (5 min)
+check_interval_secs = 300
+
+# Log a warning when usage exceeds this percentage of the configured max. Default: 80
+warn_threshold_pct = 80
+
+# ── [ingest] ─────────────────────────────────────────────────────────────────
+
+[ingest]
+# Minimum interval (seconds) between counter writes per (device, interface).
+# Suppresses identical counter telemetry updates that arrive faster than this.
+# Default: 10
+counter_debounce_secs = 10
+
+# Total RAM budget for the three ingest debounce LRU caches combined.
+# Default: 16777216 (16 MiB)
+debounce_memory_bytes = 16777216
+
+# [ingest.backpressure] — shed load when lbug buffer pool is under pressure.
+[ingest.backpressure]
+# Drop non-critical updates when buffer pool reaches this % of capacity. Default: 75
+level_1_pct = 75
+
+# Drop all but exempt paths when buffer pool reaches this % of capacity. Default: 90
+level_2_pct = 90
+
+# gNMI subscription paths exempt from backpressure shedding (always kept).
+# Example: interface oper-state, BGP session state — events that must not be lost.
+# exemptions = ["/interface[name=*]/oper-state", "/network-instance[name=*]/protocols/bgp"]
+exemptions = []
+
+# ── [event_bus] ──────────────────────────────────────────────────────────────
+
+[event_bus]
+# Broadcast channel capacity for the internal event bus.
+# Increase if high-frequency labs cause "lagged" warnings. Default: 2048
+capacity = 2048
+
+# ── [layered_ingestion] ──────────────────────────────────────────────────────
+
+[layered_ingestion]
+# Enable the config-state change detection layer (gNMI GET + diff + parse).
+# Disable only for bare telemetry-only deployments. Default: true
+enabled = true
+
+# Path for the layered ingestion config store (stores per-device config snapshots).
+# Default: "runtime/config-store"
+config_store_path = "runtime/config-store"
+
+# How often (seconds) to schedule a full config fetch cycle for all managed devices.
+# Default: 3600 (1h)
+change_detection_schedule_interval_secs = 3600
+
+# How often (seconds) to force a full re-parse of all stored configs.
+# Default: 604800 (7 days)
+change_detection_reparse_interval_secs = 604800
+
+# Maximum number of historical config snapshots retained per device.
+# Default: 25
+history_limit = 25
+
+# Additional gNMI GET paths to include in config fetch beyond the auto-selected profile.
+# Example: ["/system/config", "/routing-policy/policy-definition"]
+default_gnmi_get_paths = []
+
+# Path to the vendor-specific gNMI known issues YAML file.
+# Default: "config/gnmi_known_issues/default.yaml"
+gnmi_known_issues_path = "config/gnmi_known_issues/default.yaml"
+
+# Path to the directory of syslog parsing pattern files.
+# Default: "config/syslog_patterns"
+syslog_patterns_path = "config/syslog_patterns"
+
+# [layered_ingestion.parser_chain] — multi-sidecar config parser settings.
+[layered_ingestion.parser_chain]
+# If true, require all parser sidecars to agree before accepting a parse result.
+# Default: false
+consensus_mode = false
+
+# [layered_ingestion.parser_chain.sidecars] — parser sidecar HTTP endpoints.
+[layered_ingestion.parser_chain.sidecars]
+# pyATS/Genie parser sidecar (Docker: pyats-sidecar service).
+# Default: "http://127.0.0.1:9101"
+pyats_url = "http://127.0.0.1:9101"
+
+# Bonsai native parser sidecar.
+# Default: "http://127.0.0.1:9102"
+native_url = "http://127.0.0.1:9102"
+
+# ── [yang] ───────────────────────────────────────────────────────────────────
+
+[yang]
+# Root directory for the YANG model library (vendor YANG files).
+# Default: "runtime/yang_catalogue"
+library_root = "runtime/yang_catalogue"
+
+# Directory for the compiled YANG schema cache.
+# Default: "runtime/yang_cache"
+cache_root = "runtime/yang_cache"
+
+# Environment variable containing the YANG bundle decryption key.
+# Default: "BONSAI_YANG_BUNDLE_KEY"
+bundle_key_env = "BONSAI_YANG_BUNDLE_KEY"
+
+# ── [collector] ──────────────────────────────────────────────────────────────
+
+[collector]
+# Collector-local lbug graph path (separate from the core graph).
+# Default: "runtime/collector.db"
+graph_path = "runtime/collector.db"
+
+# Diagnostic HTTP server port for the collector process.
+# Exposes /health, /api/readiness, /api/collector/status.
+# 0 = disabled. Set BONSAI_COLLECTOR_DIAG_PASSWORD env var to require auth.
+# Default: 0 (disabled)
+diagnostic_port = 0
+
+# [collector.queue] — disk-backed telemetry queue (buffering when core is unreachable).
+[collector.queue]
+# Directory for append-only queue files. Default: "runtime/collector-queue"
+path = "runtime/collector-queue"
+
+# Maximum queue size in bytes. 0 = unlimited. Default: 1073741824 (1 GiB)
+max_bytes = 1073741824
+
+# Drop records older than this many hours. 0 = unlimited. Default: 24
+max_age_hours = 24
+
+# Maximum records replayed in one batch when reconnecting to the core.
+# Default: 1000
+drain_batch_size = 1000
+
+# Log queue depth at this interval (seconds). 0 = never. Default: 30
+log_interval_seconds = 30
+
+# [collector.filter] — control how counter telemetry is forwarded.
+[collector.filter]
+# Forwarding mode for counter updates:
+#   "raw"       — forward every update as-is.
+#   "debounced" — drop updates within the debounce window (reduces write traffic).
+#   "summary"   — aggregate into time-windowed summaries (recommended for distributed).
+# Default: "debounced"
+counter_forward_mode = "debounced"
+
+# Minimum interval (seconds) between counter forwards per (device, interface).
+# Only used when counter_forward_mode = "debounced". Default: 10
+counter_debounce_secs = 10
+
+# Summary window duration in seconds.
+# Only used when counter_forward_mode = "summary". Default: 60
+counter_window_secs = 60
+
+# Seconds of silence after which a partial summary window is flushed.
+# Default: 70 (window + 10s)
+counter_flush_idle_secs = 70
+
+# ── [remediation] ────────────────────────────────────────────────────────────
+
+[remediation]
+# Seconds a proposal in "approved" state stays eligible for rollback.
+# After this window closes, rollback is no longer available.
+# Default: 60
+rollback_window_secs = 60
+
+# When true, bonsai automatically creates a pending RemediationProposal for
+# every DetectionEvent that matches a known playbook.
+# Start with false until you have reviewed your playbook catalogue.
+# Default: false (D3-5 T1)
+# auto_propose = false
+
+# [remediation.graduation] — trust graduation thresholds.
+[remediation.graduation]
+# Number of consecutive operator approvals for a (rule, playbook) tuple before
+# bonsai surfaces a "consider promoting to auto-approve" hint.
+# Default: 10
+consecutive_approvals_required = 10
+
+# [remediation.defaults] — initial TrustState for new (rule, env, site, playbook) tuples.
+# Values: "suggest_only" | "approve_each" | "auto_with_notification" | "auto_silent"
+[remediation.defaults]
+home_lab     = "auto_with_notification"
+data_center  = "approve_each"
+service_provider = "approve_each"
+campus_wired = "approve_each"
+campus_wireless = "approve_each"
+
+# Per-rule overrides (inherits from defaults when unset):
 # [remediation.rule_defaults.bgp_session_down]
-# data_center      = "approve_each"
-# service_provider = "approve_each"
+# data_center = "auto_with_notification"
 
-# ── Lab management network (CV5 T2-3) ───────────────────────────────────────
-# Declares the active lab's management subnet as an explicit config key.
-# Scripts and tooling read this instead of inferring it from device addresses.
-# Invariant: network name is always "bonsai-mgmt"; only the subnet changes per lab.
+# ── [integrations] ───────────────────────────────────────────────────────────
+
+[integrations.servicenow]
+# Enable ServiceNow integration. Requires instance_url + credential_alias.
+enabled = false
+
+# PDI or production instance URL. Example: "https://dev12345.service-now.com"
+instance_url = ""
+
+# Vault alias for ServiceNow credentials (username + password).
+credential_alias = ""
+
+# Push detection events to ServiceNow Event Management.
+em_push_enabled = false
+
+[integrations.servicenow.event_filter]
+# Minimum event severity to push: "critical" | "warning" | "info". Default: "warning"
+min_severity = "warning"
+
+# Hold detections this many seconds before pushing (avoid noise from flaps). Default: 60
+min_age_secs = 60
+
+# Suppress a (device, rule_id) pair that was already pushed within this window. Default: 300
+dedup_window_secs = 300
+
+[integrations.servicenow.aiops]
+# Enable Sprint 6 incident sync and playbook bridge (ServiceNow AIOps).
+enabled = false
+
+# Background sync cadence (seconds). Default: 120
+poll_interval_secs = 120
+
+# Detections newer than this window are treated as active incidents. Default: 900
+active_window_secs = 900
+
+# Time window to correlate detections into one incident. Default: 30
+correlation_window_secs = 30
+
+# ServiceNow table name for ITSM incidents. Default: "incident"
+incident_table = "incident"
+
+# State value for open incidents. Default: "1" (New)
+open_state = "1"
+
+# State value when bonsai auto-resolves. Default: "6" (Resolved)
+resolved_state = "6"
+
+# Max physical hop depth for blast-radius context attached to incidents. Default: 2
+max_blast_radius_hops = 2
+
+# Resolve previously-synced incidents when detections go quiet. Default: true
+auto_clear = true
+
+# Parse ServiceNow comments for `bonsai:playbook <id>` commands. Default: true
+playbook_bridge_enabled = true
+
+# Optional fallback assignment group name/sys_id when CMDB has no group for the device.
+# assignment_group_fallback = ""
+
+# ── [signals] ────────────────────────────────────────────────────────────────
+
+[signals.syslog]
+# Enable the syslog receiver for structured event parsing from network devices.
+enabled = false
+
+# UDP listen address. Use "0.0.0.0:514" for deployment (requires root/cap_net_bind).
+# Default avoids privileged ports for dev.
+udp_addr = "0.0.0.0:5514"
+
+# TCP listen address for syslog over TCP (RFC 3195).
+tcp_addr = "0.0.0.0:6514"
+
+# JSONL archive path for raw + parsed syslog records.
+archive_path = "runtime/signals/syslog.jsonl"
+
+# Maximum accepted syslog frame size in bytes. Default: 8192
+max_frame_bytes = 8192
+
+[signals.snmp]
+# Enable the SNMP trap receiver (v1/v2c/v3).
+enabled = false
+
+# UDP listen address. Use "0.0.0.0:162" for deployment (requires root/cap_net_bind).
+udp_addr = "0.0.0.0:9162"
+
+# JSONL archive path for raw SNMP trap records.
+archive_path = "runtime/signals/snmp.jsonl"
+
+# Maximum accepted trap size in bytes. Default: 8192
+max_frame_bytes = 8192
+
+# ── [streaming] ──────────────────────────────────────────────────────────────
+
+[streaming.bmp]
+# Enable BMP (BGP Monitoring Protocol) receiver. Listens for BMP sessions from routers.
+enabled = false
+tcp_addr = "0.0.0.0:5000"
+archive_path = "runtime/streaming/bmp.jsonl"
+max_frame_bytes = 65535
+
+[streaming.bgp_ls]
+# Enable BGP-LS receiver (via GoBGP sidecar).
+# Receives line-delimited JSON events from the gobgp-bgp-ls Docker sidecar.
+enabled = false
+tcp_addr = "127.0.0.1:15071"
+archive_path = "runtime/streaming/bgp_ls.jsonl"
+max_frame_bytes = 65535
+
+[streaming.pcep]
+# Enable PCEP (Path Computation Element Protocol) receiver.
+enabled = false
+tcp_addr = "0.0.0.0:4189"
+archive_path = "runtime/streaming/pcep.jsonl"
+max_frame_bytes = 65535
+
+[streaming.otlp]
+# Enable OpenTelemetry Protocol (OTLP) HTTP receiver.
+enabled = false
+http_addr = "0.0.0.0:4318"
+
+[streaming.netflow]
+# Enable NetFlow/IPFIX UDP receiver.
+enabled = false
+udp_addr = "0.0.0.0:2055"
+
+# ── [gnn] ────────────────────────────────────────────────────────────────────
+
+[gnn]
+# GNN inference mode:
+#   "calibration" — anomaly scores accumulate in gnn_calibration_scores but
+#                   no Detection rows are written. Use for the first 7–30 days.
+#   "production"  — scores above threshold produce Detection rows.
+# Do not switch to "production" before reviewing the calibration score distribution.
+# Default: "calibration"
+inference_mode = "calibration"
+
+# Anomaly score threshold for production mode. Scores above this trigger a Detection.
+# Review calibration P95 before adjusting. Default: 0.5
+threshold = 0.5
+
+# Advisory minimum number of calibration-phase samples before transitioning to production.
+# Bonsai does not block the transition — this is informational only. Default: 1000
+min_calibration_samples = 1000
+
+# ── [logging] ────────────────────────────────────────────────────────────────
+
+[logging]
+# Log level: "error" | "warn" | "info" | "debug" | "trace". Default: "info"
+level = "info"
+
+# Path for the rotating log file. When empty, logs go to stderr only.
+# Default: "" (stderr only)
+file_path = ""
+
+# Log rotation period: "daily" | "hourly" | "never". Default: "daily"
+rotation = "daily"
+
+# Number of rotated log files to retain. Default: 7
+retention_days = 7
+
+# Minimum free disk bytes at the log file path required to start bonsai.
+# 0 = skip the check. Default: 5368709120 (5 GiB)
+min_free_bytes = 5368709120
+
+# Per-module log level overrides (takes precedence over `level`).
+# [logging.targets]
+# "bonsai::ingest" = "debug"
+# "bonsai::enrichment" = "debug"
+
+# ── [lab] ────────────────────────────────────────────────────────────────────
+
+[lab]
+# Active lab topology identifier. Used by scripts to select the correct
+# ContainerLab topology file. Valid values: "dc" | "sp" | "fast-iteration" | "cloud-dc"
+# Omit the entire [lab] section for non-lab (production) deployments.
+topology = ""
+
+# IPv4 management subnet for the active ContainerLab topology.
+# ContainerLab invariant: the Docker network is always named "bonsai-mgmt".
+# Example: "172.100.103.0/24"
+mgmt_subnet = ""
+
+# IPv6 management subnet. Example: "2001:db8:103::/64"
+mgmt_ipv6_subnet = ""
+
+# ── [assignment] ─────────────────────────────────────────────────────────────
+
+# Collector assignment rules for distributed deployments.
+# When a device has no explicit collector_id, these rules are evaluated in
+# descending priority order. Omit this section for single-collector setups.
 #
-# [lab]
-# topology       = "dc"                  # dc | sp | fast-iteration | cloud-dc
-# mgmt_subnet    = "172.100.103.0/24"    # IPv4 mgmt subnet for the active lab
-# mgmt_ipv6_subnet = "2001:db8:103::/64" # IPv6 mgmt subnet for the active lab
+# [[assignment.rules]]
+# match_site = "site-a"
+# match_role = "leaf"       # optional; omit to match any role
+# collector_id = "site-a-collector-1"
+# priority = 10
 
-# ── Nokia SR Linux — spine (TLS) ─────────────────────────────────────────────
-[[target]]
-address    = "172.100.102.11:57400"
-hostname   = "srl-spine1"
-tls_domain = "clab-bonsai-p4-srl-spine1"
-ca_cert    = "lab/fast-iteration/p4-ca.pem"
-# credential_alias = "srl-lab-admin"  # preferred once added via /api/credentials
-username   = "admin"
-password   = "NokiaSrl1!"
-
-# ── Nokia SR Linux — leaf1 (TLS) ─────────────────────────────────────────────
-[[target]]
-address    = "172.100.102.12:57400"
-hostname   = "srl-leaf1"
-tls_domain = "clab-bonsai-p4-srl-leaf1"
-ca_cert    = "lab/fast-iteration/p4-ca.pem"
-username   = "admin"
-password   = "NokiaSrl1!"
-
-# ── Nokia SR Linux — leaf2 (TLS) ─────────────────────────────────────────────
-[[target]]
-address    = "172.100.102.13:57400"
-hostname   = "srl-leaf2"
-tls_domain = "clab-bonsai-p4-srl-leaf2"
-ca_cert    = "lab/fast-iteration/p4-ca.pem"
-username   = "admin"
-password   = "NokiaSrl1!"
-
-# ── Cisco IOS-XRd — PE (no TLS) ──────────────────────────────────────────────
-[[target]]
-address  = "172.100.102.21:57400"
-hostname = "xrd-pe1"
-username = "cisco"
-password = "cisco123!"
+# ── [[target]] ───────────────────────────────────────────────────────────────
+#
+# One [[target]] block per managed network device.
+# Devices can also be added at runtime via the UI or POST /api/devices.
+# Static targets here are merged with runtime-managed devices on startup.
+#
+# Minimal example (no TLS, inline credentials — lab only):
+# [[target]]
+# address  = "192.0.2.1:57400"
+# hostname = "router-1"
+# username = "admin"
+# password = "secret"
+#
+# Production example (TLS + vault credentials):
+# [[target]]
+# address          = "10.0.1.1:57400"
+# hostname         = "leaf-01"
+# role             = "leaf"          # leaf | spine | pe | p | rr | core | distribution | access
+# site             = "dc-east"
+# tls_domain       = "leaf-01.mgmt.example.com"    # SNI name on the device certificate
+# ca_cert          = "config/tls/ca.pem"            # PEM CA that signed the device cert
+# credential_alias = "dc-east-gnmi"                 # vault alias (added via UI or CLI)
+# collector_id     = "site-a-collector-1"           # omit for single-collector setups
+#
+# Env-var credentials (useful for CI / container deployments):
+# [[target]]
+# address      = "10.0.1.2:57400"
+# hostname     = "leaf-02"
+# username_env = "DEVICE_USERNAME"   # reads from $DEVICE_USERNAME
+# password_env = "DEVICE_PASSWORD"
+#
+# Subscription path override (normally auto-selected during onboarding discovery):
+# [[target.selected_paths]]
+# path               = "/interface[name=*]/statistics"
+# mode               = "SAMPLE"
+# sample_interval_ns = 10000000000   # 10 seconds in nanoseconds
+# rationale          = "interface counters"
+# optional           = false

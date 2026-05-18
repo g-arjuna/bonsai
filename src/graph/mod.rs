@@ -17,9 +17,14 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use self::common::{now_ns, read_str, read_ts_ns, ts, upsert_app_flow, upsert_device};
+use self::common::{
+    link_host_endpoint_to_interface, now_ns, read_str, read_ts_ns, ts, upsert_app_flow,
+    upsert_device, upsert_host_endpoint,
+};
 use crate::config::TargetConfig;
+use crate::correlation_buffer::{CorrelationBuffer, CorrelationKey, semantic_key_for_event};
 use crate::signals::syslog::SyslogFact;
+use crate::signals::snmp::SnmpFact;
 use crate::store::BonsaiStore;
 use crate::streaming::bgp_ls::BgpLsEvent;
 use crate::streaming::bmp::BmpEvent;
@@ -41,6 +46,8 @@ pub struct BonsaiEvent {
     /// UUID of the persisted StateChangeEvent node; empty for broadcast-only events
     /// that don't write a node (e.g. oper-status events which are broadcast-only).
     pub state_change_event_id: String,
+    /// Signal origin: "gnmi" | "syslog" | "snmp" | "netflow" | "otlp" | "bmp" | "bgp_ls" | "detection" | "registry"
+    pub source_type: String,
 }
 
 /// A detection + its linked remediation (if any). Used by the HTTP topology API.
@@ -51,6 +58,8 @@ pub struct DetectionRow {
     pub rule_id: String,
     pub severity: String,
     pub features_json: String,
+    pub source_types: Vec<String>,
+    pub latency_ns: i64,
     pub fired_at_ns: i64,
     pub remediation_id: String,
     pub remediation_action: String,
@@ -74,8 +83,17 @@ pub struct RemediationProposalRow {
     pub decided_at_ns: i64,
 }
 
-/// One step in a closed-loop trace: trigger → detection → remediation.
+/// A persisted StateChangeEvent node returned by the history query.
 #[derive(Debug, Clone, Serialize)]
+pub struct StateChangeEventRow {
+    pub id: String,
+    pub device_address: String,
+    pub event_type: String,
+    pub source_type: String,
+    pub detail_json: String,
+    pub occurred_at_ns: i64,
+}
+
 pub struct TraceStep {
     pub kind: String, // "trigger" | "detection" | "remediation"
     pub id: String,
@@ -199,6 +217,11 @@ pub struct GraphStore {
     write_lock: Arc<Mutex<()>>,
     /// Configured LadybugDB buffer pool cap — exposed for memory health reporting.
     buffer_pool_bytes: u64,
+    /// Late-arrival multi-source correlation buffer. State-change events from
+    /// BMP, gNMI, syslog and SNMP that describe the same physical event are
+    /// absorbed into a single slot and flushed as a fused detection after the
+    /// window expires.
+    pub correlation_buffer: Arc<CorrelationBuffer>,
 }
 
 impl GraphStore {
@@ -219,6 +242,7 @@ impl GraphStore {
             event_tx,
             write_lock: Arc::new(Mutex::new(())),
             buffer_pool_bytes,
+            correlation_buffer: Arc::new(CorrelationBuffer::new(45)),
         };
 
         let t = Instant::now();
@@ -282,6 +306,8 @@ impl BonsaiStore for GraphStore {
         rule_id: String,
         severity: String,
         features_json: String,
+        source_types_json: String,
+        latency_ns: i64,
         fired_at_ns: i64,
         state_change_event_id: String,
     ) -> Result<String> {
@@ -290,6 +316,8 @@ impl BonsaiStore for GraphStore {
             rule_id,
             severity,
             features_json,
+            source_types_json,
+            latency_ns,
             fired_at_ns,
             state_change_event_id,
         )
@@ -465,6 +493,7 @@ impl GraphStore {
                 device_address STRING,\
                 event_type     STRING,\
                 detail         STRING,\
+                source_type    STRING,\
                 occurred_at    TIMESTAMP_NS,\
                 PRIMARY KEY (id))",
         )
@@ -486,6 +515,8 @@ impl GraphStore {
                 rule_id        STRING,\
                 severity       STRING,\
                 features_json  STRING,\
+                source_types   STRING,\
+                latency_ns     INT64,\
                 fired_at       TIMESTAMP_NS,\
                 PRIMARY KEY (id))",
         )
@@ -954,6 +985,111 @@ impl GraphStore {
         )
         .context("create DeviceEmbedding table")?;
 
+        // ── Location hierarchy (D3-4 / graph-strategy) ───────────────────────
+        // Rack already written by common::upsert_rack; create table here so the
+        // schema is self-contained regardless of whether the enricher has run.
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS Rack(\
+                id         STRING,\
+                name       STRING,\
+                site       STRING,\
+                row_id     STRING,\
+                metadata   STRING,\
+                updated_at TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create Rack table")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS RACK_MEMBER(FROM Device TO Rack)")
+            .context("create RACK_MEMBER rel")?;
+
+        // Location is the sub-site layer: AZ, pod, building, floor, room.
+        // kind carries the semantic ("az" | "pod" | "building" | "floor" | "room" | "other").
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS Location(\
+                id         STRING,\
+                name       STRING,\
+                kind       STRING,\
+                site_id    STRING,\
+                source     STRING,\
+                updated_at TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create Location table")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS IN_LOCATION(FROM Device TO Location)")
+            .context("create IN_LOCATION rel")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS IN_SITE(FROM Location TO Site)")
+            .context("create IN_SITE rel")?;
+
+        // Migration: add id column to Rack if created by an older upsert_rack that
+        // used name as PK only. Silently ignored on fresh DBs.
+        let _ = conn.query("ALTER TABLE Rack ADD id STRING DEFAULT ''");
+
+        // ── AppFlow (D3-11 / streaming audit) ────────────────────────────────
+        // Represents a network flow record exported by a network device.
+        // exporter_address = the router/switch that sent the NetFlow/IPFIX packet.
+        // src_address / dst_address = endpoints of the observed traffic.
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS AppFlow(\
+                id                STRING,\
+                exporter_address  STRING,\
+                src_address       STRING,\
+                dst_address       STRING,\
+                dst_port          INT64,\
+                protocol          STRING,\
+                bytes_per_sec     DOUBLE,\
+                packets_per_sec   DOUBLE,\
+                updated_at        TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create AppFlow table")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS CARRIES_FLOW(FROM Device TO AppFlow)")
+            .context("create CARRIES_FLOW rel")?;
+
+        // ── HostEndpoint (D3-11 / D14) ───────────────────────────────────────
+        // Represents a non-network-device endpoint: server, AP client, phone,
+        // CPE, IoT, printer. Always optional — absence is valid for SP deploys.
+        // id = primary IP address of the endpoint.
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS HostEndpoint(\
+                id         STRING,\
+                ip         STRING,\
+                kind       STRING,\
+                hostname   STRING,\
+                mac        STRING,\
+                vendor     STRING,\
+                rack_id    STRING,\
+                site_id    STRING,\
+                source     STRING,\
+                updated_at TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create HostEndpoint table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS CONNECTED_TO(FROM HostEndpoint TO Interface)",
+        )
+        .context("create CONNECTED_TO rel")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS SRC_HOST(FROM AppFlow TO HostEndpoint)")
+            .context("create SRC_HOST rel")?;
+
+        conn.query("CREATE REL TABLE IF NOT EXISTS DST_HOST(FROM AppFlow TO HostEndpoint)")
+            .context("create DST_HOST rel")?;
+
+        // RUNS_SERVICE extended: HostEndpoint → Application (OTLP spans from servers).
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HOST_RUNS_SERVICE(FROM HostEndpoint TO Application)",
+        )
+        .context("create HOST_RUNS_SERVICE rel")?;
+
+        // Migration: add exporter_address to AppFlow if upgrading from a DB
+        // created before D3-11. Silently ignored on fresh installs.
+        let _ = conn.query("ALTER TABLE AppFlow ADD exporter_address STRING DEFAULT ''");
+
         info!("graph schema initialised");
         Ok(())
     }
@@ -1297,6 +1433,8 @@ impl GraphStore {
         rule_id: String,
         severity: String,
         features_json: String,
+        source_types_json: String,
+        latency_ns: i64,
         fired_at_ns: i64,
         state_change_event_id: String,
     ) -> Result<String> {
@@ -1308,6 +1446,7 @@ impl GraphStore {
         let id = tokio::task::spawn_blocking(move || {
             let _guard = write_lock.lock().expect("write lock poisoned");
             let conn = Connection::new(&db).context("detection write connection")?;
+            conn.query("BEGIN TRANSACTION").context("detection begin transaction")?;
             let id = Uuid::new_v4().to_string();
             let now = ts(fired_at_ns);
             let metric_rule_id = rule_id.clone();
@@ -1317,7 +1456,9 @@ impl GraphStore {
                     "MERGE (e:DetectionEvent {id: $id}) \
                  ON CREATE SET \
                    e.device_address = $addr, e.rule_id = $rule, \
-                   e.severity = $sev, e.features_json = $feats, e.fired_at = $ts",
+                   e.severity = $sev, e.features_json = $feats, \
+                   e.source_types = $srctypes, e.latency_ns = $latency, \
+                   e.fired_at = $ts",
                 )
                 .context("prepare DetectionEvent insert")?;
             conn.execute(
@@ -1328,6 +1469,8 @@ impl GraphStore {
                     ("rule", Value::String(rule_id)),
                     ("sev", Value::String(severity)),
                     ("feats", Value::String(features_json)),
+                    ("srctypes", Value::String(source_types_json)),
+                    ("latency", Value::Int64(latency_ns)),
                     ("ts", now),
                 ],
             )
@@ -1364,6 +1507,7 @@ impl GraphStore {
                 )
                 .context("execute TRIGGERED_BY edge")?;
             }
+            conn.query("COMMIT").context("detection commit transaction")?;
             metrics::counter!(
                 "bonsai_rule_firings_total",
                 "rule_id" => metric_rule_id,
@@ -1385,6 +1529,7 @@ impl GraphStore {
             ),
             occurred_at_ns: fired_at_ns,
             state_change_event_id: String::new(),
+            source_type: "detection".to_string(),
         });
 
         Ok(id)
@@ -1408,6 +1553,7 @@ impl GraphStore {
         let id = tokio::task::spawn_blocking(move || {
             let _guard = write_lock.lock().expect("write lock poisoned");
             let conn = Connection::new(&db).context("remediation write connection")?;
+            conn.query("BEGIN TRANSACTION").context("remediation begin transaction")?;
             let id = Uuid::new_v4().to_string();
             let att_ts = ts(attempted_at_ns);
             let comp_ts = ts(if completed_at_ns > 0 {
@@ -1453,6 +1599,7 @@ impl GraphStore {
             )
             .context("execute RESOLVES edge")?;
             write_remediation_trust_mark(&conn, &id, attempted_at_ns)?;
+            conn.query("COMMIT").context("remediation commit transaction")?;
             Ok::<String, anyhow::Error>(id)
         })
         .await
@@ -1463,11 +1610,12 @@ impl GraphStore {
             device_address: String::new(),
             event_type: "remediation_outcome".to_string(),
             detail_json: format!(
-                r#"{{"id":"{}","detection_id":"{}","action":"{}","status":"{}"}}"#,
+                r#"{{"id":"{}","detection_id":"{}","action":"{}","status":"{}"}}"
                 id, event_detection_id, event_action, event_status
             ),
             occurred_at_ns: attempted_at_ns,
             state_change_event_id: String::new(),
+            source_type: "detection".to_string(),
         });
 
         Ok(id)
@@ -1632,7 +1780,8 @@ impl GraphStore {
                 "MATCH (e:DetectionEvent) \
                  OPTIONAL MATCH (r:Remediation)-[:RESOLVES]->(e) \
                  RETURN e.id, e.device_address, e.rule_id, e.severity, \
-                        e.features_json, e.fired_at, r.id, r.action, r.status \
+                        e.features_json, e.source_types, e.latency_ns, e.fired_at, \
+                        r.id, r.action, r.status \
                  ORDER BY e.fired_at DESC LIMIT {limit}"
             );
             let rows = conn.query(&cypher).context("read_detections query")?;
@@ -1643,16 +1792,20 @@ impl GraphStore {
                 // OPTIONAL MATCH can produce duplicate detection rows when multiple
                 // remediations exist for one detection — keep only the first.
                 if seen.insert(id.clone()) {
+                    let src_json = read_str(&row[5]);
+                    let source_types: Vec<String> = serde_json::from_str(&src_json).unwrap_or_default();
                     out.push(DetectionRow {
                         id,
                         device_address: read_str(&row[1]),
                         rule_id: read_str(&row[2]),
                         severity: read_str(&row[3]),
                         features_json: read_str(&row[4]),
-                        fired_at_ns: read_ts_ns(&row[5]),
-                        remediation_id: read_str(&row[6]),
-                        remediation_action: read_str(&row[7]),
-                        remediation_status: read_str(&row[8]),
+                        source_types,
+                        latency_ns: read_i64(&row[6]),
+                        fired_at_ns: read_ts_ns(&row[7]),
+                        remediation_id: read_str(&row[8]),
+                        remediation_action: read_str(&row[9]),
+                        remediation_status: read_str(&row[10]),
                     });
                 }
             }
@@ -1660,6 +1813,106 @@ impl GraphStore {
         })
         .await
         .context("spawn_blocking panicked")?
+    }
+
+    /// Query persisted StateChangeEvent nodes with optional filters.
+    pub async fn read_events_history(
+        &self,
+        source: Option<String>,
+        device: Option<String>,
+        site: Option<String>,
+        limit: u32,
+    ) -> Result<Vec<StateChangeEventRow>> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("read_events_history connection")?;
+
+            // Build WHERE clauses dynamically (all parts collected before assembly).
+            let mut where_parts: Vec<String> = Vec::new();
+            if let Some(ref s) = source {
+                if !s.is_empty() {
+                    where_parts.push(format!("e.source_type = '{}'", s.replace('\'', "''")));
+                }
+            }
+            if let Some(ref d) = device {
+                if !d.is_empty() {
+                    where_parts.push(format!("e.device_address STARTS WITH '{}'", d.replace('\'', "''")));
+                }
+            }
+
+            // Site filter requires an OPTIONAL MATCH on Device; added last so it can
+            // reference the optional `d` binding.
+            let need_site = site.as_deref().is_some_and(|s| !s.is_empty());
+            let match_clause = if need_site {
+                "MATCH (e:StateChangeEvent) OPTIONAL MATCH (d:Device {address: e.device_address})"
+                    .to_string()
+            } else {
+                "MATCH (e:StateChangeEvent)".to_string()
+            };
+            if need_site {
+                let escaped = site.as_deref().unwrap_or("").replace('\'', "''");
+                where_parts.push(format!(
+                    "(d IS NULL OR d.site = '{escaped}' OR d.site STARTS WITH '{escaped}')"
+                ));
+            }
+
+            let where_clause = if where_parts.is_empty() {
+                String::new()
+            } else {
+                format!("WHERE {}", where_parts.join(" AND "))
+            };
+
+            let cypher = format!(
+                "{match_clause} {where_clause} \
+                 RETURN e.id, e.device_address, e.event_type, e.source_type, e.detail, e.occurred_at \
+                 ORDER BY e.occurred_at DESC LIMIT {limit}"
+            );
+
+            let rows = conn.query(&cypher).context("read_events_history query")?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(StateChangeEventRow {
+                    id: read_str(&row[0]),
+                    device_address: read_str(&row[1]),
+                    event_type: read_str(&row[2]),
+                    source_type: read_str(&row[3]),
+                    detail_json: read_str(&row[4]),
+                    occurred_at_ns: read_ts_ns(&row[5]),
+                });
+            }
+            Ok::<_, anyhow::Error>(out)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    /// Return the TRIGGERED_BY StateChangeEvent chain for a DetectionEvent.
+    /// Used to build the correlation_chain on IncidentJson.
+    pub fn read_triggered_by_chain_sync(
+        conn: &Connection<'_>,
+        detection_id: &str,
+    ) -> Result<Vec<(String, String, String, String, i64)>> {
+        let mut stmt = conn
+            .prepare(
+                "MATCH (e:DetectionEvent {id: $id})-[:TRIGGERED_BY]->(s:StateChangeEvent) \
+                 RETURN s.id, s.event_type, s.source_type, s.device_address, s.occurred_at \
+                 ORDER BY s.occurred_at ASC",
+            )
+            .context("prepare triggered_by_chain")?;
+        let rows = conn
+            .execute(&mut stmt, vec![("id", Value::String(detection_id.to_string()))])
+            .context("execute triggered_by_chain")?;
+        Ok(rows
+            .map(|row| {
+                (
+                    read_str(&row[0]),
+                    read_str(&row[1]),
+                    read_str(&row[2]),
+                    read_str(&row[3]),
+                    read_ts_ns(&row[4]),
+                )
+            })
+            .collect())
     }
 
     /// Return all steps in a closed-loop trace for a given DetectionEvent id.
@@ -1757,6 +2010,7 @@ impl GraphStore {
         let db = Arc::clone(&self.db);
         let event_tx = self.event_tx.clone();
         let write_lock = Arc::clone(&self.write_lock);
+        let corr_buf = Arc::clone(&self.correlation_buffer);
         let target = update.target.clone();
         tokio::task::spawn_blocking(move || {
             metrics::counter!("bonsai_telemetry_updates_total", "target" => target.clone())
@@ -1764,7 +2018,7 @@ impl GraphStore {
             let t0 = Instant::now();
             let _guard = write_lock.lock().expect("write lock poisoned");
             let conn = Connection::new(&db).context("single write connection")?;
-            let result = write_blocking(&conn, &update, &event_tx);
+            let result = write_blocking(&conn, &update, &event_tx, &corr_buf);
             metrics::histogram!("bonsai_graph_write_latency_seconds", "target" => target)
                 .record(t0.elapsed().as_secs_f64());
             result
@@ -1778,6 +2032,7 @@ impl GraphStore {
         let db = Arc::clone(&self.db);
         let event_tx = self.event_tx.clone();
         let write_lock = Arc::clone(&self.write_lock);
+        let corr_buf = Arc::clone(&self.correlation_buffer);
         tokio::task::spawn_blocking(move || {
             let t0 = Instant::now();
             let _guard = write_lock.lock().expect("write lock poisoned");
@@ -1787,7 +2042,7 @@ impl GraphStore {
             for update in updates {
                 metrics::counter!("bonsai_telemetry_updates_total", "target" => update.target.clone())
                     .increment(1);
-                if let Err(error) = write_blocking(&conn, &update, &event_tx) {
+                if let Err(error) = write_blocking(&conn, &update, &event_tx, &corr_buf) {
                     // Log individual failures but keep processing — a single bad update
                     // from buggy device firmware must not poison the entire batch (C-1).
                     tracing::warn!(
@@ -2317,6 +2572,7 @@ fn write_blocking(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
     match update.classify() {
         TelemetryEvent::InterfaceStats { if_name } => {
@@ -2343,6 +2599,7 @@ fn write_blocking(
             &peer_address,
             state_value.as_ref().unwrap_or(&update.value),
             event_tx,
+            corr_buf,
         ),
         TelemetryEvent::BfdSessionState {
             if_name,
@@ -2355,6 +2612,7 @@ fn write_blocking(
             &local_discriminator,
             state_value.as_ref().unwrap_or(&update.value),
             event_tx,
+            corr_buf,
         ),
         TelemetryEvent::LldpNeighbor {
             local_if,
@@ -2372,18 +2630,21 @@ fn write_blocking(
             oper_status,
         } => emit_oper_status_event(conn, update, &if_name, &oper_status, event_tx),
         TelemetryEvent::SyslogEvent { category } => {
-            write_syslog_state_change_event(conn, update, &category, event_tx)
+            write_syslog_state_change_event(conn, update, &category, event_tx, corr_buf)
         }
         TelemetryEvent::SyslogFact { fact_type } => {
-            write_syslog_fact_event(conn, update, &fact_type, event_tx)
+            write_syslog_fact_event(conn, update, &fact_type, event_tx, corr_buf)
         }
         TelemetryEvent::SnmpTrap { event_type } => {
-            write_signal_state_change_event(conn, update, &event_type, event_tx)
+            write_signal_state_change_event(conn, update, &event_type, "snmp", event_tx, corr_buf)
+        }
+        TelemetryEvent::SnmpFact { fact_type } => {
+            write_snmp_fact_event(conn, update, &fact_type, event_tx, corr_buf)
         }
         TelemetryEvent::ConfigChange { yang_path, new_value } => {
             write_config_change_event(conn, update, &yang_path, &new_value, event_tx)
         }
-        TelemetryEvent::BmpPeerState => write_bmp_peer_state(conn, update, event_tx),
+        TelemetryEvent::BmpPeerState => write_bmp_peer_state(conn, update, event_tx, corr_buf),
         TelemetryEvent::BmpRouteMonitoring => write_bmp_route_monitoring(conn, update, event_tx),
         TelemetryEvent::BgpLsState => write_bgp_ls_state(conn, update, event_tx),
         TelemetryEvent::OtlpSpan {
@@ -2391,6 +2652,7 @@ fn write_blocking(
             peer_address,
         } => write_otlp_span(conn, update, &service_name, &peer_address, event_tx),
         TelemetryEvent::NetflowRecord {
+            exporter_address,
             src_address,
             dst_address,
             dst_port,
@@ -2400,6 +2662,7 @@ fn write_blocking(
         } => write_netflow_record(
             conn,
             update,
+            &exporter_address,
             &src_address,
             &dst_address,
             dst_port,
@@ -2478,36 +2741,112 @@ fn write_config_change_event(
         .to_string(),
         occurred_at_ns: update.timestamp_ns,
         state_change_event_id: String::new(),
+        source_type: "gnmi".to_string(),
     };
     let _ = event_tx.send(evt);
     Ok(())
 }
 
 fn write_otlp_span(
-    _conn: &Connection<'_>,
+    conn: &Connection<'_>,
     update: &TelemetryUpdate,
     service_name: &str,
     peer_address: &str,
     event_tx: &broadcast::Sender<BonsaiEvent>,
 ) -> Result<()> {
-    let evt = BonsaiEvent {
+    if service_name.is_empty() {
+        let _ = event_tx.send(BonsaiEvent {
+            device_address: update.target.clone(),
+            event_type: "otlp_span_event".to_string(),
+            detail_json: serde_json::json!({
+                "service_name": service_name,
+                "peer_address": peer_address,
+            })
+            .to_string(),
+            occurred_at_ns: update.timestamp_ns,
+            state_change_event_id: String::new(),
+            source_type: "otlp".to_string(),
+        });
+        return Ok(());
+    }
+
+    let now = ts(update.timestamp_ns);
+    let app_id = format!("app:{service_name}");
+
+    // Track F1: Upsert Application node.
+    let mut app_stmt = conn
+        .prepare(
+            "MERGE (a:Application {id: $id}) \
+             ON CREATE SET a.name = $name, a.criticality = 'unknown', \
+               a.owner_group = '', a.source_name = $src, a.updated_at = $ts \
+             ON MATCH SET a.updated_at = $ts",
+        )
+        .context("prepare Application upsert")?;
+    conn.execute(
+        &mut app_stmt,
+        vec![
+            ("id",   Value::String(app_id.clone())),
+            ("name", Value::String(service_name.to_string())),
+            ("src",  Value::String("otlp".to_string())),
+            ("ts",   now),
+        ],
+    )
+    .context("execute Application upsert")?;
+
+    // RUNS_SERVICE: Device → Application (if peer_address matches a Device).
+    if !peer_address.is_empty() {
+        let mut dev_edge = conn
+            .prepare(
+                "MATCH (d:Device) WHERE d.address STARTS WITH $pfx \
+                 MATCH (a:Application {id: $aid}) \
+                 MERGE (d)-[:RUNS_SERVICE]->(a)",
+            )
+            .context("prepare RUNS_SERVICE merge")?;
+        let _ = conn.execute(
+            &mut dev_edge,
+            vec![
+                ("pfx", Value::String(peer_address.to_string())),
+                ("aid", Value::String(app_id.clone())),
+            ],
+        );
+
+        // HOST_RUNS_SERVICE: HostEndpoint → Application (if peer_address matches a HostEndpoint).
+        let mut host_edge = conn
+            .prepare(
+                "MATCH (h:HostEndpoint {ip: $ip}) \
+                 MATCH (a:Application {id: $aid}) \
+                 MERGE (h)-[:HOST_RUNS_SERVICE]->(a)",
+            )
+            .context("prepare HOST_RUNS_SERVICE merge")?;
+        let _ = conn.execute(
+            &mut host_edge,
+            vec![
+                ("ip",  Value::String(peer_address.to_string())),
+                ("aid", Value::String(app_id.clone())),
+            ],
+        );
+    }
+
+    let _ = event_tx.send(BonsaiEvent {
         device_address: update.target.clone(),
         event_type: "otlp_span_event".to_string(),
         detail_json: serde_json::json!({
             "service_name": service_name,
             "peer_address": peer_address,
+            "app_id": app_id,
         })
         .to_string(),
         occurred_at_ns: update.timestamp_ns,
         state_change_event_id: String::new(),
-    };
-    let _ = event_tx.send(evt);
+        source_type: "otlp".to_string(),
+    });
     Ok(())
 }
 
 fn write_netflow_record(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
+    exporter_address: &str,
     src_address: &str,
     dst_address: &str,
     dst_port: i64,
@@ -2520,6 +2859,7 @@ fn write_netflow_record(
     upsert_app_flow(
         conn,
         &id,
+        exporter_address,
         src_address,
         dst_address,
         dst_port,
@@ -2528,11 +2868,59 @@ fn write_netflow_record(
         packets_per_sec,
         update.timestamp_ns,
     )?;
+
+    // Track A2: CARRIES_FLOW — link the exporting Device to this AppFlow.
+    // Silent no-op if the Device node doesn't exist yet (collector-only mode).
+    let mut carries = conn
+        .prepare(
+            "MATCH (d:Device {address: $addr}), (f:AppFlow {id: $fid}) \
+             MERGE (d)-[:CARRIES_FLOW]->(f)",
+        )
+        .context("prepare CARRIES_FLOW merge")?;
+    let _ = conn.execute(
+        &mut carries,
+        vec![
+            ("addr", Value::String(exporter_address.to_string())),
+            ("fid", Value::String(id.clone())),
+        ],
+    );
+
+    // Track C1: SRC_HOST / DST_HOST — link AppFlow to HostEndpoints if they exist.
+    // Completely silent when no HostEndpoint nodes are present (SP deployments).
+    let mut src_host = conn
+        .prepare(
+            "MATCH (h:HostEndpoint {ip: $ip}), (f:AppFlow {id: $fid}) \
+             MERGE (f)-[:SRC_HOST]->(h)",
+        )
+        .context("prepare SRC_HOST merge")?;
+    let _ = conn.execute(
+        &mut src_host,
+        vec![
+            ("ip", Value::String(src_address.to_string())),
+            ("fid", Value::String(id.clone())),
+        ],
+    );
+
+    let mut dst_host = conn
+        .prepare(
+            "MATCH (h:HostEndpoint {ip: $ip}), (f:AppFlow {id: $fid}) \
+             MERGE (f)-[:DST_HOST]->(h)",
+        )
+        .context("prepare DST_HOST merge")?;
+    let _ = conn.execute(
+        &mut dst_host,
+        vec![
+            ("ip", Value::String(dst_address.to_string())),
+            ("fid", Value::String(id.clone())),
+        ],
+    );
+
     let evt = BonsaiEvent {
-        device_address: update.target.clone(),
+        device_address: exporter_address.to_string(),
         event_type: "app_flow_event".to_string(),
         detail_json: serde_json::json!({
             "flow_id": id,
+            "exporter_address": exporter_address,
             "src_address": src_address,
             "dst_address": dst_address,
             "dst_port": dst_port,
@@ -2543,6 +2931,7 @@ fn write_netflow_record(
         .to_string(),
         occurred_at_ns: update.timestamp_ns,
         state_change_event_id: String::new(),
+        source_type: "netflow".to_string(),
     };
     let _ = event_tx.send(evt);
     Ok(())
@@ -2950,6 +3339,7 @@ fn write_bgp_neighbor(
     peer_addr: &str,
     val: &serde_json::Value,
     event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
     let id = format!("{}:{}", u.target, peer_addr);
     let now = ts(u.timestamp_ns);
@@ -3014,9 +3404,11 @@ fn write_bgp_neighbor(
             &u.target,
             "bgp_session_change",
             &detail,
+            "gnmi",
             now.clone(),
             u.timestamp_ns,
             event_tx,
+            corr_buf,
         )?;
     }
 
@@ -3053,6 +3445,7 @@ fn write_bfd_session(
     local_discriminator: &str,
     val: &serde_json::Value,
     event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
     let id = format!("{}:{}:{}", u.target, if_name, local_discriminator);
     let now = ts(u.timestamp_ns);
@@ -3113,9 +3506,11 @@ fn write_bfd_session(
             &u.target,
             "bfd_session_change",
             &detail,
+            "gnmi",
             now.clone(),
             u.timestamp_ns,
             event_tx,
+            corr_buf,
         )?;
     }
 
@@ -3183,9 +3578,11 @@ fn write_state_change_event(
     device_address: &str,
     event_type: &str,
     detail: &str,
+    source_type: &str,
     now: Value,
     timestamp_ns: i64,
     event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
 ) -> Result<String> {
     let id = Uuid::new_v4().to_string();
 
@@ -3193,7 +3590,7 @@ fn write_state_change_event(
         .prepare(
             "CREATE (e:StateChangeEvent {\
                 id: $id, device_address: $addr, event_type: $etype, \
-                detail: $detail, occurred_at: $ts})",
+                detail: $detail, source_type: $src, occurred_at: $ts})",
         )
         .context("prepare StateChangeEvent insert")?;
 
@@ -3204,6 +3601,7 @@ fn write_state_change_event(
             ("addr", Value::String(device_address.to_string())),
             ("etype", Value::String(event_type.to_string())),
             ("detail", Value::String(detail.to_string())),
+            ("src", Value::String(source_type.to_string())),
             ("ts", now.clone()),
         ],
     )
@@ -3232,10 +3630,16 @@ fn write_state_change_event(
             detail_json: detail.to_string(),
             occurred_at_ns: timestamp_ns,
             state_change_event_id: id.clone(),
+            source_type: source_type.to_string(),
         })
         .is_err()
     {
         metrics::counter!("bonsai_broadcast_drops_total").increment(1);
+    }
+
+    if let Some((semantic_type, sub_key)) = semantic_key_for_event(event_type, detail) {
+        let key = CorrelationKey::new(device_address, semantic_type, sub_key);
+        corr_buf.record(key, id.clone(), source_type.to_string(), timestamp_ns, detail.to_string());
     }
 
     debug!(device = %device_address, event_type = %event_type, "state change event recorded");
@@ -3247,8 +3651,9 @@ fn write_syslog_state_change_event(
     update: &TelemetryUpdate,
     category: &str,
     event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
-    write_signal_state_change_event(conn, update, &format!("syslog_{category}"), event_tx)
+    write_signal_state_change_event(conn, update, &format!("syslog_{category}"), "syslog", event_tx, corr_buf)
 }
 
 #[derive(Serialize)]
@@ -3271,6 +3676,7 @@ fn write_syslog_fact_event(
     update: &TelemetryUpdate,
     fact_type: &str,
     event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
     let fact: SyslogFact =
         serde_json::from_value(update.value.clone()).context("parse syslog fact event")?;
@@ -3324,9 +3730,11 @@ fn write_syslog_fact_event(
         &update.target,
         event_type,
         &detail_json,
+        "syslog",
         ts(update.timestamp_ns),
         update.timestamp_ns,
         event_tx,
+        corr_buf,
     )?;
     Ok(())
 }
@@ -3402,6 +3810,143 @@ fn join_syslog_fact(
         "status": "orphan",
         "kind": "unknown",
         "reason": "no_cross_source_match_key",
+    }))
+}
+
+// ── SNMP OID Fact pipeline ────────────────────────────────────────────────────
+
+fn write_snmp_fact_event(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    fact_type: &str,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
+) -> Result<()> {
+    let fact: SnmpFact =
+        serde_json::from_value(update.value.clone()).context("parse snmp fact")?;
+    upsert_device(
+        conn,
+        &update.target,
+        &update.vendor,
+        &update.hostname,
+        &update.role,
+        &update.site,
+        ts(update.timestamp_ns),
+    )?;
+    let join = join_snmp_fact(conn, update, &fact)?;
+    let join_status = join
+        .get("status")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("orphan");
+    let event_type = if join_status == "joined" {
+        "snmp_fact_joined"
+    } else {
+        "snmp_fact_orphan"
+    };
+    metrics::counter!(
+        "bonsai_snmp_fact_join_total",
+        "fact_type" => fact_type.to_string(),
+        "status" => join_status.to_string(),
+    )
+    .increment(1);
+    let detail_json = serde_json::to_string(&serde_json::json!({
+        "fact_type": fact_type,
+        "trap_oid": fact.trap_oid,
+        "peer_addr": fact.peer_addr,
+        "enterprise_oid": fact.enterprise_oid,
+        "field_schema": fact.field_schema,
+        "fields": fact.fields,
+        "device_context": {
+            "device_address": update.target,
+            "vendor": update.vendor,
+            "hostname": update.hostname,
+            "role": update.role,
+            "site": update.site,
+        },
+        "join": join,
+    }))
+    .context("serialize snmp fact detail")?;
+    let _ = write_state_change_event(
+        conn,
+        &update.target,
+        event_type,
+        &detail_json,
+        "snmp",
+        ts(update.timestamp_ns),
+        update.timestamp_ns,
+        event_tx,
+        corr_buf,
+    )?;
+    Ok(())
+}
+
+/// Join an SNMP fact against graph context.
+/// - link_down / link_up → correlate with Interface oper_status via `interface_name` or `interface_index`
+/// - bgp_peer_state / bgp_peer_backward_transition → correlate with BgpNeighbor via `peer_address`
+/// - ospf / isis → correlate with existing StateChangeEvents on the same device
+/// - everything else → orphan (still written as a state-change event)
+fn join_snmp_fact(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    fact: &SnmpFact,
+) -> Result<JsonValue> {
+    // Interface facts: link_down / link_up
+    if matches!(fact.fact_type.as_str(), "link_down" | "link_up") {
+        if let Some(iface_name) = fact.fields.get("interface_name").filter(|v| !v.is_empty()) {
+            let if_id = format!("{}:{}", update.target, iface_name);
+            let mut stmt = conn
+                .prepare("MATCH (i:Interface {id: $id}) RETURN i.oper_status")
+                .context("prepare interface join")?;
+            let rows: Vec<_> = conn
+                .execute(&mut stmt, vec![("id", Value::String(if_id.clone()))])
+                .context("execute interface join")?
+                .collect();
+            if let Some(row) = rows.first() {
+                return Ok(serde_json::json!({
+                    "status": "joined",
+                    "join_type": "interface",
+                    "interface_id": if_id,
+                    "current_oper_status": read_str(&row[0]),
+                }));
+            }
+        }
+    }
+
+    // BGP facts: bgp_peer_state / bgp_peer_backward_transition
+    if matches!(fact.fact_type.as_str(), "bgp_peer_state" | "bgp_peer_backward_transition") {
+        if let Some(peer_addr) = fact.fields.get("peer_address").filter(|v| !v.is_empty()) {
+            let mut stmt = conn
+                .prepare(
+                    "MATCH (n:BgpNeighbor {device_address: $dev, peer_address: $peer}) \
+                     RETURN n.session_state, n.peer_as",
+                )
+                .context("prepare bgp neighbor join")?;
+            let rows: Vec<_> = conn
+                .execute(
+                    &mut stmt,
+                    vec![
+                        ("dev", Value::String(update.target.clone())),
+                        ("peer", Value::String(peer_addr.clone())),
+                    ],
+                )
+                .context("execute bgp neighbor join")?
+                .collect();
+            if let Some(row) = rows.first() {
+                return Ok(serde_json::json!({
+                    "status": "joined",
+                    "join_type": "bgp_neighbor",
+                    "peer_address": peer_addr,
+                    "current_session_state": read_str(&row[0]),
+                    "peer_as": read_str(&row[1]),
+                }));
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "status": "orphan",
+        "reason": "no_graph_entity_matched",
+        "fact_type": fact.fact_type,
     }))
 }
 
@@ -3699,7 +4244,9 @@ fn write_signal_state_change_event(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     event_type: &str,
+    source_type: &str,
     event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
     let now = ts(update.timestamp_ns);
     upsert_device(
@@ -3717,9 +4264,11 @@ fn write_signal_state_change_event(
         &update.target,
         event_type,
         &detail,
+        source_type,
         now,
         update.timestamp_ns,
         event_tx,
+        corr_buf,
     )?;
     Ok(())
 }
@@ -3728,6 +4277,7 @@ fn write_bmp_peer_state(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
     let event: BmpEvent =
         serde_json::from_value(update.value.clone()).context("parse BMP peer-state event")?;
@@ -3750,9 +4300,11 @@ fn write_bmp_peer_state(
             &update.target,
             "bmp_session_change",
             &detail,
+            "bmp",
             ts(update.timestamp_ns),
             update.timestamp_ns,
             event_tx,
+            corr_buf,
         )?;
     }
     Ok(())
@@ -3844,6 +4396,7 @@ fn write_bmp_route_monitoring(
         &update.target,
         "bmp_route_change",
         &serde_json::to_string(&detail)?,
+        "bmp",
         now,
         update.timestamp_ns,
         event_tx,
@@ -4058,6 +4611,7 @@ fn write_bgp_ls_state(
                     &update.target,
                     "sr_policy_change",
                     &detail,
+                    "bgp_ls",
                     ts(update.timestamp_ns),
                     update.timestamp_ns,
                     event_tx,
@@ -4219,6 +4773,7 @@ fn write_lldp_neighbor(
     // Best-effort: link the local Interface to the remote Interface via LLDP data.
     let system_name = json_str(val, "system-name").to_string();
     let port_id = json_str(val, "port-id").to_string();
+    let chassis_id = json_str(val, "chassis-id").to_string();
     if !system_name.is_empty()
         && !port_id.is_empty()
         && let Err(e) = try_connect_interfaces(
@@ -4233,11 +4788,65 @@ fn write_lldp_neighbor(
         debug!(error = %e, local_if, system_name, port_id, "interface link skipped");
     }
 
+    // Track B4: HostEndpoint fallback.
+    // If the LLDP peer does not match any Device (by hostname or address), create a
+    // HostEndpoint so the endpoint is at least visible in the graph topology.
+    // This is arch-agnostic: works for campus workstations, printers, phones, etc.
+    // A HostEndpoint with kind="unknown" is a placeholder that NetBox enrichment or
+    // operator data can promote to a richer record later.
+    if !chassis_id.is_empty() {
+        let peer_is_known_device = {
+            // Check by hostname match
+            let mut chk = conn
+                .prepare("MATCH (d:Device {hostname: $hn}) RETURN d.address LIMIT 1")
+                .ok();
+            let found_by_hostname = chk.as_mut().map_or(false, |s| {
+                conn.execute(s, vec![("hn", Value::String(system_name.clone()))])
+                    .ok()
+                    .map_or(false, |mut rows| rows.next().is_some())
+            });
+            // Also check chassis_id as an IP address (some vendors put mgmt IP in chassis-id)
+            let mut chk2 = conn
+                .prepare("MATCH (d:Device) WHERE d.address STARTS WITH $pfx RETURN d.address LIMIT 1")
+                .ok();
+            let found_by_chassis = !chassis_id.is_empty()
+                && chk2.as_mut().map_or(false, |s| {
+                    conn.execute(s, vec![("pfx", Value::String(chassis_id.clone()))])
+                        .ok()
+                        .map_or(false, |mut rows| rows.next().is_some())
+                });
+            found_by_hostname || found_by_chassis
+        };
+
+        if !peer_is_known_device {
+            let now_ns = u.timestamp_ns;
+            if let Err(e) = upsert_host_endpoint(
+                conn,
+                &chassis_id,
+                "unknown",
+                &system_name,
+                &chassis_id,
+                "",
+                "",
+                "",
+                "lldp",
+                now_ns,
+            ) {
+                debug!(error = %e, chassis_id, "HostEndpoint upsert from LLDP skipped");
+            } else {
+                // Wire CONNECTED_TO: HostEndpoint → local Interface of the observing device
+                let local_iface_id = format!("{}:{local_if}", u.target);
+                let _ = link_host_endpoint_to_interface(conn, &chassis_id, &local_iface_id);
+                debug!(chassis_id, system_name, "HostEndpoint created from LLDP");
+            }
+        }
+    }
+
     info!(
         target = %u.target,
         local_if = %local_if,
-        chassis_id = %json_str(val, "chassis-id"),
-        system_name = %json_str(val, "system-name"),
+        chassis_id = %chassis_id,
+        system_name = %system_name,
         "LLDP neighbor written"
     );
     Ok(())
@@ -4505,7 +5114,7 @@ fn normalize_site(mut site: SiteRecord) -> Result<SiteRecord> {
     Ok(site)
 }
 
-fn site_id_from_name(name: &str) -> String {
+pub fn site_id_from_name(name: &str) -> String {
     let mut slug = String::new();
     let mut last_was_dash = false;
     for ch in name.trim().to_ascii_lowercase().chars() {
@@ -4763,6 +5372,7 @@ fn emit_oper_status_event(
         detail_json: detail,
         occurred_at_ns: u.timestamp_ns,
         state_change_event_id: String::new(),
+        source_type: "gnmi".to_string(),
     });
     debug!(target = %u.target, if_name, oper_status, "interface oper-status event emitted");
     Ok(())

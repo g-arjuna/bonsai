@@ -30,11 +30,20 @@ export function healthColor(health) {
   return C.stateNeutral;
 }
 
-export function roleStrokeColor(role, hostname) {
-  const r = (role || '').toLowerCase().replace(/[-_ ]/g, '');
-  const h = (hostname || '').toLowerCase();
-  if (r === 'superspine' || (r === 'spine' && (h.includes('super') || h.startsWith('ss')))) return C.accentMuted;
-  if (r === 'spine') return C.accentPrimary;
-  if (['pe', 'rr', 'border', 'core'].includes(r)) return C.stateInfo;
+export function roleStrokeColor(role) {
+  const r = (role || '').toLowerCase().replace(/[-_\s]/g, '');
+  // Tier-0 roles (core / superspine / route-reflector / WAN core)
+  if (['superspine','superleaf','core','backbone','rr','routereflector',
+       'wancore','wanrouter','wan','datacentercore','dccore','borderleaf'].includes(r))
+    return C.accentMuted;
+  // Tier-1 roles (spine / aggregation / distribution / PE / WLC / firewall)
+  if (['spine','aggregation','distribution','pe','providerededge',
+       'border','borderrouter','p',
+       'wlc','wirelesscontroller','wlancontroller',
+       'firewall','fw','loadbalancer','lb'].includes(r))
+    return C.accentPrimary;
+  // Provider/WAN edge roles get info-blue
+  if (['ce','customeredge','edge','edgerouter','cpe'].includes(r))
+    return C.stateInfo;
   return null; // fall back to health color
 }

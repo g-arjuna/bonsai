@@ -213,6 +213,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             rule_id: String,
             severity: String,
             features_json: String,
+            source_types_json: String,
+            latency_ns: i64,
             fired_at_ns: i64,
             state_change_event_id: String,
         ) -> Result<String> {
@@ -223,6 +225,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         rule_id,
                         severity,
                         features_json,
+                        source_types_json,
+                        latency_ns,
                         fired_at_ns,
                         state_change_event_id,
                     )
@@ -234,6 +238,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         rule_id,
                         severity,
                         features_json,
+                        source_types_json,
+                        latency_ns,
                         fired_at_ns,
                         state_change_event_id,
                     )
@@ -422,141 +428,160 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         });
     }
 
-    if cfg.signals.syslog.enabled && run_collector {
-        let syslog_cfg = cfg.signals.syslog.clone();
-        let syslog_pattern_dir = cfg.layered_ingestion.syslog_patterns_path.clone();
-        let syslog_targets = cfg.target.clone();
-        let syslog_bus = std::sync::Arc::clone(&bus);
-        let syslog_shutdown = shutdown_rx.clone();
-        let syslog_governor = shared_governor.clone();
+    // ── Correlation buffer sweep task ─────────────────────────────────────────
+    if let Some(Store::Core(ref s)) = store {
+        let corr_buf = std::sync::Arc::clone(&s.correlation_buffer);
         tokio::spawn(async move {
-            if let Err(error) = bonsai::signals::syslog::run_syslog_receiver(
-                syslog_cfg,
-                syslog_pattern_dir,
-                syslog_targets,
-                syslog_bus,
-                syslog_shutdown,
-                syslog_governor,
-            )
-            .await
-            {
-                warn!(%error, "syslog receiver stopped");
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let flushed = corr_buf.drain_expired();
+                for slot in &flushed {
+                    if slot.is_multi_source() {
+                        tracing::info!(
+                            device = %slot.key.device_address,
+                            semantic = %slot.key.semantic_type,
+                            sub_key = %slot.key.sub_key,
+                            sources = ?slot.source_types,
+                            state_change_ids = ?slot.state_change_event_ids,
+                            "correlation buffer: multi-source event fused"
+                        );
+                        metrics::counter!(
+                            "bonsai_correlation_multi_source_total",
+                            "semantic" => slot.key.semantic_type.clone(),
+                        )
+                        .increment(1);
+                    }
+                }
             }
         });
-    } else if cfg.signals.syslog.enabled {
-        info!(
-            "syslog receiver enabled but runtime mode has no collector role; skipping syslog receiver"
+    }
+
+    // ── D3-13 T2: Receiver Supervisor — all receivers managed via supervisor ──
+    let supervisor = bonsai::receiver_supervisor::new_shared();
+
+    macro_rules! spawn_or_register {
+        ($name:literal, $addr:expr, $enabled:expr, $run_collector:expr, $factory:expr) => {{
+            let mut sup = supervisor.blocking_write();
+            if $enabled && $run_collector {
+                sup.spawn($name, $addr.to_string(), $factory);
+            } else {
+                sup.register_disabled($name, $addr.to_string());
+                if $enabled && !$run_collector {
+                    info!(receiver = $name, "receiver enabled but no collector role; skipping");
+                }
+            }
+        }};
+    }
+
+    {
+        let syslog_cfg  = cfg.signals.syslog.clone();
+        let pattern_dir = cfg.layered_ingestion.syslog_patterns_path.clone();
+        let targets     = cfg.target.clone();
+        let syslog_bus  = std::sync::Arc::clone(&bus);
+        let governor    = shared_governor.clone();
+        spawn_or_register!(
+            "syslog",
+            cfg.signals.syslog.udp_addr.clone() + "/" + &cfg.signals.syslog.tcp_addr,
+            cfg.signals.syslog.enabled,
+            run_collector,
+            |shutdown| async move {
+                bonsai::signals::syslog::run_syslog_receiver(
+                    syslog_cfg, pattern_dir, targets, syslog_bus, shutdown, governor,
+                ).await
+            }
         );
     }
 
-    if cfg.signals.snmp.enabled && run_collector {
-        let snmp_cfg = cfg.signals.snmp.clone();
-        let snmp_targets = cfg.target.clone();
-        let snmp_bus = std::sync::Arc::clone(&bus);
-        let snmp_shutdown = shutdown_rx.clone();
-        tokio::spawn(async move {
-            if let Err(error) = bonsai::signals::snmp::run_snmp_receiver(
-                snmp_cfg,
-                snmp_targets,
-                snmp_bus,
-                snmp_shutdown,
-            )
-            .await
-            {
-                warn!(%error, "snmp receiver stopped");
+    {
+        let snmp_cfg  = cfg.signals.snmp.clone();
+        let targets   = cfg.target.clone();
+        let snmp_bus  = std::sync::Arc::clone(&bus);
+        spawn_or_register!(
+            "snmp",
+            cfg.signals.snmp.udp_addr.clone(),
+            cfg.signals.snmp.enabled,
+            run_collector,
+            |shutdown| async move {
+                bonsai::signals::snmp::run_snmp_receiver(
+                    snmp_cfg, targets, snmp_bus, shutdown,
+                ).await
             }
-        });
-    } else if cfg.signals.snmp.enabled {
-        info!(
-            "snmp receiver enabled but runtime mode has no collector role; skipping snmp receiver"
         );
     }
 
-    if cfg.streaming.bmp.enabled && run_collector {
-        let bmp_cfg = cfg.streaming.bmp.clone();
-        let bmp_targets = cfg.target.clone();
-        let bmp_bus = std::sync::Arc::clone(&bus);
-        let bmp_shutdown = shutdown_rx.clone();
-        let bmp_governor = shared_governor.clone();
-        tokio::spawn(async move {
-            if let Err(error) = bonsai::streaming::bmp::run_bmp_receiver(
-                bmp_cfg,
-                bmp_targets,
-                bmp_bus,
-                bmp_shutdown,
-                bmp_governor,
-            )
-            .await
-            {
-                warn!(%error, "BMP receiver stopped");
+    {
+        let bmp_cfg  = cfg.streaming.bmp.clone();
+        let targets  = cfg.target.clone();
+        let bmp_bus  = std::sync::Arc::clone(&bus);
+        let governor = shared_governor.clone();
+        spawn_or_register!(
+            "bmp",
+            cfg.streaming.bmp.tcp_addr.clone(),
+            cfg.streaming.bmp.enabled,
+            run_collector,
+            |shutdown| async move {
+                bonsai::streaming::bmp::run_bmp_receiver(
+                    bmp_cfg, targets, bmp_bus, shutdown, governor,
+                ).await
             }
-        });
-    } else if cfg.streaming.bmp.enabled {
-        info!("BMP receiver enabled but runtime mode has no collector role; skipping BMP receiver");
+        );
     }
 
-    if cfg.streaming.bgp_ls.enabled && run_collector {
+    {
         let bgp_ls_cfg = cfg.streaming.bgp_ls.clone();
-        let bgp_ls_targets = cfg.target.clone();
+        let targets    = cfg.target.clone();
         let bgp_ls_bus = std::sync::Arc::clone(&bus);
-        let bgp_ls_shutdown = shutdown_rx.clone();
-        tokio::spawn(async move {
-            if let Err(error) = bonsai::streaming::bgp_ls::run_bgp_ls_receiver(
-                bgp_ls_cfg,
-                bgp_ls_targets,
-                bgp_ls_bus,
-                bgp_ls_shutdown,
-            )
-            .await
-            {
-                warn!(%error, "BGP-LS receiver stopped");
+        spawn_or_register!(
+            "bgp_ls",
+            cfg.streaming.bgp_ls.tcp_addr.clone(),
+            cfg.streaming.bgp_ls.enabled,
+            run_collector,
+            |shutdown| async move {
+                bonsai::streaming::bgp_ls::run_bgp_ls_receiver(
+                    bgp_ls_cfg, targets, bgp_ls_bus, shutdown,
+                ).await
             }
-        });
-    } else if cfg.streaming.bgp_ls.enabled {
-        info!(
-            "BGP-LS receiver enabled but runtime mode has no collector role; skipping BGP-LS receiver"
         );
     }
 
     if cfg.streaming.pcep.enabled {
-        info!(
-            "PCEP ingest is configured but intentionally deferred in CV2 Sprint 4; no runtime receiver will be started yet"
+        info!("PCEP ingest deferred; no runtime receiver started");
+        let mut sup = supervisor.blocking_write();
+        sup.register_disabled("pcep", cfg.streaming.pcep.tcp_addr.clone());
+    }
+
+    {
+        let otlp_cfg = cfg.streaming.otlp.clone();
+        let otlp_bus = std::sync::Arc::clone(&bus);
+        spawn_or_register!(
+            "otlp",
+            cfg.streaming.otlp.http_addr.clone(),
+            cfg.streaming.otlp.enabled,
+            run_collector,
+            |shutdown| async move {
+                bonsai::streaming::otlp::run_otlp_receiver(
+                    otlp_cfg, otlp_bus, shutdown,
+                ).await
+            }
         );
     }
 
-    if cfg.streaming.otlp.enabled && run_collector {
-        let otlp_cfg = cfg.streaming.otlp.clone();
-        let otlp_bus = std::sync::Arc::clone(&bus);
-        let otlp_shutdown = shutdown_rx.clone();
-        tokio::spawn(async move {
-            if let Err(error) =
-                bonsai::streaming::otlp::run_otlp_receiver(otlp_cfg, otlp_bus, otlp_shutdown)
-                    .await
-            {
-                warn!(%error, "OTLP receiver stopped");
-            }
-        });
-    } else if cfg.streaming.otlp.enabled {
-        info!("OTLP receiver enabled but runtime mode has no collector role; skipping");
-    }
-
-    if cfg.streaming.netflow.enabled && run_collector {
+    {
         let netflow_cfg = cfg.streaming.netflow.clone();
         let netflow_bus = std::sync::Arc::clone(&bus);
-        let netflow_shutdown = shutdown_rx.clone();
-        tokio::spawn(async move {
-            if let Err(error) = bonsai::streaming::netflow::run_netflow_receiver(
-                netflow_cfg,
-                netflow_bus,
-                netflow_shutdown,
-            )
-            .await
-            {
-                warn!(%error, "Netflow receiver stopped");
+        spawn_or_register!(
+            "netflow",
+            cfg.streaming.netflow.udp_addr.clone(),
+            cfg.streaming.netflow.enabled,
+            run_collector,
+            |shutdown| async move {
+                bonsai::streaming::netflow::run_netflow_receiver(
+                    netflow_cfg, netflow_bus, shutdown,
+                ).await
             }
-        });
-    } else if cfg.streaming.netflow.enabled {
-        info!("Netflow receiver enabled but runtime mode has no collector role; skipping");
+        );
     }
 
     if cfg.archive.enabled && (run_collector || run_core) {
@@ -849,12 +874,36 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     };
 
     if run_collector && !run_core {
+        let queue_depth_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let queue_bytes_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let queue_max_bytes_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        let diag_port = cfg.collector.diagnostic_port;
+        let diag_state = if diag_port > 0 {
+            let ds = bonsai::collector::diagnostic_server::DiagnosticState::new(
+                &cfg.runtime.collector_id,
+            );
+            let diag_shutdown = shutdown_rx.clone();
+            tokio::spawn(bonsai::collector::diagnostic_server::start(
+                diag_port,
+                ds.clone(),
+                diag_shutdown,
+            ));
+            Some(ds)
+        } else {
+            None
+        };
+
         let forwarder_bus = std::sync::Arc::clone(&bus);
         let core_endpoint = cfg.runtime.core_ingest_endpoint.clone();
         let collector_id = cfg.runtime.collector_id.clone();
         let collector_config = cfg.collector.clone();
         let tls_config = cfg.runtime.tls.clone();
         let forwarder_shutdown = shutdown_rx.clone();
+        let forwarder_counter = std::sync::Arc::clone(&queue_depth_counter);
+        let forwarder_bytes = std::sync::Arc::clone(&queue_bytes_counter);
+        let forwarder_max_bytes = std::sync::Arc::clone(&queue_max_bytes_counter);
+        let forwarder_diag = diag_state.clone();
 
         tokio::spawn(async move {
             ingest::run_core_forwarder(
@@ -864,6 +913,10 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 collector_config,
                 tls_config,
                 forwarder_shutdown,
+                forwarder_counter,
+                forwarder_bytes,
+                forwarder_max_bytes,
+                forwarder_diag,
             )
             .await;
         });
@@ -873,7 +926,16 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         let collector_bus = std::sync::Arc::clone(&bus);
         let collector_plan_tx = subscription_plan_tx.clone();
         let collector_shutdown = shutdown_rx.clone();
+        let manager_counter = std::sync::Arc::clone(&queue_depth_counter);
+        let manager_bytes = std::sync::Arc::clone(&queue_bytes_counter);
+        let manager_max_bytes = std::sync::Arc::clone(&queue_max_bytes_counter);
+        let manager_diag = diag_state;
 
+        let manager_supervisor = if run_collector {
+            Some(std::sync::Arc::clone(&supervisor))
+        } else {
+            None
+        };
         tokio::spawn(async move {
             if let Err(error) = ingest::run_collector_manager(
                 runtime_cfg,
@@ -881,25 +943,17 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 collector_bus,
                 collector_plan_tx,
                 collector_shutdown,
+                manager_counter,
+                manager_bytes,
+                manager_max_bytes,
+                manager_diag,
+                manager_supervisor,
             )
             .await
             {
                 warn!(%error, "collector manager failed");
             }
         });
-
-        let diag_port = cfg.collector.diagnostic_port;
-        if diag_port > 0 {
-            let diag_state = bonsai::collector::diagnostic_server::DiagnosticState::new(
-                &cfg.runtime.collector_id,
-            );
-            let diag_shutdown = shutdown_rx.clone();
-            tokio::spawn(bonsai::collector::diagnostic_server::start(
-                diag_port,
-                diag_state,
-                diag_shutdown,
-            ));
-        }
     }
 
     // D1-T1 (DV1): HTTP task handle — tracked so an unexpected HTTP exit triggers shutdown.
@@ -992,7 +1046,10 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             } else {
                 unreachable!()
             };
-            let http_addr: std::net::SocketAddr = "0.0.0.0:3000".parse().unwrap();
+            let http_addr: std::net::SocketAddr = cfg
+                .http_addr
+                .parse()
+                .unwrap_or_else(|_| "0.0.0.0:3000".parse().unwrap());
             info!(%http_addr, "HTTP UI server listening");
             let registry_for_http = std::sync::Arc::clone(&registry);
             let credentials_for_http = std::sync::Arc::clone(&credentials);
@@ -1055,6 +1112,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         storage_config_for_http,
                         cfg.layered_ingestion.clone(),
                         cfg.streaming.clone(),
+                        cfg.signals.clone(),
                         cfg.yang.library_root.clone(),
                         cfg.yang.cache_root.clone(),
                         cfg.yang.bundle_key_env.clone(),
@@ -1063,6 +1121,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         cfg.collector.filter.counter_debounce_secs,
                         governor_for_http,
                         std::sync::Arc::clone(&sidecar_registry),
+                        std::sync::Arc::clone(&supervisor),
+                        std::sync::Arc::clone(&bus),
                     ),
                 )
                 .await

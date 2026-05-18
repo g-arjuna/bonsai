@@ -175,11 +175,31 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
     ) -> Result<Response<pb::HeartbeatAck>, Status> {
         let stats = req.into_inner();
         if let Some(manager) = &self.collector_manager {
+            let receiver_records: Vec<crate::assignment::ReceiverStatusRecord> = stats
+                .receiver_statuses
+                .iter()
+                .map(|r| crate::assignment::ReceiverStatusRecord {
+                    name: r.name.clone(),
+                    state: r.state.clone(),
+                    addr: r.addr.clone(),
+                    packet_count: r.packet_count,
+                    error_count: r.error_count,
+                    last_error: if r.last_error.is_empty() { None } else { Some(r.last_error.clone()) },
+                })
+                .collect();
             manager.record_heartbeat(
                 &stats.collector_id,
                 stats.queue_depth_updates,
                 stats.subscription_count,
                 stats.uptime_secs,
+                stats.queue_bytes,
+                stats.queue_utilization_pct,
+                stats.active_subscribers,
+                stats.failed_subscribers,
+                stats.memory_used_bytes,
+                stats.recent_warn_count,
+                stats.recent_error_count,
+                receiver_records,
             );
         }
         tracing::debug!(
@@ -749,6 +769,8 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                     d.rule_id,
                     d.severity,
                     d.features_json,
+                    d.source_types_json,
+                    d.latency_ns,
                     d.fired_at_ns,
                     d.state_change_event_id,
                 )
@@ -781,6 +803,8 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 r.rule_id,
                 r.severity,
                 r.features_json,
+                r.source_types_json,
+                r.latency_ns,
                 r.fired_at_ns,
                 r.state_change_event_id,
             )

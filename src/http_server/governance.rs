@@ -58,6 +58,13 @@ pub(super) struct AssignmentRulesResponse {
 pub(super) struct SetAssignmentRulesRequest {
     rules: Vec<AssignmentRule>,
 }
+#[derive(Serialize, Clone)]
+pub(super) struct StreamingReceiverBadge {
+    pub enabled: bool,
+    pub addr: String,
+    pub protocol: String,
+}
+
 #[derive(Serialize)]
 pub(super) struct CollectorStatusJson {
     id: String,
@@ -71,6 +78,26 @@ pub(super) struct CollectorStatusJson {
     observed_subscriptions: usize,
     pending_subscriptions: usize,
     silent_subscriptions: usize,
+    /// Streaming receiver status per protocol — populated from heartbeat-reported
+    /// data for remote collectors; empty until receiver supervisor lands (D3-13).
+    streaming_status: HashMap<String, StreamingReceiverBadge>,
+    queue_bytes: u64,
+    queue_utilization_pct: f32,
+    active_subscribers: u32,
+    failed_subscribers: u32,
+    memory_used_mb: u64,
+    recent_warn_count: u32,
+    recent_error_count: u32,
+    receiver_statuses: Vec<ReceiverStatusJson>,
+}
+#[derive(Serialize)]
+pub(super) struct ReceiverStatusJson {
+    name: String,
+    state: String,
+    addr: String,
+    packet_count: u64,
+    error_count: u64,
+    last_error: Option<String>,
 }
 #[derive(Serialize)]
 pub(super) struct AssignmentStatusResponse {
@@ -194,6 +221,7 @@ pub(super) async fn assignment_status_handler(
         unassigned_devices: summary.unassigned_devices,
     }))
 }
+
 pub(super) fn collector_status_json(s: CollectorStatus) -> CollectorStatusJson {
     CollectorStatusJson {
         id: s.id,
@@ -207,7 +235,35 @@ pub(super) fn collector_status_json(s: CollectorStatus) -> CollectorStatusJson {
         observed_subscriptions: 0,
         pending_subscriptions: 0,
         silent_subscriptions: 0,
+        streaming_status: HashMap::new(),
+        queue_bytes: s.queue_bytes,
+        queue_utilization_pct: s.queue_utilization_pct,
+        active_subscribers: s.active_subscribers,
+        failed_subscribers: s.failed_subscribers,
+        memory_used_mb: s.memory_used_bytes / (1024 * 1024),
+        recent_warn_count: s.recent_warn_count,
+        recent_error_count: s.recent_error_count,
+        receiver_statuses: s.receiver_statuses.into_iter().map(|r| ReceiverStatusJson {
+            name: r.name,
+            state: r.state,
+            addr: r.addr,
+            packet_count: r.packet_count,
+            error_count: r.error_count,
+            last_error: r.last_error,
+        }).collect(),
     }
+}
+
+pub(super) fn streaming_status_from_config(
+    streaming: &crate::config::StreamingConfig,
+) -> HashMap<String, StreamingReceiverBadge> {
+    let mut m = HashMap::new();
+    m.insert("bmp".into(),     StreamingReceiverBadge { enabled: streaming.bmp.enabled,     addr: streaming.bmp.tcp_addr.clone(),    protocol: "tcp".into() });
+    m.insert("bgp_ls".into(),  StreamingReceiverBadge { enabled: streaming.bgp_ls.enabled,  addr: streaming.bgp_ls.tcp_addr.clone(), protocol: "tcp".into() });
+    m.insert("pcep".into(),    StreamingReceiverBadge { enabled: streaming.pcep.enabled,    addr: streaming.pcep.tcp_addr.clone(),   protocol: "tcp".into() });
+    m.insert("otlp".into(),    StreamingReceiverBadge { enabled: streaming.otlp.enabled,    addr: streaming.otlp.http_addr.clone(),  protocol: "http".into() });
+    m.insert("netflow".into(), StreamingReceiverBadge { enabled: streaming.netflow.enabled, addr: streaming.netflow.udp_addr.clone(), protocol: "udp".into() });
+    m
 }
 pub(super) fn collector_status_with_subscription_json(
     collector: CollectorStatus,

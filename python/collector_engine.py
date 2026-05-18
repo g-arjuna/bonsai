@@ -87,6 +87,7 @@ def on_detection(detection: Detection, local_client: BonsaiClient) -> None:
             features_json=detection.features.to_json(),
             fired_at_ns=detection.features.occurred_at_ns or int(time.time() * 1e9),
             state_change_event_id=detection.features.state_change_event_id,
+            source_event_ids=detection.effective_source_event_ids,
         )
         _metrics["detections_out_total"] += 1
     except Exception as exc:

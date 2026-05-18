@@ -57,6 +57,10 @@ pub enum TelemetryEvent {
     SnmpTrap {
         event_type: String,
     },
+    /// Structured fact extracted from SNMP varbinds via OID pattern matching.
+    SnmpFact {
+        fact_type: String,
+    },
     /// gNMI ON_CHANGE notification on a subscribed config_path (admin-state, ingress-vni, etc.)
     ConfigChange {
         yang_path: String,
@@ -70,6 +74,7 @@ pub enum TelemetryEvent {
         peer_address: String,
     },
     NetflowRecord {
+        exporter_address: String,
         src_address: String,
         dst_address: String,
         dst_port: i64,
@@ -301,6 +306,15 @@ impl TelemetryUpdate {
             };
         }
 
+        if self.path.starts_with("signals/snmp_fact/")
+            && let Some(fact_type) = self.path.rsplit('/').next()
+            && !fact_type.is_empty()
+        {
+            return TelemetryEvent::SnmpFact {
+                fact_type: fact_type.to_string(),
+            };
+        }
+
         if self.path.starts_with("signals/snmp/")
             && let Some(event_type) = self.path.rsplit('/').next()
             && !event_type.is_empty()
@@ -344,6 +358,12 @@ impl TelemetryUpdate {
         }
 
         if self.path == "streaming/netflow/flow" {
+            let exporter_address = self
+                .value
+                .get("exporter_address")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&self.target)
+                .to_string();
             let src_address = self
                 .value
                 .get("src_address")
@@ -378,6 +398,7 @@ impl TelemetryUpdate {
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0);
             return TelemetryEvent::NetflowRecord {
+                exporter_address,
                 src_address,
                 dst_address,
                 dst_port,

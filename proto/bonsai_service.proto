@@ -237,6 +237,8 @@ message DetectionEventIngest {
   string state_change_event_id = 8;
   bool   auto_remediate        = 9;
   string remediation_action    = 10;
+  string source_types_json     = 11; // JSON-encoded []string of source types that contributed
+  int64  latency_ns            = 12; // time from first StateChangeEvent to detection fire
 }
 
 message DetectionIngestResponse {
@@ -252,7 +254,10 @@ message CreateDetectionRequest {
   string severity              = 3;  // "info" | "warn" | "critical"
   string features_json         = 4;  // full feature vector — stored for Phase 5 ML training
   int64  fired_at_ns           = 5;
-  string state_change_event_id = 6;  // UUID of the triggering StateChangeEvent; empty for poll-based rules
+  string state_change_event_id = 6;  // UUID of the primary triggering StateChangeEvent; empty for poll-based rules
+  string source_types_json     = 7;  // JSON-encoded []string of source types that contributed
+  int64  latency_ns            = 8;  // time from first StateChangeEvent to detection fire (ns)
+  repeated string source_event_ids = 9;  // all StateChangeEvent UUIDs that contributed (multi-source correlation)
 }
 message CreateDetectionResponse {
   string id    = 1;  // UUID of the new DetectionEvent node
@@ -302,11 +307,32 @@ message AssignmentUpdate {
   bool                      is_full_sync = 2; // If true, collector should drop other devices
 }
 
+// Per-receiver status snapshot carried in each heartbeat (D3-14 T4 / D3-13).
+message CollectorReceiverStatus {
+  string name         = 1;  // "bmp" | "bgp_ls" | "otlp" | "netflow" | "syslog" | "snmp"
+  string state        = 2;  // "listening" | "stopped" | "error" | "port_conflict" | "disabled"
+  string addr         = 3;  // bound address
+  uint64 packet_count = 4;
+  uint64 error_count  = 5;
+  string last_error   = 6;  // empty if none
+}
+
 message CollectorStats {
   string collector_id        = 1;
   uint64 queue_depth_updates = 2;
   uint32 subscription_count  = 3;
   int64  uptime_secs         = 4;
+  // Extended health fields — added in D3-14.
+  // Old collectors that do not send these fields will have zero values on core.
+  uint64 queue_bytes          = 5;
+  float  queue_utilization_pct = 6;
+  uint32 active_subscribers   = 7;
+  uint32 failed_subscribers   = 8;
+  uint64 memory_used_bytes    = 9;
+  uint32 recent_warn_count    = 10;
+  uint32 recent_error_count   = 11;
+  // D3-14 T4: per-receiver status; empty on old collectors.
+  repeated CollectorReceiverStatus receiver_statuses = 12;
 }
 
 message HeartbeatAck {

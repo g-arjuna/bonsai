@@ -1,12 +1,145 @@
 <script>
   import { onMount } from 'svelte';
+  import { navigate } from '$lib/router.svelte.js';
+  import { toast } from '$lib/toast.svelte.js';
 
-  const STEPS = [
+  // When first_run=true, prepend 4 setup steps (Welcome/Environment/Site/Credential)
+  // before the device wizard steps. App.svelte passes this when is_first_run is detected.
+  let { first_run = false, onComplete = () => {} } = $props();
+
+  const SETUP_STEPS = [
+    { id: 1, label: 'Welcome' },
+    { id: 2, label: 'Environment' },
+    { id: 3, label: 'Site' },
+    { id: 4, label: 'Credential' },
+  ];
+
+  const DEVICE_STEPS = [
     { id: 1, label: 'Identity' },
     { id: 2, label: 'Discovery' },
     { id: 3, label: 'Paths' },
     { id: 4, label: 'Confirm' }
   ];
+
+  // Logical steps exposed to the template
+  let STEPS = $derived(first_run
+    ? [...SETUP_STEPS, ...DEVICE_STEPS.map(s => ({ id: s.id + 4, label: s.label }))]
+    : DEVICE_STEPS
+  );
+
+  // Offset applied to device wizard step numbers when first_run is active
+  let stepOffset = $derived(first_run ? 4 : 0);
+
+  // ── First-run setup state ─────────────────────────────────────────────────
+  const ARCHETYPES = [
+    { value: 'data_center',      label: 'Data Center',      desc: 'DC fabrics, spine/leaf, EVPN/BGP' },
+    { value: 'campus_wired',     label: 'Campus Wired',     desc: 'Access/distribution/core LAN' },
+    { value: 'campus_wireless',  label: 'Campus Wireless',  desc: 'APs, WLCs, wireless overlay' },
+    { value: 'service_provider', label: 'Service Provider', desc: 'Core, PE/P routers, MPLS, SR' },
+    { value: 'home_lab',         label: 'Home Lab',         desc: 'ContainerLab, FRR, any topology' },
+  ];
+
+  let frEnvName      = $state('');
+  let frEnvArchetype = $state('home_lab');
+  let frEnvSaving    = $state(false);
+  let frEnvCreated   = $state(null);
+
+  let frSiteName     = $state('');
+  let frSiteKind     = $state('dc');
+  let frSiteSaving   = $state(false);
+  let frSiteCreated  = $state(null);
+
+  let frCredAlias    = $state('');
+  let frCredUser     = $state('');
+  let frCredPass     = $state('');
+  let frCredSaving   = $state(false);
+  let frCredCreated  = $state(null);
+
+  async function frCreateEnvironment() {
+    if (!frEnvName.trim()) return;
+    frEnvSaving = true;
+    try {
+      const r = await fetch('/api/environments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: frEnvName.trim(), archetype: frEnvArchetype }),
+      });
+      const data = await r.json();
+      if (!data.success) throw new Error(data.error);
+      frEnvCreated = { name: frEnvName.trim(), archetype: frEnvArchetype };
+      toast(`Environment "${frEnvName.trim()}" created.`, 'success');
+      step = 3;
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      frEnvSaving = false;
+    }
+  }
+
+  async function frCreateSite() {
+    if (!frSiteName.trim()) return;
+    frSiteSaving = true;
+    try {
+      const r = await fetch('/api/sites', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: frSiteName.trim(), kind: frSiteKind, parent_id: '', lat: 0, lon: 0, metadata_json: '{}' }),
+      });
+      const data = await r.json();
+      if (!data.success) throw new Error(data.error);
+      frSiteCreated = { name: frSiteName.trim(), kind: frSiteKind };
+      toast(`Site "${frSiteName.trim()}" created.`, 'success');
+      await loadSites();
+      step = 4;
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      frSiteSaving = false;
+    }
+  }
+
+  async function frCreateCredential() {
+    if (!frCredAlias.trim() || !frCredUser.trim() || !frCredPass) return;
+    frCredSaving = true;
+    try {
+      const r = await fetch('/api/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ alias: frCredAlias.trim(), username: frCredUser.trim(), password: frCredPass }),
+      });
+      const data = await r.json();
+      if (!data.success) throw new Error(data.error);
+      frCredCreated = { alias: frCredAlias.trim() };
+      form.credential_alias = frCredAlias.trim();
+      toast(`Credential alias "${frCredAlias.trim()}" stored in vault.`, 'success');
+      await loadCredentials();
+      step = 5;  // first device — Identity
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      frCredSaving = false;
+    }
+  }
+
+  async function frSkip() {
+    try {
+      await fetch('/api/environments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Home Lab', archetype: 'home_lab' }),
+      });
+      await fetch('/api/sites', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'default-site', kind: 'other', parent_id: '', lat: 0, lon: 0, metadata_json: '{}' }),
+      });
+      await loadSites();
+      await loadEnvironments();
+    } catch (_) { /* non-fatal */ }
+    toast('Setup skipped. Add devices from the wizard.', 'info');
+    onComplete();
+    navigate('/');
+  }
 
   let loading = $state(true);
   let saving = $state(false);
@@ -29,6 +162,167 @@
   let selectedDeviceAddresses = $state([]);
   let events = null;
   let refreshTimer = null;
+
+  // ── NetBox import (D3-2 T2) ──────────────────────────────────────────────────
+  // ── Per-device readiness badges (D3-2 T5) ────────────────────────────────────
+  // Map of address → { service_status, tls_status, blockers, loading }
+  let deviceReadiness = $state({});
+
+  async function fetchReadinessBadge(address) {
+    deviceReadiness = { ...deviceReadiness, [address]: { loading: true } };
+    try {
+      const r = await fetch(`/api/devices/${encodeURIComponent(address)}/gnmi-readiness`);
+      if (!r.ok) {
+        deviceReadiness = { ...deviceReadiness, [address]: { loading: false, error: r.status } };
+        return;
+      }
+      const body = await r.json();
+      const rpt  = body.report || {};
+      deviceReadiness = { ...deviceReadiness, [address]: {
+        loading:        false,
+        service_status: rpt.service_status || 'unknown',
+        tls_status:     rpt.tls_status     || 'unknown',
+        blockers:       rpt.blockers        || [],
+        actions:        rpt.recommended_actions || [],
+      }};
+    } catch (e) {
+      deviceReadiness = { ...deviceReadiness, [address]: { loading: false, error: e.message } };
+    }
+  }
+
+  function readinessBadgeClass(r) {
+    if (!r || r.loading) return 'info';
+    if (r.error) return 'critical';
+    if (r.service_status === 'reachable' && !r.blockers?.length) return 'healthy';
+    if (r.service_status === 'reachable') return 'degraded';
+    return 'critical';
+  }
+
+  function readinessBadgeLabel(r) {
+    if (!r || r.loading) return 'checking…';
+    if (r.error) return 'readiness error';
+    if (r.service_status === 'reachable' && !r.blockers?.length) return 'gNMI OK';
+    if (r.service_status === 'reachable') return `gNMI ⚠ ${r.blockers.length} blocker${r.blockers.length === 1 ? '' : 's'}`;
+    if (r.service_status === 'rpc_failed') return 'RPC failed';
+    if (r.service_status === 'unreachable') return 'unreachable';
+    if (r.service_status === 'auth_failed') return 'auth failed';
+    return r.service_status;
+  }
+
+  // ── Inline add-credential expander (D3-2 T3) ────────────────────────────────
+  let showInlineCredForm = $state(false);
+  let inlineCredForm = $state({ alias: '', username: '', password: '' });
+  let inlineCredSaving = $state(false);
+
+  async function saveInlineCredential() {
+    if (!inlineCredForm.alias.trim() || !inlineCredForm.username.trim() || !inlineCredForm.password) return;
+    inlineCredSaving = true;
+    try {
+      const r = await fetch('/api/credentials', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(inlineCredForm),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const body = await r.json();
+      if (!body.success) throw new Error(body.error || 'credential save failed');
+      form.credential_alias = body.credential.alias;
+      inlineCredForm = { alias: '', username: '', password: '' };
+      showInlineCredForm = false;
+      invalidateDiscovery();
+      await loadCredentials();
+      toast(`Credential "${body.credential.alias}" stored in vault.`, 'success');
+    } catch (e) {
+      error = e.message;
+    } finally {
+      inlineCredSaving = false;
+    }
+  }
+
+  let nbUrl         = $state('');
+  let nbToken       = $state('');
+  let nbSiteSlug    = $state('');
+  let nbFetching    = $state(false);
+  let nbCandidates  = $state([]);
+  let nbSelected    = $state([]);
+  let nbVersion     = $state('');
+  let nbWarnings    = $state([]);
+  let nbImporting   = $state(false);
+  let nbImportDone  = $state([]);
+
+  async function nbFetchDevices() {
+    nbFetching = true;
+    nbCandidates = [];
+    nbSelected = [];
+    nbWarnings = [];
+    nbVersion = '';
+    error = '';
+    try {
+      const r = await fetch('/api/enrichment/netbox/import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: nbUrl.trim(), token: nbToken.trim(), site_slug: nbSiteSlug.trim() }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const data = await r.json();
+      nbCandidates = data.candidates || [];
+      nbSelected = data.candidates.map(c => c.address);
+      nbVersion = data.netbox_version || '';
+      nbWarnings = data.warnings || [];
+    } catch (e) {
+      error = e.message;
+    } finally {
+      nbFetching = false;
+    }
+  }
+
+  function nbToggle(address) {
+    if (nbSelected.includes(address)) {
+      nbSelected = nbSelected.filter(a => a !== address);
+    } else {
+      nbSelected = [...nbSelected, address];
+    }
+  }
+
+  async function nbImportSelected() {
+    const toImport = nbCandidates.filter(c => nbSelected.includes(c.address));
+    if (!toImport.length) return;
+    nbImporting = true;
+    nbImportDone = [];
+    error = '';
+    // Use the first available credential alias (if any) as a hint
+    const credHint = credentials[0]?.alias || '';
+    const results = [];
+    for (const dev of toImport) {
+      try {
+        const r = await fetch('/api/onboarding/devices/with_paths', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            address: dev.address,
+            hostname: dev.name,
+            vendor: dev.vendor,
+            role: dev.role || 'leaf',
+            site: dev.site,
+            enabled: true,
+            credential_alias: credHint,
+            username_env: '',
+            password_env: '',
+            tls_domain: '',
+            ca_cert: '',
+            selected_paths: [],
+          }),
+        });
+        const body = await r.json();
+        results.push({ address: dev.address, ok: body.success, msg: body.error || '' });
+      } catch (e) {
+        results.push({ address: dev.address, ok: false, msg: e.message });
+      }
+    }
+    nbImportDone = results;
+    nbImporting = false;
+    await loadDevices();
+  }
 
   // ── Custom path customisation (T2-6) ─────────────────────────────────────
   let extraPaths = $state([]);        // manually added or browsed-from-catalogue paths
@@ -301,6 +595,8 @@
         : `Device ${body.device.address} is managed with ${paths.length} selected subscription paths.`;
       editingDeviceAddress = '';
       editingSavedPaths = [];
+      fetchReadinessBadge(body.device.address);
+      if (first_run) { onComplete(); navigate('/'); return; }
       workspace = 'devices';
       await loadDevices();
     } catch (e) {
@@ -623,19 +919,23 @@
 
   function nextStep() {
     error = '';
-    if (step === 1 && !form.address.trim()) {
+    const identityStep  = 1 + stepOffset;
+    const discoveryStep = 2 + stepOffset;
+    const pathsStep     = 3 + stepOffset;
+    const maxStep       = 4 + stepOffset;
+    if (step === identityStep && !form.address.trim()) {
       error = 'gNMI address is required before discovery.';
       return;
     }
-    if (step === 2 && !discovery) {
+    if (step === discoveryStep && !discovery) {
       error = 'Run discovery before choosing a path profile.';
       return;
     }
-    if (step === 3 && !selectedPaths().length) {
+    if (step === pathsStep && !selectedPaths().length) {
       error = 'Select at least one subscription path before confirming.';
       return;
     }
-    step = Math.min(4, step + 1);
+    step = Math.min(maxStep, step + 1);
   }
 
   function previousStep() {
@@ -674,6 +974,7 @@
     <div class="workspace-switcher" aria-label="Onboarding workspace">
       <button class:active={workspace === 'wizard'} onclick={() => workspace = 'wizard'}>Wizard</button>
       <button class:active={workspace === 'devices'} onclick={() => workspace = 'devices'}>Device list</button>
+      <button class:active={workspace === 'netbox'} onclick={() => workspace = 'netbox'}>Import from NetBox</button>
       <button class="ghost" onclick={loadDevices}>Refresh</button>
     </div>
   </section>
@@ -707,9 +1008,128 @@
           </div>
         {/if}
 
-        {#if step === 1}
+        {#if first_run && step === 1}
           <div class="panel-heading">
-            <p class="eyebrow">Step 1</p>
+            <p class="eyebrow">Welcome</p>
+            <h3>Welcome to bonsai</h3>
+            <p class="muted">
+              A streaming-first network state engine. bonsai ingests gNMI telemetry, builds a
+              live graph of your network, and closes a detect-predict-heal loop.
+            </p>
+            <p class="muted">
+              This wizard takes about two minutes to configure your first environment, site, and
+              device credential. You can also skip it and configure everything from the workspaces.
+            </p>
+          </div>
+          <div class="wizard-actions">
+            <button type="button" onclick={() => step = 2}>Get started</button>
+            <button type="button" class="ghost" onclick={frSkip}>Skip, go to dashboard</button>
+          </div>
+
+        {:else if first_run && step === 2}
+          <div class="panel-heading">
+            <p class="eyebrow">Step 2 of 8</p>
+            <h3>Define an environment</h3>
+            <p class="muted">
+              An environment groups sites and devices by operational context.
+              The archetype shapes default role options and remediation trust levels.
+            </p>
+          </div>
+          <div class="form-grid">
+            <div class="form-row span-2">
+              <label for="fr-env-name">Name</label>
+              <input id="fr-env-name" bind:value={frEnvName} placeholder="e.g. Lab DC Fabric" autocomplete="off" />
+            </div>
+            <div class="form-row span-2">
+              <label>Archetype</label>
+              <div class="archetype-grid">
+                {#each ARCHETYPES as arch}
+                  <label class="archetype-option" class:selected={frEnvArchetype === arch.value}>
+                    <input type="radio" name="fr-archetype" value={arch.value} bind:group={frEnvArchetype} />
+                    <strong>{arch.label}</strong>
+                    <span class="muted small">{arch.desc}</span>
+                  </label>
+                {/each}
+              </div>
+            </div>
+          </div>
+          <div class="wizard-actions">
+            <button type="button" class="ghost" onclick={() => step = 1}>Back</button>
+            <button type="button" onclick={frCreateEnvironment} disabled={frEnvSaving || !frEnvName.trim()}>
+              {frEnvSaving ? 'Creating…' : 'Create environment'}
+            </button>
+            <button type="button" class="ghost" onclick={() => step = 3}>Skip this step</button>
+          </div>
+
+        {:else if first_run && step === 3}
+          <div class="panel-heading">
+            <p class="eyebrow">Step 3 of 8</p>
+            <h3>Add a top-level site</h3>
+            {#if frEnvCreated}
+              <p class="muted">Environment <strong>{frEnvCreated.name}</strong> created. Now define your first site.</p>
+            {:else}
+              <p class="muted">Define at least one site — a data centre, PoP, campus, or region. You can build the full hierarchy later from the Sites workspace.</p>
+            {/if}
+          </div>
+          <div class="form-grid">
+            <div class="form-row">
+              <label for="fr-site-name">Site name</label>
+              <input id="fr-site-name" bind:value={frSiteName} placeholder="e.g. dc-lab-01" autocomplete="off" />
+            </div>
+            <div class="form-row">
+              <label for="fr-site-kind">Kind</label>
+              <select id="fr-site-kind" bind:value={frSiteKind}>
+                <option value="region">region</option>
+                <option value="dc">dc</option>
+                <option value="pod">pod</option>
+                <option value="rack">rack</option>
+                <option value="other">other</option>
+              </select>
+            </div>
+          </div>
+          <div class="wizard-actions">
+            <button type="button" class="ghost" onclick={() => step = 2}>Back</button>
+            <button type="button" onclick={frCreateSite} disabled={frSiteSaving || !frSiteName.trim()}>
+              {frSiteSaving ? 'Creating…' : 'Create site'}
+            </button>
+            <button type="button" class="ghost" onclick={() => step = 4}>Skip this step</button>
+          </div>
+
+        {:else if first_run && step === 4}
+          <div class="panel-heading">
+            <p class="eyebrow">Step 4 of 8</p>
+            <h3>Store a device credential</h3>
+            {#if frSiteCreated}
+              <p class="muted">Site <strong>{frSiteCreated.name}</strong> created. Now store a credential alias. The username and password are encrypted in the local vault and never exposed in the API or UI.</p>
+            {:else}
+              <p class="muted">Store a credential alias. The username and password are encrypted in the local vault and never exposed in the API or UI.</p>
+            {/if}
+          </div>
+          <div class="form-grid">
+            <div class="form-row">
+              <label for="fr-cred-alias">Alias</label>
+              <input id="fr-cred-alias" bind:value={frCredAlias} placeholder="e.g. lab-admin" autocomplete="off" />
+            </div>
+            <div class="form-row">
+              <label for="fr-cred-user">Username</label>
+              <input id="fr-cred-user" bind:value={frCredUser} placeholder="admin" autocomplete="off" />
+            </div>
+            <div class="form-row">
+              <label for="fr-cred-pass">Password</label>
+              <input id="fr-cred-pass" type="password" bind:value={frCredPass} placeholder="••••••••" autocomplete="new-password" />
+            </div>
+          </div>
+          <div class="wizard-actions">
+            <button type="button" class="ghost" onclick={() => step = 3}>Back</button>
+            <button type="button" onclick={frCreateCredential} disabled={frCredSaving || !frCredAlias.trim() || !frCredUser.trim() || !frCredPass}>
+              {frCredSaving ? 'Saving…' : 'Save credential'}
+            </button>
+            <button type="button" class="ghost" onclick={() => step = 5}>Skip this step</button>
+          </div>
+
+        {:else if step === 1 + stepOffset}
+          <div class="panel-heading">
+            <p class="eyebrow">{first_run ? 'Step 5 of 8' : 'Step 1'}</p>
             <h3>{editingDeviceAddress ? 'Review address and credentials' : 'Address and credentials'}</h3>
             <p class="muted">Vault aliases are preferred. Env vars remain available for lab compatibility, but secrets never enter the registry JSON.</p>
           </div>
@@ -741,13 +1161,33 @@
               </select>
             </div>
             <div class="form-row">
-              <label for="onboard-credential-alias">Credential alias</label>
-              <select id="onboard-credential-alias" bind:value={form.credential_alias} onchange={invalidateDiscovery}>
-                <option value="">No vault alias</option>
-                {#each credentials as credential}
-                  <option value={credential.alias}>{credential.alias}</option>
-                {/each}
-              </select>
+              <label for="onboard-credential-alias">
+                Credential alias
+                {#if !vaultUnlocked}<span class="vault-locked-chip">vault locked</span>{/if}
+              </label>
+              <div class="cred-picker-row">
+                <select id="onboard-credential-alias" bind:value={form.credential_alias} onchange={invalidateDiscovery} disabled={!vaultUnlocked && !credentials.length}>
+                  <option value="">{vaultUnlocked ? 'No vault alias' : credentials.length ? 'Pick alias (vault locked — existing aliases work)' : 'Vault locked'}</option>
+                  {#each credentials as credential}
+                    <option value={credential.alias}>{credential.alias}{credential.device_count ? ` (${credential.device_count} device${credential.device_count === 1 ? '' : 's'})` : ''}</option>
+                  {/each}
+                </select>
+                {#if vaultUnlocked}
+                  <button type="button" class="ghost compact" onclick={() => { showInlineCredForm = !showInlineCredForm; }}>
+                    {showInlineCredForm ? 'Cancel' : '+ New'}
+                  </button>
+                {/if}
+              </div>
+              {#if showInlineCredForm}
+                <div class="inline-cred-form">
+                  <input bind:value={inlineCredForm.alias} placeholder="alias" autocomplete="off" />
+                  <input bind:value={inlineCredForm.username} placeholder="username" autocomplete="off" />
+                  <input bind:value={inlineCredForm.password} type="password" placeholder="password" autocomplete="new-password" />
+                  <button type="button" onclick={saveInlineCredential} disabled={inlineCredSaving || !inlineCredForm.alias.trim() || !inlineCredForm.username.trim() || !inlineCredForm.password}>
+                    {inlineCredSaving ? 'Saving…' : 'Store'}
+                  </button>
+                </div>
+              {/if}
             </div>
             <div class="form-row">
               <label for="onboard-site">Site</label>
@@ -821,9 +1261,9 @@
               </form>
             </section>
           </div>
-        {:else if step === 2}
+        {:else if step === 2 + stepOffset}
           <div class="panel-heading">
-            <p class="eyebrow">Step 2</p>
+            <p class="eyebrow">{first_run ? 'Step 6 of 8' : 'Step 2'}</p>
             <h3>Discovery report</h3>
             <p class="muted">Bonsai calls gNMI Capabilities with the chosen credential alias or env vars, then ranks path profiles for this role.</p>
           </div>
@@ -853,16 +1293,29 @@
             {#if discovery.warnings.length}
               <div class="warning-stack">
                 {#each discovery.warnings as warning}
-                  <p class="warning">{warning}</p>
+                  <div class="blocker-row">
+                    <p class="warning">{warning}</p>
+                    {#if warning.toLowerCase().includes('tls') && warning.toLowerCase().includes('domain')}
+                      <button class="cta-action" onclick={() => { step = 1 + stepOffset; document.getElementById('onboard-tls-domain')?.focus(); }}>Fix TLS domain</button>
+                    {:else if warning.toLowerCase().includes('ca cert') || warning.toLowerCase().includes('ca_cert')}
+                      <button class="cta-action" onclick={() => { step = 1 + stepOffset; document.getElementById('onboard-ca-cert')?.focus(); }}>Set CA cert path</button>
+                    {:else if warning.toLowerCase().includes('auth') || warning.toLowerCase().includes('credential')}
+                      <button class="cta-action" onclick={() => { step = 1 + stepOffset; document.getElementById('onboard-credential-alias')?.focus(); }}>Check credential</button>
+                    {:else if warning.toLowerCase().includes('timeout') || warning.toLowerCase().includes('unreachable')}
+                      <button class="cta-action" onclick={() => { step = 1 + stepOffset; document.getElementById('onboard-address')?.focus(); }}>Check address</button>
+                    {:else if warning.toLowerCase().includes('tls') || warning.toLowerCase().includes('certificate')}
+                      <button class="cta-action" onclick={() => { step = 1 + stepOffset; document.getElementById('onboard-ca-cert')?.focus(); }}>Review TLS config</button>
+                    {/if}
+                  </div>
                 {/each}
               </div>
             {/if}
           {:else}
             <p class="empty">No report yet. Run discovery to unlock path profile selection.</p>
           {/if}
-        {:else if step === 3}
+        {:else if step === 3 + stepOffset}
           <div class="panel-heading">
-            <p class="eyebrow">Step 3</p>
+            <p class="eyebrow">{first_run ? 'Step 7 of 8' : 'Step 3'}</p>
             <h3>Profile and path selection</h3>
             <p class="muted">Required paths stay armed. Optional paths can be removed if the lab image advertises them but you do not want that stream yet.</p>
           </div>
@@ -1053,7 +1506,7 @@
           {/if}
         {:else}
           <div class="panel-heading">
-            <p class="eyebrow">Step 4</p>
+            <p class="eyebrow">{first_run ? 'Step 8 of 8' : 'Step 4'}</p>
             <h3>Confirm subscriber plan</h3>
             <p class="muted">Saving writes the registry entry and selected paths, then the runtime subscriber manager starts or restarts the device.</p>
           </div>
@@ -1072,18 +1525,95 @@
           </div>
         {/if}
 
+        {#if !first_run || step > 4}
+          <div class="wizard-actions">
+            <button type="button" class="ghost" onclick={previousStep} disabled={step === (first_run ? 5 : 1)}>Back</button>
+            <button type="button" class="ghost" onclick={resetForm}>Clear</button>
+            {#if step < 4 + stepOffset}
+              <button type="button" onclick={nextStep}>Next</button>
+            {:else}
+              <button type="button" onclick={saveDevice} disabled={saving || !selectedPaths().length}>
+                {saving ? 'Saving...' : 'Save and subscribe'}
+              </button>
+            {/if}
+          </div>
+        {/if}
+      </div>
+    </section>
+  {:else if workspace === 'netbox'}
+    <section class="managed-section separate-workspace">
+      <div class="section-title">
+        <h3>Import from NetBox</h3>
+        <span>Pull active devices from your NetBox instance into the onboarding registry</span>
+      </div>
+
+      <div class="netbox-import-form">
+        <div class="form-grid">
+          <div class="form-row">
+            <label for="nb-url">NetBox URL</label>
+            <input id="nb-url" bind:value={nbUrl} placeholder="https://netbox.example.com" autocomplete="off" />
+          </div>
+          <div class="form-row">
+            <label for="nb-token">API token</label>
+            <input id="nb-token" bind:value={nbToken} type="password" placeholder="Token from NetBox → Profile → API Tokens" autocomplete="off" />
+          </div>
+          <div class="form-row">
+            <label for="nb-site">Site slug <span class="muted">(optional)</span></label>
+            <input id="nb-site" bind:value={nbSiteSlug} placeholder="e.g. dc-london" autocomplete="off" />
+          </div>
+        </div>
         <div class="wizard-actions">
-          <button type="button" class="ghost" onclick={previousStep} disabled={step === 1}>Back</button>
-          <button type="button" class="ghost" onclick={resetForm}>Clear</button>
-          {#if step < 4}
-            <button type="button" onclick={nextStep}>Next</button>
-          {:else}
-            <button type="button" onclick={saveDevice} disabled={saving || !selectedPaths().length}>
-              {saving ? 'Saving...' : 'Save and subscribe'}
-            </button>
-          {/if}
+          <button onclick={nbFetchDevices} disabled={nbFetching || !nbUrl.trim() || !nbToken.trim()}>
+            {nbFetching ? 'Fetching…' : 'Fetch devices'}
+          </button>
         </div>
       </div>
+
+      {#if nbVersion}
+        <p class="muted" style="margin-bottom: 8px;">NetBox <strong>{nbVersion}</strong> — {nbCandidates.length} device{nbCandidates.length === 1 ? '' : 's'} found</p>
+      {/if}
+
+      {#if nbWarnings.length}
+        <div class="warning-stack" style="margin-bottom: 12px;">
+          {#each nbWarnings as w}<p class="warning">{w}</p>{/each}
+        </div>
+      {/if}
+
+      {#if nbCandidates.length}
+        <div class="nb-candidate-list">
+          <div class="nb-candidate-header">
+            <label class="select-all">
+              <input type="checkbox"
+                checked={nbSelected.length === nbCandidates.length}
+                onchange={() => nbSelected = nbSelected.length === nbCandidates.length ? [] : nbCandidates.map(c => c.address)}
+              />
+              <span>{nbSelected.length} of {nbCandidates.length} selected</span>
+            </label>
+            <button onclick={nbImportSelected} disabled={nbImporting || !nbSelected.length}>
+              {nbImporting ? 'Importing…' : `Import ${nbSelected.length} device${nbSelected.length === 1 ? '' : 's'}`}
+            </button>
+          </div>
+
+          {#each nbCandidates as cand}
+            {@const done = nbImportDone.find(d => d.address === cand.address)}
+            <div class="nb-candidate-row" class:nb-done={done?.ok} class:nb-fail={done && !done.ok}>
+              <label class="nb-check">
+                <input type="checkbox" checked={nbSelected.includes(cand.address)} onchange={() => nbToggle(cand.address)} />
+              </label>
+              <div class="nb-meta">
+                <strong>{cand.name}</strong>
+                <code>{cand.address}</code>
+                <span class="muted">{cand.site} · {cand.role || 'role unknown'} · {cand.vendor || 'vendor unknown'}</span>
+              </div>
+              {#if done}
+                <span class="badge {done.ok ? 'healthy' : 'critical'}">{done.ok ? 'imported' : done.msg || 'failed'}</span>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {:else if nbVersion}
+        <p class="empty">No active devices with a primary IP found.</p>
+      {/if}
     </section>
   {:else}
     <section class="managed-section separate-workspace">
@@ -1127,8 +1657,19 @@
                   <h4>{device.hostname || device.address}</h4>
                   <p>
                     <span class="badge {device.enabled ? 'healthy' : 'critical'}">{device.enabled ? 'enabled' : 'stopped'}</span>
-                    {device.address} - {device.vendor || 'vendor pending'} - {device.role || 'role unset'} - {device.credential_alias || 'env credentials'}
+                    {@const rd = deviceReadiness[device.address]}
+                    {#if rd !== undefined}
+                      <span class="badge {readinessBadgeClass(rd)}" title={rd.blockers?.join('\n') || ''}>{readinessBadgeLabel(rd)}</span>
+                    {:else}
+                      <button class="readiness-probe-btn" onclick={() => fetchReadinessBadge(device.address)}>Check gNMI</button>
+                    {/if}
+                    <span class="muted-inline">{device.address} · {device.vendor || 'vendor pending'} · {device.role || 'role unset'} · {device.credential_alias || 'env credentials'}</span>
                   </p>
+                  {#if rd?.blockers?.length}
+                    <ul class="readiness-blockers">
+                      {#each rd.blockers as b}<li>{b}</li>{/each}
+                    </ul>
+                  {/if}
                 </div>
                 <div class="device-actions">
                   <button class="ghost" onclick={() => editDevice(device)}>Edit in wizard</button>

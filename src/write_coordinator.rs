@@ -34,18 +34,25 @@ pub fn snapshot() -> CoordinatorSnapshot {
     }
 }
 
-/// A request to write data to the graph database.
+/// High-throughput telemetry and subscription updates — batched.
 pub enum WriteRequest {
     /// Batchable telemetry updates.
     Telemetry(TelemetryUpdate),
-    /// Subscription status tracking.
+    /// Subscription status tracking — coalesced, never interrupts telemetry batch.
     SubscriptionStatus(SubscriptionStatusWrite),
+}
+
+/// Low-volume priority writes that need the freshest graph state.
+/// Kept on a separate small channel so they never force-flush the telemetry batch.
+pub enum PriorityWriteRequest {
     /// Detection events.
     Detection {
         device_address: String,
         rule_id: String,
         severity: String,
         features_json: String,
+        source_types_json: String,
+        latency_ns: i64,
         fired_at_ns: i64,
         state_change_event_id: String,
         /// Response sender for the generated ID.
@@ -87,6 +94,7 @@ impl Default for WriteCoordinatorConfig {
 
 pub struct WriteCoordinator {
     tx: mpsc::Sender<WriteRequest>,
+    priority_tx: mpsc::Sender<PriorityWriteRequest>,
     depth: Arc<AtomicUsize>,
     capacity: usize,
 }
@@ -100,14 +108,16 @@ impl WriteCoordinator {
         let capacity = cfg.queue_capacity;
         GLOBAL_QUEUE_CAPACITY.store(capacity, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel(capacity);
+        let (priority_tx, priority_rx) = mpsc::channel(256);
         let depth_clone = Arc::clone(&depth);
 
         tokio::spawn(async move {
-            run_coordinator(rx, store, cfg, depth_clone).await;
+            run_coordinator(rx, priority_rx, store, cfg, depth_clone).await;
         });
 
         Self {
             tx,
+            priority_tx,
             depth,
             capacity,
         }
@@ -132,6 +142,13 @@ impl WriteCoordinator {
         res
     }
 
+    pub async fn submit_priority(&self, req: PriorityWriteRequest) -> Result<()> {
+        self.priority_tx
+            .send(req)
+            .await
+            .context("write coordinator priority channel closed")
+    }
+
     pub fn queue_depth(&self) -> usize {
         self.depth.load(Ordering::Relaxed)
     }
@@ -149,6 +166,7 @@ impl WriteCoordinator {
 
 async fn run_coordinator(
     mut rx: mpsc::Receiver<WriteRequest>,
+    mut priority_rx: mpsc::Receiver<PriorityWriteRequest>,
     store: Arc<GraphStore>,
     cfg: WriteCoordinatorConfig,
     depth: Arc<AtomicUsize>,
@@ -160,6 +178,10 @@ async fn run_coordinator(
     );
 
     let mut telemetry_batch: Vec<TelemetryUpdate> = Vec::with_capacity(cfg.batch_size);
+    // Subscription status writes are cheap MERGE upserts. Accumulating them here
+    // and flushing alongside the telemetry batch (on timer or when batch is full)
+    // prevents each subscription renewal from interrupting mid-batch writes.
+    let mut sub_status_pending: Vec<SubscriptionStatusWrite> = Vec::with_capacity(64);
     let mut flush_timer = tokio::time::interval(cfg.flush_interval);
     flush_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -173,41 +195,58 @@ async fn run_coordinator(
             .map(|_| cfg.batch_size * 2)
             .unwrap_or(cfg.batch_size);
 
+        // biased: priority_rx is checked first on every iteration so Detection/Remediation
+        // writes are never starved, but they also never interrupt a filling telemetry batch
+        // because they arrive on a separate channel.
         tokio::select! {
-            req = rx.recv() => match req {
-                Some(WriteRequest::Telemetry(u)) => {
-                    telemetry_batch.push(u);
-                    if telemetry_batch.len() >= effective_batch {
-                        flush_telemetry_batch(&store, &mut telemetry_batch).await;
-                    }
-                }
-                Some(WriteRequest::SubscriptionStatus(s)) => {
+            biased;
+            preq = priority_rx.recv() => match preq {
+                Some(PriorityWriteRequest::Detection { device_address, rule_id, severity, features_json, source_types_json, latency_ns, fired_at_ns, state_change_event_id, reply_to }) => {
+                    // Flush pending telemetry so the detection sees the latest graph state.
                     if !telemetry_batch.is_empty() {
                         flush_telemetry_batch(&store, &mut telemetry_batch).await;
                     }
-                    if let Err(e) = store.write_subscription_status(s).await {
-                        warn!(error = %e, "subscription status write failed");
+                    if !sub_status_pending.is_empty() {
+                        flush_sub_status_batch(&store, &mut sub_status_pending).await;
                     }
-                }
-                Some(WriteRequest::Detection { device_address, rule_id, severity, features_json, fired_at_ns, state_change_event_id, reply_to }) => {
-                    if !telemetry_batch.is_empty() {
-                        flush_telemetry_batch(&store, &mut telemetry_batch).await;
-                    }
-                    let res = store.write_detection(device_address, rule_id, severity, features_json, fired_at_ns, state_change_event_id).await;
+                    let res = store.write_detection(device_address, rule_id, severity, features_json, source_types_json, latency_ns, fired_at_ns, state_change_event_id).await;
                     let _ = reply_to.send(res);
                 }
-                Some(WriteRequest::Remediation { detection_id, action, status, detail_json, attempted_at_ns, completed_at_ns, reply_to }) => {
+                Some(PriorityWriteRequest::Remediation { detection_id, action, status, detail_json, attempted_at_ns, completed_at_ns, reply_to }) => {
                     if !telemetry_batch.is_empty() {
                         flush_telemetry_batch(&store, &mut telemetry_batch).await;
+                    }
+                    if !sub_status_pending.is_empty() {
+                        flush_sub_status_batch(&store, &mut sub_status_pending).await;
                     }
                     let res = store.write_remediation(detection_id, action, status, detail_json, attempted_at_ns, completed_at_ns).await;
                     let _ = reply_to.send(res);
                 }
                 None => break,
             },
+            req = rx.recv() => match req {
+                Some(WriteRequest::Telemetry(u)) => {
+                    telemetry_batch.push(u);
+                    if telemetry_batch.len() >= effective_batch {
+                        flush_telemetry_batch(&store, &mut telemetry_batch).await;
+                        flush_sub_status_batch(&store, &mut sub_status_pending).await;
+                    }
+                }
+                Some(WriteRequest::SubscriptionStatus(s)) => {
+                    // Coalesce — do not flush the telemetry batch on every subscription tick.
+                    sub_status_pending.push(s);
+                    if sub_status_pending.len() >= 128 {
+                        flush_sub_status_batch(&store, &mut sub_status_pending).await;
+                    }
+                }
+                None => break,
+            },
             _ = flush_timer.tick() => {
                 if !telemetry_batch.is_empty() {
                     flush_telemetry_batch(&store, &mut telemetry_batch).await;
+                }
+                if !sub_status_pending.is_empty() {
+                    flush_sub_status_batch(&store, &mut sub_status_pending).await;
                 }
             }
         }
@@ -225,5 +264,17 @@ async fn flush_telemetry_batch(store: &Arc<GraphStore>, batch: &mut Vec<Telemetr
     let updates = std::mem::replace(batch, Vec::with_capacity(batch.capacity()));
     if let Err(e) = store.write_batch(updates).await {
         warn!(error = %e, "telemetry batch write failed");
+    }
+}
+
+async fn flush_sub_status_batch(
+    store: &Arc<GraphStore>,
+    pending: &mut Vec<SubscriptionStatusWrite>,
+) {
+    let writes = std::mem::replace(pending, Vec::with_capacity(pending.capacity()));
+    for s in writes {
+        if let Err(e) = store.write_subscription_status(s).await {
+            warn!(error = %e, "subscription status write failed");
+        }
     }
 }

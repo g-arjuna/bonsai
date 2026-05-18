@@ -93,7 +93,7 @@ impl ChangeDetectionRuntime {
         ));
 
         let (subscriber, mut subscriber_rx) =
-            MpscSubscriber::new("change-detection", 256, OverflowPolicy::DropNewest);
+            MpscSubscriber::new("change-detection", 2048, OverflowPolicy::DropOldest);
         let trigger_runtime = Arc::clone(&runtime);
         let syslog_patterns_for_bus = Arc::clone(&syslog_patterns);
         tokio::spawn(async move {

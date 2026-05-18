@@ -156,10 +156,39 @@
               </div>
             {/if}
 
-            <!-- Expanded: detection timeline -->
+            <!-- Expanded: correlation chain + blast radius + detection timeline -->
             {#if isOpen}
               <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
               <div class="expanded-body" role="presentation" onclick={(e) => e.stopPropagation()}>
+
+                <!-- Provenance: correlation chain -->
+                {#if inc.correlation_chain?.length}
+                  <div class="provenance-section">
+                    <span class="provenance-label">Triggered by</span>
+                    {#each inc.correlation_chain as step}
+                      <span class="chain-step">
+                        <span class="chain-src src-{step.source_type}">{step.source_type}</span>
+                        <span class="chain-type">{step.event_type}</span>
+                        <code class="chain-dev">{step.device_address}</code>
+                      </span>
+                    {/each}
+                  </div>
+                {/if}
+
+                <!-- Blast radius summary -->
+                {#if inc.blast_radius_summary}
+                  <div class="blast-summary">
+                    <span class="blast-chip">
+                      ⚡ {inc.blast_radius_summary.device_count} reachable device{inc.blast_radius_summary.device_count === 1 ? '' : 's'}
+                    </span>
+                    {#if inc.blast_radius_summary.app_count > 0}
+                      <span class="blast-chip">
+                        📦 {inc.blast_radius_summary.app_count} app{inc.blast_radius_summary.app_count === 1 ? '' : 's'} at risk
+                      </span>
+                    {/if}
+                  </div>
+                {/if}
+
                 {#each incidentDetections(inc).slice(0, 8) as det}
                   <button
                     class="det-row"
@@ -169,6 +198,16 @@
                     <span class="det-ts">{shortTime(det.fired_at_ns)}</span>
                     <code class="det-device">{det.device_address ?? '—'}</code>
                     <span class="det-rule">{det.rule_id ?? ''}</span>
+                    {#if det.source_types?.length}
+                      <span class="det-sources">
+                        {#each det.source_types as st}
+                          <span class="src-pill">{st}</span>
+                        {/each}
+                      </span>
+                    {/if}
+                    {#if det.latency_ns > 0}
+                      <span class="det-latency">{(det.latency_ns / 1e6).toFixed(0)}ms</span>
+                    {/if}
                     {#if det.id}<span class="det-trace">trace →</span>{/if}
                   </button>
                 {/each}
@@ -399,11 +438,86 @@
     color: var(--accent-primary);
     white-space: nowrap;
   }
+  .det-sources { display: inline-flex; gap: 3px; flex-wrap: wrap; }
+  .src-pill {
+    display: inline-block;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--border, rgba(255,255,255,0.12));
+    color: var(--text-secondary, #9ca3af);
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 8px;
+  }
+  .det-latency {
+    font-size: 10px;
+    color: var(--text-tertiary, #6b7280);
+    white-space: nowrap;
+  }
 
   .det-overflow {
     padding: 4px 4px;
     font-size: 11px;
     color: var(--text-tertiary);
+  }
+
+  /* ── Provenance / correlation chain ──────────────────────────────────────── */
+  .provenance-section {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 0 4px;
+    border-bottom: 1px solid var(--border-subtle);
+    margin-bottom: 6px;
+  }
+  .provenance-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-tertiary);
+    margin-right: 4px;
+  }
+  .chain-step {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 2px 7px;
+    font-size: 11px;
+  }
+  .chain-src {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.06);
+  }
+  .chain-src.src-gnmi    { color: #4dd0c8; }
+  .chain-src.src-syslog  { color: #a78bfa; }
+  .chain-src.src-snmp    { color: #f59e0b; }
+  .chain-src.src-netflow { color: #3b82f6; }
+  .chain-src.src-otlp    { color: #10b981; }
+  .chain-src.src-bmp     { color: #f97316; }
+  .chain-src.src-bgp_ls  { color: #ec4899; }
+  .chain-type { color: var(--text-secondary); }
+  .chain-dev  { font-size: 10px; color: var(--text-tertiary); }
+
+  /* ── Blast radius summary ─────────────────────────────────────────────────── */
+  .blast-summary {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    padding: 4px 0 6px;
+  }
+  .blast-chip {
+    font-size: 11px;
+    background: rgba(239,68,68,0.08);
+    border: 1px solid rgba(239,68,68,0.25);
+    color: #fca5a5;
+    border-radius: 6px;
+    padding: 2px 8px;
   }
 
   /* ── Chevron ─────────────────────────────────────────────────────────────── */

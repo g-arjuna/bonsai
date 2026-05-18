@@ -32,6 +32,24 @@ struct CollectorRuntimeState {
     subscription_count: u32,
     uptime_secs: i64,
     last_heartbeat_ns: i64,
+    queue_bytes: u64,
+    queue_utilization_pct: f32,
+    active_subscribers: u32,
+    failed_subscribers: u32,
+    memory_used_bytes: u64,
+    recent_warn_count: u32,
+    recent_error_count: u32,
+    receiver_statuses: Vec<ReceiverStatusRecord>,
+}
+
+#[derive(Clone, Default)]
+pub struct ReceiverStatusRecord {
+    pub name: String,
+    pub state: String,
+    pub addr: String,
+    pub packet_count: u64,
+    pub error_count: u64,
+    pub last_error: Option<String>,
 }
 
 impl CollectorManager {
@@ -319,6 +337,14 @@ impl CollectorManager {
         queue_depth_updates: u64,
         subscription_count: u32,
         uptime_secs: i64,
+        queue_bytes: u64,
+        queue_utilization_pct: f32,
+        active_subscribers: u32,
+        failed_subscribers: u32,
+        memory_used_bytes: u64,
+        recent_warn_count: u32,
+        recent_error_count: u32,
+        receiver_statuses: Vec<ReceiverStatusRecord>,
     ) {
         let mut runtime = self.runtime_state.lock().unwrap();
         let entry = runtime.entry(collector_id.to_string()).or_default();
@@ -327,6 +353,14 @@ impl CollectorManager {
         entry.subscription_count = subscription_count;
         entry.uptime_secs = uptime_secs;
         entry.last_heartbeat_ns = now_ns();
+        entry.queue_bytes = queue_bytes;
+        entry.queue_utilization_pct = queue_utilization_pct;
+        entry.active_subscribers = active_subscribers;
+        entry.failed_subscribers = failed_subscribers;
+        entry.memory_used_bytes = memory_used_bytes;
+        entry.recent_warn_count = recent_warn_count;
+        entry.recent_error_count = recent_error_count;
+        entry.receiver_statuses = receiver_statuses;
     }
 
     /// Lists all devices and their assignment status for the UI.
@@ -376,6 +410,14 @@ impl CollectorManager {
                     subscription_count: runtime_state.subscription_count,
                     uptime_secs: runtime_state.uptime_secs,
                     last_heartbeat_ns: runtime_state.last_heartbeat_ns,
+                    queue_bytes: runtime_state.queue_bytes,
+                    queue_utilization_pct: runtime_state.queue_utilization_pct,
+                    active_subscribers: runtime_state.active_subscribers,
+                    failed_subscribers: runtime_state.failed_subscribers,
+                    memory_used_bytes: runtime_state.memory_used_bytes,
+                    recent_warn_count: runtime_state.recent_warn_count,
+                    recent_error_count: runtime_state.recent_error_count,
+                    receiver_statuses: runtime_state.receiver_statuses,
                 }
             })
             .collect();
@@ -397,6 +439,14 @@ pub struct CollectorStatus {
     pub subscription_count: u32,
     pub uptime_secs: i64,
     pub last_heartbeat_ns: i64,
+    pub queue_bytes: u64,
+    pub queue_utilization_pct: f32,
+    pub active_subscribers: u32,
+    pub failed_subscribers: u32,
+    pub memory_used_bytes: u64,
+    pub recent_warn_count: u32,
+    pub recent_error_count: u32,
+    pub receiver_statuses: Vec<ReceiverStatusRecord>,
 }
 
 pub struct CollectorStatusSummary {

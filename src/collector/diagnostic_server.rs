@@ -19,7 +19,7 @@ use axum::{
     response::Json,
     routing::get,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tracing::{info, warn};
 
@@ -37,6 +37,17 @@ struct DiagnosticStateInner {
     assigned_device_addresses: Vec<String>,
     last_heartbeat_unix_secs: u64,
     uptime_start_unix_secs: u64,
+    receiver_statuses: Vec<ReceiverStatusEntry>,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct ReceiverStatusEntry {
+    pub name: String,
+    pub state: String,
+    pub addr: String,
+    pub packet_count: u64,
+    pub error_count: u64,
+    pub last_error: Option<String>,
 }
 
 impl DiagnosticState {
@@ -60,6 +71,18 @@ impl DiagnosticState {
         inner.assigned_device_addresses = assigned;
         inner.last_heartbeat_unix_secs = now_unix_secs();
     }
+
+    pub fn update_queue_depth(&self, queue_depth: u64) {
+        self.inner.lock().unwrap().queue_depth = queue_depth;
+    }
+
+    pub fn update_receiver_statuses(&self, statuses: Vec<ReceiverStatusEntry>) {
+        self.inner.lock().unwrap().receiver_statuses = statuses;
+    }
+
+    pub fn receiver_statuses(&self) -> Vec<ReceiverStatusEntry> {
+        self.inner.lock().unwrap().receiver_statuses.clone()
+    }
 }
 
 #[derive(Serialize)]
@@ -82,6 +105,7 @@ struct CollectorStatusResponse {
     assigned_devices: Vec<String>,
     last_heartbeat_unix_secs: u64,
     uptime_secs: u64,
+    receiver_statuses: Vec<ReceiverStatusEntry>,
 }
 
 async fn health_handler() -> Json<HealthResponse> {
@@ -138,6 +162,7 @@ async fn status_handler(
         assigned_devices: inner.assigned_device_addresses.clone(),
         last_heartbeat_unix_secs: inner.last_heartbeat_unix_secs,
         uptime_secs,
+        receiver_statuses: inner.receiver_statuses.clone(),
     }))
 }
 

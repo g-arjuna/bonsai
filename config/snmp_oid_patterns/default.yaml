@@ -1,0 +1,90 @@
+# SNMP OID fact extraction patterns.
+# Each entry maps a trap OID prefix to a fact_type and declares which varbind
+# OIDs should be extracted as named fields.
+#
+# fact_type   : written to TelemetryUpdate path as "signals/snmp_fact/{fact_type}"
+# trap_oid    : OID prefix to match (prefix match, stripped of trailing .0)
+# fields      : varbind OID → field name mapping
+# field_schema: field name → type hint ("string" | "integer" | "ip")
+
+patterns:
+  - fact_type: link_down
+    trap_oid: "1.3.6.1.6.3.1.1.5.3"
+    fields:
+      "1.3.6.1.2.1.2.2.1.1": interface_index
+      "1.3.6.1.2.1.2.2.1.2": interface_name
+      "1.3.6.1.2.1.2.2.1.7": admin_status
+      "1.3.6.1.2.1.2.2.1.8": oper_status
+    field_schema:
+      interface_index: integer
+      interface_name: string
+      admin_status: integer
+      oper_status: integer
+
+  - fact_type: link_up
+    trap_oid: "1.3.6.1.6.3.1.1.5.4"
+    fields:
+      "1.3.6.1.2.1.2.2.1.1": interface_index
+      "1.3.6.1.2.1.2.2.1.2": interface_name
+      "1.3.6.1.2.1.2.2.1.8": oper_status
+    field_schema:
+      interface_index: integer
+      interface_name: string
+      oper_status: integer
+
+  - fact_type: bgp_peer_state
+    trap_oid: "1.3.6.1.2.1.15.7"
+    fields:
+      "1.3.6.1.2.1.15.3.1.7": peer_address
+      "1.3.6.1.2.1.15.3.1.2": peer_state
+      "1.3.6.1.2.1.15.3.1.9": peer_as
+    field_schema:
+      peer_address: ip
+      peer_state: integer
+      peer_as: integer
+
+  - fact_type: bgp_peer_backward_transition
+    trap_oid: "1.3.6.1.2.1.15.8"
+    fields:
+      "1.3.6.1.2.1.15.3.1.7": peer_address
+      "1.3.6.1.2.1.15.3.1.2": peer_state
+      "1.3.6.1.2.1.15.3.1.9": peer_as
+    field_schema:
+      peer_address: ip
+      peer_state: integer
+      peer_as: integer
+
+  - fact_type: ospf_nbr_state_change
+    trap_oid: "1.3.6.1.2.1.14.16.2.2"
+    fields:
+      "1.3.6.1.2.1.14.10.1.3": neighbor_address
+      "1.3.6.1.2.1.14.10.1.6": neighbor_state
+    field_schema:
+      neighbor_address: ip
+      neighbor_state: integer
+
+  - fact_type: isis_adj_state_change
+    trap_oid: "1.3.6.1.2.1.138.0.1"
+    fields:
+      "1.3.6.1.2.1.138.1.8.1.3": system_id
+      "1.3.6.1.2.1.138.1.8.1.4": adj_state
+      "1.3.6.1.2.1.138.1.8.1.7": interface_name
+    field_schema:
+      system_id: string
+      adj_state: integer
+      interface_name: string
+
+  - fact_type: cold_start
+    trap_oid: "1.3.6.1.6.3.1.1.5.1"
+    fields: {}
+    field_schema: {}
+
+  - fact_type: warm_start
+    trap_oid: "1.3.6.1.6.3.1.1.5.2"
+    fields: {}
+    field_schema: {}
+
+  - fact_type: auth_failure
+    trap_oid: "1.3.6.1.6.3.1.1.5.5"
+    fields: {}
+    field_schema: {}

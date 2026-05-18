@@ -12,20 +12,22 @@ use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 
 use super::AppState;
 use super::{
-    TopologyResponse, DeviceJson, BgpJson, LinkJson, PathResponse, PathParams,
+    TopologyResponse, DeviceJson, BgpJson, LinkJson, HostEndpointJson, PathResponse, PathParams,
     BlastRadiusParams, DetectionsResponse, DetectionsParams, TraceResponse,
     ReadinessResponse, OperationsResponse, BudgetBreach, TestStatusResponse, DiskStatusJson,
     DailyCheckResponse, DailyCheckCounts, DailyCheckItem,
     WeeklyTrendDay, WeeklyTrendResponse,
     IncidentJson, IncidentsResponse, IncidentsParams,
+    CorrelationStep, BlastRadiusSummary,
     SsePayload, EmbeddingsResponse, UpsertEmbeddingsBody,
     ExplorerQueryBody,
     read_str, read_i64, read_subscription_statuses,
     now_ns, build_site_path_by_id, resolve_site_metadata, compute_health,
     CreateSavedQueryBody,
+    EventsHistoryParams, EventsHistoryResponse, EventHistoryItem,
     API_SCHEMA_VERSION, RSS_BUDGET_BYTES, COORDINATOR_QUEUE_BUDGET_PCT,
 };
-use crate::graph::{DetectionRow, REMEDIATION_TRUST_CUTOFF_ISO};
+use crate::graph::{DetectionRow, StateChangeEventRow, REMEDIATION_TRUST_CUTOFF_ISO};
 use crate::registry::{DeviceRegistry, RegistryChange};
 use crate::config::TargetConfig;
 use crate::{event_bus, disk_guard, memory_profile, archive};
@@ -35,7 +37,7 @@ pub(super) async fn topology_handler(
 ) -> Result<Json<TopologyResponse>, (StatusCode, String)> {
     let db = state.store.db();
 
-    let (devices_raw, links_raw, bgp_raw) = tokio::task::spawn_blocking(move || {
+    let (devices_raw, links_raw, bgp_raw, host_endpoints_raw) = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
 
         // Devices
@@ -107,7 +109,30 @@ pub(super) async fn topology_handler(
             })
             .collect();
 
-        Ok::<_, String>((devices_raw, links_raw, bgp_raw))
+        // HostEndpoints and their CONNECTED_TO interface links
+        let he_rows = conn
+            .query(
+                "MATCH (h:HostEndpoint) \
+                 OPTIONAL MATCH (h)-[:CONNECTED_TO]->(i:Interface) \
+                 RETURN h.id, h.ip, h.mac, h.hostname, h.kind, i.device_address, i.name",
+            )
+            .map_err(|e| e.to_string())?;
+        let host_endpoints_raw: Vec<(String, String, String, String, String, String, String)> =
+            he_rows
+                .map(|row| {
+                    (
+                        read_str(&row[0]),
+                        read_str(&row[1]),
+                        read_str(&row[2]),
+                        read_str(&row[3]),
+                        read_str(&row[4]),
+                        read_str(&row[5]),
+                        read_str(&row[6]),
+                    )
+                })
+                .collect();
+
+        Ok::<_, String>((devices_raw, links_raw, bgp_raw, host_endpoints_raw))
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -182,10 +207,26 @@ pub(super) async fn topology_handler(
         )
         .collect();
 
+    let host_endpoints: Vec<HostEndpointJson> = host_endpoints_raw
+        .into_iter()
+        .map(|(id, ip, mac, hostname, kind, connected_to_device, connected_to_iface)| {
+            HostEndpointJson {
+                id,
+                ip,
+                mac,
+                hostname,
+                kind,
+                connected_to_device,
+                connected_to_iface,
+            }
+        })
+        .collect();
+
     Ok(Json(TopologyResponse {
         schema_version: API_SCHEMA_VERSION.to_string(),
         devices,
         links,
+        host_endpoints,
     }))
 }
 /// Shortest path between two devices, computed in the graph database.
@@ -655,6 +696,29 @@ pub(super) async fn weekly_trend_handler(State(state): State<AppState>) -> Json<
 
     Json(WeeklyTrendResponse { days })
 }
+pub(super) async fn events_history_handler(
+    State(state): State<AppState>,
+    Query(params): Query<EventsHistoryParams>,
+) -> Result<Json<EventsHistoryResponse>, (StatusCode, String)> {
+    let rows = state
+        .store
+        .read_events_history(params.source, params.device, params.site, params.limit)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let events = rows
+        .into_iter()
+        .map(|r| EventHistoryItem {
+            id: r.id,
+            device_address: r.device_address,
+            event_type: r.event_type,
+            source_type: r.source_type,
+            detail_json: r.detail_json,
+            occurred_at_ns: r.occurred_at_ns,
+        })
+        .collect();
+    Ok(Json(EventsHistoryResponse { events }))
+}
+
 pub(super) async fn events_handler(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
@@ -669,6 +733,7 @@ pub(super) async fn events_handler(
                 detail_json: ev.detail_json,
                 occurred_at_ns: ev.occurred_at_ns,
                 state_change_event_id: ev.state_change_event_id,
+                source_type: ev.source_type,
             })
             .unwrap_or_default(),
             // Receiver lagged (broadcast buffer full); send a heartbeat comment.
@@ -696,6 +761,7 @@ pub(super) fn registry_change_payload(change: RegistryChange) -> SsePayload {
             detail_json: serde_json::json!({ "address": address }).to_string(),
             occurred_at_ns: now_ns(),
             state_change_event_id: String::new(),
+            source_type: "registry".to_string(),
         },
     }
 }
@@ -717,6 +783,7 @@ pub(super) fn registry_target_payload(event_type: &str, target: TargetConfig) ->
         .to_string(),
         occurred_at_ns: now_ns(),
         state_change_event_id: String::new(),
+        source_type: "registry".to_string(),
     }
 }
 pub(super) async fn incidents_handler(
@@ -729,28 +796,75 @@ pub(super) async fn incidents_handler(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // Build a device-degree map from LLDP topology. Higher-degree devices are treated as
-    // more "upstream" when selecting the root detection within a grouped incident.
+    // Single spawn_blocking: degree map + correlation chains + blast radius summaries.
     let db = state.store.db();
-    let degree_map: HashMap<String, usize> = tokio::task::spawn_blocking(move || {
-        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
-        let rows = conn
-            .query(
-                "MATCH (a:Interface)-[:CONNECTED_TO]->(:Interface) \
-                 RETURN a.device_address",
-            )
-            .map_err(|e| e.to_string())?;
-        let mut map: HashMap<String, usize> = HashMap::new();
-        for row in rows {
-            *map.entry(read_str(&row[0])).or_insert(0) += 1;
-        }
-        Ok::<_, String>(map)
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .unwrap_or_default();
+    let detection_ids: Vec<String> = detections.iter().map(|d| d.id.clone()).collect();
+    let root_devices: Vec<String> = detections.iter().map(|d| d.device_address.clone()).collect();
 
-    let incidents = group_into_incidents(detections, params.window_secs, &degree_map);
+    type ChainMap = HashMap<String, Vec<CorrelationStep>>;
+    type BrMap = HashMap<String, BlastRadiusSummary>;
+
+    let (degree_map, chain_map, br_map): (HashMap<String, usize>, ChainMap, BrMap) =
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+
+            // Degree map
+            let rows = conn
+                .query(
+                    "MATCH (a:Interface)-[:CONNECTED_TO]->(:Interface) \
+                     RETURN a.device_address",
+                )
+                .map_err(|e| e.to_string())?;
+            let mut degree_map: HashMap<String, usize> = HashMap::new();
+            for row in rows {
+                *degree_map.entry(read_str(&row[0])).or_insert(0) += 1;
+            }
+
+            // Correlation chains (one query per detection — bounded by params.limit)
+            let mut chain_map: ChainMap = HashMap::new();
+            for det_id in &detection_ids {
+                let steps = crate::graph::GraphStore::read_triggered_by_chain_sync(&conn, det_id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(sid, etype, src, dev, ts)| CorrelationStep {
+                        state_change_event_id: sid,
+                        event_type: etype,
+                        source_type: src,
+                        device_address: dev,
+                        occurred_at_ns: ts,
+                    })
+                    .collect();
+                chain_map.insert(det_id.clone(), steps);
+            }
+
+            // Blast radius summary per unique root device (2-hop, capped)
+            let mut br_map: BrMap = HashMap::new();
+            let mut seen_devices: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for addr in &root_devices {
+                if seen_devices.insert(addr.clone()) {
+                    if let Ok(br) = crate::graph::queries::blast_radius(&conn, addr, 2) {
+                        let app_count = br.direct_apps.len()
+                            + br.neighbor_apps.iter()
+                                .filter(|a| !br.direct_apps.contains(a))
+                                .count();
+                        br_map.insert(
+                            addr.clone(),
+                            BlastRadiusSummary {
+                                device_count: br.reachable_devices.len(),
+                                app_count,
+                            },
+                        );
+                    }
+                }
+            }
+
+            Ok::<_, String>((degree_map, chain_map, br_map))
+        })
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .unwrap_or_default();
+
+    let incidents = group_into_incidents(detections, params.window_secs, &degree_map, &chain_map, &br_map);
     Ok(Json(IncidentsResponse {
         schema_version: API_SCHEMA_VERSION.to_string(),
         incidents,
@@ -763,6 +877,8 @@ pub(super) fn group_into_incidents(
     mut detections: Vec<DetectionRow>,
     window_secs: u64,
     degree_map: &HashMap<String, usize>,
+    chain_map: &HashMap<String, Vec<CorrelationStep>>,
+    br_map: &HashMap<String, BlastRadiusSummary>,
 ) -> Vec<IncidentJson> {
     detections.sort_by_key(|d| d.fired_at_ns);
     let window_ns = (window_secs as i64).saturating_mul(1_000_000_000);
@@ -859,6 +975,14 @@ pub(super) fn group_into_incidents(
                 )
             };
 
+            let correlation_chain = chain_map
+                .get(&id)
+                .cloned()
+                .unwrap_or_default();
+            let blast_radius_summary = br_map
+                .get(&root.device_address)
+                .cloned();
+
             IncidentJson {
                 id,
                 root,
@@ -872,6 +996,8 @@ pub(super) fn group_into_incidents(
                 co_fire_signature,
                 device_count,
                 event_count,
+                correlation_chain,
+                blast_radius_summary,
             }
         })
         .collect();

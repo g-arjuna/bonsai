@@ -24,6 +24,8 @@ pub trait BonsaiStore: Send + Sync {
         rule_id: String,
         severity: String,
         features_json: String,
+        source_types_json: String,
+        latency_ns: i64,
         fired_at_ns: i64,
         state_change_event_id: String,
     ) -> Result<String>;

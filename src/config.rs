@@ -14,6 +14,9 @@ pub struct Config {
     /// gRPC listen address for the Bonsai API server. Default: "[::1]:50051".
     #[serde(default = "default_api_addr")]
     pub api_addr: String,
+    /// HTTP UI server listen address. Default: "0.0.0.0:3000".
+    #[serde(default = "default_http_addr")]
+    pub http_addr: String,
     /// Prometheus /metrics HTTP listener. Default: "[::1]:9090". Set to "" to disable.
     #[serde(default = "default_metrics_addr")]
     pub metrics_addr: String,
@@ -154,6 +157,10 @@ pub struct SnmpConfig {
     /// Maximum accepted trap size in bytes. Default: 8192 bytes.
     #[serde(default = "default_snmp_max_frame_bytes")]
     pub max_frame_bytes: usize,
+    /// Directory containing SNMP OID pattern YAML files for fact extraction.
+    /// Defaults to "config/snmp_oid_patterns".
+    #[serde(default)]
+    pub oid_pattern_dir: Option<String>,
 }
 
 impl Default for SnmpConfig {
@@ -163,6 +170,7 @@ impl Default for SnmpConfig {
             udp_addr: default_snmp_udp_addr(),
             archive_path: default_snmp_archive_path(),
             max_frame_bytes: default_snmp_max_frame_bytes(),
+            oid_pattern_dir: None,
         }
     }
 }
@@ -1301,6 +1309,10 @@ fn default_target_enabled() -> bool {
 
 fn default_api_addr() -> String {
     "[::1]:50051".to_string()
+}
+
+fn default_http_addr() -> String {
+    "0.0.0.0:3000".to_string()
 }
 
 fn default_metrics_addr() -> String {

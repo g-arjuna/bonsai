@@ -12,13 +12,13 @@
   import Onboarding from '$lib/Onboarding.svelte';
   import CommandPalette from '$lib/CommandPalette.svelte';
   import Environments from './routes/Environments.svelte';
-  import Setup from './routes/Setup.svelte';
   import Profiles from './routes/Profiles.svelte';
   import Enrichment from './routes/Enrichment.svelte';
   import Approvals from './routes/Approvals.svelte';
   import Adapters from './routes/Adapters.svelte';
   import Explorer from './routes/Explorer.svelte';
   import Investigations from './routes/Investigations.svelte';
+  import Settings from './routes/Settings.svelte';
   import DensityToggle from '$lib/components/DensityToggle.svelte';
 
   // Cmd-1..9 workspace shortcuts mirror CommandPalette WORKSPACE_SHORTCUTS
@@ -37,11 +37,12 @@
     { href: '/sites',         label: 'Sites',         icon: '◎' },
     { href: '/credentials',   label: 'Credentials',   icon: '⚿' },
     { href: '/investigations',label: 'Investigations',icon: '🔍' },
+    { href: '/settings',      label: 'Settings',      icon: '⚙' },
   ];
 
-  let setupChecked = $state(false);
-  let showSetup    = $state(false);
-  let healthInfo   = $state(null);
+  let isFirstRunChecked = $state(false);
+  let isFirstRun        = $state(false);
+  let healthInfo        = $state(null);
 
   import { onMount } from 'svelte';
   onMount(async () => {
@@ -49,12 +50,12 @@
       const r = await fetch('/api/setup/status');
       if (r.ok) {
         const data = await r.json();
-        if (data.is_first_run) showSetup = true;
+        isFirstRun = !!data.is_first_run;
       }
     } catch (_) {
       // non-fatal
     } finally {
-      setupChecked = true;
+      isFirstRunChecked = true;
     }
 
     const pollHealth = async () => {
@@ -111,14 +112,12 @@
   </aside>
 
   <main class="main-content">
-    {#if !setupChecked}
+    {#if !isFirstRunChecked}
       <!-- wait for first-run check -->
-    {:else if showSetup && path() !== '/setup'}
-      <Setup onComplete={() => { showSetup = false; }} />
+    {:else if isFirstRun}
+      <Onboarding first_run={true} onComplete={() => { isFirstRun = false; }} />
     {:else if traceParams}
       <TraceRoute id={traceParams.id} />
-    {:else if path() === '/setup'}
-      <Setup onComplete={() => { showSetup = false; }} />
     {:else if path() === '/' || path() === ''}
       <Live />
     {:else if path() === '/incidents'}
@@ -151,6 +150,8 @@
       <Explorer />
     {:else if path() === '/investigations'}
       <Investigations />
+    {:else if path() === '/settings'}
+      <Settings />
     {:else}
       <div class="empty">Page not found.</div>
     {/if}

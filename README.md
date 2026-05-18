@@ -1,209 +1,328 @@
 # bonsai
 
-> **Current status: Phase 6 in progress — Axum HTTP server + Svelte UI live. Phase 5 ML (IsolationForest + GBT) complete. Next: Phase 6.1 device onboarding UI.**
+**Network observability and autonomous remediation for engineers who own the infrastructure.**
 
-A streaming-first, graph-native network state engine for closed-loop autonomous
-network operations. Replicates the architecture described in Google's ANO framework
-paper at lab scale, using only open source primitives.
-
-> **Contributors and AI agents — read this first**:
-> [`docs/CANONICAL.md`](docs/CANONICAL.md) is the single orientation document
-> (architecture, non-negotiables, scope guardrails, where every other doc lives).
-> Environment rules: [`docs/operations/dev_vs_ops_boundary.md`](docs/operations/dev_vs_ops_boundary.md).
-> Active sprint: [`BONSAI_CONSOLIDATED_BACKLOG_CV7.md`](BONSAI_CONSOLIDATED_BACKLOG_CV7.md).
+Bonsai collects streaming telemetry from network devices via gNMI, builds a live graph of your network state, detects anomalies, and can autonomously remediate faults — with a human-in-the-loop trust model that graduates to autonomy only when you are ready.
 
 ---
 
-## The Gap This Fills
+## What bonsai does
 
-The open source ecosystem has strong individual components but no integrated system
-that does all of this together:
+```
+gNMI telemetry   syslog   SNMP traps   BGP-LS   BMP
+       │              │         │          │       │
+       └──────────────┴─────────┴──────────┴───────┘
+                              │
+                    ┌─────────▼──────────┐
+                    │  Collector(s)       │  gNMI subscribe + GET
+                    │  (bonsai binary,    │  config-state diff
+                    │   mode=collector)   │  parser chain
+                    └─────────┬──────────┘
+                              │ gRPC (mTLS optional)
+                    ┌─────────▼──────────┐
+                    │  Core               │  lbug graph DB
+                    │  (bonsai binary,    │  change detection
+                    │   mode=core / all)  │  enrichment
+                    └──┬──────┬──────────┘
+                       │      │
+              ┌────────▼─┐  ┌─▼──────────────┐
+              │  REST/    │  │  AI Agent       │
+              │  SSE API  │  │  (MCP tools +   │
+              │  + UI     │  │   LLM loop)     │
+              └────────┬──┘  └─────────────────┘
+                       │
+              ┌────────▼──────────────────────┐
+              │  Remediation engine            │
+              │  suggest_only → approve_each   │
+              │  → auto_with_notification      │
+              │  → auto_silent                 │
+              └───────────────────────────────┘
+```
 
-| Layer | Open Source Today | Status |
+- **Graph database**: lbug (LadybugDB) — embedded, no external dependencies
+- **Telemetry**: gNMI subscribe (ON_CHANGE + SAMPLE), syslog, SNMP traps, BGP-LS, BMP, PCEP, OTLP, NetFlow
+- **Change detection**: per-device config diff + pyATS/Genie + native parser chain
+- **Enrichment**: NetBox (3.x + 4.x), ServiceNow CMDB, CLI config scraping
+- **Remediation**: playbook-based, trust model with graduation, rollback window
+- **AI investigations**: MCP tool server + LLM agent loop (Gemini, Moonshot, Anthropic, OpenAI)
+- **GNN**: graph neural network anomaly detection, calibration → production pipeline
+
+---
+
+## Quick start — Docker (no lab required)
+
+Requires: Docker 24+, Docker Compose v2.
+
+```bash
+git clone https://github.com/your-org/bonsai && cd bonsai
+
+# 1. Create your .env
+cp .env.example .env
+# Edit .env — at minimum, set BONSAI_VAULT_PASSPHRASE to any strong passphrase.
+
+# 2. Start bonsai
+docker compose --profile standalone up -d
+
+# 3. Open the UI
+open http://localhost:3000
+```
+
+The `standalone` profile uses a plain Docker bridge network — no ContainerLab needed.
+Add devices via the **Onboarding** wizard in the UI.
+
+---
+
+## Quick start — native binary (macOS / Linux)
+
+Requires: Rust 1.82+, clang, cmake.
+
+```bash
+git clone https://github.com/your-org/bonsai && cd bonsai
+
+# Build
+cargo build --release
+
+# Configure
+cp bonsai.toml.example bonsai.toml
+# Edit bonsai.toml: set graph_path, add [[target]] blocks for your devices.
+
+export BONSAI_VAULT_PASSPHRASE="your-passphrase"
+./target/release/bonsai --config bonsai.toml
+```
+
+The UI is served at `http://localhost:3000` (port embedded in `api_addr`).
+
+---
+
+## Docker profiles
+
+| Profile | Command | Description |
 |---|---|---|
-| Multi-vendor streaming telemetry | gNMI + OpenConfig + gNMIc | Mature |
-| Time-series metrics | Prometheus / InfluxDB | Mature |
-| Normalized tabular state | SuzieQ (Parquet) | Good |
-| Intended state / source of truth | Nautobot / NetBox | Mature |
-| **Live graph of operational state, streaming updates** | **Nothing complete** | **The gap** |
-| **LLM-agnostic query layer over graph state** | **Nothing complete** | **The gap** |
-| **Closed-loop predict/heal pipeline on OSS** | **Nothing complete** | **The gap** |
-
-Forward Networks and Selector are commercial because they built the graph + inference
-layer. That is the exact layer bonsai targets.
+| `standalone` | `docker compose --profile standalone up -d` | Single container, no ContainerLab. Best for first install. |
+| `dev` | `docker compose --profile dev up -d` | Local dev with fast-iteration ContainerLab topology. |
+| `distributed` | `docker compose --profile distributed up -d` | Core + two collectors on separate containers. |
+| `cloud-dc` | `docker compose --profile cloud-dc up -d` | 6-node cloud DC topology. |
+| `parsers` | add `--profile parsers` to any above | Enables pyATS + native parser sidecars. |
+| `streaming` | add `--profile streaming` | Enables GoBGP BGP-LS sidecar. |
 
 ---
 
-## Architecture
+## Configuration
 
-```
-┌──────────────────────────────────────────────────┐
-│  ContainerLab topologies                         │
-│  Nokia SR Linux · Cisco IOS-XRd                  │
-│  Juniper cRPD · Arista cEOS                      │
-│  Holo · FRR (open-source fast-iteration targets) │
-│  gNMI Subscribe streams, OpenConfig YANG paths   │
-└────────────────────┬─────────────────────────────┘
-                     │ gRPC/gNMI
-                     ▼
-┌──────────────────────────────────────────────────┐
-│  RUST CORE                                       │
-│  ┌────────────────────────────────────────────┐  │
-│  │ gNMI subscriber pool (tokio, per-device)   │  │
-│  │  → protobuf decode, OpenConfig normalize   │  │
-│  ├────────────────────────────────────────────┤  │
-│  │ Graph writer (batched, debounced)           │  │
-│  │  → embedded graph DB                       │  │
-│  │  → StateChangeEvent append-only log         │  │
-│  ├────────────────────────────────────────────┤  │
-│  │ Query API (Cypher over REST)               │  │
-│  └────────────────────────────────────────────┘  │
-└────────────────────┬─────────────────────────────┘
-                     │ REST
-                     ▼
-┌──────────────────────────────────────────────────┐
-│  PYTHON LAYER                                    │
-│  Query SDK · anomaly rules · ML pipeline         │
-│  Remediation via gNMI Set back to devices        │
-└──────────────────────────────────────────────────┘
+All configuration lives in `bonsai.toml`. Copy and edit the reference file:
+
+```bash
+cp bonsai.toml.example bonsai.toml
 ```
 
-**Principles:**
-- **Streaming-first** — no polling, no scheduled scrapes, everything flows as telemetry arrives
-- **Graph-native** — relationships are first-class, topology traversal is the primary query pattern
-- **Temporal (partial)** — `StateChangeEvent` append-only log captures every state transition; full bitemporal `valid_from`/`valid_to` on all nodes is deferred to Phase 5.5 (required for "reconstruct graph state at time T" queries)
-- **LLM-agnostic** — Cypher query API, any consumer (Python, LLM, Grafana, ServiceNow) can use it
+`bonsai.toml.example` documents every field with its default value and when to change it.
+
+### Minimum required fields
+
+```toml
+graph_path = "runtime/bonsai.db"
+
+[[target]]
+address          = "10.0.0.1:57400"
+hostname         = "leaf-01"
+credential_alias = "lab-gnmi"    # added via UI -> Credentials
+```
+
+### Key environment variables
+
+| Variable | Description |
+|---|---|
+| `BONSAI_VAULT_PASSPHRASE` | **Required.** Passphrase for the encrypted credential vault. |
+| `BONSAI_YANG_BUNDLE_KEY` | Optional. Decryption key for the YANG model bundle. |
+| `BONSAI_COLLECTOR_DIAG_PASSWORD` | Optional. Auth for the collector diagnostic HTTP server. |
+| `RUST_LOG` | Log filter (e.g. `info,bonsai=debug`). |
 
 ---
 
-## Technology Stack
+## UI workspaces
 
-| Component | Choice | Notes |
+| Workspace | Path | Description |
 |---|---|---|
-| Core language | Rust (stable, edition 2024) | tokio async, tonic gRPC, prost protobuf |
-| Graph DB | LadybugDB (`lbug` crate, MIT) | Embedded, Cypher, active Kuzu fork. See DECISIONS.md |
-| Python integration | REST API (PyO3 later) | Phase 3+ |
-| ML | PyTorch + scikit-learn | Phase 5 |
-| Lab | ContainerLab | Nokia SR Linux running; Cisco/Juniper/Arista pending accounts |
+| **Live** | `/` | Real-time event stream, topology map, active incidents |
+| **Incidents** | `/incidents` | Detection events table with severity, rule, blast radius |
+| **Devices** | `/devices` | Managed device list, per-device gNMI status, config history |
+| **Operations** | `/operations` | Daily health check, GNN calibration, weekly trend |
+| **Collectors** | `/collectors` | Distributed collector status and queue depth |
+| **Enrichment** | `/enrichment` | Enricher status, run-on-demand, per-device property inspector |
+| **Adapters** | `/adapters` | Output adapter status (ServiceNow, Splunk, Elastic) |
+| **Approvals** | `/approvals` | Pending remediation proposals, trust state per playbook |
+| **Explorer** | `/explorer` | Raw graph query interface (Cypher) |
+| **Investigations** | `/investigations` | AI investigation records and reasoning trails |
+| **Credentials** | `/credentials` | Encrypted vault management |
+| **Sites / Environments / Profiles** | various | Topology grouping, archetype config, path profiles |
 
 ---
 
-## Development Environment
+## API
 
-Python and live lab operations are WSL-first.
+The REST API is served on the same port as the UI (`api_addr` in `bonsai.toml`, default `:50051`).
 
-- Create a repo-local `.venv/` from WSL and install dependencies from `python/pyproject.toml`.
-- Run `scripts/chaos_runner.py`, `python/inject_fault.py`, and any `clab` or `netem` commands from WSL because the ContainerLab lab runs there.
-- Run `scripts/check_training_readiness.py` from Windows or WSL. It prefers gRPC, but on Windows it now auto-falls back to `http://127.0.0.1:3000/api/readiness` when local Python does not have `grpc` installed.
-- Keep Rust builds on Windows with `cargo --release` as documented below.
-- Use `scripts\start_bonsai_windows.ps1` / `scripts\stop_bonsai_windows.ps1` for the Windows Bonsai process.
-- Use `scripts\search_repo.ps1` instead of bare `rg` on this machine; it bypasses the unreliable Chocolatey shim.
-- Use `scripts\regenerate_python_stubs.ps1` after editing `proto/bonsai_service.proto`.
-- Runtime mode defaults to `all`. `core` runs graph/API/UI plus `TelemetryIngest`; `collector` runs local gNMI subscribers and forwards decoded telemetry to the core endpoint.
+OpenAPI schema: `GET /openapi.json`
 
-Setup details live in `docs/DEVELOPMENT.md`.
-
-## API Docs
-
-- Swagger UI: `http://127.0.0.1:3000/api/docs`
-- OpenAPI JSON: `http://127.0.0.1:3000/api/openapi.json`
-- Refresh live example payloads for the docs surface: `bash scripts/refresh_api_docs.sh`
-
-The docs workflow is described in `docs/openapi/README.md`.
-
----
-
-## Enrichment Integrations
-
-Bonsai enriches the graph with business context from two sources:
-
-- **NetBox** (local): bring up via `docker compose -f docker/compose-external.yml --profile netbox up -d`. Pre-seeded by `scripts/seed_external.sh`. No account required.
-- **ServiceNow**: use your own Personal Developer Instance (PDI). Get one free at [developer.servicenow.com](https://developer.servicenow.com). Set `SNOW_INSTANCE_URL`, `SNOW_USERNAME`, `SNOW_PASSWORD` in `.env` and run `scripts/seed_external.sh` to populate it with lab device records.
-
-Credentials are stored encrypted in the local credential vault (never in config files). Add them via the UI or the HTTP API after bonsai starts.
-
----
-
-## Scope
-
-**In scope:** Data center + service provider topologies · gNMI/OpenConfig only ·
-Nokia SR Linux · Cisco IOS-XRd · Juniper cRPD/vJunosEvolved · Arista cEOS ·
-Holo + FRR as OSS references · YANG paths: interfaces, BGP, OSPF, IS-IS, LLDP,
-platform, openconfig-mpls, openconfig-segment-routing, openconfig-network-instance ·
-Closed-loop healing via gNMI Set · Single-host deployment.
-
-**Out of scope:** SNMP · NETCONF · Campus/wireless · Optical transport · Kubernetes/HA ·
-Multi-tenancy/RBAC · Production WAL/replication · Config-writing UI · Any fifth vendor
-in the first 6 months.
-
----
-
-## Roadmap
-
-| Phase | Goal | Status |
-|---|---|---|
-| **1 — The Heartbeat** ✓ | gNMI subscriber pool, interface counters + BGP ON_CHANGE, reconnect, graceful shutdown | **Complete** |
-| **2 — The Graph** ✓ | Telemetry writes to LadybugDB graph, Cypher queries return live + historical state | **Complete** |
-| **3 — Python Layer** ✓ | SDK queries graph, pushes remediation via gNMI Set | **Complete** |
-| **4 — Rules Detect+Heal** ✓ | Deterministic anomaly detection, closed-loop healing demo | **Complete** |
-| 5 — ML Prediction | Autoencoder/LSTM predicts failures, classifier selects remediation | Planned |
-| 6 — Demo UI | Live topology view, event stream, closed-loop trace — view-only | Planned |
-
----
-
-## Phase 1 — Completed
-
-- [x] `cargo run` subscribes to 3 Nokia SR Linux nodes in parallel (tokio task per device)
-- [x] Handles full subscription lifecycle: connect, authenticate, subscribe, reconnect on drop (exponential backoff)
-- [x] Streams interface counter updates (SAMPLE/10s) and BGP neighbor state (ON_CHANGE) as JSON
-- [x] Graceful Ctrl+C shutdown via shared watch channel
-- [ ] 24-hour stability run (in progress)
-
-## Phase 2 — Complete
-
-- [x] Graph DB decided: LadybugDB (embedded, MIT, Cypher) — rationale in DECISIONS.md
-- [x] Schema defined: Device, Interface, BgpNeighbor, LldpNeighbor, StateChangeEvent nodes
-- [x] Graph writer wired: telemetry channel → spawn_blocking → LadybugDB Cypher upserts
-- [x] Multi-vendor normalization: SRL + XRd + cEOS, Capabilities-based vendor detection
-- [x] LLDP topology: CONNECTED_TO edges across all three vendors
-- [x] Cypher queries validated: live topology + BGP state in graph
-
-## Phase 3 — Complete
-
-- [x] gRPC API server (tonic): Query, GetDevices, GetInterfaces, GetBgpNeighbors, GetTopology, StreamEvents
-- [x] Python SDK: BonsaiClient with typed methods, end-to-end validated
-- [x] BonsaiEvent broadcast: StateChangeEvent emitted on every BGP session-state change
-
-## Phase 4 — Complete
-
-- [x] Rule engine running, consuming StreamEvents from gRPC server
-- [x] 8 rules: BgpSessionDown, BgpSessionFlap, BgpAllPeersDown, BgpNeverEstablished, InterfaceDown, InterfaceErrorSpike, InterfaceHighUtilization, TopologyEdgeLost
-- [x] DetectionEvent written to graph for every fired rule (features_json = Phase 5 training data)
-- [x] BGP session bounce: end-to-end auto-heal working on SRL (admin-state disable → enable)
-- [x] Circuit breaker: ≥5 remediations per device in 10 min → halt
-- [x] Remediation nodes written with outcome timestamps
-- [x] Oper-status telemetry subscription: SRL (ON_CHANGE) + XRd (SAMPLE 30s)
-
----
-
-## Repository Layout
+Key endpoint groups:
 
 ```
-/src          Rust core
-/python       Python SDK and rule engine
-/lab
-  /fast-iteration   Holo/FRR ContainerLab topologies (immediate use)
-  /real-vendors     Nokia/Cisco/Juniper/Arista topologies
-/docs         Architecture notes
-DECISIONS.md  Append-only architecture decision log
+GET  /health                               -- health + version info
+GET  /api/devices                          -- list managed devices
+POST /api/devices                          -- add a device
+GET  /api/devices/{addr}/gnmi-readiness    -- gNMI readiness check
+POST /api/enrichment/{name}/run            -- trigger an enricher
+GET  /api/incidents                        -- detection events
+GET  /api/approvals                        -- remediation proposals
+POST /api/approvals/{id}/approve           -- approve a proposal
+POST /api/approvals/{id}/reject            -- reject a proposal
+POST /api/investigations                   -- create an AI investigation
+GET  /api/operations/daily-check           -- health summary
+GET  /events                               -- SSE stream of live events
 ```
 
 ---
 
-## License
+## Python SDK
 
-MIT — see [LICENSE](LICENSE).
+```bash
+pip install bonsai-sdk
+```
+
+```python
+from bonsai_sdk import BonsaiClient
+
+client = BonsaiClient("http://localhost:50051")
+detections = client.list_incidents()
+```
+
+See `python/bonsai_sdk/` for the full SDK and `python/bonsai_agent/` for the AI agent.
 
 ---
 
-*Bonsai: deliberate cultivation of something precise and living.*
+## Distributed deployment
+
+For multi-site or multi-collector setups, run bonsai in split mode:
+
+```toml
+# core node (bonsai.toml)
+[runtime]
+mode = "core"
+
+# each collector node (bonsai.toml)
+[runtime]
+mode                 = "collector"
+collector_id         = "site-a-col-1"
+core_ingest_endpoint = "http://core.example.com:50051"
+```
+
+Optionally enable mTLS on the collector-core channel via `[runtime.tls]`.
+
+See `config/` for per-collector path profiles and `bonsai.toml.example` for full TLS config.
+
+---
+
+## Enrichment
+
+Enrichers run on a schedule and write properties to graph nodes.
+
+**NetBox** (3.x and 4.x — auto-detected at runtime from `GET {base_url}/api/`):
+
+Configure the NetBox enricher via the UI (Enrichment workspace) or the enricher config file.
+The `netbox_version` field accepts `"auto"` (default), `"3"`, or `"4"` to pin the version.
+
+**ServiceNow CMDB**:
+
+```toml
+[integrations.servicenow]
+enabled          = true
+instance_url     = "https://dev12345.service-now.com"
+credential_alias = "snow-cmdb"
+```
+
+---
+
+## Remediation
+
+Bonsai maps detection events to playbooks and proposes remediations via a trust-graduated pipeline:
+
+1. **suggest_only** — propose only, never execute
+2. **approve_each** — execute after human approval (default for production environments)
+3. **auto_with_notification** — execute automatically, notify operator, rollback window open
+4. **auto_silent** — fully autonomous (graduate to this deliberately)
+
+Playbooks live in `playbooks/library/`. Each has a `rule_id`, `steps` (gNMI SET / CLI), `description`, and `risk_level`.
+
+Enable auto-proposal (create proposals when detections fire):
+
+```toml
+[remediation]
+auto_propose = true
+```
+
+---
+
+## GNN anomaly detection
+
+Bonsai includes a Graph Neural Network pipeline for unsupervised anomaly detection.
+
+1. **Accumulate data**: run with `[archive] enabled = true` for 7-30 days.
+2. **Train**: `python python/bonsai_ml/gnn/train_anomaly.py`
+3. **Calibrate**: switch `[gnn] inference_mode = "calibration"` and review the score distribution via Operations -> GNN Calibration.
+4. **Promote**: switch to `inference_mode = "production"` when P95 is below your threshold.
+
+---
+
+## Lab setup (ContainerLab)
+
+For lab-backed testing with Nokia SRL or Cisco XRd:
+
+```bash
+# Deploy a 6-node DC topology
+cd lab/dc
+make deploy
+
+# Start bonsai against it
+docker compose --profile lab-dc up -d bonsai-lab-dc
+```
+
+See `lab/` for topology YAML files and `scripts/` for seed scripts.
+
+---
+
+## Development
+
+```bash
+# Rust
+cargo build
+cargo test --workspace
+
+# UI (Svelte + Vite)
+cd ui && npm install && npm run dev
+
+# Python SDK
+cd python && pip install -e ".[dev]"
+pytest
+```
+
+See `docs/DEVELOPMENT.md` for full dev environment setup including ContainerLab, NetBox, and the parser sidecar stack.
+
+---
+
+## Architecture decisions
+
+See `DECISIONS.md` for the rationale behind key architectural choices:
+- lbug (LadybugDB) as the embedded graph database
+- Rust-first binary with Python ML sidecar
+- MCP server for AI tool use
+- Two-binary model (`bonsai` + `healthcheck`)
+- Trust model for autonomous remediation
+
+---
+
+## Contributing
+
+1. Fork and branch from `main`.
+2. `cargo test --workspace` must pass.
+3. `cd ui && npm run build` must succeed.
+4. New API endpoints must update `src/http_server/schema.rs`.

@@ -218,6 +218,7 @@ class BonsaiClient:
         features_json: str,
         fired_at_ns: int,
         state_change_event_id: str = "",
+        source_event_ids: list[str] | None = None,
     ):
         req = pb.CreateDetectionRequest(
             device_address=device_address,
@@ -226,6 +227,7 @@ class BonsaiClient:
             features_json=features_json,
             fired_at_ns=fired_at_ns,
             state_change_event_id=state_change_event_id,
+            source_event_ids=source_event_ids or [],
         )
         resp = self.stub.CreateDetection(req)
         if resp.error:

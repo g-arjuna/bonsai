@@ -1,0 +1,20 @@
+graph_path = "runtime/bonsai.db"
+api_addr   = "0.0.0.0:50051"
+
+[runtime]
+mode         = "all"
+collector_id = "local"
+
+[credentials]
+path           = "bonsai-credentials"
+passphrase_env = "BONSAI_VAULT_PASSPHRASE"
+
+[archive]
+enabled                = false
+path                   = "runtime/archive"
+flush_interval_seconds = 10
+max_batch_rows         = 1000
+
+# No [[target]] blocks — devices are added via the UI onboarding wizard or
+# POST /api/devices after the container starts.
+# To pre-seed devices, add [[target]] blocks here following bonsai.toml.example.

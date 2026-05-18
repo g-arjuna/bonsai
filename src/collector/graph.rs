@@ -152,6 +152,8 @@ impl CollectorGraphStore {
         rule_id: String,
         severity: String,
         features_json: String,
+        source_types_json: String,
+        latency_ns: i64,
         fired_at_ns: i64,
         state_change_event_id: String,
     ) -> Result<String> {
@@ -168,7 +170,9 @@ impl CollectorGraphStore {
                 "MERGE (e:DetectionEvent {id: $id}) \
                  ON CREATE SET \
                    e.device_address = $addr, e.rule_id = $rule, \
-                   e.severity = $sev, e.features_json = $feats, e.fired_at = $ts",
+                   e.severity = $sev, e.features_json = $feats, \
+                   e.source_types = $srctypes, e.latency_ns = $latency, \
+                   e.fired_at = $ts",
             ).context("prepare collector DetectionEvent insert")?;
 
             conn.execute(&mut stmt, vec![
@@ -177,6 +181,8 @@ impl CollectorGraphStore {
                 ("rule", Value::String(rule_id.clone())),
                 ("sev", Value::String(severity.clone())),
                 ("feats", Value::String(features_json.clone())),
+                ("srctypes", Value::String(source_types_json.clone())),
+                ("latency", Value::Int64(latency_ns)),
                 ("ts", now),
             ]).context("execute collector DetectionEvent insert")?;
 
@@ -204,6 +210,7 @@ impl CollectorGraphStore {
                 detail_json: features_json,
                 occurred_at_ns: fired_at_ns,
                 state_change_event_id,
+                source_type: "detection".to_string(),
             });
 
             Ok(id)
@@ -239,6 +246,8 @@ impl BonsaiStore for CollectorGraphStore {
         rule_id: String,
         severity: String,
         features_json: String,
+        source_types_json: String,
+        latency_ns: i64,
         fired_at_ns: i64,
         state_change_event_id: String,
     ) -> Result<String> {
@@ -247,6 +256,8 @@ impl BonsaiStore for CollectorGraphStore {
             rule_id,
             severity,
             features_json,
+            source_types_json,
+            latency_ns,
             fired_at_ns,
             state_change_event_id,
         )

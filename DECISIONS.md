@@ -1,1886 +1,465 @@
-# DECISIONS.md — Bonsai Architecture Decision Log
+# Architectural Decisions — bonsai
 
-Append-only. Never edit or delete past entries. Add new entries at the bottom.
-Format: `## YYYY-MM-DD — <title>`
+Captures the key design choices made during development and the reasoning behind them.
+Ordered roughly chronologically. New decisions are appended.
 
 ---
 
-## 2026-04-17 — Core language: Rust
+## D1 — lbug (LadybugDB) as the embedded graph database
 
-**Decision**: Rust (stable, edition 2024) for the ingestion and graph engine core.
+**Decision**: Use lbug, an embedded graph database, as the sole persistence layer.
 
-**Alternatives considered**: Go, Python.
+**Alternatives considered**:
+- Neo4j / Memgraph — require a separate process, Docker image, and connection management. Adds operational complexity for a tool that targets network engineers, not database administrators.
+- SQLite + adjacency tables — possible but graph traversals (blast radius, LLDP topology, BGP path) require recursive CTEs that become hard to maintain.
+- DGraph / TigerGraph — cloud-native, heavyweight, not embeddable.
 
-**Rationale**:
-- Streaming telemetry ingestion at scale benefits from zero-cost abstractions and
-  predictable latency — no GC pauses on the hot path.
-- Parsing untrusted protobuf from network devices benefits from memory safety guarantees.
-- tokio async runtime is mature and well-suited to the per-device subscriber pool pattern.
-- Holo (MIT-licensed Rust routing suite with native gNMI) serves as both a reference
-  implementation and a ContainerLab peer — reduces the "Rust in network automation is
-  uncharted" risk.
-- Go was the serious alternative; rejected because this is a learning project and
-  the Rust upskill is part of the explicit goal.
-- Python rejected for the core due to GIL and async limitations at streaming scale;
-  Python is appropriate for the rules engine and ML pipeline (Phase 4/5).
+**Reasoning**: The entire point of bonsai is that it can run on a single laptop or a single Ubuntu VM with no external services. An embedded graph DB with Cypher support gives the query expressiveness of a graph store without requiring a network-visible process or persistent socket. lbug fits in the binary.
 
----
-
-## 2026-04-17 — Async runtime: tokio only
-
-**Decision**: tokio is the one and only async runtime. No async-std, no smol.
-
-**Rationale**: tonic (gRPC) requires tokio. Mixing runtimes causes hard-to-debug
-panics. Constraint makes dependency choices simpler for the lifetime of the project.
-
----
-
-## 2026-04-17 — gRPC/protobuf: tonic + prost
-
-**Decision**: tonic for the gRPC transport layer, prost for protobuf code generation
-from the official openconfig/gnmi .proto files.
-
-**Rationale**: tonic is the de-facto standard tokio-native gRPC crate. prost integrates
-cleanly with tonic's build pipeline. The Holo project uses the same stack — provides
-a reference to cross-check against.
-
----
-
-## 2026-04-17 — Graph database: DEFERRED — research task for Phase 1
-
-**Decision**: Not yet decided. Three candidates:
-
-1. **Kuzu v0.11.3** — MIT, embedded, Rust bindings exist. Archived (Apple acquisition
-   Oct 2025) so no future development, but stable and known-working.
-2. **Ladybug** — community fork of Kuzu by Arun Sharma. Intends to be a 1:1 Kuzu
-   replacement. Early stage; stability unknown.
-3. **ArcadeDB** — Apache 2.0, multi-model, OpenCypher support (97.8% TCK pass).
-   More mature but runs as a server process, not embedded.
-
-**Action**: Spend 2–3 days in Phase 1 benchmarking with a small synthetic graph
-workload (node upserts, edge traversals, temporal queries). Document outcome here.
-
-**Leaning**: Start with Kuzu v0.11.3 for stability. Plan migration path to Ladybug
-if it stabilizes by end of Phase 2.
-
----
-
-## 2026-04-17 — Telemetry ingestion: gNMI Subscribe only (no polling, no SNMP, no NETCONF)
-
-**Decision**: gNMI Subscribe (STREAM mode, ON_CHANGE + SAMPLE) is the only ingestion
-path. No SNMP, no NETCONF, no REST scraping, no Telegraf intermediate hop.
-
-**Rationale**: The project's core thesis is streaming-first. Polling defeats the
-purpose. SNMP is legacy. NETCONF is request/response. Taking gNMI directly keeps
-the latency path short and the architecture honest.
-
-**Constraint**: This is non-negotiable for the lifetime of the project.
-
----
-
-## 2026-04-17 — Python integration: REST API first, PyO3 later
-
-**Decision**: Python layer communicates with the Rust core via a REST API. PyO3
-FFI binding is a future option once the API is stable.
-
-**Rationale**: REST is simpler to iterate on during early phases. PyO3 offers lower
-latency and tighter integration but adds build complexity before the API contract
-is known. Revisit at end of Phase 3.
-
----
-
-## 2026-04-17 — Project name: bonsai
-
-**Decision**: The project is named **bonsai**.
-
-**Rationale**: Deliberate cultivation of something precise and living. Mirrors the
-core discipline of this project — prune scope ruthlessly, shape carefully, let it
-grow only where it should. The folder name was already bonsai; the metaphor fits.
-
----
-
-## 2026-04-17 — SR Linux gNMI path normalization: use native paths at ingestion, normalize in pipeline
-
-**Decision**: Subscribe using SR Linux native path `interface[name=*]/statistics`
-(singular, no `srl_nokia-interfaces:` prefix). Normalization to OpenConfig canonical
-paths (`/interfaces/interface[name=*]/state/counters`) is deferred to a Phase 2
-normalization layer.
-
-**Context**: Nokia SR Linux 26.x deviates from OpenConfig canonical paths:
-- Uses `interface` (singular) vs OpenConfig `interfaces` (plural)
-- Responses may carry the `srl_nokia-interfaces:` model prefix on returned values
-- ContainerLab gNMI server on port 57400; no separate `gnmi-server` config block
-  needed in SR Linux 26.x (enabled automatically)
-
-**Rationale**: Subscribing to native paths is required — SR Linux rejects the
-OpenConfig canonical path. Normalizing at ingestion time (in the subscriber) would
-couple device-specific quirks to the transport layer. A dedicated normalization
-stage in the pipeline is cleaner and easier to test. Each NOS will need its own
-normalization rules; centralizing them in one place is the right long-term shape.
-
-**Impact on current code**: `interface_counters_path()` in `src/subscriber.rs`
-uses `interface` (singular) with a wildcard key `name=*`. Path normalization is
-out of scope until Phase 2.
-
----
-
-## 2026-04-17 — gNMI authentication model: mTLS preferred, credentials-from-config as fallback
-
-**Decision**: The correct authentication model for gNMI is mTLS (mutual TLS). Username/password
-credentials are supported as a fallback for NOS implementations that require them, but
-credentials must never appear in source code.
-
-**Context and reasoning**:
-
-gNMI has no authentication specification of its own — it rides gRPC over TLS. Most NOS
-implementations (SR Linux, IOS-XR, Junos) bolt username/password onto gRPC metadata headers
-because their gNMI server reuses the same AAA stack as SSH. This is a vendor implementation
-detail, not a gNMI feature.
-
-With mTLS, both sides present certificates. The device trusts certificates signed by a known
-CA; bonsai presents a client certificate. No passwords are exchanged. This is the production-
-correct model and what Google's production systems use. The "onboarding" step becomes: issue a
-client cert to bonsai, add the CA to the device's trust store.
-
-**Credential storage hierarchy** (most to least preferred):
-1. No credentials (device configured with mTLS or `skip-authentication`)
-2. Environment variables referenced by name in `bonsai.toml`
-3. Inline plaintext in `bonsai.toml` — only for lab; `bonsai.toml` must not be committed
-4. Hardcoded in source — **never acceptable**
-
-**Impact on code**:
-- `GnmiSubscriber` accepts `Option<String>` for username and password
-- Interceptor only injects headers when credentials are `Some`
-- No credentials in `main.rs`, `bonsai-mv.rs`, or any compiled binary
-- mTLS client cert support added when needed (Phase 3 target)
-
-**Constraint**: Credentials in source code are a hard block on any PR.
-
----
-
-## 2026-04-17 — Device onboarding model: config-file-driven, Capabilities-based vendor detection
-
-**Decision**: Targets are declared in an external `bonsai.toml` config file, not in source code.
-Vendor family is auto-detected at runtime via the gNMI Capabilities RPC. An optional `vendor`
-override in the config skips detection for known-problematic devices.
-
-**Onboarding flow**:
-1. Operator configures gNMI/gRPC on the device (port, TLS mode, credentials if required)
-2. Operator appends a `[[target]]` block to `bonsai.toml` with address, TLS settings, credentials
-3. Bonsai starts, reads `bonsai.toml`, connects to each target
-4. Capabilities RPC returns `supported_models` — bonsai inspects model names to detect vendor:
-   - `srl_nokia-*` prefix → `nokia_srl`
-   - `Cisco-IOS-XR-*` prefix → `cisco_xrd`
-   - `junos-*` prefix → `juniper_crpd`
-   - `arista-*` / EOS models → `arista_ceos`
-   - fallback → `openconfig` (uses OC canonical paths)
-5. Bonsai selects subscription paths for the detected vendor and subscribes
-
-**Dial-in vs dial-out**:
-Bonsai uses dial-in (bonsai connects to device). Dial-out (device pushes to a collector endpoint)
-is the correct model for large fleets but adds collector infrastructure complexity. Dial-out is
-a Phase 3+ consideration. Dial-in is correct for single-host lab deployment (Phase 1–2).
-
-**Config file security**:
-- `bonsai.toml` is listed in `.gitignore` — actual credentials never committed
-- `bonsai.toml.example` is committed — a redacted template with comments
-- Production path: credentials come from environment variables referenced by name in the config
-
-**Impact on code**:
-- Single `bonsai` binary handles all topologies; `bonsai-mv.rs` is deleted
-- `src/config.rs` owns the config model and TOML loading
-- `GnmiSubscriber::new()` accepts `vendor_hint: Option<String>` — None triggers Capabilities detection
-
----
-
-## 2026-04-17 — Graph database: LadybugDB (lbug crate) with Grafeo as fallback
-
-**Decision**: Use **LadybugDB** (`lbug` crate on crates.io) as the embedded graph
-database for Phase 2. **Grafeo** is the named fallback if Ladybug stalls.
-
-**Candidates evaluated**:
-
-| Candidate | Status | License | Rust embed | Cypher | Temporal | Verdict |
-|---|---|---|---|---|---|---|
-| Kuzu v0.11.3 | Archived (Apple, Oct 2025) | Formerly MIT | FFI (frozen) | Yes | DIY | Avoid |
-| **LadybugDB v0.15.3** | Active, ~2-week cadence | MIT | FFI (`lbug`) | Yes | DIY | **Chosen** |
-| ArcadeDB v26.3.2 | Active | Apache 2.0 | JVM-only | Yes (97.8% TCK) | Time-series only | Wrong fit |
-| SurrealDB | Active | BSL 1.1 | Native Rust | No (SurrealQL) | Native, excellent | BSL + no Cypher |
-| Cozo | Abandoned (Dec 2023) | MPL 2.0 | Native Rust | No (Datalog) | Native, excellent | Abandoned |
-| Grafeo v0.5.x | New (Mar 2026) | Apache 2.0 | Native Rust | Yes | DIY | Too new — watch |
-| FalkorDB | Active | SSPLv1 | Redis module | Yes | DIY | SSPLv1 + Redis dep |
-
-**Rationale for LadybugDB**:
-- Only option satisfying all hard constraints at once: embedded in-process, MIT,
-  Rust bindings, Cypher/OpenCypher, active development
-- Direct code fork of Kuzu — same columnar storage, vectorized execution, MVCC
-  transactions, and Cypher implementation. Kuzu benchmarks apply as baseline.
-- v0.15.3 as of April 2026, consistent release cadence since November 2025
-- Arun Sharma (founder) has prior distributed graph systems experience (Facebook
-  Dragon, Google)
-
-**Known gap — temporal queries**: LadybugDB has no native time-travel or point-in-time
-snapshot feature. "What did the graph look like 5 minutes ago" requires DIY
-bitemporal modeling:
-- Every node and edge carries `valid_from TIMESTAMP` and `valid_to TIMESTAMP`
-- On update: set `valid_to = now()` on the existing record, insert new record with
-  `valid_from = now()` and `valid_to = NULL`
-- Historical queries: `WHERE valid_from <= $t AND (valid_to IS NULL OR valid_to > $t)`
-- This is standard practice, adds one extra write per update, and works cleanly
-  at our scale (hundreds of upserts/minute for Phase 1–2)
-
-**Risks and mitigations**:
-- Risk: Ladybug is a 6-month-old fork with a single primary maintainer — bus factor
-- Mitigation: Grafeo (Apache 2.0, pure Rust, embedded, Cypher) is the named fallback.
-  It appeared March 2026 and has code quality concerns (AI-generated at scale), but
-  if Ladybug stalls, Grafeo should be re-evaluated. Set a 6-month review checkpoint.
-- Risk: FFI bindings over C++ core (same as Kuzu) — not pure Rust
-- Mitigation: acceptable for Phase 2; Grafeo would resolve this if it matures
-
-**Fallback trigger**: if LadybugDB has no release activity for 60+ days, evaluate
-Grafeo for replacement before writing more graph code.
-
----
-
-## 2026-04-18 — Capabilities-driven native-first subscription strategy
-
-**Decision**: All path selection is driven exclusively by the device's Capabilities
-response. Native vendor models are preferred when advertised; OpenConfig is the
-fallback. No per-vendor static branching in path selection logic.
-
-**Context**: Phase 2 multi-vendor lab (SRL, XRd, cEOS). Prior approach had static
-per-vendor path tables that required code changes when adding a new vendor or
-when a device firmware changed supported models.
-
-**Rules implemented**:
-- `has_srl_native` (srl_nokia in model names) → SRL native paths for all concerns
-- `has_xr_native` (Cisco-IOS-XR-infra-statsd-oper model present) → XR native stats
-- `has_oc_interfaces/bgp/lldp` → OC paths as fallback
-- Vendor label is derived from Capabilities for logging and Device node tagging only,
-  never for path routing decisions
-- Same rule applies to every vendor: native-first, OC second, no duplicates
-
-**Alternatives considered**: Static per-vendor tables (rejected — breaks at firmware
-boundaries and requires code changes per device), always-OC (rejected — SRL does not
-advertise OC model names; XR native stats are richer than OC counters).
-
----
-
-## 2026-04-18 — Per-notification leaf grouping in subscriber
-
-**Decision**: In `subscribe_telemetry`, scalar leaf updates within a single gNMI
-notification are grouped by parent path before dispatch to the graph writer.
-
-**Context**: cEOS (and some XRd paths) send individual scalar leaves rather than a
-JSON blob at the container path. Without grouping, `interfaces/interface[name=X]/state/counters/in-pkts`
-arrives as path=`…/in-pkts`, value=`12345` — no classifier can match it.
-After grouping, the dispatcher sees path=`interfaces/interface[name=X]/state/counters`,
-value=`{"in-pkts":12345,"out-pkts":...}` — same blob-at-container-path shape as SRL.
-
-**Rule**: If a TypedValue is a scalar (Number/String/Bool), split on the last `/`,
-accumulate leaves into a `HashMap<parent_path, JSON object>`, and emit one synthetic
-TelemetryUpdate per parent path per notification. JSON object blobs and null values
-are forwarded as-is. This transform is invisible to all downstream classifiers.
-
----
-
-## 2026-04-18 — XRd BGP blob walker
-
-**Decision**: XRd ON_CHANGE BGP sends partial `network-instances` JSON trees (one
-blob per neighbor) rather than individual leaf paths. A dedicated `walk_xrd_bgp_blob`
-function navigates `network-instance.protocols.protocol.bgp.neighbors.neighbor` to
-extract `neighbor-address` and the `state` sub-object.
-
-**Why a walker instead of path-based classification**: XRd does not send
-`neighbors/neighbor[neighbor-address=X]/state` as the path; it always uses
-`network-instances` as the top-level path with a partial JSON tree as the value.
-The walker is the only viable approach without changing the subscription path.
-
-**`BgpNeighborState` carries `state_value: Option<Value>`**: When the walker fires,
-the pre-extracted `state` sub-object is passed along so `write_bgp_neighbor` reads
-`session-state` and `peer-as` from the correct nesting level rather than the top-level
-update value. `None` means callers use `u.value` directly (SRL native, OC paths).
-
----
-
-## 2026-04-18 — XRd native LLDP: SAMPLE subscription + blob walker
-
-**Decision**: Subscribe to XRd's native LLDP path
-(`Cisco-IOS-XR-ethernet-lldp-oper:lldp/nodes/node/neighbors/details/detail`)
-using SAMPLE mode (60 s interval), not ON_CHANGE. Walk the `lldp-neighbor[0]`
-array to normalize into `{"chassis-id", "system-name", "port-id"}` before writing.
-
-**Why SAMPLE instead of ON_CHANGE**: LLDP neighbors discovered before the subscription
-starts will never trigger an ON_CHANGE event. SAMPLE guarantees the initial sync
-includes all existing neighbors regardless of when they were discovered.
-
-**Why native path**: The OC path (`openconfig/lldp`) root subscription returned no
-data from XRd even though `openconfig-lldp` is advertised in Capabilities. The native
-`ethernet-lldp-oper` path responds correctly.
-
-**`LldpNeighbor` carries `state_value: Option<Value>`**: Same pattern as `BgpNeighborState`.
-The walker produces a flat `{"chassis-id", "system-name", "port-id"}` object so
-`write_lldp_neighbor` works identically for SRL native, OC (cEOS), and XRd native
-without any vendor branching in graph.rs.
-
-**XRd hostname**: Default IOS-XR hostname is "ios". Added `hostname xrd1` to xrd1.cfg
-so LLDP broadcasts `system-name=xrd1`, allowing `try_connect_interfaces` to resolve
-the Device node from SRL/cEOS LLDP data. Without this, edges from SRL/cEOS to XRd
-are silently skipped (device lookup returns no rows).
-
----
-
-## 2026-04-18 — Phase 3 Python SDK transport: gRPC
-
-**Decision**: Expose the Bonsai graph to Python clients via a tonic gRPC server
-(`BonsaiGraph` service in `proto/bonsai_service.proto`). Python uses `grpcio` stubs
-generated by `grpcio-tools`.
-
-**Rejected alternatives**:
-- **PyO3 / native extension**: Near-zero latency but couples Python version to Rust
-  build, prevents running the SDK against a remote instance, and requires a FFI
-  boundary for every new call. Premature for a Phase 3 read path.
-- **REST (axum/actix)**: Familiar but requires a separate HTTP server, JSON schema
-  maintenance, and manual streaming support. gRPC gives streaming for free via
-  `StreamEvents`.
-- **File export (JSON/SQLite)**: Polling-only, no streaming, brittle on Windows file
-  locking. Unacceptable for a real-time rules engine in Phase 4.
-
-**Why gRPC**:
-1. Single source of truth: the `.proto` file is the contract for both sides.
-2. `StreamEvents` server-streaming is the Phase 4 rules-engine entry point — getting
-   it right now avoids a breaking API change later.
-3. `grpcio-tools` generates typed Python stubs; the SDK layer is a thin wrapper.
-4. The gRPC server runs inside the existing tokio runtime as a spawned task — no
-   second process or port conflicts beyond the single `api_addr` config key.
-
-**Event broadcast**: `tokio::sync::broadcast::channel(1024)` in `GraphStore`.
-`write_state_change_event` publishes a `BonsaiEvent` after every DB insert.
-`StreamEvents` subscribes via `BroadcastStream`; lagged receivers are silently
-dropped (broadcast semantics: no back-pressure on the writer).
-
----
-
-## 2026-04-18 — Fixed graph database name: bonsai.db
-
-**Decision**: The graph database file is always named `bonsai.db`, regardless of
-topology or lab context. `graph_path` defaults to `bonsai.db` in `src/main.rs`;
-`bonsai.toml` sets it explicitly to `bonsai.db`.
-
-**Why**: Topology-specific names (e.g. `bonsai-mv.db`) are an operational anti-pattern.
-In production you don't rename your database when you add a device. The graph accumulates
-state across topology changes — a name change would lose history and confuse automation
-that references a known path.
-
----
-
-## 2026-04-18 — cRPD removed from all topologies
-
-**Decision**: Juniper cRPD is removed from `multivendor.clab.yml` and will not appear
-in the Phase 4 lab topology.
-
-**Why**: cRPD 23.2R1.13 had persistent BGP session flapping against SRL 26.x and
-XRd 24.x (diagnosed as capability negotiation failure during OPEN exchange). Phase 4
-requires a stable baseline to distinguish injected faults from pre-existing flaps.
-An unstable node undermines that. cRPD can be re-evaluated when a stable image
-compatible with current SRL/XRd firmware is available.
-
-**Not a permanent decision**: cRPD remains in scope per PROJECT_KICKOFF.md as one of
-the four target vendor families. This is a deferral, not a removal from the roadmap.
-
----
-
-## 2026-04-18 — ML-ready detection abstraction: Detector base class
-
-**Decision**: The Phase 4 rule engine uses a `Detector` ABC with two methods:
-`extract_features()` and `detect()`. Rules and future ML models both implement this
-interface. Feature extraction is shared; only `detect()` changes when moving to ML.
-
-**Why**: Separating feature extraction from decision logic means:
-1. Training data is stored in the graph from day one (features_json on DetectionEvent)
-   with no re-extraction needed in Phase 5.
-2. Swapping a rule for an ML model is a one-method change, not a pipeline refactor.
-3. Rules can be validated by inspecting the feature dict, not just the firing behaviour.
-
-**Feature storage**: Every `DetectionEvent` carries `features_json` — the complete
-feature vector that triggered it. Phase 5 reads these as labelled training examples
-(`DetectionEvent` = anomaly label, `Remediation.status` = outcome label for the
-remediation classifier).
-
----
-
-## 2026-04-18 — gNMI Set transport: Rust proxy via PushRemediation RPC
-
-**Decision**: Python never connects to devices directly for remediation. All gNMI Set
-calls go through a new `PushRemediation` RPC on the Rust gRPC server. Python sends:
-target address + YANG path + JSON value. Rust executes the Set using the existing
-connection (or opens a short-lived one), returns success/error.
-
-**Why**: Credentials (usernames, passwords, TLS certs) are owned by the Rust process
-via `bonsai.toml`. Passing them to Python would duplicate credential storage and risk
-them appearing in Python logs or stack traces. The Rust proxy is also the correct shape
-for Phase 5 where the ML remediation selector pushes actions — one integration point,
-one credential store, one connection pool.
-
-**Constraint**: Python never receives or stores credentials. This is non-negotiable.
-
----
-
-## 2026-04-18 — Phase 4 lab topology: DC spine-leaf + SP PE (bonsai-phase4.clab.yml)
-
-**Decision**: The Phase 4 test lab is `lab/fast-iteration/bonsai-phase4.clab.yml`:
-3× Nokia SR Linux (spine + 2 leaves) + 1× Cisco IOS-XRd (SP PE edge). Total ~6.5 GB RAM.
-
-**Why this topology**:
-- Each device has 2–3 BGP sessions → rules like "one peer down" vs "all peers down" are testable
-- OSPF area 0 underlay → future OSPF adjacency rules without topology changes
-- SR-MPLS prefix-SIDs on SRL → SP path telemetry in Phase 4/5 without adding nodes
-- 3× SRL minimises RAM (SRL ≈ 1.5 GB vs cEOS ≈ 2 GB, XRd ≈ 2 GB)
-- All links are point-to-point `/31`s → clean LLDP CONNECTED_TO edges, no broadcast domains
-
-**Fault injection**: ContainerLab `tools netem` for link impairment; `sr_cli` or
-bonsai `PushRemediation` for interface/BGP-level faults. No external tool required.
-
----
-
-## 2026-04-18 — Rule trigger model: hybrid event + poll (D1 resolved)
-
-**Decision**: Event-driven (StreamEvents gRPC) for single-event rules; poll-based
-(30 s interval) for pattern rules requiring history or counter deltas.
-
-**Why**:
-- BGP state transitions (`bgp_session_change`) arrive as ON_CHANGE gNMI updates;
-  routing them directly through StreamEvents gives sub-second detection latency.
-- Interface counter deltas (error rate, utilisation) require two samples — polling
-  the graph every 30 s is simpler and correct; the SAMPLE interval is 10 s so
-  at least two data points are always available.
-- Topology diff (`topology_edge_lost`) requires comparing the current LLDP edge set
-  against the previous snapshot — inherently poll-based.
-- The `RuleEngine` implements both loops in parallel background threads. Validated
-  in Phase 4: event loop and poll loop coexist without interference.
-
----
-
-## 2026-04-18 — Interface oper-status telemetry: SRL ON_CHANGE confirmed (D4 resolved)
-
-**Decision**: SRL native oper-state path (`interface[name=*]/oper-state`) with
-ON_CHANGE subscription is the primary interface oper-status source. XRd deferred.
-
-**What was found**:
-- SRL sends oper-state as a scalar leaf. The subscriber's leaf-grouping logic
-  consolidates it under the parent container path
-  (`srl_nokia-interfaces:interface[name=X]` with value `{"oper-state":"up/down"}`).
-  The original classifier checked `path.ends_with("/oper-state")` which never matched
-  the grouped form. Fixed by checking `json_find(value, "oper-state").is_some()`.
-- XRd: the `oc_interfaces` OC subscription is accepted by XRd but oper-status events
-  were not seen in Phase 4 testing. Deferred — XRd interface rules are not blocked
-  on this since the PE node is not a target for interface-level auto-remediation.
-
-**Phase 5 note**: When XRd oper-status is needed, subscribe to
-`Cisco-IOS-XR-pfi-im-cmd-oper:interfaces` (SAMPLE 30 s) and extend the OC
-oper-status classifier to normalise the XR native field names.
-
----
-
-## 2026-04-18 — BgpSessionDown guard: established->idle only
-
-**Decision**: `BgpSessionDown` and `BgpSessionFlap` only fire when
-`old_state == "established"` transitions to `new_state == "idle"`.
-
-**Why**: The BGP FSM has many transient states (active, opensent, openconfirm,
-connect) that cycle during normal reconnection. Firing on `active->idle` (the
-exponential backoff retry) caused a remediation feedback loop: each `bgp_session_bounce`
-resets the session to idle, which triggers another detection, saturating the circuit
-breaker within seconds. Only `established->idle` means a working session was lost
-and warrants remediation. All other non-established transitions are normal FSM cycling.
-
----
-
-## 2026-04-18 — Junos native interface classifier paths removed from telemetry.rs
-
-**Decision**: The Junos-specific interface stats classifier block in `telemetry.rs`
-(lines matching `input-bytes` / `output-bytes` / `input-packets` field names from
-`junos-state-interfaces`) is removed. cRPD is not in scope for Phase 4/5 and these
-paths were never validated against a live device.
-
-**Rationale**: Dead code rots. An untested vendor path gives false confidence and
-creates maintenance surface with no benefit until cRPD is re-enabled. The block
-should be re-added when cRPD is back in scope, informed by actual Capabilities and
-live validation, not copied from a prior speculative attempt.
+**Consequence**: The graph schema is defined in Rust structs (`src/graph/mod.rs`). Schema migrations are managed in-process. The `buffer_pool_bytes` tuning knob is the main operational lever.
 
-**Re-enable condition**: When cRPD is added back to the Phase N lab topology, add
-an ADR capturing the validated Junos gNMI subscription path and field names before
-adding any code. Do not restore the old block without validation.
-
----
-
-## 2026-04-18 — StateChangeEvent pruning deferred to Phase 5.5
-
-**Decision**: No event retention / pruning logic will run in Phases 4 or 5.
-A `retention` module seam (`src/retention.rs`, `prune_events` function) will be
-scaffolded in Phase 5.0 hygiene work so the entry point exists, but it will be
-a no-op and disabled by default in `bonsai.toml`.
-
-**Rationale**: The lab topology generates tens of events per minute — volume is
-irrelevant today. Phase 5 ML training needs the full DetectionEvent + Remediation
-history intact. Deleting events before Phase 5 training data is exported would
-destroy training labels. Pruning of raw StateChangeEvents (keeping 72h hot,
-exporting to Parquet) is the right long-term model but is Phase 5.5 work.
-
-**Phase 5.5 plan** (capture here so it is not forgotten):
-- StateChangeEvent: keep 72h in graph, export older records to Parquet (one file
-  per day, device-partitioned), delete from graph after export.
-- DetectionEvent + Remediation: keep forever in graph — small, high-value training data.
-- The `prune_events(store, cutoff)` function scaffolded now runs on a tokio interval;
-  enabling it requires setting `[retention] enabled = true` in `bonsai.toml`.
-
----
-
-## 2026-04-18 — Schema migration story deferred; LadybugDB has no ALTER TABLE
-
-**Decision**: Adding columns to existing LadybugDB node tables (e.g., adding
-`firmware_version` to Device, or `triggered_by_id` to DetectionEvent) requires
-dropping and recreating the table. There is no `ALTER TABLE ADD COLUMN` in the
-current LadybugDB/Kuzu Cypher dialect. This is a known gap; no migration
-infrastructure is built for Phase 5.0.
-
-**Rationale**: The schema is stable at Phase 4. Phase 5.0 adds one new edge type
-(`TRIGGERED_BY` from DetectionEvent to StateChangeEvent) — this is an `CREATE REL TABLE`
-not an `ALTER`, so it is safe. No existing node table columns change. The migration
-problem only becomes real when a node property must be added to a table with existing
-data.
-
-**Mitigation until a migration story exists**:
-1. New properties are added via new edge types where possible (avoids ALTER).
-2. Node table schema changes require a `bonsai.db` rebuild (acceptable for a lab
-   deployment — stop bonsai, delete the DB, restart to rebuild from live telemetry).
-3. Schema version is tracked as a property on a singleton `SchemaVersion` node
-   (to be added). If the running code expects a higher version than the DB contains,
-   bonsai logs a warning and exits cleanly rather than writing corrupt state.
-
-**Long-term**: evaluate LadybugDB's migration support as it matures; if it gains
-`ALTER TABLE ADD COLUMN`, remove this constraint.
-
-
----
-
-## 2026-04-19 — ML feature contract: `features_to_vector()` as shared training/inference path
-
-**Decision**: A single module-level function `features_to_vector(Features) -> np.ndarray` in
-`python/bonsai_sdk/ml_detector.py` is the exclusive encoding path for both training data
-export and live inference.
-
-**Rationale**: The most common failure mode in applied ML on streaming systems is maintaining
-two feature pipelines — one in pandas for training, one in Python dicts for inference — that
-drift apart. Models that worked in the notebook fail silently in production. By enforcing a
-single function as the contract, training rows and inference vectors are always identical.
-The `Features` dataclass is the API boundary; `features_to_vector()` is the serialiser.
-
-**Consequences**: Any new feature added to `Features` must also be added to
-`features_to_vector()` and models must be retrained. Feature vector layout is append-only —
-prepending or reordering breaks existing models without a version bump.
-
----
-
-## 2026-04-19 — Model sequencing: A before C before B
-
-**Decision**: Phase 5 trains three models in order: A (IsolationForest anomaly detector),
-C (GBT remediation classifier), B (LSTM sequence predictor).
-
-**Rationale**:
-- Model A requires only normal + anomaly windows, accumulates from day one of Phase 4.
-  IsolationForest needs no GPU, trains in seconds, interpretable. Start here.
-- Model C requires labelled Remediation nodes (action + success/failed status). These
-  accumulate naturally as Phase 4 auto-remediation runs. Train once ~50+ remediations exist.
-- Model B requires enough *failure precursor sequences* (N samples before each critical event).
-  This needs deliberate fault injection over weeks. Train last.
-Training B before A wastes effort on data that doesn't exist yet.
-
----
-
-## 2026-04-19 — MLDetector integrated as a standard Detector in RuleEngine
-
-**Decision**: `MLDetector` implements the same `Detector` ABC as rule-based detectors.
-`RuleEngine` scans `model_dir` at startup and appends loaded `MLDetector` instances to
-`self._rules`. If no model files are found the engine starts in rules-only mode without error.
-
-**Rationale**: Keeping ML and rules under the same dispatch loop means: (1) the engine
-doesn't know or care whether a detector is rules-based or ML, (2) ML detections follow the
-exact same path to `DetectionEvent` write and `RemediationExecutor` as rule detections,
-(3) model upgrades are a file drop — replace `models/anomaly_v1.joblib`, restart engine.
-
-**Consequences**: `MLDetector.extract_features()` must do graph queries itself (no feature
-sharing with co-firing rule detectors). Acceptable at lab scale; at fleet scale, a shared
-feature cache per event would avoid duplicate graph reads.
-
----
-
-## 2026-04-19 — Phase 6 HTTP server: Axum in-process over FastAPI
-
-**Decision**: Phase 6 HTTP/SSE server is implemented in Rust (Axum 0.8) running
-in-process alongside the Tonic gRPC server, not as a separate FastAPI process.
-
-**Alternatives considered**: FastAPI (Python), separate Go HTTP proxy.
-
-**Rationale**:
-- Axum shares the same `Arc<GraphStore>` and `broadcast::Sender<BonsaiEvent>` as
-  Tonic — SSE subscribers receive events with zero extra serialization (no gRPC hop).
-- FastAPI would require 3 serialization round-trips per SSE event: BonsaiEvent →
-  protobuf → gRPC → Python → JSON → HTTP. At fleet scale this is significant overhead.
-- Both Axum and Tonic run on the same tokio runtime — no cross-runtime contention.
-- Long-term scalability: Axum handles tens of thousands of concurrent SSE connections
-  without a GIL. FastAPI is capped by Python threading for CPU-bound work.
-- Single binary, single process, single port pair (50051 gRPC + 3000 HTTP). No
-  inter-process coordination, no credential duplication.
-
-**Endpoints**:
-- `GET /api/topology` — devices, LLDP links, BGP sessions, computed health
-- `GET /api/detections?limit=N` — recent DetectionEvents + Remediations
-- `GET /api/trace/:id` — closed-loop trace steps for one DetectionEvent
-- `GET /api/events` — SSE stream of live BonsaiEvents (BroadcastStream)
-- `/*` fallback — Svelte SPA static files from `ui/dist/`
-
-**Constraint**: Phase 6 UI is view-only. No config writing to devices, no admin
-features, no authentication beyond TLS. Onboarding (Phase 6.1) means "add a device
-to bonsai's monitoring scope via AddDevice RPC" — not writing config to the device.
-
----
-
-## 2026-04-19 — BGP peer_as write-through bug: ON_CHANGE clobber fix
-
-**Decision**: `write_bgp_neighbor` only updates `peer_as` on MERGE ON MATCH when the
-incoming value is non-zero. Previously, ON_CHANGE notifications for session-state
-transitions (e.g. idle→established after remediation) omitted `peer-as`, causing
-`json_i64(val, "peer-as")` to return 0 and clobber the stored value.
-
-**Fix**: Construct the MERGE cypher dynamically — include `n.peer_as = $peer_as` in
-the ON MATCH SET clause only when `peer_as != 0`. ON CREATE always sets it (correct
-for initial population). The pattern generalises: any field that arrives only on
-initial advertisement should use conditional ON MATCH writes.
-
-**Why this matters**: The same class of bug affects any field that gNMI devices send
-once at session start but not on subsequent ON_CHANGE updates. Review other MERGE
-statements if similar staleness bugs are observed on other fields.
-
----
-
-## 2026-04-19 — Phase 6 UI: Svelte + Vite + D3
-
-**Decision**: Phase 6 SPA uses Svelte 5 + Vite + D3-force for the topology graph.
-
-**Rationale**: Minimum build-system complexity. Svelte compiles to vanilla JS with no
-runtime framework overhead. D3-force gives a physics-based graph layout with zoom/pan
-in ~100 lines. The built output in `ui/dist/` is served as static files by Axum's
-ServeDir — no separate web server needed.
-
-**Three views**:
-1. Topology — D3-force graph (zoom/pan/drag), health-colored nodes (green/yellow/red),
-   LLDP link hover shows interface names, BGP peer table below. Auto-refreshes 15s.
-2. Events — SSE consumer on `/api/events`, live reverse-chronological feed,
-   pause/clear, "View trace →" link on each event with a state_change_event_id.
-3. Trace — Fetches `/api/trace/:id`, shows trigger → detection → remediation timeline.
-
-**Build**: `cd ui && npm run build` → `ui/dist/`. `ui/dist/` and `ui/node_modules/`
-are gitignored (reproducible from source). Committed: all src/ files, package.json,
-vite.config.js, svelte.config.js.
-
 ---
 
-## 2026-04-20 — Event bus seam: `InProcessBus` over tokio broadcast
-
-**Decision**: Inter-component event fan-out uses a small `EventBus` trait with an
-`InProcessBus` implementation backed by `tokio::sync::broadcast`. Subscribers publish
-`TelemetryUpdate` events to the bus; downstream consumers subscribe independently.
-
-**Alternatives considered**: Keep the original single `mpsc` channel from subscriber
-to graph writer, introduce NATS/Kafka immediately, or use a trait-less direct
-`broadcast::Sender` everywhere.
-
-**Rationale**:
-- The original `mpsc` shape hard-wired one producer to one consumer. Adding archive,
-  metrics, or external sinks would have required touching the subscriber path each time.
-- `broadcast` provides the needed one-to-many fan-out today with minimal operational
-  overhead and no extra infrastructure, which matches the single-host Phase 2 scope.
-- The trait wrapper preserves a migration seam for a future distributed bus without
-  leaking transport details throughout the codebase.
-- Going straight to NATS/Kafka would add operational breadth before the local graph
-  and archive pipeline are stable, which violates the project’s scope discipline.
+## D2 — Rust-first binary with Python ML sidecar
 
----
-
-## 2026-04-20 — Counter write debounce: 10 seconds per `(device, interface)`
-
-**Decision**: `InterfaceStats` writes to the graph are debounced to at most once every
-10 seconds for each `(device, interface)` key. State-transition events (BGP, BFD, LLDP,
-interface oper-status) bypass the debounce and write immediately.
-
-**Alternatives considered**: No debounce, a global debounce across all counters,
-shorter intervals such as 1–5 seconds, or longer intervals such as 30–60 seconds.
-
-**Rationale**:
-- Counter telemetry is the highest-volume stream and was the main source of graph
-  write pressure; debouncing reduces lock contention without sacrificing topology or
-  state-transition fidelity.
-- The per-`(device, interface)` scope keeps hot interfaces from suppressing updates on
-  unrelated links. A global debounce would create cross-interface coupling and hide data.
-- Ten seconds is long enough to collapse flood-style counter churn but short enough to
-  preserve useful utilisation and error-rate trends at lab scale.
-- State transitions represent control-plane truth changes, not rolling counters, so they
-  must stay immediate even under load.
+**Decision**: The core runtime (collector, graph, API, change detection, remediation) is a single Rust binary. ML inference (GNN, pyATS parsing) runs as a Python HTTP sidecar.
 
----
+**Alternatives considered**:
+- Pure Python — operational simplicity, but telemetry ingestion at gNMI scale (sub-second ON_CHANGE events from 50+ devices) is hard to sustain in Python without async complexity matching Rust's.
+- Pure Rust — feasible but PyTorch/DGL GNN training is not available in Rust. Maintaining a native GNN in Rust would be a significant maintenance burden.
 
-## 2026-04-20 — Retention count-cap semantics: exact oldest-event deletion
-
-**Decision**: Count-based retention deletes the exact oldest `StateChangeEvent` IDs
-needed to return under `max_state_change_events`. Ties on `occurred_at` are resolved by
-selecting the oldest limited ID set first and deleting only those rows.
-
-**Alternatives considered**: Age-based retention only, deleting all rows at or before
-the timestamp of the excess-th oldest event, or disabling count caps until Parquet
-archive exists.
-
-**Rationale**:
-- A hard count cap is still useful before the Parquet archive lands because it bounds
-  graph growth independently of wall-clock age and protects long-lived lab runs.
-- Timestamp-based cutoff deletion is simpler but can over-delete when multiple events
-  share the same timestamp, which distorts training history unevenly.
-- Exact ID deletion is deterministic and preserves the intended retention budget even
-  during bursty event storms.
-- Detection and remediation history remain outside this cap; only `StateChangeEvent`
-  hot history is pruned.
+**Reasoning**: The hot path (gNMI subscribe, ingest, graph writes, change detection, API responses) requires predictable latency and low memory overhead. Rust is the right tool. The cold path (periodic ML inference, config parsing via pyATS/Genie) tolerates Python's overhead and benefits enormously from the Python ML ecosystem (PyTorch, DGL, Genie).
 
----
+**Consequence**: Two deployment shapes:
+- Simple: single `bonsai` binary + optional Python sidecars (pyats-sidecar, bonsai-native-parser)
+- Full: `bonsai` binary + Python sidecars + GoBGP sidecar (for BGP-LS)
 
-## 2026-04-20 — Playbook verification field: `expected_graph_state` is canonical
-
-**Decision**: Playbook verification queries use `expected_graph_state` as the canonical
-field name. `cypher` remains supported as a legacy alias for backward compatibility with
-older or hand-written playbooks.
-
-**Alternatives considered**: Keep `cypher` as the canonical field, support only one name
-and break older playbooks, or defer verification entirely and accept unverified
-remediation outcomes.
-
-**Rationale**:
-- `expected_graph_state` is semantically clearer: it names the purpose of the query
-  rather than the query language alone.
-- Keeping the legacy alias avoids needless breakage while the playbook catalog is still
-  young and likely to have hand-authored variants.
-- Verification cannot be optional in practice because remediation success labels feed
-  Model C training. Silent “success” without a graph check corrupts the dataset.
-- This choice lets the catalog converge on one documented shape without forcing an
-  immediate cleanup of every historical YAML.
+The sidecar boundary is HTTP (JSON). Sidecars are optional — bonsai degrades gracefully if they are unreachable (parser chain skips that sidecar, logs a warning).
 
 ---
-
-## 2026-04-20 — Shared feature extraction split: unconditional ML, gated rules
-
-**Decision**: `extract_features_for_event()` in `ml_detector.py` is the canonical event
-feature extractor. `MLDetector` calls it unconditionally for every event; rule detectors
-perform fast event/rule gating and then call the shared extractor before applying any
-rule-specific thresholds or windows.
-
-**Alternatives considered**: Separate feature extraction paths for ML and rules, keep
-all rule-specific inline extraction logic, or build a per-event shared cache inside the
-engine before the rule/ML split.
-
-**Rationale**:
-- Training/inference skew is a real failure mode; one canonical extractor keeps field
-  population logic in one place and makes regressions testable.
-- ML needs a dense, always-on feature path because the model decides whether an event is
-  anomalous; skipping extraction based on rule semantics would bias the model input.
-- Rules still benefit from pre-extraction gating so they can cheaply ignore unrelated
-  events and preserve their explicit semantics.
-- A richer shared cache may be worthwhile later, but the current split solves the drift
-  problem without introducing a heavier engine redesign.
 
----
+## D3 — MCP server for AI tool use
 
-## 2026-04-20 — Typed defaults for training rows via `typing.get_type_hints()`
-
-**Decision**: Empty/default feature rows in the training pipeline are generated using
-`typing.get_type_hints(Features)` so each field gets a type-correct default (`0`, `0.0`,
-`""`, `{}`) even under `from __future__ import annotations`.
-
-**Alternatives considered**: Maintain a handwritten default map, use dataclass field
-metadata without resolving postponed annotations, or tolerate mixed dtypes and clean
-them later in pandas/pyarrow.
-
-**Rationale**:
-- Postponed annotations turn field types into strings at runtime; naive inspection can
-  default numeric columns to `""`, which poisons Parquet schema inference.
-- Resolving type hints from the source dataclass keeps the defaulting logic coupled to
-  the actual `Features` contract instead of a second manually synchronized map.
-- Type-correct defaults preserve stable Arrow/Parquet schemas and make downstream ML
-  exports predictable.
-- Cleaning bad dtypes later is the wrong layer; the exporter should emit structurally
-  correct rows at the source.
+**Decision**: Expose bonsai's graph data to LLMs via a Model Context Protocol (MCP) server (`src/mcp_server.rs`) rather than prompt-stuffing raw data.
 
----
+**Alternatives considered**:
+- Prompt stuffing — dump device state into the system prompt. Works for small networks but hits context window limits for any real deployment. Also: the LLM cannot ask follow-up questions.
+- RAG pipeline — embed graph nodes as vectors, retrieve relevant chunks. Loses graph topology (you cannot embed the fact that leaf-01 → spine-01 → core-01 in a way a retrieval query can navigate).
 
-## 2026-04-20 — Cold archive format: collector-local parquet batches off the event bus
-
-**Decision**: Raw `TelemetryUpdate` events are archived from the event bus into Parquet
-files on local disk. The archive is collector-local in the future distributed design;
-today it is core-local only because the current deployment is single-process and
-single-host. Default flush cadence is 10 seconds with an early flush at 1000 rows.
-
-**Alternatives considered**: Keep raw events only in the graph, archive directly from
-the graph after retention pruning, or introduce a remote object store / TSDB before a
-local Parquet layer exists.
-
-**Rationale**:
-- The graph is the hot state store, not the long-range raw-history substrate. Training
-  needs more history than the bounded `StateChangeEvent` graph should retain.
-- Archiving off the event bus keeps the cold path additive: the graph writer and archive
-  subscriber both observe the same decoded `TelemetryUpdate` stream without coupling the
-  graph schema to archival needs.
-- Local Parquet is the simplest useful format: columnar, compressible, readable from
-  Python/pandas, and operationally aligned with the single-host phase.
-- Ten seconds is short enough to keep data fresh for inspection while avoiding a file
-  per event burst. The row-count flush cap prevents large in-memory buffers during
-  sustained telemetry floods.
-- In a future distributed topology, each collector should write its own local archive
-  shard with the same schema and partitioning. No central archive coordinator is needed
-  for v1.
+**Reasoning**: MCP gives the LLM a typed interface to query the graph as needed. The agent loop calls `get_incident`, `query_devices`, `blast_radius`, `query_graph` in sequence — building up context from narrow, precise queries rather than receiving a firehose dump. This reduces hallucination and keeps cost per investigation bounded.
 
----
+**Tools exposed**:
+- `get_incident` — fetch a detection event by ID with context
+- `query_devices` — filter devices by site, role, vendor, status
+- `blast_radius` — compute physical + logical blast radius from a device
+- `query_graph` — raw Cypher (read-only, with LIMIT injection and timeout)
 
-## 2026-04-20 — Python tooling and live lab operations are WSL-first with a repo-local `.venv`
-
-**Decision**: Python tooling for Bonsai runs from a project-local `.venv/` created
-inside WSL. Dependency declarations stay in `python/pyproject.toml`. Chaos tooling,
-fault injection, and any `clab`-dependent workflows are executed from WSL because the
-live ContainerLab lab and `clab` binary live there on this machine.
-
-**Alternatives considered**: Install Python packages into machine-global Windows
-interpreters, rely on the Codex bundled runtime for project dependencies, or keep a
-Windows-hosted venv and shell out across the Windows/WSL boundary for `clab`.
-
-**Rationale**:
-- The live lab is hosted in WSL, so Windows Python cannot be the trusted execution
-  environment for `clab tools netem` and related lab-side actions.
-- A repo-local `.venv/` makes Python dependencies reproducible, isolated, and visible
-  to every contributor without coupling the project to one developer's global package
-  state.
-- `python/pyproject.toml` already expresses the dependency contract; the venv is the
-  installation target, not a second dependency specification.
-- Keeping Rust on the existing Windows `--release` path avoids churn in the validated
-  build workflow while still moving the lab-facing Python path to the environment where
-  the lab actually runs.
+**Consequence**: The MCP server is a read-only interface. Write-back from AI proposals goes through the normal remediation pipeline (proposal → approval → execution), not through MCP. This preserves the trust model.
 
 ---
-
-## 2026-04-20 — Model C remediation training excludes pre-T0-2 outcomes
-
-**Decision**: Model C training data uses a hard remediation cutoff at
-`2026-04-20T09:32:50Z`, the timestamp of commit `4a5cd707b7e59aa77d3f08a0bffb7a0c3ec72189`
-(`T0-1 + T0-2: fix playbook catalog path and verification field name`). Remediation
-rows with `attempted_at <= cutoff` are considered untrustworthy for training because
-they were recorded before `verify()` produced real success/failure labels.
-
-**Alternatives considered**: Keep all historical Remediation rows, manually scrub old
-rows from the graph, or add a new `trustworthy` property to the schema and migrate all
-historical data.
-
-**Rationale**:
-- The verification fix changed the semantic meaning of `Remediation.status`; old rows
-  can overstate success and would poison Model C if left unfiltered.
-- A dated cutoff is the smallest honest move: it is explicit, auditable, and works with
-  the current schema without a graph migration.
-- Filtering in both readiness checks and the training path prevents stale data from
-  silently inflating counts or leaking into the classifier.
-- A future schema-level `trustworthy` flag may still be worthwhile, but the cutoff gets
-  the project back to truthful training data immediately.
 
----
+## D4 — Two-binary model: `bonsai` + `healthcheck`
 
-## 2026-04-20 â€” Remediation trust is explicit in the graph via sidecar marks
-
-**Decision**: trust for remediation outcomes is represented in-graph using a
-`RemediationTrustMark` node linked to each `Remediation` by `TRUST_MARKS`. Startup
-backfills marks for legacy rows using the existing `2026-04-20T09:32:50Z` cutoff, and
-new remediations are marked at write time.
-
-**Alternatives considered**: continue filtering only in Python training code, delete all
-pre-cutoff remediation rows, or alter the `Remediation` node schema in place to add a
-new property.
-
-**Rationale**:
-- The previous cutoff-only approach was honest for training, but the graph itself still
-  looked authoritative even though historical rows were semantically tainted.
-- A sidecar mark makes trust explicit without risking an in-place mutation of the
-  existing `Remediation` table on LadybugDB.
-- Backfilling on startup keeps legacy databases truthful without a one-off migration
-  command.
-- Training readiness and Model C export can now query trusted remediations directly from
-  graph state instead of carrying the trust boundary only as an application convention.
+**Decision**: Ship two binaries — `bonsai` (the main process) and `healthcheck` (a tiny binary used by Docker/systemd health probes).
 
----
+**Alternatives considered**:
+- Shell script health check (`curl http://localhost:3000/health`) — works but requires curl in the container image, which adds ~3 MB and a potential attack surface in a distroless image.
+- Single binary with a `--healthcheck` subcommand — possible but the binary would need to link all its dependencies just to make an HTTP GET call.
 
-## 2026-04-20 - Dynamic device registry uses a local JSON backing file in v1
-
-**Decision**: the runtime `ApiRegistry` persists managed devices in a local
-`bonsai-registry.json` file, seeded from `bonsai.toml` on startup and then mutated
-through Bonsai gRPC CRUD calls. The registry file is gitignored and treated as local
-runtime state rather than source-controlled configuration.
-
-**Alternatives considered**: add a dedicated SQLite registry database immediately,
-keep managed-device state only in memory, or continue using `bonsai.toml` as the only
-source of truth and require a restart for every device change.
-
-**Rationale**:
-- JSON is the lightest durable store that closes T1-3a without introducing a second
-  embedded database beside LadybugDB.
-- Seeding from `bonsai.toml` preserves today's static-target workflow while allowing
-  API-added devices to survive a process restart.
-- Keeping the registry local and gitignored avoids leaking lab-specific env-var names
-  or CA file paths into committed project configuration.
-- If onboarding later needs richer queries or relationships, the JSON-backed seam can
-  be replaced with SQLite without changing the gRPC surface or subscriber manager
-  contract.
+**Reasoning**: The `healthcheck` binary is ~300 KB and has zero dependencies beyond the standard library. It calls `GET /health` on the bonsai API and exits 0/1. This allows a distroless Docker image for the main binary while still supporting Docker health checks.
 
 ---
 
-## 2026-04-21 - Device discovery is a probe-only gNMI Capabilities RPC
-
-**Decision**: `DiscoverDevice` probes a candidate device with gNMI Capabilities and
-returns a structured report without mutating the runtime registry. The RPC accepts
-credential environment variable names only, never plaintext credential values. Discovery
-now reads file-backed path profiles when available and retains the original built-in
-recommendation logic as a fallback for missing or malformed local profile files.
-
-**Alternatives considered**: make discovery automatically add devices to the registry,
-allow plaintext credentials in the request for convenience, or block `T1-3c` until the
-path-profile YAML templates exist.
-
-**Rationale**:
-- Probe-only behavior keeps operator intent explicit: discovery answers "what is this
-  device and what should we subscribe to?" while `AddDevice` remains the lifecycle
-  mutation.
-- Env-var-only credentials keep the API aligned with the project rule that credentials
-  must not appear in source or committed files.
-- File-backed recommendations keep the Capabilities/reporting seam operator-visible
-  while the built-in fallback keeps local discovery usable if profiles are temporarily
-  broken during development.
-- Reusing model-family rules avoids vendor branching by config string and keeps
-  OpenConfig/native path choice tied to what the device actually advertises.
+## D5 — Trust model for autonomous remediation
 
----
+**Decision**: Remediation proposals are gated by a four-level trust model that graduates over time, not a binary approve/auto toggle.
 
-## 2026-04-21 - Local runtime ownership is Windows core, WSL lab
-
-**Decision**: On this workstation, Bonsai's Rust core/API/UI process runs from Windows
-PowerShell, while the live ContainerLab lab and lab-affecting Python tools run from WSL.
-Repo helper scripts are the canonical interface for repeated local tasks:
-`start_bonsai_windows.ps1`, `stop_bonsai_windows.ps1`, `check_dev_env.ps1`,
-`search_repo.ps1`, and `regenerate_python_stubs.ps1`.
-
-**Alternatives considered**: run Bonsai itself from WSL, rely on ambiguous PATH commands
-such as bare `python`, `python3`, and `rg`, or keep using one-off Start-Process commands.
-
-**Rationale**:
-- Bonsai has already been validated on the Windows Rust `--release` path, and Windows is
-  where the UI/API process is expected to listen for local operator access.
-- ContainerLab, `clab`, and `netem` live in WSL, so lab mutation must stay there.
-- The local PATH contains unreliable entries: the Chocolatey `rg.exe` shim can fail with
-  access denied, and sandboxed shells may not execute user Python without explicit
-  permission even though the interpreter exists.
-- Durable scripts make tool resolution explicit and keep future sessions from
-  rediscovering the same environment boundary.
+**Levels**:
+1. `suggest_only` — proposals are created but never executed, even if approved
+2. `approve_each` — human must approve every proposal before execution
+3. `auto_with_notification` — executes automatically but operator is notified and a rollback window is open
+4. `auto_silent` — fully autonomous, no notification
 
----
+**Trust state is per (rule_id, environment_archetype, site, playbook_id) tuple** — not per device. This means a playbook for `bgp_session_down` can be `auto_with_notification` in the home lab but `approve_each` in the data centre.
 
-## 2026-04-21 - Discovery path recommendations are YAML-backed templates
-
-**Decision**: `DiscoverDevice` path recommendations are driven by YAML profile files
-under `config/path_profiles/`. Each path declares its gNMI path, origin, subscription
-mode, sample interval, rationale, and required model gates. Discovery loads the profiles,
-selects by role, filters paths against advertised Capabilities models, and reports
-warnings for unsupported paths that were dropped.
-
-**Alternatives considered**: keep path recommendations hardcoded in Rust, wait until a
-future UI wizard exists before adding templates, or store profiles in TOML/JSON to avoid
-a YAML parser.
-
-**Rationale**:
-- Templates make onboarding behavior inspectable and editable without changing Rust code.
-- Model gates preserve the project rule that path selection follows what the device
-  advertises, not a vendor string alone.
-- YAML is the backlog-requested operator-facing format and is easier to read for path
-  catalog work than JSON.
-- The previous Rust built-in recommendations remain as a fallback so malformed or
-  missing template files do not make discovery unusable during local development.
+**Graduation**: After `consecutive_approvals_required` consecutive operator approvals without a rollback, bonsai surfaces a hint that the tuple is a candidate for promotion to the next level. The operator promotes manually.
 
----
+**Alternatives considered**:
+- Simple approve/deny — does not capture the concept of "I trust this in lab but not in production". Leads to operators disabling automation entirely for prod rather than tuning it.
+- Confidence-score gates — tie execution to detection confidence. Rejected because confidence is a property of the detection, not of the operator's trust in a specific remediation action.
 
-## 2026-04-21 - Subscription path health is explicit graph state
-
-**Decision**: Bonsai records subscription path health in graph `SubscriptionStatus`
-nodes linked from `Device` by `HAS_SUBSCRIPTION_STATUS`. Subscribers publish their
-actual path plan after a successful Subscribe RPC. A verifier task watches the telemetry
-bus for 30 seconds and marks each path as `pending`, `observed`, or
-`subscribed_but_silent`.
-
-**Alternatives considered**: infer subscription health only from logs, write status only
-inside the subscriber task, or treat missing telemetry as a subscriber connection error
-instead of path-level graph state.
-
-**Rationale**:
-- The operator needs to know which subscribed paths are truly producing data, not just
-  whether the gNMI stream is connected.
-- Keeping status in graph state makes the honesty layer queryable by API, UI, and later
-  CLI commands without scraping logs.
-- The verifier observes the same event bus as the graph/archive consumers, so it stays
-  additive and does not sit in the hot subscriber write path.
-- Event-family matching handles vendor response shape differences while still preserving
-  path-level accountability.
+**Consequence**: `remediation/trust.rs` stores `TrustState` rows per tuple. The approvals UI shows the current state per tuple. Graduation hints are advisory — bonsai never auto-graduates.
 
 ---
-
-## 2026-04-21 - Distributed collector lands as runtime modes plus ingest seam
-
-**Decision**: T1-2 starts with one Bonsai binary and three runtime modes: `all`,
-`core`, and `collector`. `all` preserves today's single-process behavior. `core`
-runs the graph/API/UI side and exposes a client-streaming `TelemetryIngest` RPC.
-`collector` runs local gNMI subscribers and forwards decoded telemetry updates to
-the configured core endpoint. The core republishes ingested updates onto its local
-event bus so graph, rule, and status consumers do not need a second write path.
-
-**Alternatives considered**: split the repository into separate binaries, introduce
-NATS/Kafka before there is a remote collector, or delay all T1-2 work until mTLS,
-zstd compression, and disk-backed queues could land together.
-
-**Rationale**:
-- A mode switch keeps deployment simple while making the collector/core boundary
-  explicit and testable.
-- Reusing the event bus on both sides preserves the additive subscriber architecture:
-  local gNMI and remote collector ingest feed the same downstream consumers.
-- `all` mode keeps the Windows lab workflow stable while `core` and `collector`
-  allow distributed validation to start incrementally.
-- gRPC zstd compression is deferred because enabling tonic's zstd feature on this
-  Windows/MSVC build links `zstd-sys` alongside LadybugDB's bundled `zstd.lib`,
-  causing duplicate symbol failures. The seam is intentionally left ready for a
-  follow-up compression slice once the link strategy is chosen.
 
----
+## D6 — Environment archetype system
 
-## 2026-04-21 - Managed device addresses are validated before persistence
-
-**Decision**: The runtime registry accepts only explicit `host:port` device
-addresses. Hosts may be DNS-style hostnames, IPv4 addresses, or bracketed IPv6
-addresses; ports must parse as `1..=65535`. Invalid input fails before writing
-`bonsai-registry.json` with the operator-facing message `device address must be
-host:port`.
-
-**Alternatives considered**: continue accepting arbitrary strings and let the
-subscriber surface connection errors later, require IP literals only, or resolve
-hostnames during validation.
-
-**Rationale**:
-- Onboarding should catch malformed input at Save time, not after the subscriber
-  loop starts and emits a transport error.
-- Hostnames remain valid because lab and production inventories often use DNS
-  names rather than management IPs.
-- Validation does not perform DNS resolution, keeping registry writes fast,
-  deterministic, and usable before the lab or network is reachable.
+**Decision**: Each bonsai deployment is tagged with an `environment_archetype`: `home_lab`, `data_center`, `service_provider`, `campus_wired`, or `campus_wireless`.
 
----
+**Reasoning**: These archetypes drive:
+- Default trust levels (home lab tolerates `auto_with_notification`; data centre starts at `approve_each`)
+- Default gNMI path profile selection (campus access has different relevant paths than a DC spine)
+- Change detection sensitivity (SP core changes have higher blast radius than a campus access port)
 
-## 2026-04-21 - Collector ingest values use MessagePack bytes
-
-**Decision**: `TelemetryIngestUpdate` now carries telemetry values as
-`bytes value_msgpack = 7`. The bytes are MessagePack-encoded
-`serde_json::Value` payloads. The Rust collector/core conversion layer owns
-the encode/decode boundary, and generated Python gRPC stubs are regenerated
-from the same proto so external consumers see the binary field name and type.
-
-**Alternatives considered**: keep the JSON string field until distributed
-hardening, use `google.protobuf.Any`, add a custom value `oneof`, or add
-compression before changing the value encoding.
-
-**Rationale**:
-- MessagePack preserves Bonsai's current schemaless telemetry value model
-  without requiring a custom proto value taxonomy before the normalized graph
-  model is fully stable.
-- Binary encoding removes JSON text overhead for numeric counter values while
-  keeping the distributed ingest seam simple and testable.
-- This is intentionally a protocol break while collector/core callsites are
-  still few; changing it after disk queues and compression would create a more
-  expensive migration.
-- The value-field change reduces encoded value bytes and total protobuf bytes,
-  but repeated per-update metadata such as `target` and `path` still dominate
-  scalar counter messages. Larger stream-level reductions belong in the later
-  T2 compression/queue/batching work.
+**Consequence**: `Environments.svelte` and the onboarding wizard ask the operator to declare their archetype. It can be changed later. All archetype-sensitive code reads from `EnvironmentRecord.archetype` in the graph.
 
 ---
 
-## 2026-04-21 - Local credential vault stores aliases, not secrets, in APIs
-
-**Decision**: Bonsai stores reusable device credentials in a local
-passphrase-encrypted `age` vault under `bonsai-credentials/vault.age`, with
-plaintext `metadata.json` containing only aliases and timestamps. Devices may
-reference `credential_alias`; subscriber startup, discovery, and remediation
-resolve credentials in-process using this order: vault alias, environment
-variables, then inline lab-only config. gRPC, HTTP, UI, and Python APIs can
-list/add/remove aliases, but list responses never include usernames or
-passwords. The current unlock mechanism is the environment variable
-`BONSAI_VAULT_PASSPHRASE`.
-
-**Alternatives considered**: keep env-var-only credentials, store credentials
-inline in `bonsai-registry.json`, use a remote secret manager, implement a
-lower-level AES-GCM vault directly, or delay vault integration until the full
-onboarding wizard exists.
-
-**Rationale**:
-- Alias-based credentials make onboarding usable for multiple devices without
-  restarting Bonsai or creating per-device process environment variables.
-- The threat model is local disk snooping: encrypted `vault.age` protects
-  secrets at rest, while `metadata.json` is intentionally non-secret. This does
-  not protect against a compromised Bonsai process or host memory inspection.
-- Secrets stay in Rust process memory and flow only to gNMI client calls; HTTP,
-  gRPC, Python, and UI list operations return alias metadata only.
-- Env vars and inline lab config remain valid fallbacks for headless and lab
-  workflows, preserving existing deployments while making the safer path
-  available.
-- Using `age` avoids inventing cryptography and keeps the vault format simple
-  enough for a v1 single-host Bonsai deployment. Remote stores and key rotation
-  remain out of scope until real operator demand appears.
+## D7 — Config-state change detection via layered ingestion
 
----
+**Decision**: Supplement streaming telemetry (gNMI ON_CHANGE/SAMPLE subscriptions) with periodic gNMI GET + diff + parse to detect configuration changes.
 
-## 2026-04-21 - Site is first-class graph state
-
-**Decision**: Bonsai represents operator sites as `Site` nodes with stable IDs,
-display names, parent IDs, kind labels, optional coordinates, metadata JSON, and
-`PARENT_OF` hierarchy edges. Managed devices remain configured with a
-human-facing `TargetConfig.site` string for now; startup and registry add/update
-paths migrate that string into a `Site` node with `kind = "unknown"` when needed
-and link the device with `Device-[:LOCATED_AT]->Site`. Site management is exposed
-through gRPC, HTTP, Python, and a minimal onboarding picker.
-
-**Alternatives considered**: keep `site` as an opaque device attribute until the
-wizard rewrite, require operators to pre-create sites before adding devices, or
-store site hierarchy only in the registry JSON.
-
-**Rationale**:
-- Putting sites in the graph makes locality queryable by the same Cypher
-  traversal model as devices, interfaces, BGP neighbors, detections, and
-  remediations.
-- Keeping `TargetConfig.site` as a string alias avoids a registry migration and
-  lets existing `bonsai-registry.json`/`bonsai.toml` entries self-heal into graph
-  sites on startup.
-- Existing string sites get `kind = "unknown"` so no operator data is lost while
-  the later onboarding wizard adds richer site creation and editing affordances.
-- `LOCATED_AT` is rewired on each registry sync so moving a device between sites
-  does not leave multiple active location edges.
-- Site ACLs, map visualization, and automatic site inference remain out of
-  scope for v1; sites are operational graph metadata, not a security boundary.
+**Alternatives considered**:
+- Syslog only — vendor-inconsistent. Arista EOS syslog for config change is reliable; Nokia SRL's is incomplete; Cisco IOS-XR varies by feature.
+- NETCONF notifications — not universally implemented; requires a separate connection.
 
----
+**Reasoning**: gNMI GET returns a complete config snapshot. Diffing consecutive snapshots gives a precise, vendor-agnostic change record. Running the diff through the pyATS/Genie parser chain extracts semantic meaning (e.g. "BGP neighbor 10.0.0.1 added to VRF default").
 
-## 2026-04-21 - Onboarding wizard persists operator-selected subscription paths
-
-**Decision**: Discovery recommendations now carry per-path `optional` metadata,
-and managed devices may persist `selected_paths` in the runtime registry. The
-subscriber still performs Capabilities detection for encoding and vendor labels,
-but when a non-empty selected path plan exists it builds the gNMI Subscribe
-request from that operator-approved plan instead of deriving paths solely from
-Capabilities. The HTTP onboarding facade exposes this through
-`POST /api/onboarding/devices/with_paths`; the Svelte onboarding workspace is a
-four-step wizard with a separate managed-device list.
-
-**Alternatives considered**: keep path selection UI-only until a later runtime
-refactor, store only the profile name and recompute paths on every restart, or
-replace Capabilities-derived fallback paths entirely.
-
-**Rationale**:
-- A wizard path checklist is only useful if the runtime honors the selected
-  paths. Persisting the concrete path list makes the saved operator intent
-  visible and restart-safe.
-- Required/optional metadata belongs in discovery output because the YAML
-  profile already owns that knowledge; the UI should not infer it from path
-  names.
-- Keeping Capabilities detection in the subscriber preserves encoding selection
-  and safe fallback behavior for legacy registry entries that do not yet have
-  `selected_paths`.
-- Storing concrete paths instead of just profile names avoids surprises if YAML
-  templates change after a device has already been onboarded.
+**Consequence**: `[layered_ingestion]` config section. The config store (`runtime/config-store/`) holds per-device snapshots. History limit is configurable (`history_limit`). Reparse interval forces a full re-parse periodically to catch parser improvements.
 
 ---
 
-## 2026-04-21 - Device stop/start is registry state, not deletion
-
-**Decision**: Managed devices now carry an `enabled` flag in the runtime
-registry. Disabled devices remain visible and editable, but the subscriber
-manager skips them at startup and stops any running subscriber when an update
-sets `enabled = false`. Bulk Stop/Start/Restart in the UI and
-`bonsai device stop|start|restart` in the CLI update this same flag instead of
-removing registry entries.
-
-**Alternatives considered**: implement stop as device removal, keep stop/start
-as UI-only buttons with no persisted state, or add a separate in-memory
-subscriber control plane that would be lost on restart.
-
-**Rationale**:
-- Operators need a maintenance state that survives a Bonsai restart; deleting a
-  device loses onboarding metadata and selected paths.
-- Reusing registry update events keeps lifecycle control in the same path as
-  device edits, avoiding a second subscriber-control mechanism.
-- Restart is represented as an update with `enabled = true`, which intentionally
-  reuses the existing stop-then-spawn behavior for updated targets.
-- Removal confirmation reports subscription and remediation-trust impact, but
-  it does not physically delete graph history. Bonsai's graph remains
-  operational history; the registry only controls active management.
+## D8 — Credential vault design
 
----
+**Decision**: Credentials are stored in an age-encrypted vault (`vault.age`) on disk. The vault passphrase is passed via environment variable. Credentials are never written to the graph database or returned to the UI after being stored.
 
-## 2026-04-22 - Tonic zstd uses shared Ladybug on Windows
-
-**Decision**: Collector-to-core `TelemetryIngest` uses tonic's native zstd
-compression. On Windows/MSVC, Bonsai builds LadybugDB as `lbug_shared.dll` by
-setting `LBUG_SHARED=1` in `.cargo/config.toml`. The root build script copies
-that DLL into `target/release` so standalone release binaries can run without
-manual PATH changes.
-
-**Alternatives considered**: use gzip, implement a Bonsai-specific compressed
-protobuf envelope, pin older zstd crate versions, or build Ladybug against a
-system zstd with `BUNDLE_ZSTD=OFF`.
-
-**Rationale**:
-- Gzip was rejected because the ingest stream is hot-path telemetry; zstd gives
-  better compression/CPU tradeoffs for the long-term collector/core seam.
-- Tonic zstd is preferable to a custom envelope because it keeps compression at
-  the transport layer and avoids a protocol compatibility fork before the disk
-  queue and batching work.
-- The static Ladybug build bundles `zstd.lib`; enabling tonic zstd also pulls
-  `zstd-sys`, producing duplicate zstd symbols in the Windows executable link.
-  Shared Ladybug keeps those Ladybug-bundled native symbols outside Bonsai's
-  executable link unit.
-- `BUNDLE_ZSTD=OFF`/system zstd is not the current path because this machine
-  does not have a stable pkg-config/vcpkg zstd setup, and adding one would make
-  local onboarding more fragile than the shared-Ladybug switch.
-- Copying `lbug_shared.dll` during the Bonsai build preserves the normal
-  `target/release/bonsai.exe` workflow after `cargo build --release`.
+**Alternatives considered**:
+- HashiCorp Vault — strong but adds an external service dependency. A field engineer deploying bonsai on a laptop should not need to run Vault.
+- OS keychain — not available in Docker / headless Linux environments.
+- Encrypted SQLite — possible but requires a separate encryption layer and key management.
 
----
+**Reasoning**: age encryption is simple, well-audited, and requires only a passphrase. The vault is a single file that can be backed up easily. The passphrase is the only secret that must be managed externally.
 
-## 2026-04-22 - Collector ingest uses an append-only disk queue
-
-**Decision**: Collector mode persists decoded telemetry to an append-only local
-queue before forwarding it to the core. The queue stores records in
-`queue.dat` as little-endian `u32 payload_len`, little-endian `i64
-enqueued_unix_ns`, then a prost-encoded `TelemetryIngestUpdate`; `queue.ack`
-stores the byte offset of the last core-accepted record. Reconnect replay sends
-FIFO batches through tonic zstd and advances `queue.ack` only after the core
-returns an accepted ingest response.
-
-**Alternatives considered**: keep the in-memory mpsc stream and accept loss
-during outages, use sled/RocksDB, or wait for a broader batching protocol.
-
-**Rationale**:
-- The collector must keep subscribing while the core is unavailable; placing
-  the bus-to-disk writer outside the gRPC connection loop prevents outage-time
-  telemetry loss.
-- A simple append-only file is easier to inspect and recover than an embedded KV
-  database, and it is enough for the single-host/lab-scale v1 constraint.
-- Acking only after the core response favors at-least-once delivery over silent
-  loss. If a stream fails before response, records remain queued and may replay.
-- Retention is explicit and local: `[collector.queue]` controls path,
-  `max_bytes`, `max_age_hours`, `drain_batch_size`, and
-  `log_interval_seconds`. Expired or over-budget records are dropped only during
-  queue compaction and are logged loudly.
-- T2-4 remains responsible for the long live two-process outage run; this slice
-  provides the durable mechanism and focused restart/retention tests.
+**Security note**: The passphrase env var (`BONSAI_VAULT_PASSPHRASE`) should be injected via an `EnvironmentFile=` in systemd (file permissions 600), not inline in the unit file (visible in `/proc/<pid>/environ` to root).
 
 ---
-
-## 2026-04-22 - Distributed ingest mTLS is optional but strict when enabled
-
-**Decision**: The collector-to-core `TelemetryIngest` channel supports optional
-mutual TLS through `[runtime.tls]`. Core mode uses `cert`/`key` as the server
-identity and `ca_cert` as the required client trust root. Collector mode uses
-`ca_cert` to verify the core and presents `cert`/`key` as its client identity;
-`server_name` overrides endpoint-host verification when the lab connects by IP.
-
-**Alternatives considered**: leave distributed ingest unauthenticated until a
-later production hardening pass, use server-only TLS, or add token-based
-collector authentication.
-
-**Rationale**:
-- The distributed seam accepts graph-writing telemetry; unauthenticated ingest
-  is too easy to spoof even in a lab.
-- mTLS matches the network-control-plane shape better than bearer tokens:
-  collectors prove identity during handshake, before any telemetry stream is
-  accepted.
-- TLS remains optional so single-process `mode = "all"` and local development do
-  not need certificates.
-- One lab CA is enough for v1. It signs the core server certificate and all
-  collector client certificates; richer per-site CA hierarchy is intentionally
-  deferred.
-- Live valid-cert and no-cert handshake proof is grouped with T2-4 so the final
-  two-process validation exercises mTLS, zstd compression, and queue replay
-  together against the lab.
 
----
+## D9 — AI provider order: Gemini first, then Moonshot
 
-## 2026-04-22 - Distributed transport validation is a separate milestone from healing/archive validation
-
-**Decision**: T2-4 closes when the distributed collector/core transport is
-proven against the live lab: Windows collector, Windows core, WSL-hosted lab
-targets, disk-backed outage queue, replay, zstd compression, mTLS, and graph
-ingest. Remediation/healing-loop validation and archive parity remain separate
-backlog validations because they exercise different subsystems.
-
-**Alternatives considered**: block T2-4 until archive parity and the full
-detect-heal loop are exercised in the same run, or mark only unit tests as
-sufficient for the distributed seam.
-
-**Rationale**:
-- The distributed seam has its own failure modes: Windows-to-WSL reachability,
-  core outage buffering, reconnect replay, TLS identity, compression, and graph
-  ingestion. These are now proven together with real lab telemetry.
-- Combining transport, archive parity, and closed-loop healing in one gate would
-  make failures ambiguous and slow the backlog. Keeping transport as its own
-  milestone gives us a clean regression point.
-- The 2026-04-22 run reached all four lab gNMI targets, queued 1,474 records
-  while the core was offline, replayed 3,314 records through zstd+mTLS, and
-  produced graph writes for SR Linux and IOS-XRd.
-- The wrong-CA collector smoke forced a real ingest RPC and delivered zero
-  records, with zero core accept events for the bad collector identity, so mTLS
-  protects the graph-writing ingest stream.
+**Decision** (Session 8 / DV3): Implement AI provider integration in order: Gemini 2.5 Pro first, Moonshot second. Anthropic and OpenAI are coded as stubs.
 
----
+**Reasoning**: Both Gemini and Moonshot have free-tier or low-cost API tiers suitable for development. Anthropic SDK is already in `pyproject.toml` but Anthropic's pricing makes it less suitable for the high-frequency investigation loop during development. OpenAI is deferred until there is a demonstrated user need.
 
-## 2026-04-22 - Archive writes one Parquet file per target per hour
-
-**Decision**: The telemetry archive uses an append-to-current-hour layout. Each
-collector process keeps one open Parquet `ArrowWriter` per `(target, hour)`
-partition and appends each flush as another row group. Writers close when the
-stream advances into a later hour, when the event bus closes, or when Bonsai
-receives its graceful shutdown signal.
-
-**Alternatives considered**: keep one Parquet file per flush and add a later
-compaction job, or close/reopen the same hourly path on every flush.
-
-**Rationale**:
-- Keeping open hourly writers fixes the small-file explosion at the source:
-  five flushes across four targets in the same hour now produce four files, not
-  twenty.
-- A compaction job would be simpler to bolt on but doubles I/O and leaves the
-  archive inefficient until compaction catches up.
-- Parquet files cannot be safely appended after their footer is closed. On
-  process restart within the same hour, Bonsai creates a `__part-NN` file
-  instead of overwriting or corrupting the existing closed file.
-- Active-hour files become fully readable when closed at hour rollover or
-  graceful shutdown. An unclean process kill can still leave the current open
-  file without a footer; that is acceptable for this lab-scale archive and is
-  consistent with the project's explicit no-production-WAL scope for v1.
-- Close logs report final file size, total raw bytes, rows, and compression
-  ratio so archive efficiency is visible without adding another metrics slice.
+**Consequence**: `src/ai_provider.rs` defines an `AiProvider` trait. `GeminiProvider` and `MoonshotProvider` are the two live implementations. The `[ai]` config section (D3-6 T1) controls which provider is active.
 
 ---
 
-## 2026-04-22 - Credential vault passphrase rotation is manual in v1
-
-**Decision**: Bonsai's local credential vault does not support in-place
-passphrase rotation in v1. Rotating `BONSAI_VAULT_PASSPHRASE` requires the
-operator to unlock with the old passphrase, re-add or export/re-import the
-credential aliases under a vault opened with the new passphrase, and restart
-Bonsai with the new environment.
-
-**Alternatives considered**: add a `RotateCredentialVaultPassphrase` RPC now,
-write a one-off migration command, or defer rotation until a broader secret
-management abstraction exists.
-
-**Rationale**:
-- The vault is a local lab-scale store protecting secrets at rest, not a remote
-  enterprise KMS. In-place rotation is useful, but it is not required for the
-  current onboarding and collector validation milestones.
-- Rotation touches the whole encrypted payload and needs careful operator UX so
-  a failed rotation does not strand credentials or write secrets to logs.
-- The manual workaround is acceptable for v0.x: start Bonsai with the old
-  passphrase, add aliases into a fresh vault directory using the new passphrase,
-  update `credentials.path` if needed, and restart.
-- Deferring a rotation RPC keeps the current API smaller and leaves room for a
-  future `CredentialStore` abstraction that can also cover remote secret stores.
-
----
+## D10 — Onboarding: retire Setup.svelte, single entry-point
 
-## 2026-04-22 - Bonsai uses one container image for all runtime roles
-
-**Decision**: Bonsai's container packaging starts with a single multi-stage
-image built by `docker/Dockerfile.bonsai`. The image contains the release Rust
-binary and built Svelte UI assets; runtime role remains a configuration choice
-through `runtime.mode = "all" | "core" | "collector"` rather than a separate
-image per role.
-
-**Alternatives considered**: build separate `bonsai-core` and
-`bonsai-collector` images, copy host-built binaries into a runtime image, or
-defer containerization until Compose is designed.
-
-**Rationale**:
-- One image keeps core/collector version skew impossible during local
-  distributed validation. Operators deploy the same artifact with different
-  config and volume mounts.
-- Multi-stage builds preserve reproducibility: Rust and Node toolchains stay in
-  builder stages, while the runtime image is Debian slim plus `curl` for the
-  healthcheck.
-- The image runs as UID/GID 10001 and writes only to mounted Bonsai state
-  directories under `/var/lib/bonsai`.
-- The healthcheck targets the core/all HTTP readiness endpoint. Compose can
-  override or disable it for collector-only roles, which do not serve the UI.
-- Docker is a v0.x deployment plane for Bonsai; Kubernetes manifests remain
-  explicitly out of scope.
+**Decision** (Session 8 / DV3): `Setup.svelte` is retired. `Onboarding.svelte` becomes the sole entry-point for both first-run setup and ongoing device addition. A `first_run` prop switches between modes.
 
----
+**Alternatives considered**:
+- Keep both: `Setup.svelte` for first-run, `Onboarding.svelte` for device add — the current (broken) state. Users who complete Setup and then go to "Add device" hit Onboarding, which has duplicated environment/site/credential steps. Confusing.
+- Merge into a single flat wizard — chosen approach. Steps 1-3 (Environment / Site / Credentials) are prepended only when `first_run = true`.
 
-## 2026-04-22 - Container runtime uses trixie and ships LadybugDB's shared library
-
-**Decision**: The Bonsai Docker image builds on the Rust 1.91 Debian trixie
-cargo-chef image and runs on Debian trixie slim. The runtime image explicitly
-copies `liblbug.so.0` alongside the stripped Bonsai binary and sets
-`LD_LIBRARY_PATH=/usr/local/lib`. The healthcheck uses BusyBox `wget` instead
-of `curl`.
-
-**Alternatives considered**: stay on bookworm, statically link LadybugDB inside
-the container, install `curl` for the healthcheck, or disable the image
-healthcheck until Compose exists.
-
-**Rationale**:
-- LadybugDB's Linux C++ build includes `<format>`, which requires a newer
-  libstdc++ than Debian bookworm's default toolchain provides. Trixie gives the
-  container a toolchain that matches the current dependency graph.
-- The repo-local `LBUG_SHARED=1` avoids the zstd symbol conflict but means the
-  runtime layer must carry `liblbug.so.0`; copying it from the builder makes the
-  container self-contained.
-- BuildKit cache mounts keep the expensive native C++/Rust build practical
-  without committing the target directory into image layers.
-- BusyBox keeps the readiness healthcheck available while bringing the Docker
-  image below the 200 MB target in Docker's normal image listing.
+**Consequence**: `App.svelte` detects `is_first_run` from `/api/setup/status` and renders `<Onboarding first_run={true}>`. The `Setup.svelte` file and its route are deleted (D3-2 T7).
 
 ---
 
-## 2026-04-23 — Unpinned apt versions in Dockerfile for maintenance
+## D11 — NetBox version: auto-detect both 3.x and 4.x
 
-**Decision**: Drop specific version pins for `apt` packages in `docker/Dockerfile.bonsai`.
+**Decision** (Session 8 / DV3): The NetBox enricher detects the NetBox API version at runtime by calling `GET {base_url}/api/` and parsing `data["netbox-version"]`. Both 3.x and 4.x are supported. The version can be pinned via `netbox_version = "3"` or `"4"` in the enricher config.
 
-**Rationale**:
-- Debian trixie (testing) rotates package versions frequently. Pinned versions (e.g., `cmake=3.31.6-2`) often disappear from mirrors within months, causing builds to fail on unchanged source code.
-- Reproducibility is better managed by pinning the base image digest rather than individual system packages.
-- Maintenance overhead of updating pins every few months outweighs the marginal reproducibility benefit in a development-heavy phase.
+**Reasoning**: NetBox 4.0 was released in 2024 and many deployments have migrated. Requiring operators to specify the version adds unnecessary friction. The auto-detect call is cheap (one HTTP GET at enricher init).
 
-**Done when**: `docker build` succeeds without version-not-found errors; base image digest fixes the repository state in effect.
+**Consequence**: `netbox.rs` stores `detected_version: u8` on the `NetboxEnricher` struct. API path differences between 3.x and 4.x are handled with a version branch at query time.
 
 ---
 
-## 2026-04-23 — cargo-chef --all-targets for cache stability
+## D12 — event_detection.rs retirement
 
-**Decision**: Use `cargo chef cook --all-targets` in the Docker build pipeline.
+**Decision** (Session 8 / DV3): `event_detection.rs` was the original rule-based detection engine. It has been replaced by the Python-side `bonsai_sdk/rules/` detector classes running as a sidecar. The Rust file is believed removed (verify with `grep -r event_detection src/`). If any dead references remain, remove them.
 
-**Rationale**:
-- The current build only warms the cache for the main `bonsai` binary. Adding additional binaries (e.g., `bonsai-device-cli`) would invalidate the cache and force a full rebuild.
-- `--all-targets` ensures that the dependency cache includes all binaries, tests, and examples defined in `Cargo.toml`.
-- This keeps the dev-loop and CI builds fast (under 30s for no-source-change rebuilds) even as the workspace grows.
+**Consequence**: D3-9 T1 is a verification task, not a build task. The GNN pipeline (`inference.rs`) is the Rust-side anomaly detection path going forward.
 
 ---
 
-## 2026-04-23 — Protocol version negotiation stub
+## D13 — NetFlow/OTLP exporter identity: target = exporter, not flow source
 
-**Decision**: Introduce a `protocol_version: uint32` field in the collector-core gRPC messages (`TelemetryIngestUpdate` and `TelemetryIngestResponse`).
+**Decision** (Session 9 / DV3 streaming audit): When a network device (ToR, spine, AP controller) exports a NetFlow/IPFIX record, `TelemetryUpdate.target` is set to the **exporter's IP** (the router/switch that sent the UDP packet), not to the flow's source IP. The flow src/dst IPs travel in the JSON value payload.
 
-**Rationale**:
-- Collectors and core will inevitably version-skew in production.
-- A version stub allows the core to detect and log warnings (or reject) incompatible connections early, before processing malformed telemetry.
-- Starting with version 1 now provides the necessary hook for Tier 2/3 data-exchange contracts without a breaking change later.
+**Reasoning**: `TelemetryUpdate.target` is the identity of the network node being observed — consistent with how gNMI, BMP, syslog, and SNMP all work (target = the device address). Setting it to the flow source IP breaks the graph write path, which uses `target` to find the Device node and link new nodes to it. The entire blast-radius model depends on exporter = device.
 
-**Versioning Policy**: Semantic versioning on protocol. Major bumps indicate incompatibility; minor bumps indicate backward-compatible additions.
+**Consequence**: `TelemetryEvent::NetflowRecord` gains an `exporter_address` field (= target). A `CARRIES_FLOW` edge is written from `Device {address: exporter}` to `AppFlow`. src/dst IPs remain in the `AppFlow` node as data fields and are used to find `HostEndpoint` nodes when they exist.
 
 ---
-
-## 2026-04-23 — Generic Graph Store Abstraction (BonsaiStore trait)
 
-**Decision**: Implement a `BonsaiStore` trait to unify `GraphStore` (core) and `CollectorGraphStore` (collector). The trait is `#[tonic::async_trait]` compatible and used by the gRPC `BonsaiService` and background tasks (subscription verifier, site sync).
+## D14 — HostEndpoint as an optional, arch-agnostic graph node
 
-**Rationale**:
-- Eliminates code duplication between core and collector graph handlers.
-- Allows the same gRPC service implementation to run in both modes, enabling collectors to expose a local query/mutation API.
-- Enables background tasks like the subscription verifier to operate seamlessly regardless of whether they are running on a core or a collector.
-- Uses `tonic::async_trait` to handle the `dyn BonsaiStore` compatibility requirements for shared tasks.
-
----
+**Decision** (Session 9 / DV3 streaming audit): A `HostEndpoint` node represents any non-network-device endpoint: server, AP client, phone, IoT sensor, CPE, printer. It is **always optional** — its absence does not break any existing query, detection, or remediation.
 
-## 2026-04-23 — Collector-Side Local Rule Execution Architecture
+**Archetypes and valid usage**:
+- **SP deployments**: Will likely have zero HostEndpoint nodes. CPE is modelled as a managed `Device` (gNMI-capable) or not at all. No code assumes HostEndpoints exist.
+- **DC deployments**: Servers in NetBox with `dcim/devices/?role=server` are imported as HostEndpoints. Connected to their ToR interface via NetBox `connected_endpoints` API.
+- **Campus wired**: Workstations/phones discovered via LLDP from switch ports become HostEndpoints if no matching Device exists.
+- **Campus wireless**: AP clients are not modelled (no LLDP from WiFi clients). The AP itself is a managed Device. If the AP exports NetFlow, flow src IPs that match a HostEndpoint from DHCP/NetBox create `SRC_HOST`/`DST_HOST` edges — otherwise they remain as dangling IPs in AppFlow, which is fine.
 
-**Decision**: Run the rule engine as a standalone Python sidecar (`python/collector_engine.py`) alongside the Rust collector. The sidecar connects to the local collector's gRPC API to stream events and query the local graph.
+**`kind` field values**: `server`, `ap_client`, `phone`, `cpe`, `printer`, `iot`, `unknown`. Drives display label only — logic is kind-agnostic.
 
-**Rationale**:
-- Moves detection logic closer to the data source, reducing core load.
-- Preserves the Python-based rule ecosystem while leveraging Rust for high-performance telemetry ingestion.
-- Enables "disconnected-ops" where detection continues even if the core is unreachable.
-- Collector-local graph contains only the nodes/edges needed for detection (Device, Interface, BGP, etc.).
+**Consequence**: New graph node `HostEndpoint` in schema. `upsert_host_endpoint()` helper in `common.rs`. NetBox enricher second pass for non-network device roles. LLDP inference in graph write path. `CONNECTED_TO(HostEndpoint→Interface)`, `SRC_HOST(AppFlow→HostEndpoint)`, `DST_HOST(AppFlow→HostEndpoint)` relation tables.
 
 ---
 
-## 2026-04-24 — Per-collector mTLS certificates instead of shared collector cert
+## D15 — Streaming receiver config owned by Core; collectors poll Core
 
-**Decision**: `scripts/generate_compose_tls.sh` now generates one client cert per collector ID (`collector-1-cert.pem`, `collector-2-cert.pem`, etc.) with CN=`bonsai-<collector-id>`. Each collector config references its own cert/key pair. The previous shared `collector-cert.pem` is no longer generated.
+**Decision** (Session 9 / DV3 streaming audit): In a distributed Core+Collector deployment, the streaming receiver configuration (NetFlow port, OTLP port, Syslog port, SNMP port, etc.) for each collector is managed from the Core UI, not by editing each collector's `bonsai.toml` directly.
 
-**Rationale**: A single shared collector cert means losing one collector's private key compromises the mTLS channel for all collectors. With per-collector certs, revoking a compromised collector is a matter of removing its cert from the CA trust bundle on the core; other collectors continue operating unaffected. The CN encodes the collector ID, so the core can log which collector authenticated on each connection. The cost is minimal: one extra `openssl req` + `x509` invocation per collector at setup time.
+**Mechanism**: The Core HTTP API exposes `GET /api/settings/streaming` returning the full `StreamingConfig` struct as JSON. Collectors query this endpoint at startup and on a configurable poll interval (default 60s). If the Core-provided config differs from the local toml, the collector logs a warning and uses the Core config for receivers it has `run_collector` authority over. Hot-reload of port changes requires a restart (flagged with `requires_restart: true` in the API response).
 
-**Adding new collectors**: Add the collector ID to `COLLECTOR_IDS` in `generate_compose_tls.sh` and re-run with `--force`, or generate the cert manually. The collector's config must reference its own `<id>-cert.pem` / `<id>-key.pem`.
+**Reasoning**: A fleet with 5 collectors across 5 PoPs should not require SSHing to each one to enable NetFlow. The Core is the single source of truth for what each collector should be doing.
 
-**Done when**: Each collector in `docker/configs/` references its own cert; the script documents the revocation procedure in its output.
+**Consequence**: New `src/http_server/settings.rs` module. `GET /api/settings/streaming` and `PATCH /api/settings/streaming` endpoints. `StreamingReceiverStatus` registry with per-receiver atomic counters (packet_count, error_count, last_packet_at_ns). Collector startup reads Core config if `core_ingest_endpoint` is set.
 
 ---
-
-## 2026-04-24 — Counter forward mode: summary as default in distributed compose profiles
-
-**Decision**: The source-level default for `counter_forward_mode` remains `"debounced"` (in `src/config.rs`). The distributed and two-collector compose profiles (`docker/configs/collector-1.toml`, `docker/configs/collector-2.toml`) explicitly set `counter_forward_mode = "summary"` under `[collector.filter]`.
-
-**Rationale**:
-- `"debounced"` is the right conservative default for stand-alone operators: it forwards individual counter updates after a quiet period, giving full per-update fidelity without flooding the core.
-- In distributed compose profiles, the bandwidth win from `"summary"` matters: collectors aggregate delta counters over a 60-second window and forward a single summary message instead of every raw update. This reduces the collector-to-core gRPC ingest volume significantly for high-rate counter paths.
-- Keeping the source-level default as `"debounced"` means new operator deployments get conservative behavior automatically; the explicit per-profile override makes the distributed profile's intent self-documenting.
-
-**Done**: `collector-1.toml` and `collector-2.toml` already carry `counter_forward_mode = "summary"` and `counter_window_secs = 60`.
-
----
-
-## 2026-04-24 — Audience framing: controller-less networks as the primary target
-
-**Decision**: Bonsai's primary target audience is controller-less network environments. Controller-integrated environments are a secondary audience with a narrower, specific integration story.
 
-**Primary audience** — environments where devices stream gNMI directly to operator-owned infrastructure with no aggregating controller layer:
-- Modern SP backbones (Arista/Nokia/Juniper/Cisco with streaming telemetry)
-- DC fabrics built device-direct (not ACI/NDI)
-- Hyperscale and research networks — the original ANO paper audience
-- Telco core networks where controllers are absent or used only for config
-- Multi-vendor environments where no single controller can claim the fabric
-- Home labs, learning environments, and the open-source networking community
+## D16 — Streaming signals require a GUI config and troubleshooting page
 
-**Why**: For this audience, bonsai is not replicating what a controller provides — it is providing what operators currently assemble by hand from Telegraf + InfluxDB + Grafana + their own rule scripts. The graph, detect-heal loop, ML pipeline, and investigation agent are differentiated because nothing in open source assembles them coherently.
+**Decision** (Session 9 / DV3 streaming audit): NetFlow, OTLP, BMP, BGP-LS, PCEP, Syslog, and SNMP are all enabled/disabled exclusively via `bonsai.toml` edit today. There is no GUI. This is a blocker for operator adoption — network engineers should not need to SSH and restart a daemon to enable NetFlow.
 
-**Secondary audience** — controller-integrated environments. Operators running DNAC, NDI, or Meraki Dashboard already have a graph, already have ML-driven analytics, already have detect-heal for their fabric. Competing against those incumbents inside their own fabrics with an open-source tool is not a defensible position. The one niche where bonsai is genuinely additive is **cross-controller correlation** — a unified graph spanning multiple controllers is something no single vendor provides.
+**New `/settings` route** in the Svelte SPA. Sections:
+1. **Streaming Receivers** — one card per protocol: enabled toggle, listen address/port, live status (listening/stopped/error), last-packet-at relative time, packet count, error count.
+2. **AI Provider** — provider selector, model, API key (stored in vault), budget caps.
+3. **Collector assignment rules** — moved from Collectors page to Settings.
 
-**Architectural consequences**:
-- The gNMI-only hot-path rule is correct and binding. It is specifically what makes bonsai valuable to the primary audience.
-- Graph enrichment (NetBox, ServiceNow) is the primary mechanism for bringing business context, because the primary audience does not have a controller already doing this.
-- Individual controller adapters are optional integrations, not core workload. Implemented only when a specific multi-controller operator requirement drives them.
-- The investigation agent's toolset is designed around the gNMI-direct graph; controller adapter tools are added only in the multi-controller correlation case.
+**Save semantics**: `PATCH /api/settings/streaming` writes a delta to `bonsai.toml` on disk and returns `{ requires_restart: true/false }`. Port changes always require restart. Enable/disable may be hot-applied in future.
 
-**Anti-positions to reject**:
-- "Bonsai is a DNAC replacement" — no, wrong audience, losing position.
-- "Bonsai should work for every network everywhere" — no, focus matters.
-- "Let's add a controller adapter speculatively" — no, demand-driven only.
-- "Controller integration is the primary enrichment story" — no, NetBox/ServiceNow for the primary audience.
+**Consequence**: New `Settings.svelte` route. New backend settings endpoints. `App.svelte` nav item "Settings" (⚙ icon). Receivers page shows troubleshooting panel per protocol.
 
-**Version note**: Captures the v7 backlog reframing. Supersedes any prior implicit framing that treated controller adapters as a core tier.
-
----
-
-## 2026-04-23 — Detection Ingest RPC (Collector → Core)
-
-**Decision**: Add a client-streaming `DetectionIngest` RPC to the core gRPC API. Collectors push locally-evaluated `DetectionEvent` records to the core for centralized monitoring and graph persistence.
-
-**Rationale**:
-- Provides a formal path for collectors to escalate anomalies to the core.
-- Allows the core to maintain a global view of all detections across the fleet.
-- Enables cross-site rule correlation on the core by treating incoming detections as triggers for global rules.
-- `DetectionEvent` metadata includes features, reason, and severity for consistent UI rendering on the core.
-
 ---
-
-## 2026-04-24 — Dockerfile build-speed and image-size optimisations (T3-1)
-
-**Decision**: Three targeted changes to `docker/Dockerfile.bonsai`:
-
-1. **Planner stage copies only Cargo manifests** (`Cargo.toml` + `Cargo.lock`). Previously `COPY . .` was used, causing the cargo-chef cook step to re-run whenever any file changed (Svelte sources, docs, proto files). Now only `Cargo.toml`/`Cargo.lock` changes bust the dependency cook cache.
-
-2. **Compiled healthcheck binary replaces curl**. A `src/bin/healthcheck.rs` binary (stdlib only, 337 KB stripped) makes a raw HTTP/1.0 TCP probe to `/api/readiness`. `curl` (~4 MB + shared libs) is removed from the runtime image. This also fixes a latent bug where `docker-compose.yml` referenced `/usr/local/bin/healthcheck` but the image only contained curl.
-
-3. **`liblbug.so.0` is stripped with `--strip-debug`**. The C++ shared library retains the symbol table needed for dynamic linking but drops debug symbols, reducing its size.
-
-**Rationale**: The reported clean Docker build time was 40 minutes. The primary driver was the cargo-chef cook step re-running on every source change. With the manifest-only planner, incremental source-only builds skip the full dep compilation and land in the ~4s range (only the final `cargo build` step runs). Image size reduction (curl removal + library strip) is a secondary benefit contributing to the <100 MB target.
-
-
-## 2026-04-24 — Sprint 2: Environment model as a first-class graph entity (T1-1, T1-6)
-
-**Decision**: introduce `Environment` as a first-class node in the graph with an archetype enum (`data_center`, `campus_wired`, `campus_wireless`, `service_provider`, `home_lab`). Sites bind to exactly one Environment via a `BELONGS_TO_ENVIRONMENT` edge. The `Site.environment_id` field tracks the binding on the Rust struct for convenience. Onboarding, path-profile selection, enrichment applicability, and future GNN features all key off the archetype rather than free strings.
-
-**Migration**: on first startup after upgrade, existing sites without an Environment binding are automatically assigned to a default environment (`id: "migrated-default"`, `archetype: home_lab`, `name: "Default (Migrated)"`) via `GraphStore::migrate_sites_to_default_environment()`. The migration is idempotent — subsequent startups are a no-op. Operators review and reassign via the `/environments` UI workspace.
-
-**Why enum not free string**: forcing a small archetype enum surfaces coverage gaps explicitly. Any network archetype that doesn't fit the five is marked `home_lab` as an escape hatch and triggers a conversation about whether the enum should be extended (requiring a new ADR).
 
-**Why five archetypes**: DC / campus-wired / campus-wireless / SP / home-lab covers the primary audience (controller-less DC fabrics, SP backbones, campus wired/wireless deployments, home labs). Per v8 backlog: extensions require an explicit ADR entry.
+## D22 — Receiver supervisor with hot-reload: ports change without process restart
 
-**API surface**: `GET /api/environments`, `POST /api/environments` (create), `POST /api/environments/update`, `POST /api/environments/remove`, `POST /api/environments/assign-site`. Setup detection: `GET /api/setup/status`.
+**Decision** (Session 10): All streaming/signal receivers (syslog, snmp, bmp, bgp_ls, otlp, netflow) are currently spawned once at startup as fire-and-forget `tokio::spawn` tasks — no handle stored, no restart mechanism. If a port is in use the receiver dies silently; the UI shows "enabled" regardless. Changing a port requires editing `bonsai.toml` and restarting the whole process.
 
-**First-run detection**: `setup_status_handler` returns `is_first_run: true` when no non-default environments exist, no credential aliases are configured, and no devices are onboarded. The UI routes to `/setup` on this signal.
+**The operator's actual need**: In any real environment, ports may conflict. Network engineers cannot be forced onto port 5514 for syslog or 9162 for SNMP. The Settings page should allow changing port + enable/disable and have the change take effect **immediately** — without restarting bonsai.
 
----
-
-## 2026-05-07 — Bv4 Sprint 1: Arc<TelemetryUpdate> through the bus (C-4)
+**Industry pattern**: Supervised task registry — each receiver runs under a named entry in a `ReceiverSupervisor` that holds:
+- `tokio::task::AbortHandle` — allows cancellation without killing the process
+- `ReceiverStatus` — `{ state: listening | stopped | error | port_conflict, addr: String, last_packet_at_ns: Option<i64>, packet_count: u64, error_count: u64 }`
+- Factory function `fn start(config) -> (JoinHandle, AbortHandle)` — restarts from latest config
 
-**Decision**: Wrap `TelemetryUpdate` in `Arc<TelemetryUpdate>` at the point of `InProcessBus::publish()`. All subscribers receive `Arc<TelemetryUpdate>`; the router clones the Arc pointer (8 bytes) rather than the full struct per subscriber.
+**Hot-reload semantics (for enable/disable + port change)**:
+1. `PATCH /api/settings/streaming` validates the new addr (parse as SocketAddr, check port range ≥ 1024 unless running as root).
+2. Calls `supervisor.restart("syslog_udp", new_config)` — aborts the running task, spawns fresh on new port.
+3. Returns `{ ok: true, requires_restart: false }` for enable/disable and port changes.
+4. HTTP UI port (`0.0.0.0:3000`) and gRPC `api_addr` still require process restart — communicated clearly.
 
-**Rationale**: At 6 subscribers × 256-update batches × ~1-5 KB per update, the Bv3 code allocated 1.5–7.5 MB of struct copies per flush. Arc clone eliminates per-subscriber heap allocation. Subscribers that need ownership call `Arc::unwrap_or_clone()` — free if the Arc is uniquely held, one clone otherwise.
+**Port conflict detection**: Each receiver factory tries `UdpSocket::bind` / `TcpListener::bind` before fully starting. On `AddrInUse` error, sets status to `port_conflict` and returns the error to the API caller as a 409 Conflict with a human message: `"Port 5514 is already in use. Choose a different port."`.
 
-**Alternatives considered**: Keeping `TelemetryUpdate` unboxed and accepting the clone cost was acceptable at 12-node scale but becomes a wall at 200+ devices.
+**Consequence**: New `src/receiver_supervisor.rs` module. `ReceiverSupervisor` struct shared via `Arc<RwLock<>>` in `AppState`. `PATCH /api/settings/streaming` calls supervisor restart, not just TOML write. Settings UI shows live status per receiver (listening/stopped/error/port_conflict) without page refresh. Syslog and SNMP added to `StreamingSettingsResponse` (currently absent).
 
 ---
-
-## 2026-05-07 — Bv4 Sprint 1: Remove dual-bus legacy_tx (C-2)
-
-**Decision**: Deleted `legacy_tx: broadcast::Sender<TelemetryUpdate>` from `InProcessBus`. All six subscriber sites (graph_writer, archive, subscription_verifier, prometheus adapter, output traits base, ingest forwarder) were already migrated to `MpscSubscriber` in Bv3. The dual-send was pure overhead.
 
-**Rationale**: The dual-bus pattern was a backward-compat shim. With all callers verified on the router path, keeping it added one broadcast channel's worth of memory and one clone + channel send per publish for zero benefit.
+## D23 — HTTP UI port and all listener addresses are fully configurable via bonsai.toml
 
----
-
-## 2026-05-07 — Bv4 Sprint 1: BroadcastSubscriber for DropOldest (C-3)
+**Decision** (Session 10): The HTTP UI port is hardcoded as `"0.0.0.0:3000"` in `server_startup.rs` — it is not present in `bonsai.toml.example` and cannot be changed without editing source. In shared environments (e.g., a VM already running something on 3000), this is a hard blocker.
 
-**Decision**: Implemented `BroadcastSubscriber` backed by `tokio::sync::broadcast`. The archive consumer uses this subscriber. `MpscSubscriber` now only supports `DropNewest` and `BlockProducer`; `DropOldest` requires `BroadcastSubscriber`.
+**Fix**: Add `http_addr` top-level key to `bonsai.toml`, default `"0.0.0.0:3000"`. Reads from config, same pattern as `api_addr`. Document in `bonsai.toml.example`. Changing `http_addr` requires process restart (it's the Axum listener bind — cannot hot-reload without losing active SSE connections).
 
-**Rationale**: `mpsc` cannot drop the oldest queued message without a deque wrapper. `broadcast` naturally supports lag-tolerance: when a slow receiver falls behind by more than capacity, the oldest slots are overwritten. This is exactly the right semantic for the archive — recent telemetry is more valuable than old telemetry when the writer is slow.
+**Also standardise all default ports** to avoid conflicts with common system daemons:
+- `[signals.syslog] udp_addr` default `"0.0.0.0:5514"` (not 514, avoids root requirement) ✅ already correct
+- `[signals.snmp] udp_addr` default `"0.0.0.0:9162"` (not 162) ✅ already correct  
+- `[streaming.bmp] tcp_addr` default `"0.0.0.0:5000"` ✅ but 5000 is commonly used by development servers — **change default to `"0.0.0.0:10179"`** (non-standard BMP port above 1024)
+- `[streaming.netflow] udp_addr` default `"0.0.0.0:2055"` ✅ standard IPFIX, acceptable
+- `[streaming.otlp] http_addr` default `"0.0.0.0:4318"` ✅ standard OTLP HTTP port
 
-**Alternatives considered**: (a) Deque-backed mpsc wrapper — more complex, no existing crate with LRU-style mpsc. (b) Documenting DropOldest as unsupported and switching archive to DropNewest — operationally surprising, operators expect archive to prioritise recent data.
+**Consequence**: `bonsai.toml` gains `http_addr` key. `server_startup.rs` reads it from `cfg.http_addr`. `bonsai.toml.example` documents all listen addresses in one place with comments explaining privilege requirements. BMP default port changed to 10179 in `config.rs` and `bonsai.toml.example`.
 
 ---
-
-## 2026-05-07 — Bv4 Sprint 1: arc_swap for lock-free subscriber list (C-5)
-
-**Decision**: Replaced `Arc<RwLock<Vec<Arc<dyn BusSubscriber>>>>` with `Arc<ArcSwap<Vec<Arc<dyn BusSubscriber>>>>`. The router's read path (`subs.load()`) is now lock-free. `add_subscriber` uses `rcu()` (read-copy-update) — clones the Vec, appends, swaps atomically. Subscribers are added at startup and never removed during steady state.
 
-**Rationale**: At 10K+ updates/sec, the RwLock acquisition added measurable overhead. ArcSwap read is a single atomic load (no lock, no cache-line contention). Write (add_subscriber) is rare and pays the Vec clone cost, which is acceptable.
+## D18 — Event feed requires structured filtering; source_type tag on all state change events
 
----
-
-## 2026-05-07 — Bv4 Sprint 1: Sharded ingest debounce caches (C-6/C-7)
+**Decision** (Session 10 / DV3 code review): The SSE event feed (`/api/events`) emits all event types from all devices to every browser tab with no filtering. In a multi-site deployment with 20+ devices generating gNMI, syslog, and NetFlow simultaneously, the feed is unusable — hundreds of events/min make it impossible to focus on a specific device or protocol. The current UI has only a Pause/Resume button.
 
-**Decision**: Replaced three `Mutex<LruCache>` in `TelemetryDebouncer` with 16-shard `ShardedLruCache<V>`. Shard selection by `DefaultHasher(key) % 16`. Per-shard capacity computed from configurable `[ingest] debounce_memory_bytes` (default 16 MiB) divided across three caches and 16 shards.
+**Root cause**: `BonsaiEvent` (the broadcast message) carries `event_type` but no `source_type` tag that maps to protocol group (gnmi, syslog, snmp, netflow, otlp, bmp, bgp_ls, detection, registry). The raw `event_type` string (e.g., `syslog_protocol`, `interface_down`, `bmp_peer_state_change`) is opaque to the UI without parsing.
 
-**Rationale (C-6)**: Single Mutex becomes a serialisation point at 200+ devices × 50 interfaces = 10K+ updates/sec. 16 shards spread contention by 16x at the cost of 16 lock objects.
+**Plan**:
+1. Add `source_type: String` to `BonsaiEvent` (and by extension `StateChangeEvent` in the graph). Populated in each write path: `"gnmi"` for interface/BGP/BFD/LLDP/config-change events, `"syslog"` for syslog events, `"snmp"` for SNMP traps, `"netflow"` for AppFlow, `"otlp"` for OTLP spans, `"detection"` for DetectionEvent firings, `"registry"` for device registry changes.
+2. New backend endpoint `GET /api/events/history?source=&device=&site=&severity=&limit=` that queries `StateChangeEvent` from the graph DB (not live SSE).
+3. `Events.svelte` gains a filter bar: source group chips (ALL / gNMI / Syslog / SNMP / NetFlow / OTLP / Detection), device address autocomplete, site selector, severity pill.
 
-**Rationale (C-7)**: Hardcoded 4096/16384 caps are insufficient at 1000-device scale (50K unique interface keys). RAM-based caps scale with operator hardware. Default 16 MiB yields ~43K counter entries and ~21K state entries — 10x the prior limit at the same memory cost.
+**Consequence**: `BonsaiEvent` struct gains `source_type` field. Schema: `StateChangeEvent.source_type` column added via `ALTER TABLE`. `SsePayload` struct gains field. All `write_state_change_event` callers pass source_type. New history endpoint. Filter bar in Events.svelte.
 
 ---
-
-## 2026-05-07 — Bv4 Sprint 1: write_batch always-COMMIT (C-1)
-
-**Decision**: Removed the all-or-nothing ROLLBACK from `write_batch`. Individual update failures are logged as warnings and counted by `bonsai_graph_write_errors_total` metric; the batch always COMMITS the successful writes.
 
-**Rationale**: One malformed gNMI update from buggy device firmware poisoned 255 good updates in Bv3. At 1000-device scale with diverse firmware, every batch would roll back. The correct fix is to reject malformed updates early (structural pre-validation added in `TelemetryDebouncer::should_drop`) and treat individual write errors as diagnostic events, not transaction failures.
+## D19 — Detection provenance: multi-source TRIGGERED_BY edges + correlation timing
 
----
+**Decision** (Session 10 / DV3 code review): The current detection model links a `DetectionEvent` to at most ONE `StateChangeEvent` via `TRIGGERED_BY`. Real detections are often caused by multiple corroborating signals — gNMI reports interface down, syslog reports BFD session lost, SNMP trap reports link_down — all within milliseconds of each other. Today only the first (or last, implementation-dependent) `state_change_event_id` is passed to `write_detection`.
 
-## 2026-05-07 — Bv4 Sprint 1: File-rotated logging (C-8 / T2-1/T2-2/T2-3/T2-4)
+**Additionally**: The Incidents UI shows rule_ids and affected_devices but no:
+- Per-detection source attribution (which protocols corroborated this detection)
+- Correlation latency (time from first observed signal to detection firing)
+- Grouping rationale (why these detections were grouped into one incident)
+- Blast radius inline on the incident card
 
-**Decision**: Added `[logging]` config section. When `file_path` is set, bonsai uses `tracing_appender::RollingFileAppender` with configurable daily rotation and N-day retention (default 7). Per-module level overrides via `[logging.targets]` table. Pre-flight disk space check at startup (`min_free_bytes`, default 5 GiB) refuses to start on near-full disk. Log volume counters (`bonsai_log_lines_total{level}`) via a custom tracing Layer.
+**Plan**:
+1. `write_detection` / `WriteRequest::Detection` gains `source_event_ids: Vec<String>` (replacing the single `state_change_event_id`). Each ID gets a `TRIGGERED_BY` edge.
+2. `DetectionEvent` gains `source_types: String` (comma-separated set of source protocols that contributed) and `correlation_latency_ms: i64` (fired_at_ns minus min occurred_at_ns of all source events).
+3. `read_detections()` returns these new fields; `DetectionRow` gains `source_types` and `correlation_latency_ms`.
+4. `IncidentJson` gains `correlation_chain: Vec<CorrelationStep>` (ordered: signal→signal→detection) and `blast_radius_summary: Option<String>` (populated by re-using the blast_radius query for the root device).
+5. Incident card UI: provenance panel showing source attribution badges (gNMI/Syslog/SNMP chips), correlation latency, blast radius summary, grouping rationale text.
 
-**Rationale**: At debug level on a 12-node lab, ~500 MB–2 GB/day fills a 30 GB cloud VM disk in 15 days. The disk-fill crash mode is now engineered out. Per-module overrides avoid flooding logs when debugging one subsystem. The pre-flight check prevents silent failure modes where the log write itself errors.
+**Consequence**: Schema changes to `DetectionEvent` table (ALTER TABLE for new columns). `TRIGGERED_BY` is now multi-edge (graph already supports multiple edges of same type). API response changes are additive (new fields, no removals). Change-detection rule firing path must collect all contributing `state_change_event_id`s before calling `write_detection`.
 
 ---
-
-## 2026-05-10 — CV1 Sprint 4: YANG library lifecycle is a first-class runtime subsystem
 
-**Decision**: Bonsai now manages YANG modules through a dedicated local library under `runtime/yang_catalogue`, with a paired cache under `runtime/yang_cache`. The library is operated through `bonsai yang ...` commands covering online sync from canonical public repositories, manual directory import, signed bundle creation for offline transfer, signed bundle install for restricted environments, trust-state updates (`trusted` vs `experimental`), and search against a Bonsai-local path index.
+## D20 — Topology completeness: HostEndpoint nodes + event heatmap overlay
 
-**Workflow split**:
-- `bonsai yang sync` is the internet-connected workflow. It clones or updates canonical public YANG repos into the cache, imports `.yang` files into the local library, and refreshes the local path index.
-- `bonsai yang import <dir>` is the curated workflow. Operators can import vendor bundles, internal extensions, or NDA-only modules from local storage without reaching the internet.
-- `bonsai yang bundle` + `bonsai yang install` is the restricted-environment workflow. A workstation with internet prepares a signed tar bundle; the air-gapped Bonsai node verifies the signature and per-file checksums before importing.
+**Decision** (Session 10 / DV3 code review): The topology graph (`/api/topology`) only returns `Device` nodes, LLDP `Interface-CONNECTED_TO-Interface` links, and `BgpNeighbor` data. `HostEndpoint` nodes were added in D3-11 (T3/T4/T5/T6) but the `topology_handler` was never updated to include them. The topology is therefore incomplete — servers, phones, APs, and printers visible in NetBox or LLDP discovery are invisible in the Live view.
 
-**Signature choice**: the first implementation uses `HMAC-SHA256` with an operator-supplied shared secret (`BONSAI_YANG_BUNDLE_KEY` by default) rather than public-key signatures. This keeps the implementation dependency-light and immediately usable in lab and enterprise jump-host workflows while still providing cryptographic integrity and origin verification between the producing workstation and the receiving Bonsai node.
+**Additionally**: There is no event activity overlay on topology nodes or links. A user looking at the topology cannot see "leaf-01 has had 12 syslog events in the last hour" without leaving the Live page.
 
-**Synthesizer impact**: the synthesizer remains driven by advertised gNMI capabilities for device-path availability, but now also consults the local YANG library to flag incomplete local module coverage. Missing required models are surfaced as recommendation gaps so operators know when to run `yang-sync` or `yang-import` before trusting catalogue-only reasoning.
+**Plan**:
+1. `topology_handler` gains a second query: `MATCH (h:HostEndpoint)-[:CONNECTED_TO]->(i:Interface) RETURN h.ip, h.kind, h.hostname, h.vendor, i.device_address, i.name` — returns HostEndpoint nodes as a separate list with their attachment point.
+2. `TopologyResponse` gains `host_endpoints: Vec<HostEndpointJson>` with fields: `ip, kind, hostname, vendor, attached_device, attached_interface`.
+3. New field `recent_event_count: usize` per `DeviceJson` — populated from `StateChangeEvent` WHERE `occurred_at > now - 1h` GROUP BY device_address count. Drives a node-level heatmap ring in the topology SVG.
+4. `Topology.svelte` renders HostEndpoints as small diamond nodes attached to their parent Device. Event count drives a colored ring around the device node (grey=0, yellow=1-5, orange=6-20, red=21+).
 
-**Why not embed pyang/libyang into bonsai-core**: module lifecycle and path discovery are operator workflows, not hot-path telemetry work. Keeping the library/index in a dedicated subsystem preserves the streaming path and avoids forcing heavy parser dependencies into every Bonsai deployment.
+**Consequence**: Topology response payload grows. `DeviceJson` gains `recent_event_count`. New `HostEndpointJson` struct. Topology D3 graph gains a second node type with different visual treatment.
 
 ---
 
-## 2026-05-10 — CV1 Sprint 6: ServiceNow AIOps sync is graph-driven and incident-centric
+## D21 — SNMP OID-to-graph correlation (parity with syslog fact join)
 
-**Decision**: Sprint 6 lands as a dedicated `servicenow_aiops` runtime subsystem rather than bolting more logic into the existing Event Management pusher or CMDB enricher. The new subsystem reads grouped Bonsai incidents from the graph, syncs them to ServiceNow ITSM incidents, auto-resolves them when detections go quiet, enriches the incident body with blast-radius context, and accepts operator playbook requests back from ServiceNow comments/work notes using the `bonsai:playbook <playbook_id>` command pattern.
+**Decision** (Session 10 / DV3 code review): Syslog processing has a two-tier pipeline — raw `SyslogEvent` creates a `StateChangeEvent`, structured `SyslogFact` extracts typed fields (if_name, peer_address, etc.) and attempts to join them to `Interface` and `BgpNeighbor` graph nodes. SNMP traps have only the first tier — raw trap → `StateChangeEvent`, no structured join.
 
-**Why incident-centric instead of detection-centric**: a raw DetectionEvent stream is the right output for Event Management, but it is too noisy for ITSM. ServiceNow operators need one correlated ticket with affected devices, causal hinting, and remediation posture rather than N sibling tickets for the same fault window.
+**Key gap**: The OID varbinds in SNMP traps contain directly useful information:
+- `linkDown` (OID 1.3.6.1.6.3.1.1.5.3): varbind `ifDescr` or `ifAlias` → Interface name
+- `bgpBackwardTransition` (OID 1.3.6.1.2.1.15.7): varbind `bgpPeerRemoteAddr` → BgpNeighbor peer
+- Enterprise traps (Cisco, Arista, Juniper) carry similar structured varbinds
 
-**Why re-use the graph instead of reimplementing correlation in the adapter**: the graph already holds topology, CMDB-derived assignment hints, remediation outcomes, and blast-radius traversals. Keeping correlation and root-cause context anchored there avoids a second source of truth and keeps the ServiceNow layer a projection of Bonsai state rather than an independent incident engine.
+**Plan**:
+1. Add `config/snmp_oid_patterns/default.yaml` — maps OID prefixes to `fact_type` + `field_extraction` rules (similar pattern to syslog_patterns YAML). E.g.: OID `1.3.6.1.6.3.1.1.5.3` → fact_type `link_down`, extract `if_name` from varbind `ifDescr` or `ifAlias`.
+2. `SnmpFactExtractor` struct (parallel to `SyslogFactExtractor`) loads these YAML files at startup.
+3. `run_snmp_receiver` calls `fact_extractor.extract(&event)` — produces `SnmpFact` structs published at `signals/snmp_fact/{fact_type}`.
+4. New `TelemetryEvent::SnmpFact{fact_type}` variant → `write_snmp_fact_event` which calls `join_snmp_fact()` — same join logic as `join_syslog_fact` but driven by OID-extracted fields.
 
-**Bridge choice**: the first bidirectional bridge is comments/work-notes driven, not a custom ServiceNow app. That keeps the integration usable on a vanilla PDI or enterprise instance without schema customisation while still giving operators a concrete control path back into Bonsai proposals.
+**Consequence**: New YAML config directory `config/snmp_oid_patterns/`. New `SnmpFactExtractor` struct. New TelemetryEvent variant. New graph write function. `StateChangeEvent` for SNMP traps can now carry join context (joined/orphan) in `detail_json` — same observability as syslog.
 
 ---
-
-## 2026-05-11 — CV2 Sprint 1: Activate layered-ingestion runtime via enricher registry and Python SSH helper
-
-**Decision**: CV2 Sprint 1 activates the previously dead layered-ingestion architecture by routing change-detection capture through a dedicated `MultiSourceEnricherRegistry` instead of hardcoding `GnmiGetConfigEnricher`. The registry currently dispatches between `gnmi_get_config` and `parser_chain_cli`, with parser-chain CLI capture implemented by a small repo-local Python helper (`scripts/cli_capture.py`) that uses Paramiko for SSH execution and returns raw command output back to Rust for `ParserChain` parsing and provenance capture.
-
-**Why registry-first**: CV1 had the right trait shape but no runtime pluralism. The registry makes multi-source capture an actual dispatch point, which is the seam needed for future vendor/capability routing without rewriting change detection again.
 
-**Why a Python SSH helper instead of adding a Rust SSH stack now**: Sprint 1's job is to make dead architecture live with minimal compile churn. Paramiko is already in the repo-local Python environment, works in both the lab and WSL-oriented workflows, and keeps the Rust dependency surface smaller while we validate the runtime path. This choice is intentionally tactical: it activates CLI capture now without turning Sprint 1 into a transport-library integration sprint.
+## D24 — Collector health/telemetry propagation to core: full-fidelity enriched heartbeat
 
-**Fallback policy**: routing is capability-biased rather than dogmatic. TLS-capable SR Linux targets still prefer gNMI Get first, while current non-TLS/multi-vendor targets can prefer CLI-first and fall back across strategies. This preserves the streaming-first posture while acknowledging the current mixed-readiness reality.
+**Decision** (Session 10): The collector → core health pipeline has 8 critical gaps that make the Collectors page in the Core UI misleading:
 
-**Operational guardrail**: Sprint 1 also codifies the "no dead code without a callsite" rule with `scripts/check_wiring.sh`, sidecar smoke coverage, and endpoint smoke coverage. The discipline outcome matters as much as the code outcome: layered-ingestion features are no longer considered landed unless a cheap wiring/smoke path proves they are reachable.
+1. **Heartbeat stats are hardcoded zeros** — `CollectorStats.queue_depth_updates = 0` and `uptime_secs = 0` are literally hardcoded in `ingest.rs:1513`. The Core Collectors page always shows queue=0, uptime=0 regardless of real state.
+2. **DiagnosticState never updated** — `DiagnosticState::new()` is called and passed to the diagnostic server, but `mark_registered()` and `update_stats()` are never called. `/api/collector/status` always returns `registered_with_core: false, queue_depth: 0, assigned_devices: []`.
+3. **Streaming badges show Core's own config** — `streaming_status_from_config(state.streaming)` in `governance.rs` uses the Core's `StreamingConfig`, not the remote collector's. A collector on a different host with different ports shows wrong data.
+4. **No receiver status in heartbeat** — `CollectorStats` proto has no receiver state (running/stopped/port_conflict), no per-protocol packet counts. Core cannot show whether collector's syslog/SNMP receivers are healthy.
+5. **No resource metrics** — collector memory, CPU, disk queue utilisation never reach core. `memory_profile` and `resource_governor` data is local-only.
+6. **No error propagation** — queue high-water warnings, subscriber disconnections, receiver port conflicts on the collector are invisible to the operator at the Core UI.
+7. **Future gap** — once D3-13 adds `ReceiverSupervisor`, its status must also feed into DiagnosticState and the heartbeat.
+8. **UI uniformity** — Collectors page applies the same `streaming_status` to every collector card, implying all collectors have identical receivers.
 
----
+**Fix — three-layer approach**:
 
-## 2026-05-11 — CV2 Sprint 4: Modern streaming tier splits into native BMP, sidecar BGP-LS, deferred PCEP
+**Layer 1 — Enriched heartbeat (gRPC, every 30s)**: Extend `CollectorStats` proto with:
+- `queue_pending_records: uint64`, `queue_bytes: uint64`, `queue_utilization_pct: float`
+- `uptime_secs: int64` (calculated from startup timestamp)
+- `receiver_statuses: repeated ReceiverStatus` (name, state enum, addr, packet_count, error_count, last_packet_at_ns) — fed by D3-13 `ReceiverSupervisor`
+- `memory_used_bytes: uint64`, `memory_rss_bytes: uint64`
+- `active_subscribers: uint32`, `failed_subscribers: uint32`
+- `recent_warn_count: uint32`, `recent_error_count: uint32` (rolling 5-minute window)
 
-**Decision**: CV2 Sprint 4 adds a dedicated `streaming` subsystem instead of folding modern control-plane feeds into the existing `signals` or layered-ingestion code. Within that subsystem, Bonsai now treats:
-- **BMP** as a native in-process TCP receiver because it is a standards-based, vendor-neutral export protocol and maps cleanly onto Bonsai's existing event-bus and graph-writer architecture.
-- **BGP-LS** as a normalized sidecar feed, with Bonsai consuming line-delimited JSON from a GoBGP-style helper rather than implementing a full BGP speaker in Rust during this sprint.
-- **PCEP** as an explicitly deferred seam: configuration and readiness accounting exist now, but the runtime parser does not start until the service-provider lab is validated.
+**Layer 2 — DiagnosticState wired correctly**: `DiagnosticState` shared via `Arc` between: the diagnostic server, `run_collector_manager` (calls `mark_registered()` on successful registration), and `run_core_forwarder` (calls `update_stats()` on every queue log interval). DiagnosticState also stores `receiver_statuses` from the supervisor once D3-13 lands.
 
-**Why BMP is embedded but BGP-LS is sidecar-based**: BMP is operationally simpler to embed because the collector only needs RFC 7854 framing plus standard BGP UPDATE parsing. BGP-LS, by contrast, requires a whole BGP speaker posture and AFI/SAFI handling; using a GoBGP sidecar keeps Sprint 4 focused on Bonsai's graph and readiness integration rather than rebuilding routing-daemon behavior.
+**Layer 3 — Core stores and serves per-collector receiver statuses**: `CollectorRuntimeState` in `assignment.rs` gains `receiver_statuses: Vec<ReceiverStatusSnapshot>`. `CollectorStatusJson` gains the same field. Core UI Collectors card shows per-collector receiver status (not its own).
 
-**Why readiness became multi-protocol**: once BMP and BGP-LS are first-class streams, a device can be "streaming-healthy" even when one protocol is impaired and another is ready. The new `StreamingReadinessReport` therefore complements, rather than replaces, `GnmiReadinessReport`. gNMI remains the primary device-state stream, but Bonsai now tells operators which additional standards-based feeds are viable per device and role.
+**Constraint maintained**: Core remains the single write authority. The enriched heartbeat is purely observational (read-only push from collector). No collector can write to the Core graph directly via this path.
 
-**Graph choice**: Sprint 4 persists BMP sessions, BGP RIB entries, BGP-LS nodes/links, SR policies, and the aggregated streaming-readiness report as first-class graph nodes. This keeps control-plane visibility queryable in the same place as gNMI state, which is essential for later cross-source correlation and blast-radius reasoning.
+**Consequence**: Proto change to `CollectorStats` (additive, backward-compatible — old collectors send zeros for new fields). Schema change to `CollectorRuntimeState` in-memory only (not graph DB). `settings.rs` streaming config API gains `receiver_statuses` per collector. `Collectors.svelte` Collector card gains a health panel row: queue utilisation bar, receiver status badges, subscriber counts, last-error timestamp.
 
 ---
-
-## 2026-05-11 — CV2 Sprint 5: Syslog facts ride the telemetry bus and join into streamed state events
 
-**Decision**: Sprint 5 treats structured syslog extraction as a first-class telemetry path rather than as Python-only post-processing. The syslog receiver now loads vendor pattern catalogues with named capture groups, emits normalized `SyslogFact` telemetry updates on the in-process bus, and lets the Rust graph writer perform the first cross-source join against current graph state before publishing either `syslog_fact_joined` or `syslog_fact_orphan` events.
+## D17 — OTLP span writes Application node and RUNS_SERVICE edge
 
-**Why the extraction happens in Rust at ingress**: the raw syslog receiver already owns device resolution, vendor context, archive timing, and bus publication. Extracting facts there means the same structured record is available to the graph, archive, and downstream detectors without duplicating regex logic across subsystems.
+**Decision** (Session 9 / DV3 streaming audit): OTLP trace spans were received and broadcast as BonsaiEvents but never written to the graph. The `Application` schema node exists but is never populated.
 
-**Why join results are emitted as state-change events instead of introducing a new detector-facing transport**: Bonsai already has one durable/broadcast path for event-driven automation: `StateChangeEvent` plus the gRPC event stream. Reusing that path keeps the Python rule engine unchanged in shape while still giving it richer cross-source context.
+**Fix**: `write_otlp_span()` upserts an `Application` node keyed by `service_name`. If `peer_address` matches a known `Device.address` (IP prefix match) or `HostEndpoint.ip`, a `RUNS_SERVICE(Device/HostEndpoint → Application)` edge is written. `CARRIES_APPLICATION(AppFlow → Application)` is written when an AppFlow's src_address is the same as the Application's peer_address.
 
-**Join policy**: Sprint 5 joins only when the syslog fact references a graph entity Bonsai can currently resolve reliably, starting with BGP neighbors and interfaces. Device-only context is attached for debugging, but it does not count as a successful cross-source join. Facts without a resolvable graph entity become explicit orphan events so the gap is visible rather than silently dropped.
+**Consequence**: OTLP spans now participate in the graph. Blast-radius traversal can answer "which services ran on devices affected by this incident".
 
 ---
-
-## 2026-05-12 — CV4 Sprint 5: Agent-friendly interface (T5-1 through T5-5)
-
-**Decision**: Bonsai exposes a first-class agent-consumption layer via five additions: an MCP JSON-RPC server (POST /mcp), a grounded incident endpoint (GET /api/incidents/{id}/grounded), a self-describing OpenAPI schema endpoint (GET /api/schema), recurrence indicators on every detection rule, and a natural-language reference resolution endpoint (GET /api/resolve).
 
-**T5-1 MCP server implementation choice**: Implemented as a thin Axum handler on the existing port 3000 router rather than a separate process or the `rmcp` crate. Rationale: the `rmcp` crate was not already in Cargo.toml; adding it would pull in a new dependency tree for functionality achievable directly with Axum's JSON extraction and serde_json. The MCP JSON-RPC 2.0 wire format (`initialize`, `tools/list`, `tools/call`) is simple enough that a hand-rolled handler is less risky than an external SDK. The five read-only tools (get_incident, query_devices, get_device_blast_radius, list_active_detections, query_graph) cover the primary agent consumption patterns from the backlog. `query_graph` validates queries against mutation keywords to enforce read-only semantics.
+## D25 — Detection/Remediation on a priority write channel
 
-**T5-2 grounded response design**: The "three-source grounding" pattern from the CNS document — topology (blast radius) + procedure (rule doc + recurrence indicators) + live state (detection features_json) — is composed read-side from existing data. No new storage. The response is self-contained: an agent receiving it has everything needed to reason about the incident without additional API calls.
+**Decision** (Session 13 / scalability audit): `WriteCoordinator` originally used a single `mpsc` channel for all write types — telemetry, subscription status, detection, and remediation. Under high telemetry ingest load, detection writes queued behind large telemetry batches, causing seconds of latency between a fault being detected and the `DetectionEvent` node appearing in the graph.
 
-**T5-3 schema choice**: Static inline OpenAPI 3.0.3 JSON rather than code-generated (via utoipa/paperclip). Rationale: code generation adds a build-time dependency and macro overhead; the API surface is stable and well-understood; a static document is readable, maintainable, and fast. The schema covers all major endpoints including the new T5 endpoints.
+**Fix**: Split `WriteRequest` into two separate channels — a normal `WriteRequest` channel (telemetry + subscription status) and a `PriorityWriteRequest` channel (detection + remediation). The coordinator's `select!` uses `biased` to poll the priority channel first on every iteration. Added `submit_priority()` method. Detection and remediation latency is now bounded by the coordinator loop interval, not the telemetry batch depth.
 
-**T5-4 recurrence indicators**: Added to the Python `Detector` base class as `recurrence_indicators: list[str] = []` and populated with 3 indicators per rule across all 18 rules (bgp × 4, interface × 3, bfd × 1, topology × 1, streaming × 5, snmp × 4). Also mirrored in the Rust `RULE_CATALOGUE` static slice for use in grounded responses without Python FFI on the hot path. Test asserts every rule has ≥3 indicators.
+**Consequence**: `src/write_coordinator.rs` — `PriorityWriteRequest` enum, `priority_tx/rx` channel pair, `biased select!`, `submit_priority()`. All `write_detection` and `write_remediation` callers use the priority path.
 
-**T5-5 resolve semantics**: Substring scoring (exact=1.0, prefix=0.8, substring=0.5) over three candidate pools: device hostnames/addresses (from graph), recent detection rule_ids/ids (last 100), and static rule catalogue descriptions. Top 20 by score. Intentionally simple — the backlog explicitly says "doesn't need to be smart." The endpoint is additive; stable IDs from the resolution result can be passed directly to other API endpoints.
-
 ---
-
-## 2026-05-12 — CV4 Sprint 6: Syslog facts (T6-1 through T6-4)
-
-**Decision**: Complete the syslog cross-source pipeline by filling four gaps: missing fact types in vendor pattern files (T6-1), ospf_neighbor and isis_adjacency join paths in the Rust join engine (T6-3), a Prometheus counter for join outcomes (T6-3), and recurrence indicators on all 13 syslog detection rules (T6-4). The SyslogFact struct, extraction pipeline, bgp/interface/bfd join paths, and 13 syslog detection rules were already present from prior sprint carryover.
-
-**T6-1 vendor pattern coverage**: nokia-srlinux already had `mpls_lsp_state`. Added it to cisco-iosxr, juniper-junos, and arista-eos using vendor-appropriate regex patterns (IOS-XR uses TE/RSVP tunnel terminology; Junos uses RSVP/SR with "coredump"; EOS uses SR-policy naming). Added `process_restart` to all four vendors in the `software` category — this fact type supports `SyslogSoftwareCrash` detection which fires on crash/panic/restart keywords in the existing `syslog_software` event stream.
 
-**T6-3 ospf/isis join routing**: OSPF and ISIS adjacency syslog facts each contain an `if_name` field. Without explicit routing, they would fall through to the generic `if_name` → Interface branch and incorrectly join to (or orphan against) an Interface node. The fix adds explicit `fact.fact_type == "ospf_neighbor"` and `isis_adjacency"` branches before the generic path, mirroring the existing `bfd_session` routing pattern. The join functions call `lookup_ospf_neighbor_state` and `lookup_isis_adjacency_state` which query `OspfNeighbor` and `IsisAdjacency` graph nodes respectively. These nodes are not yet written from gNMI telemetry (no openconfig-ospf write path exists), so all ospf/isis syslog facts currently orphan with `reason: "no_ospf_neighbor_match"` / `"no_isis_adjacency_match"`. This is the correct visible behavior: the join gap is explicit in the orphan event, and the lookup functions are ready when the OSPF/ISIS gNMI write path is added.
+## D26 — SubscriptionStatus batched independently of telemetry
 
-**T6-3 join metrics**: `bonsai_syslog_fact_join_total{fact_type, status}` counter added in `write_syslog_fact_event`. Labels are `fact_type` (e.g. "bgp_neighbor") and `status` ("joined" | "orphan"). This gives Prometheus a per-type join rate observable separately from the coarser `bonsai_telemetry_updates_total`.
+**Decision** (Session 13): `SubscriptionStatusWrite` messages were previously flushed through the write coordinator on every gNMI subscription renewal — which for 50 devices with 30-second keepalives produces ~100 flushes/minute. Each flush interrupted the telemetry batch pipeline.
 
-**T6-4 syslog rule recurrence indicators**: Added 3 indicators per rule to all 13 syslog detection rules following the same pattern as Sprint 5's 18 non-syslog rules. The indicators reference the relevant graph query (e.g. `MATCH (b:BfdSession ...)` for `syslog_bfd_disagreement`), a count query for recurrence frequency, and the `/api/detections` endpoint for historical depth. These are consumed by the grounded incident endpoint and MCP `get_incident` tool when a syslog-derived rule fires.
+**Fix**: `sub_status_pending: Vec<SubscriptionStatusWrite>` accumulates up to 128 entries in the coordinator. Flushed on the timer tick or when the telemetry batch is full, not on individual subscription renewal. Added `flush_sub_status_batch()` helper.
 
-**What was not implemented**: gNMI write paths for OspfNeighbor and IsisAdjacency graph nodes. Adding those requires new OpenConfig YANG path handlers (`openconfig-ospfv2`, `openconfig-isis`) which are a separate body of work. The syslog join infrastructure is ready for them; they are deferred to a future sprint when OSPF/ISIS gNMI path coverage is the explicit goal.
+**Consequence**: `src/write_coordinator.rs`. No API change. Subscription status writes batch with telemetry naturally, eliminating unnecessary pipeline interruptions.
 
 ---
 
-## 2026-05-13 — ContainerLab TLS: always destroy --cleanup; force-recreate bonsai after redeploy
+## D27 — CorrelationBuffer: multi-source signal deduplication within 45s window
 
-**Decision**: All topology redeploy scripts (`scripts/lab/redeploy_dc.sh`, `scripts/lab/redeploy_cloud_dc.sh`) use `containerlab destroy --cleanup --graceful` before every deploy. After deploy, bonsai is force-recreated via `docker compose up -d --force-recreate`.
+**Decision** (Session 13): When multiple telemetry sources (gNMI, syslog, SNMP) independently observe the same fault on the same device (e.g. BGP session down from gNMI + syslog + BMP), the current pipeline creates three separate `StateChangeEvent` nodes with identical semantic meaning, and the detection rule fires three times with three separate incidents.
 
-**Root cause discovered**: `containerlab destroy` without `--cleanup` preserves the `.tls/` directory. A subsequent `containerlab deploy` reuses the existing CA keypair and only generates new node certs for new nodes. Nodes from prior deploys retain certs signed by the previous CA. Bonsai trusts one CA at a time, so the mixed-CA environment causes partial subscription failures (some nodes connect, others are silently rejected). The symptom is `observed_subscriptions` being lower than `device_count × paths_per_device` with no error visible in logs.
+**Fix**: New `CorrelationBuffer` (`src/correlation_buffer.rs`) keyed by `CorrelationKey{device_address, semantic_type, sub_key}`. 45-second deduplication window. `record()` returns `NewSlot` (first observation) or `Absorbed` (duplicate within window). `semantic_key_for_event()` normalises event types across all sources (bgp, bfd, interface, ospf, isis) to a canonical semantic type. A sweep task runs every 10s, logs multi-source fusions, and emits a `bonsai_correlation_multi_source_total` Prometheus counter.
 
-**`--force-recreate` requirement**: The bonsai container caches its TLS config (CA cert + per-device connections) in memory at startup. Even after a topology redeploy generates a fresh CA, the running container holds the old CA in memory. Force-recreating the container flushes this cache and picks up the new CA from the bind mount.
+**`write_state_change_event()` calls `record()` after each write**: if `Absorbed`, the event is still written (for observability) but downstream detection is not re-fired.
 
-**Operational rule**: Never run `containerlab deploy` without a preceding `containerlab destroy --cleanup`. Never patch a running topology in-place if TLS is involved. The redeploy scripts are the canonical path for any topology change.
+**Consequence**: `src/correlation_buffer.rs` (new), wired into `GraphStore` as `Arc<CorrelationBuffer>`. All 6 correlatable graph write sub-functions carry `corr_buf`. `write()` and `write_batch()` clone the Arc into `spawn_blocking`. Sweep task in `server_startup.rs`.
 
 ---
 
-## 2026-05-13 — 7-day proof uses mode=all; distributed core+collector is the target architecture
+## D28 — change-detection subscriber: 8× capacity, DropOldest policy
 
-**Decision**: The CV5 7-day handoff proof runs with `mode = "all"` (single-process, core+collector in one container) on both laptop (`lab-dc` profile) and cloud (`cloud-dc` profile). This is a deliberate temporary choice. All future bringups after the proof must use the distributed `core + collector` compose profile.
+**Decision** (Session 13): The change-detection subscriber (`MpscSubscriber`) had a capacity of 256. Under burst telemetry load (e.g. 50 devices with ON_CHANGE firing simultaneously), the subscriber queue filled and either blocked ingest or dropped detection signals non-deterministically.
 
-**Why mode=all for the proof**: Simplifies the bringup procedure to a single container per environment. Eliminates the mTLS cert generation step between core and collector. Reduces failure surface for a time-bounded demonstration focused on data collection correctness, not architecture validation.
+**Fix**: `MpscSubscriber::new("change-detection", 2048, OverflowPolicy::DropOldest)` — 8× capacity. On overflow, the oldest (stale) signal is dropped rather than the newest (fresh). This preserves the most recent observation in all cases.
 
-**Expected artifacts of mode=all**: `collectors_connected: 0` and `unassigned_devices: N` appear in `/api/operations`. These are display artifacts — the collector assignment subsystem is bypassed when core and collector run in the same process. Devices are subscribed and collecting; the counts are misleading, not indicative of a fault.
+**Consequence**: `src/change_detection.rs`. The `DropOldest` policy is correct for a fault-detection system: a 30-second-old BGP-down signal superseded by a BGP-up is noise; the reverse is not.
 
-**Target architecture**: Distributed `bonsai-core` + `bonsai-collector-1` (or two-collector) compose profile. Prerequisites: (1) run `scripts/generate_compose_tls.sh` for core↔collector mTLS, (2) fix `docker/configs/core.toml` CA cert path from `lab/dc/ca.pem` to the live bind-mount path `lab/dc/clab-bonsai-dc/.tls/ca/ca.pem`. The `core.toml` already has all 8 DC targets split across collector IDs.
-
 ---
-
-## 2026-05-13 — Daily health reports auto-committed and pushed to GitHub main
-
-**Decision**: `scripts/cloud/daily_check_push.sh` wraps `bv5_daily_check.sh` and, on success, commits `docs/test_results/daily_runs/YYYY-MM-DD.md` and pushes to `main`. The cron entry at 02:30 UTC on both environments uses this wrapper instead of calling `bv5_daily_check.sh` directly.
-
-**Rationale**: Daily health reports written to `docs/test_results/daily_runs/` were local-only. During the 7-day handoff proof the operator needs to inspect each day's result without SSH access. Pushing to `main` makes reports visible on GitHub each morning. GITHUB_TOKEN is sourced from `~/.bonsai.env` (laptop) or `/opt/bonsai/instance.env` (cloud) inside the wrapper — cron subprocesses do not inherit interactive shell exports.
 
-**Idempotency**: The push is skipped if `git ls-files --others` and `git diff HEAD` both show no new content in `docs/test_results/daily_runs/`. A failed push (network, token expiry) commits locally and logs a warning; the report is not lost.
+## D29 — Python SDK bounded WindowRegistry and TTL-evicted rule cooldowns
 
----
-
-## 2026-05-13 — Laptop daily_sync uses Docker exec for parquet extraction
+**Decision** (Session 13 / Python scalability): Two Python-side memory leaks were identified:
 
-**Decision**: On laptop, `scripts/cloud/daily_sync.sh` detects the absence of `/mnt/bonsai-archive` (the OCI block volume path, cloud-only) and enters `LAPTOP_MODE`. In this mode it stages to `runtime/sync-staging/` and extracts parquet files from the running bonsai container via `docker exec <container> tar -cf - /app/runtime/archive | tar -xf - --strip-components=3`.
+1. `WindowRegistry` in `bonsai_sdk/window.py` had no size cap. In long-running collector sessions (30+ days), every unique `(device, feature_key)` pair accumulated unbounded entries. Fixed with `max_entries=4096` cap and FIFO eviction via `evict_stale()`.
 
-**Root cause**: Laptop parquet files are written to a Docker named volume (`bonsai_graph_lab_dc`) mounted at `/app/runtime/archive` inside the container. This path is not accessible on the host filesystem. The cloud OCI block volume is mounted at `/mnt/bonsai-archive/archive` on the host, which is directly readable. The sync script previously assumed the cloud layout unconditionally, causing `mkdir /mnt/bonsai-archive` to fail silently on laptop.
+2. `_last_fired` dict in `bonsai_sdk/rules/streaming.py` accumulated stale rule-fire timestamps indefinitely. For rules with long cooldowns on rarely-seen devices, this dict grew without bound. Fixed: `_evict_last_fired(now)` called at the start of `evaluate_graph()` removes keys older than the cooldown window.
 
-**Container name convention**: Laptop bonsai container is `bonsai-bonsai-lab-dc-1` (overridable via `BONSAI_CONTAINER` env var). If the container is not running at sync time, parquet collection is skipped with a log warning; the ops snapshot and system snapshot are still collected and pushed.
+**Consequence**: `python/bonsai_sdk/window.py` — `max_entries`, `evict_stale()`. `python/bonsai_sdk/rules/streaming.py` — `_evict_last_fired()`. Both changes are backward-compatible.
 
 ---
 
-## 2026-05-13 — API memory budget reads from governor profile; hardcoded constant is fallback only
+## D30 — Live UI: 3-panel environment-agnostic architecture
 
-**Decision**: `memory_budget_bytes` and `memory_rss_pct_of_budget` in `/api/operations`, and the RSS budget breach check in `/api/test-status`, now read from `GovernorHandle::snapshot().memory_budget_mb` when a governor is active. The hardcoded `RSS_BUDGET_BYTES = 1.5 GiB` constant is retained as a fallback for non-governed modes only.
+**Decision** (Session 14 / UI refactor): The Live Status UI had four compounding problems:
+1. **DC-only topology tiering** — role-to-tier mapping used hostname heuristics (`hostname.includes('super')`) and only recognised `superspine/spine/leaf`. Any campus, SP, WAN, or wireless device ended up at the wrong tier or miscoloured.
+2. **BGP table always rendered** — confusing and noisy on campus/IoT environments with no BGP.
+3. **Fixed-height event feed** — `max-height: 600px` made the feed unusable at scale; SSE had no reconnect logic.
+4. **No site context** — site selector was a buried `<select>` inside the topology panel; no per-site health summary; no incident count visible at a glance.
 
-**Root cause**: `RSS_BUDGET_BYTES` was introduced in commit `d488161` (Bv3, 2026-05-07) before the resource governor existed. It was a reasonable lab-scale ceiling at the time. CV4 Sprint 4 (`97d9e8c`, 2026-05-12) built `resource_profile.rs` and `resource_governor.rs` — probing RAM at startup and deriving a per-host budget (Tiny=256 MB through XLarge=4 GB). The `GovernorHandle` was wired into `AppState` for governance actions (cache shrink, rate shedding) but the HTTP server was not updated to read the profile budget for reporting. The constant and the governor coexisted silently.
+**Fix — 4 components, 1 orchestrating shell**:
 
-**Observed impact**: On a 47 GB RAM host (xlarge, 4 GB governor budget) the API reported 92% RSS utilisation against the 1.5 GB constant while the governor was watching against 4 GB — a false alarm with no governance action taken. On the 23 GB cloud host (large, 2 GB budget) the API reported 90% against 1.5 GB while the real figure was ~33% of 2 GB. The UI tile was amber/yellow on both environments throughout the proof period despite no actual memory pressure.
-
-**`/api/governance/state`** calls `g.snapshot()` directly and was always correct. The inconsistency between the two panels on the Operations page (tile vs. governance detail) was the visible symptom.
-
----
+- **`SiteRail.svelte`** (new): narrow left column listing all sites derived from topology data. Each entry shows a health dot, device count, and incident badge. Click isolates the topology canvas to that site.
+- **`LiveStatusBar.svelte`** (new): 32px top bar — total devices, health pills (critical/warn/healthy), open incident count, pulsing SSE dot, "updated Ns ago".
+- **`Live.svelte`**: 3-column grid (`140px | 1fr | 320px`) inside a flex column. Single topology fetch drives SiteRail + StatusBar via `onTopoLoad` callback — no extra requests.
+- **`Topology.svelte`** refactor:
+  - Accepts `activeSite` prop (site state owned by parent, not topology).
+  - `ROLE_TIER` alias map covers 30+ roles: DC fabric, campus (wlc, distribution, access, ap), SP/WAN (pe, p, ce, cpe, wan), firewall, LB.
+  - Degree-percentile auto-tier is now a **first-class path**: any topology with missing/unknown roles is correctly tiered by fabric connectivity (top-25% degree → tier 0, bottom-25% → tier 2).
+  - Tier rail labels derived from actual node roles, not hardcoded strings.
+  - BGP column hidden when no device in the filtered set has BGP data (`hasBgpData` derived).
+  - Canvas uses `flex: 1` — fills remaining height; device table capped at `32vh`.
+- **`Events.svelte`** refactor:
+  - `flex: 1` scroll list (no fixed height).
+  - SSE exponential-backoff reconnect (1s → 30s max).
+  - Per-event severity coloring derived from event type semantics (down/fail/lost → critical; change/flap → warn).
+  - Collapsible JSON detail per event (▾/▴ toggle, hover-reveal actions).
+- **`colors.js`**: `roleStrokeColor()` expanded to all 30+ aliases; hostname-based heuristics removed.
 
-## 2026-05-14 — CV7 T4: Retire Rust event-detection fastpath; sidecars are the canonical detection path; sidecar status is a first-class operational fact
-
-**Decision**: `src/event_detection.rs` (the 191-line Rust fastpath added in CV6 covering `bgp_session_down`, `bfd_session_down`, `interface_down`) is retired. Detection is the responsibility of Python sidecars exclusively. Bonsai exposes a sidecar registry — `RegisterSidecar` + `Heartbeat` gRPC RPCs, `/api/sidecars` HTTP endpoint, a "Detection Engine" UI tab — so the presence, absence, type, and health of every Python sidecar (rules, ML inference, syslog parser, future GNN trainer) is a visible operational fact. A `BONSAI_REQUIRE_SIDECAR=rules` env flag causes `/health` to return `degraded` when the required sidecar has not registered within startup grace, surfacing the "Detections: 0" failure mode the moment it occurs.
-
-**What this supersedes**:
-- 2026-04-23 sidecar decision (rule engine as standalone Python sidecar) — preserved in shape, extended with visibility.
-- 2026-04-17 "Python rejected for the core … Python is appropriate for the rules engine and ML pipeline" — preserved.
-- CV6 introduction of `src/event_detection.rs` — explicitly retired. The fastpath was a workaround for the "Detections: 0" symptom whose actual root cause was that the Python sidecar was not running and bonsai had no way to surface that.
-
-**Why retire the Rust fastpath rather than keep it as a safety net**:
-- It is parallel logic — two implementations of "BGP went down" that must be kept in semantic sync forever. The Python rule has the recurrence indicators, the auto-remediate hint, the features extraction; the Rust fastpath is a stripped subset. They will drift.
-- It masked the real bug. With the fastpath silently catching three rule_ids, the operator could observe *some* detections firing while 15 of 18 silently did nothing. The system felt healthy when it wasn't.
-- The fix it was reaching for is observability, not parallel logic. Surface the sidecar's presence and absence directly; let the single Python path own detection.
-
-**Why a sidecar registry rather than a passive liveness check**:
-- We expect multiple sidecars over time — rules today, ML inference next, syslog parser if it splits out, GNN trainer when GNN training ships. A registry typed by `kind` scales to all of these; a per-sidecar liveness flag does not.
-- The UI question is not "is *the* sidecar running" but "what is bound to bonsai right now, where, and is each one healthy." A registry answers that directly. Each `RegisterSidecar` call captures `name`, `kind`, `version`, `capabilities`, `address`, returns a `sidecar_id`. Heartbeats every 15s. Last-seen + counters surface in `/api/sidecars`.
-
-**Why read-only UI (no rule editor) in CV7**:
-- CV7's guardrail is "no new features, stabilization." A status surface is observability; a rule editor is a feature. The northstar wants the editor; CV8 is the right place.
-- A read-only view delivers the operational visibility the operator needs *now* (is the sidecar running, are rules firing, is ML loaded) without expanding scope.
-
-**Sequencing constraint**: `src/event_detection.rs` is deleted only after the new visibility + Tier-2 sidecar codification land and the Python rules-sidecar is observed catching the three retired rule_ids in a live 1-hour smoke. Deleting before that regresses to "Detections: 0" with no safety net.
-
-**Future sidecars envisioned (not built in CV7)**:
-- `ml-inference` sidecar: hosts the IsolationForest / GBT models, separate process for memory isolation.
-- `syslog-parser` sidecar: vendor regex evaluation if syslog volume warrants offload.
-- `gnn-trainer` sidecar: offline GNN training pipeline that talks to the archive, not the live bus.
-- The registry contract is designed to accept these without protocol changes — only `kind` strings are added.
-
-**Where**:
-- New ADR (this entry) in DECISIONS.md.
-- `docs/architecture/sidecars.md` replaces the deleted `docs/architecture/detection_paths.md` draft.
-- `BONSAI_CONSOLIDATED_BACKLOG_CV7.md` Tier 4 rewritten end-to-end (T4-1 through T4-7). Tier 2 amended to include the sidecar in the per-environment deployment story. Tier 5 amended to mention `sidecars.md` instead of `detection_paths.md`.
-- `proto/bonsai_service.proto` gains `RegisterSidecar`, `Heartbeat` RPCs and supporting messages.
-- `src/sidecar_registry.rs` (new) — registry state + gRPC handlers.
-- `src/http_server.rs` — `GET /api/sidecars` endpoint.
-- `ui-bonpy/` (new, see addendum below) — separate Svelte SPA for sidecar status + ML; served by bonsai HTTP at `/bonpy/`.
-- `python/collector_engine.py` — calls `RegisterSidecar` at startup; runs heartbeat thread.
-- `src/event_detection.rs` — deleted (last step of Tier 4).
-
-**Addendum 2026-05-14 (same-day clarification) — Bonpy: a second UI for Python/ML/AIOps surfaces**:
-The sidecar status surface is **not** a tab in bonsai's existing Svelte UI. It is a separate SPA called **bonpy** (a portmanteau of bonsai + python — bonsai's Python-facing companion UI). Rationale: the operator anticipates AIOps interactivity (rule editor, model retraining controls, GNN training console) growing into a real surface as the project moves past CV7. Bundling that into the bonsai UI would conflate "view of the live network graph" with "manage the Python/ML side." Separation keeps each UI focused: bonsai shows what bonsai sees, bonpy shows what Python/ML sidecars are doing. Independent build pipelines (`ui-bonpy/package.json`), independent component libraries, distinct visual identity. Both served by the same bonsai Axum HTTP server — bonsai at `/`, bonpy at `/bonpy/` — to keep ops simple (one process, one port, two paths). CV7 ships bonpy v1 as **read-only status** (sidecar registry surface, per-rule firing summary, ML model panel). Editing/interactivity is deferred to CV8+. The read-only-now / interactive-later progression matches the broader CV7 guardrail of "no new features in CV7" while reserving the architectural shape for the AIOps future.
+**Consequence**: No backend changes. All changes are Svelte/JS. The topology is now environment-agnostic and self-adapts to any network archetype declared in the environment config.

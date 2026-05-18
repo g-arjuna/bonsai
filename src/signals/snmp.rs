@@ -1,15 +1,16 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use hex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, watch};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::{SnmpConfig, TargetConfig};
 use crate::event_bus::InProcessBus;
@@ -50,6 +51,109 @@ pub struct SnmpTrapEvent {
     pub raw_len: usize,
 }
 
+/// A structured fact extracted from SNMP varbinds using an OID pattern.
+#[derive(Debug, Clone, Serialize)]
+pub struct SnmpFact {
+    pub timestamp_ns: i64,
+    pub fact_type: String,
+    pub trap_oid: String,
+    pub peer_addr: String,
+    pub enterprise_oid: String,
+    #[serde(default)]
+    pub field_schema: BTreeMap<String, String>,
+    #[serde(default)]
+    pub fields: BTreeMap<String, String>,
+}
+
+// ── OID pattern config (loaded from config/snmp_oid_patterns/*.yaml) ──────────
+
+#[derive(Debug, Clone, Deserialize)]
+struct SnmpOidPatternFile {
+    patterns: Vec<SnmpOidPattern>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SnmpOidPattern {
+    fact_type: String,
+    trap_oid: String,
+    #[serde(default)]
+    fields: BTreeMap<String, String>,
+    #[serde(default)]
+    field_schema: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Default)]
+pub struct SnmpFactExtractor {
+    patterns: Vec<SnmpOidPattern>,
+}
+
+impl SnmpFactExtractor {
+    pub fn load_from_dir(dir: &str) -> Self {
+        if dir.trim().is_empty() {
+            return Self::default();
+        }
+        let mut patterns: Vec<SnmpOidPattern> = Vec::new();
+        let read_dir = match std::fs::read_dir(dir) {
+            Ok(rd) => rd,
+            Err(e) => {
+                warn!(dir, error = %e, "snmp_oid_patterns dir not readable; fact extraction disabled");
+                return Self::default();
+            }
+        };
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+                continue;
+            }
+            match std::fs::read_to_string(&path) {
+                Ok(text) => match serde_yaml::from_str::<SnmpOidPatternFile>(&text) {
+                    Ok(file) => {
+                        info!(file = %path.display(), count = file.patterns.len(), "loaded snmp OID patterns");
+                        patterns.extend(file.patterns);
+                    }
+                    Err(e) => warn!(file = %path.display(), error = %e, "failed to parse snmp OID pattern file"),
+                },
+                Err(e) => warn!(file = %path.display(), error = %e, "failed to read snmp OID pattern file"),
+            }
+        }
+        Self { patterns }
+    }
+
+    /// Try to match a parsed trap against OID patterns. Returns `Some(SnmpFact)` on first match.
+    pub fn extract(&self, event: &SnmpTrapEvent) -> Option<SnmpFact> {
+        let trap_oid = event.trap_oid.trim_end_matches(".0");
+        let pattern = self.patterns.iter().find(|p| {
+            let pat = p.trap_oid.trim_end_matches(".0");
+            trap_oid == pat || trap_oid.starts_with(&format!("{pat}."))
+        })?;
+
+        let mut fields: BTreeMap<String, String> = BTreeMap::new();
+        for vb in &event.varbinds {
+            let oid = vb.oid.trim_end_matches(".0");
+            if let Some(field_name) = pattern.fields.get(oid) {
+                fields.insert(field_name.clone(), vb.value.clone());
+            }
+        }
+
+        debug!(
+            fact_type = %pattern.fact_type,
+            trap_oid = %event.trap_oid,
+            fields = ?fields,
+            "snmp OID fact extracted"
+        );
+
+        Some(SnmpFact {
+            timestamp_ns: event.timestamp_ns,
+            fact_type: pattern.fact_type.clone(),
+            trap_oid: event.trap_oid.clone(),
+            peer_addr: event.peer_addr.clone(),
+            enterprise_oid: event.enterprise_oid.clone(),
+            field_schema: pattern.field_schema.clone(),
+            fields,
+        })
+    }
+}
+
 pub async fn run_snmp_receiver(
     cfg: SnmpConfig,
     targets: Vec<TargetConfig>,
@@ -58,6 +162,9 @@ pub async fn run_snmp_receiver(
 ) -> Result<()> {
     let archive = SnmpArchive::open(&cfg.archive_path).await?;
     let target_map = SnmpTargetMap::new(&targets);
+    let fact_extractor = SnmpFactExtractor::load_from_dir(
+        cfg.oid_pattern_dir.as_deref().unwrap_or("config/snmp_oid_patterns"),
+    );
 
     if cfg.udp_addr.trim().is_empty() {
         warn!("snmp receiver enabled but udp_addr empty");
@@ -118,15 +225,33 @@ pub async fn run_snmp_receiver(
                         let value = serde_json::to_value(&event)
                             .unwrap_or_else(|_| json!({"peer_addr": event.peer_addr.clone()}));
                         bus.publish(TelemetryUpdate {
-                            target: resolved.address,
-                            vendor: resolved.vendor,
-                            hostname: resolved.hostname,
-                            role: resolved.role,
-                            site: resolved.site,
+                            target: resolved.address.clone(),
+                            vendor: resolved.vendor.clone(),
+                            hostname: resolved.hostname.clone(),
+                            role: resolved.role.clone(),
+                            site: resolved.site.clone(),
                             timestamp_ns: event.timestamp_ns,
                             path: format!("signals/snmp/{}", event.event_type),
                             value,
                         });
+
+                        // OID fact extraction — publish a second TelemetryUpdate on
+                        // signals/snmp_fact/{fact_type} if an OID pattern matches.
+                        if let Some(fact) = fact_extractor.extract(&event) {
+                            let fact_path = format!("signals/snmp_fact/{}", fact.fact_type);
+                            let fact_value = serde_json::to_value(&fact)
+                                .unwrap_or_else(|_| json!({"peer_addr": fact.peer_addr.clone()}));
+                            bus.publish(TelemetryUpdate {
+                                target: resolved.address,
+                                vendor: resolved.vendor,
+                                hostname: resolved.hostname,
+                                role: resolved.role,
+                                site: resolved.site,
+                                timestamp_ns: event.timestamp_ns,
+                                path: fact_path,
+                                value: fact_value,
+                            });
+                        }
                     }
                     Err(error) => warn!(%error, "snmp UDP receive failed"),
                 }
