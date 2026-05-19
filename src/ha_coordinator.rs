@@ -249,22 +249,59 @@ pub enum ConfigChangeType {
 /// - Apply incoming changes from other nodes
 pub struct ConfigReplicator {
     node_id: String,
+    etcd_config: Option<EtcdConfig>,
 }
 
 impl ConfigReplicator {
     pub fn new(node_id: String) -> Self {
-        Self { node_id }
+        Self {
+            node_id,
+            etcd_config: None,
+        }
+    }
+
+    pub fn with_etcd_config(mut self, config: EtcdConfig) -> Self {
+        self.etcd_config = Some(config);
+        self
     }
 
     /// Publish a config change for replication
-    pub async fn publish_change(&self, change: ConfigChange) {
-        // TODO: Publish to replication channel (etcd, Kafka, etc.)
-        tracing::debug!(
-            change_type = ?change.change_type,
-            table = %change.table,
-            key = %change.key,
-            "config change published for replication"
-        );
+    pub async fn publish_change(&self, change: ConfigChange) -> anyhow::Result<()> {
+        if let Some(ref etcd_config) = self.etcd_config {
+            use etcd_client::{Client, ConnectOptions};
+
+            let endpoints: Vec<&str> = etcd_config.endpoints.iter().map(|s| s.as_str()).collect();
+            let client = Client::connect(endpoints, Some(ConnectOptions::default()))
+                .await
+                .context("failed to connect to etcd for config publish")?;
+
+            // Serialize config change to JSON
+            let change_json = serde_json::to_string(&change)
+                .context("failed to serialize config change")?;
+
+            // Write to etcd with key: /bonsai/config/<table>/<key>
+            let etcd_key = format!("{}/{}/{}", etcd_config.config_prefix, change.table, change.key);
+            
+            let mut kv_client = client.kv_client();
+            let put_response = kv_client.put(etcd_key, change_json, None).await
+                .context("failed to publish config change to etcd")?;
+
+            tracing::info!(
+                change_type = ?change.change_type,
+                table = %change.table,
+                key = %change.key,
+                revision = put_response.revision(),
+                "config change published to etcd"
+            );
+        } else {
+            tracing::debug!(
+                change_type = ?change.change_type,
+                table = %change.table,
+                key = %change.key,
+                "config change published for replication (no etcd config)"
+            );
+        }
+        Ok(())
     }
 
     /// Apply a config change from another node
