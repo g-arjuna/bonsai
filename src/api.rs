@@ -72,6 +72,7 @@ pub struct BonsaiService<S: BonsaiStore> {
     collector_manager: Option<Arc<crate::assignment::CollectorManager>>,
     sidecar_registry: Arc<SidecarRegistry>,
     sqlite_store: Option<Arc<crate::sqlite_store::SqliteStore>>,
+    ha_coordinator: Option<Arc<crate::ha_coordinator::HACoordinator>>,
 }
 
 impl<S: BonsaiStore> BonsaiService<S> {
@@ -83,6 +84,8 @@ impl<S: BonsaiStore> BonsaiService<S> {
         debouncer: Option<Arc<ingest::TelemetryDebouncer>>,
         collector_manager: Option<Arc<crate::assignment::CollectorManager>>,
         sidecar_registry: Arc<SidecarRegistry>,
+        sqlite_store: Option<Arc<crate::sqlite_store::SqliteStore>>,
+        ha_coordinator: Option<Arc<crate::ha_coordinator::HACoordinator>>,
     ) -> Self {
         Self {
             store,
@@ -92,12 +95,18 @@ impl<S: BonsaiStore> BonsaiService<S> {
             debouncer,
             collector_manager,
             sidecar_registry,
-            sqlite_store: None,
+            sqlite_store,
+            ha_coordinator,
         }
     }
 
     pub fn with_sqlite_store(mut self, store: Arc<crate::sqlite_store::SqliteStore>) -> Self {
         self.sqlite_store = Some(store);
+        self
+    }
+
+    pub fn with_ha_coordinator(mut self, ha_coordinator: Arc<crate::ha_coordinator::HACoordinator>) -> Self {
+        self.ha_coordinator = Some(ha_coordinator);
         self
     }
 
@@ -126,6 +135,44 @@ type RegisterCollectorStream =
 impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
     type StreamEventsStream = EventStream;
     type RegisterCollectorStream = RegisterCollectorStream;
+
+    // G3 Session 7: GetLeader RPC for collector re-homing
+    async fn get_leader(
+        &self,
+        _req: Request<pb::GetLeaderRequest>,
+    ) -> Result<Response<pb::GetLeaderResponse>, Status> {
+        let response = if let Some(ref ha_coordinator) = self.ha_coordinator {
+            let state = ha_coordinator.state().await;
+            let is_leader = matches!(state, crate::ha_coordinator::LeaderState::Leader);
+            let leader_id = match state {
+                crate::ha_coordinator::LeaderState::Leader => {
+                    if let crate::ha_coordinator::HAMode::Cluster { ref node_id } = ha_coordinator.mode {
+                        node_id.clone()
+                    } else {
+                        "standalone".to_string()
+                    }
+                }
+                crate::ha_coordinator::LeaderState::Follower { ref leader_id } => leader_id.clone(),
+                crate::ha_coordinator::LeaderState::Electing => "electing".to_string(),
+            };
+            
+            pb::GetLeaderResponse {
+                leader_id,
+                leader_addr: std::env::var("BONSAI_GRPC_BIND").unwrap_or_else(|_| "0.0.0.0:50051".to_string()),
+                is_leader,
+                error: String::new(),
+            }
+        } else {
+            pb::GetLeaderResponse {
+                leader_id: "unknown".to_string(),
+                leader_addr: String::new(),
+                is_leader: false,
+                error: "HA coordinator not configured".to_string(),
+            }
+        };
+        
+        Ok(Response::new(response))
+    }
 
     async fn register_collector(
         &self,

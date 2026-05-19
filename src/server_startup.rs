@@ -1010,6 +1010,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         }
 
         let sqlite_store_for_api = std::sync::Arc::clone(&sqlite_store);
+        let ha_coordinator_for_api = ha_coordinator.clone();
         tokio::spawn(async move {
             match store_for_api {
                 Store::Core(s) => {
@@ -1021,9 +1022,10 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         Some(std::sync::Arc::clone(&debouncer)),
                         collector_manager_for_api,
                         sidecar_registry_for_api,
+                        Some(sqlite_store_for_api.clone()),
+                        Some(ha_coordinator_for_api.clone()),
                     )
-                    .with_sqlite_store(sqlite_store_for_api))
-                    .accept_compressed(CompressionEncoding::Zstd);
+                    .accept_compressed(CompressionEncoding::Zstd));
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {
                         warn!(%error, "gRPC core server error");
                     }
@@ -1037,9 +1039,10 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         Some(std::sync::Arc::clone(&debouncer)),
                         None,
                         sidecar_registry_for_api,
+                        Some(sqlite_store_for_api.clone()),
+                        Some(ha_coordinator_for_api.clone()),
                     )
-                    .with_sqlite_store(sqlite_store_for_api))
-                    .accept_compressed(CompressionEncoding::Zstd);
+                    .accept_compressed(CompressionEncoding::Zstd));
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {
                         warn!(%error, "gRPC collector server error");
                     }
