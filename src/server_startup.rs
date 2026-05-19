@@ -1082,13 +1082,38 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             );
 
             // G3: HA coordinator
+            // G3 Session 1: HA coordinator with etcd configuration
             let ha_mode = if std::env::var("BONSAI_HA_MODE").as_deref() == Ok("cluster") {
                 let node_id = std::env::var("BONSAI_NODE_ID").unwrap_or_else(|_| "node-1".to_string());
                 bonsai::ha_coordinator::HAMode::Cluster { node_id }
             } else {
                 bonsai::ha_coordinator::HAMode::Standalone
             };
-            let ha_coordinator = std::sync::Arc::new(bonsai::ha_coordinator::HACoordinator::new(ha_mode.clone()));
+
+            let mut ha_coordinator = std::sync::Arc::new(bonsai::ha_coordinator::HACoordinator::new(ha_mode.clone()));
+
+            // Add etcd configuration if in cluster mode and env vars are set
+            if matches!(ha_mode, bonsai::ha_coordinator::HAMode::Cluster { .. }) {
+                let etcd_endpoints_str = std::env::var("BONSAI_ETCD_ENDPOINTS").unwrap_or_default();
+                if !etcd_endpoints_str.is_empty() {
+                    let etcd_config = bonsai::ha_coordinator::EtcdConfig {
+                        endpoints: etcd_endpoints_str
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect(),
+                        election_ttl_secs: std::env::var("BONSAI_ETCD_ELECTION_TTL")
+                            .unwrap_or_else(|_| "10".to_string())
+                            .parse()
+                            .unwrap_or(10),
+                        config_prefix: std::env::var("BONSAI_ETCD_CONFIG_PREFIX")
+                            .unwrap_or_else(|_| "/bonsai/config".to_string()),
+                    };
+                    let ha = std::sync::Arc::make_mut(&mut ha_coordinator);
+                    *ha = ha.with_etcd_config(etcd_config);
+                }
+            }
+
             tokio::spawn({
                 let ha = ha_coordinator.clone();
                 async move {

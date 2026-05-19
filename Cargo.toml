@@ -81,6 +81,9 @@ lru = "0.12"
 # SQLite config store for registry, adapters, enrichers (G2)
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+# etcd client for distributed leader election and config replication (G3)
+etcd-client = "0.12"
+
 # Internal observability — exposes /metrics in Prometheus text format
 metrics = "0.24"
 metrics-exporter-prometheus = "0.16"

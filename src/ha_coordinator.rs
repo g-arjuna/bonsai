@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use anyhow::Result;
 
 /// HA mode configuration
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,6 +21,24 @@ pub enum HAMode {
     Standalone,
     /// Multi-node with leader election
     Cluster { node_id: String },
+}
+
+/// etcd configuration for cluster mode
+#[derive(Clone, Debug)]
+pub struct EtcdConfig {
+    pub endpoints: Vec<String>,
+    pub election_ttl_secs: i64,
+    pub config_prefix: String,
+}
+
+impl Default for EtcdConfig {
+    fn default() -> Self {
+        Self {
+            endpoints: vec!["127.0.0.1:2379".to_string()],
+            election_ttl_secs: 10,
+            config_prefix: "/bonsai/config".to_string(),
+        }
+    }
 }
 
 /// Leader election state
@@ -37,6 +56,7 @@ pub enum LeaderState {
 pub struct HACoordinator {
     mode: HAMode,
     state: Arc<RwLock<LeaderState>>,
+    etcd_config: Option<EtcdConfig>,
 }
 
 impl HACoordinator {
@@ -44,7 +64,13 @@ impl HACoordinator {
         Self {
             mode,
             state: Arc::new(RwLock::new(LeaderState::Electing)),
+            etcd_config: None,
         }
+    }
+
+    pub fn with_etcd_config(mut self, config: EtcdConfig) -> Self {
+        self.etcd_config = Some(config);
+        self
     }
 
     /// Get current leader state
@@ -73,12 +99,49 @@ impl HACoordinator {
                 tracing::info!("HA mode: standalone, assumed leader");
             }
             HAMode::Cluster { node_id } => {
-                // TODO: Implement etcd-based leader election
-                // For now, use simple health-based election
-                tracing::info!(%node_id, "HA mode: cluster, election not yet implemented (needs etcd)");
-                self.set_state(LeaderState::Leader).await; // Temporary: assume leader
+                // G3 Session 1: Test etcd connection
+                if let Some(ref etcd_config) = self.etcd_config {
+                    match self.test_etcd_connection(etcd_config).await {
+                        Ok(_) => {
+                            tracing::info!(
+                                %node_id,
+                                endpoints = ?etcd_config.endpoints,
+                                "HA mode: cluster, etcd connection successful"
+                            );
+                            // TODO: G3 Session 2: Implement actual leader election
+                            self.set_state(LeaderState::Leader).await; // Temporary
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                %node_id,
+                                error = %e,
+                                "HA mode: cluster, etcd connection failed, falling back to leader assumption"
+                            );
+                            self.set_state(LeaderState::Leader).await; // Fallback
+                        }
+                    }
+                } else {
+                    tracing::warn!(%node_id, "HA mode: cluster but no etcd config provided");
+                    self.set_state(LeaderState::Leader).await; // Fallback
+                }
             }
         }
+    }
+
+    /// Test etcd connection
+    async fn test_etcd_connection(&self, config: &EtcdConfig) -> Result<()> {
+        use etcd_client::{Client, ConnectOptions};
+
+        let endpoints: Vec<&str> = config.endpoints.iter().map(|s| s.as_str()).collect();
+        let client = Client::connect(endpoints, Some(ConnectOptions::default()))
+            .await
+            .context("failed to connect to etcd")?;
+
+        // Test by getting cluster status
+        let status = client.status().await.context("failed to get etcd status")?;
+        tracing::debug!(leader = ?status.leader, "etcd connection test successful");
+
+        Ok(())
     }
 }
 
