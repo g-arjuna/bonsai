@@ -4,6 +4,8 @@
 **Bonsai config**: `docker/configs/signal-test.toml`
 **Goal**: End-to-end validation of every receiver and signal pipeline introduced in DV3.
 
+**See Also**: For HA cluster testing with etcd, see `docs/HA_TESTING.md`. For a master index of all testing guides, see `docs/TESTING_INDEX.md`.
+
 Each step is numbered. Mark ✅/❌ as you go. Do not skip steps — they have dependencies.
 
 ---

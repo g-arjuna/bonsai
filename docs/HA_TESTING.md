@@ -2,6 +2,8 @@
 
 This document describes how to test and validate Bonsai's HA failover behavior in a multi-node cluster deployment.
 
+**See Also**: For signal receiver testing in ContainerLab topology, see `lab/signal-test-lab/UBUNTU_TESTING_GUIDE.md`. For a master index of all testing guides, see `docs/TESTING_INDEX.md`.
+
 ## Prerequisites
 
 - etcd cluster (3 nodes recommended for production, 1 node for testing)
