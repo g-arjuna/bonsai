@@ -631,16 +631,18 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
 
     // Disk guard
     let storage_config_for_http = cfg.storage.clone();
+    let health_emitter_for_disk = std::sync::Arc::new(bonsai::health_emitter::HealthEmitter::new(bus.clone()));
     if run_core && (cfg.storage.max_archive_bytes > 0 || cfg.storage.max_graph_bytes > 0) {
         let archive_path = std::path::PathBuf::from(&cfg.archive.path);
         let graph_path = std::path::PathBuf::from(&cfg.graph_path);
         let storage_cfg = cfg.storage;
         let dg_shutdown = shutdown_rx.clone();
-        tokio::spawn(bonsai::disk_guard::run_disk_guard(
+        tokio::spawn(bonsai::disk_guard::start(
             archive_path,
             graph_path,
             storage_cfg,
             dg_shutdown,
+            Some(health_emitter_for_disk.clone()),
         ));
     }
 
@@ -673,7 +675,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 std::sync::Arc::clone(&registry),
                 std::sync::Arc::clone(&credentials),
                 cfg.assignment.rules.clone(),
-            ),
+            )
+            .with_health_emitter(health_emitter_for_disk.clone()),
         ))
     } else {
         None

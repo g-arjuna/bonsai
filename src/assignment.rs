@@ -23,6 +23,7 @@ pub struct CollectorManager {
     sites_cache: Arc<Mutex<Vec<SiteRecord>>>,
     /// Optional event sender — wired after construction from GraphStore::event_sender().
     event_tx: Mutex<Option<broadcast::Sender<BonsaiEvent>>>,
+    health_emitter: Option<Arc<crate::health_emitter::HealthEmitter>>,
 }
 
 #[derive(Clone, Default)]
@@ -68,9 +69,14 @@ impl CollectorManager {
             rules: Arc::new(Mutex::new(rules)),
             sites_cache: Arc::new(Mutex::new(Vec::new())),
             event_tx: Mutex::new(None),
+            health_emitter: None,
         };
-        manager.start_registry_watcher();
         manager
+    }
+
+    pub fn with_health_emitter(mut self, emitter: Arc<crate::health_emitter::HealthEmitter>) -> Self {
+        self.health_emitter = Some(emitter);
+        self
     }
 
     /// Wire the graph event channel so collector connect/disconnect events
@@ -231,6 +237,11 @@ impl CollectorManager {
         // G6: Emit metric for collector connection
         metrics::gauge!("bonsai_collector_connected_total").increment(1);
 
+        // G4: Emit health event for collector connection
+        if let Some(ref emitter) = self.health_emitter {
+            emitter.emit_collector_connected(&collector_id, "unknown");
+        }
+
         let (tx, rx) = mpsc::channel(32);
 
         let targets = self.registry.list_assigned_to(&collector_id)?;
@@ -275,6 +286,11 @@ impl CollectorManager {
     pub fn unregister_collector(&self, collector_id: &str) {
         // G6: Emit metric for collector disconnection
         metrics::gauge!("bonsai_collector_connected_total").decrement(1);
+
+        // G4: Emit health event for collector disconnection
+        if let Some(ref emitter) = self.health_emitter {
+            emitter.emit_collector_disconnected(collector_id, "unknown");
+        }
 
         {
             let mut collectors = self.active_collectors.lock().unwrap();

@@ -75,11 +75,12 @@ pub fn snapshot(archive_path: &Path, graph_path: &Path, cfg: &StorageConfig) -> 
 /// Logs a warning when usage exceeds `cfg.warn_threshold_pct` of the cap.
 /// When usage reaches 100%, logs an error — the caller is responsible for
 /// triggering retention or dropping data.
-pub async fn run_disk_guard(
+pub async fn start(
     archive_path: PathBuf,
     graph_path: PathBuf,
     cfg: StorageConfig,
     mut shutdown: watch::Receiver<bool>,
+    health_emitter: Option<Arc<crate::health_emitter::HealthEmitter>>,
 ) {
     let interval = Duration::from_secs(cfg.check_interval_secs.max(30));
     let mut ticker = tokio::time::interval(interval);
@@ -113,6 +114,9 @@ pub async fn run_disk_guard(
                         metrics::counter!("bonsai_disk_cap_reached_total",
                             "component" => "archive"
                         ).increment(1);
+                        if let Some(ref emitter) = health_emitter {
+                            emitter.emit_disk_space_critical(archive_path.to_str().unwrap_or("archive"), snap.archive_pct as f64);
+                        }
                     } else if snap.archive_pct >= warn_pct {
                         warn!(
                             pct = snap.archive_pct,
@@ -141,6 +145,9 @@ pub async fn run_disk_guard(
                         metrics::counter!("bonsai_disk_cap_reached_total",
                             "component" => "graph"
                         ).increment(1);
+                        if let Some(ref emitter) = health_emitter {
+                            emitter.emit_disk_space_critical(graph_path.to_str().unwrap_or("graph"), snap.graph_pct as f64);
+                        }
                     } else if snap.graph_pct >= warn_pct {
                         warn!(
                             pct = snap.graph_pct,
