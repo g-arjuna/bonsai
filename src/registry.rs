@@ -116,7 +116,7 @@ impl DeviceRegistry for FileRegistry {
     }
 }
 
-/// Runtime registry persisted to a local JSON file.
+/// Runtime registry persisted to SQLite (preferred) or JSON file.
 ///
 /// The on-disk state is the durable managed-device set for v1. Devices from
 /// `bonsai.toml` are treated as seed entries and merged in on startup so local
@@ -125,18 +125,28 @@ pub struct ApiRegistry {
     path: PathBuf,
     state: Arc<Mutex<RegistryState>>,
     change_tx: broadcast::Sender<RegistryChange>,
+    sqlite_store: Option<Arc<crate::sqlite_store::SqliteStore>>,
 }
 
 impl ApiRegistry {
     pub fn open(path: impl Into<PathBuf>, seed_targets: Vec<TargetConfig>) -> Result<Self> {
         let path = path.into();
-        let state = Self::load_state(&path, seed_targets)?;
+        let runtime_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let sqlite_store = crate::sqlite_store::SqliteStore::open(runtime_dir).ok();
+
+        // Try to migrate from JSON if SQLite is new
+        if let Some(ref store) = sqlite_store {
+            let _ = store.migrate_from_json(runtime_dir);
+        }
+
+        let state = Self::load_state(&path, seed_targets, sqlite_store.as_deref())?;
         let (change_tx, _) = broadcast::channel(REGISTRY_CHANNEL_CAPACITY);
 
         Ok(Self {
             path,
             state: Arc::new(Mutex::new(state)),
             change_tx,
+            sqlite_store,
         })
     }
 
@@ -172,7 +182,12 @@ impl ApiRegistry {
                 bail!("device '{address}' already exists");
             }
             state.targets.insert(address.clone(), target.clone());
-            Self::persist_state(&self.path, &state)?;
+            Self::persist_state(&self.path, &state, self.sqlite_store.as_deref())?
+        }
+
+        // Also write directly to SQLite for better audit trail
+        if let Some(ref store) = self.sqlite_store {
+            let _ = store.upsert_device(&target, "registry_add_device");
         }
 
         let _ = self.change_tx.send(RegistryChange::Added(target.clone()));
@@ -206,7 +221,7 @@ impl ApiRegistry {
                 stamp_existing_target_audit(&mut target, &existing, actor, action);
             }
             state.targets.insert(address.clone(), target.clone());
-            Self::persist_state(&self.path, &state)?;
+            Self::persist_state(&self.path, &state, self.sqlite_store.as_deref())?
         }
 
         let _ = self.change_tx.send(RegistryChange::Updated(target.clone()));
@@ -222,12 +237,16 @@ impl ApiRegistry {
                 .map_err(|_| anyhow!("registry lock poisoned"))?;
             let removed = state.targets.remove(&address);
             if removed.is_some() {
-                Self::persist_state(&self.path, &state)?;
+                Self::persist_state(&self.path, &state, self.sqlite_store.as_deref())?
             }
             removed
         };
 
         if removed.is_some() {
+            // Also delete directly from SQLite for better audit trail
+            if let Some(ref store) = self.sqlite_store {
+                let _ = store.delete_device(&address, "registry_remove_device");
+            }
             let _ = self.change_tx.send(RegistryChange::Removed(address));
         }
 
@@ -263,7 +282,7 @@ impl ApiRegistry {
             .retain(|o| !(o.scope == *scope && o.path == path));
         let changed = state.overrides.len() != len_before;
         if changed {
-            Self::persist_state(&self.path, &state)?;
+            Self::persist_state(&self.path, &state, self.sqlite_store.as_deref())?
         }
         Ok(changed)
     }
@@ -324,7 +343,7 @@ impl ApiRegistry {
             target.updated_by = actor.to_string();
             target.last_operator_action = action.to_string();
             let updated = target.clone();
-            Self::persist_state(&self.path, &state)?;
+            Self::persist_state(&self.path, &state, self.sqlite_store.as_deref())?
             updated
         };
 
@@ -332,44 +351,56 @@ impl ApiRegistry {
         Ok(target)
     }
 
-    fn load_state(path: &Path, seed_targets: Vec<TargetConfig>) -> Result<RegistryState> {
-        let mut state = if path.exists() {
+    fn load_state(path: &Path, seed_targets: Vec<TargetConfig>, sqlite_store: Option<&crate::sqlite_store::SqliteStore>) -> Result<RegistryState> {
+        let mut targets = if let Some(store) = sqlite_store {
+            store.list_devices().unwrap_or_default()
+        } else if path.exists() {
             let raw = std::fs::read_to_string(path)
                 .with_context(|| format!("failed to read registry '{}'", path.display()))?;
             let raw = raw.trim_start();
             if raw.starts_with('[') {
-                let targets: Vec<TargetConfig> = serde_json::from_str(raw).with_context(|| {
+                serde_json::from_str(raw).with_context(|| {
                     format!("failed to parse legacy registry '{}'", path.display())
-                })?;
-                RegistryState::from_targets(targets)
+                })?
             } else {
                 serde_json::from_str(raw)
                     .with_context(|| format!("failed to parse registry '{}'", path.display()))?
             }
         } else {
-            RegistryState::default()
+            Vec::new()
         };
 
         for mut target in seed_targets {
             let address = normalize_address(&target.address)?;
             target.address = address.clone();
-            state.targets.entry(address).or_insert(target);
+            if !targets.iter().any(|t| t.address == address) {
+                targets.push(target);
+            }
         }
 
-        Self::persist_state(path, &state)?;
+        let state = RegistryState::from_targets(targets);
+        Self::persist_state(path, &state, sqlite_store)?;
         Ok(state)
     }
 
-    fn persist_state(path: &Path, state: &RegistryState) -> Result<()> {
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!("failed to create registry directory '{}'", parent.display())
-        })?;
+    fn persist_state(path: &Path, state: &RegistryState, sqlite_store: Option<&crate::sqlite_store::SqliteStore>) -> Result<()> {
+        if let Some(store) = sqlite_store {
+            for target in state.targets.values() {
+                if let Err(e) = store.upsert_device(target, "registry_persist") {
+                    warn!("failed to persist device '{}' to SQLite: {e}", target.address);
+                }
+            }
+        } else {
+            let parent = path.parent().unwrap_or_else(|| Path::new("."));
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create registry directory '{}'", parent.display())
+            })?;
 
-        let serialized =
-            serde_json::to_string_pretty(&state).context("failed to serialize registry state")?;
-        std::fs::write(path, serialized)
-            .with_context(|| format!("failed to write registry '{}'", path.display()))?;
+            let serialized =
+                serde_json::to_string_pretty(&state).context("failed to serialize registry state")?;
+            std::fs::write(path, serialized)
+                .with_context(|| format!("failed to write registry '{}'", path.display()))?;
+        }
         Ok(())
     }
 }
