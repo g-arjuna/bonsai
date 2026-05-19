@@ -536,6 +536,48 @@ mgmt_ipv6_subnet = ""
 # collector_id = "site-a-collector-1"
 # priority = 10
 
+# ── [ha] ────────────────────────────────────────────────────────────────────────
+#
+# High Availability (HA) configuration for distributed multi-node deployments.
+# When enabled, multiple bonsai core instances coordinate via etcd for leader
+# election and config replication. Only the leader accepts collector registrations.
+# Omit this section for single-node (standalone) deployments.
+
+[ha]
+# HA mode: "standalone" or "cluster".
+#   "standalone" — single node, no leader election (default)
+#   "cluster"    — multi-node with etcd-based leader election and config replication
+# Default: "standalone"
+# Also controlled by BONSAI_HA_MODE environment variable.
+mode = "standalone"
+
+# Unique identifier for this node in the cluster.
+# Must be unique across all nodes (e.g., "node-1", "site-a-core-1").
+# Default: "node-1"
+# Also controlled by BONSAI_NODE_ID environment variable.
+node_id = "node-1"
+
+# [ha.etcd] — etcd configuration for leader election and config storage.
+[ha.etcd]
+# Comma-separated list of etcd endpoint URLs.
+# Example: "http://etcd-1:2379,http://etcd-2:2379,http://etcd-3:2379"
+# Default: "http://127.0.0.1:2379"
+# Also controlled by BONSAI_ETCD_ENDPOINTS environment variable.
+endpoints = "http://127.0.0.1:2379"
+
+# Leader election lease TTL in seconds.
+# If the leader fails to renew within this window, a new election is triggered.
+# Lower values = faster failover but more etcd traffic.
+# Default: 10
+# Also controlled by BONSAI_ETCD_ELECTION_TTL environment variable.
+election_ttl_secs = 10
+
+# etcd key prefix for config replication.
+# Config changes are stored under this prefix (e.g., /bonsai/config/devices/...).
+# Default: "/bonsai/config"
+# Also controlled by BONSAI_ETCD_CONFIG_PREFIX environment variable.
+config_prefix = "/bonsai/config"
+
 # ── [[target]] ───────────────────────────────────────────────────────────────
 #
 # One [[target]] block per managed network device.
