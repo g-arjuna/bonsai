@@ -1,0 +1,55 @@
+{
+  "mappings": [
+    {
+      "name": "ServiceNow em_event POST",
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/api/now/table/em_event.*"
+      },
+      "response": {
+        "status": 201,
+        "headers": { "Content-Type": "application/json" },
+        "jsonBody": {
+          "result": {
+            "sys_id": "{{randomValue type='UUID'}}",
+            "state": "1",
+            "severity": "{{jsonPath request.body '$.severity'}}",
+            "node": "{{jsonPath request.body '$.node'}}",
+            "type": "{{jsonPath request.body '$.type'}}",
+            "sys_created_on": "{{now format='yyyy-MM-dd HH:mm:ss'}}"
+          }
+        }
+      }
+    },
+    {
+      "name": "ServiceNow sys_user GET (connectivity check)",
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/api/now/table/sys_user.*"
+      },
+      "response": {
+        "status": 200,
+        "headers": { "Content-Type": "application/json" },
+        "jsonBody": {
+          "result": [
+            { "user_name": "bonsai-test", "email": "bonsai@signal-test.local" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "ServiceNow em_event GET (recent events)",
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/api/now/table/em_event.*"
+      },
+      "response": {
+        "status": 200,
+        "headers": { "Content-Type": "application/json" },
+        "jsonBody": {
+          "result": []
+        }
+      }
+    }
+  ]
+}

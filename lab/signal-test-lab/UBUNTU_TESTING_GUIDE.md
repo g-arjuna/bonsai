@@ -1,7 +1,7 @@
 # Bonsai Signal-Test Lab — Ubuntu Testing Guide
 
-**Topology**: `lab/signal-test-lab/signal-test.clab.yml`  
-**Bonsai config**: `docker/configs/signal-test.toml`  
+**Topology**: `lab/signal-test-lab/signal-test.clab.yml`
+**Bonsai config**: `docker/configs/signal-test.toml`
 **Goal**: End-to-end validation of every receiver and signal pipeline introduced in DV3.
 
 Each step is numbered. Mark ✅/❌ as you go. Do not skip steps — they have dependencies.
@@ -74,7 +74,7 @@ cargo build --release 2>&1 | tail -20
 echo "Exit: $?"
 ```
 
-**Expected**: `Compiling bonsai` ... `Finished release`. Exit 0.  
+**Expected**: `Compiling bonsai` ... `Finished release`. Exit 0.
 **If FAIL**: Record the error in `docs/test_results/`. Common issues:
 - Missing `libssl-dev`: `sudo apt install libssl-dev pkg-config`
 - Missing `protobuf-compiler`: `sudo apt install protobuf-compiler`
@@ -417,7 +417,7 @@ done
 tail -5 runtime/signals/syslog.jsonl 2>/dev/null | python3 -m json.tool 2>/dev/null | head -40
 ```
 
-**Expected**: JSONL lines with `source_ip`, `raw_message`, `parsed` fields.  
+**Expected**: JSONL lines with `source_ip`, `raw_message`, `parsed` fields.
 **If empty**: Check `ss -ulnp | grep :5514`. Verify leaf1 syslog config is applied:
 ```bash
 docker exec clab-bonsai-signal-test-srl-leaf1 \
@@ -502,9 +502,9 @@ grep "172.100.109.14" runtime/signals/syslog.jsonl 2>/dev/null | wc -l
 ```bash
 # Watch the correlation counter after triggering a BGP event on leaf2 (syslog-enabled)
 # Prometheus metric: bonsai_correlation_multi_source_total
-curl -s http://127.0.0.1:9090/metrics 2>/dev/null \
+curl -s http://127.0.0.1:9100/metrics 2>/dev/null \
   | grep "bonsai_correlation_multi_source_total" \
-  || echo "Prometheus not on :9090 — check metrics_addr in config"
+  || echo "Bonsai metrics not on :9100 — check metrics_addr in config"
 
 # Alternative: check bonsai log for "multi-source fusion"
 grep -i "multi.source\|fusion\|absorbed" logs/bonsai-signal-test.log 2>/dev/null | tail -10
@@ -563,7 +563,7 @@ docker exec clab-bonsai-signal-test-srl-leaf3 \
   sr_cli -d "set / interface ethernet-1/2 admin-state enable"
 ```
 
-**Expected**: Record with `source_ip=172.100.109.16`, `trap_oid=1.3.6.1.6.3.1.1.5.3` (linkDown).  
+**Expected**: Record with `source_ip=172.100.109.16`, `trap_oid=1.3.6.1.6.3.1.1.5.3` (linkDown).
 `fact_type=link_down` confirms OID pattern extraction worked.
 
 ---
@@ -674,7 +674,7 @@ docker exec clab-bonsai-signal-test-srl-spine1 \
 sleep 20
 
 # Check CorrelationBuffer fusion counter
-curl -s http://127.0.0.1:9090/metrics 2>/dev/null \
+curl -s http://127.0.0.1:9100/metrics 2>/dev/null \
   | grep "bonsai_correlation_multi_source_total"
 
 grep -i "Absorbed\|multi.source" logs/bonsai-signal-test.log 2>/dev/null | tail -5
@@ -913,7 +913,7 @@ Both should land at `CorrelationBuffer` for the same `(srl-leaf2, interface_down
 
 ```bash
 # Record baseline counters
-BEFORE=$(curl -s http://127.0.0.1:9090/metrics 2>/dev/null \
+BEFORE=$(curl -s http://127.0.0.1:9100/metrics 2>/dev/null \
   | grep "bonsai_correlation_multi_source_total" | awk '{print $2}')
 echo "Correlation counter before: ${BEFORE:-0}"
 
@@ -924,7 +924,7 @@ docker exec clab-bonsai-signal-test-srl-leaf2 \
 sleep 30
 
 # Check counters
-AFTER=$(curl -s http://127.0.0.1:9090/metrics 2>/dev/null \
+AFTER=$(curl -s http://127.0.0.1:9100/metrics 2>/dev/null \
   | grep "bonsai_correlation_multi_source_total" | awk '{print $2}')
 echo "Correlation counter after: ${AFTER:-0}"
 
@@ -1372,4 +1372,412 @@ addrs = {dev['address'] for dev in d.get('devices',[])}
 print('Device addresses in graph:', addrs)
 "
 # The OTLP span peer.address must match one of these
+```
+
+---
+
+## Phase 17 — External Integrations Testing
+
+**Prerequisite**: Phases 0–3 complete (bonsai running, lab deployed).
+**Reference**: `docker/compose-signal-test.yml`, `docker/configs/signal-test.toml` (integration comments).
+
+---
+
+### S-57: Start external integration containers
+
+```bash
+cd /opt/bonsai
+docker compose -f docker/compose-signal-test.yml up -d
+
+# Wait for all services to become healthy (~2–3 min)
+docker compose -f docker/compose-signal-test.yml ps
+```
+
+**Expected**: All services show `healthy` or `running`.
+Services: `bonsai-netbox`, `bonsai-netbox-db`, `bonsai-netbox-redis`,
+`bonsai-signal-prom`, `bonsai-signal-grafana`, `bonsai-signal-elastic`,
+`bonsai-signal-kibana`, `bonsai-signal-splunk`, `bonsai-signal-snow-mock`.
+
+```bash
+# Quick reachability check for each service
+curl -sf http://localhost:8080/api/ -H "Authorization: Token bonsai-signal-test-token-0000000001" \
+  | python3 -m json.tool | grep -i '"status"'     # NetBox
+curl -sf http://localhost:9090/-/healthy           # Prometheus
+curl -sf http://localhost:9200/_cluster/health     # Elasticsearch
+curl -sf http://localhost:8090/__admin/health      # WireMock (ServiceNow mock)
+```
+
+**Expected**: NetBox returns `"status": "ok"`, Prometheus returns `Prometheus is Healthy.`,
+Elasticsearch returns `"status":"green"` or `yellow`, WireMock returns `"status":"Running"`.
+
+---
+
+### S-58: Load WireMock ServiceNow EM mappings
+
+```bash
+# WireMock loads docker/wiremock/*.json via a read-only bind mount.
+curl -sf http://localhost:8090/__admin/mappings | python3 -m json.tool | grep '"name"'
+```
+
+**Expected**: Shows `"name": "ServiceNow em_event POST"` and `"name": "ServiceNow sys_user GET (connectivity check)"`.
+
+---
+
+### S-59: Provision vault credentials for integrations
+
+```bash
+export BONSAI_VAULT_PASSPHRASE=bonsai-signal-test-pass
+
+# NetBox API token
+./target/release/bonsai credential add \
+  --alias netbox-lab \
+  --username admin \
+  --password bonsai-signal-test-token-0000000001
+
+# Splunk HEC token
+./target/release/bonsai credential add \
+  --alias splunk-hec-lab \
+  --username splunk \
+  --password bonsai-signal-hec-token-00000001
+
+# ServiceNow (mock accepts any credentials)
+./target/release/bonsai credential add \
+  --alias snow-lab \
+  --username admin \
+  --password bonsai-snow-test
+
+# Verify vault entries
+./target/release/bonsai credential list
+```
+
+**Expected**: Lists `netbox-lab`, `splunk-hec-lab`, `snow-lab` with `purpose: enrich/aiops_event`.
+
+---
+
+### S-60: Register NetBox enricher via UI
+
+1. Open `http://localhost:3000/integrations` in a browser.
+2. Click **Enrichment Sources** tab → **+ Add enricher**.
+3. Fill in:
+   - Name: `netbox-lab`
+   - Type: `NetBox (IPAM/DCIM)`
+   - Base URL: `http://localhost:8080`
+   - Credential alias: `netbox-lab`
+   - Poll interval: `300`
+   - **NetBox advanced options** → Endpoint roles: `server,ap,phone,cpe,printer,workstation`
+4. Click **Test connection** → expect `✓ Connected`.
+5. Click **Save enricher**.
+6. Click **Run now** on the `netbox-lab` card.
+
+**Expected**: Card shows "Last run: *timestamp* · Xs · N nodes touched". No errors.
+
+Verify via API:
+```bash
+curl -s http://localhost:3000/api/enrichment | python3 -m json.tool | grep -E '"name"|"last_run"'
+```
+
+---
+
+### S-61: Verify NetBox enrichment wrote graph nodes
+
+```bash
+# Check for VLAN, Prefix, Rack or HostEndpoint nodes added by NetBox enricher
+curl -s 'http://localhost:3000/api/explorer/query' \
+  -H 'Content-Type: application/json' \
+  -d '{"cypher": "MATCH (n) WHERE n.netbox_site IS NOT NULL RETURN n.hostname, n.netbox_site, n.netbox_rack LIMIT 10"}' \
+  | python3 -m json.tool
+```
+
+**Expected**: Returns Device nodes with `netbox_site` and `netbox_rack` properties populated from NetBox.
+
+If NetBox has no devices yet (fresh install), seed it first:
+```bash
+# Seed NetBox with lab devices via API
+for ip in 172.100.109.11 172.100.109.12 172.100.109.13 172.100.109.14 172.100.109.15 172.100.109.16 172.100.109.17; do
+  name=$(grep -B2 "address.*${ip}" docker/configs/signal-test.toml | grep hostname | awk -F'"' '{print $2}')
+  [ -z "$name" ] && continue
+  curl -sf -X POST http://localhost:8080/api/dcim/devices/ \
+    -H "Authorization: Token bonsai-signal-test-token-0000000001" \
+    -H "Content-Type: application/json" \
+    -d "{\"name\":\"${name}\",\"device_type\":1,\"role\":1,\"site\":1,\"status\":\"active\",
+         \"primary_ip4\":{\"address\":\"${ip}/24\"}}" | python3 -m json.tool | grep '"id"'
+done
+```
+
+Then re-run the enricher and re-verify.
+
+---
+
+### S-62: Register Prometheus Remote Write adapter via UI
+
+1. Click **Output Adapters** tab → **+ Add adapter**.
+2. Fill in:
+   - Name: `prom-lab`
+   - Type: `Prometheus Remote Write`
+   - Endpoint URL: `http://localhost:9090/api/v1/write`
+   - Flush interval: `15`
+   - **Prometheus options** → Job label: `bonsai-signal-test`
+3. Click **Test connection** → expect `✓ Connected`.
+4. Click **Save adapter**.
+
+**Expected**: Card appears with type badge **Prometheus Remote Write** in orange. Status shows "No push recorded yet — adapter starts on next server boot."
+
+Restart bonsai to activate the adapter:
+```bash
+pkill -f bonsai || true; sleep 2
+BONSAI_VAULT_PASSPHRASE=bonsai-signal-test-pass \
+  ./target/release/bonsai --config docker/configs/signal-test.toml &
+sleep 10
+```
+
+After 15 seconds (one flush interval), refresh the Integrations page.
+
+**Expected**: Card shows "Last push: *timestamp* · N events · X KB".
+
+Verify in Prometheus:
+```bash
+curl -sg 'http://localhost:9090/api/v1/query?query=bonsai_interface_statistics_in_octets' \
+  | python3 -m json.tool | grep '"resultType"'
+```
+
+**Expected**: `"resultType": "vector"` with one or more results.
+
+---
+
+### S-63: Register Elasticsearch adapter via UI
+
+1. Click **+ Add adapter**.
+2. Fill in:
+   - Name: `elastic-lab`
+   - Type: `Elasticsearch Bulk API`
+   - Endpoint URL: `http://localhost:9200`
+   - Flush interval: `30`
+   - **Elasticsearch options** → Index: `bonsai-detections`, Auth type: `Basic auth`, Dedup window: `60`
+3. Click **Test connection** → expect `✓ Connected`.
+4. Click **Save adapter**.
+
+To generate a detection (needed for push verification):
+```bash
+# Inject a test detection
+curl -s -X POST http://localhost:3000/api/_test/inject_detection \
+  -H "Content-Type: application/json" \
+  -d '{"device_address":"172.100.109.14","rule_id":"test_bgp_down","severity":"warning"}'
+```
+
+Wait 30 seconds for flush, then check Elasticsearch:
+```bash
+curl -s 'http://localhost:9200/bonsai-detections/_search?size=5' \
+  | python3 -m json.tool | grep -E '"rule_id"|"severity"|"@timestamp"'
+```
+
+**Expected**: Returns hits with `rule.id = "test_bgp_down"`, `event.kind = "alert"`, `event.module = "bonsai"`.
+
+---
+
+### S-64: Register Splunk HEC adapter via UI
+
+1. Click **+ Add adapter**.
+2. Fill in:
+   - Name: `splunk-lab`
+   - Type: `Splunk HEC`
+   - Endpoint URL: `http://localhost:8088`
+   - Credential alias: `splunk-hec-lab`
+   - Flush interval: `30`
+   - **Splunk HEC options** → Sourcetype: `bonsai:detection`, Index: `main`, Skip TLS: ✓
+3. Click **Test connection** → expect `✓ Connected`.
+4. Click **Save adapter**.
+
+Wait 30 seconds after injecting a detection (see S-63), then verify in Splunk:
+```bash
+# Query Splunk via REST API
+curl -sk -u admin:bonsai-splunk-admin \
+  'https://localhost:8089/services/search/jobs/export?search=search+index%3Dmain+sourcetype%3D%22bonsai%3Adetection%22&output_mode=json&count=5' \
+  | python3 -c "import json,sys; [print(json.dumps(json.loads(l))) for l in sys.stdin if l.strip()]" 2>/dev/null \
+  | grep -i 'rule_id\|severity' | head -10
+```
+
+**Expected**: Returns JSON lines containing `rule_id` and `severity` fields from the injected detection.
+
+---
+
+### S-65: Register ServiceNow EM adapter (WireMock mock) via UI
+
+1. Click **+ Add adapter**.
+2. Fill in:
+   - Name: `snow-em-lab`
+   - Type: `ServiceNow Event Mgmt`
+   - Endpoint URL: `http://localhost:8090`
+   - Credential alias: `snow-lab`
+   - Flush interval: `60`
+   - **ServiceNow EM options** → Min severity: `Warning and above`, Min age: `30`, Dedup window: `120`
+3. Click **Test connection** → expect `✓ Connected`.
+4. Click **Save adapter**.
+
+Wait 60 seconds after injecting a detection with severity ≥ warning. Verify the mock received the push:
+```bash
+# Check WireMock received POST to em_event
+curl -s 'http://localhost:8090/__admin/requests' \
+  | python3 -c "
+import json,sys
+data = json.load(sys.stdin)
+reqs = [r for r in data.get('requests',[]) if 'em_event' in r.get('request',{}).get('url','')]
+print(f'ServiceNow EM pushes received: {len(reqs)}')
+for r in reqs[:3]:
+    body = json.loads(r['request']['body'])
+    print(f'  node={body.get(\"node\")}  severity={body.get(\"severity\")}  type={body.get(\"type\")}')"
+```
+
+**Expected**: Shows at least 1 push with `severity=3` (warning) and the device address in `node`.
+
+---
+
+### S-66: Verify push audit log in UI
+
+1. On the **Integrations** page → **Output Adapters** tab, scroll to **Push audit log**.
+2. Verify rows appear for `prom-lab`, `elastic-lab`, `splunk-lab`, `snow-em-lab`.
+3. Check for `success` outcome badges. No `error` rows.
+
+Via API:
+```bash
+curl -s http://localhost:3000/api/adapters/audit | python3 -m json.tool | grep -E '"adapter"|"outcome"|"events_pushed"'
+```
+
+**Expected**: Each adapter appears with `outcome: "success"` and `events_pushed > 0`.
+
+---
+
+### S-67: Grafana dashboard smoke test
+
+1. Open `http://localhost:3001` (Grafana).
+2. Login: `admin` / `bonsai-grafana`.
+3. Add Prometheus datasource: `http://prometheus:9090`.
+4. Create a simple graph: metric `bonsai_interface_statistics_in_octets`.
+
+**Expected**: Time-series graph shows data points from the last 5 minutes.
+
+---
+
+### S-68: Full integration round-trip — fault → detect → push to all sinks
+
+```bash
+# 1. Inject leaf4 BGP fault (shut down uplink to spine2)
+docker exec clab-bonsai-signal-test-srl-leaf4 \
+  sr_cli -d "enter candidate; /interface ethernet-1/1 admin-state disable; commit stay"
+
+sleep 90   # allow detection to fire + min_age filters to pass
+
+# 2. Inject a detection directly (if rules engine hasn't fired yet)
+curl -s -X POST http://localhost:3000/api/_test/inject_detection \
+  -H "Content-Type: application/json" \
+  -d '{"device_address":"172.100.109.17","rule_id":"bgp_session_down","severity":"critical"}'
+
+sleep 65   # wait for all adapter flush cycles
+
+# 3. Verify all sinks received the event
+echo "=== Elasticsearch ==="
+curl -s 'http://localhost:9200/bonsai-detections/_search?size=1&sort=@timestamp:desc' \
+  | python3 -m json.tool | grep -E '"rule.id"|"host.ip"' || \
+curl -s 'http://localhost:9200/bonsai-detections/_search?size=1' \
+  | python3 -m json.tool | grep -E '"rule_id"|"device_address"'
+
+echo "=== ServiceNow EM (WireMock) ==="
+curl -s http://localhost:8090/__admin/requests \
+  | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+em=[r for r in d.get('requests',[]) if 'em_event' in r.get('request',{}).get('url','')]
+print(f'{len(em)} EM event(s) pushed')"
+
+echo "=== Adapter push audit ==="
+curl -s http://localhost:3000/api/adapters/audit \
+  | python3 -c "
+import json,sys
+entries=json.load(sys.stdin).get('entries',[])
+for e in entries[:8]:
+    print(f'  {e[\"adapter\"]:20s}  {e[\"outcome\"]:10s}  {e.get(\"events_pushed\",0)} events')"
+
+# 4. Heal the fault
+docker exec clab-bonsai-signal-test-srl-leaf4 \
+  sr_cli -d "enter candidate; /interface ethernet-1/1 admin-state enable; commit stay"
+```
+
+**Expected**:
+- Elasticsearch: `rule_id = "bgp_session_down"` in `bonsai-detections`.
+- WireMock: ≥1 POST to `/api/now/table/em_event` with `severity = 1` (critical).
+- Adapter audit: `elastic-lab`, `splunk-lab`, `snow-em-lab` all show `success` with `events_pushed ≥ 1`.
+
+---
+
+### S-69: Integrations UI — edit, disable, re-enable
+
+1. On the Integrations page, click **Edit** on `elastic-lab`.
+2. Change Dedup window to `30`.
+3. Click **Test connection** from inside the form → expect `✓ Connected`.
+4. Click **Save adapter**.
+5. Toggle `enabled: false` → save → verify card shows greyed-out with `disabled` badge.
+6. Re-enable → save → verify normal state restored.
+
+---
+
+### Phase 17 Summary Checklist
+
+| Step | Test | ✅/❌ |
+|------|------|------|
+| S-57 | All 9 integration containers healthy | |
+| S-58 | WireMock ServiceNow EM mappings loaded | |
+| S-59 | Vault credentials: netbox-lab, splunk-hec-lab, snow-lab | |
+| S-60 | NetBox enricher registered + Test connection OK | |
+| S-61 | NetBox enrichment wrote graph nodes (netbox_site property) | |
+| S-62 | Prometheus adapter registered + push confirmed in Prometheus | |
+| S-63 | Elasticsearch adapter registered + detection document in index | |
+| S-64 | Splunk HEC adapter registered + event in Splunk main index | |
+| S-65 | ServiceNow EM adapter registered + mock received POST | |
+| S-66 | Push audit log visible in UI for all 4 adapters | |
+| S-67 | Grafana shows bonsai telemetry metrics | |
+| S-68 | Full round-trip: fault → detection → all 4 sinks pushed | |
+| S-69 | UI edit/disable/re-enable cycle works correctly | |
+
+---
+
+### Phase 17 Troubleshooting
+
+**NetBox 404 on enrichment run**
+Verify NetBox is fully started: `docker logs bonsai-netbox --tail 30`. The `SKIP_SUPERUSER=false`
+token `bonsai-signal-test-token-0000000001` is created on first boot. If it wasn't created:
+```bash
+docker exec -it bonsai-netbox python3 /opt/netbox/netbox/manage.py \
+  create_token --user admin --token bonsai-signal-test-token-0000000001
+```
+
+**Elasticsearch `index_not_found_exception`**
+The index is auto-created on first bulk push. If it doesn't appear, check Elasticsearch logs:
+```bash
+docker logs bonsai-signal-elastic --tail 20
+```
+Confirm security is disabled: `curl -sf http://localhost:9200 | grep cluster_name`.
+
+**Splunk HEC returns 403**
+The HEC token must match exactly. Verify via Splunk management API:
+```bash
+curl -sk -u admin:bonsai-splunk-admin \
+  'https://localhost:8089/services/data/inputs/http?output_mode=json' \
+  | python3 -m json.tool | grep '"token"'
+```
+If wrong, delete and recreate: Settings → Data Inputs → HTTP Event Collector.
+
+**ServiceNow EM adapter: "credential resolve failed"**
+The vault must be unlocked with `BONSAI_VAULT_PASSPHRASE=bonsai-signal-test-pass`. Re-export and restart bonsai.
+
+**Prometheus remote-write: no metrics after restart**
+Verify the adapter is running by checking the adapter list:
+```bash
+curl -s http://localhost:3000/api/adapters | python3 -m json.tool | grep '"is_running"'
+```
+If `false` for `prom-lab`, the adapter config may have been lost. Re-register via the UI.
+Adapters load their configs from `runtime/adapter_configs.json` at startup.
+
+**UI Integrations page: form not saving extra fields**
+The `extra` object is passed as-is to the backend. If type-specific extra fields appear blank after reload, verify the `GET /api/adapters` response includes the `extra` object. Check with:
+```bash
+curl -s http://localhost:3000/api/adapters | python3 -m json.tool | grep -A5 '"extra"'
 ```

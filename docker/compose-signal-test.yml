@@ -1,0 +1,280 @@
+# docker/compose-signal-test.yml
+#
+# External integration services for the signal-test lab.
+# Provides testable endpoints for every bonsai output adapter and enricher:
+#
+#   NetBox        → enrichment (IPAM/DCIM)             http://localhost:8080
+#   Prometheus    → output adapter (remote-write)      http://localhost:9090
+#   Grafana       → dashboards for prometheus data      http://localhost:3001
+#   Elasticsearch → output adapter (bulk API)          http://localhost:9200
+#   Kibana        → UI for elasticsearch data           http://localhost:5601
+#   Splunk        → output adapter (HEC)               http://localhost:8088  (HEC)
+#                                                       http://localhost:8000  (web)
+#   WireMock      → ServiceNow EM mock (em_event API)  http://localhost:8090
+#
+# Usage:
+#   cd /opt/bonsai
+#   docker compose -f docker/compose-signal-test.yml up -d
+#   docker compose -f docker/compose-signal-test.yml ps
+#   docker compose -f docker/compose-signal-test.yml down -v
+#
+# Network:
+#   All services join bonsai-signal-ext (172.20.0.0/24).
+#   Bonsai (on the Docker host) reaches them via the published ports above.
+#
+# Memory budget (Oracle Always Free / 32 GB box):
+#   NetBox + postgres + redis  ~1.5 GB
+#   Prometheus                 ~256 MB
+#   Grafana                    ~256 MB
+#   Elasticsearch              ~2 GB  (heap 1g)
+#   Kibana                     ~512 MB
+#   Splunk Free                ~2 GB
+#   WireMock                   ~128 MB
+#   Total                      ~6.5 GB  (headroom with lab nodes at ~14 GB)
+
+name: bonsai-signal-ext
+
+networks:
+  signal-ext:
+    name: bonsai-signal-ext
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+volumes:
+  netbox-db:
+  netbox-redis:
+  netbox-media:
+  prometheus-data:
+  grafana-data:
+  elastic-data:
+  splunk-data:
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NetBox — IPAM/DCIM enrichment source
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  netbox-db:
+    image: postgres:15-alpine
+    container_name: bonsai-netbox-db
+    restart: unless-stopped
+    networks: [signal-ext]
+    environment:
+      POSTGRES_DB: netbox
+      POSTGRES_USER: netbox
+      POSTGRES_PASSWORD: netbox-signal-test-pw
+    volumes:
+      - netbox-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netbox"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  netbox-redis:
+    image: redis:7-alpine
+    container_name: bonsai-netbox-redis
+    restart: unless-stopped
+    networks: [signal-ext]
+
+  netbox:
+    image: netboxcommunity/netbox:v4.1-3.0.2
+    container_name: bonsai-netbox
+    restart: unless-stopped
+    networks: [signal-ext]
+    ports:
+      - "8080:8080"
+    depends_on:
+      netbox-db:
+        condition: service_healthy
+      netbox-redis:
+        condition: service_started
+    environment:
+      DB_HOST: netbox-db
+      DB_NAME: netbox
+      DB_USER: netbox
+      DB_PASSWORD: netbox-signal-test-pw
+      REDIS_HOST: netbox-redis
+      REDIS_PORT: "6379"
+      REDIS_DATABASE: "0"
+      SECRET_KEY: bonsai-signal-test-secret-key-32chars
+      SUPERUSER_NAME: admin
+      SUPERUSER_EMAIL: admin@signal-test.local
+      SUPERUSER_PASSWORD: bonsai-netbox-admin
+      SUPERUSER_API_TOKEN: bonsai-signal-test-token-0000000001
+      SKIP_SUPERUSER: "false"
+      LOGIN_REQUIRED: "false"
+      ALLOWED_HOSTS: "*"
+    volumes:
+      - netbox-media:/opt/netbox/netbox/media
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'curl -sf http://localhost:8080/api/ -H ''Authorization: Token bonsai-signal-test-token-0000000001'' | grep -q ''"status"''',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Prometheus + Grafana — remote-write output adapter
+  # ─────────────────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: bonsai-signal-prom
+    restart: unless-stopped
+    networks: [signal-ext]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "9090:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-remote-write-receiver
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+    volumes:
+      - prometheus-data:/prometheus
+      - ./prometheus/signal-test.yml:/etc/prometheus/prometheus.yml:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:9090/-/healthy | grep -q Healthy",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana-oss:10.4.2
+    container_name: bonsai-signal-grafana
+    restart: unless-stopped
+    networks: [signal-ext]
+    ports:
+      - "3001:3000"
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: bonsai-grafana
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Elasticsearch + Kibana — ECS output adapter
+  # ─────────────────────────────────────────────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    container_name: bonsai-signal-elastic
+    restart: unless-stopped
+    networks: [signal-ext]
+    ports:
+      - "9200:9200"
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+      cluster.name: bonsai-signal-test
+      node.name: bonsai-elastic-1
+    volumes:
+      - elastic-data:/usr/share/elasticsearch/data
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'curl -sf http://localhost:9200/_cluster/health | grep -qE ''"status":"(green|yellow)"''',
+        ]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.4
+    container_name: bonsai-signal-kibana
+    restart: unless-stopped
+    networks: [signal-ext]
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ELASTICSEARCH_HOSTS: "http://elasticsearch:9200"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'curl -sf http://localhost:5601/api/status | grep -q ''"level":"available"''',
+        ]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Splunk Free — HEC output adapter
+  # HEC token: "bonsai-signal-hec-token-00000001"
+  # ─────────────────────────────────────────────────────────────────────────────
+  splunk:
+    image: splunk/splunk:9.2.1
+    container_name: bonsai-signal-splunk
+    restart: unless-stopped
+    networks: [signal-ext]
+    ports:
+      - "8000:8000" # Splunk Web
+      - "8088:8088" # HEC endpoint
+      - "8089:8089" # Management API
+    environment:
+      SPLUNK_START_ARGS: --accept-license
+      SPLUNK_PASSWORD: bonsai-splunk-admin
+      SPLUNK_HEC_TOKEN: bonsai-signal-hec-token-00000001
+      SPLUNK_APPS_URL: ""
+    volumes:
+      - splunk-data:/opt/splunk/var
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sf -k https://localhost:8089/services/server/info -u admin:bonsai-splunk-admin | grep -q '<title>server info</title>'",
+        ]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 90s
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WireMock — ServiceNow EM mock (em_event table + sys_user)
+  # Simulates ServiceNow Table API so bonsai can push em_event records
+  # without a real ServiceNow PDI.
+  # ─────────────────────────────────────────────────────────────────────────────
+  wiremock:
+    image: wiremock/wiremock:3.5.4
+    container_name: bonsai-signal-snow-mock
+    restart: unless-stopped
+    networks: [signal-ext]
+    ports:
+      - "8090:8080"
+    command: --verbose --global-response-templating
+    volumes:
+      - ./wiremock:/home/wiremock/mappings:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'wget -qO- http://localhost:8080/__admin/health | grep -q ''"status":"Running"''',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
