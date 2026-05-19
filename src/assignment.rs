@@ -228,6 +228,9 @@ impl CollectorManager {
         &self,
         collector_id: String,
     ) -> Result<mpsc::Receiver<AssignmentUpdate>> {
+        // G6: Emit metric for collector connection
+        metrics::gauge!("bonsai_collector_connected_total").increment(1);
+
         let (tx, rx) = mpsc::channel(32);
 
         let targets = self.registry.list_assigned_to(&collector_id)?;
@@ -270,6 +273,9 @@ impl CollectorManager {
     }
 
     pub fn unregister_collector(&self, collector_id: &str) {
+        // G6: Emit metric for collector disconnection
+        metrics::gauge!("bonsai_collector_connected_total").decrement(1);
+
         {
             let mut collectors = self.active_collectors.lock().unwrap();
             collectors.remove(collector_id);

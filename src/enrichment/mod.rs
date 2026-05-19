@@ -288,6 +288,9 @@ impl EnricherRegistry {
     }
 
     pub fn record_run(&mut self, name: &str, report: &EnrichmentReport) {
+        // G6: Emit histogram for enricher run duration
+        metrics::histogram!("bonsai_enricher_run_duration_seconds", report.duration_ms as f64 / 1000.0, "enricher" => name, "outcome" => if report.error.is_some() { "error" } else { "success" });
+
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as i64)

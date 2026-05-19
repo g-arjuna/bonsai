@@ -165,6 +165,7 @@ pub async fn run_change_sync(
     store: &Arc<GraphStore>,
     creds: &Arc<CredentialVault>,
 ) -> Result<ChangeSyncStats> {
+    let start = std::time::Instant::now();
     let cred = creds
         .resolve(&config.credential_alias, ResolvePurpose::ServiceNowAdmin)
         .context("resolve ServiceNow credential for change management")?;
@@ -206,6 +207,9 @@ pub async fn run_change_sync(
         device_links = stats.device_links_created,
         "change management sync cycle complete"
     );
+
+    let duration = start.elapsed().as_secs_f64();
+    metrics::histogram!("bonsai_servicenow_sync_duration_seconds", duration, "sync_type" => "change_management");
 
     Ok(stats)
 }

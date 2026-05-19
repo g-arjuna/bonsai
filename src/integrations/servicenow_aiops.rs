@@ -137,6 +137,7 @@ pub async fn run_sync_cycle(
     store: &Arc<GraphStore>,
     creds: &Arc<CredentialVault>,
 ) -> Result<SyncStats> {
+    let start = std::time::Instant::now();
     let cred = creds
         .resolve(&config.credential_alias, ResolvePurpose::ServiceNowAdmin)
         .context("resolve ServiceNow admin credential for AIOps sync")?;
@@ -260,6 +261,9 @@ pub async fn run_sync_cycle(
             }
         }
     }
+
+    let duration = start.elapsed().as_secs_f64();
+    metrics::histogram!("bonsai_servicenow_sync_duration_seconds", duration, "sync_type" => "aiops");
 
     Ok(stats)
 }
