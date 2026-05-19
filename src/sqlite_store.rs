@@ -24,26 +24,26 @@ const CURRENT_SCHEMA_VERSION: i64 = 1;
 /// SQLite config store with versioned schema and audit trail.
 pub struct SqliteStore {
     db: Arc<Mutex<Connection>>,
-    path: PathBuf,
+    runtime_dir: PathBuf,
+    config_replicator: Option<Arc<crate::ha_coordinator::ConfigReplicator>>,
 }
 
 impl SqliteStore {
     /// Open or create the config store, running migrations if needed.
     pub fn open(runtime_dir: &Path) -> Result<Self> {
-        let path = runtime_dir.join(DB_FILE);
-        let db = Connection::open(&path)
-            .with_context(|| format!("failed to open SQLite config store '{}'", path.display()))?;
-
-        // Enable WAL mode for better concurrency
-        db.execute("PRAGMA journal_mode=WAL", [])
-            .context("failed to enable WAL mode")?;
+        let db_path = runtime_dir.join(DB_FILE);
+        let db = Connection::open(&db_path)
+            .with_context(|| format!("failed to open SQLite DB at '{}'", db_path.display()))?;
 
         let store = Self {
             db: Arc::new(Mutex::new(db)),
-            path,
+            runtime_dir: runtime_dir.to_path_buf(),
+            config_replicator: None,
         };
 
-        store.migrate()?;
+        store.init_schema()?;
+        store.enable_wal()?;
+
         Ok(store)
     }
 

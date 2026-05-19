@@ -1080,6 +1080,22 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         panic!("SQLite store required for G5 features"); // For now, fail hard if SQLite unavailable
                     }),
             );
+
+            // G3: HA coordinator
+            let ha_mode = if std::env::var("BONSAI_HA_MODE").as_deref() == Ok("cluster") {
+                let node_id = std::env::var("BONSAI_NODE_ID").unwrap_or_else(|_| "node-1".to_string());
+                bonsai::ha_coordinator::HAMode::Cluster { node_id }
+            } else {
+                bonsai::ha_coordinator::HAMode::Standalone
+            };
+            let ha_coordinator = std::sync::Arc::new(bonsai::ha_coordinator::HACoordinator::new(ha_mode.clone()));
+            tokio::spawn({
+                let ha = ha_coordinator.clone();
+                async move {
+                    ha.start_election().await;
+                }
+            });
+
             let enricher_registry =
                 bonsai::enrichment::new_registry(std::path::Path::new(&runtime_dir));
             let adapter_registry =
