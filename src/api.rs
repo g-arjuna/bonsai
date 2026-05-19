@@ -100,6 +100,19 @@ impl<S: BonsaiStore> BonsaiService<S> {
         self.sqlite_store = Some(store);
         self
     }
+
+    /// Extract TLS certificate fingerprint from the gRPC request.
+    /// This requires access to the TLS connection which is not directly exposed
+    /// by tonic's Request. For now, this returns None and can be enhanced
+    /// with custom interceptors if needed.
+    async fn extract_tls_cert_fingerprint(&self, _req: &Request<CollectorIdentity>) -> Option<String> {
+        // TODO: Extract TLS cert fingerprint using custom interceptor
+        // This would require:
+        // 1. Custom tonic interceptor to capture peer cert
+        // 2. Extension mechanism to pass cert info to handler
+        // For now, return None - cert fingerprint pinning is optional
+        None
+    }
 }
 
 pub type CollectorService = BonsaiService<crate::collector::graph::CollectorGraphStore>;
@@ -118,6 +131,10 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<CollectorIdentity>,
     ) -> Result<Response<Self::RegisterCollectorStream>, Status> {
+        // G5: Extract peer info from TLS connection
+        let peer_addr = req.peer_addr().map(|addr| addr.to_string());
+        let cert_fingerprint = self.extract_tls_cert_fingerprint(&req).await;
+
         let identity = req.into_inner();
         let collector_id = identity.collector_id.clone();
         let collector_version = identity.protocol_version;
@@ -132,6 +149,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             if auth_token != expected {
                 tracing::error!(
                     %collector_id,
+                    peer_ip = peer_addr.as_deref(),
                     "collector registration rejected: invalid auth token"
                 );
                 metrics::counter!("bonsai_collector_registration_rejected_total", "reason" => "invalid_token").increment(1);
@@ -140,8 +158,8 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                         &collector_id,
                         &hostname,
                         collector_version,
-                        None, // peer_ip not available from Request
-                        None, // cert_fingerprint not available from Request
+                        peer_addr.as_deref(),
+                        cert_fingerprint.as_deref(),
                         false,
                         Some("invalid_token"),
                     );
@@ -170,6 +188,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             VersionCompat::MajorSkew { client, server } => {
                 tracing::error!(
                     %collector_id,
+                    peer_ip = peer_addr.as_deref(),
                     collector_version = client,
                     server_version = server,
                     "collector protocol version major skew — rejecting registration"
@@ -180,8 +199,8 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                         &collector_id,
                         &hostname,
                         collector_version,
-                        None,
-                        None,
+                        peer_addr.as_deref(),
+                        cert_fingerprint.as_deref(),
                         false,
                         Some(&format!("protocol_skew: collector={client} server={server}")),
                     );
@@ -198,8 +217,8 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 &collector_id,
                 &hostname,
                 collector_version,
-                None, // peer_ip - would need TLS connection info
-                None, // cert_fingerprint - would need TLS connection info
+                peer_addr.as_deref(),
+                cert_fingerprint.as_deref(),
                 true,
                 None,
             );
