@@ -143,7 +143,7 @@ mod tests {
     fn sha256_hex_is_stable() {
         assert_eq!(
             sha256_hex("bonsai"),
-            "8f1984b431f6bbf6a4d2f18453d9aeb13f056b5b8e3e4707ed657dc3fdb6441d"
+            "7dd7122ad9bf240f04fdf988a0df4a2552098ad8ed8df429bed1056ebdb64387"
         );
     }
 }

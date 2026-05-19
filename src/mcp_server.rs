@@ -639,7 +639,7 @@ async fn tool_list_active_detections(
 /// **Upgrade path (D2-11 T1)**: watch for `lbug::Connection::new_read_only(&db)`
 /// or an equivalent in the lbug changelog. When that API lands, replace the
 /// `tool_query_graph` body with:
-/// ```rust
+/// ```rust,ignore
 /// let conn = Connection::new_read_only(&db).map_err(|e| e.to_string())?;
 /// let result = conn.query(&cypher)...
 /// ```

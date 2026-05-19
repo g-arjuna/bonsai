@@ -152,6 +152,29 @@ fn build_paths(raw_paths: &[String]) -> Result<Vec<Path>> {
     raw_paths.iter().map(|path| parse_path(path)).collect()
 }
 
+fn split_path_segments(path: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, c) in path.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            '/' if depth == 0 => {
+                if i > start {
+                    segments.push(&path[start..i]);
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < path.len() {
+        segments.push(&path[start..]);
+    }
+    segments
+}
+
 fn parse_path(raw_path: &str) -> Result<Path> {
     let trimmed = raw_path.trim();
     if trimmed.is_empty() || trimmed == "/" {
@@ -159,7 +182,7 @@ fn parse_path(raw_path: &str) -> Result<Path> {
     }
 
     let mut elem = Vec::new();
-    for segment in trimmed.split('/').filter(|segment| !segment.is_empty()) {
+    for segment in split_path_segments(trimmed).into_iter().filter(|s| !s.is_empty()) {
         let first_key = segment.find('[').unwrap_or(segment.len());
         let name = segment[..first_key].trim();
         if name.is_empty() {

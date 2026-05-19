@@ -1293,7 +1293,7 @@ mod tests {
             },
         ];
 
-        let (nodes, edges, warnings) = write_to_graph(&db, &[], &vlans, &[], &[], "test").unwrap();
+        let (nodes, edges, warnings) = write_to_graph(&db, &[], &vlans, &[], &[], &[], "test").unwrap();
 
         assert_eq!(nodes, 2, "two VLAN nodes should be touched");
         assert_eq!(edges, 0, "VLANs alone create no edges");
@@ -1316,7 +1316,7 @@ mod tests {
         }];
 
         let (nodes, _edges, warnings) =
-            write_to_graph(&db, &[], &[], &prefixes, &[], "test").unwrap();
+            write_to_graph(&db, &[], &[], &prefixes, &[], &[], "test").unwrap();
 
         assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
         assert_eq!(nodes, 1);
@@ -1332,8 +1332,8 @@ mod tests {
             name: "prod".to_string(),
             description: String::new(),
         }];
-        let (n1, _, _) = write_to_graph(&db, &[], &vlans, &[], &[], "test").unwrap();
-        let (n2, _, _) = write_to_graph(&db, &[], &vlans, &[], &[], "test").unwrap();
+        let (n1, _, _) = write_to_graph(&db, &[], &vlans, &[], &[], &[], "test").unwrap();
+        let (n2, _, _) = write_to_graph(&db, &[], &vlans, &[], &[], &[], "test").unwrap();
         // MERGE is idempotent — same number of nodes both times
         assert_eq!(n1, n2);
     }
