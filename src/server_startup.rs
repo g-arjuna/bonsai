@@ -1110,6 +1110,22 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 info!("Syslog adapter started for health events");
             }
 
+            // G4: Start SNMP adapter for health events if configured
+            if std::env::var("BONSAI_SNMP_ENABLED").as_deref() == Ok("true") {
+                let snmp_config = bonsai::output::snmp_adapter::SnmpConfig {
+                    enabled: true,
+                    target: std::env::var("BONSAI_SNMP_TARGET").unwrap_or_else(|_| "127.0.0.1".to_string()),
+                    community: std::env::var("BONSAI_SNMP_COMMUNITY").unwrap_or_else(|_| "public".to_string()),
+                    port: std::env::var("BONSAI_SNMP_PORT")
+                        .unwrap_or_else(|_| "162".to_string())
+                        .parse()
+                        .unwrap_or(162),
+                };
+                let snmp_adapter = std::sync::Arc::new(bonsai::output::snmp_adapter::SnmpAdapter::new(snmp_config, bus.clone()));
+                snmp_adapter.start().await;
+                info!("SNMP adapter started for health events");
+            }
+
             let adapter_registry =
                 bonsai::output::traits::new_adapter_registry(std::path::Path::new(&runtime_dir));
             let adapter_registry_handle = std::sync::Arc::clone(&adapter_registry);

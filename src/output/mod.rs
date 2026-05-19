@@ -22,6 +22,7 @@
 pub mod elastic;
 pub mod prometheus;
 pub mod servicenow_em;
+pub mod snmp_adapter;
 pub mod splunk_hec;
 pub mod syslog_adapter;
 pub mod traits;
