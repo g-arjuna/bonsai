@@ -412,6 +412,24 @@ pub(super) fn openapi_schema() -> serde_json::Value {
                     "responses": { "200": { "description": "Enrichment data" }}
                 }
             },
+            "/api/devices/{address}/enrichment/conflicts": {
+                "get": {
+                    "tags": ["Devices & Onboarding"],
+                    "summary": "Enrichment conflicts for a device",
+                    "description": "Returns conflicting enrichment properties where the same key is set by multiple sources (e.g. CLI, NetBox, ServiceNow). Includes provenance winner/loser tracking, confidence, and timestamps.",
+                    "parameters": [{ "name": "address", "in": "path", "required": true, "schema": { "type": "string" }}],
+                    "responses": { "200": { "description": "List of enrichment conflicts grouped by key" }}
+                }
+            },
+            "/api/devices/{address}/cmdb": {
+                "get": {
+                    "tags": ["Devices & Onboarding"],
+                    "summary": "CMDB hierarchy for a device",
+                    "description": "Returns the ServiceNow CMDB context for a device: parent/child CI relationships (CMDB_PARENT_OF), business service bindings (RUNS_SERVICE, CARRIES_APPLICATION), and location hierarchy from cmn_location.",
+                    "parameters": [{ "name": "address", "in": "path", "required": true, "schema": { "type": "string" }}],
+                    "responses": { "200": { "description": "CMDB hierarchy data" }}
+                }
+            },
             "/api/setup/status": {
                 "get": {
                     "tags": ["Devices & Onboarding"],
@@ -890,6 +908,30 @@ pub(super) fn openapi_schema() -> serde_json::Value {
                     "summary": "Graph structure insights",
                     "description": "Returns high-level graph statistics: node counts by label, edge counts by type, graph density, average degree, and any structural anomalies (isolated nodes, missing enrichment linkages).",
                     "responses": { "200": { "description": "Graph insights" }}
+                }
+            },
+            "/api/explorer/ask": {
+                "post": {
+                    "tags": ["Graph Explorer"],
+                    "summary": "Natural language graph query",
+                    "description": "Accepts a plain English question about the network, generates a read-only Cypher query using an LLM (Anthropic Claude), executes it against LadybugDB, and returns the generated Cypher, explanation, and result rows. Requires ANTHROPIC_API_KEY environment variable.",
+                    "requestBody": {
+                        "required": true,
+                        "content": { "application/json": { "schema": { "type": "object", "properties": { "question": { "type": "string", "description": "Natural language question, e.g. 'Which servers are connected to spine1?'" }}, "required": ["question"] }}}
+                    },
+                    "responses": {
+                        "200": { "description": "Generated Cypher, explanation, and result rows" },
+                        "400": { "description": "Empty question" },
+                        "503": { "description": "ANTHROPIC_API_KEY not set" }
+                    }
+                }
+            },
+            "/api/explorer/nl-budget": {
+                "get": {
+                    "tags": ["Graph Explorer"],
+                    "summary": "NL query token budget status",
+                    "description": "Returns the daily token usage and limit for natural language graph queries.",
+                    "responses": { "200": { "description": "Token usage and daily limit" }}
                 }
             },
             "/api/explorer/query": {

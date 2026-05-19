@@ -1242,6 +1242,28 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             });
         }
 
+        // ── Investigation auto-trigger ───────────────────────────────────────
+        if run_core {
+            let has_api_key = std::env::var("ANTHROPIC_API_KEY")
+                .map(|k| !k.is_empty())
+                .unwrap_or(false);
+            let trigger_store = if let Store::Core(s) = store {
+                std::sync::Arc::clone(s)
+            } else {
+                unreachable!()
+            };
+            let trigger_config = bonsai::investigation_trigger::InvestigationTriggerConfig {
+                enabled: has_api_key,
+                base_url: format!("http://127.0.0.1:{}", cfg.http_addr.split(':').last().unwrap_or("3000")),
+            };
+            let trigger_shutdown = shutdown_rx.clone();
+            tokio::spawn(bonsai::investigation_trigger::run_investigation_trigger(
+                trigger_store,
+                trigger_config,
+                trigger_shutdown,
+            ));
+        }
+
         if run_core && cfg.retention.enabled {
             let store_for_retention = if let Store::Core(s) = store {
                 std::sync::Arc::clone(s)

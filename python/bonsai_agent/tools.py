@@ -48,6 +48,19 @@ def query_graph(client: "BonsaiClient", cypher: str) -> dict:
         return {"error": str(exc)}
 
 
+def ask_graph(client: "BonsaiClient", question: str) -> dict:
+    """Ask a natural language question about the network graph.
+
+    The server uses an LLM to generate a Cypher query from the question,
+    executes it, and returns both the generated Cypher and result rows.
+    Requires ANTHROPIC_API_KEY on the server.
+    """
+    try:
+        return client._http_json("POST", "/api/explorer/ask", {"question": question})
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 def get_recent_detections(
     client: "BonsaiClient", device_address: str, window_secs: int = 300
 ) -> dict:
@@ -105,8 +118,36 @@ def propose_playbook(
 
     Requires human approval before any action is taken (mandatory gate).
     Audit-logged with purpose=AgentInvestigation.
+
+    Looks up the playbook from the catalog to populate real steps and
+    verification. Falls back to a placeholder if catalog lookup fails.
     """
-    steps = json.dumps([{"action": "playbook", "playbook_id": playbook_id, "rationale": rationale}])
+    steps_list = [{"action": "playbook", "playbook_id": playbook_id, "rationale": rationale}]
+    rollback_steps_list: list = []
+
+    # Try to resolve the actual playbook steps from the catalog.
+    try:
+        from bonsai_sdk.playbooks.catalog import PlaybookCatalog
+        catalog = PlaybookCatalog()
+        candidates = catalog.for_detection(rule_id, "*")
+        playbook = next((p for p in candidates if p.get("name") == playbook_id), None)
+        if playbook and playbook.get("steps"):
+            steps_list = list(playbook["steps"])
+            # Append verify_graph step from playbook verification if present.
+            vfy = playbook.get("verification", {})
+            expected = vfy.get("expected_graph_state") or vfy.get("cypher")
+            if expected:
+                steps_list.append({
+                    "verify_graph": {
+                        "expected_graph_state": expected.strip(),
+                        "wait_seconds": int(vfy.get("wait_seconds", 30)),
+                    }
+                })
+    except Exception:
+        pass  # Catalog unavailable — use placeholder steps.
+
+    steps = json.dumps(steps_list)
+    rollback_steps = json.dumps(rollback_steps_list)
     try:
         return client._http_json(
             "POST",
@@ -118,7 +159,7 @@ def propose_playbook(
                 "environment_archetype": environment_archetype,
                 "site_id": site_id,
                 "steps_json": steps,
-                "rollback_steps_json": "[]",
+                "rollback_steps_json": rollback_steps,
             },
         )
     except Exception as exc:
@@ -161,6 +202,22 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "cypher": {"type": "string", "description": "Read-only Cypher (no CREATE/DELETE/SET)"},
             },
             "required": ["cypher"],
+        },
+    },
+    {
+        "name": "ask_graph",
+        "description": (
+            "Ask a natural language question about the network and get results. "
+            "The server generates a Cypher query from the question using an LLM, "
+            "executes it, and returns the generated Cypher, explanation, and result rows. "
+            "Use this when you need to explore the graph but don't know the exact Cypher syntax."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "Natural language question, e.g. 'Which devices are connected to spine1?'"},
+            },
+            "required": ["question"],
         },
     },
     {
@@ -220,6 +277,7 @@ TOOL_FN: dict[str, Any] = {
     "get_blast_radius": get_blast_radius,
     "get_application_impact": get_application_impact,
     "query_graph": query_graph,
+    "ask_graph": ask_graph,
     "get_recent_detections": get_recent_detections,
     "get_remediation_history": get_remediation_history,
     "summarise": summarise,

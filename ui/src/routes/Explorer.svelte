@@ -16,7 +16,15 @@
 
   let insights = $state(null);
   let insightsLoading = $state(false);
-  let activeTab = $state('explorer'); // 'explorer' | 'insights'
+  let activeTab = $state('ask'); // 'ask' | 'explorer' | 'insights'
+
+  // ── NL query state ──────────────────────────────────────────────────────────
+  let nlQuestion = $state('');
+  let nlRunning = $state(false);
+  let nlResult = $state(null);  // AskResponse | null
+  let nlError = $state(null);
+  let nlBudget = $state(null);
+  let nlHistory = $state([]);   // past Q&A pairs
 
   // Curated query library shown in the sidebar
   const QUERY_LIBRARY = [
@@ -61,6 +69,26 @@
       cypher: "MATCH (d:Device)-[:HAS_ENRICHMENT_PROPERTY]->(ep:EnrichmentProperty) WHERE ep.source_name = 'netbox' RETURN d.hostname, ep.key, ep.value ORDER BY d.hostname",
     },
     {
+      label: 'Enrichment properties (ServiceNow)',
+      cypher: "MATCH (d:Device)-[:HAS_ENRICHMENT_PROPERTY]->(ep:EnrichmentProperty) WHERE ep.source_name CONTAINS 'snow' RETURN d.hostname, ep.key, ep.value, ep.source_name ORDER BY d.hostname, ep.key",
+    },
+    {
+      label: 'CMDB CI hierarchy',
+      cypher: "MATCH (p:Device)-[r:CMDB_PARENT_OF]->(c:Device) RETURN p.hostname AS parent, c.hostname AS child, r.rel_type, r.source_name ORDER BY parent, child",
+    },
+    {
+      label: 'Business service bindings',
+      cypher: "MATCH (d:Device)-[r:RUNS_SERVICE|CARRIES_APPLICATION]->(a:Application) RETURN d.hostname, a.name, a.criticality, type(r) AS rel ORDER BY d.hostname",
+    },
+    {
+      label: 'CMDB locations',
+      cypher: "MATCH (l:Location) OPTIONAL MATCH (p:Location)-[:LOC_PARENT_OF]->(l) RETURN l.name, l.full_address, p.name AS parent, l.source ORDER BY l.name",
+    },
+    {
+      label: 'Enrichment conflicts (provenance)',
+      cypher: "MATCH (ep:EnrichmentProperty)-[:ENRICHMENT_PROPERTY_PROVENANCE]->(pv:PropertyProvenance) WHERE pv.details_json CONTAINS 'conflict' RETURN ep.device_address, ep.key, ep.value, ep.source_name, pv.confidence, pv.details_json ORDER BY ep.device_address, ep.key",
+    },
+    {
       label: 'Sites per environment',
       cypher: "MATCH (e:Environment)<-[:BELONGS_TO_ENVIRONMENT]-(s:Site) RETURN e.name, e.archetype, s.name ORDER BY e.name, s.name",
     },
@@ -72,6 +100,7 @@
 
   onMount(() => {
     loadSavedQueries();
+    loadNlBudget();
   });
 
   // ── query execution ────────────────────────────────────────────────────────
@@ -162,6 +191,48 @@
   function switchTab(tab) {
     activeTab = tab;
     if (tab === 'insights' && !insights) loadInsights();
+    if (tab === 'ask' && !nlBudget) loadNlBudget();
+  }
+
+  // ── NL query ────────────────────────────────────────────────────────────────
+
+  async function loadNlBudget() {
+    try {
+      const r = await fetch('/api/explorer/nl-budget');
+      if (r.ok) nlBudget = await r.json();
+    } catch {}
+  }
+
+  async function askQuestion() {
+    if (!nlQuestion.trim() || nlRunning) return;
+    nlRunning = true;
+    nlError = null;
+    nlResult = null;
+    try {
+      const r = await fetch('/api/explorer/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: nlQuestion }),
+      });
+      if (!r.ok) {
+        const msg = await r.text();
+        throw new Error(msg);
+      }
+      nlResult = await r.json();
+      nlHistory = [{ question: nlQuestion, result: nlResult }, ...nlHistory].slice(0, 20);
+      loadNlBudget(); // refresh budget
+    } catch (e) {
+      nlError = e.message;
+    } finally {
+      nlRunning = false;
+    }
+  }
+
+  function useCypherInExplorer(newCypher) {
+    activeTab = 'explorer';
+    cypher = newCypher;
+    result = null;
+    error = null;
   }
 
   // ── formatting helpers ─────────────────────────────────────────────────────
@@ -180,12 +251,103 @@
       <h1>Explorer</h1>
     </div>
     <div class="tab-bar">
-      <button class="tab-btn" class:active={activeTab === 'explorer'} onclick={() => switchTab('explorer')}>Query</button>
+      <button class="tab-btn" class:active={activeTab === 'ask'} onclick={() => switchTab('ask')}>Ask</button>
+      <button class="tab-btn" class:active={activeTab === 'explorer'} onclick={() => switchTab('explorer')}>Cypher</button>
       <button class="tab-btn" class:active={activeTab === 'insights'} onclick={() => switchTab('insights')}>Insights</button>
     </div>
   </div>
 
-  {#if activeTab === 'explorer'}
+  {#if activeTab === 'ask'}
+    <!-- ── NL ask pane ───────────────────────────────────────────────────── -->
+    <div class="ask-layout">
+      <div class="ask-header">
+        <div class="ask-input-wrap">
+          <input
+            class="ask-input"
+            type="text"
+            bind:value={nlQuestion}
+            placeholder="Ask about your network… e.g. 'Which devices are connected to spine1?' or 'Show me all critical incidents'"
+            onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); askQuestion(); } }}
+            disabled={nlRunning}
+          />
+          <button class="btn-primary ask-btn" onclick={askQuestion} disabled={nlRunning || !nlQuestion.trim()}>
+            {nlRunning ? 'Thinking…' : 'Ask'}
+          </button>
+        </div>
+        {#if nlBudget}
+          <div class="nl-budget">
+            <span class="budget-label">Token budget:</span>
+            <span class="budget-value {nlBudget.daily_total_tokens > nlBudget.daily_limit * 0.8 ? 'warn' : ''}">
+              {nlBudget.daily_total_tokens.toLocaleString()} / {nlBudget.daily_limit.toLocaleString()}
+            </span>
+          </div>
+        {/if}
+      </div>
+
+      {#if nlError}
+        <div class="error-banner">{nlError}</div>
+      {/if}
+
+      {#if nlResult}
+        <div class="ask-result-card">
+          <div class="ask-question-echo">{nlResult.question}</div>
+
+          {#if nlResult.explanation}
+            <div class="ask-explanation">{nlResult.explanation}</div>
+          {/if}
+
+          <details class="ask-cypher-details" open>
+            <summary class="ask-cypher-summary">Generated Cypher <span class="ask-tokens">{nlResult.tokens_used} tokens</span></summary>
+            <pre class="ask-cypher-pre">{nlResult.cypher}</pre>
+            <button class="btn-secondary ask-use-btn" onclick={() => { cypher = nlResult.cypher; activeTab = 'explorer'; result = null; error = null; }}>
+              Open in Cypher editor
+            </button>
+          </details>
+
+          {#if nlResult.error}
+            <div class="error-banner" style="margin-top:0.75rem;">{nlResult.error}</div>
+          {:else if nlResult.rows.length > 0}
+            <div class="result-meta" style="margin-top:0.75rem;">{nlResult.row_count} row{nlResult.row_count !== 1 ? 's' : ''}</div>
+            <div class="result-table-wrap">
+              <table class="result-table">
+                <thead>
+                  <tr>
+                    {#each nlResult.columns as col}
+                      <th>{col}</th>
+                    {/each}
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each nlResult.rows as row}
+                    <tr>
+                      {#each row as cell}
+                        <td>{cellStr(cell)}</td>
+                      {/each}
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {:else}
+            <div class="empty-result" style="margin-top:0.5rem;">Query returned 0 rows.</div>
+          {/if}
+        </div>
+      {/if}
+
+      {#if nlHistory.length > 1}
+        <div class="ask-history">
+          <div class="sidebar-section-title">Recent questions</div>
+          {#each nlHistory.slice(1) as item}
+            <button class="lib-btn" onclick={() => { nlQuestion = item.question; nlResult = item.result; nlError = null; }}>
+              {item.question}
+              <span class="ask-history-rows">{item.result.row_count} rows</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </div>
+
+  {:else if activeTab === 'explorer'}
     <!-- ── explorer pane ─────────────────────────────────────────────────── -->
     <div class="explorer-layout">
       <!-- sidebar -->
@@ -627,4 +789,123 @@
 
   .loading { padding: 2rem; text-align: center; color: var(--text-muted, #888); }
   .empty { padding: 2rem; text-align: center; color: var(--text-muted, #888); }
+
+  /* ── ask pane ────────────────────────────────────────────────────────────── */
+  .ask-layout { display: flex; flex-direction: column; gap: 1rem; }
+
+  .ask-header { display: flex; flex-direction: column; gap: 0.5rem; }
+
+  .ask-input-wrap {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+  }
+
+  .ask-input {
+    flex: 1;
+    padding: 0.6rem 0.85rem;
+    background: var(--surface, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    color: var(--text, #e5e5e5);
+    font-size: 0.9rem;
+    font-family: inherit;
+  }
+  .ask-input:focus {
+    outline: none;
+    border-color: var(--accent, #3b82f6);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #3b82f6) 25%, transparent);
+  }
+  .ask-input::placeholder { color: var(--text-muted, #666); }
+
+  .ask-btn { flex-shrink: 0; padding: 0.6rem 1.2rem; font-size: 0.9rem; }
+
+  .nl-budget {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.72rem;
+    color: var(--text-muted, #888);
+  }
+  .budget-label { opacity: 0.7; }
+  .budget-value.warn { color: var(--warn, #f59e0b); }
+
+  .ask-result-card {
+    background: var(--surface, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+  }
+
+  .ask-question-echo {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: var(--text, #e5e5e5);
+  }
+
+  .ask-explanation {
+    font-size: 0.82rem;
+    color: var(--text-muted, #aaa);
+    margin-bottom: 0.75rem;
+    line-height: 1.5;
+  }
+
+  .ask-cypher-details {
+    margin-top: 0.25rem;
+  }
+
+  .ask-cypher-summary {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted, #888);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .ask-tokens {
+    font-size: 0.68rem;
+    color: var(--text-muted, #666);
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  .ask-cypher-pre {
+    background: var(--bg, #111);
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    padding: 0.6rem 0.75rem;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.78rem;
+    line-height: 1.6;
+    overflow-x: auto;
+    margin: 0.4rem 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--accent, #58a6ff);
+  }
+
+  .ask-use-btn {
+    font-size: 0.72rem;
+    padding: 0.2rem 0.5rem;
+    margin-top: 0.25rem;
+  }
+
+  .ask-history {
+    margin-top: 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .ask-history-rows {
+    margin-left: auto;
+    font-size: 0.7rem;
+    color: var(--text-muted, #888);
+    font-weight: 400;
+  }
 </style>
