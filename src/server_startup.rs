@@ -1081,7 +1081,6 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                     }),
             );
 
-            // G3: HA coordinator
             // G3 Session 1: HA coordinator with etcd configuration
             let ha_mode = if std::env::var("BONSAI_HA_MODE").as_deref() == Ok("cluster") {
                 let node_id = std::env::var("BONSAI_NODE_ID").unwrap_or_else(|_| "node-1".to_string());
@@ -1091,6 +1090,15 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             };
 
             let mut ha_coordinator = std::sync::Arc::new(bonsai::ha_coordinator::HACoordinator::new(ha_mode.clone()));
+
+            // G3 Session 6: ConfigReplicator for config replication
+            let mut config_replicator = bonsai::ha_coordinator::ConfigReplicator::new(
+                if matches!(ha_mode, bonsai::ha_coordinator::HAMode::Cluster { ref node_id }) {
+                    node_id.clone()
+                } else {
+                    "standalone".to_string()
+                }
+            );
 
             // Add etcd configuration if in cluster mode and env vars are set
             if matches!(ha_mode, bonsai::ha_coordinator::HAMode::Cluster { .. }) {
@@ -1110,7 +1118,10 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                             .unwrap_or_else(|_| "/bonsai/config".to_string()),
                     };
                     let ha = std::sync::Arc::make_mut(&mut ha_coordinator);
-                    *ha = ha.with_etcd_config(etcd_config);
+                    *ha = ha.with_etcd_config(etcd_config.clone());
+                    
+                    let cr = &mut config_replicator;
+                    *cr = cr.with_etcd_config(etcd_config);
                 }
             }
 
@@ -1120,6 +1131,19 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                     ha.start_election().await;
                 }
             });
+
+            // G3 Session 6: Start config change watcher
+            if matches!(ha_mode, bonsai::ha_coordinator::HAMode::Cluster { .. }) {
+                // Wire ConfigReplicator to SQLite store
+                config_replicator = config_replicator.with_sqlite_store(sqlite_store.clone());
+                let config_replicator = std::sync::Arc::new(config_replicator);
+                let shutdown_signal = ha_coordinator.shutdown_signal();
+                tokio::spawn(async move {
+                    if let Err(e) = config_replicator.watch_and_apply_changes(shutdown_signal).await {
+                        error!(error = %e, "config watcher failed");
+                    }
+                });
+            }
 
             let enricher_registry =
                 bonsai::enrichment::new_registry(std::path::Path::new(&runtime_dir));

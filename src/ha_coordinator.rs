@@ -95,6 +95,11 @@ impl HACoordinator {
         *self.shutdown_signal.write().await = true;
     }
 
+    /// Get the shutdown signal for external use
+    pub fn shutdown_signal(&self) -> Arc<RwLock<bool>> {
+        self.shutdown_signal.clone()
+    }
+
     /// Start leader election loop
     ///
     /// In standalone mode, immediately becomes leader.
@@ -250,6 +255,7 @@ pub enum ConfigChangeType {
 pub struct ConfigReplicator {
     node_id: String,
     etcd_config: Option<EtcdConfig>,
+    sqlite_store: Option<std::sync::Arc<crate::sqlite_store::SqliteStore>>,
 }
 
 impl ConfigReplicator {
@@ -257,11 +263,17 @@ impl ConfigReplicator {
         Self {
             node_id,
             etcd_config: None,
+            sqlite_store: None,
         }
     }
 
     pub fn with_etcd_config(mut self, config: EtcdConfig) -> Self {
         self.etcd_config = Some(config);
+        self
+    }
+
+    pub fn with_sqlite_store(mut self, store: std::sync::Arc<crate::sqlite_store::SqliteStore>) -> Self {
+        self.sqlite_store = Some(store);
         self
     }
 
@@ -306,8 +318,7 @@ impl ConfigReplicator {
 
     /// Apply a config change from another node
     pub async fn apply_change(&self, change: ConfigChange) -> anyhow::Result<()> {
-        // G3 Session 4: Apply config change from etcd
-        // For now, log the change - actual SQLite application will be wired in Session 5/6
+        // G3 Session 6: Apply config change from etcd to local SQLite store
         tracing::info!(
             change_type = ?change.change_type,
             table = %change.table,
@@ -317,11 +328,55 @@ impl ConfigReplicator {
             "applying replicated config change"
         );
         
-        // TODO: Apply to local SQLite store
-        // This will require:
-        // 1. SqliteStore reference in ConfigReplicator
-        // 2. Dispatch to appropriate upsert/delete methods based on table
-        // 3. Conflict resolution (last-write-wins or vector clocks)
+        // Apply to local SQLite store if available
+        if let Some(ref store) = self.sqlite_store {
+            // Skip changes from self to avoid loops
+            if change.node_id == self.node_id {
+                tracing::debug!("skipping change from self");
+                return Ok(());
+            }
+            
+            match change.table.as_str() {
+                "devices" => {
+                    if change.change_type == ConfigChangeType::Upsert {
+                        if let Some(ref value) = change.value {
+                            if let Ok(device) = serde_json::from_str::<crate::config::TargetConfig>(value) {
+                                store.upsert_device(&device, "replication", "apply_change")?;
+                            }
+                        }
+                    } else {
+                        store.delete_device(&change.key, "replication")?;
+                    }
+                }
+                "enrichers" => {
+                    if change.change_type == ConfigChangeType::Upsert {
+                        if let Some(ref value) = change.value {
+                            if let Ok(config) = serde_json::from_str::<crate::enrichment::EnricherConfig>(value) {
+                                store.upsert_enricher(&config, "replication")?;
+                            }
+                        }
+                    } else {
+                        store.delete_enricher(&change.key, "replication")?;
+                    }
+                }
+                "adapters" => {
+                    if change.change_type == ConfigChangeType::Upsert {
+                        if let Some(ref value) = change.value {
+                            if let Ok(config) = serde_json::from_str::<crate::output::OutputAdapterConfig>(value) {
+                                store.upsert_adapter(&config, "replication")?;
+                            }
+                        }
+                    } else {
+                        store.delete_adapter(&change.key, "replication")?;
+                    }
+                }
+                _ => {
+                    tracing::warn!(table = %change.table, "unknown config table");
+                }
+            }
+        } else {
+            tracing::warn!("no SQLite store configured, cannot apply config change");
+        }
         
         Ok(())
     }
