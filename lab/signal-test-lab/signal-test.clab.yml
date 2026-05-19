@@ -147,7 +147,7 @@ topology:
     # ── FRR route reflector — BMP exporter to bonsai ─────────────────────────
     frr-rr:
       kind: linux
-      image: frrouting/frr:latest
+      image: quay.io/frrouting/frr:10.6.1
       mgmt-ipv4: 172.100.109.21
       memory: 128m
       binds:

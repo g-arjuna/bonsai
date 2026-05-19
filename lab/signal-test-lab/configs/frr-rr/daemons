@@ -16,4 +16,4 @@ bfdd=yes
 fabricd=no
 vrrpd=no
 pathd=no
-bmpd=yes
+bmpd=no
