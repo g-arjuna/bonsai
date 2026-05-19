@@ -1396,7 +1396,7 @@ docker compose -f docker/compose-signal-test.yml ps
 **Expected**: All services show `healthy` or `running`.
 Services: `bonsai-netbox`, `bonsai-netbox-db`, `bonsai-netbox-redis`,
 `bonsai-signal-prom`, `bonsai-signal-grafana`, `bonsai-signal-elastic`,
-`bonsai-signal-kibana`, `bonsai-signal-splunk`, `bonsai-signal-snow-mock`.
+`bonsai-signal-kibana`, `bonsai-signal-splunk`.
 
 ```bash
 # Quick reachability check for each service
@@ -1404,22 +1404,26 @@ curl -sf http://localhost:8080/api/ -H "Authorization: Token bonsai-signal-test-
   | python3 -m json.tool | grep -i '"status"'     # NetBox
 curl -sf http://localhost:9090/-/healthy           # Prometheus
 curl -sf http://localhost:9200/_cluster/health     # Elasticsearch
-curl -sf http://localhost:8090/__admin/health      # WireMock (ServiceNow mock)
 ```
 
 **Expected**: NetBox returns `"status": "ok"`, Prometheus returns `Prometheus is Healthy.`,
-Elasticsearch returns `"status":"green"` or `yellow`, WireMock returns `"status":"Running"`.
+Elasticsearch returns `"status":"green"` or `yellow`.
 
 ---
 
-### S-58: Load WireMock ServiceNow EM mappings
+### S-58: Verify ServiceNow PDI connectivity
 
 ```bash
-# WireMock loads docker/wiremock/*.json via a read-only bind mount.
-curl -sf http://localhost:8090/__admin/mappings | python3 -m json.tool | grep '"name"'
+export SNOW_PDI_URL="https://<your-pdi>.service-now.com"
+export SNOW_PDI_USER="<pdi-user>"
+export SNOW_PDI_PASSWORD="<pdi-password>"
+
+curl -sf -u "${SNOW_PDI_USER}:${SNOW_PDI_PASSWORD}" \
+  "${SNOW_PDI_URL}/api/now/table/sys_user?sysparm_limit=1" \
+  | python3 -m json.tool | grep '"result"'
 ```
 
-**Expected**: Shows `"name": "ServiceNow em_event POST"` and `"name": "ServiceNow sys_user GET (connectivity check)"`.
+**Expected**: ServiceNow PDI returns a JSON `result` array. If this fails, verify the PDI is awake and the user has table API access.
 
 ---
 
@@ -1440,17 +1444,17 @@ export BONSAI_VAULT_PASSPHRASE=bonsai-signal-test-pass
   --username splunk \
   --password bonsai-signal-hec-token-00000001
 
-# ServiceNow (mock accepts any credentials)
+# ServiceNow PDI
 ./target/release/bonsai credential add \
-  --alias snow-lab \
-  --username admin \
-  --password bonsai-snow-test
+  --alias snow-pdi \
+  --username "${SNOW_PDI_USER}" \
+  --password "${SNOW_PDI_PASSWORD}"
 
 # Verify vault entries
 ./target/release/bonsai credential list
 ```
 
-**Expected**: Lists `netbox-lab`, `splunk-hec-lab`, `snow-lab` with `purpose: enrich/aiops_event`.
+**Expected**: Lists `netbox-lab`, `splunk-hec-lab`, `snow-pdi` with `purpose: enrich/aiops_event`.
 
 ---
 
@@ -1600,34 +1604,27 @@ curl -sk -u admin:bonsai-splunk-admin \
 
 ---
 
-### S-65: Register ServiceNow EM adapter (WireMock mock) via UI
+### S-65: Register ServiceNow EM adapter via UI
 
 1. Click **+ Add adapter**.
 2. Fill in:
    - Name: `snow-em-lab`
    - Type: `ServiceNow Event Mgmt`
-   - Endpoint URL: `http://localhost:8090`
-   - Credential alias: `snow-lab`
+   - Endpoint URL: your `${SNOW_PDI_URL}` value, for example `https://dev123456.service-now.com`
+   - Credential alias: `snow-pdi`
    - Flush interval: `60`
    - **ServiceNow EM options** → Min severity: `Warning and above`, Min age: `30`, Dedup window: `120`
 3. Click **Test connection** → expect `✓ Connected`.
 4. Click **Save adapter**.
 
-Wait 60 seconds after injecting a detection with severity ≥ warning. Verify the mock received the push:
+Wait 60 seconds after injecting a detection with severity ≥ warning. Verify the PDI received the event:
 ```bash
-# Check WireMock received POST to em_event
-curl -s 'http://localhost:8090/__admin/requests' \
-  | python3 -c "
-import json,sys
-data = json.load(sys.stdin)
-reqs = [r for r in data.get('requests',[]) if 'em_event' in r.get('request',{}).get('url','')]
-print(f'ServiceNow EM pushes received: {len(reqs)}')
-for r in reqs[:3]:
-    body = json.loads(r['request']['body'])
-    print(f'  node={body.get(\"node\")}  severity={body.get(\"severity\")}  type={body.get(\"type\")}')"
+curl -sf -u "${SNOW_PDI_USER}:${SNOW_PDI_PASSWORD}" \
+  "${SNOW_PDI_URL}/api/now/table/em_event?sysparm_limit=5&sysparm_query=source=bonsai^ORDERBYDESCsys_created_on" \
+  | python3 -m json.tool | grep -E '"node"|"severity"|"source"'
 ```
 
-**Expected**: Shows at least 1 push with `severity=3` (warning) and the device address in `node`.
+**Expected**: Shows at least 1 `em_event` with `source = "bonsai"`, the device address in `node`, and expected severity.
 
 ---
 
@@ -1680,13 +1677,10 @@ curl -s 'http://localhost:9200/bonsai-detections/_search?size=1&sort=@timestamp:
 curl -s 'http://localhost:9200/bonsai-detections/_search?size=1' \
   | python3 -m json.tool | grep -E '"rule_id"|"device_address"'
 
-echo "=== ServiceNow EM (WireMock) ==="
-curl -s http://localhost:8090/__admin/requests \
-  | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-em=[r for r in d.get('requests',[]) if 'em_event' in r.get('request',{}).get('url','')]
-print(f'{len(em)} EM event(s) pushed')"
+echo "=== ServiceNow EM (PDI) ==="
+curl -sf -u "${SNOW_PDI_USER}:${SNOW_PDI_PASSWORD}" \
+  "${SNOW_PDI_URL}/api/now/table/em_event?sysparm_limit=5&sysparm_query=source=bonsai^ORDERBYDESCsys_created_on" \
+  | python3 -m json.tool | grep -E '"node"|"severity"|"source"'
 
 echo "=== Adapter push audit ==="
 curl -s http://localhost:3000/api/adapters/audit \
@@ -1703,7 +1697,7 @@ docker exec clab-bonsai-signal-test-srl-leaf4 \
 
 **Expected**:
 - Elasticsearch: `rule_id = "bgp_session_down"` in `bonsai-detections`.
-- WireMock: ≥1 POST to `/api/now/table/em_event` with `severity = 1` (critical).
+- ServiceNow PDI: ≥1 `em_event` row with `source = "bonsai"` and `severity = 1` (critical).
 - Adapter audit: `elastic-lab`, `splunk-lab`, `snow-em-lab` all show `success` with `events_pushed ≥ 1`.
 
 ---
@@ -1723,15 +1717,15 @@ docker exec clab-bonsai-signal-test-srl-leaf4 \
 
 | Step | Test | ✅/❌ |
 |------|------|------|
-| S-57 | All 9 integration containers healthy | |
-| S-58 | WireMock ServiceNow EM mappings loaded | |
-| S-59 | Vault credentials: netbox-lab, splunk-hec-lab, snow-lab | |
+| S-57 | All 8 integration containers healthy | |
+| S-58 | ServiceNow PDI table API reachable | |
+| S-59 | Vault credentials: netbox-lab, splunk-hec-lab, snow-pdi | |
 | S-60 | NetBox enricher registered + Test connection OK | |
 | S-61 | NetBox enrichment wrote graph nodes (netbox_site property) | |
 | S-62 | Prometheus adapter registered + push confirmed in Prometheus | |
 | S-63 | Elasticsearch adapter registered + detection document in index | |
 | S-64 | Splunk HEC adapter registered + event in Splunk main index | |
-| S-65 | ServiceNow EM adapter registered + mock received POST | |
+| S-65 | ServiceNow EM adapter registered + PDI received em_event | |
 | S-66 | Push audit log visible in UI for all 4 adapters | |
 | S-67 | Grafana shows bonsai telemetry metrics | |
 | S-68 | Full round-trip: fault → detection → all 4 sinks pushed | |

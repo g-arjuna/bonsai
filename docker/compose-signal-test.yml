@@ -10,7 +10,6 @@
 #   Kibana        → UI for elasticsearch data           http://localhost:5601
 #   Splunk        → output adapter (HEC)               http://localhost:8088  (HEC)
 #                                                       http://localhost:8000  (web)
-#   WireMock      → ServiceNow EM mock (em_event API)  http://localhost:8090
 #
 # Usage:
 #   cd /opt/bonsai
@@ -29,8 +28,7 @@
 #   Elasticsearch              ~2 GB  (heap 1g)
 #   Kibana                     ~512 MB
 #   Splunk Free                ~2 GB
-#   WireMock                   ~128 MB
-#   Total                      ~6.5 GB  (headroom with lab nodes at ~14 GB)
+#   Total                      ~6.4 GB  (headroom with lab nodes at ~14 GB)
 
 name: bonsai-signal-ext
 
@@ -253,28 +251,3 @@ services:
       timeout: 15s
       retries: 10
       start_period: 90s
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # WireMock — ServiceNow EM mock (em_event table + sys_user)
-  # Simulates ServiceNow Table API so bonsai can push em_event records
-  # without a real ServiceNow PDI.
-  # ─────────────────────────────────────────────────────────────────────────────
-  wiremock:
-    image: wiremock/wiremock:3.5.4
-    container_name: bonsai-signal-snow-mock
-    restart: unless-stopped
-    networks: [signal-ext]
-    ports:
-      - "8090:8080"
-    command: --verbose --global-response-templating
-    volumes:
-      - ./wiremock:/home/wiremock/mappings:ro
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          'wget -qO- http://localhost:8080/__admin/health | grep -q ''"status":"Running"''',
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 5

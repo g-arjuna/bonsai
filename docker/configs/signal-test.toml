@@ -230,17 +230,17 @@ password   = "NokiaSrl1!"
 # Add vault credential:
 #   ./bonsai credential add --alias splunk-hec-lab --username splunk --password bonsai-signal-hec-token-00000001
 #
-# ServiceNow EM (WireMock mock):
+# ServiceNow EM (Personal Developer Instance):
 #   name              = "snow-em-lab"
 #   adapter_type      = "servicenow_em"
 #   enabled           = true
-#   endpoint_url      = "http://localhost:8090"
-#   credential_alias  = "snow-lab"          # vault: any username/password (mock accepts all)
+#   endpoint_url      = "https://<your-pdi>.service-now.com"
+#   credential_alias  = "snow-pdi"
 #   flush_interval_secs = 60
 #   extra.min_severity     = "warning"
 #   extra.min_age_secs     = 30
 #   extra.dedup_window_secs = 120
 #
 # Add vault credential:
-#   ./bonsai credential add --alias snow-lab --username admin --password bonsai-snow-test
+#   ./bonsai credential add --alias snow-pdi --username <pdi-user> --password <pdi-password>
 # ─────────────────────────────────────────────────────────────────────────────
