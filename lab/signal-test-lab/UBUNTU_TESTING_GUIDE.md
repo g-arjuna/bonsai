@@ -14,7 +14,6 @@ Each step is numbered. Mark ✅/❌ as you go. Do not skip steps — they have d
 |---|---|---|---|
 | gNMI | gRPC/TLS | 57400 (on nodes) | all 7 SRL nodes |
 | Syslog UDP | UDP | 5514 | srl-leaf1, srl-leaf2 |
-| Syslog TCP | TCP | 6514 | srl-leaf1 |
 | SNMP traps | UDP | 9162 | srl-leaf3, srl-leaf4 |
 | BMP | TCP | 5000 | srl-spine1, srl-spine2 |
 | NetFlow v5 | UDP | 2055 | linux-host1 (softflowd) |
@@ -45,7 +44,7 @@ pkill -f 'collector_engine' || true
 sleep 2
 
 # Check ports are free
-ss -tlnp | grep -E ':3000|:5000|:5514|:6514|:9162|:4318|:2055' \
+ss -tlnp | grep -E ':3000|:5000|:5514|:9162|:4318|:2055' \
   && echo "WARNING: ports in use" || echo "OK: all receiver ports free"
 ```
 
@@ -228,14 +227,14 @@ curl -s http://127.0.0.1:3000/health | python3 -m json.tool
 ### S-13: Verify all receiver ports are listening
 
 ```bash
-for port in 3000 50051 5514 6514 9162 5000 4318 2055; do
+for port in 3000 50051 5514 9162 5000 4318 2055; do
   ss -tlnp 2>/dev/null | grep -q ":$port\b" \
     && echo "LISTEN :$port" \
     || echo "MISSING :$port  ← check bonsai log"
 done
 ```
 
-**Expected**: All 8 ports showing `LISTEN`. Port 2055 uses UDP — check with:
+**Expected**: All 7 ports showing `LISTEN`. Port 2055 uses UDP — check with:
 
 ```bash
 ss -ulnp | grep ':2055'
@@ -479,21 +478,10 @@ for e in syslog_events:
 
 ---
 
-### S-24: Syslog T4 — TCP syslog path (leaf1 → port 6514)
+### S-24: (Removed — TCP syslog not applicable)
 
-```bash
-# Check TCP syslog is reaching bonsai (leaf1 sends mgmt subsystem on TCP)
-# Force a login event (changes AAA log):
-docker exec clab-bonsai-signal-test-srl-leaf1 \
-  sr_cli -d "show system aaa authentication session"
-
-sleep 5
-
-# TCP syslog goes to same archive
-grep "172.100.109.14" runtime/signals/syslog.jsonl 2>/dev/null | wc -l
-```
-
-**Expected**: Non-zero count. Both UDP and TCP contributions should be in the same archive.
+Nokia SRL does not support two remote-server entries to the same IP with different
+transports. Syslog is validated via UDP only (leaf1 + leaf2 → bonsai:5514).
 
 ---
 
@@ -1258,7 +1246,7 @@ Copy this to your results `.md` after each run:
 | S-21 | Syslog: UDP archive receiving | ⬜ |
 | S-22 | Syslog: commit message captured | ⬜ |
 | S-23 | Syslog: fact extracted → graph | ⬜ |
-| S-24 | Syslog: TCP path working | ⬜ |
+| S-24 | (Removed — TCP syslog N/A) | — |
 | S-25 | Syslog: multi-source fusion counter | ⬜ |
 | S-26 | SNMP: manual trap test | ⬜ |
 | S-27 | SNMP: linkDown trap from leaf3 | ⬜ |
@@ -1350,7 +1338,7 @@ SRL BMP requires BGP to be established first. Wait for S-09 to confirm BGP befor
 If BMP still doesn't establish after 60s:
 ```bash
 docker exec clab-bonsai-signal-test-srl-spine1 \
-  sr_cli -d "show bmp"
+  sr_cli -d "show network-instance default protocols bgp-monitoring"
 ```
 Look for `state: session-established`. If state is `connecting`, the IP/port may be wrong — verify bonsai is listening on `:5000` and the container can reach `172.100.109.1`.
 

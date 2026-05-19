@@ -7,7 +7,7 @@ name: bonsai-signal-test
 #   pipeline in a single topology:
 #
 #   gNMI          → all 7 SRL nodes → bonsai gNMI subscriber
-#   Syslog        → leaf1 and leaf2  → bonsai syslog UDP/TCP receiver (5514/6514)
+#   Syslog        → leaf1 and leaf2  → bonsai syslog UDP receiver (5514)
 #   SNMP traps    → leaf3 and leaf4  → bonsai snmp receiver (9162)
 #   BMP           → spine1 and spine2→ bonsai BMP receiver (5000)
 #   NetFlow/IPFIX → linux-host1      → bonsai netflow receiver (2055)
