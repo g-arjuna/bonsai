@@ -1237,6 +1237,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         std::sync::Arc::clone(&sidecar_registry),
                         std::sync::Arc::clone(&supervisor),
                         bus_for_http,
+                        ha_coordinator,
                     ),
                 )
                 .await

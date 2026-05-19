@@ -19,6 +19,7 @@
   import Investigations from './routes/Investigations.svelte';
   import Settings from './routes/Settings.svelte';
   import DensityToggle from '$lib/components/DensityToggle.svelte';
+  import HA from './routes/HA.svelte';
 
   // Cmd-1..9 workspace shortcuts mirror CommandPalette WORKSPACE_SHORTCUTS
   const NAV = [
@@ -31,6 +32,7 @@
     { href: '/approvals',     label: 'Approvals',     icon: '✓', kbd: '7' },
     { href: '/explorer',      label: 'Explorer',      icon: '⬡', kbd: '8' },
     { href: '/investigations',label: 'Investigations',icon: '🔍', kbd: '9' },
+    { href: '/ha',            label: 'HA',            icon: '⚡' },
     { href: '/environments',  label: 'Environments',  icon: '⬡' },
     { href: '/profiles',      label: 'Profiles',      icon: '📋' },
     { href: '/sites',         label: 'Sites',         icon: '◎' },
@@ -183,6 +185,8 @@
       <Explorer />
     {:else if path() === '/investigations'}
       <Investigations />
+    {:else if path() === '/ha'}
+      <HA />
     {:else if path() === '/settings'}
       <Settings />
     {:else}

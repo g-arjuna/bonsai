@@ -6,6 +6,25 @@
   const warnCount     = $derived(topology.devices?.filter(d => d.health === 'warn').length ?? 0);
   const criticalCount = $derived(topology.devices?.filter(d => d.health === 'critical').length ?? 0);
 
+  let haStatus = $state(null);
+  let haLoading = $state(true);
+
+  async function loadHAStatus() {
+    try {
+      const res = await fetch('/api/ha/status');
+      if (res.ok) {
+        haStatus = await res.json();
+      }
+    } catch (_) {
+      // HA not configured or endpoint unavailable
+    } finally {
+      haLoading = false;
+    }
+  }
+
+  loadHAStatus();
+  const haInterval = setInterval(loadHAStatus, 30000);
+
   function fmtAge(ts) {
     if (!ts) return '—';
     const s = Math.round((Date.now() - ts) / 1000);
@@ -43,6 +62,14 @@
   </div>
 
   <div class="spacer"></div>
+
+  {#if haStatus && haStatus.mode !== 'standalone'}
+    <div class="divider"></div>
+    <div class="stat-group ha-indicator" title={haStatus.is_leader ? 'HA: This node is the leader' : `HA: Follower of ${haStatus.leader_id || 'unknown'}`}>
+      <span class="ha-dot" class:leader={haStatus.is_leader} class:follower={!haStatus.is_leader}></span>
+      <span class="stat-label" style="font-size:11px">{haStatus.is_leader ? 'Leader' : 'Follower'}</span>
+    </div>
+  {/if}
 
   <div class="stat-group">
     <span class="sse-dot" class:connected={sseConnected} title={sseConnected ? 'Live stream connected' : 'Reconnecting…'}></span>
@@ -128,5 +155,23 @@
   @keyframes pulse {
     0%, 100% { opacity: 1; }
     50%       { opacity: 0.5; }
+  }
+
+  .ha-indicator {
+    cursor: pointer;
+  }
+
+  .ha-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .ha-dot.leader {
+    background: #34d399;
+    box-shadow: 0 0 5px rgba(52,211,153,0.5);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  .ha-dot.follower {
+    background: #fbbf24;
   }
 </style>

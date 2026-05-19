@@ -58,6 +58,7 @@ mod schema;
 mod schema_components;
 mod settings;
 mod nl_query;
+mod ha;
 
 use mcp_routes::{openapi_json_handler, resolve_handler, schema_handler, swagger_ui_handler};
 use remediation::{approvals_approve_handler, approvals_create_handler, approvals_list_handler, approvals_reject_handler, approvals_rollback_handler, trust_list_handler, trust_graduate_handler, snow_integration_test_handler, servicenow_aiops_sync_handler, list_overrides, add_override, remove_override, list_investigations_handler, create_investigation_handler, get_investigation_handler, list_tool_calls_handler, complete_investigation_handler, grounded_incident_handler, webhook_change_event_handler, change_context_handler, servicenow_change_sync_handler, list_changes_handler};
@@ -68,6 +69,7 @@ use governance::{assignment_override_handler, assignment_rules_handler, assignme
 use outputs::{adapter_audit_handler, adapter_list_handler, adapter_remove_handler, adapter_test_handler, adapter_upsert_handler};
 use test_endpoints::{inject_detection_handler, parse_syslog_fixture_handler};
 use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler};
+use ha::{ha_status_handler, ha_settings_handler, ha_patch_settings_handler};
 use nl_query::{explorer_ask_handler, nl_budget_handler};
 
 // ── JSON response types ───────────────────────────────────────────────────────
@@ -630,6 +632,8 @@ pub struct AppState {
     /// surfaces see the same data. See `src/sidecar_registry.rs`.
     pub sidecar_registry: Arc<crate::sidecar_registry::SidecarRegistry>,
     pub receiver_supervisor: crate::receiver_supervisor::SharedReceiverSupervisor,
+    /// G3: HA coordinator for leader election and config replication
+    pub ha_coordinator: Option<Arc<crate::ha_coordinator::HACoordinator>>,
     pub event_bus: std::sync::Arc<crate::event_bus::InProcessBus>,
 }
 
@@ -667,6 +671,7 @@ pub fn router(
     sidecar_registry: Arc<crate::sidecar_registry::SidecarRegistry>,
     receiver_supervisor: crate::receiver_supervisor::SharedReceiverSupervisor,
     event_bus: std::sync::Arc<crate::event_bus::InProcessBus>,
+    ha_coordinator: Option<Arc<crate::ha_coordinator::HACoordinator>>,
 ) -> Router {
     let state = AppState {
         store,
@@ -698,6 +703,7 @@ pub fn router(
         governor,
         sidecar_registry,
         receiver_supervisor,
+        ha_coordinator,
         event_bus,
     };
 
@@ -861,6 +867,8 @@ fn settings_routes() -> Router<AppState> {
             get(get_streaming_settings_handler).patch(patch_streaming_settings_handler),
         )
         .route("/api/receivers/status", get(get_receiver_status_handler))
+        .route("/api/ha/status", get(ha_status_handler))
+        .route("/api/ha/settings", get(ha_settings_handler).patch(ha_patch_settings_handler))
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
