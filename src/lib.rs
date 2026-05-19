@@ -11,6 +11,7 @@ pub mod collector;
 pub mod config;
 pub mod config_store;
 pub mod counter_summarizer;
+pub mod sqlite_store;
 pub mod credentials;
 pub mod discovery;
 pub mod disk_guard;

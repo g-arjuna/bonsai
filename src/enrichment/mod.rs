@@ -186,30 +186,52 @@ pub struct EnricherRegistry {
     states: std::collections::HashMap<String, EnricherRunState>,
     configs_path: PathBuf,
     audit_root: PathBuf,
+    sqlite_store: Option<Arc<crate::sqlite_store::SqliteStore>>,
 }
 
 impl EnricherRegistry {
-    /// Load from `runtime_dir/enrichment_configs.json`, or start empty.
+    /// Load from SQLite config store (preferred) or fall back to JSON.
     pub fn load(runtime_dir: &Path) -> Self {
         let configs_path = runtime_dir.join(CONFIGS_FILE);
-        let configs: Vec<EnricherConfig> = std::fs::read_to_string(&configs_path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-        info!(count = configs.len(), "enricher configs loaded");
+        let sqlite_store = crate::sqlite_store::SqliteStore::open(runtime_dir).ok();
+
+        // Try to migrate from JSON if SQLite is new
+        if let Some(ref store) = sqlite_store {
+            let _ = store.migrate_from_json(runtime_dir);
+        }
+
+        let configs = if let Some(ref store) = sqlite_store {
+            store.list_enrichers().unwrap_or_default()
+        } else {
+            std::fs::read_to_string(&configs_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default()
+        };
+
+        info!(count = configs.len(), source = if sqlite_store.is_some() { "sqlite" } else { "json" }, "enricher configs loaded");
         Self {
             configs,
             states: std::collections::HashMap::new(),
             configs_path,
             audit_root: runtime_dir.to_path_buf(),
+            sqlite_store,
         }
     }
 
     fn persist(&self) {
-        if let Ok(json) = serde_json::to_string_pretty(&self.configs)
-            && let Err(e) = std::fs::write(&self.configs_path, json)
-        {
-            warn!("failed to persist enricher configs: {e}");
+        if let Some(ref store) = self.sqlite_store {
+            for config in &self.configs {
+                if let Err(e) = store.upsert_enricher(config, "system") {
+                    warn!("failed to persist enricher config '{}' to SQLite: {e}", config.name);
+                }
+            }
+        } else {
+            if let Ok(json) = serde_json::to_string_pretty(&self.configs)
+                && let Err(e) = std::fs::write(&self.configs_path, json)
+            {
+                warn!("failed to persist enricher configs: {e}");
+            }
         }
     }
 
@@ -224,21 +246,35 @@ impl EnricherRegistry {
     }
 
     pub fn upsert(&mut self, config: EnricherConfig) {
+        if let Some(ref store) = self.sqlite_store {
+            if let Err(e) = store.upsert_enricher(&config, "enricher_upsert") {
+                warn!("failed to upsert enricher config '{}' to SQLite: {e}", config.name);
+            }
+        }
         if let Some(existing) = self.configs.iter_mut().find(|c| c.name == config.name) {
             *existing = config;
         } else {
             self.configs.push(config);
         }
-        self.persist();
+        if self.sqlite_store.is_none() {
+            self.persist();
+        }
     }
 
     pub fn remove(&mut self, name: &str) -> bool {
+        if let Some(ref store) = self.sqlite_store {
+            if let Err(e) = store.delete_enricher(name, "enricher_remove") {
+                warn!("failed to delete enricher config '{}' from SQLite: {e}", name);
+            }
+        }
         let before = self.configs.len();
         self.configs.retain(|c| c.name != name);
         let removed = self.configs.len() < before;
         if removed {
             self.states.remove(name);
-            self.persist();
+            if self.sqlite_store.is_none() {
+                self.persist();
+            }
         }
         removed
     }

@@ -78,6 +78,9 @@ uuid = { version = "1", features = ["v4"] }
 # Bounded LRU cache for the graph-writer debounce map (T0-2)
 lru = "0.12"
 
+# SQLite config store for registry, adapters, enrichers (G2)
+rusqlite = { version = "0.32", features = ["bundled"] }
+
 # Internal observability — exposes /metrics in Prometheus text format
 metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
