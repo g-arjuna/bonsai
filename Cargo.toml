@@ -1,0 +1,112 @@
+[package]
+name = "bonsai"
+version = "0.2.0"
+edition = "2024"
+
+[lib]
+name = "bonsai"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bonsai"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# gRPC transport
+tonic = { version = "0.13", features = ["tls-ring", "zstd"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+# Protobuf serialization
+prost = "0.13"
+prost-types = "0.13"
+
+# Serialization (JSON output for Phase 1)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+regex = "1"
+rmp-serde = "1"
+age = "0.11"
+zstd = "0.13"
+
+# Columnar archive writer
+arrow-array = "54"
+arrow-schema = "54"
+parquet = { version = "54", features = ["arrow", "zstd"] }
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
+tracing-appender = "0.2"
+
+# Lock-free ArcSwap for hot-path subscriber list
+arc-swap = "1"
+
+# Streaming helpers
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+# Stream combinators used by API event streaming
+futures = "0.3"
+async-stream = "0.3"
+async-trait = "0.1"
+
+# Hostname detection for collector identification
+hostname = "0.4"
+
+# Error handling
+anyhow = "1"
+
+# Config file parsing
+toml = "0.8"
+
+# Graph database
+lbug = "0.15.3"
+
+# Allocator — jemalloc returns freed pages to OS aggressively (madvise MADV_DONTNEED),
+# preventing KuZuDB buffer-pool evictions from inflating RSS via glibc arena fragmentation.
+tikv-jemallocator = "0.6"
+
+# Timestamp conversion for lbug Value::TimestampNs
+time = { version = "0.3", features = ["parsing"] }
+
+# UUID generation for StateChangeEvent primary keys
+uuid = { version = "1", features = ["v4"] }
+
+# Bounded LRU cache for the graph-writer debounce map (T0-2)
+lru = "0.12"
+
+# Internal observability — exposes /metrics in Prometheus text format
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+tar = "0.4"
+semver = "1"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+snap = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+libc = "0.2"
+
+# HTTP API server for the Phase 6 UI (Axum + tower-http for CORS + static files)
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+
+# OpenAPI spec type (CV6 T1-1 / T1-2) — swagger-ui served via bundled HTML handler
+utoipa = "5"
+
+[build-dependencies]
+tonic-build = "0.13"
+protoc-bin-vendored = "3"
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6"
+
+[profile.release]
+lto = "thin"           # thin LTO: ~80% of full-LTO benefit at ~30% of build time cost
+codegen-units = 1      # slower build, smaller + faster binary
+strip = "symbols"      # smaller binary for production
+incremental = false    # release builds don't benefit from incremental
