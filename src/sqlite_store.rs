@@ -126,6 +126,21 @@ impl SqliteStore {
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp_ns);
+
+                -- G5: Collector registration audit log
+                CREATE TABLE IF NOT EXISTS collector_registrations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    collector_id TEXT,
+                    hostname TEXT,
+                    protocol_version INTEGER,
+                    peer_ip TEXT,
+                    cert_fingerprint TEXT,
+                    timestamp_ns INTEGER,
+                    success INTEGER DEFAULT 1,
+                    rejection_reason TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_collector_reg_timestamp ON collector_registrations(timestamp_ns);
             "#).context("failed to create schema v1")?;
 
             db.execute("PRAGMA user_version=1", [])
@@ -498,6 +513,40 @@ impl SqliteStore {
         if rows > 0 {
             self.audit("adapters", "DELETE", name, actor, "adapter_remove", old.as_deref(), None)?;
         }
+        Ok(())
+    }
+
+    // ── Collector registration audit ─────────────────────────────────────────────
+
+    pub fn log_collector_registration(
+        &self,
+        collector_id: &str,
+        hostname: &str,
+        protocol_version: u32,
+        peer_ip: Option<&str>,
+        cert_fingerprint: Option<&str>,
+        success: bool,
+        rejection_reason: Option<&str>,
+    ) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+            .unwrap_or(0);
+
+        db.execute(
+            "INSERT INTO collector_registrations (collector_id, hostname, protocol_version, peer_ip, cert_fingerprint, timestamp_ns, success, rejection_reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                collector_id,
+                hostname,
+                protocol_version as i64,
+                peer_ip,
+                cert_fingerprint,
+                now,
+                success,
+                rejection_reason,
+            ],
+        )?;
         Ok(())
     }
 }

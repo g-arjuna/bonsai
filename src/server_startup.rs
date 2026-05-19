@@ -1006,6 +1006,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             info!(%api_addr, ingest_compression = "zstd", mtls = false, "gRPC API and telemetry ingest server listening");
         }
 
+        let sqlite_store_for_api = std::sync::Arc::clone(&sqlite_store);
         tokio::spawn(async move {
             match store_for_api {
                 Store::Core(s) => {
@@ -1017,7 +1018,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         Some(std::sync::Arc::clone(&debouncer)),
                         collector_manager_for_api,
                         sidecar_registry_for_api,
-                    ))
+                    )
+                    .with_sqlite_store(sqlite_store_for_api))
                     .accept_compressed(CompressionEncoding::Zstd);
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {
                         warn!(%error, "gRPC core server error");
@@ -1032,7 +1034,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         Some(std::sync::Arc::clone(&debouncer)),
                         None,
                         sidecar_registry_for_api,
-                    ))
+                    )
+                    .with_sqlite_store(sqlite_store_for_api))
                     .accept_compressed(CompressionEncoding::Zstd);
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {
                         warn!(%error, "gRPC collector server error");
@@ -1066,6 +1069,14 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 catalogue::load_catalogue(std::path::Path::new(&catalogue_dir)),
             ));
             let runtime_dir = "runtime".to_string();
+            let sqlite_store = std::sync::Arc::new(
+                bonsai::sqlite_store::SqliteStore::open(std::path::Path::new(&runtime_dir))
+                    .unwrap_or_else(|e| {
+                        warn!("failed to open SQLite config store: {e}, falling back to JSON");
+                        // Continue without SQLite - will use JSON fallback
+                        panic!("SQLite store required for G5 features"); // For now, fail hard if SQLite unavailable
+                    }),
+            );
             let enricher_registry =
                 bonsai::enrichment::new_registry(std::path::Path::new(&runtime_dir));
             let adapter_registry =

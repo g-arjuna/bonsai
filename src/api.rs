@@ -71,6 +71,7 @@ pub struct BonsaiService<S: BonsaiStore> {
     debouncer: Option<Arc<ingest::TelemetryDebouncer>>,
     collector_manager: Option<Arc<crate::assignment::CollectorManager>>,
     sidecar_registry: Arc<SidecarRegistry>,
+    sqlite_store: Option<Arc<crate::sqlite_store::SqliteStore>>,
 }
 
 impl<S: BonsaiStore> BonsaiService<S> {
@@ -91,7 +92,13 @@ impl<S: BonsaiStore> BonsaiService<S> {
             debouncer,
             collector_manager,
             sidecar_registry,
+            sqlite_store: None,
         }
+    }
+
+    pub fn with_sqlite_store(mut self, store: Arc<crate::sqlite_store::SqliteStore>) -> Self {
+        self.sqlite_store = Some(store);
+        self
     }
 }
 
@@ -112,8 +119,36 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         req: Request<CollectorIdentity>,
     ) -> Result<Response<Self::RegisterCollectorStream>, Status> {
         let identity = req.into_inner();
-        let collector_id = identity.collector_id;
+        let collector_id = identity.collector_id.clone();
         let collector_version = identity.protocol_version;
+        let hostname = identity.hostname.clone();
+        let auth_token = identity.auth_token;
+
+        // G5: Token validation for collector registration
+        let expected_token = std::env::var("BONSAI_COLLECTOR_TOKEN")
+            .ok()
+            .filter(|t| !t.trim().is_empty());
+        if let Some(expected) = expected_token {
+            if auth_token != expected {
+                tracing::error!(
+                    %collector_id,
+                    "collector registration rejected: invalid auth token"
+                );
+                metrics::counter!("bonsai_collector_registration_rejected_total", "reason" => "invalid_token").increment(1);
+                if let Some(ref store) = self.sqlite_store {
+                    let _ = store.log_collector_registration(
+                        &collector_id,
+                        &hostname,
+                        collector_version,
+                        None, // peer_ip not available from Request
+                        None, // cert_fingerprint not available from Request
+                        false,
+                        Some("invalid_token"),
+                    );
+                }
+                return Err(Status::unauthenticated("invalid collector auth token"));
+            }
+        }
 
         match check_protocol_compat(collector_version, PROTOCOL_VERSION) {
             VersionCompat::Compatible => {
@@ -139,10 +174,35 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                     server_version = server,
                     "collector protocol version major skew — rejecting registration"
                 );
+                metrics::counter!("bonsai_collector_registration_rejected_total", "reason" => "protocol_skew").increment(1);
+                if let Some(ref store) = self.sqlite_store {
+                    let _ = store.log_collector_registration(
+                        &collector_id,
+                        &hostname,
+                        collector_version,
+                        None,
+                        None,
+                        false,
+                        Some(&format!("protocol_skew: collector={client} server={server}")),
+                    );
+                }
                 return Err(Status::failed_precondition(format!(
                     "protocol version major skew: collector={client} server={server}; upgrade required"
                 )));
             }
+        }
+
+        // Log successful registration
+        if let Some(ref store) = self.sqlite_store {
+            let _ = store.log_collector_registration(
+                &collector_id,
+                &hostname,
+                collector_version,
+                None, // peer_ip - would need TLS connection info
+                None, // cert_fingerprint - would need TLS connection info
+                true,
+                None,
+            );
         }
 
         let manager = self

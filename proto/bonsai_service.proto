@@ -295,6 +295,7 @@ message CollectorIdentity {
   string collector_id     = 1;
   string hostname         = 2;
   uint32 protocol_version = 3;
+  string auth_token       = 4; // PSK token for registration (BONSAI_COLLECTOR_TOKEN)
 }
 
 message DeviceAssignment {
