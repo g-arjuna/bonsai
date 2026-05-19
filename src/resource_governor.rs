@@ -207,6 +207,8 @@ async fn memory_pressure_loop(handle: GovernorHandle, mut shutdown: watch::Recei
                             budget_mb = budget / (1024 * 1024),
                             "memory pressure: HARD — triggering aggressive governance"
                         );
+                        // G6: Emit metric for governor violation
+                        metrics::counter!("bonsai_governor_violation_total", "type" => "memory_pressure_hard").increment(1);
                     }
                     govern_memory_hard(&handle, rss, budget);
                 } else if rss >= soft_threshold {
@@ -216,6 +218,8 @@ async fn memory_pressure_loop(handle: GovernorHandle, mut shutdown: watch::Recei
                             budget_mb = budget / (1024 * 1024),
                             "memory pressure: SOFT — graduated response active"
                         );
+                        // G6: Emit metric for governor violation
+                        metrics::counter!("bonsai_governor_violation_total", "type" => "memory_pressure_soft").increment(1);
                     }
                     govern_memory_soft(&handle, rss, budget);
                 } else {
@@ -318,6 +322,8 @@ async fn write_pressure_loop(handle: GovernorHandle, mut shutdown: watch::Receiv
                     }
                     if !handle.inner.write_pressure_active.swap(true, Ordering::Relaxed) {
                         info!(queue_pct = pct, "write pressure: queue > 50%");
+                        // G6: Emit metric for governor violation
+                        metrics::counter!("bonsai_governor_violation_total", "type" => "write_pressure").increment(1);
                     }
                 } else {
                     pressure_since = None;
@@ -408,6 +414,8 @@ async fn rate_governance_loop(handle: GovernorHandle, mut shutdown: watch::Recei
                             excess_events = excess,
                             "rate governance: budget exceeded — shedding low-priority events"
                         );
+                        // G6: Emit metric for governor violation
+                        metrics::counter!("bonsai_governor_violation_total", "type" => "rate_shedding").increment(1);
                     }
                 } else {
                     if handle.inner.rate_shedding_active.swap(false, Ordering::Relaxed) {

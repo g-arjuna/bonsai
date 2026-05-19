@@ -162,6 +162,14 @@ impl WriteCoordinator {
         let current_depth = self.capacity - self.tx.capacity();
         self.depth.store(current_depth, Ordering::Relaxed);
         metrics::gauge!("bonsai_write_coordinator_queue_depth").set(current_depth as f64);
+
+        // G6: Track queue saturation events
+        let fill_pct = (current_depth as u64 * 100) / (self.capacity as u64);
+        if fill_pct >= 95 {
+            metrics::counter!("bonsai_queue_saturation_total", "threshold" => "95pct").increment(1);
+        } else if fill_pct >= 80 {
+            metrics::counter!("bonsai_queue_saturation_total", "threshold" => "80pct").increment(1);
+        }
     }
 }
 
