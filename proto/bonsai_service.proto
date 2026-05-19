@@ -371,10 +371,24 @@ message SidecarHeartbeatResponse {
   bool   reregister_required   = 2;  // true if bonsai lost the sidecar_id (e.g. bonsai restart) — sidecar should call RegisterSidecar again
 }
 
+// ── G3 Session 7: HA leader query for collector re-homing ─────────────────────
+
+message GetLeaderRequest {}
+
+message GetLeaderResponse {
+  string leader_id   = 1;  // node_id of the current leader (e.g., "node-1")
+  string leader_addr = 2;  // gRPC endpoint of the leader (e.g., "bonsai-core-1:50051")
+  bool   is_leader   = 3;  // true if this node is the leader
+  string error       = 4;  // error message if leader query failed
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 service BonsaiGraph {
   // ... existing rpcs ...
+
+  // G3 Session 7: Query current HA leader for collector re-homing
+  rpc GetLeader(GetLeaderRequest) returns (GetLeaderResponse);
 
   // Bidirectional streaming: collector registers and receives device assignments.
   rpc RegisterCollector(CollectorIdentity) returns (stream AssignmentUpdate);
