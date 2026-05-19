@@ -1523,6 +1523,9 @@ impl GraphStore {
         state_change_event_id: String,
         source_event_ids: Vec<String>,
     ) -> Result<String> {
+        // G6: Emit metric for detection write
+        metrics::counter!("bonsai_graph_detection_write_total", "severity" => &severity).increment(1);
+
         let event_addr = device_address.clone();
         let event_rule = rule_id.clone();
         let event_sev = severity.clone();
@@ -1638,6 +1641,9 @@ impl GraphStore {
         attempted_at_ns: i64,
         completed_at_ns: i64,
     ) -> Result<String> {
+        // G6: Emit metric for remediation write
+        metrics::counter!("bonsai_graph_remediation_write_total", "status" => &status).increment(1);
+
         let event_detection_id = detection_id.clone();
         let event_action = action.clone();
         let event_status = status.clone();
@@ -3676,6 +3682,9 @@ fn write_state_change_event(
     event_tx: &broadcast::Sender<BonsaiEvent>,
     corr_buf: &CorrelationBuffer,
 ) -> Result<String> {
+    // G6: Emit metric for state change event write
+    metrics::counter!("bonsai_graph_state_change_write_total", "event_type" => event_type, "source" => source_type).increment(1);
+
     let id = Uuid::new_v4().to_string();
 
     let mut stmt = conn
