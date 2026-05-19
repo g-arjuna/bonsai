@@ -306,14 +306,119 @@ impl ConfigReplicator {
 
     /// Apply a config change from another node
     pub async fn apply_change(&self, change: ConfigChange) -> anyhow::Result<()> {
-        // TODO: Apply to local SQLite store
-        tracing::debug!(
+        // G3 Session 4: Apply config change from etcd
+        // For now, log the change - actual SQLite application will be wired in Session 5/6
+        tracing::info!(
             change_type = ?change.change_type,
             table = %change.table,
             key = %change.key,
             from_node = %change.node_id,
+            timestamp_ns = change.timestamp_ns,
             "applying replicated config change"
         );
+        
+        // TODO: Apply to local SQLite store
+        // This will require:
+        // 1. SqliteStore reference in ConfigReplicator
+        // 2. Dispatch to appropriate upsert/delete methods based on table
+        // 3. Conflict resolution (last-write-wins or vector clocks)
+        
         Ok(())
+    }
+
+    /// Watch for config changes from etcd and apply them
+    pub async fn watch_and_apply_changes(&self, shutdown_signal: Arc<RwLock<bool>>) -> anyhow::Result<()> {
+        if let Some(ref etcd_config) = self.etcd_config {
+            use etcd_client::{Client, ConnectOptions, Watcher};
+            use tokio::time::{interval, Duration};
+
+            let endpoints: Vec<&str> = etcd_config.endpoints.iter().map(|s| s.as_str()).collect();
+            let client = Client::connect(endpoints, Some(ConnectOptions::default()))
+                .await
+                .context("failed to connect to etcd for config watch")?;
+
+            let watch_prefix = format!("{}/", etcd_config.config_prefix);
+            
+            tracing::info!(
+                %watch_prefix,
+                node_id = %self.node_id,
+                "starting config change watcher"
+            );
+
+            let mut watcher = client.watcher(watch_prefix, None).await
+                .context("failed to create etcd watcher")?;
+
+            let mut ticker = interval(Duration::from_secs(5));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        // Periodic health check
+                        tracing::debug!("config watcher healthy");
+                    }
+                    result = watcher.next() => {
+                        match result {
+                            Ok(Some(response)) => {
+                                for event in response.events() {
+                                    if let Some(kv) = event.kv() {
+                                        let key = String::from_utf8_lossy(kv.key());
+                                        let value = kv.value().map(|v| String::from_utf8_lossy(v).to_string());
+                                        
+                                        // Parse key: /bonsai/config/<table>/<key>
+                                        let parts: Vec<&str> = key.trim_start_matches(&format!("{}/", etcd_config.config_prefix)).split('/').collect();
+                                        if parts.len() >= 2 {
+                                            let table = parts[0].to_string();
+                                            let config_key = parts[1..].join("/");
+                                            
+                                            let change_type = if event.is_delete() {
+                                                ConfigChangeType::Delete
+                                            } else {
+                                                ConfigChangeType::Upsert
+                                            };
+                                            
+                                            if let Some(ref val) = value {
+                                                if let Ok(deserialized) = serde_json::from_str::<ConfigChange>(val) {
+                                                    // Apply the change
+                                                    if let Err(e) = self.apply_change(deserialized).await {
+                                                        tracing::error!(error = %e, "failed to apply replicated config change");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                tracing::warn!("etcd watcher returned None, reconnecting");
+                                // Re-create watcher
+                                watcher = client.watcher(watch_prefix, None).await
+                                    .context("failed to recreate etcd watcher")?;
+                            }
+                            Err(e) => {
+                                tracing::error!(error = %e, "etcd watcher error, reconnecting");
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                watcher = client.watcher(watch_prefix, None).await
+                                    .context("failed to recreate etcd watcher after error")?;
+                            }
+                        }
+                    }
+                    _ = self.watch_shutdown_signal(shutdown_signal.clone()) => {
+                        tracing::info!("shutdown requested, stopping config watcher");
+                        return Ok(());
+                    }
+                }
+            }
+        } else {
+            tracing::warn!("no etcd config provided, config watcher not started");
+            Ok(())
+        }
+    }
+
+    /// Watch for shutdown signal
+    async fn watch_shutdown_signal(&self, shutdown_signal: Arc<RwLock<bool>>) {
+        while !*shutdown_signal.read().await {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 }
