@@ -371,6 +371,25 @@ impl SqliteStore {
         )?;
 
         self.audit("devices", "UPSERT", &device.address, actor, action, old.as_deref(), Some(&new))?;
+
+        // G3 Session 5: Publish config change to etcd
+        if let Some(ref replicator) = self.config_replicator {
+            let change = crate::ha_coordinator::ConfigChange {
+                change_type: crate::ha_coordinator::ConfigChangeType::Upsert,
+                table: "devices".to_string(),
+                key: device.address.clone(),
+                value: Some(new),
+                timestamp_ns: now,
+                node_id: replicator.node_id.clone(),
+            };
+            let replicator = Arc::clone(replicator);
+            tokio::spawn(async move {
+                if let Err(e) = replicator.publish_change(change).await {
+                    tracing::error!(error = %e, "failed to publish config change");
+                }
+            });
+        }
+
         Ok(())
     }
 
@@ -380,6 +399,28 @@ impl SqliteStore {
         let rows = db.execute("DELETE FROM devices WHERE address = ?1", params![address])?;
         if rows > 0 {
             self.audit("devices", "DELETE", address, actor, "registry_remove_device", old.as_deref(), None)?;
+
+            // G3 Session 5: Publish config change to etcd
+            if let Some(ref replicator) = self.config_replicator {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+                    .unwrap_or(0);
+                let change = crate::ha_coordinator::ConfigChange {
+                    change_type: crate::ha_coordinator::ConfigChangeType::Delete,
+                    table: "devices".to_string(),
+                    key: address.to_string(),
+                    value: None,
+                    timestamp_ns: now,
+                    node_id: replicator.node_id.clone(),
+                };
+                let replicator = Arc::clone(replicator);
+                tokio::spawn(async move {
+                    if let Err(e) = replicator.publish_change(change).await {
+                        tracing::error!(error = %e, "failed to publish config change");
+                    }
+                });
+            }
         }
         Ok(())
     }
@@ -437,6 +478,25 @@ impl SqliteStore {
         )?;
 
         self.audit("enrichers", "UPSERT", &config.name, actor, "enricher_upsert", old.as_deref(), Some(&new))?;
+
+        // G3 Session 5: Publish config change to etcd
+        if let Some(ref replicator) = self.config_replicator {
+            let change = crate::ha_coordinator::ConfigChange {
+                change_type: crate::ha_coordinator::ConfigChangeType::Upsert,
+                table: "enrichers".to_string(),
+                key: config.name.clone(),
+                value: Some(new),
+                timestamp_ns: now,
+                node_id: replicator.node_id.clone(),
+            };
+            let replicator = Arc::clone(replicator);
+            tokio::spawn(async move {
+                if let Err(e) = replicator.publish_change(change).await {
+                    tracing::error!(error = %e, "failed to publish config change");
+                }
+            });
+        }
+
         Ok(())
     }
 
@@ -446,6 +506,28 @@ impl SqliteStore {
         let rows = db.execute("DELETE FROM enrichers WHERE name = ?1", params![name])?;
         if rows > 0 {
             self.audit("enrichers", "DELETE", name, actor, "enricher_remove", old.as_deref(), None)?;
+
+            // G3 Session 5: Publish config change to etcd
+            if let Some(ref replicator) = self.config_replicator {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+                    .unwrap_or(0);
+                let change = crate::ha_coordinator::ConfigChange {
+                    change_type: crate::ha_coordinator::ConfigChangeType::Delete,
+                    table: "enrichers".to_string(),
+                    key: name.to_string(),
+                    value: None,
+                    timestamp_ns: now,
+                    node_id: replicator.node_id.clone(),
+                };
+                let replicator = Arc::clone(replicator);
+                tokio::spawn(async move {
+                    if let Err(e) = replicator.publish_change(change).await {
+                        tracing::error!(error = %e, "failed to publish config change");
+                    }
+                });
+            }
         }
         Ok(())
     }
@@ -503,6 +585,25 @@ impl SqliteStore {
         )?;
 
         self.audit("adapters", "UPSERT", &config.name, actor, "adapter_upsert", old.as_deref(), Some(&new))?;
+
+        // G3 Session 5: Publish config change to etcd
+        if let Some(ref replicator) = self.config_replicator {
+            let change = crate::ha_coordinator::ConfigChange {
+                change_type: crate::ha_coordinator::ConfigChangeType::Upsert,
+                table: "adapters".to_string(),
+                key: config.name.clone(),
+                value: Some(new),
+                timestamp_ns: now,
+                node_id: replicator.node_id.clone(),
+            };
+            let replicator = Arc::clone(replicator);
+            tokio::spawn(async move {
+                if let Err(e) = replicator.publish_change(change).await {
+                    tracing::error!(error = %e, "failed to publish config change");
+                }
+            });
+        }
+
         Ok(())
     }
 
@@ -512,6 +613,28 @@ impl SqliteStore {
         let rows = db.execute("DELETE FROM adapters WHERE name = ?1", params![name])?;
         if rows > 0 {
             self.audit("adapters", "DELETE", name, actor, "adapter_remove", old.as_deref(), None)?;
+
+            // G3 Session 5: Publish config change to etcd
+            if let Some(ref replicator) = self.config_replicator {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+                    .unwrap_or(0);
+                let change = crate::ha_coordinator::ConfigChange {
+                    change_type: crate::ha_coordinator::ConfigChangeType::Delete,
+                    table: "adapters".to_string(),
+                    key: name.to_string(),
+                    value: None,
+                    timestamp_ns: now,
+                    node_id: replicator.node_id.clone(),
+                };
+                let replicator = Arc::clone(replicator);
+                tokio::spawn(async move {
+                    if let Err(e) = replicator.publish_change(change).await {
+                        tracing::error!(error = %e, "failed to publish config change");
+                    }
+                });
+            }
         }
         Ok(())
     }
