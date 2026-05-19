@@ -156,6 +156,7 @@ impl CollectorGraphStore {
         latency_ns: i64,
         fired_at_ns: i64,
         state_change_event_id: String,
+        source_event_ids: Vec<String>,
     ) -> Result<String> {
         let db = Arc::clone(&self.db);
         let write_lock = Arc::clone(&self.write_lock);
@@ -194,14 +195,23 @@ impl CollectorGraphStore {
                 ("id", Value::String(id.clone())),
             ]).context("execute collector TRIGGERED edge")?;
 
+            let mut trigger_event_ids = source_event_ids;
             if !state_change_event_id.is_empty() {
+                trigger_event_ids.push(state_change_event_id.clone());
+            }
+            trigger_event_ids.sort();
+            trigger_event_ids.dedup();
+
+            if !trigger_event_ids.is_empty() {
                 let mut tb = conn.prepare(
                     "MATCH (e:DetectionEvent {id: $eid}), (s:StateChangeEvent {id: $sid}) CREATE (e)-[:TRIGGERED_BY]->(s)"
                 ).context("prepare collector TRIGGERED_BY edge")?;
-                conn.execute(&mut tb, vec![
-                    ("eid", Value::String(id.clone())),
-                    ("sid", Value::String(state_change_event_id.clone())),
-                ]).context("execute collector TRIGGERED_BY edge")?;
+                for source_event_id in trigger_event_ids {
+                    conn.execute(&mut tb, vec![
+                        ("eid", Value::String(id.clone())),
+                        ("sid", Value::String(source_event_id)),
+                    ]).context("execute collector TRIGGERED_BY edge")?;
+                }
             }
 
             let _ = event_tx.send(BonsaiEvent {
@@ -250,6 +260,7 @@ impl BonsaiStore for CollectorGraphStore {
         latency_ns: i64,
         fired_at_ns: i64,
         state_change_event_id: String,
+        source_event_ids: Vec<String>,
     ) -> Result<String> {
         self.write_detection(
             device_address,
@@ -260,6 +271,7 @@ impl BonsaiStore for CollectorGraphStore {
             latency_ns,
             fired_at_ns,
             state_change_event_id,
+            source_event_ids,
         )
         .await
     }

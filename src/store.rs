@@ -28,6 +28,7 @@ pub trait BonsaiStore: Send + Sync {
         latency_ns: i64,
         fired_at_ns: i64,
         state_change_event_id: String,
+        source_event_ids: Vec<String>,
     ) -> Result<String>;
 
     async fn write_remediation(

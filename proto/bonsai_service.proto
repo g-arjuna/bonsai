@@ -239,6 +239,7 @@ message DetectionEventIngest {
   string remediation_action    = 10;
   string source_types_json     = 11; // JSON-encoded []string of source types that contributed
   int64  latency_ns            = 12; // time from first StateChangeEvent to detection fire
+  repeated string source_event_ids = 13;  // all StateChangeEvent UUIDs that contributed
 }
 
 message DetectionIngestResponse {

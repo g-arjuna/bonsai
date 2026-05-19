@@ -217,6 +217,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             latency_ns: i64,
             fired_at_ns: i64,
             state_change_event_id: String,
+            source_event_ids: Vec<String>,
         ) -> Result<String> {
             match self {
                 Store::Core(s) => {
@@ -229,6 +230,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         latency_ns,
                         fired_at_ns,
                         state_change_event_id,
+                        source_event_ids,
                     )
                     .await
                 }
@@ -242,6 +244,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         latency_ns,
                         fired_at_ns,
                         state_change_event_id,
+                        source_event_ids,
                     )
                     .await
                 }

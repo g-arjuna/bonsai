@@ -59,6 +59,14 @@ COPY ui/index.html ui/svelte.config.js ui/vite.config.js ./
 COPY ui/src ./src
 RUN npm run build
 
+FROM node:20-alpine AS bonpy-builder
+WORKDIR /ui-bonpy
+COPY ui-bonpy/package.json ui-bonpy/package-lock.json ./
+RUN npm ci
+COPY ui-bonpy/index.html ui-bonpy/svelte.config.js ui-bonpy/vite.config.js ./
+COPY ui-bonpy/src ./src
+RUN npm run build
+
 # ── Runtime: slim Debian with no curl dep — healthcheck is a compiled binary ──
 FROM debian:trixie-slim AS runtime
 
@@ -78,6 +86,7 @@ COPY --from=rust-builder /app/bonsai        /usr/local/bin/bonsai
 COPY --from=rust-builder /app/healthcheck   /usr/local/bin/healthcheck
 COPY --from=rust-builder /app/liblbug.so.0  /usr/local/lib/liblbug.so.0
 COPY --from=ui-builder   /ui/dist           /app/ui/dist
+COPY --from=bonpy-builder /ui-bonpy/dist    /app/ui-bonpy/dist
 
 ENV BONSAI_CONFIG=/etc/bonsai/bonsai.toml
 ENV LD_LIBRARY_PATH=/usr/local/lib

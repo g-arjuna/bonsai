@@ -1644,6 +1644,7 @@
       {:else}
         <div class="device-list">
           {#each devices as device}
+            {@const rd = deviceReadiness[device.address]}
             <article class="managed-device">
               <header>
                 <input
@@ -1657,7 +1658,6 @@
                   <h4>{device.hostname || device.address}</h4>
                   <p>
                     <span class="badge {device.enabled ? 'healthy' : 'critical'}">{device.enabled ? 'enabled' : 'stopped'}</span>
-                    {@const rd = deviceReadiness[device.address]}
                     {#if rd !== undefined}
                       <span class="badge {readinessBadgeClass(rd)}" title={rd.blockers?.join('\n') || ''}>{readinessBadgeLabel(rd)}</span>
                     {:else}

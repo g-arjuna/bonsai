@@ -58,6 +58,7 @@ def detection_ingest_generator() -> Generator[pb.DetectionEventIngest, None, Non
                 state_change_event_id=detection.features.state_change_event_id or "",
                 auto_remediate=detection.auto_remediate,
                 remediation_action=detection.remediation_action,
+                source_event_ids=detection.effective_source_event_ids,
             )
         except queue.Empty:
             # Check for shutdown here if needed

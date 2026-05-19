@@ -773,6 +773,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                     d.latency_ns,
                     d.fired_at_ns,
                     d.state_change_event_id,
+                    d.source_event_ids,
                 )
                 .await
             {
@@ -807,6 +808,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 r.latency_ns,
                 r.fired_at_ns,
                 r.state_change_event_id,
+                r.source_event_ids,
             )
             .await
         {

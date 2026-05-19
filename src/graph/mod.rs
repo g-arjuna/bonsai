@@ -310,6 +310,7 @@ impl BonsaiStore for GraphStore {
         latency_ns: i64,
         fired_at_ns: i64,
         state_change_event_id: String,
+        source_event_ids: Vec<String>,
     ) -> Result<String> {
         self.write_detection(
             device_address,
@@ -320,6 +321,7 @@ impl BonsaiStore for GraphStore {
             latency_ns,
             fired_at_ns,
             state_change_event_id,
+            source_event_ids,
         )
         .await
     }
@@ -1437,6 +1439,7 @@ impl GraphStore {
         latency_ns: i64,
         fired_at_ns: i64,
         state_change_event_id: String,
+        source_event_ids: Vec<String>,
     ) -> Result<String> {
         let event_addr = device_address.clone();
         let event_rule = rule_id.clone();
@@ -1451,6 +1454,12 @@ impl GraphStore {
             let now = ts(fired_at_ns);
             let metric_rule_id = rule_id.clone();
             let metric_severity = severity.clone();
+            let mut trigger_event_ids = source_event_ids;
+            if !state_change_event_id.is_empty() {
+                trigger_event_ids.push(state_change_event_id);
+            }
+            trigger_event_ids.sort();
+            trigger_event_ids.dedup();
             let mut stmt = conn
                 .prepare(
                     "MERGE (e:DetectionEvent {id: $id}) \
@@ -1491,21 +1500,23 @@ impl GraphStore {
             )
             .context("execute TRIGGERED edge")?;
             // TRIGGERED_BY edge DetectionEvent → StateChangeEvent (when available)
-            if !state_change_event_id.is_empty() {
+            if !trigger_event_ids.is_empty() {
                 let mut tb = conn
                     .prepare(
                         "MATCH (e:DetectionEvent {id: $eid}), (s:StateChangeEvent {id: $sid})\
                      CREATE (e)-[:TRIGGERED_BY]->(s)",
                     )
                     .context("prepare TRIGGERED_BY edge")?;
-                conn.execute(
-                    &mut tb,
-                    vec![
-                        ("eid", Value::String(id.clone())),
-                        ("sid", Value::String(state_change_event_id)),
-                    ],
-                )
-                .context("execute TRIGGERED_BY edge")?;
+                for source_event_id in trigger_event_ids {
+                    conn.execute(
+                        &mut tb,
+                        vec![
+                            ("eid", Value::String(id.clone())),
+                            ("sid", Value::String(source_event_id)),
+                        ],
+                    )
+                    .context("execute TRIGGERED_BY edge")?;
+                }
             }
             conn.query("COMMIT").context("detection commit transaction")?;
             metrics::counter!(

@@ -55,6 +55,7 @@ pub enum PriorityWriteRequest {
         latency_ns: i64,
         fired_at_ns: i64,
         state_change_event_id: String,
+        source_event_ids: Vec<String>,
         /// Response sender for the generated ID.
         reply_to: oneshot::Sender<Result<String>>,
     },
@@ -201,7 +202,7 @@ async fn run_coordinator(
         tokio::select! {
             biased;
             preq = priority_rx.recv() => match preq {
-                Some(PriorityWriteRequest::Detection { device_address, rule_id, severity, features_json, source_types_json, latency_ns, fired_at_ns, state_change_event_id, reply_to }) => {
+                Some(PriorityWriteRequest::Detection { device_address, rule_id, severity, features_json, source_types_json, latency_ns, fired_at_ns, state_change_event_id, source_event_ids, reply_to }) => {
                     // Flush pending telemetry so the detection sees the latest graph state.
                     if !telemetry_batch.is_empty() {
                         flush_telemetry_batch(&store, &mut telemetry_batch).await;
@@ -209,7 +210,7 @@ async fn run_coordinator(
                     if !sub_status_pending.is_empty() {
                         flush_sub_status_batch(&store, &mut sub_status_pending).await;
                     }
-                    let res = store.write_detection(device_address, rule_id, severity, features_json, source_types_json, latency_ns, fired_at_ns, state_change_event_id).await;
+                    let res = store.write_detection(device_address, rule_id, severity, features_json, source_types_json, latency_ns, fired_at_ns, state_change_event_id, source_event_ids).await;
                     let _ = reply_to.send(res);
                 }
                 Some(PriorityWriteRequest::Remediation { detection_id, action, status, detail_json, attempted_at_ns, completed_at_ns, reply_to }) => {

@@ -48,6 +48,7 @@ pub(super) async fn inject_detection_handler(
             0,
             fired_at_ns,
             String::new(),
+            Vec::new(),
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;

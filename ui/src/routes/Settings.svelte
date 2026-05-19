@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { addToast } from '$lib/toast.svelte.js';
+  import { toast } from '$lib/toast.svelte.js';
 
   // ── State ───────────────────────────────────────────────────────────────────
   let loading  = $state(true);
@@ -78,7 +78,7 @@
         snmp:       { enabled: settings.snmp.enabled,       addr: settings.snmp.addr },
       };
     } catch (e) {
-      addToast(`Failed to load streaming settings: ${e.message}`, 'error');
+      toast(`Failed to load streaming settings: ${e.message}`, 'error');
     } finally {
       loading = false;
     }
@@ -107,9 +107,9 @@
       });
       const body = await r.json();
       if (!r.ok) throw new Error(body.message || r.statusText);
-      addToast(body.message, 'info');
+      toast(body.message, 'info');
     } catch (e) {
-      addToast(`Save failed: ${e.message}`, 'error');
+      toast(`Save failed: ${e.message}`, 'error');
       dirty = true;
     } finally {
       saving = false;
@@ -158,7 +158,7 @@
       <h2>Streaming Receivers</h2>
       <p class="section-desc">
         Enable or disable streaming protocol receivers and configure their listen addresses.
-        Bonsai must be restarted after saving.
+        BMP, BGP-LS, OTLP, and NetFlow changes apply live; syslog and SNMP changes require a process restart.
       </p>
 
       <div class="receiver-grid">
