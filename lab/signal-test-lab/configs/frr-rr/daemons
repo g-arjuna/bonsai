@@ -1,4 +1,5 @@
 bgpd=yes
+bgpd_options="-M bgpd_bmp"
 ospfd=no
 ospf6d=no
 ripd=no
