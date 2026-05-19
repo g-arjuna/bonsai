@@ -53,6 +53,32 @@ pub struct BmpEvent {
     pub termination_reason: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub termination_reason_name: Option<String>,
+    // RFC 7854 §4.2 — Pre/Post-policy and Loc-RIB classification
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rib_type: Option<String>,
+    // RFC 7854 §4.6 — PeerUp parsed BGP OPEN info
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_up_info: Option<BmpPeerUpInfo>,
+    // RFC 7854 §4.3 — Initiation TLV type 2 (admin string)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub init_admin_string: Option<String>,
+    // RFC 7854 §4.5 — Termination TLV type 0 (free-form message)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub termination_message: Option<String>,
+}
+
+/// RFC 7854 §4.6 — Parsed fields from PeerUp Notification Local/Remote OPEN
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BmpPeerUpInfo {
+    pub local_address: String,
+    pub local_port: u16,
+    pub remote_port: u16,
+    pub sent_hold_time: u16,
+    pub received_hold_time: u16,
+    pub sent_bgp_id: String,
+    pub received_bgp_id: String,
+    pub sent_capabilities: Vec<String>,
+    pub received_capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,6 +229,9 @@ fn parse_bmp_message(message_type: u8, payload: &[u8], collector_peer: String) -
     let peer = parse_common_peer_header(&payload[..BMP_COMMON_PEER_HEADER_LEN])?;
     let body = &payload[BMP_COMMON_PEER_HEADER_LEN..];
 
+    // RFC 7854 §4.2 / RFC 8671 / RFC 9069 — classify RIB type from peer_type + flags
+    let rib_type = classify_rib_type(peer.peer_type, peer.peer_flags);
+
     let mut event = BmpEvent {
         timestamp_ns,
         collector_peer,
@@ -224,6 +253,10 @@ fn parse_bmp_message(message_type: u8, payload: &[u8], collector_peer: String) -
         sys_descr: None,
         termination_reason: None,
         termination_reason_name: None,
+        rib_type: Some(rib_type),
+        peer_up_info: None,
+        init_admin_string: None,
+        termination_message: None,
     };
 
     match message_type {
@@ -247,6 +280,7 @@ fn parse_bmp_message(message_type: u8, payload: &[u8], collector_peer: String) -
         3 => {
             event.message_type = "peer_up".to_string();
             event.session_state = "established".to_string();
+            event.peer_up_info = parse_peer_up(body, peer.peer_flags);
         }
         other => return Err(anyhow!("unsupported BMP message type {other}")),
     }
@@ -336,6 +370,7 @@ fn parse_peer_down_reason(body: &[u8]) -> (u8, String) {
 fn parse_initiation(payload: &[u8], collector_peer: String, timestamp_ns: i64) -> Result<BmpEvent> {
     let mut sys_name = None;
     let mut sys_descr = None;
+    let mut init_admin_string = None;
     let mut cursor = 0;
 
     while cursor + 4 <= payload.len() {
@@ -350,6 +385,7 @@ fn parse_initiation(payload: &[u8], collector_peer: String, timestamp_ns: i64) -
         match tlv_type {
             0 => sys_descr = Some(String::from_utf8_lossy(value).into_owned()),
             1 => sys_name = Some(String::from_utf8_lossy(value).into_owned()),
+            2 => init_admin_string = Some(String::from_utf8_lossy(value).into_owned()),
             _ => {}
         }
     }
@@ -375,6 +411,10 @@ fn parse_initiation(payload: &[u8], collector_peer: String, timestamp_ns: i64) -
         sys_descr,
         termination_reason: None,
         termination_reason_name: None,
+        rib_type: None,
+        peer_up_info: None,
+        init_admin_string,
+        termination_message: None,
     })
 }
 
@@ -385,6 +425,7 @@ fn parse_termination(
 ) -> Result<BmpEvent> {
     let mut termination_reason = None;
     let mut termination_reason_name = None;
+    let mut termination_message = None;
     let mut cursor = 0;
 
     while cursor + 4 <= payload.len() {
@@ -396,18 +437,22 @@ fn parse_termination(
         }
         let value = &payload[cursor..cursor + tlv_len];
         cursor += tlv_len;
-        if tlv_type == 1 && tlv_len == 2 {
-            let code = u16::from_be_bytes([value[0], value[1]]);
-            let name = match code {
-                0 => "session_admin_closed",
-                1 => "unspecified",
-                2 => "out_of_resources",
-                3 => "redundant_connection",
-                4 => "perm_admin_closed",
-                _ => "unknown",
-            };
-            termination_reason = Some(code);
-            termination_reason_name = Some(name.to_string());
+        match tlv_type {
+            0 => termination_message = Some(String::from_utf8_lossy(value).into_owned()),
+            1 if tlv_len == 2 => {
+                let code = u16::from_be_bytes([value[0], value[1]]);
+                let name = match code {
+                    0 => "session_admin_closed",
+                    1 => "unspecified",
+                    2 => "out_of_resources",
+                    3 => "redundant_connection",
+                    4 => "perm_admin_closed",
+                    _ => "unknown",
+                };
+                termination_reason = Some(code);
+                termination_reason_name = Some(name.to_string());
+            }
+            _ => {}
         }
     }
 
@@ -432,6 +477,10 @@ fn parse_termination(
         sys_descr: None,
         termination_reason,
         termination_reason_name,
+        rib_type: None,
+        peer_up_info: None,
+        init_admin_string: None,
+        termination_message,
     })
 }
 
@@ -479,6 +528,158 @@ fn parse_common_peer_header(input: &[u8]) -> Result<ParsedPeer> {
         peer_as,
         peer_bgp_id,
     })
+}
+
+/// RFC 7854 §4.2, RFC 8671, RFC 9069 — classify RIB type from peer_type + peer_flags.
+/// peer_type 0 = Global Instance Peer (Adj-RIB-In pre/post-policy based on L flag)
+/// peer_type 1 = RD Instance Peer
+/// peer_type 2 = Local Instance Peer (RFC 8671: Adj-RIB-Out)
+/// peer_type 3 = Loc-RIB (RFC 9069)
+/// L flag (bit 6, 0x40) = 0 → pre-policy, 1 → post-policy
+fn classify_rib_type(peer_type: u8, peer_flags: u8) -> String {
+    match peer_type {
+        3 => "loc-rib".to_string(),
+        2 => {
+            if peer_flags & 0x40 != 0 {
+                "adj-rib-out-post-policy".to_string()
+            } else {
+                "adj-rib-out-pre-policy".to_string()
+            }
+        }
+        _ => {
+            if peer_flags & 0x40 != 0 {
+                "adj-rib-in-post-policy".to_string()
+            } else {
+                "adj-rib-in-pre-policy".to_string()
+            }
+        }
+    }
+}
+
+/// RFC 7854 §4.6 — PeerUp Notification body:
+///   20 bytes: local address (16) + local port (2) + remote port (2)
+///   Sent OPEN message (BGP header + OPEN)
+///   Received OPEN message (BGP header + OPEN)
+///   Optional: Information TLVs
+fn parse_peer_up(body: &[u8], peer_flags: u8) -> Option<BmpPeerUpInfo> {
+    if body.len() < 20 {
+        return None;
+    }
+    let is_ipv6 = peer_flags & 0x80 != 0;
+    let local_address = if is_ipv6 {
+        IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&body[0..16]).unwrap_or([0; 16]))).to_string()
+    } else {
+        IpAddr::V4(Ipv4Addr::new(body[12], body[13], body[14], body[15])).to_string()
+    };
+    let local_port = u16::from_be_bytes([body[16], body[17]]);
+    let remote_port = u16::from_be_bytes([body[18], body[19]]);
+
+    let rest = &body[20..];
+    let (sent_open, after_sent) = parse_bgp_open_from_message(rest)?;
+    let (received_open, _) = parse_bgp_open_from_message(after_sent)?;
+
+    Some(BmpPeerUpInfo {
+        local_address,
+        local_port,
+        remote_port,
+        sent_hold_time: sent_open.hold_time,
+        received_hold_time: received_open.hold_time,
+        sent_bgp_id: sent_open.bgp_id,
+        received_bgp_id: received_open.bgp_id,
+        sent_capabilities: sent_open.capabilities,
+        received_capabilities: received_open.capabilities,
+    })
+}
+
+struct ParsedBgpOpen {
+    hold_time: u16,
+    bgp_id: String,
+    capabilities: Vec<String>,
+}
+
+/// Parse a BGP OPEN message (prefixed by 19-byte BGP header).
+/// Returns the parsed OPEN and remaining bytes.
+fn parse_bgp_open_from_message(data: &[u8]) -> Option<(ParsedBgpOpen, &[u8])> {
+    if data.len() < BGP_HEADER_LEN {
+        return None;
+    }
+    let msg_len = u16::from_be_bytes([data[16], data[17]]) as usize;
+    if msg_len > data.len() || msg_len < BGP_HEADER_LEN + 10 {
+        return None;
+    }
+    // BGP OPEN type = 1
+    if data[18] != 1 {
+        return None;
+    }
+    let open = &data[BGP_HEADER_LEN..msg_len];
+    // OPEN: version(1) + AS(2) + hold_time(2) + bgp_id(4) + opt_params_len(1)
+    if open.len() < 10 {
+        return None;
+    }
+    let hold_time = u16::from_be_bytes([open[2], open[3]]);
+    let bgp_id = Ipv4Addr::new(open[4], open[5], open[6], open[7]).to_string();
+    let opt_params_len = open[8] as usize;
+    let opt_params = if open.len() >= 9 + opt_params_len {
+        &open[9..9 + opt_params_len]
+    } else {
+        &[]
+    };
+    let capabilities = parse_bgp_capabilities(opt_params);
+    let remaining = &data[msg_len..];
+    Some((
+        ParsedBgpOpen {
+            hold_time,
+            bgp_id,
+            capabilities,
+        },
+        remaining,
+    ))
+}
+
+/// Parse BGP Optional Parameters (type 2 = Capability) and extract capability names.
+fn parse_bgp_capabilities(params: &[u8]) -> Vec<String> {
+    let mut caps = Vec::new();
+    let mut cursor = 0;
+    while cursor + 2 <= params.len() {
+        let param_type = params[cursor];
+        let param_len = params[cursor + 1] as usize;
+        cursor += 2;
+        if cursor + param_len > params.len() {
+            break;
+        }
+        if param_type == 2 {
+            // Capability parameter — parse inner capability TLVs
+            let mut cap_cursor = cursor;
+            while cap_cursor + 2 <= cursor + param_len {
+                let cap_code = params[cap_cursor];
+                let cap_len = params[cap_cursor + 1] as usize;
+                cap_cursor += 2;
+                if cap_cursor + cap_len > cursor + param_len {
+                    break;
+                }
+                caps.push(capability_name(cap_code));
+                cap_cursor += cap_len;
+            }
+        }
+        cursor += param_len;
+    }
+    caps
+}
+
+fn capability_name(code: u8) -> String {
+    match code {
+        1 => "multiprotocol".to_string(),
+        2 => "route-refresh".to_string(),
+        5 => "extended-next-hop".to_string(),
+        6 => "extended-message".to_string(),
+        65 => "4-byte-as".to_string(),
+        69 => "add-path".to_string(),
+        70 => "enhanced-route-refresh".to_string(),
+        71 => "long-lived-graceful-restart".to_string(),
+        73 => "fqdn".to_string(),
+        128 => "route-refresh-cisco".to_string(),
+        _ => format!("cap-{code}"),
+    }
 }
 
 fn parse_route_monitoring(payload: &[u8]) -> Result<Vec<BmpRouteEntry>> {
@@ -939,5 +1140,120 @@ mod tests {
             event.termination_reason_name.as_deref(),
             Some("session_admin_closed")
         );
+    }
+
+    #[test]
+    fn classify_rib_type_pre_post_policy() {
+        assert_eq!(classify_rib_type(0, 0x00), "adj-rib-in-pre-policy");
+        assert_eq!(classify_rib_type(0, 0x40), "adj-rib-in-post-policy");
+        assert_eq!(classify_rib_type(1, 0x00), "adj-rib-in-pre-policy");
+        assert_eq!(classify_rib_type(2, 0x00), "adj-rib-out-pre-policy");
+        assert_eq!(classify_rib_type(2, 0x40), "adj-rib-out-post-policy");
+        assert_eq!(classify_rib_type(3, 0x00), "loc-rib");
+        assert_eq!(classify_rib_type(3, 0x40), "loc-rib");
+    }
+
+    #[test]
+    fn parse_initiation_extracts_admin_string_tlv() {
+        let mut payload = Vec::new();
+        // TLV type=0 (sysDescr)
+        let descr = b"FRRouting/10.2.1";
+        payload.extend_from_slice(&[0x00, 0x00]);
+        payload.extend_from_slice(&(descr.len() as u16).to_be_bytes());
+        payload.extend_from_slice(descr);
+        // TLV type=1 (sysName)
+        let name = b"frr-rr";
+        payload.extend_from_slice(&[0x00, 0x01]);
+        payload.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        payload.extend_from_slice(name);
+        // TLV type=2 (admin string)
+        let admin = b"lab bmp source";
+        payload.extend_from_slice(&[0x00, 0x02]);
+        payload.extend_from_slice(&(admin.len() as u16).to_be_bytes());
+        payload.extend_from_slice(admin);
+
+        let event =
+            parse_initiation(&payload, "10.0.0.1".to_string(), 0).expect("parse initiation");
+        assert_eq!(event.sys_descr.as_deref(), Some("FRRouting/10.2.1"));
+        assert_eq!(event.sys_name.as_deref(), Some("frr-rr"));
+        assert_eq!(event.init_admin_string.as_deref(), Some("lab bmp source"));
+    }
+
+    #[test]
+    fn parse_termination_extracts_free_form_message() {
+        let mut payload = Vec::new();
+        // TLV type=0 (free-form string)
+        let msg = b"shutting down BMP";
+        payload.extend_from_slice(&[0x00, 0x00]);
+        payload.extend_from_slice(&(msg.len() as u16).to_be_bytes());
+        payload.extend_from_slice(msg);
+        // TLV type=1 (reason code), len=2, code=1 (unspecified)
+        payload.extend_from_slice(&[0x00, 0x01, 0x00, 0x02, 0x00, 0x01]);
+
+        let event =
+            parse_termination(&payload, "10.0.0.1".to_string(), 0).expect("parse termination");
+        assert_eq!(event.termination_message.as_deref(), Some("shutting down BMP"));
+        assert_eq!(event.termination_reason, Some(1));
+        assert_eq!(event.termination_reason_name.as_deref(), Some("unspecified"));
+    }
+
+    #[test]
+    fn parse_peer_up_extracts_bgp_open_info() {
+        // Build a PeerUp body: 20 bytes header + Sent OPEN + Received OPEN
+        let mut body = Vec::new();
+        // Local address: IPv4 10.9.0.8 (stored in last 4 bytes of 16)
+        body.extend_from_slice(&[0u8; 12]);
+        body.extend_from_slice(&[10, 9, 0, 8]);
+        // local_port=179, remote_port=45678
+        body.extend_from_slice(&179u16.to_be_bytes());
+        body.extend_from_slice(&45678u16.to_be_bytes());
+
+        // Build a minimal BGP OPEN message
+        fn build_bgp_open(bgp_id: [u8; 4], hold_time: u16, asn: u16) -> Vec<u8> {
+            // Optional params: capability param with 4-byte-as cap
+            let cap_4byte_as = [0x41, 0x04, 0x00, 0x00, 0xfd, 0xe8]; // cap-code=65, len=4, AS=65000
+            let opt_param = [0x02, cap_4byte_as.len() as u8]; // type=2 (capability), len
+            let opt_params_len = (opt_param.len() + cap_4byte_as.len()) as u8;
+            let open_len = 10 + opt_params_len as usize;
+            let total_len = (BGP_HEADER_LEN + open_len) as u16;
+            let mut msg = Vec::new();
+            // BGP header: marker(16) + length(2) + type(1)
+            msg.extend_from_slice(&[0xff; 16]);
+            msg.extend_from_slice(&total_len.to_be_bytes());
+            msg.push(1); // OPEN type
+            // OPEN: version(1) + AS(2) + hold_time(2) + bgp_id(4) + opt_params_len(1)
+            msg.push(4); // BGP version 4
+            msg.extend_from_slice(&asn.to_be_bytes());
+            msg.extend_from_slice(&hold_time.to_be_bytes());
+            msg.extend_from_slice(&bgp_id);
+            msg.push(opt_params_len);
+            msg.extend_from_slice(&opt_param);
+            msg.extend_from_slice(&cap_4byte_as);
+            msg
+        }
+
+        let sent_open = build_bgp_open([10, 9, 0, 8], 90, 65900);
+        let recv_open = build_bgp_open([10, 9, 0, 1], 180, 65900);
+        body.extend_from_slice(&sent_open);
+        body.extend_from_slice(&recv_open);
+
+        let info = parse_peer_up(&body, 0x00).expect("should parse peer_up");
+        assert_eq!(info.local_address, "10.9.0.8");
+        assert_eq!(info.local_port, 179);
+        assert_eq!(info.remote_port, 45678);
+        assert_eq!(info.sent_hold_time, 90);
+        assert_eq!(info.received_hold_time, 180);
+        assert_eq!(info.sent_bgp_id, "10.9.0.8");
+        assert_eq!(info.received_bgp_id, "10.9.0.1");
+        assert!(info.sent_capabilities.contains(&"4-byte-as".to_string()));
+        assert!(info.received_capabilities.contains(&"4-byte-as".to_string()));
+    }
+
+    #[test]
+    fn capability_name_maps_known_codes() {
+        assert_eq!(capability_name(1), "multiprotocol");
+        assert_eq!(capability_name(65), "4-byte-as");
+        assert_eq!(capability_name(69), "add-path");
+        assert_eq!(capability_name(99), "cap-99");
     }
 }

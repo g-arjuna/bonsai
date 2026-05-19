@@ -4340,10 +4340,11 @@ fn write_bmp_route_monitoring(
     )?;
     upsert_bmp_session(conn, update, &event)?;
     let now = ts(update.timestamp_ns);
+    let rib_type = event.rib_type.as_deref().unwrap_or("adj-rib-in-pre-policy");
     for route in &event.route_entries {
         let id = format!(
-            "{}:{}:{}:{}/{}",
-            update.target, event.peer_address, route.afi_safi, route.prefix, route.prefix_len
+            "{}:{}:{}:{}:{}/{}",
+            update.target, event.peer_address, rib_type, route.afi_safi, route.prefix, route.prefix_len
         );
         let mut stmt = conn.prepare(
             "MERGE (r:BgpRibEntry {id: $id}) \
@@ -4352,11 +4353,11 @@ fn write_bmp_route_monitoring(
                r.prefix = $prefix, r.prefix_len = $prefix_len, r.action = $action, \
                r.next_hop = $next_hop, r.as_path_json = $as_path_json, \
                r.communities_json = $communities_json, r.med = $med, r.local_pref = $local_pref, \
-               r.updated_at = $ts \
+               r.rib_type = $rib_type, r.updated_at = $ts \
              ON MATCH SET \
                r.action = $action, r.next_hop = $next_hop, r.as_path_json = $as_path_json, \
                r.communities_json = $communities_json, r.med = $med, r.local_pref = $local_pref, \
-               r.updated_at = $ts",
+               r.rib_type = $rib_type, r.updated_at = $ts",
         )?;
         conn.execute(
             &mut stmt,
@@ -4382,6 +4383,7 @@ fn write_bmp_route_monitoring(
                     "local_pref",
                     Value::Int64(route.local_pref.unwrap_or_default() as i64),
                 ),
+                ("rib_type", Value::String(rib_type.to_string())),
                 ("ts", now.clone()),
             ],
         )?;

@@ -15,7 +15,7 @@ Each step is numbered. Mark ✅/❌ as you go. Do not skip steps — they have d
 | gNMI | gRPC/TLS | 57400 (on nodes) | all 7 SRL nodes |
 | Syslog UDP | UDP | 5514 | srl-leaf1, srl-leaf2 |
 | SNMP traps | UDP | 9162 | srl-leaf3, srl-leaf4 |
-| BMP | TCP | 5000 | srl-spine1, srl-spine2 |
+| BMP | TCP | 5000 | frr-rr (FRR 10.x) |
 | NetFlow v5 | UDP | 2055 | linux-host1 (softflowd) |
 | OTLP HTTP | HTTP | 4318 | linux-host1 (otelcol-contrib) |
 
@@ -605,61 +605,97 @@ docker exec clab-bonsai-signal-test-srl-leaf4 \
 
 ## Phase 7 — BMP Receiver Tests
 
-### S-30: BMP T1 — BMP sessions established from spine1 and spine2
+### S-30: BMP T1 — BMP session established from frr-rr
 
 ```bash
 # Check bonsai BMP archive for BMP initiation messages
 ls -lh runtime/streaming/bmp.jsonl 2>/dev/null || echo "BMP archive not yet created"
 
-sleep 30   # BMP sessions need time to establish after BGP convergence
+sleep 30   # BMP session needs time to establish after BGP convergence
 
-tail -5 runtime/streaming/bmp.jsonl 2>/dev/null | python3 -c "
+tail -10 runtime/streaming/bmp.jsonl 2>/dev/null | python3 -c "
 import sys, json
 for line in sys.stdin:
     try:
         d = json.loads(line)
-        print(f\"  type={d.get('msg_type','?'):20s}  peer={d.get('peer_address','?')}\")
+        mt = d.get('message_type','?')
+        peer = d.get('peer_address','?')
+        rib = d.get('rib_type','?')
+        print(f'  type={mt:20s}  peer={peer}  rib_type={rib}')
     except: print(line[:120])
 " 2>/dev/null
 ```
 
-**Expected**: BMP messages from spine1 and spine2 (`source_ip=172.100.109.12` and `.13`).
+**Expected**: BMP messages from frr-rr (`collector_peer` contains `172.100.109.21`).
+Should see `initiation` (with sys_name=frr-rr), then `peer_up`, then `route_monitoring`.
+`rib_type` should show `adj-rib-in-pre-policy`, `adj-rib-in-post-policy`, and `loc-rib`.
 
 ---
 
 ### S-31: BMP T2 — Verify BMP session shows in bonsai log
 
 ```bash
-grep -i "bmp\|bgp.monitoring" logs/bonsai-signal-test.log 2>/dev/null | tail -10
+grep -i "bmp" logs/bonsai-signal-test.log 2>/dev/null | tail -10
 ```
 
-**Expected**: Log lines showing BMP session accepted for spine1 and spine2.
+**Expected**: Log lines showing BMP session accepted from frr-rr (`172.100.109.21`).
 
 ---
 
 ### S-32: BMP T3 — BMP route advertisement visible (ROUTE_MONITORING)
 
 ```bash
-# After BGP converges, BMP should send ROUTE_MONITORING for each RIB entry
-grep "route_monitoring\|ROUTE_MONITORING\|peer_up" runtime/streaming/bmp.jsonl 2>/dev/null \
-  | wc -l
+# After BGP converges, FRR sends ROUTE_MONITORING for each RIB entry
+# FRR exports pre-policy, post-policy, AND loc-rib (RFC 9069)
+grep "route_monitoring\|peer_up" runtime/streaming/bmp.jsonl 2>/dev/null | wc -l
+
+# Verify all 3 RIB types are present
+grep -o '"rib_type":"[^"]*"' runtime/streaming/bmp.jsonl 2>/dev/null | sort | uniq -c
 ```
 
-**Expected**: Count > 0. Each established BGP session generates at minimum a PEER_UP + ROUTE_MONITORING message.
+**Expected**: Count > 0. Should see PEER_UP + ROUTE_MONITORING messages.
+RIB types should include `adj-rib-in-pre-policy`, `adj-rib-in-post-policy`, and `loc-rib`.
+
+---
+
+### S-32b: BMP T3b — PeerUp contains BGP OPEN capabilities
+
+```bash
+# Verify our RFC 7854 §4.6 PeerUp parser extracts BGP OPEN info
+grep 'peer_up' runtime/streaming/bmp.jsonl 2>/dev/null | head -1 | python3 -c "
+import sys, json
+for line in sys.stdin:
+    d = json.loads(line)
+    info = d.get('peer_up_info')
+    if info:
+        print(f'  local_addr={info[\"local_address\"]}  local_port={info[\"local_port\"]}')
+        print(f'  sent_hold_time={info[\"sent_hold_time\"]}  recv_hold_time={info[\"received_hold_time\"]}')
+        print(f'  sent_caps={info[\"sent_capabilities\"]}')
+        print(f'  recv_caps={info[\"received_capabilities\"]}')
+    else:
+        print('  peer_up_info: not parsed (check parser)')
+" 2>/dev/null
+```
+
+**Expected**: PeerUp shows local/remote ports, hold times, and capabilities (e.g. `4-byte-as`, `multiprotocol`, `route-refresh`).
 
 ---
 
 ### S-33: BMP T4 — Multi-source fusion: BMP + gNMI same BGP event
 
 ```bash
-# Cause BGP flap on spine1 → should be seen by BOTH gNMI and BMP paths
-docker exec clab-bonsai-signal-test-srl-spine1 \
-  sr_cli -d "set / network-instance default protocols bgp neighbor 10.9.0.1 admin-state disable"
+# Cause BGP flap on frr-rr's peer (super1) from the SRL side
+# This should be seen by BOTH gNMI (SRL reporting BGP state) and BMP (FRR reporting PEER_DOWN/UP)
+docker exec clab-bonsai-signal-test-srl-super1 \
+  sr_cli -d "set / network-instance default protocols bgp neighbor 10.9.0.8 admin-state disable"
 sleep 5
-docker exec clab-bonsai-signal-test-srl-spine1 \
-  sr_cli -d "set / network-instance default protocols bgp neighbor 10.9.0.1 admin-state enable"
+docker exec clab-bonsai-signal-test-srl-super1 \
+  sr_cli -d "set / network-instance default protocols bgp neighbor 10.9.0.8 admin-state enable"
 
 sleep 20
+
+# Check BMP archive for peer_down / peer_up from frr-rr
+grep -E 'peer_down|peer_up' runtime/streaming/bmp.jsonl 2>/dev/null | tail -5
 
 # Check CorrelationBuffer fusion counter
 curl -s http://127.0.0.1:9100/metrics 2>/dev/null \
@@ -668,7 +704,8 @@ curl -s http://127.0.0.1:9100/metrics 2>/dev/null \
 grep -i "Absorbed\|multi.source" logs/bonsai-signal-test.log 2>/dev/null | tail -5
 ```
 
-**Expected**: `bonsai_correlation_multi_source_total` counter incremented OR log lines showing `Absorbed` events.
+**Expected**: BMP archive shows `peer_down` then `peer_up` from frr-rr.
+`bonsai_correlation_multi_source_total` counter incremented OR log lines showing `Absorbed` events.
 
 ---
 
@@ -1252,9 +1289,10 @@ Copy this to your results `.md` after each run:
 | S-27 | SNMP: linkDown trap from leaf3 | ⬜ |
 | S-28 | SNMP: SNMP-sourced event in graph | ⬜ |
 | S-29 | SNMP: BGP backward-transition trap | ⬜ |
-| S-30 | BMP: archive receiving | ⬜ |
+| S-30 | BMP: frr-rr session established | ⬜ |
 | S-31 | BMP: session log confirmed | ⬜ |
-| S-32 | BMP: ROUTE_MONITORING messages | ⬜ |
+| S-32 | BMP: ROUTE_MONITORING + rib_type | ⬜ |
+| S-32b | BMP: PeerUp BGP OPEN capabilities | ⬜ |
 | S-33 | BMP: multi-source fusion BMP+gNMI | ⬜ |
 | S-34 | NetFlow: softflowd installed | ⬜ |
 | S-35 | NetFlow: host1 interfaces configured | ⬜ |
@@ -1334,13 +1372,20 @@ kill %1
 
 ### BMP session not establishing
 
-SRL BMP requires BGP to be established first. Wait for S-09 to confirm BGP before checking BMP.
+FRR's BMP (`bmpd`) requires BGP to be established first. Wait for S-09 to confirm BGP before checking BMP.
 If BMP still doesn't establish after 60s:
 ```bash
-docker exec clab-bonsai-signal-test-srl-spine1 \
-  sr_cli -d "show network-instance default protocols bgp-monitoring"
+# Check FRR BMP status
+docker exec clab-bonsai-signal-test-frr-rr vtysh -c "show bmp"
+
+# Check FRR can reach bonsai BMP listener
+docker exec clab-bonsai-signal-test-frr-rr ping -c 2 172.100.109.1
+
+# Verify bonsai is listening on :5000
+ss -tlnp | grep :5000
 ```
-Look for `state: session-established`. If state is `connecting`, the IP/port may be wrong — verify bonsai is listening on `:5000` and the container can reach `172.100.109.1`.
+`show bmp` should list the `bonsai` target with state `up`. If state is `connecting`,
+verify bonsai is listening on `:5000` and frr-rr can reach `172.100.109.1` on the mgmt network.
 
 ### NetFlow records not appearing in graph
 

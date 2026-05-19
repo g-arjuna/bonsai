@@ -173,6 +173,13 @@ ca_cert    = "lab/signal-test-lab/clab-bonsai-signal-test/.tls/ca/ca.pem"
 username   = "admin"
 password   = "NokiaSrl1!"
 
+# ── FRR BMP source (frr-rr) ────────────────────────────────────────────────────
+# frr-rr (172.100.109.21) initiates BMP session TO bonsai at 0.0.0.0:5000.
+# No [[target]] entry needed — BMP is push-based (router → collector).
+# FRR sends: Initiation, PeerUp, PeerDown, RouteMonitoring, StatisticsReport,
+#   Termination (all 6 RFC 7854 types) + RFC 9069 Loc-RIB monitoring.
+# Verify: ss -tlnp | grep :5000  (should show bonsai LISTEN before FRR connects)
+
 # ── External integration services (docker/compose-signal-test.yml) ────────────
 #
 # Start all external services:
