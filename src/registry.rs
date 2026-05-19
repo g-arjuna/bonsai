@@ -343,7 +343,7 @@ impl ApiRegistry {
             target.updated_by = actor.to_string();
             target.last_operator_action = action.to_string();
             let updated = target.clone();
-            Self::persist_state(&self.path, &state, self.sqlite_store.as_deref())?
+            Self::persist_state(&self.path, &state, self.sqlite_store.as_deref())?;
             updated
         };
 

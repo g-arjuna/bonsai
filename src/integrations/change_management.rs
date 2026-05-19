@@ -209,7 +209,7 @@ pub async fn run_change_sync(
     );
 
     let duration = start.elapsed().as_secs_f64();
-    metrics::histogram!("bonsai_servicenow_sync_duration_seconds", duration, "sync_type" => "change_management");
+    metrics::histogram!("bonsai_servicenow_sync_duration_seconds", "sync_type" => "change_management").record(duration);
 
     Ok(stats)
 }
