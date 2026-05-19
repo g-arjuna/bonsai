@@ -57,6 +57,7 @@ pub struct HACoordinator {
     mode: HAMode,
     state: Arc<RwLock<LeaderState>>,
     etcd_config: Option<EtcdConfig>,
+    shutdown_signal: Arc<RwLock<bool>>,
 }
 
 impl HACoordinator {
@@ -65,6 +66,7 @@ impl HACoordinator {
             mode,
             state: Arc::new(RwLock::new(LeaderState::Electing)),
             etcd_config: None,
+            shutdown_signal: Arc::new(RwLock::new(false)),
         }
     }
 
@@ -88,10 +90,15 @@ impl HACoordinator {
         *self.state.write().await = new_state;
     }
 
+    /// Shutdown the HA coordinator
+    pub async fn shutdown(&self) {
+        *self.shutdown_signal.write().await = true;
+    }
+
     /// Start leader election loop
     ///
     /// In standalone mode, immediately becomes leader.
-    /// In cluster mode, would use etcd for distributed election.
+    /// In cluster mode, uses etcd for distributed election.
     pub async fn start_election(&self) {
         match &self.mode {
             HAMode::Standalone => {
@@ -99,24 +106,14 @@ impl HACoordinator {
                 tracing::info!("HA mode: standalone, assumed leader");
             }
             HAMode::Cluster { node_id } => {
-                // G3 Session 1: Test etcd connection
+                // G3 Session 2: Implement etcd-based leader election
                 if let Some(ref etcd_config) = self.etcd_config {
-                    match self.test_etcd_connection(etcd_config).await {
+                    match self.run_etcd_election(node_id.clone(), etcd_config).await {
                         Ok(_) => {
-                            tracing::info!(
-                                %node_id,
-                                endpoints = ?etcd_config.endpoints,
-                                "HA mode: cluster, etcd connection successful"
-                            );
-                            // TODO: G3 Session 2: Implement actual leader election
-                            self.set_state(LeaderState::Leader).await; // Temporary
+                            tracing::info!(%node_id, "HA mode: cluster, leader election completed");
                         }
                         Err(e) => {
-                            tracing::error!(
-                                %node_id,
-                                error = %e,
-                                "HA mode: cluster, etcd connection failed, falling back to leader assumption"
-                            );
+                            tracing::error!(%node_id, error = %e, "HA mode: cluster, leader election failed, falling back to leader assumption");
                             self.set_state(LeaderState::Leader).await; // Fallback
                         }
                     }
@@ -125,6 +122,88 @@ impl HACoordinator {
                     self.set_state(LeaderState::Leader).await; // Fallback
                 }
             }
+        }
+    }
+
+    /// Run etcd-based leader election
+    async fn run_etcd_election(&self, node_id: String, config: &EtcdConfig) -> Result<()> {
+        use etcd_client::{Client, ConnectOptions, LeaseClient, ElectionClient};
+        use tokio::time::{interval, Duration};
+
+        let endpoints: Vec<&str> = config.endpoints.iter().map(|s| s.as_str()).collect();
+        let client = Client::connect(endpoints, Some(ConnectOptions::default()))
+            .await
+            .context("failed to connect to etcd")?;
+
+        let lease_id = client.lease_grant(config.election_ttl_secs, None).await?.id();
+        let election_key = format!("{}/leader", config.config_prefix);
+
+        tracing::info!(
+            %node_id,
+            lease_id,
+            %election_key,
+            "starting etcd leader election"
+        );
+
+        // Campaign for leadership
+        let campaign_result = client.election(election_key.clone(), lease_id).campaign(node_id.clone()).await;
+
+        match campaign_result {
+            Ok(_) => {
+                self.set_state(LeaderState::Leader).await;
+                tracing::info!(%node_id, "won leader election");
+            }
+            Err(e) => {
+                tracing::error!(%node_id, error = %e, "failed to campaign for leadership");
+                // Check if there's already a leader
+                match client.election(election_key.clone()).leader().await {
+                    Ok(Some(leader)) => {
+                        self.set_state(LeaderState::Follower { leader_id: leader }).await;
+                        tracing::info!(%node_id, %leader, "became follower");
+                    }
+                    Ok(None) => {
+                        tracing::warn!(%node_id, "no leader found, retrying election");
+                        return Err(anyhow::anyhow!("no leader found"));
+                    }
+                    Err(e) => {
+                        tracing::error!(%node_id, error = %e, "failed to get leader");
+                        return Err(e.into());
+                    }
+                }
+                return Ok(());
+            }
+        }
+
+        // Maintain lease (heartbeat)
+        let mut ticker = interval(Duration::from_secs(config.election_ttl_secs as u64 / 2));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    // Keep lease alive
+                    if let Err(e) = client.lease_keep_alive(lease_id, None).await {
+                        tracing::error!(error = %e, "failed to keep lease alive, resigning leadership");
+                        self.set_state(LeaderState::Electing).await;
+                        return Err(e.into());
+                    }
+                }
+                _ = self.watch_shutdown_signal() => {
+                    tracing::info!(%node_id, "shutdown requested, resigning leadership");
+                    if let Err(e) = client.lease_revoke(lease_id, None).await {
+                        tracing::error!(error = %e, "failed to revoke lease");
+                    }
+                    self.set_state(LeaderState::Electing).await;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    /// Watch for shutdown signal
+    async fn watch_shutdown_signal(&self) {
+        while !*self.shutdown_signal.read().await {
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
