@@ -337,6 +337,8 @@ pub(super) async fn device_detail_handler(
                     rule_id: read_str(&row[2]),
                     severity: read_str(&row[3]),
                     features_json: read_str(&row[4]),
+                    source_types: vec![],
+                    latency_ns: 0,
                     fired_at_ns: read_ts_ns(&row[5]),
                     remediation_id: read_str(&row[6]),
                     remediation_action: read_str(&row[7]),

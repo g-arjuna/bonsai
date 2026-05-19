@@ -263,6 +263,7 @@ impl CollectorManager {
             detail_json: format!(r#"{{"collector_id":"{}","connected":true}}"#, collector_id),
             occurred_at_ns: now_ns(),
             state_change_event_id: String::new(),
+            source_type: "collector".to_string(),
         });
         info!(%collector_id, "collector registered, initial assignments sent");
         Ok(rx)
@@ -285,6 +286,7 @@ impl CollectorManager {
             detail_json: format!(r#"{{"collector_id":"{}","connected":false}}"#, collector_id),
             occurred_at_ns: now_ns(),
             state_change_event_id: String::new(),
+            source_type: "collector".to_string(),
         });
         info!(%collector_id, "collector unregistered; re-evaluating its devices");
 

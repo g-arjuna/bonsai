@@ -1171,6 +1171,7 @@ pub(super) async fn events_inject_handler(
                 .to_string(),
                 occurred_at_ns,
                 state_change_event_id: String::new(),
+                source_type: "gnmi".to_string(),
             });
             Ok(StatusCode::NO_CONTENT)
         }

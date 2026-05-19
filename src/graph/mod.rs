@@ -94,6 +94,7 @@ pub struct StateChangeEventRow {
     pub occurred_at_ns: i64,
 }
 
+#[derive(Debug, Clone, Serialize)]
 pub struct TraceStep {
     pub kind: String, // "trigger" | "detection" | "remediation"
     pub id: String,
@@ -1621,7 +1622,7 @@ impl GraphStore {
             device_address: String::new(),
             event_type: "remediation_outcome".to_string(),
             detail_json: format!(
-                r#"{{"id":"{}","detection_id":"{}","action":"{}","status":"{}"}}"
+                r#"{{"id":"{}","detection_id":"{}","action":"{}","status":"{}"}}"#,
                 id, event_detection_id, event_action, event_status
             ),
             occurred_at_ns: attempted_at_ns,
@@ -2656,8 +2657,8 @@ fn write_blocking(
             write_config_change_event(conn, update, &yang_path, &new_value, event_tx)
         }
         TelemetryEvent::BmpPeerState => write_bmp_peer_state(conn, update, event_tx, corr_buf),
-        TelemetryEvent::BmpRouteMonitoring => write_bmp_route_monitoring(conn, update, event_tx),
-        TelemetryEvent::BgpLsState => write_bgp_ls_state(conn, update, event_tx),
+        TelemetryEvent::BmpRouteMonitoring => write_bmp_route_monitoring(conn, update, event_tx, corr_buf),
+        TelemetryEvent::BgpLsState => write_bgp_ls_state(conn, update, event_tx, corr_buf),
         TelemetryEvent::OtlpSpan {
             service_name,
             peer_address,
@@ -3148,7 +3149,6 @@ fn read_f64(v: &Value) -> f64 {
     }
 }
 
-#[cfg(test)]
 fn read_i64(v: &Value) -> i64 {
     match v {
         Value::Int64(n) => *n,
@@ -4325,6 +4325,7 @@ fn write_bmp_route_monitoring(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
     let event: BmpEvent =
         serde_json::from_value(update.value.clone()).context("parse BMP route-monitoring event")?;
@@ -4411,6 +4412,7 @@ fn write_bmp_route_monitoring(
         now,
         update.timestamp_ns,
         event_tx,
+        corr_buf,
     )?;
     Ok(())
 }
@@ -4419,6 +4421,7 @@ fn write_bgp_ls_state(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
     let event: BgpLsEvent =
         serde_json::from_value(update.value.clone()).context("parse BGP-LS event")?;
@@ -4626,6 +4629,7 @@ fn write_bgp_ls_state(
                     ts(update.timestamp_ns),
                     update.timestamp_ns,
                     event_tx,
+                    corr_buf,
                 )?;
             }
         }

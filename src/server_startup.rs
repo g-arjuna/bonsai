@@ -1092,6 +1092,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 .with_context(|| format!("failed to bind HTTP port at {http_addr}"))?;
             info!(addr = %http_addr, "HTTP listener bound");
 
+            let bus_for_http = std::sync::Arc::clone(&bus);
             http_task = Some(tokio::spawn(async move {
                 if let Err(error) = axum::serve(
                     http_listener,
@@ -1125,7 +1126,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         governor_for_http,
                         std::sync::Arc::clone(&sidecar_registry),
                         std::sync::Arc::clone(&supervisor),
-                        std::sync::Arc::clone(&bus),
+                        bus_for_http,
                     ),
                 )
                 .await

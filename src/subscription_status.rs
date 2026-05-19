@@ -218,6 +218,7 @@ fn subscription_status_event(status: &SubscriptionStatusWrite) -> BonsaiEvent {
         .to_string(),
         occurred_at_ns: status.updated_at_ns,
         state_change_event_id: String::new(),
+        source_type: "gnmi".to_string(),
     }
 }
 
@@ -250,6 +251,7 @@ fn path_matches_update(
         TelemetryEvent::LldpNeighbor { .. } => expected.contains("lldp"),
         TelemetryEvent::SyslogEvent { .. } => false,
         TelemetryEvent::SyslogFact { .. } => false,
+        TelemetryEvent::SnmpFact { .. } => false,
         TelemetryEvent::SnmpTrap { .. } => false,
         TelemetryEvent::ConfigChange { .. } => false,
         TelemetryEvent::BmpPeerState => false,

@@ -52,7 +52,7 @@ pub struct SnmpTrapEvent {
 }
 
 /// A structured fact extracted from SNMP varbinds using an OID pattern.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnmpFact {
     pub timestamp_ns: i64,
     pub fact_type: String,
