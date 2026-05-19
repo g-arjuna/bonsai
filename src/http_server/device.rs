@@ -425,6 +425,238 @@ pub(super) async fn device_enrichment_handler(
         properties: props,
     }))
 }
+
+// ── Enrichment conflicts endpoint ─────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub(super) struct EnrichmentConflictJson {
+    key: String,
+    sources: Vec<ConflictSourceJson>,
+}
+
+#[derive(Serialize)]
+pub(super) struct ConflictSourceJson {
+    source_name: String,
+    value: String,
+    confidence: String,
+    updated_at_ns: i64,
+    is_winner: bool,
+}
+
+#[derive(Serialize)]
+pub(super) struct DeviceConflictsResponse {
+    address: String,
+    conflicts: Vec<EnrichmentConflictJson>,
+}
+
+pub(super) async fn device_enrichment_conflicts_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<Json<DeviceConflictsResponse>, (StatusCode, String)> {
+    let db = state.store.db();
+    let addr_clone = address.clone();
+
+    let conflicts = tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        // Find all enrichment properties for this device, grouped by key,
+        // where the same key appears from multiple sources.
+        let mut stmt = conn
+            .prepare(
+                "MATCH (d:Device {address: $addr})-[:HAS_ENRICHMENT_PROPERTY]->(p:EnrichmentProperty) \
+                 OPTIONAL MATCH (p)-[:ENRICHMENT_PROPERTY_PROVENANCE]->(prov:PropertyProvenance) \
+                 RETURN p.key, p.value, p.source_name, p.updated_at, \
+                        prov.confidence, prov.details_json \
+                 ORDER BY p.key, p.source_name",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = conn
+            .execute(&mut stmt, vec![("addr", Value::String(addr_clone))])
+            .map_err(|e| e.to_string())?;
+
+        // Group by key
+        let mut by_key: std::collections::HashMap<String, Vec<ConflictSourceJson>> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let key = read_str(&row[0]);
+            let value = read_str(&row[1]);
+            let source_name = read_str(&row[2]);
+            let updated_at_ns = read_ts_ns(&row[3]);
+            let confidence = read_str(&row[4]);
+            let details = read_str(&row[5]);
+            let is_winner = if details.contains("\"conflict\":true") {
+                details.contains(&format!("\"winner\":\"{source_name}\""))
+            } else {
+                true // no conflict = default winner
+            };
+            by_key.entry(key).or_default().push(ConflictSourceJson {
+                source_name,
+                value,
+                confidence,
+                updated_at_ns,
+                is_winner,
+            });
+        }
+
+        // Only return keys where multiple sources exist
+        let conflicts: Vec<EnrichmentConflictJson> = by_key
+            .into_iter()
+            .filter(|(_, sources)| {
+                let unique: std::collections::HashSet<&str> =
+                    sources.iter().map(|s| s.source_name.as_str()).collect();
+                unique.len() > 1
+            })
+            .map(|(key, sources)| EnrichmentConflictJson { key, sources })
+            .collect();
+
+        Ok::<_, String>(conflicts)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(DeviceConflictsResponse { address, conflicts }))
+}
+
+// ── CMDB hierarchy endpoint ───────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub(super) struct CmdbRelJson {
+    direction: String, // "parent" or "child"
+    peer_hostname: String,
+    rel_type: String,
+    source_name: String,
+}
+
+#[derive(Serialize)]
+pub(super) struct CmdbServiceJson {
+    app_id: String,
+    app_name: String,
+    rel_type: String, // "RUNS_SERVICE" or "CARRIES_APPLICATION"
+}
+
+#[derive(Serialize)]
+pub(super) struct CmdbLocationJson {
+    location_id: String,
+    location_name: String,
+    full_address: String,
+    parent_name: String,
+}
+
+#[derive(Serialize)]
+pub(super) struct DeviceCmdbResponse {
+    address: String,
+    ci_relationships: Vec<CmdbRelJson>,
+    services: Vec<CmdbServiceJson>,
+    location: Option<CmdbLocationJson>,
+}
+
+pub(super) async fn device_cmdb_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<Json<DeviceCmdbResponse>, (StatusCode, String)> {
+    let db = state.store.db();
+    let addr_clone = address.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+
+        // 1. CMDB parent/child relationships (Device→Device)
+        let mut ci_rels = Vec::new();
+        // Children
+        let mut child_stmt = conn
+            .prepare(
+                "MATCH (d:Device {address: $addr})-[r:CMDB_PARENT_OF]->(c:Device) \
+                 RETURN c.hostname, r.rel_type, r.source_name",
+            )
+            .map_err(|e| e.to_string())?;
+        for row in conn
+            .execute(&mut child_stmt, vec![("addr", Value::String(addr_clone.clone()))])
+            .map_err(|e| e.to_string())?
+        {
+            ci_rels.push(CmdbRelJson {
+                direction: "child".to_string(),
+                peer_hostname: read_str(&row[0]),
+                rel_type: read_str(&row[1]),
+                source_name: read_str(&row[2]),
+            });
+        }
+        // Parents
+        let mut parent_stmt = conn
+            .prepare(
+                "MATCH (p:Device)-[r:CMDB_PARENT_OF]->(d:Device {address: $addr}) \
+                 RETURN p.hostname, r.rel_type, r.source_name",
+            )
+            .map_err(|e| e.to_string())?;
+        for row in conn
+            .execute(&mut parent_stmt, vec![("addr", Value::String(addr_clone.clone()))])
+            .map_err(|e| e.to_string())?
+        {
+            ci_rels.push(CmdbRelJson {
+                direction: "parent".to_string(),
+                peer_hostname: read_str(&row[0]),
+                rel_type: read_str(&row[1]),
+                source_name: read_str(&row[2]),
+            });
+        }
+
+        // 2. Business services (RUNS_SERVICE / CARRIES_APPLICATION)
+        let mut services = Vec::new();
+        let mut svc_stmt = conn
+            .prepare(
+                "MATCH (d:Device {address: $addr})-[r:RUNS_SERVICE|CARRIES_APPLICATION]->(a:Application) \
+                 RETURN a.id, a.name, type(r)",
+            )
+            .map_err(|e| e.to_string())?;
+        for row in conn
+            .execute(&mut svc_stmt, vec![("addr", Value::String(addr_clone.clone()))])
+            .map_err(|e| e.to_string())?
+        {
+            services.push(CmdbServiceJson {
+                app_id: read_str(&row[0]),
+                app_name: read_str(&row[1]),
+                rel_type: read_str(&row[2]),
+            });
+        }
+
+        // 3. Location (via IN_LOCATION or snow_location enrichment property)
+        let mut location = None;
+        let mut loc_stmt = conn
+            .prepare(
+                "MATCH (d:Device {address: $addr})-[:IN_LOCATION]->(l:Location) \
+                 OPTIONAL MATCH (p:Location)-[:LOC_PARENT_OF]->(l) \
+                 RETURN l.id, l.name, l.full_address, p.name",
+            )
+            .map_err(|e| e.to_string())?;
+        for row in conn
+            .execute(&mut loc_stmt, vec![("addr", Value::String(addr_clone))])
+            .map_err(|e| e.to_string())?
+        {
+            location = Some(CmdbLocationJson {
+                location_id: read_str(&row[0]),
+                location_name: read_str(&row[1]),
+                full_address: read_str(&row[2]),
+                parent_name: read_str(&row[3]),
+            });
+            break; // take first
+        }
+
+        Ok::<_, String>(DeviceCmdbResponse {
+            address: String::new(), // filled below
+            ci_relationships: ci_rels,
+            services,
+            location,
+        })
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(DeviceCmdbResponse {
+        address,
+        ..result
+    }))
+}
+
 pub(super) async fn device_config_history_handler(
     State(state): State<AppState>,
     Path(address): Path<String>,

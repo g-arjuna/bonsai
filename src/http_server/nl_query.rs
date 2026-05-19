@@ -95,6 +95,7 @@ const GRAPH_SCHEMA: &str = "\
 - BgpRibEntry(id PK, rib_type, peer_address, prefix, next_hop, as_path, communities, updated_at)
 - ConfigSnapshot(id PK, device_address, trigger, summary, confidence, parser, captured_at)
 - ConfigChange(id PK, device_address, trigger, summary, confidence, parser, added_lines, removed_lines, changed_at)
+- ChangeRequest(id PK, number, source, snow_sys_id, short_description, state, change_type, risk, assigned_to, assignment_group, affected_cis_json, planned_start_ns INT64, planned_end_ns INT64, correlation_id, external_ref, updated_at)
 
 ### Relationship Tables
 - HAS_INTERFACE(Device → Interface)
@@ -130,6 +131,10 @@ const GRAPH_SCHEMA: &str = "\
 - HOST_RUNS_SERVICE(HostEndpoint → Application)
 - ON_VLAN(Interface → Vlan)
 - HAS_RIB_ENTRY(Device → BgpRibEntry)
+- AFFECTED_BY_CHANGE(Device → ChangeRequest) [role, updated_at]
+- CHANGE_CAUSED_CONFIG(ConfigChange → ChangeRequest)
+- CHANGE_CAUSED_DETECTION(DetectionEvent → ChangeRequest)
+- RELATED_TO_CHANGE(Incident → ChangeRequest)
 
 ### Notes
 - Device.address is the primary key and main join field (IP or IP:port).
@@ -145,6 +150,17 @@ const GRAPH_SCHEMA: &str = "\
 - Remediation is created AFTER a proposal is approved and execution succeeds/fails.
 - Investigation nodes record LLM-driven analysis of detections (agent tool calls, summary, cost).
 - Incident nodes link to ServiceNow incidents (snow_sys_id) and to DetectionEvents.
+
+### Change Management
+- ChangeRequest represents a planned or in-progress change (ServiceNow CHG, AAP/Ansible job, manual maintenance).
+- source: 'servicenow', 'aap', 'ansible_tower', 'manual', 'webhook'.
+- state: 'new', 'scheduled', 'implement', 'review', 'closed', 'cancelled'.
+- change_type: 'standard', 'normal', 'emergency'.
+- AFFECTED_BY_CHANGE links devices to their planned change window.
+- CHANGE_CAUSED_CONFIG links ConfigChanges that occurred during an active change window.
+- CHANGE_CAUSED_DETECTION links DetectionEvents that occurred during an active change window.
+- RELATED_TO_CHANGE links Incidents back to the authorising change ticket.
+- A detection with a CHANGE_CAUSED_DETECTION edge is 'expected noise' — it fired during a planned maintenance.
 ";
 
 const FEW_SHOT_EXAMPLES: &str = "\
@@ -194,6 +210,18 @@ Cypher: MATCH (d:Device)-[:TRIGGERED]->(de:DetectionEvent) WHERE de.remediation_
 
 User: What playbooks have been proposed for BGP detections?
 Cypher: MATCH (de:DetectionEvent)-[:HAS_PROPOSAL]->(p:RemediationProposal) WHERE de.rule_id CONTAINS 'bgp' RETURN de.rule_id, de.device_address, p.playbook_id, p.status, p.trust_key ORDER BY p.proposed_at DESC LIMIT 30
+
+User: Show all active change requests
+Cypher: MATCH (c:ChangeRequest) WHERE c.state IN ['new', 'scheduled', 'implement'] RETURN c.number, c.short_description, c.source, c.state, c.change_type, c.risk, c.planned_start_ns, c.planned_end_ns ORDER BY c.planned_start_ns DESC LIMIT 50
+
+User: Which devices are affected by change CHG0012345?
+Cypher: MATCH (d:Device)-[:AFFECTED_BY_CHANGE]->(c:ChangeRequest) WHERE c.number CONTAINS 'CHG0012345' RETURN d.hostname, d.address, c.number, c.short_description, c.state, c.change_type
+
+User: Show detections that fired during a planned change
+Cypher: MATCH (de:DetectionEvent)-[:CHANGE_CAUSED_DETECTION]->(c:ChangeRequest) RETURN de.device_address, de.rule_id, de.severity, de.fired_at, c.number, c.short_description ORDER BY de.fired_at DESC LIMIT 30
+
+User: Are there any incidents linked to change tickets?
+Cypher: MATCH (i:Incident)-[:RELATED_TO_CHANGE]->(c:ChangeRequest) RETURN i.number, i.short_description, i.state, c.number AS change_number, c.short_description AS change_desc ORDER BY i.updated_at DESC LIMIT 30
 ";
 
 const SYSTEM_PROMPT: &str = "\

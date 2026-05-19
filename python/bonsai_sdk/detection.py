@@ -49,6 +49,11 @@ class Features:
     # Falls back to [state_change_event_id] when only one source contributed.
     source_event_ids: list = field(default_factory=list)
 
+    # Change Management context — populated when the detection fires during an
+    # active change window (ServiceNow CHG, AAP job, manual maintenance).
+    change_correlated: bool = False
+    change_refs: list = field(default_factory=list)  # [{"id", "number", "source"}]
+
     def to_json(self) -> str:
         return json.dumps(asdict(self))
 
@@ -71,6 +76,8 @@ class Detection:
     reason: str            # human-readable explanation
     auto_remediate: bool = False
     remediation_action: str = ""   # e.g. "bgp_soft_clear"
+    # True when detection fired during an active change window.
+    change_correlated: bool = False
 
     @property
     def effective_source_event_ids(self) -> list[str]:

@@ -524,6 +524,8 @@ pub struct ServiceNowConfig {
     pub event_filter: ServiceNowEventFilterConfig,
     #[serde(default)]
     pub aiops: ServiceNowAiopsConfig,
+    #[serde(default)]
+    pub change_management: ServiceNowChangeManagementConfig,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -602,6 +604,60 @@ impl Default for ServiceNowAiopsConfig {
             playbook_bridge_enabled: default_snow_aiops_playbook_bridge_enabled(),
         }
     }
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct ServiceNowChangeManagementConfig {
+    /// Enable polling ServiceNow change_request table.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Poll interval in seconds. Default: 120.
+    #[serde(default = "default_snow_chg_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+    /// ServiceNow table for change requests. Default: `change_request`.
+    #[serde(default = "default_snow_chg_table")]
+    pub change_table: String,
+    /// Lookback window: fetch changes scheduled to start within this many hours. Default: 24.
+    #[serde(default = "default_snow_chg_lookback_hours")]
+    pub lookback_hours: u64,
+    /// How to handle detections that fire during an active change window.
+    /// "annotate" = tag detection with change_correlated but keep it (default).
+    /// "suppress" = skip creating the detection entirely.
+    #[serde(default = "default_snow_chg_suppression_policy")]
+    pub suppression_policy: String,
+    /// Also accept changes from external webhooks (AAP, Ansible Tower, etc.).
+    #[serde(default)]
+    pub webhook_enabled: bool,
+    /// Shared secret for webhook HMAC validation. Env var name that holds the secret.
+    #[serde(default)]
+    pub webhook_secret_env: String,
+}
+
+impl Default for ServiceNowChangeManagementConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            poll_interval_secs: default_snow_chg_poll_interval_secs(),
+            change_table: default_snow_chg_table(),
+            lookback_hours: default_snow_chg_lookback_hours(),
+            suppression_policy: default_snow_chg_suppression_policy(),
+            webhook_enabled: false,
+            webhook_secret_env: String::new(),
+        }
+    }
+}
+
+fn default_snow_chg_poll_interval_secs() -> u64 {
+    120
+}
+fn default_snow_chg_table() -> String {
+    "change_request".to_string()
+}
+fn default_snow_chg_lookback_hours() -> u64 {
+    24
+}
+fn default_snow_chg_suppression_policy() -> String {
+    "annotate".to_string()
 }
 
 fn default_snow_min_severity() -> String {

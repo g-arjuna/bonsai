@@ -222,6 +222,11 @@ impl InProcessBus {
         EVENT_BUS_RECEIVERS.store(count, Ordering::Relaxed);
     }
 
+    /// Number of registered subscribers.
+    pub fn subscriber_count(&self) -> usize {
+        self.subscribers.load().len()
+    }
+
     /// Wrap in Arc and submit to the router. Publishing is non-blocking; if the router
     /// queue is full the message is dropped and a metric is incremented.
     pub fn publish(&self, update: TelemetryUpdate) {

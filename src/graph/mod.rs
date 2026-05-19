@@ -1026,6 +1026,28 @@ impl GraphStore {
         conn.query("CREATE REL TABLE IF NOT EXISTS IN_SITE(FROM Location TO Site)")
             .context("create IN_SITE rel")?;
 
+        // CMDB parent/child hierarchy edges (ServiceNow CMDB integration)
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS CMDB_PARENT_OF(\
+                FROM Device TO Device, \
+                rel_type    STRING, \
+                source_name STRING, \
+                updated_at  TIMESTAMP_NS)",
+        )
+        .context("create CMDB_PARENT_OF (Device→Device) rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS LOC_PARENT_OF(\
+                FROM Location TO Location, \
+                source_name STRING, \
+                updated_at  TIMESTAMP_NS)",
+        )
+        .context("create LOC_PARENT_OF (Location→Location) rel")?;
+
+        // Migration: add full_address to Location for ServiceNow enrichment.
+        let _ = conn.query("ALTER TABLE Location ADD full_address STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE Location ADD source_name STRING DEFAULT ''");
+
         // Migration: add id column to Rack if created by an older upsert_rack that
         // used name as PK only. Silently ignored on fresh DBs.
         let _ = conn.query("ALTER TABLE Rack ADD id STRING DEFAULT ''");
@@ -1092,6 +1114,65 @@ impl GraphStore {
         // Migration: add exporter_address to AppFlow if upgrading from a DB
         // created before D3-11. Silently ignored on fresh installs.
         let _ = conn.query("ALTER TABLE AppFlow ADD exporter_address STRING DEFAULT ''");
+
+        // ── Change Management (ServiceNow CHG / AAP / manual) ────────────────
+        // ChangeRequest represents a planned or in-progress change ticket.
+        // source: "servicenow" | "aap" | "ansible_tower" | "manual" | "webhook"
+        // state: "new" | "scheduled" | "implement" | "review" | "closed" | "cancelled"
+        // change_type: "standard" | "normal" | "emergency"
+        // risk: "high" | "moderate" | "low" | "none"
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS ChangeRequest(\
+                id                  STRING,\
+                number              STRING,\
+                source              STRING,\
+                snow_sys_id         STRING,\
+                short_description   STRING,\
+                state               STRING,\
+                change_type         STRING,\
+                risk                STRING,\
+                assigned_to         STRING,\
+                assignment_group    STRING,\
+                affected_cis_json   STRING,\
+                planned_start_ns    INT64,\
+                planned_end_ns      INT64,\
+                actual_start_ns     INT64,\
+                actual_end_ns       INT64,\
+                correlation_id      STRING,\
+                external_ref        STRING,\
+                updated_at          TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create ChangeRequest table")?;
+
+        // Device affected by a planned change.
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS AFFECTED_BY_CHANGE(\
+                FROM Device TO ChangeRequest, \
+                role STRING, \
+                updated_at TIMESTAMP_NS)",
+        )
+        .context("create AFFECTED_BY_CHANGE rel")?;
+
+        // ConfigChange or DetectionEvent that occurred during an active change window.
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS CHANGE_CAUSED_CONFIG(\
+                FROM ConfigChange TO ChangeRequest)",
+        )
+        .context("create CHANGE_CAUSED_CONFIG rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS CHANGE_CAUSED_DETECTION(\
+                FROM DetectionEvent TO ChangeRequest)",
+        )
+        .context("create CHANGE_CAUSED_DETECTION rel")?;
+
+        // Incident linked to the authorising change ticket.
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS RELATED_TO_CHANGE(\
+                FROM Incident TO ChangeRequest)",
+        )
+        .context("create RELATED_TO_CHANGE rel")?;
 
         info!("graph schema initialised");
         Ok(())

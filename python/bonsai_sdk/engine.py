@@ -109,14 +109,16 @@ class RuleEngine:
                     continue
                 reason = rule.detect(features)
                 if reason:
-                    self._on_detection(Detection(
+                    det = Detection(
                         rule_id=rule.rule_id,
                         severity=rule.severity,
                         features=features,
                         reason=reason,
                         auto_remediate=getattr(rule, "auto_remediate", False),
                         remediation_action=getattr(rule, "remediation_action", ""),
-                    ))
+                    )
+                    self._annotate_change_context(det)
+                    self._on_detection(det)
             except Exception as exc:
                 print(f"[engine] rule {rule.rule_id} error: {exc}")
 
@@ -190,9 +192,34 @@ class RuleEngine:
             if_name=if_name,
             occurred_at_ns=occurred_at_ns,
         )
-        self._on_detection(Detection(
+        det = Detection(
             rule_id=rule_id,
             severity=severity,
             features=features,
             reason=reason,
-        ))
+        )
+        self._annotate_change_context(det)
+        self._on_detection(det)
+
+    # ── change context overlay ────────────────────────────────────────────────
+
+    def _annotate_change_context(self, det: Detection) -> None:
+        """Check if the device is in an active change window and annotate the detection."""
+        try:
+            resp = self._client._http_json(
+                "GET",
+                f"/api/changes/context/{det.features.device_address}",
+            )
+            if resp.get("in_change_window"):
+                det.change_correlated = True
+                det.features.change_correlated = True
+                det.features.change_refs = [
+                    {"id": c.get("id", ""), "number": c.get("number", ""), "source": c.get("source", "")}
+                    for c in resp.get("change_requests", [])
+                ]
+                change_nums = ", ".join(
+                    c.get("number", c.get("id", "")) for c in resp.get("change_requests", [])
+                )
+                det.reason = f"[DURING CHANGE {change_nums}] {det.reason}"
+        except Exception:
+            pass  # Non-fatal: if change context is unavailable, detection fires normally

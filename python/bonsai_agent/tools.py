@@ -166,6 +166,19 @@ def propose_playbook(
         return {"error": str(exc)}
 
 
+def check_change_context(client: "BonsaiClient", device_address: str) -> dict:
+    """Check if a device is in an active change window (maintenance, CHG ticket, AAP job).
+
+    Returns whether the device has active change requests, and their details.
+    Use this early in an investigation to distinguish expected changes (during a
+    planned maintenance window) from unexpected changes (possible rogue activity).
+    """
+    try:
+        return client._http_json("GET", f"/api/changes/context/{device_address}")
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 # ── tool registry ─────────────────────────────────────────────────────────────
 
 # Anthropic tool schema for each tool.
@@ -255,6 +268,22 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "check_change_context",
+        "description": (
+            "Check if a device is currently in an active change window "
+            "(ServiceNow CHG ticket, AAP/Ansible job, or manual maintenance). "
+            "Use this to determine if a fault might be expected due to planned maintenance. "
+            "Returns active change requests with their type, risk level, and time window."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_address": {"type": "string", "description": "Device address to check"},
+            },
+            "required": ["device_address"],
+        },
+    },
+    {
         "name": "propose_playbook",
         "description": (
             "Submit a playbook proposal to the approval queue. "
@@ -280,6 +309,7 @@ TOOL_FN: dict[str, Any] = {
     "ask_graph": ask_graph,
     "get_recent_detections": get_recent_detections,
     "get_remediation_history": get_remediation_history,
+    "check_change_context": check_change_context,
     "summarise": summarise,
     "propose_playbook": propose_playbook,
 }

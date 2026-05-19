@@ -12,6 +12,10 @@
 
   let enrichmentProps = $state([]);
   let enrichmentLoading = $state(false);
+  let enrichmentConflicts = $state([]);
+  let conflictsLoading = $state(false);
+  let cmdbData = $state(null);
+  let cmdbLoading = $state(false);
   let configHistory = $state({ snapshots: [], changes: [] });
   let configLoading = $state(false);
   let readiness = $state(null);
@@ -28,7 +32,7 @@
   let reparseBusy = $state(false);
   let reparseMessage = $state('');
 
-  const TABS = ['interfaces', 'peers', 'paths', 'recommendations', 'events', 'detections', 'readiness', 'config', 'enrichment', 'audit'];
+  const TABS = ['interfaces', 'peers', 'paths', 'recommendations', 'events', 'detections', 'readiness', 'config', 'enrichment', 'cmdb', 'audit'];
 
   $effect(() => {
     if (address) {
@@ -36,6 +40,8 @@
       error = null;
       device = null;
       enrichmentProps = [];
+      enrichmentConflicts = [];
+      cmdbData = null;
       configHistory = { snapshots: [], changes: [] };
       readiness = null;
       recommendations = null;
@@ -123,6 +129,35 @@
     }
     return Object.entries(groups);
   }
+
+  // Build a set of conflicting property keys for badge display
+  function conflictKeySet() {
+    const keys = new Set();
+    for (const c of enrichmentConflicts) {
+      keys.add(c.key);
+    }
+    return keys;
+  }
+
+  $effect(() => {
+    if (activeTab === 'enrichment' && address && !conflictsLoading && enrichmentConflicts.length === 0) {
+      conflictsLoading = true;
+      fetch('/api/devices/' + encodeURIComponent(address) + '/enrichment/conflicts')
+        .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(t); }))
+        .then(d => { enrichmentConflicts = d.conflicts || []; conflictsLoading = false; })
+        .catch(() => { conflictsLoading = false; });
+    }
+  });
+
+  $effect(() => {
+    if (activeTab === 'cmdb' && address && !cmdbLoading && !cmdbData) {
+      cmdbLoading = true;
+      fetch('/api/devices/' + encodeURIComponent(address) + '/cmdb')
+        .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(t); }))
+        .then(d => { cmdbData = d; cmdbLoading = false; })
+        .catch(() => { cmdbLoading = false; });
+    }
+  });
 
   function healthClass(h) {
     if (h === 'healthy') return 'healthy';
@@ -706,21 +741,121 @@
         {:else if enrichmentProps.length === 0}
           <div class="empty">No enrichment data for this device. Run an enricher from the Enrichment workspace.</div>
         {:else}
+          {@const ckeys = conflictKeySet()}
+          {#if ckeys.size > 0}
+            <div class="conflict-banner" style="margin:0 12px 12px; padding:8px 12px; border-radius:6px; background:rgba(255,180,50,0.12); border:1px solid rgba(255,180,50,0.3); font-size:12px;">
+              <strong style="color:var(--state-degraded-border, #f5a623);">{ckeys.size} conflicting propert{ckeys.size === 1 ? 'y' : 'ies'}</strong>
+              — multiple sources disagree. Winner shown with higher confidence.
+            </div>
+          {/if}
           {#each groupedEnrichment() as [source, props]}
             <h4 class="section-head">{source}</h4>
             <table>
               <thead><tr><th>Property</th><th>Value</th><th>Updated</th></tr></thead>
               <tbody>
                 {#each props as p}
-                  <tr>
-                    <td><code style="font-size:12px;">{p.key}</code></td>
-                    <td style="max-width:180px; overflow-wrap:anywhere;">{p.value}<div class="muted" style="font-size:11px;">{p.confidence || '—'} / {p.parser || '—'}</div></td>
+                  <tr class={ckeys.has(p.key) ? 'conflict-row' : ''}>
+                    <td>
+                      <code style="font-size:12px;">{p.key}</code>
+                      {#if ckeys.has(p.key)}
+                        <span class="conflict-badge" title="Value conflicts with another source">conflict</span>
+                      {/if}
+                    </td>
+                    <td style="max-width:180px; overflow-wrap:anywhere;">
+                      {p.value}
+                      <div class="muted" style="font-size:11px;">
+                        {p.confidence || '—'} / {p.parser || '—'}
+                      </div>
+                    </td>
                     <td title={absoluteTime(p.updated_at_ns)} style="white-space:nowrap;">{relativeTime(p.updated_at_ns)}</td>
                   </tr>
                 {/each}
               </tbody>
             </table>
           {/each}
+          {#if enrichmentConflicts.length > 0}
+            <h4 class="section-head" style="margin-top:20px;">Conflict Details</h4>
+            {#each enrichmentConflicts as conflict}
+              <div style="margin:0 12px 10px; padding:8px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg2); font-size:12px;">
+                <strong><code>{conflict.key}</code></strong>
+                <div style="margin-top:4px; display:grid; gap:3px;">
+                  {#each conflict.sources as src}
+                    <div style="display:flex; align-items:center; gap:6px;">
+                      <span class="conflict-pip {src.is_winner ? 'winner' : 'loser'}"></span>
+                      <span style="font-weight:600;">{src.source_name}</span>
+                      <code style="font-size:11px; color:var(--fg-muted);">{src.value}</code>
+                      <span class="muted" style="margin-left:auto;">{src.confidence}</span>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/each}
+          {/if}
+        {/if}
+
+      {:else if activeTab === 'cmdb'}
+        {#if cmdbLoading}
+          <div class="drawer-loading">
+            {#each [1, 2, 3] as _}<div class="skeleton-line"></div>{/each}
+          </div>
+        {:else if !cmdbData}
+          <div class="empty">No CMDB data available.</div>
+        {:else}
+          {#if cmdbData.services.length > 0}
+            <h4 class="section-head">Business Services</h4>
+            <table>
+              <thead><tr><th>Service</th><th>Relationship</th></tr></thead>
+              <tbody>
+                {#each cmdbData.services as svc}
+                  <tr>
+                    <td><strong>{svc.app_name}</strong><div class="muted" style="font-size:11px;">{svc.app_id}</div></td>
+                    <td><span class="meta-chip">{svc.rel_type.replace('_', ' ')}</span></td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {:else}
+            <div class="empty" style="margin-bottom:12px;">No business service bindings.</div>
+          {/if}
+
+          {#if cmdbData.ci_relationships.length > 0}
+            <h4 class="section-head" style="margin-top:16px;">CI Hierarchy</h4>
+            <table>
+              <thead><tr><th>Direction</th><th>Peer</th><th>Type</th><th>Source</th></tr></thead>
+              <tbody>
+                {#each cmdbData.ci_relationships as rel}
+                  <tr>
+                    <td>
+                      <span class="meta-chip" style="font-size:10px;">{rel.direction === 'parent' ? 'parent' : 'child'}</span>
+                    </td>
+                    <td><code style="font-size:12px;">{rel.peer_hostname}</code></td>
+                    <td style="font-size:12px;">{rel.rel_type}</td>
+                    <td class="muted" style="font-size:11px;">{rel.source_name}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {:else}
+            <div class="empty" style="margin-bottom:12px;">No parent/child CI relationships.</div>
+          {/if}
+
+          {#if cmdbData.location}
+            <h4 class="section-head" style="margin-top:16px;">Location</h4>
+            <div class="audit-grid" style="padding:0 12px;">
+              <span class="muted">Name</span>
+              <span>{cmdbData.location.location_name}</span>
+              {#if cmdbData.location.full_address}
+                <span class="muted">Address</span>
+                <span>{cmdbData.location.full_address}</span>
+              {/if}
+              {#if cmdbData.location.parent_name}
+                <span class="muted">Parent</span>
+                <span>{cmdbData.location.parent_name}</span>
+              {/if}
+            </div>
+          {:else}
+            <div class="empty">No CMDB location assigned.</div>
+          {/if}
         {/if}
 
       {:else if activeTab === 'audit'}
@@ -919,4 +1054,28 @@
   .det-ts { font-size: 11px; }
   .text-warn { color: var(--yellow); }
   .empty { padding: 24px 16px; color: var(--muted); text-align: center; }
+
+  .conflict-row { background: rgba(255,180,50,0.06); }
+  .conflict-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 1px 5px;
+    margin-left: 6px;
+    border-radius: 3px;
+    background: rgba(255,180,50,0.18);
+    color: var(--state-degraded-border, #f5a623);
+    border: 1px solid rgba(255,180,50,0.3);
+    vertical-align: middle;
+  }
+  .conflict-pip {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .conflict-pip.winner { background: var(--state-healthy-border, #3fb950); }
+  .conflict-pip.loser  { background: var(--state-degraded-border, #f5a623); opacity: 0.6; }
 </style>

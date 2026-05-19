@@ -136,8 +136,104 @@ pub(super) struct HealthResponse {
     version: &'static str,
     git_sha: &'static str,
     build_ts: &'static str,
+    uptime_secs: u64,
+    subsystems: SubsystemHealth,
+}
+
+#[derive(Serialize, Default)]
+pub(super) struct SubsystemHealth {
+    graph_db: ComponentHealth,
+    collectors: CollectorHealth,
+    sidecars: SidecarHealth,
+    disk: DiskHealth,
+    enrichers: EnricherHealth,
+    governor: GovernorHealth,
+    event_bus: EventBusHealth,
+}
+
+#[derive(Serialize, Default)]
+pub(super) struct ComponentHealth {
+    status: &'static str,       // "ok", "degraded", "failed"
     #[serde(skip_serializing_if = "Option::is_none")]
-    missing_required_sidecars: Option<Vec<String>>,
+    detail: Option<String>,
+}
+
+#[derive(Serialize, Default)]
+pub(super) struct CollectorHealth {
+    status: &'static str,
+    total: usize,
+    connected: usize,
+    disconnected: usize,
+    stale_heartbeat: usize,     // heartbeat older than 90s
+    unassigned_devices: usize,
+}
+
+#[derive(Serialize, Default)]
+pub(super) struct SidecarHealth {
+    status: &'static str,
+    total: usize,
+    healthy: usize,
+    stale: usize,
+    lost: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    missing_required: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Default)]
+pub(super) struct DiskHealth {
+    status: &'static str,
+    archive_bytes: u64,
+    archive_pct: u8,
+    graph_bytes: u64,
+    graph_pct: u8,
+}
+
+#[derive(Serialize, Default)]
+pub(super) struct EnricherHealth {
+    status: &'static str,
+    total: usize,
+    enabled: usize,
+    errored: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    errored_names: Vec<String>,
+}
+
+#[derive(Serialize, Default)]
+pub(super) struct GovernorHealth {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+#[derive(Serialize, Default)]
+pub(super) struct EventBusHealth {
+    status: &'static str,
+    subscriber_count: usize,
+}
+
+/// Simple liveness probe — returns 200 if the process is running.
+pub(super) async fn healthz_handler() -> (StatusCode, Json<serde_json::Value>) {
+    (StatusCode::OK, Json(serde_json::json!({"status": "alive"})))
+}
+
+/// K8s readiness probe — returns 200 only if graph is writable and at least
+/// one collector is connected (or we're in standalone mode).
+pub(super) async fn readyz_handler(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    // Probe graph
+    let graph_ok = probe_graph_db(&state).await;
+    let collectors_ok = state.collector_manager.as_ref()
+        .map(|m| {
+            let summary = m.collector_status_summary();
+            summary.collectors.iter().any(|c| c.connected)
+        })
+        .unwrap_or(true); // standalone mode: no collectors needed
+
+    let ready = graph_ok && collectors_ok;
+    let code = if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    let reason = if ready { "ready" } else if !graph_ok { "graph_db_unavailable" } else { "no_collectors_connected" };
+    (code, Json(serde_json::json!({"ready": ready, "reason": reason})))
 }
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
@@ -459,26 +555,213 @@ pub(super) async fn sidecars_handler(State(state): State<AppState>) -> Json<Side
     })
 }
 pub(super) async fn health_handler(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
-    match state.sidecar_registry.missing_required().await {
-        Some(missing) if !missing.is_empty() => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(HealthResponse {
-                status: "degraded",
-                version: env!("CARGO_PKG_VERSION"),
-                git_sha: env!("BONSAI_GIT_SHA"),
-                build_ts: env!("BONSAI_BUILD_TS"),
-                missing_required_sidecars: Some(missing),
-            }),
-        ),
-        _ => (
-            StatusCode::OK,
-            Json(HealthResponse {
-                status: "ok",
-                version: env!("CARGO_PKG_VERSION"),
-                git_sha: env!("BONSAI_GIT_SHA"),
-                build_ts: env!("BONSAI_BUILD_TS"),
-                missing_required_sidecars: None,
-            }),
-        ),
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let start = START.get_or_init(std::time::Instant::now);
+    let uptime_secs = start.elapsed().as_secs();
+
+    // ── Graph DB probe ────────────────────────────────────────────────────
+    let graph_ok = probe_graph_db(&state).await;
+    let graph_db = ComponentHealth {
+        status: if graph_ok { "ok" } else { "failed" },
+        detail: if graph_ok { None } else { Some("graph DB unreachable or read failed".into()) },
+    };
+
+    // ── Collectors ─────────────────────────────────────────────────────────
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0);
+    let stale_threshold_ns: i64 = 90 * 1_000_000_000; // 3× heartbeat interval
+    let collectors = if let Some(ref m) = state.collector_manager {
+        let summary = m.collector_status_summary();
+        let connected = summary.collectors.iter().filter(|c| c.connected).count();
+        let disconnected = summary.collectors.len() - connected;
+        let stale = summary.collectors.iter().filter(|c| {
+            c.connected && c.last_heartbeat_ns > 0
+                && (now_ns - c.last_heartbeat_ns) > stale_threshold_ns
+        }).count();
+        let status = if summary.collectors.is_empty() {
+            "ok" // no collectors expected
+        } else if connected == 0 {
+            "failed"
+        } else if stale > 0 || disconnected > 0 {
+            "degraded"
+        } else {
+            "ok"
+        };
+        CollectorHealth {
+            status,
+            total: summary.collectors.len(),
+            connected,
+            disconnected,
+            stale_heartbeat: stale,
+            unassigned_devices: summary.unassigned_devices.len(),
+        }
+    } else {
+        CollectorHealth { status: "ok", ..Default::default() }
+    };
+
+    // ── Sidecars ──────────────────────────────────────────────────────────
+    let sidecar_snapshots = state.sidecar_registry.snapshot().await;
+    let missing_req = state.sidecar_registry.missing_required().await;
+    let sc_healthy = sidecar_snapshots.iter()
+        .filter(|s| matches!(s.status, crate::sidecar_registry::SidecarStatus::Healthy))
+        .count();
+    let sc_stale = sidecar_snapshots.iter()
+        .filter(|s| matches!(s.status, crate::sidecar_registry::SidecarStatus::Stale))
+        .count();
+    let sc_lost = sidecar_snapshots.iter()
+        .filter(|s| matches!(s.status, crate::sidecar_registry::SidecarStatus::Lost))
+        .count();
+    let sidecar_status = match &missing_req {
+        Some(m) if !m.is_empty() => "degraded",
+        _ if sc_lost > 0 => "degraded",
+        _ => "ok",
+    };
+    let sidecars = SidecarHealth {
+        status: sidecar_status,
+        total: sidecar_snapshots.len(),
+        healthy: sc_healthy,
+        stale: sc_stale,
+        lost: sc_lost,
+        missing_required: missing_req.clone(),
+    };
+
+    // ── Disk ──────────────────────────────────────────────────────────────
+    let disk_snap = crate::disk_guard::snapshot(
+        std::path::Path::new(&state.archive_path),
+        std::path::Path::new(&state.graph_path),
+        &state.storage_config,
+    );
+    let disk_status = if disk_snap.archive_pct >= 95 || disk_snap.graph_pct >= 95 {
+        "failed"
+    } else if disk_snap.archive_pct >= 80 || disk_snap.graph_pct >= 80 {
+        "degraded"
+    } else {
+        "ok"
+    };
+    let disk = DiskHealth {
+        status: disk_status,
+        archive_bytes: disk_snap.archive_bytes,
+        archive_pct: disk_snap.archive_pct,
+        graph_bytes: disk_snap.graph_bytes,
+        graph_pct: disk_snap.graph_pct,
+    };
+
+    // ── Enrichers ────────────────────────────────────────────────────────
+    let (enricher_total, enricher_enabled, errored_names) = {
+        let reg = state.enricher_registry.read().await;
+        let items = reg.list();
+        let total = items.len();
+        let enabled = items.iter().filter(|(c, _)| c.enabled).count();
+        let errored: Vec<String> = items.iter()
+            .filter(|(c, s)| c.enabled && s.last_run_error.is_some())
+            .map(|(c, _)| c.name.clone())
+            .collect();
+        (total, enabled, errored)
+    };
+    let enrichers = EnricherHealth {
+        status: if errored_names.is_empty() { "ok" } else { "degraded" },
+        total: enricher_total,
+        enabled: enricher_enabled,
+        errored: errored_names.len(),
+        errored_names,
+    };
+
+    // ── Governor ──────────────────────────────────────────────────────────
+    let governor = match &state.governor {
+        Some(g) => {
+            let snap = g.snapshot();
+            let any_pressure = snap.memory_pressure_active
+                || snap.write_pressure_active
+                || snap.rate_shedding_active;
+            let status = if any_pressure { "degraded" } else { "ok" };
+            GovernorHealth {
+                status,
+                detail: if any_pressure {
+                    let mut reasons = Vec::new();
+                    if snap.memory_pressure_active { reasons.push("memory_pressure"); }
+                    if snap.write_pressure_active { reasons.push("write_pressure"); }
+                    if snap.rate_shedding_active { reasons.push("rate_shedding"); }
+                    Some(format!("active: {}", reasons.join(", ")))
+                } else {
+                    None
+                },
+            }
+        }
+        None => GovernorHealth { status: "ok", detail: None },
+    };
+
+    // ── Event bus ────────────────────────────────────────────────────────
+    let bus_subs = state.event_bus.subscriber_count();
+    let event_bus = EventBusHealth {
+        status: "ok",
+        subscriber_count: bus_subs,
+    };
+
+    // ── Aggregate ────────────────────────────────────────────────────────
+    let subsystems = SubsystemHealth {
+        graph_db,
+        collectors,
+        sidecars,
+        disk,
+        enrichers,
+        governor,
+        event_bus,
+    };
+
+    let worst = worst_status(&[
+        subsystems.graph_db.status,
+        subsystems.collectors.status,
+        subsystems.sidecars.status,
+        subsystems.disk.status,
+        subsystems.enrichers.status,
+        subsystems.governor.status,
+    ]);
+
+    let http_code = match worst {
+        "ok" => StatusCode::OK,
+        _ => StatusCode::SERVICE_UNAVAILABLE,
+    };
+
+    // Prometheus gauge
+    let health_val = match worst {
+        "ok" => 1.0_f64,
+        "degraded" => 0.5,
+        _ => 0.0,
+    };
+    metrics::gauge!("bonsai_health_status").set(health_val);
+
+    (http_code, Json(HealthResponse {
+        status: worst,
+        version: env!("CARGO_PKG_VERSION"),
+        git_sha: env!("BONSAI_GIT_SHA"),
+        build_ts: env!("BONSAI_BUILD_TS"),
+        uptime_secs,
+        subsystems,
+    }))
+}
+
+/// Probe graph DB with a trivial read query.
+async fn probe_graph_db(state: &AppState) -> bool {
+    let db = state.store.db();
+    tokio::task::spawn_blocking(move || {
+        let conn = match lbug::Connection::new(&db) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        conn.query("MATCH (d:Device) RETURN count(d) LIMIT 1").is_ok()
+    })
+    .await
+    .unwrap_or(false)
+}
+
+fn worst_status(statuses: &[&str]) -> &'static str {
+    if statuses.iter().any(|s| *s == "failed") {
+        "failed"
+    } else if statuses.iter().any(|s| *s == "degraded") {
+        "degraded"
+    } else {
+        "ok"
     }
 }

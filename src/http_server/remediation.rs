@@ -1050,3 +1050,138 @@ pub(super) async fn grounded_incident_handler(
         procedural_references: refs,
     }))
 }
+
+// ── Change Management handlers ──────────────────────────────────────────────
+
+/// POST /api/webhooks/change-event — ingest a change event from AAP, Ansible
+/// Tower, ServiceNow business rule, or any external system.
+pub(super) async fn webhook_change_event_handler(
+    State(state): State<AppState>,
+    Json(body): Json<crate::integrations::change_management::WebhookChangeEvent>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !state.servicenow_config.change_management.webhook_enabled {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "change management webhook is not enabled".to_string(),
+        ));
+    }
+    let record = crate::integrations::change_management::ingest_webhook_change(&state.store, body)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "change_request_id": record.id,
+        "number": record.number,
+    })))
+}
+
+/// GET /api/changes/context/{device_address} — check if a device is in an
+/// active change window right now.
+pub(super) async fn change_context_handler(
+    State(state): State<AppState>,
+    Path(device_address): Path<String>,
+) -> Result<Json<crate::integrations::change_management::ActiveChangeContext>, (StatusCode, String)>
+{
+    crate::integrations::change_management::active_change_context(&state.store, &device_address)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+}
+
+/// POST /api/integrations/servicenow/changes/sync — trigger a manual change
+/// request sync cycle.
+pub(super) async fn servicenow_change_sync_handler(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    match crate::integrations::change_management::run_change_sync(
+        &state.servicenow_config,
+        &state.store,
+        &state.credentials,
+    )
+    .await
+    {
+        Ok(stats) => Json(serde_json::json!({
+            "success": true,
+            "stats": stats,
+        })),
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "error": format!("{e:#}"),
+        })),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct ChangeListParams {
+    #[serde(default = "default_change_state")]
+    state: String,
+    #[serde(default = "default_change_limit")]
+    limit: u32,
+}
+fn default_change_state() -> String {
+    String::new()
+}
+fn default_change_limit() -> u32 {
+    100
+}
+
+/// GET /api/changes — list change requests from the graph.
+pub(super) async fn list_changes_handler(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<ChangeListParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let db = state.store.db();
+    let filter_state = params.state.clone();
+    let limit = params.limit.min(500) as i64;
+    let rows = tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, String> {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        let query = if filter_state.is_empty() {
+            "MATCH (c:ChangeRequest) \
+             RETURN c.id, c.number, c.source, c.short_description, c.state, c.change_type, \
+                    c.risk, c.planned_start_ns, c.planned_end_ns, c.affected_cis_json, \
+                    c.assigned_to, c.assignment_group, c.correlation_id, c.external_ref \
+             ORDER BY c.planned_start_ns DESC \
+             LIMIT $limit"
+                .to_string()
+        } else {
+            format!(
+                "MATCH (c:ChangeRequest) WHERE c.state = '{}' \
+                 RETURN c.id, c.number, c.source, c.short_description, c.state, c.change_type, \
+                        c.risk, c.planned_start_ns, c.planned_end_ns, c.affected_cis_json, \
+                        c.assigned_to, c.assignment_group, c.correlation_id, c.external_ref \
+                 ORDER BY c.planned_start_ns DESC \
+                 LIMIT $limit",
+                filter_state
+            )
+        };
+        let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+        let result = conn
+            .execute(&mut stmt, vec![("limit", Value::Int64(limit))])
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<serde_json::Value> = result
+            .map(|row| {
+                serde_json::json!({
+                    "id": crate::graph::common::read_str(&row[0]),
+                    "number": crate::graph::common::read_str(&row[1]),
+                    "source": crate::graph::common::read_str(&row[2]),
+                    "short_description": crate::graph::common::read_str(&row[3]),
+                    "state": crate::graph::common::read_str(&row[4]),
+                    "change_type": crate::graph::common::read_str(&row[5]),
+                    "risk": crate::graph::common::read_str(&row[6]),
+                    "planned_start_ns": match &row[7] { Value::Int64(v) => *v, _ => 0 },
+                    "planned_end_ns": match &row[8] { Value::Int64(v) => *v, _ => 0 },
+                    "affected_cis_json": crate::graph::common::read_str(&row[9]),
+                    "assigned_to": crate::graph::common::read_str(&row[10]),
+                    "assignment_group": crate::graph::common::read_str(&row[11]),
+                    "correlation_id": crate::graph::common::read_str(&row[12]),
+                    "external_ref": crate::graph::common::read_str(&row[13]),
+                })
+            })
+            .collect();
+        Ok(rows)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(serde_json::json!({ "changes": rows })))
+}

@@ -1230,6 +1230,26 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             );
         }
 
+        // ── ServiceNow Change Management sync ────────────────────────────────
+        if run_core
+            && cfg.integrations.servicenow.enabled
+            && cfg.integrations.servicenow.change_management.enabled
+        {
+            let snow_cfg = cfg.integrations.servicenow.clone();
+            let creds_for_chg = std::sync::Arc::clone(&credentials);
+            let store_for_chg = if let Store::Core(s) = store {
+                std::sync::Arc::clone(s)
+            } else {
+                unreachable!()
+            };
+            bonsai::integrations::change_management::maybe_start(
+                &snow_cfg,
+                store_for_chg,
+                creds_for_chg,
+                shutdown_rx.clone(),
+            );
+        }
+
         if run_core {
             let store_for_reconciler = if let Store::Core(s) = store {
                 std::sync::Arc::clone(s)

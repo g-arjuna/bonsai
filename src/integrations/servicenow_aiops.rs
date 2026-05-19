@@ -178,6 +178,33 @@ pub async fn run_sync_cycle(
         )
         .await?;
         stats.local_incidents_synced += 1;
+
+        // Change-context back-annotation: if the device is in an active change
+        // window, link the incident to the ChangeRequest so operators see the
+        // CHG reference on the ServiceNow incident.
+        if let Ok(ctx) = crate::integrations::change_management::active_change_context(
+            store,
+            &candidate.root_device_address,
+        )
+        .await
+        {
+            for change in &ctx.change_requests {
+                let _ = crate::integrations::change_management::link_incident_to_change(
+                    store,
+                    &candidate.id,
+                    &change.id,
+                )
+                .await;
+                // Best-effort: annotate the SNOW incident with the CHG number.
+                let _ = annotate_snow_incident_with_change(
+                    &api,
+                    &snow.sys_id,
+                    &change.number,
+                    &change.short_description,
+                )
+                .await;
+            }
+        }
         remote_by_id.insert(candidate.id.clone(), snow);
     }
 
@@ -728,6 +755,34 @@ async fn request_json(
         .json()
         .await
         .context("parse ServiceNow write response")
+}
+
+/// Annotate a ServiceNow incident with a related change ticket reference.
+async fn annotate_snow_incident_with_change(
+    api: &SnowApi<'_>,
+    incident_sys_id: &str,
+    change_number: &str,
+    change_description: &str,
+) -> Result<()> {
+    let url = format!(
+        "{}/api/now/table/{}/{}",
+        api.instance_url, api.cfg.incident_table, incident_sys_id
+    );
+    api.http
+        .patch(&url)
+        .basic_auth(api.username, Some(api.password))
+        .json(&json!({
+            "work_notes": format!(
+                "Bonsai: This incident occurred during active change {change_number} ({change_description}). \
+                 The detection may be expected maintenance noise."
+            ),
+        }))
+        .send()
+        .await
+        .with_context(|| format!("PATCH {url}"))?
+        .error_for_status()
+        .context("annotate incident with change reference returned error")?;
+    Ok(())
 }
 
 async fn upsert_local_incident(
