@@ -23,6 +23,7 @@ pub mod elastic;
 pub mod prometheus;
 pub mod servicenow_em;
 pub mod splunk_hec;
+pub mod syslog_adapter;
 pub mod traits;
 
 use std::sync::Arc;
@@ -58,7 +59,7 @@ pub fn build_adapter(
 pub fn ensure_supported_adapter_type(config: &OutputAdapterConfig) -> Result<()> {
     if matches!(
         config.adapter_type.as_str(),
-        "prometheus_remote_write" | "splunk_hec" | "elastic" | "servicenow_em"
+        "prometheus_remote_write" | "splunk_hec" | "elastic" | "servicenow_em" | "syslog"
     ) {
         Ok(())
     } else {

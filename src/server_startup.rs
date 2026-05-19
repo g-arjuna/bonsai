@@ -1098,6 +1098,18 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
 
             let enricher_registry =
                 bonsai::enrichment::new_registry(std::path::Path::new(&runtime_dir));
+            // G4: Start syslog adapter for health events if configured
+            if std::env::var("BONSAI_SYSLOG_ENABLED").as_deref() == Ok("true") {
+                let syslog_config = bonsai::output::syslog_adapter::SyslogConfig {
+                    enabled: true,
+                    endpoint: std::env::var("BONSAI_SYSLOG_ENDPOINT").unwrap_or_else(|_| "127.0.0.1:514".to_string()),
+                    facility: std::env::var("BONSAI_SYSLOG_FACILITY").unwrap_or_else(|_| "local0".to_string()),
+                };
+                let syslog_adapter = std::sync::Arc::new(bonsai::output::syslog_adapter::SyslogAdapter::new(syslog_config, bus.clone()));
+                syslog_adapter.start().await;
+                info!("Syslog adapter started for health events");
+            }
+
             let adapter_registry =
                 bonsai::output::traits::new_adapter_registry(std::path::Path::new(&runtime_dir));
             let adapter_registry_handle = std::sync::Arc::clone(&adapter_registry);
