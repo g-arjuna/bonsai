@@ -25,6 +25,8 @@
   let loading = true;
   let error: string | null = null;
   let editingSettings = false;
+  let showRestartDialog = false;
+  let restartPending = false;
 
   async function loadStatus() {
     try {
@@ -58,8 +60,29 @@
       settings = await res.json();
       editingSettings = false;
       await loadStatus();
+      
+      // Show restart dialog since settings changed
+      showRestartDialog = true;
     } catch (e) {
       error = `Failed to save HA settings: ${e}`;
+    }
+  }
+
+  async function triggerRestart() {
+    restartPending = true;
+    try {
+      const res = await fetch('/api/restart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'HA settings changed' })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      error = `Restart initiated: ${data.message}`;
+      // Page will disconnect, user will need to refresh after restart
+    } catch (e) {
+      error = `Failed to trigger restart: ${e}`;
+      restartPending = false;
     }
   }
 
@@ -193,6 +216,21 @@
         </div>
       </div>
     </section>
+  {/if}
+
+  {#if showRestartDialog}
+    <div class="modal-overlay">
+      <div class="modal">
+        <h3>Restart Required</h3>
+        <p>HA settings have been updated. A restart is required for the changes to take effect.</p>
+        <div class="modal-actions">
+          <button class="btn-secondary" on:click={() => showRestartDialog = false}>Cancel</button>
+          <button class="btn-primary" on:click={triggerRestart} disabled={restartPending}>
+            {restartPending ? 'Restarting...' : 'Restart Now'}
+          </button>
+        </div>
+      </div>
+    </div>
   {/if}
 
   <section class="troubleshoot-card">
@@ -367,5 +405,42 @@
     background: var(--accent-muted);
     color: var(--text-primary);
     border: 1px solid var(--border);
+  }
+
+  .modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+
+  .modal {
+    background: var(--surface2);
+    border-radius: 12px;
+    padding: 2rem;
+    max-width: 400px;
+    border: 1px solid var(--border);
+  }
+
+  .modal h3 {
+    margin: 0 0 1rem 0;
+    color: var(--text-primary);
+  }
+
+  .modal p {
+    margin: 0 0 1.5rem 0;
+    color: var(--text-secondary);
+  }
+
+  .modal-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
   }
 </style>

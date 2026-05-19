@@ -69,7 +69,7 @@ use governance::{assignment_override_handler, assignment_rules_handler, assignme
 use outputs::{adapter_audit_handler, adapter_list_handler, adapter_remove_handler, adapter_test_handler, adapter_upsert_handler};
 use test_endpoints::{inject_detection_handler, parse_syslog_fixture_handler};
 use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler};
-use ha::{ha_status_handler, ha_settings_handler, ha_patch_settings_handler};
+use ha::{ha_status_handler, ha_settings_handler, ha_patch_settings_handler, restart_handler};
 use nl_query::{explorer_ask_handler, nl_budget_handler};
 
 // ── JSON response types ───────────────────────────────────────────────────────
@@ -869,6 +869,7 @@ fn settings_routes() -> Router<AppState> {
         .route("/api/receivers/status", get(get_receiver_status_handler))
         .route("/api/ha/status", get(ha_status_handler))
         .route("/api/ha/settings", get(ha_settings_handler).patch(ha_patch_settings_handler))
+        .route("/api/restart", post(restart_handler))
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
