@@ -58,6 +58,8 @@ pub struct HACoordinator {
     state: Arc<RwLock<LeaderState>>,
     etcd_config: Option<EtcdConfig>,
     shutdown_signal: Arc<RwLock<bool>>,
+    // G3 Session 8: Callback to notify when leadership changes
+    leadership_change_callback: Mutex<Option<Box<dyn Fn(LeaderState) + Send + Sync>>>,
 }
 
 impl HACoordinator {
@@ -67,6 +69,7 @@ impl HACoordinator {
             state: Arc::new(RwLock::new(LeaderState::Electing)),
             etcd_config: None,
             shutdown_signal: Arc::new(RwLock::new(false)),
+            leadership_change_callback: Mutex::new(None),
         }
     }
 
@@ -87,7 +90,20 @@ impl HACoordinator {
 
     /// Set leader state (called by election loop)
     pub async fn set_state(&self, new_state: LeaderState) {
-        *self.state.write().await = new_state;
+        let old_state = self.state.read().await.clone();
+        *self.state.write().await = new_state.clone();
+        
+        // G3 Session 8: Invoke callback if leadership changed
+        if old_state != new_state {
+            if let Some(ref callback) = *self.leadership_change_callback.lock().unwrap() {
+                callback(new_state.clone());
+            }
+        }
+    }
+
+    /// Register a callback to be invoked when leadership changes
+    pub fn register_leadership_change_callback(&self, callback: Box<dyn Fn(LeaderState) + Send + Sync>) {
+        *self.leadership_change_callback.lock().unwrap() = Some(callback);
     }
 
     /// Shutdown the HA coordinator

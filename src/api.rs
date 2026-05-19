@@ -215,6 +215,31 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             }
         }
 
+        // G3 Session 8: Leadership check - only leader should accept collector registrations
+        if let Some(ref ha_coordinator) = self.ha_coordinator {
+            let is_leader = ha_coordinator.is_leader().await;
+            if !is_leader {
+                tracing::warn!(
+                    %collector_id,
+                    peer_ip = peer_addr.as_deref(),
+                    "collector registration rejected: this node is not the leader"
+                );
+                metrics::counter!("bonsai_collector_registration_rejected_total", "reason" => "not_leader").increment(1);
+                if let Some(ref store) = self.sqlite_store {
+                    let _ = store.log_collector_registration(
+                        &collector_id,
+                        &hostname,
+                        collector_version,
+                        peer_addr.as_deref(),
+                        cert_fingerprint.as_deref(),
+                        false,
+                        Some("not_leader"),
+                    );
+                }
+                return Err(Status::unavailable("this node is not the leader, collectors should connect to the leader"));
+            }
+        }
+
         match check_protocol_compat(collector_version, PROTOCOL_VERSION) {
             VersionCompat::Compatible => {
                 tracing::info!(
