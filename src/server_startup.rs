@@ -466,7 +466,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
 
     macro_rules! spawn_or_register {
         ($name:literal, $addr:expr, $enabled:expr, $run_collector:expr, $factory:expr) => {{
-            let mut sup = supervisor.blocking_write();
+            let mut sup = supervisor.write().await;
             if $enabled && $run_collector {
                 sup.spawn($name, $addr.to_string(), $factory);
             } else {
@@ -551,7 +551,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
 
     if cfg.streaming.pcep.enabled {
         info!("PCEP ingest deferred; no runtime receiver started");
-        let mut sup = supervisor.blocking_write();
+        let mut sup = supervisor.write().await;
         sup.register_disabled("pcep", cfg.streaming.pcep.tcp_addr.clone());
     }
 
