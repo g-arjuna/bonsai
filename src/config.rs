@@ -1375,7 +1375,7 @@ fn default_metrics_addr() -> String {
     "[::1]:9090".to_string()
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct TargetConfig {
     pub address: String,
     /// Whether the runtime subscriber should be running for this target.
@@ -1409,6 +1409,12 @@ pub struct TargetConfig {
     /// Operator-selected subscription paths from onboarding discovery.
     #[serde(default)]
     pub selected_paths: Vec<SelectedSubscriptionPath>,
+    /// Flat list of gNMI paths for this device (used by SQLite store and replication).
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// Whether this device is optional (absence of subscription not fatal).
+    #[serde(default)]
+    pub optional: bool,
     /// Audit metadata for runtime-managed devices. Seed/config-driven targets may leave these unset.
     #[serde(default)]
     pub created_at_ns: i64,

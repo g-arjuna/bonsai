@@ -289,6 +289,15 @@ async fn handle_frame(
     let target_role = target.role.clone();
     let target_site = target.site.clone();
 
+    // Suppress SRL infrastructure noise apps that produce no routing-relevant events.
+    // These apps (e.g. sr_grpc_server TLS profile chatter) can account for 90%+ of
+    // syslog volume on an idle lab node. Archive is already written above.
+    const SYSLOG_NOISE_APPS: &[&str] = &["sr_grpc_server"];
+    if SYSLOG_NOISE_APPS.contains(&event.app_name.as_str()) {
+        metrics::counter!("bonsai_syslog_noise_suppressed_total").increment(1);
+        return;
+    }
+
     // Under rate shedding or memory pressure, skip bus publish to relieve pipeline
     // pressure. Raw data is still archived above so no telemetry is permanently lost.
     // Memory pressure shedding (D2-10 T5): `should_shed()` covers both rate_shedding_active

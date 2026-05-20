@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::time::{SystemTime, UNIX_EPOCH};
 use axum::{
@@ -12,7 +12,7 @@ use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 
 use super::AppState;
 use super::{
-    TopologyResponse, DeviceJson, BgpJson, LinkJson, HostEndpointJson, PathResponse, PathParams,
+    TopologyResponse, DeviceJson, BgpJson, IsisAdjJson, LinkJson, HostEndpointJson, PathResponse, PathParams,
     BlastRadiusParams, DetectionsResponse, DetectionsParams, TraceResponse,
     ReadinessResponse, OperationsResponse, BudgetBreach, TestStatusResponse, DiskStatusJson,
     DailyCheckResponse, DailyCheckCounts, DailyCheckItem,
@@ -21,13 +21,14 @@ use super::{
     CorrelationStep, BlastRadiusSummary,
     SsePayload, EmbeddingsResponse, UpsertEmbeddingsBody,
     ExplorerQueryBody,
-    read_str, read_i64, read_subscription_statuses,
+    read_str, read_i64, read_ts_ns, read_subscription_statuses,
     now_ns, build_site_path_by_id, resolve_site_metadata, compute_health,
     CreateSavedQueryBody,
     EventsHistoryParams, EventsHistoryResponse, EventHistoryItem,
     API_SCHEMA_VERSION, RSS_BUDGET_BYTES, COORDINATOR_QUEUE_BUDGET_PCT,
 };
-use crate::graph::{DetectionRow, StateChangeEventRow, REMEDIATION_TRUST_CUTOFF_ISO};
+use crate::http_server::device::InterfaceDetailJson;
+use crate::graph::{DetectionRow, REMEDIATION_TRUST_CUTOFF_ISO};
 use crate::registry::{DeviceRegistry, RegistryChange};
 use crate::config::TargetConfig;
 use crate::{event_bus, disk_guard, memory_profile, archive};
@@ -37,7 +38,7 @@ pub(super) async fn topology_handler(
 ) -> Result<Json<TopologyResponse>, (StatusCode, String)> {
     let db = state.store.db();
 
-    let (devices_raw, links_raw, bgp_raw, host_endpoints_raw) = tokio::task::spawn_blocking(move || {
+    let (devices_raw, interfaces_raw, links_raw, bgp_raw, host_endpoints_raw, isis_raw) = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
 
         // Devices
@@ -46,6 +47,30 @@ pub(super) async fn topology_handler(
             .map_err(|e| e.to_string())?;
         let devices_raw: Vec<(String, String, String)> = dev_rows
             .map(|row| (read_str(&row[0]), read_str(&row[1]), read_str(&row[2])))
+            .collect();
+
+        let iface_rows = conn
+            .query(
+                "MATCH (i:Interface) \
+                 RETURN i.device_address, i.name, i.in_errors, i.out_errors, i.in_octets, i.out_octets, \
+                        i.carrier_transitions, i.updated_at",
+            )
+            .map_err(|e| e.to_string())?;
+        let interfaces_raw: Vec<(String, InterfaceDetailJson)> = iface_rows
+            .map(|row| {
+                (
+                    read_str(&row[0]),
+                    InterfaceDetailJson {
+                        name: read_str(&row[1]),
+                        in_errors: read_i64(&row[2]),
+                        out_errors: read_i64(&row[3]),
+                        in_octets: read_i64(&row[4]),
+                        out_octets: read_i64(&row[5]),
+                        carrier_transitions: read_i64(&row[6]),
+                        updated_at_ns: read_ts_ns(&row[7]),
+                    },
+                )
+            })
             .collect();
 
         // LLDP fabric links with interface counter totals for heatmap
@@ -132,7 +157,26 @@ pub(super) async fn topology_handler(
                 })
                 .collect();
 
-        Ok::<_, String>((devices_raw, links_raw, bgp_raw, host_endpoints_raw))
+        // IS-IS adjacencies — gracefully absent before first gNMI or syslog IS-IS event
+        let isis_raw: Vec<(String, String, String, String, String)> = match conn.query(
+            "MATCH (a:IsisAdjacency) \
+             RETURN a.device_address, a.system_id, a.if_name, a.adjacency_state, a.source_type",
+        ) {
+            Ok(rows) => rows
+                .map(|row| {
+                    (
+                        read_str(&row[0]),
+                        read_str(&row[1]),
+                        read_str(&row[2]),
+                        read_str(&row[3]),
+                        read_str(&row[4]),
+                    )
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+
+        Ok::<_, String>((devices_raw, interfaces_raw, links_raw, bgp_raw, host_endpoints_raw, isis_raw))
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -149,9 +193,11 @@ pub(super) async fn topology_handler(
     let site_path_by_id = build_site_path_by_id(&all_sites);
 
     // Build role + site map from registry
+    let mut allowed_devices: HashSet<String> = HashSet::new();
     let mut role_site: HashMap<String, (String, String, String, String)> = HashMap::new();
     if let Ok(targets) = state.registry.list_all_targets() {
         for t in targets {
+            allowed_devices.insert(t.address.clone());
             let site = t.site.unwrap_or_default();
             let (site_id, site_path) =
                 resolve_site_metadata(&site, &site_id_by_name, &site_path_by_id);
@@ -162,9 +208,23 @@ pub(super) async fn topology_handler(
         }
     }
 
+    let mut interfaces_by_device: HashMap<String, Vec<InterfaceDetailJson>> = HashMap::new();
+    for (dev, iface) in interfaces_raw {
+        if !allowed_devices.contains(&dev) {
+            continue;
+        }
+        interfaces_by_device.entry(dev).or_default().push(iface);
+    }
+    for ifaces in interfaces_by_device.values_mut() {
+        ifaces.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+
     // Group BGP by device
     let mut bgp_by_device: HashMap<String, Vec<BgpJson>> = HashMap::new();
     for (dev, peer, st, peer_as) in bgp_raw {
+        if !allowed_devices.contains(&dev) {
+            continue;
+        }
         bgp_by_device.entry(dev).or_default().push(BgpJson {
             peer,
             state: st,
@@ -172,11 +232,28 @@ pub(super) async fn topology_handler(
         });
     }
 
+    // Group IS-IS adjacencies by device
+    let mut isis_by_device: HashMap<String, Vec<IsisAdjJson>> = HashMap::new();
+    for (dev, system_id, if_name, adjacency_state, source_type) in isis_raw {
+        if !allowed_devices.contains(&dev) {
+            continue;
+        }
+        isis_by_device.entry(dev).or_default().push(IsisAdjJson {
+            system_id,
+            if_name,
+            adjacency_state,
+            source_type,
+        });
+    }
+
     // Build device list with computed health + registry metadata
     let devices: Vec<DeviceJson> = devices_raw
         .into_iter()
+        .filter(|(address, _, _)| allowed_devices.contains(address))
         .map(|(address, vendor, hostname)| {
+            let interfaces = interfaces_by_device.remove(&address).unwrap_or_default();
             let bgp = bgp_by_device.remove(&address).unwrap_or_default();
+            let isis_adjacencies = isis_by_device.remove(&address).unwrap_or_default();
             let health = compute_health(&bgp);
             let (role, site, site_id, site_path) = role_site.remove(&address).unwrap_or_default();
             DeviceJson {
@@ -188,13 +265,18 @@ pub(super) async fn topology_handler(
                 site_id,
                 site_path,
                 health,
+                interfaces,
                 bgp,
+                isis_adjacencies,
             }
         })
         .collect();
 
     let links = links_raw
         .into_iter()
+        .filter(|(src_device, _, dst_device, _, _, _)| {
+            allowed_devices.contains(src_device) && allowed_devices.contains(dst_device)
+        })
         .map(
             |(src_device, src_iface, dst_device, dst_iface, bytes_total, is_mgmt)| LinkJson {
                 src_device,

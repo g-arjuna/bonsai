@@ -3,7 +3,7 @@ use std::fs;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use bonsai::{
     api::{BonsaiGraphServer, CollectorService, CoreService},
@@ -23,7 +23,7 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 
-use super::{GRAPH_PATH_DEFAULT, REGISTRY_PATH};
+use super::{GRAPH_PATH_DEFAULT, registry_path_for_graph_path};
 
 fn config_path() -> String {
     super::config_path()
@@ -646,11 +646,20 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         ));
     }
 
-    let registry = std::sync::Arc::new(ApiRegistry::open(REGISTRY_PATH, cfg.target.clone())?);
+    let registry_path = registry_path_for_graph_path(&cfg.graph_path);
+    info!(path = %registry_path.display(), "opening API registry");
+    let registry = std::sync::Arc::new(ApiRegistry::open(&registry_path, cfg.target.clone())?);
+    info!(path = %registry_path.display(), "API registry opened");
+    info!(
+        path = %cfg.credentials.path,
+        passphrase_env = %cfg.credentials.passphrase_env,
+        "opening credential vault"
+    );
     let credentials = std::sync::Arc::new(CredentialVault::open(
         &cfg.credentials.path,
         &cfg.credentials.passphrase_env,
     )?);
+    info!(path = %cfg.credentials.path, "credential vault open complete");
 
     // CV7 T4-2: sidecar registry. Tracks Python (and future) sidecar processes
     // that bond to bonsai over gRPC. BONSAI_REQUIRE_SIDECAR=<comma-list> turns
@@ -695,6 +704,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         );
     }
     if let Some(ref store) = store {
+        info!("syncing registry site labels into graph");
         match registry.list_active() {
             Ok(targets) => {
                 store
@@ -724,6 +734,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     // Seed the collector manager's site cache and keep it refreshed so that
     // hierarchy-aware assignment rules reflect current graph state.
     if let (Some(store), Some(manager)) = (&store, &collector_manager) {
+        info!("seeding assignment site cache");
         match store.list_sites().await {
             Ok(sites) => manager.set_sites(sites),
             Err(e) => warn!(%e, "failed to seed assignment site cache"),
@@ -804,6 +815,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     }
 
     let subscriber_manager = if runtime_mode == bonsai::config::RuntimeMode::All {
+        info!("starting subscriber manager");
         let registry = std::sync::Arc::clone(&registry);
         let credentials = std::sync::Arc::clone(&credentials);
         let bus = std::sync::Arc::clone(&bus);
@@ -1009,8 +1021,6 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             info!(%api_addr, ingest_compression = "zstd", mtls = false, "gRPC API and telemetry ingest server listening");
         }
 
-        let sqlite_store_for_api = std::sync::Arc::clone(&sqlite_store);
-        let ha_coordinator_for_api = ha_coordinator.clone();
         tokio::spawn(async move {
             match store_for_api {
                 Store::Core(s) => {
@@ -1022,10 +1032,10 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         Some(std::sync::Arc::clone(&debouncer)),
                         collector_manager_for_api,
                         sidecar_registry_for_api,
-                        Some(sqlite_store_for_api.clone()),
-                        Some(ha_coordinator_for_api.clone()),
-                    )
-                    .accept_compressed(CompressionEncoding::Zstd));
+                        None,
+                        None,
+                    ))
+                    .accept_compressed(CompressionEncoding::Zstd);
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {
                         warn!(%error, "gRPC core server error");
                     }
@@ -1039,10 +1049,10 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         Some(std::sync::Arc::clone(&debouncer)),
                         None,
                         sidecar_registry_for_api,
-                        Some(sqlite_store_for_api.clone()),
-                        Some(ha_coordinator_for_api.clone()),
-                    )
-                    .accept_compressed(CompressionEncoding::Zstd));
+                        None,
+                        None,
+                    ))
+                    .accept_compressed(CompressionEncoding::Zstd);
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {
                         warn!(%error, "gRPC collector server error");
                     }
@@ -1092,16 +1102,16 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 bonsai::ha_coordinator::HAMode::Standalone
             };
 
-            let mut ha_coordinator = std::sync::Arc::new(bonsai::ha_coordinator::HACoordinator::new(ha_mode.clone()));
-
             // G3 Session 6: ConfigReplicator for config replication
-            let mut config_replicator = bonsai::ha_coordinator::ConfigReplicator::new(
-                if matches!(ha_mode, bonsai::ha_coordinator::HAMode::Cluster { ref node_id }) {
-                    node_id.clone()
-                } else {
-                    "standalone".to_string()
-                }
-            );
+            let cluster_node_id = if let bonsai::ha_coordinator::HAMode::Cluster { ref node_id } = ha_mode {
+                node_id.clone()
+            } else {
+                "standalone".to_string()
+            };
+
+            // Build HACoordinator and ConfigReplicator, applying etcd config before Arc wrapping
+            let mut ha_coordinator_val = bonsai::ha_coordinator::HACoordinator::new(ha_mode.clone());
+            let mut config_replicator = bonsai::ha_coordinator::ConfigReplicator::new(cluster_node_id);
 
             // Add etcd configuration if in cluster mode and env vars are set
             if matches!(ha_mode, bonsai::ha_coordinator::HAMode::Cluster { .. }) {
@@ -1120,13 +1130,11 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         config_prefix: std::env::var("BONSAI_ETCD_CONFIG_PREFIX")
                             .unwrap_or_else(|_| "/bonsai/config".to_string()),
                     };
-                    let ha = std::sync::Arc::make_mut(&mut ha_coordinator);
-                    *ha = ha.with_etcd_config(etcd_config.clone());
-                    
-                    let cr = &mut config_replicator;
-                    *cr = cr.with_etcd_config(etcd_config);
+                    ha_coordinator_val = ha_coordinator_val.with_etcd_config(etcd_config.clone());
+                    config_replicator = config_replicator.with_etcd_config(etcd_config);
                 }
             }
+            let ha_coordinator = std::sync::Arc::new(ha_coordinator_val);
 
             tokio::spawn({
                 let ha = ha_coordinator.clone();
@@ -1237,7 +1245,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         std::sync::Arc::clone(&sidecar_registry),
                         std::sync::Arc::clone(&supervisor),
                         bus_for_http,
-                        ha_coordinator,
+                        Some(ha_coordinator),
                     ),
                 )
                 .await

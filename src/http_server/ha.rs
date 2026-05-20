@@ -66,7 +66,7 @@ pub async fn ha_status_handler(
         
         let is_leader = matches!(state, LeaderState::Leader);
         let etcd_connected = ha.etcd_config.is_some();
-        let etcd_endpoints = ha.etcd_config.as_ref().map(|c| c.endpoints.clone());
+        let etcd_endpoints = ha.etcd_config.as_ref().map(|c| c.endpoints.join(","));
         
         Ok(Json(HAStatusResponse {
             mode,
@@ -110,8 +110,8 @@ pub async fn ha_settings_handler(
             } else {
                 "N/A".to_string()
             },
-            etcd_endpoints: etcd_config.map(|c| c.endpoints.clone()).unwrap_or_default(),
-            election_ttl_secs: etcd_config.map(|c| c.election_ttl_secs).unwrap_or(10),
+            etcd_endpoints: etcd_config.map(|c| c.endpoints.join(",")).unwrap_or_default(),
+            election_ttl_secs: etcd_config.map(|c| c.election_ttl_secs as u64).unwrap_or(10),
             config_prefix: etcd_config.map(|c| c.config_prefix.clone()).unwrap_or_else(|| "/bonsai/config".to_string()),
         }))
     } else {
@@ -130,7 +130,7 @@ pub async fn ha_patch_settings_handler(
     Json(req): Json<HAPatchSettingsRequest>,
 ) -> Result<Json<HASettingsResponse>, StatusCode> {
     // Write HA settings to bonsai.toml
-    if let Some(config_path) = std::env::var("BONSAI_CONFIG_PATH") {
+    if let Ok(config_path) = std::env::var("BONSAI_CONFIG_PATH") {
         if let Err(e) = write_ha_settings_to_toml(&config_path, &req) {
             tracing::error!("Failed to write HA settings to {}: {}", config_path, e);
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
@@ -150,8 +150,8 @@ pub async fn ha_patch_settings_handler(
             } else {
                 "N/A".to_string()
             },
-            etcd_endpoints: etcd_config.map(|c| c.endpoints.clone()).unwrap_or_default(),
-            election_ttl_secs: etcd_config.map(|c| c.election_ttl_secs).unwrap_or(10),
+            etcd_endpoints: etcd_config.map(|c| c.endpoints.join(",")).unwrap_or_default(),
+            election_ttl_secs: etcd_config.map(|c| c.election_ttl_secs as u64).unwrap_or(10),
             config_prefix: etcd_config.map(|c| c.config_prefix.clone()).unwrap_or_else(|| "/bonsai/config".to_string()),
         }
     } else {
@@ -185,7 +185,7 @@ fn write_ha_settings_to_toml(config_path: &str, req: &HAPatchSettingsRequest) ->
     
     // Ensure ha section exists
     if !value.is_table() {
-        *value = toml::Value::Table(toml::map::Map::new());
+        value = toml::Value::Table(toml::map::Map::new());
     }
     
     let table = value.as_table_mut().ok_or("Not a table")?;

@@ -350,6 +350,7 @@ pub(super) fn collector_status_json(s: CollectorStatus) -> CollectorStatusJson {
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn streaming_status_from_config(
     streaming: &crate::config::StreamingConfig,
 ) -> HashMap<String, StreamingReceiverBadge> {

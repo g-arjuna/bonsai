@@ -179,7 +179,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         req: Request<CollectorIdentity>,
     ) -> Result<Response<Self::RegisterCollectorStream>, Status> {
         // G5: Extract peer info from TLS connection
-        let peer_addr = req.peer_addr().map(|addr| addr.to_string());
+        let peer_addr = req.remote_addr().map(|addr| addr.to_string());
         let cert_fingerprint = self.extract_tls_cert_fingerprint(&req).await;
 
         let identity = req.into_inner();
@@ -1163,6 +1163,8 @@ pub fn target_from_managed_device(
         created_by: String::new(),
         updated_by: String::new(),
         last_operator_action: String::new(),
+        paths: vec![],
+        optional: false,
     })
 }
 

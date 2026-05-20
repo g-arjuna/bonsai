@@ -730,6 +730,8 @@ pub(super) fn target_from_request(req: ManagedDeviceRequest) -> Result<TargetCon
         created_by: String::new(),
         updated_by: String::new(),
         last_operator_action: String::new(),
+        paths: vec![],
+        optional: false,
     })
 }
 pub(super) fn site_json(site: SiteRecord) -> SiteJson {

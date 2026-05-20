@@ -69,15 +69,15 @@ impl SnmpAdapter {
     }
 
     /// Format health event as SNMP trap
-    fn format_trap(&self, event: &HealthEvent) -> String {
+    fn format_trap(config: &SnmpConfig, event: &HealthEvent) -> String {
         let oid = Self::to_event_oid(&event.event_type);
         let severity = Self::to_trap_severity(&event.severity);
-        
+
         // Format as SNMPv2c trap
         format!(
             "SNMPv2c Trap: target={}, community={}, oid={}, severity={}, component={}, message={}",
-            self.config.target,
-            self.config.community,
+            config.target,
+            config.community,
             oid,
             severity,
             event.component,
@@ -115,8 +115,8 @@ impl SnmpAdapter {
                     }
                     result = rx.recv() => {
                         if let Ok(update) = result {
-                            if update.event_type == "health_event" {
-                                if let Some(payload) = &update.payload {
+                            if update.path == "health_event" {
+                                if let Some(payload) = update.value.as_str() {
                                     if let Ok(event) = serde_json::from_str::<HealthEvent>(payload) {
                                         let trap = Self::format_trap(&config, &event);
                                         tracing::debug!(trap, "SNMP: {}", trap);

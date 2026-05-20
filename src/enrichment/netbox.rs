@@ -662,7 +662,7 @@ fn write_to_graph(
                     let addr2 = addr.clone();
                     let loc_name = loc.name.clone();
                     let sid = site_id.clone();
-                    let src = source.clone();
+                    let src = source;
                     if let Err(e) = with_write_retry(|| {
                         upsert_location(&conn, &loc_name, &kind, &sid, &addr2, &src, now_ns)
                     }) {
@@ -687,7 +687,7 @@ fn write_to_graph(
                     let key = format!("netbox_cf_{cf_key}");
                     let id = format!("{addr}:{key}");
                     let addr2 = addr.clone();
-                    let src2 = source.clone();
+                    let src2 = source;
                     if let Err(e) = with_write_retry(|| {
                         upsert_enrichment_property(&conn, &id, &addr2, &key, &str_val, &src2, now_ns)
                     }) {

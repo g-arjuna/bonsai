@@ -153,6 +153,9 @@ pub struct OutputAdapterConfig {
     /// Credential alias in the vault. Empty string = no authentication.
     #[serde(default)]
     pub credential_alias: String,
+    /// Message bus topic / queue name for adapters that need it (e.g. Kafka, SNMP).
+    #[serde(default)]
+    pub topic: Option<String>,
     /// How often the adapter batches and flushes metrics (seconds).
     #[serde(default = "default_flush_interval")]
     pub flush_interval_secs: u64,
@@ -200,7 +203,7 @@ impl OutputAdapterRegistry {
     /// Load configs from SQLite config store (preferred) or fall back to JSON.
     pub fn load(runtime_dir: &Path) -> Self {
         let configs_path = runtime_dir.join(CONFIGS_FILE);
-        let sqlite_store = crate::sqlite_store::SqliteStore::open(runtime_dir).ok();
+        let sqlite_store = crate::sqlite_store::SqliteStore::open(runtime_dir).ok().map(Arc::new);
 
         let configs = if let Some(ref store) = sqlite_store {
             store.list_adapters().unwrap_or_default()

@@ -13,18 +13,16 @@
 //! - Migration path from existing JSON files
 
 use anyhow::{Context, Result, anyhow};
-use rusqlite::{Connection, params, OptionalExtension};
-use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use rusqlite::{Connection, params};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 const DB_FILE: &str = "bonsai_config.db";
-const CURRENT_SCHEMA_VERSION: i64 = 1;
+const CURRENT_SCHEMA_VERSION: i64 = 2;
 
 /// SQLite config store with versioned schema and audit trail.
 pub struct SqliteStore {
     db: Arc<Mutex<Connection>>,
-    runtime_dir: PathBuf,
     config_replicator: Option<Arc<crate::ha_coordinator::ConfigReplicator>>,
 }
 
@@ -37,7 +35,6 @@ impl SqliteStore {
 
         let store = Self {
             db: Arc::new(Mutex::new(db)),
-            runtime_dir: runtime_dir.to_path_buf(),
             config_replicator: None,
         };
 
@@ -45,6 +42,16 @@ impl SqliteStore {
         store.enable_wal()?;
 
         Ok(store)
+    }
+
+    fn init_schema(&self) -> Result<()> {
+        self.migrate()
+    }
+
+    fn enable_wal(&self) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        db.execute_batch("PRAGMA journal_mode=WAL;")?;
+        Ok(())
     }
 
     /// Run schema migrations to bring DB to current version.
@@ -64,12 +71,17 @@ impl SqliteStore {
             db.execute_batch(r#"
                 CREATE TABLE IF NOT EXISTS devices (
                     address TEXT PRIMARY KEY,
+                    enabled INTEGER DEFAULT 1,
                     hostname TEXT,
+                    tls_domain TEXT,
                     vendor TEXT,
+                    credential_alias TEXT,
+                    username_env TEXT,
                     role TEXT,
                     site TEXT,
                     collector_id TEXT,
                     username TEXT,
+                    password TEXT,
                     password_env TEXT,
                     ca_cert TEXT,
                     paths TEXT, -- JSON array
@@ -142,8 +154,16 @@ impl SqliteStore {
 
                 CREATE INDEX IF NOT EXISTS idx_collector_reg_timestamp ON collector_registrations(timestamp_ns);
             "#).context("failed to create schema v1")?;
+        }
 
-            db.execute("PRAGMA user_version=1", [])
+        if user_version < 2 {
+            let _ = db.execute("ALTER TABLE devices ADD COLUMN enabled INTEGER DEFAULT 1", []);
+            let _ = db.execute("ALTER TABLE devices ADD COLUMN tls_domain TEXT", []);
+            let _ = db.execute("ALTER TABLE devices ADD COLUMN credential_alias TEXT", []);
+            let _ = db.execute("ALTER TABLE devices ADD COLUMN username_env TEXT", []);
+            let _ = db.execute("ALTER TABLE devices ADD COLUMN password TEXT", []);
+
+            db.execute("PRAGMA user_version=2", [])
                 .context("failed to set schema version")?;
         }
 
@@ -152,7 +172,7 @@ impl SqliteStore {
 
     /// Migrate existing JSON files to SQLite on first run.
     pub fn migrate_from_json(&self, runtime_dir: &Path) -> Result<()> {
-        let db = self.db.lock().unwrap();
+        let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;
 
         // Check if we already have data
@@ -170,18 +190,24 @@ impl SqliteStore {
         if registry_path.exists() {
             if let Ok(raw) = std::fs::read_to_string(&registry_path) {
                 if let Ok(registry_state) = serde_json::from_str::<crate::registry::RegistryState>(&raw) {
+                    let count = registry_state.targets.len();
                     for (address, target) in registry_state.targets {
                         let paths_json = serde_json::to_string(&target.paths).unwrap_or_default();
                         tx.execute(
-                            "INSERT INTO devices (address, hostname, vendor, role, site, collector_id, username, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                            "INSERT INTO devices (address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
                             params![
                                 address,
+                                target.enabled,
                                 target.hostname,
+                                target.tls_domain,
                                 target.vendor,
+                                target.credential_alias,
+                                target.username_env,
                                 target.role,
                                 target.site,
                                 target.collector_id,
                                 target.username,
+                                target.password,
                                 target.password_env,
                                 target.ca_cert,
                                 paths_json,
@@ -194,7 +220,7 @@ impl SqliteStore {
                             ],
                         ).ok();
                     }
-                    tracing::info!("migrated {} devices from JSON", registry_state.targets.len());
+                    tracing::info!("migrated {} devices from JSON", count);
                 }
             }
         }
@@ -204,6 +230,7 @@ impl SqliteStore {
         if enricher_path.exists() {
             if let Ok(raw) = std::fs::read_to_string(&enricher_path) {
                 if let Ok(configs) = serde_json::from_str::<Vec<crate::enrichment::EnricherConfig>>(&raw) {
+                    let count = configs.len();
                     for config in configs {
                         let scope_json = serde_json::to_string(&config.environment_scope).unwrap_or_default();
                         let extra_json = serde_json::to_string(&config.extra).unwrap_or_default();
@@ -221,7 +248,7 @@ impl SqliteStore {
                             ],
                         ).ok();
                     }
-                    tracing::info!("migrated {} enrichers from JSON", configs.len());
+                    tracing::info!("migrated {} enrichers from JSON", count);
                 }
             }
         }
@@ -231,6 +258,7 @@ impl SqliteStore {
         if adapter_path.exists() {
             if let Ok(raw) = std::fs::read_to_string(&adapter_path) {
                 if let Ok(configs) = serde_json::from_str::<Vec<crate::output::OutputAdapterConfig>>(&raw) {
+                    let count = configs.len();
                     for config in configs {
                         let scope_json = serde_json::to_string(&config.environment_scope).unwrap_or_default();
                         let extra_json = serde_json::to_string(&config.extra).unwrap_or_default();
@@ -248,7 +276,7 @@ impl SqliteStore {
                             ],
                         ).ok();
                     }
-                    tracing::info!("migrated {} adapters from JSON", configs.len());
+                    tracing::info!("migrated {} adapters from JSON", count);
                 }
             }
         }
@@ -276,27 +304,33 @@ impl SqliteStore {
 
     pub fn list_devices(&self) -> Result<Vec<crate::config::TargetConfig>> {
         let db = self.db.lock().unwrap();
-        let mut stmt = db.prepare("SELECT address, hostname, vendor, role, site, collector_id, username, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action FROM devices")?;
+        let mut stmt = db.prepare("SELECT address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action FROM devices")?;
         let rows = stmt.query_map([], |row| {
-            let paths_json: String = row.get(9)?;
+            let paths_json: String = row.get(14)?;
             let paths: Vec<String> = serde_json::from_str(&paths_json).unwrap_or_default();
             Ok(crate::config::TargetConfig {
                 address: row.get(0)?,
-                hostname: row.get(1)?,
-                vendor: row.get(2)?,
-                role: row.get(3)?,
-                site: row.get(4)?,
-                collector_id: row.get(5)?,
-                username: row.get(6)?,
-                password_env: row.get(7)?,
-                ca_cert: row.get(8)?,
+                enabled: row.get(1)?,
+                hostname: row.get(2)?,
+                tls_domain: row.get(3)?,
+                vendor: row.get(4)?,
+                credential_alias: row.get(5)?,
+                username_env: row.get(6)?,
+                role: row.get(7)?,
+                site: row.get(8)?,
+                collector_id: row.get(9)?,
+                username: row.get(10)?,
+                password: row.get(11)?,
+                password_env: row.get(12)?,
+                ca_cert: row.get(13)?,
                 paths,
-                optional: row.get(10)?,
-                created_at_ns: row.get(11)?,
-                updated_at_ns: row.get(12)?,
-                created_by: row.get(13)?,
-                updated_by: row.get(14)?,
-                last_operator_action: row.get(15)?,
+                optional: row.get(15)?,
+                created_at_ns: row.get(16)?,
+                updated_at_ns: row.get(17)?,
+                created_by: row.get(18)?,
+                updated_by: row.get(19)?,
+                last_operator_action: row.get(20)?,
+                ..Default::default()
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| anyhow!("failed to collect devices: {e}"))
@@ -305,28 +339,34 @@ impl SqliteStore {
     pub fn get_device(&self, address: &str) -> Result<Option<crate::config::TargetConfig>> {
         let db = self.db.lock().unwrap();
         let result = db.query_row(
-            "SELECT address, hostname, vendor, role, site, collector_id, username, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action FROM devices WHERE address = ?1",
+            "SELECT address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action FROM devices WHERE address = ?1",
             params![address],
             |row| {
-                let paths_json: String = row.get(9)?;
+                let paths_json: String = row.get(14)?;
                 let paths: Vec<String> = serde_json::from_str(&paths_json).unwrap_or_default();
                 Ok(crate::config::TargetConfig {
                     address: row.get(0)?,
-                    hostname: row.get(1)?,
-                    vendor: row.get(2)?,
-                    role: row.get(3)?,
-                    site: row.get(4)?,
-                    collector_id: row.get(5)?,
-                    username: row.get(6)?,
-                    password_env: row.get(7)?,
-                    ca_cert: row.get(8)?,
+                    enabled: row.get(1)?,
+                    hostname: row.get(2)?,
+                    tls_domain: row.get(3)?,
+                    vendor: row.get(4)?,
+                    credential_alias: row.get(5)?,
+                    username_env: row.get(6)?,
+                    role: row.get(7)?,
+                    site: row.get(8)?,
+                    collector_id: row.get(9)?,
+                    username: row.get(10)?,
+                    password: row.get(11)?,
+                    password_env: row.get(12)?,
+                    ca_cert: row.get(13)?,
                     paths,
-                    optional: row.get(10)?,
-                    created_at_ns: row.get(11)?,
-                    updated_at_ns: row.get(12)?,
-                    created_by: row.get(13)?,
-                    updated_by: row.get(14)?,
-                    last_operator_action: row.get(15)?,
+                    optional: row.get(15)?,
+                    created_at_ns: row.get(16)?,
+                    updated_at_ns: row.get(17)?,
+                    created_by: row.get(18)?,
+                    updated_by: row.get(19)?,
+                    last_operator_action: row.get(20)?,
+                    ..Default::default()
                 })
             },
         );
@@ -338,7 +378,6 @@ impl SqliteStore {
     }
 
     pub fn upsert_device(&self, device: &crate::config::TargetConfig, actor: &str, action: &str) -> Result<()> {
-        let db = self.db.lock().unwrap();
         let old = self.get_device(&device.address)?.map(|d| serde_json::to_string(&d).unwrap());
         let new = serde_json::to_string(device).unwrap();
         let now = std::time::SystemTime::now()
@@ -348,27 +387,35 @@ impl SqliteStore {
 
         let paths_json = serde_json::to_string(&device.paths).unwrap_or_default();
 
-        db.execute(
-            "INSERT INTO devices (address, hostname, vendor, role, site, collector_id, username, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) ON CONFLICT(address) DO UPDATE SET hostname=?2, vendor=?3, role=?4, site=?5, collector_id=?6, username=?7, password_env=?8, ca_cert=?9, paths=?10, optional=?11, updated_at_ns=?13, updated_by=?14, last_operator_action=?15",
-            params![
-                device.address,
-                device.hostname,
-                device.vendor,
-                device.role,
-                device.site,
-                device.collector_id,
-                device.username,
-                device.password_env,
-                device.ca_cert,
-                paths_json,
-                device.optional,
-                device.created_at_ns,
-                now,
-                device.created_by,
-                actor,
-                action,
-            ],
-        )?;
+        {
+            let db = self.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO devices (address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21) ON CONFLICT(address) DO UPDATE SET enabled=?2, hostname=?3, tls_domain=?4, vendor=?5, credential_alias=?6, username_env=?7, role=?8, site=?9, collector_id=?10, username=?11, password=?12, password_env=?13, ca_cert=?14, paths=?15, optional=?16, updated_at_ns=?18, updated_by=?20, last_operator_action=?21",
+                params![
+                    device.address,
+                    device.enabled,
+                    device.hostname,
+                    device.tls_domain,
+                    device.vendor,
+                    device.credential_alias,
+                    device.username_env,
+                    device.role,
+                    device.site,
+                    device.collector_id,
+                    device.username,
+                    device.password,
+                    device.password_env,
+                    device.ca_cert,
+                    paths_json,
+                    device.optional,
+                    device.created_at_ns,
+                    now,
+                    device.created_by,
+                    actor,
+                    action,
+                ],
+            )?;
+        }
 
         self.audit("devices", "UPSERT", &device.address, actor, action, old.as_deref(), Some(&new))?;
 
@@ -395,8 +442,10 @@ impl SqliteStore {
 
     pub fn delete_device(&self, address: &str, actor: &str) -> Result<()> {
         let old = self.get_device(address)?.map(|d| serde_json::to_string(&d).unwrap());
-        let db = self.db.lock().unwrap();
-        let rows = db.execute("DELETE FROM devices WHERE address = ?1", params![address])?;
+        let rows = {
+            let db = self.db.lock().unwrap();
+            db.execute("DELETE FROM devices WHERE address = ?1", params![address])?
+        };
         if rows > 0 {
             self.audit("devices", "DELETE", address, actor, "registry_remove_device", old.as_deref(), None)?;
 
@@ -450,7 +499,6 @@ impl SqliteStore {
     }
 
     pub fn upsert_enricher(&self, config: &crate::enrichment::EnricherConfig, actor: &str) -> Result<()> {
-        let db = self.db.lock().unwrap();
         let old = self.list_enrichers()?.iter().find(|e| e.name == config.name).map(|d| serde_json::to_string(d).unwrap());
         let new = serde_json::to_string(config).unwrap();
         let now = std::time::SystemTime::now()
@@ -461,21 +509,24 @@ impl SqliteStore {
         let scope_json = serde_json::to_string(&config.environment_scope).unwrap_or_default();
         let extra_json = serde_json::to_string(&config.extra).unwrap_or_default();
 
-        db.execute(
-            "INSERT INTO enrichers (name, enricher_type, enabled, base_url, credential_alias, poll_interval_secs, environment_scope, extra, created_at_ns, updated_at_ns) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) ON CONFLICT(name) DO UPDATE SET enricher_type=?2, enabled=?3, base_url=?4, credential_alias=?5, poll_interval_secs=?6, environment_scope=?7, extra=?8, updated_at_ns=?10",
-            params![
-                config.name,
-                config.enricher_type,
-                config.enabled,
-                config.base_url,
-                config.credential_alias,
-                config.poll_interval_secs,
-                scope_json,
-                extra_json,
-                now,
-                now,
-            ],
-        )?;
+        {
+            let db = self.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO enrichers (name, enricher_type, enabled, base_url, credential_alias, poll_interval_secs, environment_scope, extra, created_at_ns, updated_at_ns) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) ON CONFLICT(name) DO UPDATE SET enricher_type=?2, enabled=?3, base_url=?4, credential_alias=?5, poll_interval_secs=?6, environment_scope=?7, extra=?8, updated_at_ns=?10",
+                params![
+                    config.name,
+                    config.enricher_type,
+                    config.enabled,
+                    config.base_url,
+                    config.credential_alias,
+                    config.poll_interval_secs,
+                    scope_json,
+                    extra_json,
+                    now,
+                    now,
+                ],
+            )?;
+        }
 
         self.audit("enrichers", "UPSERT", &config.name, actor, "enricher_upsert", old.as_deref(), Some(&new))?;
 
@@ -502,8 +553,10 @@ impl SqliteStore {
 
     pub fn delete_enricher(&self, name: &str, actor: &str) -> Result<()> {
         let old = self.list_enrichers()?.iter().find(|e| e.name == name).map(|d| serde_json::to_string(d).unwrap());
-        let db = self.db.lock().unwrap();
-        let rows = db.execute("DELETE FROM enrichers WHERE name = ?1", params![name])?;
+        let rows = {
+            let db = self.db.lock().unwrap();
+            db.execute("DELETE FROM enrichers WHERE name = ?1", params![name])?
+        };
         if rows > 0 {
             self.audit("enrichers", "DELETE", name, actor, "enricher_remove", old.as_deref(), None)?;
 
@@ -551,13 +604,13 @@ impl SqliteStore {
                 topic: row.get(5)?,
                 environment_scope: scope,
                 extra,
+                flush_interval_secs: 30,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| anyhow!("failed to collect adapters: {e}"))
     }
 
     pub fn upsert_adapter(&self, config: &crate::output::OutputAdapterConfig, actor: &str) -> Result<()> {
-        let db = self.db.lock().unwrap();
         let old = self.list_adapters()?.iter().find(|a| a.name == config.name).map(|d| serde_json::to_string(d).unwrap());
         let new = serde_json::to_string(config).unwrap();
         let now = std::time::SystemTime::now()
@@ -568,21 +621,24 @@ impl SqliteStore {
         let scope_json = serde_json::to_string(&config.environment_scope).unwrap_or_default();
         let extra_json = serde_json::to_string(&config.extra).unwrap_or_default();
 
-        db.execute(
-            "INSERT INTO adapters (name, adapter_type, enabled, endpoint_url, credential_alias, topic, environment_scope, extra, created_at_ns, updated_at_ns) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) ON CONFLICT(name) DO UPDATE SET adapter_type=?2, enabled=?3, endpoint_url=?4, credential_alias=?5, topic=?6, environment_scope=?7, extra=?8, updated_at_ns=?10",
-            params![
-                config.name,
-                config.adapter_type,
-                config.enabled,
-                config.endpoint_url,
-                config.credential_alias,
-                config.topic,
-                scope_json,
-                extra_json,
-                now,
-                now,
-            ],
-        )?;
+        {
+            let db = self.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO adapters (name, adapter_type, enabled, endpoint_url, credential_alias, topic, environment_scope, extra, created_at_ns, updated_at_ns) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) ON CONFLICT(name) DO UPDATE SET adapter_type=?2, enabled=?3, endpoint_url=?4, credential_alias=?5, topic=?6, environment_scope=?7, extra=?8, updated_at_ns=?10",
+                params![
+                    config.name,
+                    config.adapter_type,
+                    config.enabled,
+                    config.endpoint_url,
+                    config.credential_alias,
+                    config.topic,
+                    scope_json,
+                    extra_json,
+                    now,
+                    now,
+                ],
+            )?;
+        }
 
         self.audit("adapters", "UPSERT", &config.name, actor, "adapter_upsert", old.as_deref(), Some(&new))?;
 
@@ -609,8 +665,10 @@ impl SqliteStore {
 
     pub fn delete_adapter(&self, name: &str, actor: &str) -> Result<()> {
         let old = self.list_adapters()?.iter().find(|a| a.name == name).map(|d| serde_json::to_string(d).unwrap());
-        let db = self.db.lock().unwrap();
-        let rows = db.execute("DELETE FROM adapters WHERE name = ?1", params![name])?;
+        let rows = {
+            let db = self.db.lock().unwrap();
+            db.execute("DELETE FROM adapters WHERE name = ?1", params![name])?
+        };
         if rows > 0 {
             self.audit("adapters", "DELETE", name, actor, "adapter_remove", old.as_deref(), None)?;
 

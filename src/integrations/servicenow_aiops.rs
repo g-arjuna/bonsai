@@ -16,7 +16,6 @@ use crate::graph::GraphStore;
 use crate::graph::common::{now_ns, read_str, read_ts_ns, ts};
 use crate::graph::queries;
 use crate::remediation::TrustKey;
-use crate::store::BonsaiStore;
 
 const SHORT_DESC_PREFIX: &str = "[Bonsai incident ";
 const PLAYBOOK_PREFIX: &str = "bonsai:playbook";

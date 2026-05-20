@@ -173,9 +173,19 @@ ca_cert    = "lab/signal-test-lab/clab-bonsai-signal-test/.tls/ca/ca.pem"
 username   = "admin"
 password   = "NokiaSrl1!"
 
-# ── FRR BMP source (frr-rr) ────────────────────────────────────────────────────
-# frr-rr (172.100.109.21) initiates BMP session TO bonsai at 0.0.0.0:5000.
-# No [[target]] entry needed — BMP is push-based (router → collector).
+# ── FRR route-reflector / BMP source (frr-rr) ───────────────────────────────
+# Keep FRR registered as a managed device so topology and BMP event attribution
+# resolve to a stable hostname/site/role even before FRR gNMI is enabled in the
+# lab. `enabled = false` prevents Bonsai from trying a gNMI subscription today.
+[[target]]
+address    = "172.100.109.21"
+enabled    = false
+hostname   = "frr-rr"
+vendor     = "frr"
+role       = "rr"
+site       = "signal-test-lab"
+
+# FRR still initiates BMP session TO bonsai at 0.0.0.0:5000.
 # FRR sends: Initiation, PeerUp, PeerDown, RouteMonitoring, StatisticsReport,
 #   Termination (all 6 RFC 7854 types) + RFC 9069 Loc-RIB monitoring.
 # Verify: ss -tlnp | grep :5000  (should show bonsai LISTEN before FRR connects)

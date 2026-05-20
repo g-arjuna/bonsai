@@ -193,7 +193,7 @@ impl EnricherRegistry {
     /// Load from SQLite config store (preferred) or fall back to JSON.
     pub fn load(runtime_dir: &Path) -> Self {
         let configs_path = runtime_dir.join(CONFIGS_FILE);
-        let sqlite_store = crate::sqlite_store::SqliteStore::open(runtime_dir).ok();
+        let sqlite_store = crate::sqlite_store::SqliteStore::open(runtime_dir).ok().map(std::sync::Arc::new);
 
         // Try to migrate from JSON if SQLite is new
         if let Some(ref store) = sqlite_store {
@@ -289,7 +289,8 @@ impl EnricherRegistry {
 
     pub fn record_run(&mut self, name: &str, report: &EnrichmentReport) {
         // G6: Emit histogram for enricher run duration
-        metrics::histogram!("bonsai_enricher_run_duration_seconds", "enricher" => name, "outcome" => if report.error.is_some() { "error" } else { "success" }).record(report.duration_ms as f64 / 1000.0);
+        let outcome = if report.error.is_some() { "error" } else { "success" };
+        metrics::histogram!("bonsai_enricher_run_duration_seconds", "enricher" => name.to_string(), "outcome" => outcome).record(report.duration_ms as f64 / 1000.0);
 
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

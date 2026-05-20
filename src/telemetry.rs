@@ -29,6 +29,10 @@ pub enum TelemetryEvent {
         /// When None, callers read fields directly from `TelemetryUpdate::value`.
         state_value: Option<serde_json::Value>,
     },
+    IsisAdjacencyState {
+        system_id: String,
+        if_name: String,
+    },
     BgpNeighborState {
         peer_address: String,
         /// Pre-extracted `state` object for blob-style updates (e.g. XRd network-instances).
@@ -283,6 +287,22 @@ impl TelemetryUpdate {
                     if_name: name,
                     oper_status: status,
                 };
+            }
+        }
+
+        // SRL native IS-IS adjacency.
+        // SRL path: ...isis/instance[name=main]/interface[interface-name=Y]/adjacency[neighbor-system-id=A][adjacency-level=L2]
+        // The adjacency node may appear with keys in either order.
+        if self.path.contains("isis/instance[name=")
+            && (self.path.contains("/adjacency[neighbor-system-id=")
+                || self.path.contains("/adjacency[adjacency-level="))
+            && json_find(&self.value, "adjacency-state").is_some()
+        {
+            let system_id = extract_bracketed(&self.path, "adjacency[neighbor-system-id=")
+                .or_else(|| extract_bracketed(&self.path, "neighbor-system-id="));
+            let if_name = extract_bracketed(&self.path, "interface[interface-name=");
+            if let (Some(sid), Some(iface)) = (system_id, if_name) {
+                return TelemetryEvent::IsisAdjacencyState { system_id: sid, if_name: iface };
             }
         }
 

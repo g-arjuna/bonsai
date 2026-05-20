@@ -1042,8 +1042,18 @@ impl BmpTargetMap {
             }
         }
         ResolvedTarget {
-            address: event.collector_peer.clone(),
-            hostname: event.collector_peer.clone(),
+            address: event
+                .collector_peer
+                .split(':')
+                .next()
+                .unwrap_or(&event.collector_peer)
+                .to_string(),
+            hostname: event
+                .collector_peer
+                .split(':')
+                .next()
+                .unwrap_or(&event.collector_peer)
+                .to_string(),
             vendor: String::new(),
             role: String::new(),
             site: String::new(),

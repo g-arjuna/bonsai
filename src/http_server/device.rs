@@ -94,13 +94,13 @@ pub(super) struct ApplySelectedPathsResponse {
 }
 #[derive(Serialize)]
 pub(super) struct InterfaceDetailJson {
-    name: String,
-    in_errors: i64,
-    out_errors: i64,
-    in_octets: i64,
-    out_octets: i64,
-    carrier_transitions: i64,
-    updated_at_ns: i64,
+    pub(super) name: String,
+    pub(super) in_errors: i64,
+    pub(super) out_errors: i64,
+    pub(super) in_octets: i64,
+    pub(super) out_octets: i64,
+    pub(super) carrier_transitions: i64,
+    pub(super) updated_at_ns: i64,
 }
 #[derive(Serialize)]
 pub(super) struct LldpNeighborJson {
@@ -211,7 +211,6 @@ use crate::enrichment::EnricherConfig;
 use crate::graph::GraphStore;
 use crate::streaming::{self, StreamingReadinessReport};
 use crate::yang::YangLibrary;
-use crate::store::BonsaiStore;
 use crate::graph::DetectionRow;
 use crate::{change_detection::{self}, synthesizer};
 

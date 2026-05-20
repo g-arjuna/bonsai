@@ -13,11 +13,10 @@ use crate::config::{LayeredIngestionConfig, TargetConfig};
 use crate::config_store::{ConfigStore, summarize_diff};
 use crate::credentials::{CredentialVault, ResolvePurpose, ResolvedCredential};
 use crate::enrichment::registry::MultiSourceEnricherRegistry;
-use crate::event_bus::{BusSubscriber, InProcessBus, MpscSubscriber, OverflowPolicy};
+use crate::event_bus::{BroadcastSubscriber, BusSubscriber, InProcessBus};
 use crate::graph::GraphStore;
 use crate::graph::common::{read_str, read_ts_ns, ts};
 use crate::registry::{ApiRegistry, DeviceRegistry};
-use crate::store::BonsaiStore;
 use crate::telemetry::TelemetryUpdate;
 
 #[derive(Clone, Debug, Serialize)]
@@ -93,11 +92,11 @@ impl ChangeDetectionRuntime {
         ));
 
         let (subscriber, mut subscriber_rx) =
-            MpscSubscriber::new("change-detection", 2048, OverflowPolicy::DropOldest);
+            BroadcastSubscriber::new("change-detection", 2048);
         let trigger_runtime = Arc::clone(&runtime);
         let syslog_patterns_for_bus = Arc::clone(&syslog_patterns);
         tokio::spawn(async move {
-            while let Some(update) = subscriber_rx.recv().await {
+            while let Ok(update) = subscriber_rx.recv().await {
                 if let Some(trigger) = signal_trigger_for_update(&update, &syslog_patterns_for_bus)
                     && let Err(error) = trigger_runtime
                         .enqueue(ChangeDetectionRequest {

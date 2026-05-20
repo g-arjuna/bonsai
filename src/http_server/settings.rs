@@ -17,6 +17,7 @@ use crate::config::{BgpLsConfig, BmpConfig, NetflowConfig, OtlpConfig, PcepConfi
 // ── Response / request shapes ─────────────────────────────────────────────────
 
 #[derive(Serialize, Clone)]
+#[allow(dead_code)]
 pub struct StreamingReceiverStatus {
     pub name: String,
     pub enabled: bool,

@@ -259,7 +259,7 @@ for dev in devices:
 "
 ```
 
-**Expected**: 7 devices. Each showing interface and BGP data. May take up to 90s for all to appear.
+**Expected**: 8 managed devices. The 7 SRL nodes should show interface and BGP data; `frr-rr` may appear earlier as a BMP-only managed node until FRR gNMI is enabled. May take up to 90s for all devices to appear.
 
 ---
 
@@ -278,7 +278,7 @@ for dev in d.get('devices', []):
 "
 ```
 
-**Expected**: All 7 devices have interfaces. Most `oper_state=up`.
+**Expected**: All 7 SRL devices have interfaces. `frr-rr` may have zero interfaces while it remains BMP-only. Most SRL `oper_state` values should be `up`.
 
 ---
 
@@ -1275,7 +1275,7 @@ Copy this to your results `.md` after each run:
 | S-11 | Bonsai started | ⬜ |
 | S-12 | /health = ok | ⬜ |
 | S-13 | All 8 ports listening | ⬜ |
-| S-14 | 7 devices in graph | ⬜ |
+| S-14 | 8 managed devices in graph | ⬜ |
 | S-15 | gNMI: interface counters | ⬜ |
 | S-16 | gNMI: BGP state | ⬜ |
 | S-17 | gNMI: IS-IS adjacency | ⬜ |

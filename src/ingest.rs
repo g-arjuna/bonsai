@@ -1519,6 +1519,7 @@ pub async fn run_collector_manager(
             collector_id: collector_id.clone(),
             hostname: hostname.clone(),
             protocol_version: crate::api::PROTOCOL_VERSION,
+            auth_token: std::env::var("BONSAI_COLLECTOR_TOKEN").unwrap_or_default(),
         };
 
         let mut stream = match client.register_collector(req).await {

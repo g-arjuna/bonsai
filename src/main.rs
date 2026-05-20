@@ -2,6 +2,7 @@
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use anyhow::Result;
+use std::path::{Path, PathBuf};
 
 mod cli;
 mod server_startup;
@@ -39,6 +40,20 @@ fn config_path() -> String {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| CONFIG_PATH.to_string())
+}
+
+fn registry_path_for_graph_path(graph_path: &str) -> PathBuf {
+    let effective_graph_path = if graph_path.trim().is_empty() {
+        GRAPH_PATH_DEFAULT
+    } else {
+        graph_path
+    };
+    let graph_path = Path::new(effective_graph_path);
+    let runtime_dir = graph_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    runtime_dir.join(REGISTRY_PATH)
 }
 
 fn install_rustls_crypto_provider() {

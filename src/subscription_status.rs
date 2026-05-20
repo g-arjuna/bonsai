@@ -65,7 +65,13 @@ pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
             }
             event = telemetry_rx.recv() => {
                 match event {
-                    Some(update) => observe_update(&store, &mut tracked, update).await,
+                    Some(update) => {
+                        observe_update(&store, &mut tracked, update).await;
+                        // drain backlog without yielding — avoids queue saturation
+                        while let Ok(update) = telemetry_rx.try_recv() {
+                            observe_update(&store, &mut tracked, update).await;
+                        }
+                    }
                     None => break,
                 }
             }
@@ -144,22 +150,25 @@ async fn observe_update<S: BonsaiStore>(
         tracked_path.status = "observed".to_string();
         tracked_path.last_observed_at_ns = now;
 
-        let status = SubscriptionStatusWrite {
-            device_address: key.0.clone(),
-            path: tracked_path.expectation.path.clone(),
-            origin: tracked_path.expectation.origin.clone(),
-            mode: tracked_path.expectation.mode.clone(),
-            sample_interval_ns: tracked_path.expectation.sample_interval_ns as i64,
-            status: tracked_path.status.clone(),
-            first_observed_at_ns: tracked_path.first_observed_at_ns,
-            last_observed_at_ns: tracked_path.last_observed_at_ns,
-            updated_at_ns: now,
-        };
-        let event = subscription_status_event(&status);
-        if let Err(error) = store.write_subscription_status(status).await {
-            warn!(%error, target = %key.0, path_key = %key.1, "failed to write observed subscription status");
-        } else if status_changed {
-            store.publish_event(event);
+        // Only write to the store on the first transition — avoids a DB write per telemetry update
+        if status_changed {
+            let status = SubscriptionStatusWrite {
+                device_address: key.0.clone(),
+                path: tracked_path.expectation.path.clone(),
+                origin: tracked_path.expectation.origin.clone(),
+                mode: tracked_path.expectation.mode.clone(),
+                sample_interval_ns: tracked_path.expectation.sample_interval_ns as i64,
+                status: tracked_path.status.clone(),
+                first_observed_at_ns: tracked_path.first_observed_at_ns,
+                last_observed_at_ns: tracked_path.last_observed_at_ns,
+                updated_at_ns: now,
+            };
+            let event = subscription_status_event(&status);
+            if let Err(error) = store.write_subscription_status(status).await {
+                warn!(%error, target = %key.0, path_key = %key.1, "failed to write observed subscription status");
+            } else {
+                store.publish_event(event);
+            }
         }
     }
 }
@@ -248,6 +257,7 @@ fn path_matches_update(
             expected.contains("bgp") || expected.contains("network-instances")
         }
         TelemetryEvent::BfdSessionState { .. } => expected.contains("bfd"),
+        TelemetryEvent::IsisAdjacencyState { .. } => expected.contains("isis"),
         TelemetryEvent::LldpNeighbor { .. } => expected.contains("lldp"),
         TelemetryEvent::SyslogEvent { .. } => false,
         TelemetryEvent::SyslogFact { .. } => false,

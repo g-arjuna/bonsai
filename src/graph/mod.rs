@@ -474,6 +474,25 @@ impl GraphStore {
             .context("create HAS_BFD_SESSION rel")?;
 
         conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS IsisAdjacency(\
+                id               STRING,\
+                device_address   STRING,\
+                system_id        STRING,\
+                if_name          STRING,\
+                neighbor_id      STRING,\
+                adjacency_state  STRING,\
+                source_type      STRING,\
+                updated_at       TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create IsisAdjacency table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_ISIS_ADJACENCY(FROM Device TO IsisAdjacency)",
+        )
+        .context("create HAS_ISIS_ADJACENCY rel")?;
+
+        conn.query(
             "CREATE NODE TABLE IF NOT EXISTS LldpNeighbor(\
                 id             STRING,\
                 device_address STRING,\
@@ -782,6 +801,7 @@ impl GraphStore {
                 id               STRING,\
                 device_address   STRING,\
                 peer_address     STRING,\
+                rib_type         STRING,\
                 afi_safi         STRING,\
                 prefix           STRING,\
                 prefix_len       INT64,\
@@ -795,6 +815,10 @@ impl GraphStore {
                 PRIMARY KEY (id))",
         )
         .context("create BgpRibEntry table")?;
+
+        // Migration: BMP route-monitoring writes now persist rib_type. Older DBs
+        // need the column added in place so startup can continue using the same graph.
+        let _ = conn.query("ALTER TABLE BgpRibEntry ADD rib_type STRING DEFAULT ''");
 
         conn.query("CREATE REL TABLE IF NOT EXISTS HAS_RIB_ENTRY(FROM Device TO BgpRibEntry)")
             .context("create HAS_RIB_ENTRY rel")?;
@@ -1524,7 +1548,7 @@ impl GraphStore {
         source_event_ids: Vec<String>,
     ) -> Result<String> {
         // G6: Emit metric for detection write
-        metrics::counter!("bonsai_graph_detection_write_total", "severity" => &severity).increment(1);
+        metrics::counter!("bonsai_graph_detection_write_total", "severity" => severity.clone()).increment(1);
 
         let event_addr = device_address.clone();
         let event_rule = rule_id.clone();
@@ -1642,7 +1666,7 @@ impl GraphStore {
         completed_at_ns: i64,
     ) -> Result<String> {
         // G6: Emit metric for remediation write
-        metrics::counter!("bonsai_graph_remediation_write_total", "status" => &status).increment(1);
+        metrics::counter!("bonsai_graph_remediation_write_total", "status" => status.clone()).increment(1);
 
         let event_detection_id = detection_id.clone();
         let event_action = action.clone();
@@ -2101,6 +2125,11 @@ impl GraphStore {
         })
         .await
         .context("spawn_blocking panicked")?
+    }
+
+    /// Return the shared write lock for external callers that need to serialize writes.
+    pub fn write_lock(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.write_lock)
     }
 
     /// Write a single telemetry update to the graph.
@@ -2713,6 +2742,9 @@ fn write_blocking(
             event_tx,
             corr_buf,
         ),
+        TelemetryEvent::IsisAdjacencyState { system_id, if_name } => {
+            write_isis_adjacency(conn, update, &system_id, &if_name, &update.value, "gnmi", event_tx, corr_buf)
+        }
         TelemetryEvent::LldpNeighbor {
             local_if,
             neighbor_id,
@@ -3639,6 +3671,121 @@ fn write_bfd_session(
     Ok(())
 }
 
+fn write_isis_adjacency(
+    conn: &Connection<'_>,
+    u: &TelemetryUpdate,
+    system_id: &str,
+    if_name: &str,
+    val: &serde_json::Value,
+    source_type: &str,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
+) -> Result<()> {
+    let id = format!("{}:{}:{}", u.target, system_id, if_name);
+    let now = ts(u.timestamp_ns);
+    let new_state = json_str(val, "adjacency-state").to_lowercase();
+
+    if new_state.is_empty() {
+        return Ok(());
+    }
+
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
+
+    let old_state = get_isis_adjacency_state(conn, &id)?;
+
+    let mut stmt = conn
+        .prepare(
+            "MERGE (a:IsisAdjacency {id: $id}) \
+         ON CREATE SET \
+           a.device_address = $addr, a.system_id = $sid, a.if_name = $if_name, \
+           a.neighbor_id = $sid, a.adjacency_state = $state, \
+           a.source_type = $src, a.updated_at = $ts \
+         ON MATCH SET \
+           a.adjacency_state = $state, a.source_type = $src, a.updated_at = $ts",
+        )
+        .context("prepare IsisAdjacency upsert")?;
+
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(id.clone())),
+            ("addr", Value::String(u.target.clone())),
+            ("sid", Value::String(system_id.to_string())),
+            ("if_name", Value::String(if_name.to_string())),
+            ("state", Value::String(new_state.clone())),
+            ("src", Value::String(source_type.to_string())),
+            ("ts", now.clone()),
+        ],
+    )
+    .context("execute IsisAdjacency upsert")?;
+
+    if old_state.as_deref() != Some(new_state.as_str()) {
+        let detail = format!(
+            r#"{{"system_id":"{}","if_name":"{}","old_state":"{}","new_state":"{}","source_type":"{}"}}"#,
+            system_id,
+            if_name,
+            old_state.as_deref().unwrap_or("none"),
+            new_state,
+            source_type,
+        );
+        write_state_change_event(
+            conn,
+            &u.target,
+            "isis_adjacency_change",
+            &detail,
+            source_type,
+            now.clone(),
+            u.timestamp_ns,
+            event_tx,
+            corr_buf,
+        )?;
+    }
+
+    let mut edge_stmt = conn
+        .prepare(
+            "MATCH (d:Device {address: $addr}), (a:IsisAdjacency {id: $id}) \
+         MERGE (d)-[:HAS_ISIS_ADJACENCY]->(a)",
+        )
+        .context("prepare HAS_ISIS_ADJACENCY merge")?;
+
+    conn.execute(
+        &mut edge_stmt,
+        vec![
+            ("addr", Value::String(u.target.clone())),
+            ("id", Value::String(id)),
+        ],
+    )
+    .context("execute HAS_ISIS_ADJACENCY merge")?;
+
+    info!(
+        target = %u.target,
+        system_id = %system_id,
+        if_name = %if_name,
+        state = %new_state,
+        source = %source_type,
+        "IS-IS adjacency written"
+    );
+    Ok(())
+}
+
+fn get_isis_adjacency_state(conn: &Connection<'_>, id: &str) -> Result<Option<String>> {
+    let mut stmt = match conn.prepare("MATCH (a:IsisAdjacency {id: $id}) RETURN a.adjacency_state") {
+        Ok(s) => s,
+        Err(e) if e.to_string().contains("does not exist") => return Ok(None),
+        Err(e) => return Err(e).context("prepare IsisAdjacency state lookup"),
+    };
+    let mut result = conn
+        .execute(&mut stmt, vec![("id", Value::String(id.to_string()))])
+        .context("execute IsisAdjacency state lookup")?;
+    Ok(result.next().and_then(|row| {
+        if let Value::String(s) = &row[0] {
+            Some(s.clone())
+        } else {
+            None
+        }
+    }))
+}
+
 fn get_bgp_state(conn: &Connection<'_>, id: &str) -> Result<Option<String>> {
     let mut stmt = conn
         .prepare("MATCH (n:BgpNeighbor {id: $id}) RETURN n.session_state")
@@ -3683,7 +3830,7 @@ fn write_state_change_event(
     corr_buf: &CorrelationBuffer,
 ) -> Result<String> {
     // G6: Emit metric for state change event write
-    metrics::counter!("bonsai_graph_state_change_write_total", "event_type" => event_type, "source" => source_type).increment(1);
+    metrics::counter!("bonsai_graph_state_change_write_total", "event_type" => event_type.to_string(), "source" => source_type.to_string()).increment(1);
 
     let id = Uuid::new_v4().to_string();
 
@@ -3790,7 +3937,7 @@ fn write_syslog_fact_event(
         &update.site,
         ts(update.timestamp_ns),
     )?;
-    let join = join_syslog_fact(conn, update, &fact)?;
+    let join = join_syslog_fact(conn, update, &fact, event_tx, corr_buf)?;
     let join_status = join
         .get("status")
         .and_then(JsonValue::as_str)
@@ -3844,6 +3991,8 @@ fn join_syslog_fact(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     fact: &SyslogFact,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
 ) -> Result<JsonValue> {
     // Route by fact_type before reaching generic field-based branches to prevent
     // ospf/isis/bfd facts from accidentally joining to Interface or BgpNeighbor nodes.
@@ -3854,7 +4003,7 @@ fn join_syslog_fact(
         return join_ospf_fact(conn, update, fact);
     }
     if fact.fact_type == "isis_adjacency" {
-        return join_isis_fact(conn, update, fact);
+        return join_isis_fact(conn, update, fact, event_tx, corr_buf);
     }
 
     if let Some(peer_address) = fact
@@ -4244,12 +4393,22 @@ fn join_isis_fact(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     fact: &SyslogFact,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
 ) -> Result<JsonValue> {
     let neighbor_id = fact
         .fields
         .get("neighbor_id")
         .or_else(|| fact.fields.get("system_id"));
     let if_name = fact.fields.get("if_name");
+    let new_state = fact.fields.get("new_state");
+
+    // Write the adjacency node from syslog if we have enough fields.
+    // Any source writes — gNMI is preferred but syslog is equally valid.
+    if let (Some(nid), Some(iface), Some(state)) = (neighbor_id, if_name, new_state) {
+        let val = serde_json::json!({ "adjacency-state": state });
+        let _ = write_isis_adjacency(conn, update, nid, iface, &val, "syslog", event_tx, corr_buf);
+    }
 
     if let Some(nid) = neighbor_id
         && let Some(graph_state) = lookup_isis_adjacency_state(conn, &update.target, nid)?

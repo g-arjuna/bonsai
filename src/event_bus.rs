@@ -192,22 +192,31 @@ pub struct InProcessBus {
     router_tx: mpsc::Sender<Arc<TelemetryUpdate>>,
     subscribers: Arc<ArcSwap<Vec<Arc<dyn BusSubscriber>>>>,
     router_capacity: usize,
+    broadcast_tx: broadcast::Sender<Arc<TelemetryUpdate>>,
 }
 
 impl InProcessBus {
     pub fn new(capacity: usize) -> Arc<Self> {
         let (router_tx, router_rx) = mpsc::channel(capacity);
         let subscribers = Arc::new(ArcSwap::from_pointee(Vec::new()));
+        let (broadcast_tx, _) = broadcast::channel(1024);
 
         let bus = Arc::new(Self {
             router_tx,
             subscribers: Arc::clone(&subscribers),
             router_capacity: capacity,
+            broadcast_tx,
         });
 
         tokio::spawn(run_router(router_rx, subscribers));
 
         bus
+    }
+
+    /// Subscribe to all published updates via a broadcast channel.
+    /// Used by lightweight adapters (SNMP, syslog) that need direct access.
+    pub fn subscribe(&self) -> broadcast::Receiver<Arc<TelemetryUpdate>> {
+        self.broadcast_tx.subscribe()
     }
 
     /// Register a subscriber. Subscribers are typically added at startup before traffic starts.
@@ -231,6 +240,7 @@ impl InProcessBus {
     /// queue is full the message is dropped and a metric is incremented.
     pub fn publish(&self, update: TelemetryUpdate) {
         let arc_update = Arc::new(update);
+        let _ = self.broadcast_tx.send(Arc::clone(&arc_update));
         if self.router_tx.try_send(arc_update).is_err() {
             warn!("event bus router queue full, dropping message");
             metrics::counter!("bonsai_event_bus_router_drops_total").increment(1);

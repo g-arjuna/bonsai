@@ -3,6 +3,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::warn;
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -60,9 +61,9 @@ pub struct PathOverride {
 }
 
 #[derive(Default, Serialize, Deserialize)]
-struct RegistryState {
+pub struct RegistryState {
     #[serde(default)]
-    targets: BTreeMap<String, TargetConfig>,
+    pub targets: BTreeMap<String, TargetConfig>,
     #[serde(default)]
     overrides: Vec<PathOverride>,
 }
@@ -132,14 +133,14 @@ impl ApiRegistry {
     pub fn open(path: impl Into<PathBuf>, seed_targets: Vec<TargetConfig>) -> Result<Self> {
         let path = path.into();
         let runtime_dir = path.parent().unwrap_or_else(|| Path::new("."));
-        let sqlite_store = crate::sqlite_store::SqliteStore::open(runtime_dir).ok();
+        let sqlite_store = crate::sqlite_store::SqliteStore::open(runtime_dir).ok().map(std::sync::Arc::new);
 
         // Try to migrate from JSON if SQLite is new
         if let Some(ref store) = sqlite_store {
             let _ = store.migrate_from_json(runtime_dir);
         }
 
-        let state = Self::load_state(&path, seed_targets, sqlite_store.as_deref())?;
+        let state = Self::load_state(&path, seed_targets, sqlite_store.as_ref().map(|s| s.as_ref()))?;
         let (change_tx, _) = broadcast::channel(REGISTRY_CHANNEL_CAPACITY);
 
         Ok(Self {
@@ -187,7 +188,7 @@ impl ApiRegistry {
 
         // Also write directly to SQLite for better audit trail
         if let Some(ref store) = self.sqlite_store {
-            let _ = store.upsert_device(&target, "registry_add_device");
+            let _ = store.upsert_device(&target, "registry", "add_device");
         }
 
         let _ = self.change_tx.send(RegistryChange::Added(target.clone()));
@@ -267,7 +268,7 @@ impl ApiRegistry {
             .lock()
             .map_err(|_| anyhow!("registry lock poisoned"))?;
         state.overrides.push(ovr);
-        Self::persist_state(&self.path, &state)?;
+        Self::persist_state(&self.path, &state, self.sqlite_store.as_deref())?;
         Ok(())
     }
 
@@ -373,7 +374,9 @@ impl ApiRegistry {
         for mut target in seed_targets {
             let address = normalize_address(&target.address)?;
             target.address = address.clone();
-            if !targets.iter().any(|t| t.address == address) {
+            if let Some(existing) = targets.iter_mut().find(|t| t.address == address) {
+                merge_seed_target(existing, &target);
+            } else {
                 targets.push(target);
             }
         }
@@ -386,7 +389,7 @@ impl ApiRegistry {
     fn persist_state(path: &Path, state: &RegistryState, sqlite_store: Option<&crate::sqlite_store::SqliteStore>) -> Result<()> {
         if let Some(store) = sqlite_store {
             for target in state.targets.values() {
-                if let Err(e) = store.upsert_device(target, "registry_persist") {
+                if let Err(e) = store.upsert_device(target, "registry", "persist") {
                     warn!("failed to persist device '{}' to SQLite: {e}", target.address);
                 }
             }
@@ -402,6 +405,49 @@ impl ApiRegistry {
                 .with_context(|| format!("failed to write registry '{}'", path.display()))?;
         }
         Ok(())
+    }
+}
+
+fn merge_seed_target(existing: &mut TargetConfig, seed: &TargetConfig) {
+    existing.enabled = seed.enabled;
+    if existing.tls_domain.as_deref().unwrap_or_default().is_empty() {
+        existing.tls_domain = seed.tls_domain.clone();
+    }
+    if existing.ca_cert.as_deref().unwrap_or_default().is_empty() {
+        existing.ca_cert = seed.ca_cert.clone();
+    }
+    if existing.vendor.as_deref().unwrap_or_default().is_empty() {
+        existing.vendor = seed.vendor.clone();
+    }
+    if existing.credential_alias.as_deref().unwrap_or_default().is_empty() {
+        existing.credential_alias = seed.credential_alias.clone();
+    }
+    if existing.username_env.as_deref().unwrap_or_default().is_empty() {
+        existing.username_env = seed.username_env.clone();
+    }
+    if existing.password_env.as_deref().unwrap_or_default().is_empty() {
+        existing.password_env = seed.password_env.clone();
+    }
+    if existing.username.as_deref().unwrap_or_default().is_empty() {
+        existing.username = seed.username.clone();
+    }
+    if existing.password.as_deref().unwrap_or_default().is_empty() {
+        existing.password = seed.password.clone();
+    }
+    if existing.hostname.as_deref().unwrap_or_default().is_empty() {
+        existing.hostname = seed.hostname.clone();
+    }
+    if existing.role.as_deref().unwrap_or_default().is_empty() {
+        existing.role = seed.role.clone();
+    }
+    if existing.site.as_deref().unwrap_or_default().is_empty() {
+        existing.site = seed.site.clone();
+    }
+    if existing.collector_id.as_deref().unwrap_or_default().is_empty() {
+        existing.collector_id = seed.collector_id.clone();
+    }
+    if existing.paths.is_empty() {
+        existing.paths = seed.paths.clone();
     }
 }
 
@@ -491,10 +537,10 @@ impl DeviceRegistry for ApiRegistry {
 
 fn normalize_address(address: &str) -> Result<String> {
     let normalized = address.trim();
-    if is_valid_host_port(normalized) {
+    if is_valid_host_port(normalized) || is_valid_host(normalized) {
         Ok(normalized.to_string())
     } else {
-        bail!("device address must be host:port")
+        bail!("device address must be host or host:port")
     }
 }
 
@@ -612,6 +658,10 @@ mod tests {
             "leaf-1.lab.local:57400",
             "localhost:50051",
             "[2001:db8::1]:57400",
+            "10.0.0.1",
+            "leaf-1.lab.local",
+            "localhost",
+            "router-rr",
         ] {
             assert_eq!(normalize_address(address).unwrap(), address);
         }
@@ -619,14 +669,16 @@ mod tests {
             normalize_address("  leaf-1.lab.local:57400  ").unwrap(),
             "leaf-1.lab.local:57400"
         );
+        assert_eq!(
+            normalize_address("  leaf-1.lab.local  ").unwrap(),
+            "leaf-1.lab.local"
+        );
     }
 
     #[test]
     fn normalize_address_rejects_invalid_forms() {
         for address in [
             "",
-            "garbage",
-            "10.0.0.1",
             "10.0.0.1:0",
             ":57400",
             "bad host:57400",
@@ -637,7 +689,7 @@ mod tests {
         ] {
             let error = normalize_address(address).unwrap_err().to_string();
             assert!(
-                error.contains("device address must be host:port"),
+                error.contains("device address must be host or host:port"),
                 "unexpected error for {address:?}: {error}"
             );
         }

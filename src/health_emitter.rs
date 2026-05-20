@@ -8,10 +8,12 @@
 //! - Resource governor violations
 //! - Enricher failures
 
+use std::sync::Arc;
+use serde::{Serialize, Deserialize};
 use crate::event_bus::InProcessBus;
 use crate::telemetry::TelemetryUpdate;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HealthEvent {
     pub event_type: HealthEventType,
     pub severity: HealthSeverity,
@@ -20,7 +22,7 @@ pub struct HealthEvent {
     pub metadata: Vec<(String, String)>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HealthEventType {
     CollectorConnected,
     CollectorDisconnected,
@@ -33,7 +35,7 @@ pub enum HealthEventType {
     DiskSpaceCritical,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HealthSeverity {
     Info,
     Warning,
@@ -51,15 +53,19 @@ impl HealthEmitter {
 
     pub fn emit(&self, event: HealthEvent) {
         let event_json = serde_json::to_string(&event).unwrap_or_default();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0);
         let update = TelemetryUpdate {
-            source: "health-emitter".to_string(),
-            device_address: None,
-            event_type: "health_event".to_string(),
-            payload: Some(event_json),
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as i64)
-                .unwrap_or(0),
+            target: "health-emitter".to_string(),
+            vendor: String::new(),
+            hostname: String::new(),
+            role: String::new(),
+            site: String::new(),
+            timestamp_ns: ts,
+            path: "health_event".to_string(),
+            value: serde_json::Value::String(event_json),
         };
         self.bus.publish(update);
     }

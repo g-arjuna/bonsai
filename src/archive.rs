@@ -695,6 +695,7 @@ fn classified_event_type(update: &TelemetryUpdate) -> &'static str {
         TelemetryEvent::InterfaceStats { .. } => "interface_stats",
         TelemetryEvent::InterfaceSummary { .. } => "interface_summary",
         TelemetryEvent::BfdSessionState { .. } => "bfd_session_state",
+        TelemetryEvent::IsisAdjacencyState { .. } => "isis_adjacency_state",
         TelemetryEvent::BgpNeighborState { .. } => "bgp_neighbor_state",
         TelemetryEvent::LldpNeighbor { .. } => "lldp_neighbor",
         TelemetryEvent::InterfaceOperStatus { .. } => "interface_oper_status",

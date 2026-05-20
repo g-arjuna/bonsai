@@ -12,7 +12,7 @@ use bonsai::{
     registry::{ApiRegistry, DeviceRegistry},
 };
 
-use super::{CONFIG_PATH, REGISTRY_PATH};
+use super::{CONFIG_PATH, registry_path_for_graph_path};
 
 // ── Config path helper (shared with main) ────────────────────────────────────
 
@@ -598,7 +598,8 @@ fn print_managed_devices(devices: Vec<ManagedDevice>) {
 }
 
 async fn run_device_cli_local(command: DeviceCliCommand, cfg: config::Config) -> Result<()> {
-    let registry = ApiRegistry::open(REGISTRY_PATH, cfg.target.clone())?;
+    let registry_path = registry_path_for_graph_path(&cfg.graph_path);
+    let registry = ApiRegistry::open(&registry_path, cfg.target.clone())?;
 
     match command {
         DeviceCliCommand::Help => print_device_cli_usage(),
@@ -629,6 +630,8 @@ async fn run_device_cli_local(command: DeviceCliCommand, cfg: config::Config) ->
                     site: add.site,
                     collector_id: None,
                     selected_paths: Vec::new(),
+                    paths: vec![],
+                    optional: false,
                     created_at_ns: 0,
                     updated_at_ns: 0,
                     created_by: String::new(),
@@ -1120,4 +1123,3 @@ pub(super) async fn run_self_test() -> Result<()> {
     }
     Ok(())
 }
-

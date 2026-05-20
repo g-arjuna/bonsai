@@ -29,13 +29,12 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use lbug::{Connection, Value};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
 use crate::config::{ServiceNowChangeManagementConfig, ServiceNowConfig};
 use crate::credentials::{CredentialVault, ResolvePurpose};
-use crate::graph::common::{now_ns, read_str, read_ts_ns, ts};
+use crate::graph::common::{now_ns, read_str, ts};
 use crate::graph::GraphStore;
 
 // ── Data types ───────────────────────────────────────────────────────────────

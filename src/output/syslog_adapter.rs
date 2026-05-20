@@ -67,11 +67,11 @@ impl SyslogAdapter {
     }
 
     /// Format health event as syslog message
-    fn format_syslog_message(&self, event: &HealthEvent) -> String {
+    fn format_syslog_message(config: &SyslogConfig, event: &HealthEvent) -> String {
         let severity = Self::to_syslog_severity(&event.severity);
         let tag = Self::to_syslog_tag(&event.event_type);
-        let facility = &self.config.facility;
-        
+        let _facility = &config.facility;
+
         // RFC5424 format: <PRIVAL>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID STRUCTURED-DATA MSG
         // For simplicity, using basic format
         format!(
@@ -116,8 +116,8 @@ impl SyslogAdapter {
                     }
                     result = rx.recv() => {
                         if let Ok(update) = result {
-                            if update.event_type == "health_event" {
-                                if let Some(payload) = &update.payload {
+                            if update.path == "health_event" {
+                                if let Some(payload) = update.value.as_str() {
                                     if let Ok(event) = serde_json::from_str::<HealthEvent>(payload) {
                                         let msg = Self::format_syslog_message(&config, &event);
                                         tracing::debug!(msg, "Syslog: {}", msg);

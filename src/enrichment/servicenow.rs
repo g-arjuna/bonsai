@@ -164,6 +164,7 @@ struct SnowIpAddress {
 /// Subnet / IP Network — cmdb_ci_ip_network
 #[derive(Debug, Deserialize)]
 struct SnowSubnet {
+    #[allow(dead_code)]
     sys_id: String,
     name: String,
     #[serde(default, rename = "subnet")]
@@ -191,6 +192,7 @@ struct SnowLoc {
 /// Network adapter — cmdb_ci_network_adapter
 #[derive(Debug, Deserialize)]
 struct SnowNetworkAdapter {
+    #[allow(dead_code)]
     sys_id: String,
     name: String,
     #[serde(default)]
@@ -198,6 +200,7 @@ struct SnowNetworkAdapter {
     #[serde(default)]
     mac_address: String,
     #[serde(default)]
+    #[allow(dead_code)]
     netmask: String,
     cmdb_ci: Option<SnowRefSysId>,
 }
@@ -270,6 +273,7 @@ async fn snow_get_page<T: for<'de> Deserialize<'de>>(
 
 /// GET a ServiceNow table with automatic 429 retry and exponential backoff (Q-13).
 /// Kept for backward-compat with tests — fetches a single page of PAGE_SIZE.
+#[allow(dead_code)]
 async fn snow_get<T: for<'de> Deserialize<'de>>(
     client: &reqwest::Client,
     instance_url: &str,

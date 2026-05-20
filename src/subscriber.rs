@@ -700,6 +700,11 @@ fn build_subscriptions(caps: &ModelCapabilities) -> Vec<Subscription> {
         subs.push(sub_on_change(oc_path(&["interfaces"])));
     }
 
+    // ── IS-IS adjacency ───────────────────────────────────────────────────────
+    if caps.has_srl_native {
+        subs.push(sub_on_change(srl_isis_adjacency_path()));
+    }
+
     // ── LLDP ──────────────────────────────────────────────────────────────────
     if caps.has_srl_native {
         subs.push(sub_on_change(srl_lldp_neighbors_path()));
@@ -878,6 +883,17 @@ fn srl_bgp_neighbors_path() -> Path {
         ("protocols", &[]),
         ("bgp", &[]),
         ("neighbor", &[("peer-address", "*")]),
+    ])
+}
+
+fn srl_isis_adjacency_path() -> Path {
+    // Subscribe to the whole IS-IS instance container — SRL sends per-interface/adjacency
+    // ON_CHANGE leaves as individual path updates when adjacency state changes.
+    srl_path(&[
+        ("network-instance", &[("name", "default")]),
+        ("protocols", &[]),
+        ("isis", &[]),
+        ("instance", &[("name", "main")]),
     ])
 }
 

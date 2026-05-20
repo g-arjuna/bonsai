@@ -10,7 +10,7 @@ use crate::api::pb::{AssignmentUpdate, DeviceAssignment};
 use crate::config::{AssignmentRule, TargetConfig};
 use crate::credentials::{CredentialVault, ResolvePurpose};
 use crate::graph::{BonsaiEvent, SiteRecord};
-use crate::registry::{ApiRegistry, DeviceRegistry, RegistryChange};
+use crate::registry::ApiRegistry;
 
 pub struct CollectorManager {
     registry: Arc<ApiRegistry>,
@@ -168,66 +168,6 @@ impl CollectorManager {
                 }
             }
         }
-    }
-
-    fn start_registry_watcher(&self) {
-        let registry = self.registry.clone();
-        let credentials = self.credentials.clone();
-        let active_collectors = self.active_collectors.clone();
-        let rules = self.rules.clone();
-        let sites_cache = self.sites_cache.clone();
-
-        tokio::spawn(async move {
-            let mut changes = registry.subscribe_changes();
-            while let Some(change) = changes.recv().await {
-                match change {
-                    RegistryChange::Added(mut target) | RegistryChange::Updated(mut target) => {
-                        // Auto-assign if no explicit collector_id and rules match.
-                        if target.collector_id.is_none()
-                            && let Some(collector_id) =
-                                find_collector_by_rules(&target, &rules, &sites_cache)
-                        {
-                            info!(
-                                address = %target.address,
-                                %collector_id,
-                                "auto-assigning device via routing rule"
-                            );
-                            match registry.assign_device_with_audit(
-                                &target.address,
-                                Some(collector_id.clone()),
-                                "system",
-                                "assignment_rule_auto_assign",
-                            ) {
-                                Ok(updated) => target = updated,
-                                Err(e) => {
-                                    warn!(address = %target.address, %e, "failed to auto-assign device")
-                                }
-                            }
-                        }
-
-                        if let Some(collector_id) = &target.collector_id {
-                            let tx = {
-                                let collectors = active_collectors.lock().unwrap();
-                                collectors.get(collector_id.as_str()).cloned()
-                            };
-                            if let Some(tx) = tx {
-                                let assignment =
-                                    create_assignment(&target, &credentials, &registry);
-                                let update = AssignmentUpdate {
-                                    assignments: vec![assignment],
-                                    is_full_sync: false,
-                                };
-                                let _ = tx.send(update).await;
-                            }
-                        }
-                    }
-                    RegistryChange::Removed(address) => {
-                        // Nothing to push — collector will receive a full sync on re-registration.
-                        info!(%address, "device removed from registry");
-                    }
-                }
-            }
-        });
     }
 
     pub async fn register_collector(
@@ -505,30 +445,6 @@ fn site_ancestor_set(device_site: &str, sites: &[SiteRecord]) -> Vec<String> {
         current_key = rec.parent_id.clone();
     }
     result
-}
-
-fn find_collector_by_rules(
-    target: &TargetConfig,
-    rules: &Mutex<Vec<AssignmentRule>>,
-    sites_cache: &Mutex<Vec<SiteRecord>>,
-) -> Option<String> {
-    let rules = rules.lock().expect("rules lock poisoned");
-    let sites = sites_cache.lock().expect("sites lock poisoned");
-    let device_site = target.site.as_deref().unwrap_or("");
-    let ancestor_set = site_ancestor_set(device_site, &sites);
-    let device_role = target.role.as_deref().unwrap_or("");
-    for rule in rules.iter() {
-        if !ancestor_set.iter().any(|s| s == &rule.match_site) {
-            continue;
-        }
-        if let Some(ref required_role) = rule.match_role
-            && required_role != device_role
-        {
-            continue;
-        }
-        return Some(rule.collector_id.clone());
-    }
-    None
 }
 
 #[cfg(test)]
