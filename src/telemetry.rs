@@ -427,7 +427,10 @@ impl TelemetryUpdate {
             };
         }
 
-        if self.path == "streaming/bmp/peer-state" {
+        if matches!(
+            self.path.as_str(),
+            "streaming/bmp/peer-up" | "streaming/bmp/peer-down" | "streaming/bmp/peer-state"
+        ) {
             return TelemetryEvent::BmpPeerState;
         }
 

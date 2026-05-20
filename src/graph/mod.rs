@@ -4553,6 +4553,51 @@ fn write_bmp_peer_state(
         ts(update.timestamp_ns),
     )?;
     upsert_bmp_session(conn, update, &event)?;
+
+    // Mirror peer state into BgpNeighbor so the topology API shows BMP-only
+    // devices (e.g. frr-rr which has no gNMI) alongside gNMI-sourced peers.
+    if !event.peer_address.is_empty() {
+        let bgp_id = format!("{}:{}", update.target, event.peer_address);
+        let mut stmt = conn
+            .prepare(
+                "MERGE (n:BgpNeighbor {id: $id}) \
+                 ON CREATE SET \
+                   n.device_address = $addr, n.peer_address = $peer, \
+                   n.peer_as = $peer_as, n.session_state = $state, \
+                   n.established_transitions = 0, n.updated_at = $ts \
+                 ON MATCH SET \
+                   n.session_state = $state, n.updated_at = $ts",
+            )
+            .context("prepare BgpNeighbor upsert (bmp)")?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("id", Value::String(bgp_id.clone())),
+                ("addr", Value::String(update.target.clone())),
+                ("peer", Value::String(event.peer_address.clone())),
+                ("peer_as", Value::Int64(event.peer_as as i64)),
+                ("state", Value::String(event.session_state.clone())),
+                ("ts", ts(update.timestamp_ns)),
+            ],
+        )
+        .context("execute BgpNeighbor upsert (bmp)")?;
+
+        let mut edge = conn
+            .prepare(
+                "MATCH (d:Device {address: $addr}), (n:BgpNeighbor {id: $id}) \
+                 MERGE (d)-[:PEERS_WITH]->(n)",
+            )
+            .context("prepare PEERS_WITH merge (bmp)")?;
+        conn.execute(
+            &mut edge,
+            vec![
+                ("addr", Value::String(update.target.clone())),
+                ("id", Value::String(bgp_id)),
+            ],
+        )
+        .context("execute PEERS_WITH merge (bmp)")?;
+    }
+
     let id = format!("{}:{}", update.target, event.peer_address);
     let old_state = get_bmp_session_state(conn, &id)?;
     if old_state.as_deref() != Some(event.session_state.as_str()) {
