@@ -3683,11 +3683,13 @@ fn write_isis_adjacency(
 ) -> Result<()> {
     let id = format!("{}:{}:{}", u.target, system_id, if_name);
     let now = ts(u.timestamp_ns);
-    let new_state = json_str(val, "adjacency-state").to_lowercase();
-
-    if new_state.is_empty() {
-        return Ok(());
-    }
+    // SRL's ON_CHANGE sync sends adjacency list entries WITHOUT adjacency-state in the
+    // initial response — the entry's existence implies the adjacency is established (up).
+    // adjacency-state is only streamed on subsequent change events.
+    let new_state = {
+        let s = json_str(val, "adjacency-state").to_lowercase();
+        if s.is_empty() { "up".to_string() } else { s }
+    };
 
     upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
 

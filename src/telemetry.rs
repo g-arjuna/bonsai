@@ -296,7 +296,6 @@ impl TelemetryUpdate {
         if self.path.contains("isis/instance[name=")
             && (self.path.contains("/adjacency[neighbor-system-id=")
                 || self.path.contains("/adjacency[adjacency-level="))
-            && json_find(&self.value, "adjacency-state").is_some()
         {
             let system_id = extract_bracketed(&self.path, "adjacency[neighbor-system-id=")
                 .or_else(|| extract_bracketed(&self.path, "neighbor-system-id="));
