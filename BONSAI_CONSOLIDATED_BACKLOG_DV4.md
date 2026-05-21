@@ -257,7 +257,7 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 - Per device: address, rules fired, `is_root` flag, `detected_at_ns`.
 - Backend: return `affected_devices: [{address, rules, is_root, detected_at_ns}]` in `/api/incidents` response.
 
-**T7 — Backend incident API completeness audit**
+**T7 — Backend incident API completeness audit** ✅ batch6
 - Audit `src/http_server/observability.rs` incident handler.
 - Verify all fields populated: `correlation_chain`, `blast_radius_summary`, `co_fire_signature`, `grouping_rationale`, `affected_devices`, `started_at_ns`, `ended_at_ns`, `remediation_status`, `event_count`, `device_count`.
 - Fix nulls silently swallowed by `?? ''` / `?? []` in Svelte UI.
@@ -487,7 +487,7 @@ There is also no UI indicator of graph health — operators have no visibility i
 - New endpoint that proxies to sidecar health URL or returns last-known gRPC heartbeat timestamp.
 - Show sidecar as a card in `Collectors.svelte`: rules count, last detection, queue depth, health badge (green/yellow/red/grey).
 
-**T3 — Fix mode=all collector registration (resolves S-49/S-50 ⚠️)**
+**T3 — Fix mode=all collector registration (resolves S-49/S-50 ⚠️)** ✅ batch6
 - When `run_core && run_collector` (mode=all): auto-register local in-process collector with well-known ID at startup rather than requiring external gRPC registration.
 - After fix: `/api/collectors` returns the in-process collector entry. Receiver badges on Collectors card become functional.
 
@@ -665,11 +665,11 @@ Over time, `DetectionEvent` nodes, `AppFlow` nodes from heavy flow sources, and 
 
 ### Tasks
 
-**T1 — DB stats API**
+**T1 — DB stats API** ✅ batch6
 - `GET /api/db/stats` → `{node_counts: {Device: N, Interface: N, AppFlow: N, DetectionEvent: N, ...}, rel_counts: {CONNECTED_TO: N, CARRIES_FLOW: N, ...}, db_size_bytes, wal_size_bytes, oldest_record_ns, newest_record_ns}`.
 - Computed via KuzuDB `COUNT(*)` queries per table.
 
-**T2 — Schema viewer endpoint + UI tab**
+**T2 — Schema viewer endpoint + UI tab** ✅ batch6
 - `GET /api/db/schema` → returns all node tables with column names and types, all rel tables with from/to node types and columns.
 - UI: new `src/routes/DbManagement.svelte` with a "Schema" tab showing this information in a formatted table.
 
@@ -856,7 +856,7 @@ FRR runs as `frr-rr` in the lab topology. BMP session confirmed working (S-30/S-
 - Call `POST /api/devices` to register device in Bonsai graph with all discovered properties.
 - Call `POST /api/devices/{address}/topology` to seed interface, BGP, IS-IS, LLDP data before first gNMI subscription.
 
-**T2 — Bootstrap integration in Onboarding UI**
+**T2 — Bootstrap integration in Onboarding UI** ✅ batch6
 - Add "Bootstrap from device" step to `Onboarding.svelte` flow:
   1. Enter address + credential alias.
   2. Click "Discover" → calls `POST /api/devices/bootstrap` → runs `bootstrap_agent.py` → shows progress.
@@ -864,7 +864,7 @@ FRR runs as `frr-rr` in the lab topology. BMP session confirmed working (S-30/S-
   4. Confirm → device added with pre-seeded graph data. gNMI subscription starts using auto-detected paths for vendor.
 - Show bootstrap progress via SSE stream from `/api/devices/bootstrap/{job_id}/stream`.
 
-**T3 — Bulk onboarding from seed file**
+**T3 — Bulk onboarding from seed file** ✅ batch6
 - `POST /api/devices/bulk` accepts YAML/JSON seed file: `[{address, hostname, vendor, credential_alias, bootstrap: true}]`.
 - Runs bootstrap agent for each device in parallel (max 4 concurrent to avoid SSH flooding).
 - Returns bulk result: `[{address, status: ok|failed, error: string}]`.

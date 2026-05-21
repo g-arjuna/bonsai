@@ -810,6 +810,22 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         manager.set_event_sender(core_store.event_sender());
     }
 
+    // D4-9 T3: In mode=all, auto-register the in-process collector so
+    // `/api/collectors` returns a real entry (fixes S-49/S-50).
+    if run_core && run_collector {
+        if let Some(ref manager) = collector_manager {
+            let local_id = cfg.runtime.collector_id.clone();
+            info!(%local_id, "mode=all: auto-registering local in-process collector");
+            // register_collector returns a Receiver for assignment updates;
+            // in mode=all the core already manages subscriptions directly, so
+            // we just drop the receiver — it keeps the collector marked as connected.
+            match manager.register_collector(local_id).await {
+                Ok(_assignment_rx) => info!("local in-process collector registered"),
+                Err(e) => warn!(%e, "failed to auto-register local collector (non-fatal)"),
+            }
+        }
+    }
+
     // Seed the collector manager's site cache and keep it refreshed so that
     // hierarchy-aware assignment rules reflect current graph state.
     if let (Some(store), Some(manager)) = (&store, &collector_manager) {

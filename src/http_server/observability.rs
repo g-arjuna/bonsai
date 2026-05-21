@@ -1501,3 +1501,164 @@ pub async fn gnn_score_handler(
         detection_id,
     }))
 }
+
+// ── D4-13 T1: DB stats ───────────────────────────────────────────────────────
+
+pub(super) async fn db_stats_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let db = state.store.db();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+
+        let node_tables = vec![
+            "Device", "Interface", "BgpSession", "IsIsAdj", "BfdSession",
+            "DetectionEvent", "Incident", "AppFlow", "Application",
+            "RemediationProposal", "Investigation", "AgentToolCall",
+            "InvestigationFeedback", "ConfigChange", "PlaybookCatalog",
+            "Location", "Prefix", "HostEndpoint", "DeviceEmbedding",
+            "GnnScore", "ShunRule", "ChangeRequest", "SubscriptionStatus",
+        ];
+        let rel_tables = vec![
+            "CONNECTED_TO", "HAS_SESSION", "HAS_INTERFACE", "HAS_ISIS_ADJ",
+            "HAS_BFD", "DETECTED_ON", "HAS_DETECTION", "HAS_PROPOSAL",
+            "HAS_INCIDENT", "HAS_TOOL_CALL", "HAS_FEEDBACK",
+            "CARRIES_FLOW", "RUNS_SERVICE", "HOST_RUNS_SERVICE",
+            "SRC_HOST", "DST_HOST", "TRUST_MARKS",
+            "AFFECTED_BY_CHANGE", "CHANGE_CAUSED_CONFIG",
+            "CHANGE_CAUSED_DETECTION", "RELATED_TO_CHANGE",
+            "CMDB_PARENT_OF", "LOC_PARENT_OF",
+        ];
+
+        let mut node_counts = serde_json::Map::new();
+        for table in &node_tables {
+            let count = conn
+                .query(&format!("MATCH (n:{table}) RETURN count(n)"))
+                .and_then(|mut r| {
+                    if let Some(row) = r.next() {
+                        Ok(row.get_val::<i64>(0).unwrap_or(0))
+                    } else {
+                        Ok(0)
+                    }
+                })
+                .unwrap_or(0);
+            if count > 0 {
+                node_counts.insert(table.to_string(), serde_json::json!(count));
+            }
+        }
+
+        let mut rel_counts = serde_json::Map::new();
+        for table in &rel_tables {
+            let count = conn
+                .query(&format!("MATCH ()-[r:{table}]->() RETURN count(r)"))
+                .and_then(|mut r| {
+                    if let Some(row) = r.next() {
+                        Ok(row.get_val::<i64>(0).unwrap_or(0))
+                    } else {
+                        Ok(0)
+                    }
+                })
+                .unwrap_or(0);
+            if count > 0 {
+                rel_counts.insert(table.to_string(), serde_json::json!(count));
+            }
+        }
+
+        // DB file size
+        let db_path = std::path::Path::new("runtime/bonsai.db");
+        let db_size_bytes = if db_path.exists() {
+            walkdir(db_path)
+        } else {
+            0
+        };
+
+        Ok::<_, (StatusCode, String)>(serde_json::json!({
+            "node_counts": node_counts,
+            "rel_counts": rel_counts,
+            "db_size_bytes": db_size_bytes,
+            "total_node_tables": node_tables.len(),
+            "total_rel_tables": rel_tables.len(),
+        }))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+}
+
+fn walkdir(path: &std::path::Path) -> u64 {
+    if path.is_file() {
+        return path.metadata().map(|m| m.len()).unwrap_or(0);
+    }
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            total += walkdir(&entry.path());
+        }
+    }
+    total
+}
+
+// ── D4-13 T2: Schema viewer ─────────────────────────────────────────────────
+
+pub(super) async fn db_schema_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let db = state.store.db();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+
+        let mut node_tables = Vec::new();
+        let mut rel_tables = Vec::new();
+
+        // Query node table info
+        if let Ok(mut result) = conn.query(
+            "CALL show_tables() RETURN * ORDER BY name"
+        ) {
+            while let Some(row) = result.next() {
+                let name = row.get_val::<String>(0).unwrap_or_default();
+                let ttype = row.get_val::<String>(1).unwrap_or_default();
+                if ttype == "NODE" {
+                    // Get columns for this node table
+                    let columns = get_table_columns(&conn, &name);
+                    node_tables.push(serde_json::json!({
+                        "name": name,
+                        "columns": columns,
+                    }));
+                } else if ttype == "REL" {
+                    let columns = get_table_columns(&conn, &name);
+                    rel_tables.push(serde_json::json!({
+                        "name": name,
+                        "columns": columns,
+                    }));
+                }
+            }
+        }
+
+        Ok::<_, (StatusCode, String)>(serde_json::json!({
+            "node_tables": node_tables,
+            "rel_tables": rel_tables,
+        }))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+}
+
+fn get_table_columns(conn: &Connection<'_>, table_name: &str) -> Vec<serde_json::Value> {
+    let mut columns = Vec::new();
+    if let Ok(mut result) = conn.query(&format!(
+        "CALL table_info('{}') RETURN *", table_name
+    )) {
+        while let Some(row) = result.next() {
+            let col_name = row.get_val::<String>(1).unwrap_or_default();
+            let col_type = row.get_val::<String>(2).unwrap_or_default();
+            columns.push(serde_json::json!({
+                "name": col_name,
+                "type": col_type,
+            }));
+        }
+    }
+    columns
+}

@@ -22,6 +22,7 @@
   import DensityToggle from '$lib/components/DensityToggle.svelte';
   import HA from './routes/HA.svelte';
   import Syslog from './routes/Syslog.svelte';
+  import DbManagement from './routes/DbManagement.svelte';
 
   // Cmd-1..9 workspace shortcuts mirror CommandPalette WORKSPACE_SHORTCUTS
   const NAV = [
@@ -41,6 +42,7 @@
     { href: '/credentials',   label: 'Credentials',   icon: '⚿' },
     { href: '/audit',         label: 'Audit',         icon: '📜' },
     { href: '/syslog',        label: 'Syslog / Shun', icon: '⬇' },
+    { href: '/db',             label: 'Database',      icon: '🗄' },
     { href: '/settings',      label: 'Settings',      icon: '⚙' },
   ];
 
@@ -195,6 +197,8 @@
       <Audit />
     {:else if path() === '/syslog'}
       <Syslog />
+    {:else if path() === '/db'}
+      <DbManagement />
     {:else if path() === '/settings'}
       <Settings />
     {:else}

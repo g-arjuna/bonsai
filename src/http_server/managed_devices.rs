@@ -834,6 +834,297 @@ pub(super) fn resolve_request_credentials(
         _ => None,
     })
 }
+// ── D4-17 T2: Device bootstrap via PyATS agent ────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub(super) struct BootstrapRequest {
+    address: String,
+    #[serde(default)]
+    credential_alias: String,
+    #[serde(default)]
+    vendor: String,
+}
+
+pub(super) async fn bootstrap_device_handler(
+    State(state): State<AppState>,
+    Json(req): Json<BootstrapRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if req.address.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "address is required".into()));
+    }
+    if req.credential_alias.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "credential_alias is required".into()));
+    }
+
+    // Resolve the API base URL for the bootstrap agent to call back into.
+    let api_url = std::env::var("BONSAI_API_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
+
+    let mut cmd = tokio::process::Command::new("python3");
+    cmd.arg("python/bootstrap_agent.py")
+        .arg("device")
+        .arg("--address").arg(&req.address)
+        .arg("--credential-alias").arg(&req.credential_alias)
+        .arg("--api-url").arg(&api_url);
+    if !req.vendor.is_empty() {
+        cmd.arg("--vendor").arg(&req.vendor);
+    }
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let output = cmd.output().await.map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to spawn bootstrap agent: {e}"))
+    })?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("bootstrap agent failed (exit {}): {}", output.status, stderr.trim()),
+        ));
+    }
+
+    let result: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|_| serde_json::json!({
+            "status": "ok",
+            "stdout": stdout.trim(),
+            "stderr": stderr.trim(),
+        }));
+
+    Ok(Json(result))
+}
+
+// ── D4-17 T2: Device seed — write pre-seeded graph data from bootstrap ────────
+
+#[derive(serde::Deserialize)]
+pub(super) struct DeviceSeedRequest {
+    address: String,
+    #[serde(default)]
+    hostname: String,
+    #[serde(default)]
+    vendor: String,
+    #[serde(default)]
+    os_version: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    interfaces: Vec<SeedInterface>,
+    #[serde(default)]
+    bgp_neighbors: Vec<SeedBgpNeighbor>,
+    #[serde(default)]
+    lldp_neighbors: Vec<SeedLldpNeighbor>,
+    #[serde(default)]
+    isis_adjacencies: Vec<SeedIsisAdj>,
+}
+
+#[derive(serde::Deserialize)]
+struct SeedInterface {
+    name: String,
+    #[serde(default)]
+    oper_status: String,
+    #[serde(default)]
+    admin_status: String,
+    #[serde(default)]
+    speed: i64,
+    #[serde(default)]
+    mac: String,
+    #[serde(default)]
+    description: String,
+}
+
+#[derive(serde::Deserialize)]
+struct SeedBgpNeighbor {
+    peer_address: String,
+    #[serde(default)]
+    peer_as: i64,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    vrf: String,
+}
+
+#[derive(serde::Deserialize)]
+struct SeedLldpNeighbor {
+    local_interface: String,
+    #[serde(default)]
+    remote_port: String,
+    #[serde(default)]
+    remote_device: String,
+}
+
+#[derive(serde::Deserialize)]
+struct SeedIsisAdj {
+    system_id: String,
+    #[serde(default)]
+    interface: String,
+    #[serde(default)]
+    state: String,
+}
+
+pub(super) async fn device_seed_handler(
+    State(state): State<AppState>,
+    Json(req): Json<DeviceSeedRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if req.address.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "address is required".into()));
+    }
+    let db = state.store.db();
+    let address = req.address.clone();
+    let source = if req.source.is_empty() { "bootstrap".to_string() } else { req.source.clone() };
+    let now = super::now_ns();
+
+    let iface_count = req.interfaces.len();
+    let bgp_count = req.bgp_neighbors.len();
+    let lldp_count = req.lldp_neighbors.len();
+    let isis_count = req.isis_adjacencies.len();
+
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+
+        // Upsert Device node with bootstrap metadata
+        conn.query(&format!(
+            "MERGE (d:Device {{address: '{}'}}) \
+             SET d.hostname = '{}', d.vendor = '{}', d.os_version = '{}', \
+                 d.bootstrap_source = '{}', d.bootstrap_at_ns = {}",
+            address, req.hostname, req.vendor, req.os_version, source, now,
+        )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+
+        // Seed interfaces
+        for iface in &req.interfaces {
+            conn.query(&format!(
+                "MERGE (i:Interface {{device_address: '{}', name: '{}'}}) \
+                 SET i.oper_status = '{}', i.admin_status = '{}', i.speed = {}, \
+                     i.mac = '{}', i.description = '{}', i.source = '{}', i.updated_at_ns = {}",
+                address, iface.name, iface.oper_status, iface.admin_status,
+                iface.speed, iface.mac, iface.description, source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        }
+
+        // Seed BGP neighbors
+        for bgp in &req.bgp_neighbors {
+            conn.query(&format!(
+                "MERGE (b:BgpSession {{device_address: '{}', peer_address: '{}'}}) \
+                 SET b.peer_as = {}, b.state = '{}', b.vrf = '{}', \
+                     b.source = '{}', b.updated_at_ns = {}",
+                address, bgp.peer_address, bgp.peer_as, bgp.state,
+                bgp.vrf, source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        }
+
+        // Seed LLDP neighbors
+        for lldp in &req.lldp_neighbors {
+            conn.query(&format!(
+                "MATCH (d:Device {{address: '{}'}}) \
+                 MERGE (i:Interface {{device_address: '{}', name: '{}'}}) \
+                 SET i.lldp_remote_port = '{}', i.lldp_remote_device = '{}', \
+                     i.source = '{}', i.updated_at_ns = {}",
+                address, address, lldp.local_interface, lldp.remote_port,
+                lldp.remote_device, source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        }
+
+        // Seed IS-IS adjacencies
+        for isis in &req.isis_adjacencies {
+            conn.query(&format!(
+                "MERGE (a:IsIsAdj {{device_address: '{}', system_id: '{}', interface: '{}'}}) \
+                 SET a.state = '{}', a.source = '{}', a.updated_at_ns = {}",
+                address, isis.system_id, isis.interface, isis.state, source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        }
+
+        Ok::<_, (StatusCode, String)>(())
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "address": req.address,
+        "seeded": {
+            "interfaces": iface_count,
+            "bgp_neighbors": bgp_count,
+            "lldp_neighbors": lldp_count,
+            "isis_adjacencies": isis_count,
+        }
+    })))
+}
+
+// ── D4-17 T3: Bulk seed from file ────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub(super) struct BulkBootstrapRequest {
+    devices: Vec<BootstrapRequest>,
+    #[serde(default = "default_parallel")]
+    parallel: usize,
+}
+
+fn default_parallel() -> usize { 4 }
+
+pub(super) async fn bulk_bootstrap_handler(
+    State(state): State<AppState>,
+    Json(req): Json<BulkBootstrapRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if req.devices.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "devices list is empty".into()));
+    }
+
+    let api_url = std::env::var("BONSAI_API_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
+
+    // Write seed YAML to temp file
+    let seed_entries: Vec<serde_json::Value> = req.devices.iter().map(|d| {
+        serde_json::json!({
+            "address": d.address,
+            "credential_alias": d.credential_alias,
+            "vendor": d.vendor,
+        })
+    }).collect();
+
+    let tmp_file = format!("/tmp/bonsai_bulk_bootstrap_{}.yaml", super::now_ns());
+    let yaml_content = serde_yaml::to_string(&serde_json::json!({ "devices": seed_entries }))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("yaml serialize: {e}")))?;
+    tokio::fs::write(&tmp_file, &yaml_content).await.map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("write temp seed file: {e}"))
+    })?;
+
+    let mut cmd = tokio::process::Command::new("python3");
+    cmd.arg("python/bootstrap_agent.py")
+        .arg("seed")
+        .arg("--seed-file").arg(&tmp_file)
+        .arg("--api-url").arg(&api_url)
+        .arg("--parallel").arg(req.parallel.min(8).to_string())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let output = cmd.output().await.map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to spawn bootstrap agent: {e}"))
+    })?;
+
+    // Cleanup temp file (best-effort)
+    let _ = tokio::fs::remove_file(&tmp_file).await;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("bulk bootstrap failed (exit {}): {}", output.status, stderr.trim()),
+        ));
+    }
+
+    let result: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|_| serde_json::json!({
+            "status": "ok",
+            "stdout": stdout.trim(),
+        }));
+
+    Ok(Json(result))
+}
+
 pub(super) fn site_subtree_ids(sites: &[SiteRecord], root_id: &str) -> std::collections::HashSet<String> {
     let mut ids = std::collections::HashSet::from([root_id.to_string()]);
     let mut changed = true;
