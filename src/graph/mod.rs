@@ -81,6 +81,8 @@ pub struct RemediationProposalRow {
     pub rollback_steps_json: String,
     pub proposed_at_ns: i64,
     pub decided_at_ns: i64,
+    /// Raw features JSON from the linked DetectionEvent (empty string when no match).
+    pub features_json: String,
 }
 
 /// A persisted StateChangeEvent node returned by the history query.
@@ -1859,7 +1861,8 @@ impl GraphStore {
                  {where_clause}\
                  RETURN p.id, p.detection_id, e.device_address, e.rule_id, e.severity, \
                         p.playbook_id, p.trust_key, p.status, p.operator_note, \
-                        p.steps_json, p.rollback_steps_json, p.proposed_at, p.decided_at \
+                        p.steps_json, p.rollback_steps_json, p.proposed_at, p.decided_at, \
+                        e.features_json \
                  ORDER BY p.proposed_at DESC LIMIT {limit}"
             );
             let mut stmt = conn.prepare(&cypher).context("prepare proposal read")?;
@@ -1886,6 +1889,7 @@ impl GraphStore {
                     rollback_steps_json: read_str(&row[10]),
                     proposed_at_ns: read_ts_ns(&row[11]),
                     decided_at_ns: read_ts_ns(&row[12]),
+                    features_json: read_str(&row[13]),
                 });
             }
             Ok::<_, anyhow::Error>(out)

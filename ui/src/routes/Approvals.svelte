@@ -119,6 +119,66 @@
     const s = secs % 60;
     return m > 0 ? `${m}m ${s}s` : `${s}s`;
   }
+
+  /** Build a one-line human-readable context summary from proposal + detection features. */
+  function buildContextSummary(p) {
+    let f = {};
+    try { f = JSON.parse(p.features_json || '{}'); } catch (_) {}
+
+    const device = p.device_address || 'unknown device';
+    const rule = (p.rule_id || '').toLowerCase();
+
+    // BGP events
+    if (rule.includes('bgp')) {
+      const peer = f.peer_address || f.neighbor || f.peer_ip || null;
+      const peerAs = f.peer_as || f.remote_as || null;
+      const state = f.session_state || f.bgp_state || null;
+      if (peer) {
+        const asStr = peerAs ? ` (AS ${peerAs})` : '';
+        const stateStr = state ? ` — state: ${state}` : ' went down';
+        return `BGP peer ${peer}${asStr} on ${device}${stateStr}`;
+      }
+      return `BGP session event on ${device}`;
+    }
+
+    // Interface / link events
+    if (rule.includes('interface') || rule.includes('link')) {
+      const iface = f.interface_name || f.if_name || f.interface || null;
+      const status = f.oper_status || f.link_status || null;
+      if (iface) return `Interface ${iface} on ${device}${status ? ` — ${status}` : ' flapped'}`;
+      return `Interface event on ${device}`;
+    }
+
+    // BFD
+    if (rule.includes('bfd')) {
+      const iface = f.if_name || f.interface_name || null;
+      return iface ? `BFD session down on ${device} (${iface})` : `BFD event on ${device}`;
+    }
+
+    // OSPF / IS-IS
+    if (rule.includes('ospf') || rule.includes('isis')) {
+      const neighbor = f.neighbor_address || f.neighbor || null;
+      const proto = rule.includes('ospf') ? 'OSPF' : 'IS-IS';
+      return neighbor
+        ? `${proto} neighbor ${neighbor} down on ${device}`
+        : `${proto} adjacency event on ${device}`;
+    }
+
+    // Disk / resource
+    if (rule.includes('disk') || rule.includes('cpu') || rule.includes('memory')) {
+      const val = f.value || f.usage_pct || null;
+      const resource = rule.includes('disk') ? 'Disk' : rule.includes('cpu') ? 'CPU' : 'Memory';
+      return val != null ? `${resource} usage ${val}% on ${device}` : `${resource} alert on ${device}`;
+    }
+
+    // Generic fallback: show any top-level string values from features
+    const extras = Object.entries(f)
+      .filter(([, v]) => typeof v === 'string' || typeof v === 'number')
+      .slice(0, 3)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(', ');
+    return extras ? `${p.rule_id} on ${device} — ${extras}` : `${p.rule_id} on ${device}`;
+  }
 </script>
 
 <div class="view">
@@ -174,6 +234,7 @@
                   <p class="playbook-op">{playbookMeta[p.playbook_id].operation}</p>
                 {/if}
                 <p>{p.device_address || 'unknown device'} · {p.rule_id || 'unknown rule'} · {p.severity || 'unknown severity'}</p>
+                <p class="detection-context">{buildContextSummary(p)}</p>
                 {#if playbookMeta[p.playbook_id]?.description}
                   <p class="playbook-desc">{playbookMeta[p.playbook_id].description.trim()}</p>
                 {/if}
@@ -253,6 +314,7 @@
   .proposal p { margin: 0; color: var(--muted); font-size: 13px; }
   .playbook-op { color: var(--fg) !important; font-weight: 500; font-size: 13px !important; margin-bottom: 2px !important; }
   .playbook-desc { color: var(--muted); font-size: 12px !important; margin-top: 6px !important; line-height: 1.5; white-space: pre-wrap; }
+  .detection-context { color: var(--fg) !important; font-size: 12px !important; margin-top: 4px !important; font-style: italic; opacity: 0.85; }
   .time { color: var(--muted); font-size: 12px; white-space: nowrap; }
   .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin: 14px 0; }
   .detail-grid span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
