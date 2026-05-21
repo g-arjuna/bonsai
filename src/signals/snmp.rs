@@ -330,12 +330,7 @@ impl SnmpTargetMap {
         let entries = targets
             .iter()
             .map(|target| SnmpTargetEntry {
-                address: target
-                    .address
-                    .split(':')
-                    .next()
-                    .unwrap_or(&target.address)
-                    .to_string(),
+                address: target.address.clone(),
                 hostname: target.hostname.clone().unwrap_or_default(),
                 vendor: target.vendor.clone().unwrap_or_default(),
                 role: target.role.clone().unwrap_or_default(),
@@ -346,7 +341,10 @@ impl SnmpTargetMap {
     }
 
     fn resolve(&self, peer_ip: &str, _event: &SnmpTrapEvent) -> ResolvedTarget {
-        if let Some(entry) = self.entries.iter().find(|entry| entry.address == peer_ip) {
+        let peer_base = peer_ip.split(':').next().unwrap_or(peer_ip);
+        if let Some(entry) = self.entries.iter().find(|entry| {
+            entry.address.split(':').next().unwrap_or(&entry.address) == peer_base
+        }) {
             return ResolvedTarget {
                 address: entry.address.clone(),
                 hostname: if entry.hostname.is_empty() {

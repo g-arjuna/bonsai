@@ -434,6 +434,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     // ── Correlation buffer sweep task ─────────────────────────────────────────
     if let Some(Store::Core(ref s)) = store {
         let corr_buf = std::sync::Arc::clone(&s.correlation_buffer);
+        let detection_store = std::sync::Arc::clone(s);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -441,20 +442,55 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 interval.tick().await;
                 let flushed = corr_buf.drain_expired();
                 for slot in &flushed {
-                    if slot.is_multi_source() {
-                        tracing::info!(
-                            device = %slot.key.device_address,
-                            semantic = %slot.key.semantic_type,
-                            sub_key = %slot.key.sub_key,
-                            sources = ?slot.source_types,
-                            state_change_ids = ?slot.state_change_event_ids,
-                            "correlation buffer: multi-source event fused"
-                        );
-                        metrics::counter!(
-                            "bonsai_correlation_multi_source_total",
-                            "semantic" => slot.key.semantic_type.clone(),
+                    let severity = match slot.key.semantic_type.as_str() {
+                        "bgp_neighbor_down" | "interface_down" | "bfd_session_down"
+                        | "isis_adjacency_down" | "ospf_neighbor_down" => "critical",
+                        _ => "warning",
+                    };
+                    let source_types_json =
+                        serde_json::to_string(&slot.source_types).unwrap_or_default();
+                    let first_sce_id =
+                        slot.state_change_event_ids.first().cloned().unwrap_or_default();
+                    match detection_store
+                        .write_detection(
+                            slot.key.device_address.clone(),
+                            slot.key.semantic_type.clone(),
+                            severity.to_string(),
+                            slot.detail_json.clone(),
+                            source_types_json,
+                            0,
+                            slot.first_signal_ns,
+                            first_sce_id,
+                            slot.state_change_event_ids.clone(),
                         )
-                        .increment(1);
+                        .await
+                    {
+                        Ok(det_id) => {
+                            tracing::info!(
+                                detection_id = %det_id,
+                                device = %slot.key.device_address,
+                                semantic = %slot.key.semantic_type,
+                                sub_key = %slot.key.sub_key,
+                                sources = ?slot.source_types,
+                                multi_source = slot.is_multi_source(),
+                                "detection event written"
+                            );
+                            if slot.is_multi_source() {
+                                metrics::counter!(
+                                    "bonsai_correlation_multi_source_total",
+                                    "semantic" => slot.key.semantic_type.clone(),
+                                )
+                                .increment(1);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                device = %slot.key.device_address,
+                                semantic = %slot.key.semantic_type,
+                                "failed to write detection event from correlation buffer"
+                            );
+                        }
                     }
                 }
             }

@@ -11,9 +11,27 @@ facts:
     field_schema:
       peer_address: string
       new_state: string
+  - fact_type: bgp_neighbor
+    category: protocol
+    regex: '(?i)\bPeer (?P<peer_address>\d{1,3}(?:\.\d{1,3}){3})\s+moved\s+from\b.*\bto\s+lower\s+state\s+(?P<new_state>\w+)'
+    field_schema:
+      peer_address: string
+      new_state: string
+  - fact_type: bgp_neighbor
+    category: protocol
+    regex: '(?i)\bPeer (?P<peer_address>\d{1,3}(?:\.\d{1,3}){3})\s+moved\s+into\s+the\s+(?P<new_state>established)\s+state'
+    field_schema:
+      peer_address: string
+      new_state: string
   - fact_type: interface_state
     category: custom
     regex: '(?i)interface (?P<if_name>[A-Za-z0-9./:_-]+).*(?:state|link).*(?P<new_state>up|down|administratively down|errdisabled)'
+    field_schema:
+      if_name: string
+      new_state: string
+  - fact_type: interface_state
+    category: custom
+    regex: '(?i)interface (?P<if_name>[A-Za-z0-9./:_-]+)\s+is\s+now\s+(?P<new_state>up|down)'
     field_schema:
       if_name: string
       new_state: string

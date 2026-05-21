@@ -88,3 +88,17 @@ patterns:
     trap_oid: "1.3.6.1.6.3.1.1.5.5"
     fields: {}
     field_schema: {}
+
+  # Nokia SR-OS / SR Linux enterprise BGP traps (TIMETRA-BGP-MIB).
+  # Peer address is encoded in the OID index suffix, not in a varbind value,
+  # so peer_address cannot be extracted here without OID-suffix parsing.
+  # These entries fix categorisation from snmp_enterprise_specific → bgp_peer_backward_transition/bgp_peer_state.
+  - fact_type: bgp_peer_backward_transition
+    trap_oid: "1.3.6.1.4.1.6527.3.1.3.14.0.7"
+    fields: {}
+    field_schema: {}
+
+  - fact_type: bgp_peer_state
+    trap_oid: "1.3.6.1.4.1.6527.3.1.3.14.0.8"
+    fields: {}
+    field_schema: {}

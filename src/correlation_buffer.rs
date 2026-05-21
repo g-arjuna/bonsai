@@ -201,8 +201,10 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
     // Parse detail for sub-key fields. Best-effort — fall back to empty sub_key.
     let detail: serde_json::Value = serde_json::from_str(detail_json).unwrap_or_default();
 
-    let peer_address = || {
-        detail.get("peer_address")
+    // BGP/BFD detail uses "peer"; syslog/SNMP use "peer_address"/"peer_addr".
+    let peer = || {
+        detail.get("peer")
+            .or_else(|| detail.get("peer_address"))
             .or_else(|| detail.get("peer_addr"))
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -216,30 +218,169 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
             .unwrap_or("")
             .to_string()
     };
+    let new_state = || {
+        detail.get("new_state")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase()
+    };
 
     match event_type {
-        // BGP peer events — keyed by peer_address
+        // gNMI BGP: direction from new_state, sub-keyed by peer
+        "bgp_session_change" => {
+            let state = new_state();
+            if state == "established" {
+                Some(("bgp_neighbor_up".to_string(), peer()))
+            } else if !state.is_empty() {
+                Some(("bgp_neighbor_down".to_string(), peer()))
+            } else {
+                None
+            }
+        }
+        // BMP / syslog BGP legacy names
         "bgp_session_down" | "bgp_neighbor_down" | "bgp_peer_state"
         | "bgp_peer_backward_transition" | "peer_down" => {
-            Some(("bgp_neighbor_down".to_string(), peer_address()))
+            Some(("bgp_neighbor_down".to_string(), peer()))
         }
         "bgp_session_up" | "bgp_neighbor_up" | "peer_up" => {
-            Some(("bgp_neighbor_up".to_string(), peer_address()))
+            Some(("bgp_neighbor_up".to_string(), peer()))
         }
-        // Interface events — keyed by interface name
-        "interface_down" | "link_down" => Some(("interface_down".to_string(), if_name())),
-        "interface_up" | "link_up" => Some(("interface_up".to_string(), if_name())),
-        // BFD events — keyed by peer address
-        "bfd_session_down" | "bfd_down" => Some(("bfd_session_down".to_string(), peer_address())),
-        "bfd_session_up" | "bfd_up" => Some(("bfd_session_up".to_string(), peer_address())),
-        // OSPF/IS-IS adjacency events — keyed by peer address
-        "ospf_neighbor_down" | "ospf_nbr_state_change" => {
-            Some(("ospf_neighbor_down".to_string(), peer_address()))
+        // gNMI BFD: direction from new_state
+        "bfd_session_change" => {
+            let state = new_state();
+            if state == "up" {
+                Some(("bfd_session_up".to_string(), peer()))
+            } else if !state.is_empty() {
+                Some(("bfd_session_down".to_string(), peer()))
+            } else {
+                None
+            }
+        }
+        "bfd_session_down" | "bfd_down" => Some(("bfd_session_down".to_string(), peer())),
+        "bfd_session_up" | "bfd_up" => Some(("bfd_session_up".to_string(), peer())),
+        // gNMI IS-IS: direction from new_state, sub-keyed by system_id
+        "isis_adjacency_change" => {
+            let state = new_state();
+            let sid = detail.get("system_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if state == "up" {
+                Some(("isis_adjacency_up".to_string(), sid))
+            } else if !state.is_empty() {
+                Some(("isis_adjacency_down".to_string(), sid))
+            } else {
+                None
+            }
         }
         "isis_adj_state_change" | "isis_adjacency_down" => {
-            Some(("isis_adjacency_down".to_string(), peer_address()))
+            Some(("isis_adjacency_down".to_string(), peer()))
         }
-        // Events that are inherently single-source — do not buffer
+        // BMP peer state — top-level session_state + peer_address
+        "bmp_session_change" => {
+            let state = detail
+                .get("session_state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let bmp_peer = detail
+                .get("peer_address")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if state == "established" {
+                Some(("bgp_neighbor_up".to_string(), bmp_peer))
+            } else if state == "down" {
+                Some(("bgp_neighbor_down".to_string(), bmp_peer))
+            } else {
+                None
+            }
+        }
+        // SNMP fact events: direction from fact_type, interface from fields.interface_name
+        "snmp_fact_joined" | "snmp_fact_orphan" => {
+            let fact_type = detail.get("fact_type").and_then(|v| v.as_str()).unwrap_or("");
+            let fields = detail.get("fields").cloned().unwrap_or_default();
+            let field_str = |k: &str| {
+                fields.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
+            };
+            match fact_type {
+                "link_down" => Some(("interface_down".to_string(), field_str("interface_name"))),
+                "link_up" => Some(("interface_up".to_string(), field_str("interface_name"))),
+                "bgp_peer_state" | "bgp_peer_backward_transition" => {
+                    let state = field_str("peer_state");
+                    if state == "established" || state == "6" {
+                        Some(("bgp_neighbor_up".to_string(), peer()))
+                    } else {
+                        Some(("bgp_neighbor_down".to_string(), peer()))
+                    }
+                }
+                _ => None,
+            }
+        }
+        // Syslog structured fact events (same event_type pattern as SNMP facts)
+        "syslog_fact_joined" | "syslog_fact_orphan" => {
+            let fact_type = detail.get("fact_type").and_then(|v| v.as_str()).unwrap_or("");
+            let fields = detail.get("fields").cloned().unwrap_or_default();
+            let field_str = |k: &str| {
+                fields.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
+            };
+            let new_state = || field_str("new_state").to_lowercase();
+            match fact_type {
+                "bgp_neighbor" => {
+                    let state = new_state();
+                    let p = field_str("peer_address");
+                    if state == "established" || state == "up" {
+                        Some(("bgp_neighbor_up".to_string(), p))
+                    } else if !state.is_empty() {
+                        Some(("bgp_neighbor_down".to_string(), p))
+                    } else {
+                        None
+                    }
+                }
+                "interface_state" => {
+                    let state = new_state();
+                    let iface = field_str("if_name");
+                    if state == "up" {
+                        Some(("interface_up".to_string(), iface))
+                    } else if !state.is_empty() {
+                        Some(("interface_down".to_string(), iface))
+                    } else {
+                        None
+                    }
+                }
+                "isis_adjacency" => {
+                    let state = new_state();
+                    let nbr = field_str("neighbor_id");
+                    if state == "up" {
+                        Some(("isis_adjacency_up".to_string(), nbr))
+                    } else if !state.is_empty() {
+                        Some(("isis_adjacency_down".to_string(), nbr))
+                    } else {
+                        None
+                    }
+                }
+                "bfd_session" => {
+                    let state = new_state();
+                    let remote = field_str("remote_address");
+                    if state == "up" {
+                        Some(("bfd_session_up".to_string(), remote))
+                    } else if !state.is_empty() {
+                        Some(("bfd_session_down".to_string(), remote))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        }
+        // Direct interface events
+        "interface_down" | "link_down" => Some(("interface_down".to_string(), if_name())),
+        "interface_up" | "link_up" => Some(("interface_up".to_string(), if_name())),
+        // OSPF
+        "ospf_neighbor_down" | "ospf_nbr_state_change" => {
+            Some(("ospf_neighbor_down".to_string(), peer()))
+        }
+        // Inherently single-source — do not buffer
         _ => None,
     }
 }

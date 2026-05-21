@@ -35,45 +35,6 @@ retention_days = 3
 
 # ── Signal receivers — all enabled ───────────────────────────────────────────
 
-[signals.syslog]
-enabled      = true
-udp_addr     = "0.0.0.0:5514"
-tcp_addr     = "0.0.0.0:6514"
-archive_path = "runtime/signals/syslog.jsonl"
-max_frame_bytes = 8192
-
-[signals.snmp]
-enabled      = true
-udp_addr     = "0.0.0.0:9162"
-archive_path = "runtime/signals/snmp.jsonl"
-max_frame_bytes = 8192
-
-# ── Streaming receivers — all enabled ────────────────────────────────────────
-
-[streaming.bmp]
-enabled      = true
-tcp_addr     = "0.0.0.0:5000"
-archive_path = "runtime/streaming/bmp.jsonl"
-max_frame_bytes = 65535
-
-[streaming.otlp]
-enabled   = true
-http_addr = "0.0.0.0:4318"
-
-[streaming.netflow]
-enabled  = true
-udp_addr = "0.0.0.0:2055"
-
-[streaming.bgp_ls]
-enabled  = false
-tcp_addr = "127.0.0.1:15071"
-
-[streaming.pcep]
-enabled  = false
-tcp_addr = "0.0.0.0:4189"
-
-# ── Retention — short for testing ────────────────────────────────────────────
-
 [retention]
 enabled                 = true
 max_age_hours           = 4
@@ -106,6 +67,7 @@ mgmt_subnet = "172.100.109.0/24"
 [[target]]
 address    = "172.100.109.11:57400"
 hostname   = "srl-super1"
+vendor     = "nokia_srl"
 role       = "super-spine"
 site       = "signal-test-lab"
 tls_domain = "clab-bonsai-signal-test-srl-super1"
@@ -116,6 +78,7 @@ password   = "NokiaSrl1!"
 [[target]]
 address    = "172.100.109.12:57400"
 hostname   = "srl-spine1"
+vendor     = "nokia_srl"
 role       = "spine"
 site       = "signal-test-lab"
 tls_domain = "clab-bonsai-signal-test-srl-spine1"
@@ -126,6 +89,7 @@ password   = "NokiaSrl1!"
 [[target]]
 address    = "172.100.109.13:57400"
 hostname   = "srl-spine2"
+vendor     = "nokia_srl"
 role       = "spine"
 site       = "signal-test-lab"
 tls_domain = "clab-bonsai-signal-test-srl-spine2"
@@ -136,6 +100,7 @@ password   = "NokiaSrl1!"
 [[target]]
 address    = "172.100.109.14:57400"
 hostname   = "srl-leaf1"
+vendor     = "nokia_srl"
 role       = "leaf"
 site       = "signal-test-lab"
 tls_domain = "clab-bonsai-signal-test-srl-leaf1"
@@ -146,6 +111,7 @@ password   = "NokiaSrl1!"
 [[target]]
 address    = "172.100.109.15:57400"
 hostname   = "srl-leaf2"
+vendor     = "nokia_srl"
 role       = "leaf"
 site       = "signal-test-lab"
 tls_domain = "clab-bonsai-signal-test-srl-leaf2"
@@ -156,6 +122,7 @@ password   = "NokiaSrl1!"
 [[target]]
 address    = "172.100.109.16:57400"
 hostname   = "srl-leaf3"
+vendor     = "nokia_srl"
 role       = "leaf"
 site       = "signal-test-lab"
 tls_domain = "clab-bonsai-signal-test-srl-leaf3"
@@ -166,6 +133,7 @@ password   = "NokiaSrl1!"
 [[target]]
 address    = "172.100.109.17:57400"
 hostname   = "srl-leaf4"
+vendor     = "nokia_srl"
 role       = "leaf"
 site       = "signal-test-lab"
 tls_domain = "clab-bonsai-signal-test-srl-leaf4"
@@ -261,3 +229,32 @@ site       = "signal-test-lab"
 # Add vault credential:
 #   ./bonsai credential add --alias snow-pdi --username <pdi-user> --password <pdi-password>
 # ─────────────────────────────────────────────────────────────────────────────
+
+[streaming.bmp]
+enabled = true
+tcp_addr = "0.0.0.0:5000"
+
+[streaming.bgp_ls]
+enabled = false
+tcp_addr = "127.0.0.1:15071"
+
+[streaming.pcep]
+enabled = false
+tcp_addr = "0.0.0.0:4189"
+
+[streaming.otlp]
+enabled = true
+http_addr = "0.0.0.0:4318"
+
+[streaming.netflow]
+enabled = true
+udp_addr = "0.0.0.0:2055"
+
+[signals.syslog]
+enabled = true
+udp_addr = "0.0.0.0:5514"
+tcp_addr = "0.0.0.0:6514"
+
+[signals.snmp]
+enabled = true
+udp_addr = "0.0.0.0:9162"

@@ -443,12 +443,7 @@ impl SyslogTargetMap {
                 }
                 Some(SyslogTargetEntry {
                     hostname: hostname.to_ascii_lowercase(),
-                    address: target
-                        .address
-                        .split(':')
-                        .next()
-                        .unwrap_or(&target.address)
-                        .to_string(),
+                    address: target.address.clone(),
                     vendor: target.vendor.clone().unwrap_or_default(),
                     role: target.role.clone().unwrap_or_default(),
                     site: target.site.clone().unwrap_or_default(),

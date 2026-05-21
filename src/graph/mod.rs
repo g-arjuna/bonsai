@@ -2759,7 +2759,7 @@ fn write_blocking(
         TelemetryEvent::InterfaceOperStatus {
             if_name,
             oper_status,
-        } => emit_oper_status_event(conn, update, &if_name, &oper_status, event_tx),
+        } => emit_oper_status_event(conn, update, &if_name, &oper_status, event_tx, corr_buf),
         TelemetryEvent::SyslogEvent { category } => {
             write_syslog_state_change_event(conn, update, &category, event_tx, corr_buf)
         }
@@ -5610,6 +5610,7 @@ fn emit_oper_status_event(
     if_name: &str,
     oper_status: &str,
     event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
     let id = format!("{}:{}", u.target, if_name);
     let normalized_oper_status = oper_status.to_ascii_lowercase();
@@ -5672,22 +5673,31 @@ fn emit_oper_status_event(
         return Ok(());
     }
 
+    let event_type = match normalized_oper_status.as_str() {
+        "down" => "interface_down",
+        "up"   => "interface_up",
+        _      => "interface_oper_status_change",
+    };
     let detail = serde_json::json!({
         "if_name": if_name,
+        "interface_name": if_name,
         "old_state": previous_oper_status.clone().unwrap_or_default(),
         "new_state": normalized_oper_status,
-        "oper_status": oper_status.to_ascii_lowercase(),
+        "oper_status": normalized_oper_status,
     })
     .to_string();
-    let _ = event_tx.send(BonsaiEvent {
-        device_address: u.target.clone(),
-        event_type: "interface_oper_status_change".to_string(),
-        detail_json: detail,
-        occurred_at_ns: u.timestamp_ns,
-        state_change_event_id: String::new(),
-        source_type: "gnmi".to_string(),
-    });
     debug!(target = %u.target, if_name, oper_status, "interface oper-status event emitted");
+    write_state_change_event(
+        conn,
+        &u.target,
+        event_type,
+        &detail,
+        "gnmi",
+        ts(u.timestamp_ns),
+        u.timestamp_ns,
+        event_tx,
+        corr_buf,
+    )?;
     Ok(())
 }
 
