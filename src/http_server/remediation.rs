@@ -116,6 +116,14 @@ pub(super) struct CreateInvestigationBody {
     trigger: String,
 }
 #[derive(Deserialize)]
+pub(super) struct InvestigationFeedbackBody {
+    rating: String,
+    #[serde(default)]
+    comment: String,
+    #[serde(default)]
+    operator: String,
+}
+#[derive(Deserialize)]
 pub(super) struct CompleteInvestigationBody {
     status: String,
     summary: String,
@@ -131,6 +139,7 @@ pub(super) struct InvestigationDetailResponse {
     investigation: crate::graph::InvestigationRecord,
     tool_calls: Vec<crate::graph::ToolCallRecord>,
 }
+use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use axum::{Json, extract::{Path, Query, State}, http::StatusCode, response::IntoResponse};
 use lbug::{Connection, Value};
@@ -1243,4 +1252,84 @@ pub async fn audit_log_handler(
     let root = std::path::Path::new(&state.runtime_dir);
     let entries = crate::audit::read_recent(root, q.limit.min(1000));
     Json(serde_json::json!({ "entries": entries }))
+}
+
+// ── D4-14 T4: Vault rekey ─────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub(super) struct VaultRekeyBody {
+    new_passphrase_env: String,
+}
+
+pub(super) async fn vault_rekey_handler(
+    State(state): State<AppState>,
+    Json(body): Json<VaultRekeyBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let env_var = body.new_passphrase_env.trim().to_string();
+    if env_var.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "new_passphrase_env is required".to_string(),
+        ));
+    }
+    let creds = Arc::clone(&state.credentials);
+    tokio::task::spawn_blocking(move || {
+        creds.rekey(&env_var)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+
+    let now = now_ns();
+    let _ = audit::append_trust_operation(
+        std::path::Path::new(&state.runtime_dir),
+        now,
+        "vault",
+        "rekey",
+        "",
+        Some(&format!("rekey via env var {}", body.new_passphrase_env)),
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Vault re-keyed successfully. Restart bonsai with the new passphrase."
+    })))
+}
+
+// ── D4-8 T2: Investigation feedback ──────────────────────────────────────────
+
+pub(super) async fn investigation_feedback_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<InvestigationFeedbackBody>,
+) -> Result<Json<crate::graph::FeedbackRecord>, (StatusCode, String)> {
+    let rating = body.rating.trim().to_lowercase();
+    if rating != "positive" && rating != "negative" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "rating must be 'positive' or 'negative'".to_string(),
+        ));
+    }
+    let operator = if body.operator.is_empty() {
+        std::env::var("BONSAI_OPERATOR").unwrap_or_else(|_| "unknown".to_string())
+    } else {
+        body.operator
+    };
+    state
+        .store
+        .add_investigation_feedback(id, rating, body.comment, operator)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+}
+
+pub(super) async fn investigation_accuracy_handler(
+    State(state): State<AppState>,
+) -> Result<Json<crate::graph::InvestigationAccuracy>, (StatusCode, String)> {
+    state
+        .store
+        .investigation_accuracy()
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
 }

@@ -347,7 +347,7 @@ There is also no UI indicator of graph health — operators have no visibility i
 - Last computed timestamp + manual refresh button.
 - Color-coded per dimension: green >80%, amber 50-80%, red <50%.
 
-**T4 — Investigation pre-flight check**
+**T4 — Investigation pre-flight check** ✅ batch5
 - In `investigation_runtime.rs`, before spawning an investigation: compute `investigation_readiness` score for the target device using quality metric logic.
 - If score < 40: prefix investigation summary with "WARNING: Graph data sparse for this device. Missing: {list_of_missing_signals}."
 - Store `context_quality_score` field on `Investigation` graph node.
@@ -433,11 +433,11 @@ There is also no UI indicator of graph health — operators have no visibility i
 
 ### Tasks
 
-**T1 — Structured RCA output**
+**T1 — Structured RCA output** ✅ batch5
 - After final LLM response, run a JSON-extraction pass to populate: `root_cause_type` (interface_down/bgp_peer_down/config_change/packet_loss/...), `confidence` (0.0-1.0), `affected_scope[]` (device addresses), `recommended_action` (human-readable), `missing_data[]` (what the LLM couldn't find).
 - Store as `result_json` on `Investigation` graph node.
 
-**T2 — Operator feedback loop**
+**T2 — Operator feedback loop** ✅ batch5
 - `POST /api/investigations/{id}/feedback`: `{rating: "correct"|"partial"|"wrong", comments: string, actual_root_cause: string}`.
 - Store as `InvestigationFeedback` node linked to `Investigation` via `HAS_FEEDBACK` edge.
 - UI: thumbs up/down + comment form in `Investigations.svelte` after investigation completes.
@@ -454,7 +454,7 @@ There is also no UI indicator of graph health — operators have no visibility i
 - Add `OllamaProvider`: local inference, configurable `base_url` (default `http://localhost:11434`).
 - All keys resolved from vault by alias (D4-3 T5) rather than env vars.
 
-**T5 — Graph-schema-aware system prompt**
+**T5 — Graph-schema-aware system prompt** ✅ batch5
 - Import `GRAPH_SCHEMA` constant from `src/http_server/nl_query.rs` into `src/investigation_runtime.rs`.
 - Inject graph schema as additional system context so LLM knows available node types, relationships, and properties before it starts querying.
 - Add few-shot investigation examples covering: BGP session down, interface down, 30% packet loss, config-caused fault, redundancy loss.
@@ -725,6 +725,9 @@ Over time, `DetectionEvent` nodes, `AppFlow` nodes from heavy flow sources, and 
 
 **T4 — Startup crash path audit** ✅ batch2
 - Vault open now emits structured `error!` log with path+env var before propagating `?`. Tokio `#[tokio::main]` returns non-zero exit on `Err`. No `unwrap()` on vault path.
+
+**T4a — Vault rekey HTTP endpoint** ✅ batch5
+- `POST /api/vault/rekey` with `{new_passphrase_env}` body. Calls `CredentialVault::rekey()`, audit-logged.
 
 **T5 — Vault init documentation**
 - Document in `scripts/install.sh` and README: vault passphrase requirements (minimum length, complexity), what happens if passphrase is lost (credentials are unrecoverable — backup the `.age` file before any re-key operation), and how to run re-key.

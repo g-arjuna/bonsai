@@ -10,8 +10,15 @@
   let triggerForm = $state({ detection_id: '', device_address: '', trigger: 'operator' });
   let showTrigger = $state(false);
   let submitting = $state(false);
+  let feedbackComment = $state('');
+  let feedbackSending = $state(false);
+  let feedbackSent = $state('');
+  let accuracy = $state(null);
 
-  onMount(async () => { await loadInvestigations(); });
+  onMount(async () => {
+    await loadInvestigations();
+    await loadAccuracy();
+  });
 
   async function loadInvestigations() {
     loading = true;
@@ -77,6 +84,34 @@
 
   function hasProposal(inv) {
     return inv?.proposal_json && inv.proposal_json !== '{}' && inv.proposal_json !== '';
+  }
+
+  async function sendFeedback(rating) {
+    if (!selected || feedbackSending) return;
+    feedbackSending = true;
+    feedbackSent = '';
+    try {
+      const r = await fetch(`/api/investigations/${selected.id}/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rating, comment: feedbackComment }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      feedbackSent = rating;
+      feedbackComment = '';
+      await loadAccuracy();
+    } catch (e) {
+      error = e.message;
+    } finally {
+      feedbackSending = false;
+    }
+  }
+
+  async function loadAccuracy() {
+    try {
+      const r = await fetch('/api/investigations/accuracy');
+      if (r.ok) accuracy = await r.json();
+    } catch (_) {}
   }
 </script>
 
@@ -195,6 +230,30 @@
         </div>
       {/if}
 
+      <!-- D4-8 T2: Operator feedback -->
+      {#if selected.status === 'completed' || selected.status === 'complete'}
+        <div class="section-label">Operator Feedback</div>
+        {#if feedbackSent}
+          <div class="feedback-sent">
+            Feedback recorded: <strong>{feedbackSent}</strong>
+          </div>
+        {:else}
+          <div class="feedback-row">
+            <button class="btn-thumb btn-up" onclick={() => sendFeedback('positive')} disabled={feedbackSending} title="Accurate">
+              <span aria-hidden="true">&#x1F44D;</span> Accurate
+            </button>
+            <button class="btn-thumb btn-down" onclick={() => sendFeedback('negative')} disabled={feedbackSending} title="Inaccurate">
+              <span aria-hidden="true">&#x1F44E;</span> Inaccurate
+            </button>
+          </div>
+          <input
+            class="form-input feedback-comment"
+            placeholder="Optional comment…"
+            bind:value={feedbackComment}
+          />
+        {/if}
+      {/if}
+
       <!-- Budget warning -->
       {#if selected.status === 'failed' && selected.summary?.startsWith('Budget exceeded')}
         <div class="budget-warn">
@@ -203,6 +262,18 @@
       {/if}
     {/if}
   </div>
+
+  <!-- Accuracy sidebar -->
+  {#if accuracy && accuracy.total_feedback > 0}
+    <div class="accuracy-bar">
+      <div class="accuracy-title">Investigation Accuracy</div>
+      <div class="accuracy-stat">{accuracy.precision_pct}% positive</div>
+      <div class="accuracy-detail">
+        {accuracy.positive} ↑ / {accuracy.negative} ↓ of {accuracy.total_feedback} ratings
+        ({accuracy.total_investigations} investigations)
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -286,4 +357,24 @@
 
   .error-bar { background: #2a1010; color: #ff7d7d; font-size: 0.8rem; padding: 8px 14px; }
   .inv-trigger { text-transform: capitalize; }
+
+  .feedback-row { display: flex; gap: 8px; margin-bottom: 6px; }
+  .btn-thumb {
+    padding: 5px 14px; border-radius: 4px; cursor: pointer; font-size: 0.82rem;
+    border: 1px solid #444; background: #1a1a1a; color: #ccc;
+  }
+  .btn-thumb:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-up:hover:not(:disabled) { background: #1a3a1a; border-color: #2d6a2d; color: #7dff7d; }
+  .btn-down:hover:not(:disabled) { background: #3a1a1a; border-color: #6a2d2d; color: #ff7d7d; }
+  .feedback-comment { width: 320px; margin-bottom: 8px; }
+  .feedback-sent {
+    font-size: 0.85rem; color: #7dff7d; padding: 6px 0;
+  }
+  .accuracy-bar {
+    width: 180px; min-width: 160px; border-left: 1px solid #333;
+    padding: 16px 14px; display: flex; flex-direction: column; gap: 6px;
+  }
+  .accuracy-title { font-size: 0.78rem; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
+  .accuracy-stat { font-size: 1.1rem; font-weight: 700; color: #7dff7d; }
+  .accuracy-detail { font-size: 0.73rem; color: #666; }
 </style>

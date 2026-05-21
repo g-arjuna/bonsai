@@ -64,7 +64,8 @@ pub fn daily_token_usage() -> (u64, u64, u64) {
 
 /// Compact graph schema description injected into the LLM system prompt.
 /// Manually maintained to match the DDL in `graph/mod.rs`.
-const GRAPH_SCHEMA: &str = "\
+/// Also used by investigation_runtime.rs (D4-8 T5) for agent graph awareness.
+pub const GRAPH_SCHEMA: &str = "\
 ## Graph Schema (LadybugDB / openCypher subset)
 
 ### Node Tables

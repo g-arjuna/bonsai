@@ -146,6 +146,27 @@ pub struct ToolCallRecord {
     pub called_at_ns: i64,
 }
 
+/// D4-8 T2: Operator feedback on investigation quality.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedbackRecord {
+    pub id: String,
+    pub investigation_id: String,
+    pub rating: String, // "positive" | "negative"
+    pub comment: String,
+    pub operator: String,
+    pub created_at_ns: i64,
+}
+
+/// D4-8 T2: Aggregate accuracy stats for the investigations/accuracy endpoint.
+#[derive(Debug, Clone, Serialize)]
+pub struct InvestigationAccuracy {
+    pub total_investigations: usize,
+    pub total_feedback: usize,
+    pub positive: usize,
+    pub negative: usize,
+    pub precision_pct: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingRecord {
     pub device_address: String,
@@ -1016,6 +1037,25 @@ impl GraphStore {
                 FROM Investigation TO AgentToolCall)",
         )
         .context("create HAS_TOOL_CALL rel table")?;
+
+        // D4-8 T2: Operator feedback on investigation results (thumbs up/down + comment).
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS InvestigationFeedback(\
+                id                STRING,\
+                investigation_id  STRING,\
+                rating            STRING,\
+                comment           STRING,\
+                operator          STRING,\
+                created_at        TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create InvestigationFeedback table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_FEEDBACK(\
+                FROM Investigation TO InvestigationFeedback)",
+        )
+        .context("create HAS_FEEDBACK rel table")?;
 
         // id = "{device_address}:{version}" to allow one embedding per (device, schema version).
         conn.query(
@@ -3054,6 +3094,105 @@ impl GraphStore {
                     })
                     .collect(),
             )
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    // ── D4-8 T2: Feedback methods ────────────────────────────────────────────
+
+    pub async fn add_investigation_feedback(
+        &self,
+        investigation_id: String,
+        rating: String,
+        comment: String,
+        operator: String,
+    ) -> Result<FeedbackRecord> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock");
+            let conn = Connection::new(&db).context("add_feedback conn")?;
+            let id = Uuid::new_v4().to_string();
+            let now = now_ns();
+            let mut stmt = conn
+                .prepare(
+                    "CREATE (f:InvestigationFeedback {id: $id, investigation_id: $iid, \
+                     rating: $rating, comment: $comment, operator: $op, created_at: $ts})",
+                )
+                .context("add_feedback prepare")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("iid", Value::String(investigation_id.clone())),
+                    ("rating", Value::String(rating.clone())),
+                    ("comment", Value::String(comment.clone())),
+                    ("op", Value::String(operator.clone())),
+                    ("ts", ts(now)),
+                ],
+            )
+            .context("add_feedback execute")?;
+            // Edge: Investigation -[:HAS_FEEDBACK]-> InvestigationFeedback
+            let mut edge_stmt = conn
+                .prepare(
+                    "MATCH (i:Investigation {id: $iid}), (f:InvestigationFeedback {id: $fid}) \
+                     CREATE (i)-[:HAS_FEEDBACK]->(f)",
+                )
+                .context("add_feedback edge prepare")?;
+            conn.execute(
+                &mut edge_stmt,
+                vec![
+                    ("iid", Value::String(investigation_id.clone())),
+                    ("fid", Value::String(id.clone())),
+                ],
+            )
+            .context("add_feedback edge execute")?;
+            Ok::<_, anyhow::Error>(FeedbackRecord {
+                id,
+                investigation_id,
+                rating,
+                comment,
+                operator,
+                created_at_ns: now,
+            })
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn investigation_accuracy(&self) -> Result<InvestigationAccuracy> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("investigation_accuracy conn")?;
+            let total_investigations: usize = conn
+                .query(
+                    "MATCH (i:Investigation) WHERE i.status = 'completed' RETURN count(i)",
+                )
+                .context("accuracy: total_inv")?
+                .next()
+                .map(|r| match &r[0] { Value::Int64(n) => *n as usize, _ => 0 })
+                .unwrap_or(0);
+            let feedback_rows: Vec<String> = conn
+                .query("MATCH (f:InvestigationFeedback) RETURN f.rating")
+                .context("accuracy: feedback")?
+                .map(|r| read_str(&r[0]))
+                .collect();
+            let total_feedback = feedback_rows.len();
+            let positive = feedback_rows.iter().filter(|r| r == &"positive").count();
+            let negative = feedback_rows.iter().filter(|r| r == &"negative").count();
+            let precision_pct = if total_feedback == 0 {
+                0.0
+            } else {
+                (positive as f64 / total_feedback as f64 * 100.0 * 10.0).round() / 10.0
+            };
+            Ok::<_, anyhow::Error>(InvestigationAccuracy {
+                total_investigations,
+                total_feedback,
+                positive,
+                negative,
+                precision_pct,
+            })
         })
         .await
         .context("spawn_blocking panicked")?
