@@ -1299,6 +1299,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         Some(ha_coordinator),
                         cfg.target.clone(),
                         cfg.ai.clone(),
+                        cfg.gnn.clone(),
                         auto_investigate.then_some(investigation_rx),
                     ),
                 )

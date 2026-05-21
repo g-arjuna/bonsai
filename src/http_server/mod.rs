@@ -62,7 +62,7 @@ mod ha;
 
 use mcp_routes::{openapi_json_handler, resolve_handler, schema_handler, swagger_ui_handler};
 use remediation::{approvals_approve_handler, approvals_create_handler, approvals_list_handler, approvals_reject_handler, approvals_rollback_handler, trust_list_handler, trust_graduate_handler, snow_integration_test_handler, servicenow_aiops_sync_handler, list_overrides, add_override, remove_override, list_investigations_handler, create_investigation_handler, get_investigation_handler, list_tool_calls_handler, complete_investigation_handler, grounded_incident_handler, webhook_change_event_handler, change_context_handler, servicenow_change_sync_handler, list_changes_handler, playbooks_catalog_handler, audit_log_handler};
-use observability::{topology_handler, path_handler, blast_radius_handler, detections_handler, trace_handler, readiness_handler, operations_handler, test_status_handler, daily_check_handler, weekly_trend_handler, events_handler, events_history_handler, incidents_handler, graph_insights_handler, explorer_query_handler, list_saved_queries_handler, create_saved_query_handler, delete_saved_query_handler, upsert_embeddings_handler, list_embeddings_handler, events_inject_handler};
+use observability::{topology_handler, path_handler, blast_radius_handler, detections_handler, trace_handler, readiness_handler, operations_handler, test_status_handler, daily_check_handler, weekly_trend_handler, gnn_calibration_handler, gnn_score_handler, events_handler, events_history_handler, incidents_handler, graph_insights_handler, explorer_query_handler, list_saved_queries_handler, create_saved_query_handler, delete_saved_query_handler, upsert_embeddings_handler, list_embeddings_handler, events_inject_handler};
 use device::{device_detail_handler, device_enrichment_handler, device_enrichment_conflicts_handler, device_cmdb_handler, device_config_history_handler, device_gnmi_readiness_handler, device_streaming_readiness_handler, device_recommendations_handler, yang_modules_handler, yang_search_handler, apply_device_selected_paths_handler, device_reparse_handler, profiles_handler, save_custom_profile_handler, enrichment_list_handler, enrichment_upsert_handler, enrichment_remove_handler, enrichment_test_handler, enrichment_run_handler, enrichment_audit_handler, netbox_import_handler};
 use device::InterfaceDetailJson;
 use managed_devices::{managed_devices_handler, discover_handler, credentials_handler, add_credential_handler, update_credential_handler, remove_credential_handler, test_credential_handler, add_managed_device_handler, add_managed_device_with_paths_handler, sites_handler, upsert_site_handler, site_summary_handler, remove_site_handler, remove_managed_device_handler, bulk_managed_device_action_handler, remove_impact_handler};
@@ -650,6 +650,8 @@ pub struct AppState {
     pub targets: Vec<crate::config::TargetConfig>,
     /// D3-6: AI config for investigation runtime.
     pub ai_config: crate::config::AiConfig,
+    /// D3-9: GNN inference config for score thresholding and anomaly detection.
+    pub gnn_config: crate::config::GnnConfig,
 }
 
 impl axum::extract::FromRef<AppState> for Option<Arc<crate::ha_coordinator::HACoordinator>> {
@@ -695,6 +697,7 @@ pub fn router(
     ha_coordinator: Option<Arc<crate::ha_coordinator::HACoordinator>>,
     targets: Vec<crate::config::TargetConfig>,
     ai_config: crate::config::AiConfig,
+    gnn_config: crate::config::GnnConfig,
     investigation_rx: Option<tokio::sync::mpsc::Receiver<crate::write_coordinator::AutoInvestigateRequest>>,
 ) -> Router {
     let state = AppState {
@@ -731,6 +734,7 @@ pub fn router(
         event_bus,
         targets,
         ai_config,
+        gnn_config,
     };
 
     // D3-6 T6: consume auto-investigate requests from the write coordinator.
@@ -810,6 +814,8 @@ fn observability_routes() -> Router<AppState> {
         .route("/api/operations", get(operations_handler))
         .route("/api/operations/daily-check", get(daily_check_handler))
         .route("/api/operations/weekly-trend", get(weekly_trend_handler))
+        .route("/api/operations/gnn-calibration", get(gnn_calibration_handler))
+        .route("/api/gnn/score", post(gnn_score_handler))
         .route("/api/trace/{id}", get(trace_handler))
         .route("/api/events", get(events_handler))
         .route("/api/events/history", get(events_history_handler))

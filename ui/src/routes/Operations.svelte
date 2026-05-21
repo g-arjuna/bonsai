@@ -7,6 +7,7 @@
   let dailyCheck = $state(null);
   let weeklyTrend = $state(null);
   let governance = $state(null);
+  let gnnCalibration = $state(null);
   let loading = $state(true);
   let error = $state(null);
 
@@ -25,13 +26,14 @@
 
   async function fetchAll() {
     try {
-      const [opsRes, collRes, topoRes, dcRes, wtRes, govRes] = await Promise.all([
+      const [opsRes, collRes, topoRes, dcRes, wtRes, govRes, gnnRes] = await Promise.all([
         fetch('/api/operations'),
         fetch('/api/assignment/status'),
         fetch('/api/topology'),
         fetch('/api/operations/daily-check'),
         fetch('/api/operations/weekly-trend'),
         fetch('/api/governance/state'),
+        fetch('/api/operations/gnn-calibration'),
       ]);
       if (!opsRes.ok) throw new Error(await opsRes.text());
       ops = await opsRes.json();
@@ -43,6 +45,7 @@
       if (dcRes.ok) dailyCheck = await dcRes.json();
       if (wtRes.ok) weeklyTrend = await wtRes.json();
       if (govRes.ok) governance = await govRes.json();
+      if (gnnRes.ok) gnnCalibration = await gnnRes.json();
       rssSamples     = [...rssSamples,     ops.rss_bytes           ?? 0].slice(-SPARKLINE_MAX);
       archiveSamples = [...archiveSamples, ops.archive_disk_bytes  ?? 0].slice(-SPARKLINE_MAX);
       graphSamples   = [...graphSamples,   ops.graph_disk_bytes    ?? 0].slice(-SPARKLINE_MAX);
@@ -471,6 +474,60 @@
       </div>
     {/if}
 
+    <!-- ── GNN Calibration ──────────────────────────────────────────────── -->
+    {#if gnnCalibration}
+      <div class="section-card">
+        <h3 style="margin-bottom:12px">GNN Anomaly Detection</h3>
+        {#if gnnCalibration.count === 0}
+          <p class="muted" style="font-size:13px">No scores recorded in the last 24h. GNN inference has not run yet or the database was recently reset.</p>
+        {:else}
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:14px">
+            <div class="stat-tile">
+              <span class="tile-label">Samples (24h)</span>
+              <span class="tile-value">{gnnCalibration.count.toLocaleString()}</span>
+            </div>
+            <div class="stat-tile">
+              <span class="tile-label">P50 Score</span>
+              <span class="tile-value">{gnnCalibration.p50?.toFixed(4) ?? '—'}</span>
+            </div>
+            <div class="stat-tile">
+              <span class="tile-label">P95 Score</span>
+              <span class="tile-value {(gnnCalibration.p95 ?? 0) >= 0.5 ? 'warn-val' : ''}">{gnnCalibration.p95?.toFixed(4) ?? '—'}</span>
+            </div>
+            <div class="stat-tile">
+              <span class="tile-label">Max Score</span>
+              <span class="tile-value">{gnnCalibration.max?.toFixed(4) ?? '—'}</span>
+            </div>
+            <div class="stat-tile">
+              <span class="tile-label">Detections Fired</span>
+              <span class="tile-value {(gnnCalibration.fired_count ?? 0) > 0 ? 'warn-val' : ''}">{gnnCalibration.fired_count ?? 0}</span>
+            </div>
+          </div>
+          {#if gnnCalibration.p95 != null}
+            {@const rec = gnnCalibration.p95 < 0.3 ? 'Scores are low — calibration looks healthy.' :
+                          gnnCalibration.p95 < 0.6 ? 'P95 approaching 0.5 threshold — monitor for false positives.' :
+                          'P95 above 0.5 — consider tuning threshold or reviewing training data.'}
+            <p class="muted" style="font-size:12px;margin:0 0 12px">Threshold recommendation: {rec}</p>
+          {/if}
+          {#if gnnCalibration.samples?.length}
+            <table>
+              <thead><tr><th>Device</th><th style="text-align:right">Score</th><th>Mode</th><th>Fired</th></tr></thead>
+              <tbody>
+                {#each gnnCalibration.samples as s}
+                  <tr>
+                    <td class="mono">{s.device_address}</td>
+                    <td style="text-align:right" class="{s.score >= 0.5 ? 'warn-val' : ''}">{s.score.toFixed(4)}</td>
+                    <td class="muted">{s.inference_mode}</td>
+                    <td>{s.fired_detection ? '⚑' : '—'}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
+        {/if}
+      </div>
+    {/if}
+
     <!-- ── Resource Governance ───────────────────────────────────────────── -->
     {#if governance && governance.status !== 'governance_not_started'}
       <div class="section-card">
@@ -735,6 +792,11 @@
     gap: 8px;
     flex-wrap: wrap;
   }
+
+  .stat-tile { background: var(--bg-glass); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 10px 14px; display: flex; flex-direction: column; gap: 4px; }
+  .tile-label { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.06em; }
+  .tile-value { font-size: 20px; font-weight: 600; font-family: var(--font-mono); }
+  .warn-val { color: var(--state-warn, #f59e0b); }
 
   @media (max-width: 900px) {
     .tile-grid { grid-template-columns: repeat(2, 1fr); }

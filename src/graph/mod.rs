@@ -1031,6 +1031,24 @@ impl GraphStore {
         )
         .context("create DeviceEmbedding table")?;
 
+        // ── GnnScore (D3-9 T3/T4) ────────────────────────────────────────────
+        // One row per device per inference run. In calibration mode scores are
+        // stored here but do NOT produce DetectionEvents. In production mode,
+        // scores above [gnn] threshold produce a DetectionEvent (rule_id=gnn_anomaly).
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS GnnScore(\
+                id             STRING,\
+                device_address STRING,\
+                score          DOUBLE,\
+                threshold      DOUBLE,\
+                inference_mode STRING,\
+                model_version  STRING,\
+                fired_detection BOOLEAN,\
+                scored_at      TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create GnnScore table")?;
+
         // ── Location hierarchy (D3-4 / graph-strategy) ───────────────────────
         // Rack already written by common::upsert_rack; create table here so the
         // schema is self-contained regardless of whether the enricher has run.
@@ -2494,6 +2512,105 @@ impl GraphStore {
                     })
                 })
                 .collect::<Result<Vec<_>>>()
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    /// Record a GNN inference score. In production mode with score >= threshold,
+    /// also writes a DetectionEvent (rule_id="gnn_anomaly") via the write coordinator.
+    /// Returns (score_id, fired_detection).
+    pub async fn write_gnn_score(
+        &self,
+        device_address: String,
+        score: f64,
+        threshold: f64,
+        inference_mode: String,
+        model_version: String,
+        fired_detection: bool,
+    ) -> Result<String> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock");
+            let conn = Connection::new(&db).context("write_gnn_score conn")?;
+            let now = now_ns();
+            let id = format!("gnn:{}:{}", device_address, now);
+            let mut stmt = conn
+                .prepare(
+                    "CREATE (g:GnnScore {id: $id, device_address: $addr, score: $score, \
+                     threshold: $thr, inference_mode: $mode, model_version: $ver, \
+                     fired_detection: $fired, scored_at: $ts})",
+                )
+                .context("write_gnn_score prepare")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("addr", Value::String(device_address)),
+                    ("score", Value::Double(score)),
+                    ("thr", Value::Double(threshold)),
+                    ("mode", Value::String(inference_mode)),
+                    ("ver", Value::String(model_version)),
+                    ("fired", Value::Bool(fired_detection)),
+                    ("ts", ts(now)),
+                ],
+            )
+            .context("write_gnn_score execute")?;
+            Ok::<_, anyhow::Error>(id)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    /// Return calibration stats for the last 24h: count, min, max, p50, p95 anomaly scores.
+    pub async fn read_gnn_calibration_stats(&self) -> Result<serde_json::Value> {
+        let day_ns: i64 = 86_400_000_000_000;
+        let since_ns = (now_ns() / day_ns) * day_ns; // start of today UTC
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("read_gnn_calibration_stats conn")?;
+            let cypher = format!(
+                "MATCH (g:GnnScore) WHERE g.scored_at >= {since_ns} RETURN g.score, g.device_address, g.inference_mode, g.fired_detection, g.scored_at"
+            );
+            let rows = conn.query(&cypher).context("read_gnn_calibration_stats query")?;
+            let mut scores: Vec<f64> = Vec::new();
+            let mut fired_count: u64 = 0;
+            let mut sample_rows: Vec<serde_json::Value> = Vec::new();
+            for r in rows {
+                let s = match &r[0] { Value::Float(f) => *f as f64, Value::Double(f) => *f, _ => 0.0 };
+                let fired = matches!(&r[3], Value::Bool(true));
+                scores.push(s);
+                if fired { fired_count += 1; }
+                if sample_rows.len() < 20 {
+                    sample_rows.push(serde_json::json!({
+                        "device_address": read_str(&r[1]),
+                        "score": s,
+                        "inference_mode": read_str(&r[2]),
+                        "fired_detection": fired,
+                        "scored_at_ns": read_ts_ns(&r[4]),
+                    }));
+                }
+            }
+            if scores.is_empty() {
+                return Ok::<_, anyhow::Error>(serde_json::json!({
+                    "count": 0, "min": null, "max": null,
+                    "p50": null, "p95": null, "fired_count": 0, "samples": []
+                }));
+            }
+            scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let n = scores.len();
+            let p50 = scores[n / 2];
+            let p95 = scores[(n as f64 * 0.95) as usize].min(scores[n - 1]);
+            Ok::<_, anyhow::Error>(serde_json::json!({
+                "count": n,
+                "min": scores[0],
+                "max": scores[n - 1],
+                "p50": p50,
+                "p95": p95,
+                "fired_count": fired_count,
+                "samples": sample_rows,
+            }))
         })
         .await
         .context("spawn_blocking panicked")?

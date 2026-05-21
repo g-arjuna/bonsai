@@ -1263,3 +1263,111 @@ pub(super) async fn events_inject_handler(
         )),
     }
 }
+
+// ── GET /api/operations/gnn-calibration ──────────────────────────────────────
+
+/// Return GNN score distribution stats for the last 24h.
+/// Used by the Operations UI calibration panel.
+pub async fn gnn_calibration_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    state
+        .store
+        .read_gnn_calibration_stats()
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+// ── POST /api/gnn/score ───────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct GnnScoreBody {
+    pub device_address: String,
+    pub score: f64,
+    #[serde(default)]
+    pub model_version: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct GnnScoreResponse {
+    pub id: String,
+    pub fired_detection: bool,
+    pub detection_id: Option<String>,
+}
+
+/// Called by the Python GNN sidecar with an anomaly score for a device.
+/// In production mode (score >= threshold) fires a DetectionEvent with
+/// rule_id="gnn_anomaly", which the auto-investigate gate will pick up.
+pub async fn gnn_score_handler(
+    State(state): State<AppState>,
+    Json(body): Json<GnnScoreBody>,
+) -> Result<Json<GnnScoreResponse>, (StatusCode, String)> {
+    let gnn = &state.gnn_config;
+    let is_production = gnn.inference_mode.to_ascii_lowercase() == "production";
+    let fired = is_production && body.score >= gnn.threshold;
+
+    let now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0);
+
+    let score_id = state
+        .store
+        .write_gnn_score(
+            body.device_address.clone(),
+            body.score,
+            gnn.threshold,
+            gnn.inference_mode.clone(),
+            body.model_version.clone(),
+            fired,
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let detection_id = if fired {
+        let features = serde_json::json!({
+            "anomaly_score": body.score,
+            "threshold": gnn.threshold,
+            "model_version": body.model_version,
+        })
+        .to_string();
+        match state
+            .store
+            .write_detection(
+                body.device_address.clone(),
+                "gnn_anomaly".to_string(),
+                "warn".to_string(),
+                features,
+                "gnn".to_string(),
+                0,
+                now_ns,
+                String::new(),
+                vec![],
+            )
+            .await
+        {
+            Ok(id) => {
+                tracing::info!(
+                    device = %body.device_address,
+                    score = body.score,
+                    detection_id = %id,
+                    "GNN anomaly detection fired"
+                );
+                Some(id)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "GNN: write_detection failed");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    Ok(Json(GnnScoreResponse {
+        id: score_id,
+        fired_detection: fired,
+        detection_id,
+    }))
+}
