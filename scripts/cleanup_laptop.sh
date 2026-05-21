@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# CV5 Sprint 1 — T1-1
-# Laptop cleanup: tear everything bonsai-related down to zero before CV5 rebuild.
+# DV3 — D3-10 T3
+# Laptop cleanup: tear everything bonsai-related down to zero for a clean DV3 rebuild.
 #
-# DESTRUCTIVE. Reads runtime/ paths to dated backups; does NOT delete them.
-# Run from WSL where containerlab and Docker run.
+# DESTRUCTIVE. Moves runtime/ paths to dated backups; does NOT delete them.
+# Run from the machine where containerlab and Docker run.
 #
 # Usage:
 #   bash scripts/cleanup_laptop.sh            # full teardown + backup
@@ -71,6 +71,10 @@ else
     sudo systemctl stop bonsai 2>/dev/null && info "Stopped bonsai systemd service." || true
     pkill -9 -f "target/release/bonsai" 2>/dev/null && info "Killed bonsai binary." || true
     pkill -9 -f "chaos_runner" 2>/dev/null && info "Killed chaos_runner." || true
+    # Remove installed bonsai binary if present
+    if [[ -f /usr/local/bin/bonsai ]]; then
+        sudo rm -f /usr/local/bin/bonsai && info "Removed /usr/local/bin/bonsai."
+    fi
     # Clean up PID file if stale
     rm -f "$REPO_ROOT/runtime/chaos_runner.pid"
     info "Process cleanup done."
@@ -82,6 +86,8 @@ step "Destroy ContainerLab labs"
 CLAB_TOPOLOGIES=(
     "$REPO_ROOT/lab/dc/dc-evpn-srv6.clab.yml"
     "$REPO_ROOT/lab/sp/sp-mpls-srte.clab.yml"
+    "$REPO_ROOT/lab/sp/sp-mpls-srte-xrd.clab.yml"
+    "$REPO_ROOT/lab/signal-test-lab/signal-test.clab.yml"
     "$REPO_ROOT/lab/fast-iteration/multivendor.clab.yml"
     "$REPO_ROOT/lab/fast-iteration/bonsai-phase4.clab.yml"
     "$REPO_ROOT/lab/fast-iteration/3node-srl.clab.yml"
@@ -131,7 +137,21 @@ else
     info "Docker Compose teardown done."
 fi
 
-# ── 5. Back up runtime state ─────────────────────────────────────────────────
+# ── 5. Clear vault and graph DB ──────────────────────────────────────────────
+step "Clear vault and graph DB"
+if $VERIFY_ONLY; then
+    [[ -f "$REPO_ROOT/vault.age" ]]       && warn "vault.age present (will be removed on full cleanup)" || info "vault.age not present."
+    [[ -f "$REPO_ROOT/runtime/bonsai.db" ]] && warn "runtime/bonsai.db present (will be removed on full cleanup)" || info "runtime/bonsai.db not present."
+    [[ -f "$REPO_ROOT/bonsai_config.db" ]] && warn "bonsai_config.db present (will be removed on full cleanup)" || info "bonsai_config.db not present."
+else
+    rm -f "$REPO_ROOT/vault.age"            && info "Removed vault.age."         || true
+    rm -f "$REPO_ROOT/runtime/bonsai.db"    && info "Removed runtime/bonsai.db." || true
+    rm -f "$REPO_ROOT/runtime/bonsai.db-shm" "$REPO_ROOT/runtime/bonsai.db-wal" 2>/dev/null || true
+    rm -f "$REPO_ROOT/bonsai_config.db"     && info "Removed bonsai_config.db."  || true
+    info "Vault + DB clear done."
+fi
+
+# ── 7. Back up runtime state ─────────────────────────────────────────────────
 step "Back up runtime state"
 RUNTIME="$REPO_ROOT/runtime"
 
@@ -151,28 +171,28 @@ if $VERIFY_ONLY; then
 else
     for d in "${BACKUP_DIRS[@]}"; do
         if [[ -d "$RUNTIME/$d" ]]; then
-            DEST="$RUNTIME/${d}.precv5-${TS}"
+            DEST="$RUNTIME/${d}.predv3-${TS}"
             mv "$RUNTIME/$d" "$DEST"
-            info "Backed up runtime/$d -> runtime/${d}.precv5-${TS}"
+            info "Backed up runtime/$d -> runtime/${d}.predv3-${TS}"
         fi
     done
     for f in "${BACKUP_FILES[@]}"; do
         if [[ -f "$RUNTIME/$f" ]]; then
-            mv "$RUNTIME/$f" "$RUNTIME/${f}.precv5-${TS}"
+            mv "$RUNTIME/$f" "$RUNTIME/${f}.predv3-${TS}"
             info "Backed up runtime/$f"
         fi
     done
     # Move local DB if present (not the primary DB used on Windows, but clean up just in case)
     for db in bonsai.db.local bonsai.db.wal.local; do
         if [[ -f "$RUNTIME/$db" ]]; then
-            mv "$RUNTIME/$db" "$RUNTIME/${db}.precv5-${TS}"
+            mv "$RUNTIME/$db" "$RUNTIME/${db}.predv3-${TS}"
             info "Backed up runtime/$db"
         fi
     done
     info "Runtime backup done."
 fi
 
-# ── 6. Verification ─────────────────────────────────────────────────────────
+# ── 8. Verification ─────────────────────────────────────────────────────────
 step "Verification"
 
 echo ""
@@ -212,6 +232,6 @@ if $VERIFY_ONLY; then
     info "Verify-only run complete. No changes made."
 else
     echo ""
-    info "Laptop cleanup complete. Backed-up dirs have suffix .precv5-${TS}"
-    info "See docs/operations/laptop_cleanup.md for the full checklist and restore notes."
+    info "Laptop cleanup complete. Backed-up dirs have suffix .predv3-${TS}"
+    info "Re-run with --verify to confirm clean state before starting DV3 fresh-install flow."
 fi

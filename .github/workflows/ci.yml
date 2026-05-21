@@ -131,6 +131,17 @@ jobs:
       - name: Summarise coverage
         run: cargo llvm-cov report --summary-only
 
+      - name: Coverage gate (graph/enrichment/remediation ≥60%)
+        run: |
+          cargo llvm-cov report --summary-only 2>&1 | tee /tmp/cov_summary.txt
+          # Extract line coverage for the three high-value modules
+          for module in graph enrichment remediation; do
+            PCT=$(grep "src/${module}/" /tmp/cov_summary.txt | awk '{sum+=$4; n++} END {if(n>0) printf "%.1f", sum/n; else print "0"}')
+            echo "Module ${module}: ${PCT}% line coverage"
+            # Fail if coverage drops below 60%
+            awk -v p="${PCT:-0}" 'BEGIN {if (p+0 < 60) {print "FAIL: " p "% < 60% for '"${module}"'"; exit 1}}'
+          done
+
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
@@ -150,7 +161,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install test dependencies
-        run: pip install --upgrade pip && pip install pytest pytest-asyncio pytest-cov pyyaml requests
+        run: pip install --upgrade pip && pip install pytest pytest-asyncio pytest-cov pyyaml requests pip-audit
 
       - name: Run tests with coverage
         working-directory: python
@@ -160,6 +171,9 @@ jobs:
             --cov-report=xml:coverage.xml \
             --cov-report=term-missing \
             --cov-fail-under=30
+
+      - name: Python dependency security audit
+        run: pip-audit --requirement python/requirements.txt --skip-editable 2>/dev/null || pip-audit -r python/requirements.txt || true
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4

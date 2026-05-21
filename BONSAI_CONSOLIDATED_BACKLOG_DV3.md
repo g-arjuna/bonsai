@@ -83,8 +83,8 @@ D3-5  Remediation Maturity — Auto-proposal + HITL Flow [✅ ALL DONE Session 1
 D3-6  AI Investigations — Provider Integration + Key Management [✅ T1-T8 ALL DONE Session 17]
 D3-7  README & Documentation Refresh                 [⚠️ T2 DONE Session 17 (toml.example + README AI env var); T1/T3/T4/T5 remain]
 D3-8  Graph Node Completeness (DV2 carry-overs)      [✅ ALL DONE Session 17]
-D3-9  GNN Production Readiness                       [⚠️ T1 DONE (event_detection retired)]
-D3-10 Developer Experience & CI Health               [⏳ NOT STARTED]
+D3-9  GNN Production Readiness                       [⚠️ T1/T3/T4 DONE Session 18; T2/T5 data-dependent]
+D3-10 Developer Experience & CI Health               [⚠️ T1/T2/T3/T4 DONE Session 18; T5 (Playwright) remains]
 D3-11 Streaming & Endpoint Graph Completeness        [✅ ALL TASKS DONE — Session 9-10]
 D3-12 Signal Observability, Detection Provenance & Topology Completeness
       [⚠️ PARTIAL: H2/J DONE in code; G1 source_type missing; G2/G3 filter UI pending]
