@@ -143,6 +143,7 @@ credential_alias = "lab-gnmi"    # add via UI → Credentials
 | Variable | Required | Description |
 |---|---|---|
 | `BONSAI_VAULT_PASSPHRASE` | **Yes** | Passphrase for the encrypted credential vault. |
+| `BONSAI_AI_API_KEY` | No | API key for the AI investigation engine. Set to a Gemini (Google AI Studio) or Moonshot key. If unset, AI investigations are silently disabled. The env var name is configurable via `[ai] api_key_env`. |
 | `BONSAI_YANG_BUNDLE_KEY` | No | Decryption key for the YANG model bundle (enterprise). |
 | `BONSAI_COLLECTOR_DIAG_PASSWORD` | No | Auth for the collector diagnostic HTTP server. |
 | `RUST_LOG` | No | Log filter — e.g. `info,bonsai=debug`. |

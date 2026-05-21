@@ -319,6 +319,12 @@ rollback_window_secs = 60
 # Default: false (D3-5 T1)
 # auto_propose = false
 
+# Directory that contains playbook YAML files (one file per detection rule ID).
+# Each file must have a top-level `detection_rule_id` key and a `playbooks` list.
+# Run `scripts/validate_playbooks.py` to validate before deploying.
+# Default: "playbooks/library"
+# playbook_library_dir = "playbooks/library"
+
 # [remediation.graduation] — trust graduation thresholds.
 [remediation.graduation]
 # Number of consecutive operator approvals for a (rule, playbook) tuple before
@@ -577,6 +583,57 @@ election_ttl_secs = 10
 # Default: "/bonsai/config"
 # Also controlled by BONSAI_ETCD_CONFIG_PREFIX environment variable.
 config_prefix = "/bonsai/config"
+
+# ── [ai] — AI Investigation Engine ───────────────────────────────────────────
+#
+# Bonsai can autonomously investigate unmatched detections using a large
+# language model with access to graph query tools (via the MCP server).
+# Both Gemini (Google) and Moonshot (OpenAI-compatible) are supported.
+#
+# Investigations are only launched when the API key env var is present.
+# Use `POST /api/ai/test` to verify the connection before enabling.
+#
+# Cost safety:
+#   - per_investigation_budget_usd: hard cap per single investigation run
+#   - daily_budget_usd: total spend cap across all investigations today
+#   Set both conservatively; increase after observing token usage.
+
+[ai]
+# AI provider backend.
+# Supported values: "gemini" | "moonshot"
+# Default: "gemini"
+# provider = "gemini"
+
+# Model name for the selected provider.
+# Gemini examples:  "gemini-2.5-pro" | "gemini-2.0-flash"
+# Moonshot examples: "moonshot-v1-8k" | "moonshot-v1-32k" | "moonshot-v1-128k"
+# Default: "gemini-2.5-pro"
+# model = "gemini-2.5-pro"
+
+# Name of the environment variable that holds the API key.
+# For Gemini: set BONSAI_AI_API_KEY to your Google AI Studio key.
+# For Moonshot: set BONSAI_AI_API_KEY to your Moonshot API key.
+# If the variable is not set, AI investigations are disabled (no error on start).
+# Default: "BONSAI_AI_API_KEY"
+# api_key_env = "BONSAI_AI_API_KEY"
+
+# Maximum cost (USD) allowed for a single investigation run.
+# The run is aborted early if this threshold is reached.
+# Default: 0.10
+# per_investigation_budget_usd = 0.10
+
+# Maximum total AI spend (USD) across all investigations started today (UTC).
+# New investigations are skipped (status = "skipped") if the daily total
+# equals or exceeds this value.
+# Default: 1.00
+# daily_budget_usd = 1.00
+
+# When true, bonsai automatically spawns an AI investigation for every
+# DetectionEvent whose rule_id has no matching playbook in the library.
+# Requires a valid API key. Start with false until you've observed
+# playbook coverage and trust the auto-propose path.
+# Default: false
+# auto_investigate_unmatched = false
 
 # ── [[target]] ───────────────────────────────────────────────────────────────
 #
