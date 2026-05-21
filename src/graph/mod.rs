@@ -28,7 +28,7 @@ use crate::signals::snmp::SnmpFact;
 use crate::store::BonsaiStore;
 use crate::streaming::bgp_ls::BgpLsEvent;
 use crate::streaming::bmp::BmpEvent;
-use crate::telemetry::{TelemetryEvent, TelemetryUpdate, json_i64, json_i64_multi, json_str};
+use crate::telemetry::{TelemetryEvent, TelemetryUpdate, json_f64, json_i64, json_i64_multi, json_str};
 
 pub const REMEDIATION_TRUST_CUTOFF_ISO: &str = "2026-04-20T09:32:50+00:00";
 pub const REMEDIATION_TRUST_CUTOFF_NS: i64 = 1_776_677_570_000_000_000;
@@ -510,6 +510,23 @@ impl GraphStore {
 
         conn.query("CREATE REL TABLE IF NOT EXISTS HAS_LLDP_NEIGHBOR(FROM Device TO LldpNeighbor)")
             .context("create HAS_LLDP_NEIGHBOR rel")?;
+
+        // EntityIdentity: canonical identity record linking a device's hostname,
+        // chassis-id, and management IP. Prevents duplicate Device nodes when the
+        // same physical device is seen via gNMI (by IP) and LLDP (by chassis-id).
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS EntityIdentity(\
+                id         STRING,\
+                hostname   STRING,\
+                chassis_id STRING,\
+                mgmt_ip    STRING,\
+                source     STRING,\
+                updated_at TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create EntityIdentity table")?;
+        conn.query("CREATE REL TABLE IF NOT EXISTS HAS_IDENTITY(FROM Device TO EntityIdentity)")
+            .context("create HAS_IDENTITY rel")?;
 
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS StateChangeEvent(\
@@ -1031,6 +1048,8 @@ impl GraphStore {
 
         conn.query("CREATE REL TABLE IF NOT EXISTS RACK_MEMBER(FROM Device TO Rack)")
             .context("create RACK_MEMBER rel")?;
+        conn.query("CREATE REL TABLE IF NOT EXISTS RACK_IN_SITE(FROM Rack TO Site)")
+            .context("create RACK_IN_SITE rel")?;
 
         // Location is the sub-site layer: AZ, pod, building, floor, room.
         // kind carries the semantic ("az" | "pod" | "building" | "floor" | "room" | "other").
@@ -1140,6 +1159,59 @@ impl GraphStore {
         // Migration: add exporter_address to AppFlow if upgrading from a DB
         // created before D3-11. Silently ignored on fresh installs.
         let _ = conn.query("ALTER TABLE AppFlow ADD exporter_address STRING DEFAULT ''");
+
+        // ── OpticalChannel (D3-8 T5) ─────────────────────────────────────────
+        // One row per DWDM/coherent optical channel on a transponder or router
+        // line-card. Populated by gNMI (openconfig-terminal-device) or SNMP.
+        // tx_power_dbm / rx_power_dbm in dBm; snr_db in dB; frequency_ghz in GHz.
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS OpticalChannel(\
+                id              STRING,\
+                device_address  STRING,\
+                channel_name    STRING,\
+                operational_mode STRING,\
+                frequency_ghz   DOUBLE,\
+                tx_power_dbm    DOUBLE,\
+                rx_power_dbm    DOUBLE,\
+                snr_db          DOUBLE,\
+                ber             DOUBLE,\
+                admin_state     STRING,\
+                oper_state      STRING,\
+                updated_at      TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create OpticalChannel table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_OPTICAL_CHANNEL(FROM Device TO OpticalChannel)",
+        )
+        .context("create HAS_OPTICAL_CHANNEL rel")?;
+
+        // ── PowerUnit (D3-8 T6) ───────────────────────────────────────────────
+        // PDU / UPS / PSU visible via SNMP. One row per physical power unit.
+        // outlet_count: total outlets; outlet_active: outlets currently carrying load.
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS PowerUnit(\
+                id             STRING,\
+                device_address STRING,\
+                name           STRING,\
+                kind           STRING,\
+                outlet_count   INT64,\
+                outlet_active  INT64,\
+                load_watts     DOUBLE,\
+                input_voltage  DOUBLE,\
+                status         STRING,\
+                updated_at     TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create PowerUnit table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS POWERED_BY(FROM Device TO PowerUnit)",
+        )
+        .context("create POWERED_BY rel")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS RACK_POWERED_BY(FROM Rack TO PowerUnit)",
+        )
+        .context("create RACK_POWERED_BY rel")?;
 
         // ── Change Management (ServiceNow CHG / AAP / manual) ────────────────
         // ChangeRequest represents a planned or in-progress change ticket.
@@ -2832,8 +2904,147 @@ fn write_blocking(
             packets_per_sec,
             event_tx,
         ),
+        TelemetryEvent::OpticalChannel { channel_name } => {
+            write_optical_channel(conn, update, &channel_name)
+        }
+        TelemetryEvent::PowerUnit { unit_name, kind } => {
+            write_power_unit(conn, update, &unit_name, &kind)
+        }
         TelemetryEvent::Ignored => Ok(()),
     }
+}
+
+fn write_optical_channel(
+    conn: &Connection<'_>,
+    u: &TelemetryUpdate,
+    channel_name: &str,
+) -> Result<()> {
+    let id = format!("{}:{}", u.target, channel_name);
+    let now = ts(u.timestamp_ns);
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
+
+    let v = &u.value;
+    let freq = json_f64(v, "frequency") as f64
+        / 1_000_000.0  // Hz → GHz
+        + json_f64(v, "frequency-ghz") as f64;
+    let tx = json_f64(v, "output-power") + json_f64(v, "tx-power-dbm");
+    let rx = json_f64(v, "input-power") + json_f64(v, "rx-power-dbm");
+    let snr = json_f64(v, "snr") + json_f64(v, "snr-db");
+    let ber = json_f64(v, "post-fec-ber") + json_f64(v, "ber");
+    let admin = json_str(v, "admin-state").to_string();
+    let oper = json_str(v, "oper-state").to_string();
+    let op_mode = json_str(v, "operational-mode").to_string();
+
+    let mut stmt = conn
+        .prepare(
+            "MERGE (c:OpticalChannel {id: $id}) \
+             ON CREATE SET c.device_address = $addr, c.channel_name = $name, \
+               c.operational_mode = $mode, c.frequency_ghz = $freq, \
+               c.tx_power_dbm = $tx, c.rx_power_dbm = $rx, c.snr_db = $snr, \
+               c.ber = $ber, c.admin_state = $admin, c.oper_state = $oper, \
+               c.updated_at = $ts \
+             ON MATCH SET c.frequency_ghz = $freq, c.tx_power_dbm = $tx, \
+               c.rx_power_dbm = $rx, c.snr_db = $snr, c.ber = $ber, \
+               c.oper_state = CASE WHEN $oper <> '' THEN $oper ELSE c.oper_state END, \
+               c.updated_at = $ts",
+        )
+        .context("prepare OpticalChannel upsert")?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(id.clone())),
+            ("addr", Value::String(u.target.clone())),
+            ("name", Value::String(channel_name.to_string())),
+            ("mode", Value::String(op_mode)),
+            ("freq", Value::Double(freq)),
+            ("tx", Value::Double(tx)),
+            ("rx", Value::Double(rx)),
+            ("snr", Value::Double(snr)),
+            ("ber", Value::Double(ber)),
+            ("admin", Value::String(admin)),
+            ("oper", Value::String(oper)),
+            ("ts", now),
+        ],
+    )
+    .context("execute OpticalChannel upsert")?;
+
+    let mut edge = conn
+        .prepare(
+            "MATCH (d:Device {address: $addr}), (c:OpticalChannel {id: $id}) \
+             MERGE (d)-[:HAS_OPTICAL_CHANNEL]->(c)",
+        )
+        .context("prepare HAS_OPTICAL_CHANNEL merge")?;
+    conn.execute(
+        &mut edge,
+        vec![
+            ("addr", Value::String(u.target.clone())),
+            ("id", Value::String(id)),
+        ],
+    )
+    .context("execute HAS_OPTICAL_CHANNEL merge")?;
+    Ok(())
+}
+
+fn write_power_unit(
+    conn: &Connection<'_>,
+    u: &TelemetryUpdate,
+    unit_name: &str,
+    kind: &str,
+) -> Result<()> {
+    let id = format!("pdu:{}:{}", u.target, unit_name);
+    let now = ts(u.timestamp_ns);
+    upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
+
+    let v = &u.value;
+    let outlet_count = json_i64(v, "outlet-count") + json_i64(v, "outlets-total");
+    let outlet_active = json_i64(v, "outlets-active") + json_i64(v, "active-outlets");
+    let load = json_f64(v, "load-watts") + json_f64(v, "active-power");
+    let voltage = json_f64(v, "input-voltage") + json_f64(v, "voltage");
+    let status = json_str(v, "status").to_string();
+
+    let mut stmt = conn
+        .prepare(
+            "MERGE (p:PowerUnit {id: $id}) \
+             ON CREATE SET p.device_address = $addr, p.name = $name, p.kind = $kind, \
+               p.outlet_count = $oc, p.outlet_active = $oa, \
+               p.load_watts = $load, p.input_voltage = $volt, \
+               p.status = $status, p.updated_at = $ts \
+             ON MATCH SET p.outlet_active = $oa, p.load_watts = $load, \
+               p.input_voltage = $volt, p.status = $status, p.updated_at = $ts",
+        )
+        .context("prepare PowerUnit upsert")?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(id.clone())),
+            ("addr", Value::String(u.target.clone())),
+            ("name", Value::String(unit_name.to_string())),
+            ("kind", Value::String(kind.to_string())),
+            ("oc", Value::Int64(outlet_count)),
+            ("oa", Value::Int64(outlet_active)),
+            ("load", Value::Double(load)),
+            ("volt", Value::Double(voltage)),
+            ("status", Value::String(status)),
+            ("ts", now),
+        ],
+    )
+    .context("execute PowerUnit upsert")?;
+
+    let mut edge = conn
+        .prepare(
+            "MATCH (d:Device {address: $addr}), (p:PowerUnit {id: $id}) \
+             MERGE (d)-[:POWERED_BY]->(p)",
+        )
+        .context("prepare POWERED_BY merge")?;
+    conn.execute(
+        &mut edge,
+        vec![
+            ("addr", Value::String(u.target.clone())),
+            ("id", Value::String(id)),
+        ],
+    )
+    .context("execute POWERED_BY merge")?;
+    Ok(())
 }
 
 fn write_config_change_event(
@@ -5182,6 +5393,26 @@ fn write_lldp_neighbor(
                 let _ = link_host_endpoint_to_interface(conn, &chassis_id, &local_iface_id);
                 debug!(chassis_id, system_name, "HostEndpoint created from LLDP");
             }
+        }
+    }
+
+    // EntityIdentity: update the identity record for the LLDP peer using chassis_id.
+    // If the peer is already a known Device (same hostname in Device table), the
+    // HAS_IDENTITY edge will link the existing Device to this identity record.
+    if !chassis_id.is_empty() || !system_name.is_empty() {
+        // Use system_name as the key when available (matches Device.hostname).
+        // device_address here is the LLDP peer's address (chassis_id as proxy).
+        let peer_addr = if !chassis_id.is_empty() { &chassis_id } else { "" };
+        if let Err(e) = crate::graph::common::upsert_entity_identity(
+            conn,
+            peer_addr,
+            &system_name,
+            &chassis_id,
+            "",
+            "lldp",
+            u.timestamp_ns,
+        ) {
+            debug!(error = %e, chassis_id, "EntityIdentity update from LLDP skipped");
         }
     }
 

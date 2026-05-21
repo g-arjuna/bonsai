@@ -76,6 +76,83 @@ pub fn upsert_device(
         .context("execute Device site SET")?;
     }
 
+    // EntityIdentity: keep the normalised identity record in sync with every device upsert.
+    // chassis_id is unknown at this point (learned later from LLDP).
+    if !hostname.is_empty() || !address.is_empty() {
+        let _ = upsert_entity_identity(conn, address, hostname, "", address, "gnmi", now_ns());
+    }
+
+    Ok(())
+}
+
+/// Create or update an EntityIdentity node and wire it to the Device.
+/// Call this from any code path that learns about a device identity:
+///  - `upsert_device` (gNMI path — knows address + hostname)
+///  - LLDP neighbor write (knows chassis_id + system_name)
+/// The node is keyed on hostname when available; falls back to chassis_id or address.
+pub fn upsert_entity_identity(
+    conn: &Connection<'_>,
+    device_address: &str,
+    hostname: &str,
+    chassis_id: &str,
+    mgmt_ip: &str,
+    source: &str,
+    now_ns: i64,
+) -> Result<()> {
+    // Stable key: prefer hostname, then chassis_id (MAC-based), then address.
+    let key = if !hostname.is_empty() {
+        hostname
+    } else if !chassis_id.is_empty() {
+        chassis_id
+    } else {
+        device_address
+    };
+    let id = format!("identity:{key}");
+    let now = ts(now_ns);
+
+    let mut stmt = conn
+        .prepare(
+            "MERGE (e:EntityIdentity {id: $id}) \
+             ON CREATE SET e.hostname = $hn, e.chassis_id = $chassis, \
+               e.mgmt_ip = $ip, e.source = $src, e.updated_at = $ts \
+             ON MATCH SET \
+               e.hostname   = CASE WHEN $hn      <> '' THEN $hn      ELSE e.hostname   END, \
+               e.chassis_id = CASE WHEN $chassis <> '' THEN $chassis ELSE e.chassis_id END, \
+               e.mgmt_ip    = CASE WHEN $ip      <> '' THEN $ip      ELSE e.mgmt_ip    END, \
+               e.updated_at = $ts",
+        )
+        .context("prepare EntityIdentity upsert")?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(id.clone())),
+            ("hn", Value::String(hostname.to_string())),
+            ("chassis", Value::String(chassis_id.to_string())),
+            ("ip", Value::String(mgmt_ip.to_string())),
+            ("src", Value::String(source.to_string())),
+            ("ts", now),
+        ],
+    )
+    .context("execute EntityIdentity upsert")?;
+
+    // Link Device → EntityIdentity (only when device_address is known).
+    if !device_address.is_empty() {
+        let mut edge = conn
+            .prepare(
+                "MATCH (d:Device {address: $addr}), (e:EntityIdentity {id: $id}) \
+                 MERGE (d)-[:HAS_IDENTITY]->(e)",
+            )
+            .context("prepare HAS_IDENTITY merge")?;
+        if let Err(e) = conn.execute(
+            &mut edge,
+            vec![
+                ("addr", Value::String(device_address.to_string())),
+                ("id", Value::String(id)),
+            ],
+        ) {
+            tracing::debug!(error = %e, device_address, "HAS_IDENTITY edge skipped (device not yet written)");
+        }
+    }
     Ok(())
 }
 
@@ -116,10 +193,30 @@ pub fn upsert_rack(
         &mut edge,
         vec![
             ("addr", Value::String(device_address.to_string())),
-            ("rack_id", Value::String(rack_id)),
+            ("rack_id", Value::String(rack_id.clone())),
         ],
     )
     .context("execute RACK_MEMBER merge")?;
+
+    // Link Rack → Site so the physical hierarchy is traversable without Device as intermediary.
+    if !site.is_empty() {
+        let site_id = format!("site:{site}");
+        let mut rack_site = conn
+            .prepare(
+                "MATCH (r:Rack {id: $rack_id}), (s:Site {id: $site_id}) \
+                 MERGE (r)-[:RACK_IN_SITE]->(s)",
+            )
+            .context("prepare RACK_IN_SITE merge")?;
+        if let Err(e) = conn.execute(
+            &mut rack_site,
+            vec![
+                ("rack_id", Value::String(rack_id)),
+                ("site_id", Value::String(site_id)),
+            ],
+        ) {
+            tracing::debug!(error = %e, site, "RACK_IN_SITE edge skipped (site not yet written)");
+        }
+    }
     Ok(())
 }
 

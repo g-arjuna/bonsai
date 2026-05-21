@@ -86,6 +86,15 @@ pub enum TelemetryEvent {
         bytes_per_sec: f64,
         packets_per_sec: f64,
     },
+    /// Coherent optical channel parameters (gNMI openconfig-terminal-device or SNMP DWDM MIB).
+    OpticalChannel {
+        channel_name: String,
+    },
+    /// PDU / UPS / PSU status update from SNMP trap or polling.
+    PowerUnit {
+        unit_name: String,
+        kind: String,
+    },
     Ignored,
 }
 
@@ -533,4 +542,12 @@ pub fn json_i64_multi(obj: &JsonValue, keys: &[&str]) -> i64 {
 
 pub fn json_str<'a>(obj: &'a JsonValue, key: &str) -> &'a str {
     json_find(obj, key).and_then(|v| v.as_str()).unwrap_or("")
+}
+
+pub fn json_f64(obj: &JsonValue, key: &str) -> f64 {
+    match json_find(obj, key) {
+        Some(JsonValue::Number(n)) => n.as_f64().unwrap_or(0.0),
+        Some(JsonValue::String(s)) => s.parse().unwrap_or(0.0),
+        _ => 0.0,
+    }
 }

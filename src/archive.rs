@@ -709,6 +709,8 @@ fn classified_event_type(update: &TelemetryUpdate) -> &'static str {
         TelemetryEvent::ConfigChange { .. } => "config_change",
         TelemetryEvent::OtlpSpan { .. } => "otlp_span",
         TelemetryEvent::NetflowRecord { .. } => "netflow_record",
+        TelemetryEvent::OpticalChannel { .. } => "optical_channel",
+        TelemetryEvent::PowerUnit { .. } => "power_unit",
         TelemetryEvent::Ignored => "ignored",
     }
 }

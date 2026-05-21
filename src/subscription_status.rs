@@ -269,6 +269,8 @@ fn path_matches_update(
         TelemetryEvent::BgpLsState => false,
         TelemetryEvent::OtlpSpan { .. } => false,
         TelemetryEvent::NetflowRecord { .. } => false,
+        TelemetryEvent::OpticalChannel { .. } => false,
+        TelemetryEvent::PowerUnit { .. } => false,
         TelemetryEvent::Ignored => false,
     }
 }
