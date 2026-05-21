@@ -11,6 +11,14 @@ path = "src/lib.rs"
 name = "bonsai"
 path = "src/main.rs"
 
+[[bin]]
+name = "vault-rekey"
+path = "src/bin/vault_rekey.rs"
+
+[[bin]]
+name = "bonsai-query"
+path = "src/bin/query.rs"
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }

@@ -377,6 +377,38 @@ impl CredentialVault {
         write_metadata(&self.root, &state.metadata)?;
         Ok(())
     }
+
+    /// Re-key the vault: decrypt with current passphrase, re-encrypt with a new one.
+    ///
+    /// Flow:
+    ///   1. Vault must already be unlocked (opened with `BONSAI_VAULT_PASSPHRASE`).
+    ///   2. Read `BONSAI_VAULT_NEW_PASSPHRASE` from the environment.
+    ///   3. Re-encrypt all entries under the new passphrase (atomic write).
+    ///
+    /// After a successful rekey the process should be restarted with the new
+    /// passphrase set as `BONSAI_VAULT_PASSPHRASE`.
+    pub fn rekey(&self, new_passphrase_env: &str) -> Result<()> {
+        let new_raw = std::env::var(new_passphrase_env)
+            .ok()
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| {
+                anyhow!(
+                    "new passphrase env var '{}' is not set or empty",
+                    new_passphrase_env
+                )
+            })?;
+        let new_passphrase = Arc::new(SecretString::new(new_raw.into()));
+
+        let state = self.state.lock().expect("vault state lock poisoned");
+        ensure_unlocked(&state)?;
+
+        encrypt_entries(&self.root, &new_passphrase, &state.entries)
+            .context("failed to re-encrypt vault with new passphrase")?;
+        write_metadata(&self.root, &state.metadata)
+            .context("failed to write metadata during rekey")?;
+
+        Ok(())
+    }
 }
 
 fn should_persist_last_used(last_used_at_ns: i64, now_ns: i64) -> bool {

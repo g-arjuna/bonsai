@@ -15,6 +15,7 @@ use tracing::{info, warn};
 use crate::config::{SyslogConfig, TargetConfig};
 use crate::event_bus::InProcessBus;
 use crate::resource_governor::GovernorHandle;
+use crate::shun::{ShunEngine, ShunOutcome};
 use crate::telemetry::TelemetryUpdate;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -94,11 +95,13 @@ pub async fn run_syslog_receiver(
     bus: Arc<InProcessBus>,
     shutdown: watch::Receiver<bool>,
     governor: Option<GovernorHandle>,
+    shun_engine: Option<Arc<ShunEngine>>,
 ) -> Result<()> {
     let archive = SyslogArchive::open(&cfg.archive_path).await?;
     let fact_extractor = Arc::new(SyslogFactExtractor::load_from_dir(&pattern_dir));
     let target_map = Arc::new(SyslogTargetMap::new(&targets));
     let governor = governor.map(Arc::new);
+    let shun_engine: Option<Arc<ShunEngine>> = shun_engine;
     let mut tasks = Vec::new();
 
     if !cfg.udp_addr.trim().is_empty() {
@@ -115,6 +118,7 @@ pub async fn run_syslog_receiver(
             cfg.max_frame_bytes,
             shutdown.clone(),
             governor.clone(),
+            shun_engine.clone(),
         )));
     }
 
@@ -132,6 +136,7 @@ pub async fn run_syslog_receiver(
             cfg.max_frame_bytes,
             shutdown.clone(),
             governor.clone(),
+            shun_engine.clone(),
         )));
     }
 
@@ -159,6 +164,7 @@ async fn run_udp(
     max_frame_bytes: usize,
     mut shutdown: watch::Receiver<bool>,
     governor: Option<Arc<GovernorHandle>>,
+    shun_engine: Option<Arc<ShunEngine>>,
 ) {
     let mut buf = vec![0_u8; max_frame_bytes.max(1)];
     loop {
@@ -180,6 +186,7 @@ async fn run_udp(
                             &fact_extractor,
                             &target_map,
                             governor.as_deref(),
+                            shun_engine.as_deref(),
                         )
                         .await;
                     }
@@ -200,6 +207,7 @@ async fn run_tcp(
     max_frame_bytes: usize,
     mut shutdown: watch::Receiver<bool>,
     governor: Option<Arc<GovernorHandle>>,
+    shun_engine: Option<Arc<ShunEngine>>,
 ) {
     loop {
         tokio::select! {
@@ -215,6 +223,7 @@ async fn run_tcp(
                         let fact_extractor = Arc::clone(&fact_extractor);
                         let target_map = Arc::clone(&target_map);
                         let governor = governor.clone();
+                        let shun_engine = shun_engine.clone();
                         tokio::spawn(async move {
                             let mut reader = BufReader::new(stream);
                             let mut line = String::new();
@@ -236,6 +245,7 @@ async fn run_tcp(
                                             &fact_extractor,
                                             &target_map,
                                             governor.as_deref(),
+                                            shun_engine.as_deref(),
                                         ).await;
                                     }
                                     Err(error) => {
@@ -263,6 +273,7 @@ async fn handle_frame(
     fact_extractor: &SyslogFactExtractor,
     target_map: &SyslogTargetMap,
     governor: Option<&GovernorHandle>,
+    shun_engine: Option<&ShunEngine>,
 ) {
     if raw.is_empty() {
         return;
@@ -296,6 +307,25 @@ async fn handle_frame(
     if SYSLOG_NOISE_APPS.contains(&event.app_name.as_str()) {
         metrics::counter!("bonsai_syslog_noise_suppressed_total").increment(1);
         return;
+    }
+
+    // Shun evaluation (D4-2 T2): drop or rate-limit before bus publish.
+    // Archive write above is intentionally before this check.
+    if let Some(engine) = shun_engine {
+        let fact_type_refs: Vec<&str> = facts.iter().map(|f| f.fact_type.as_str()).collect();
+        match engine.evaluate(&target_address, &event.message, &fact_type_refs) {
+            ShunOutcome::Dropped { rule_id } => {
+                metrics::counter!("bonsai_syslog_shunned_total", "action" => "drop").increment(1);
+                tracing::debug!(rule_id, "syslog event dropped by shun rule");
+                return;
+            }
+            ShunOutcome::RateLimited { rule_id } => {
+                metrics::counter!("bonsai_syslog_shunned_total", "action" => "rate_limit").increment(1);
+                tracing::debug!(rule_id, "syslog event rate-limited by shun rule");
+                return;
+            }
+            ShunOutcome::Pass => {}
+        }
     }
 
     // Under rate shedding or memory pressure, skip bus publish to relieve pipeline

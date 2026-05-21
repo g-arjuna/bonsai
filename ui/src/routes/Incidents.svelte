@@ -229,6 +229,9 @@
 </div>
 
 <style>
+  /* ── View root ────────────────────────────────────────────────────────────── */
+  .view { min-width: 0; overflow-x: hidden; }
+
   /* ── Header ──────────────────────────────────────────────────────────────── */
   .open-count {
     font-size: var(--text-small);
@@ -290,6 +293,7 @@
     flex: 1;
     padding: 10px var(--card-pad);
     min-width: 0;
+    overflow: hidden;
   }
 
   .row-primary {
@@ -297,6 +301,7 @@
     align-items: center;
     gap: 10px;
     flex-wrap: wrap;
+    min-width: 0;
   }
 
   .device-addr {
@@ -305,6 +310,11 @@
     font-weight: 600;
     color: var(--text-primary);
     letter-spacing: var(--tracking-mono);
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex-shrink: 1;
   }
 
   .rule-pills {
@@ -312,6 +322,8 @@
     flex-wrap: wrap;
     gap: 4px;
     align-items: center;
+    min-width: 0;
+    flex-shrink: 1;
   }
 
   .rule-pill {
@@ -384,11 +396,11 @@
 
   .det-row {
     display: grid;
-    grid-template-columns: 72px 1fr 1fr auto;
-    gap: 10px;
+    grid-template-columns: 72px minmax(0,1fr) minmax(0,1fr) auto auto auto;
+    gap: 8px;
     align-items: center;
-    height: var(--row-height);
-    padding: 0 4px;
+    min-height: var(--row-height);
+    padding: 3px 4px;
     border-radius: 3px;
     background: transparent;
     border: none;
@@ -399,6 +411,7 @@
     width: 100%;
     cursor: pointer;
     transition: background var(--duration-instant) var(--ease-out);
+    overflow: hidden;
   }
 
   .det-row:hover:not(:disabled) {

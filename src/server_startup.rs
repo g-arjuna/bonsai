@@ -512,6 +512,18 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         });
     }
 
+    // ── D4-2: Syslog shun engine — load active rules from graph DB at startup ──
+    let shun_engine = bonsai::shun::ShunEngine::new();
+    if let Some(Store::Core(ref s)) = store {
+        match s.list_shun_rules().await {
+            Ok(rules) => {
+                info!(count = rules.len(), "syslog shun rules loaded");
+                shun_engine.reload(rules);
+            }
+            Err(e) => warn!(error = %e, "failed to load shun rules at startup"),
+        }
+    }
+
     // ── D3-13 T2: Receiver Supervisor — all receivers managed via supervisor ──
     let supervisor = bonsai::receiver_supervisor::new_shared();
 
@@ -535,6 +547,11 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         let targets     = cfg.target.clone();
         let syslog_bus  = std::sync::Arc::clone(&bus);
         let governor    = shared_governor.clone();
+        let shun_engine_for_syslog = if run_core {
+            Some(std::sync::Arc::clone(&shun_engine))
+        } else {
+            None
+        };
         spawn_or_register!(
             "syslog",
             cfg.signals.syslog.udp_addr.clone() + "/" + &cfg.signals.syslog.tcp_addr,
@@ -543,6 +560,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             |shutdown| async move {
                 bonsai::signals::syslog::run_syslog_receiver(
                     syslog_cfg, pattern_dir, targets, syslog_bus, shutdown, governor,
+                    shun_engine_for_syslog,
                 ).await
             }
         );
@@ -706,10 +724,20 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         passphrase_env = %cfg.credentials.passphrase_env,
         "opening credential vault"
     );
-    let credentials = std::sync::Arc::new(CredentialVault::open(
-        &cfg.credentials.path,
-        &cfg.credentials.passphrase_env,
-    )?);
+    let credentials = std::sync::Arc::new(
+        CredentialVault::open(&cfg.credentials.path, &cfg.credentials.passphrase_env)
+            .map_err(|e| {
+                // D4-14 T4: emit a structured log before propagating so the error
+                // appears in the journal even if the process exits immediately.
+                error!(
+                    path = %cfg.credentials.path,
+                    passphrase_env = %cfg.credentials.passphrase_env,
+                    error = %e,
+                    "FATAL: credential vault failed to open — bonsai cannot start"
+                );
+                e
+            })?,
+    );
     info!(path = %cfg.credentials.path, "credential vault open complete");
 
     // CV7 T4-2: sidecar registry. Tracks Python (and future) sidecar processes
@@ -1301,6 +1329,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         cfg.ai.clone(),
                         cfg.gnn.clone(),
                         auto_investigate.then_some(investigation_rx),
+                        Some(std::sync::Arc::clone(&shun_engine)),
                     ),
                 )
                 .await

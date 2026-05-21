@@ -206,6 +206,10 @@ pub struct SnmpConfig {
     /// Defaults to "config/snmp_oid_patterns".
     #[serde(default)]
     pub oid_pattern_dir: Option<String>,
+    /// Optional community string allowlist (v1/v2c). If non-empty, traps with a community
+    /// not in this list are dropped (still archived) with a warn log. Empty list = accept all.
+    #[serde(default)]
+    pub community_allowlist: Vec<String>,
 }
 
 impl Default for SnmpConfig {
@@ -216,6 +220,7 @@ impl Default for SnmpConfig {
             archive_path: default_snmp_archive_path(),
             max_frame_bytes: default_snmp_max_frame_bytes(),
             oid_pattern_dir: None,
+            community_allowlist: Vec::new(),
         }
     }
 }

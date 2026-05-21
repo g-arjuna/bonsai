@@ -246,6 +246,7 @@ pub async fn run_snmp_receiver(
     let fact_extractor = SnmpFactExtractor::load_from_dir(
         cfg.oid_pattern_dir.as_deref().unwrap_or("config/snmp_oid_patterns"),
     );
+    let community_allowlist: Vec<String> = cfg.community_allowlist.clone();
 
     if cfg.udp_addr.trim().is_empty() {
         warn!("snmp receiver enabled but udp_addr empty");
@@ -321,6 +322,22 @@ pub async fn run_snmp_receiver(
                         if let Err(error) = archive.append(&event).await {
                             warn!(%error, "failed to archive snmp trap");
                             metrics::counter!("bonsai_snmp_archive_errors_total").increment(1);
+                        }
+
+                        // Community allowlist filtering: drop traps from unknown communities.
+                        // Archive write above is intentionally before this check so every
+                        // trap (including blocked ones) is preserved for forensic review.
+                        if !community_allowlist.is_empty()
+                            && !event.community.is_empty()
+                            && !community_allowlist.iter().any(|c| c == &event.community)
+                        {
+                            warn!(
+                                peer = %peer_ip,
+                                community = %event.community,
+                                "snmp trap from unknown community — dropping (not in allowlist)"
+                            );
+                            metrics::counter!("bonsai_snmp_community_blocked_total").increment(1);
+                            continue;
                         }
 
                         let resolved = target_map.resolve(&peer_ip, &event);

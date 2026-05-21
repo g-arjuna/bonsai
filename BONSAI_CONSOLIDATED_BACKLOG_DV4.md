@@ -116,22 +116,19 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 
 ### Tasks
 
-**T1 — ShunRule data model + DB storage**
+**T1 — ShunRule data model + DB storage** ✅ batch2
 - `ShunRule` fields: `id`, `scope_type` (device/group/site/global), `scope_value`, `match_type` (substring/regex/fact_type), `match_value`, `action` (drop/rate_limit), `rate_limit_per_min`, `expires_at_ns`, `created_by`, `created_at_ns`.
 - Store as graph DB `ShunRule` nodes or dedicated table.
 
-**T2 — Syslog receiver: shun evaluation on ingest**
+**T2 — Syslog receiver: shun evaluation on ingest** ✅ batch2
 - In `src/signals/syslog.rs`, after fact extraction, before `bus.publish()`:
   - Evaluate active ShunRules matching `(device_address, site, message_body, fact_type)`.
   - `drop`: skip `bus.publish()`, increment `bonsai_syslog_shunned_total{rule_id}` counter.
   - `rate_limit`: per-rule token bucket — allow N/min, drop excess.
   - Still archive shunned messages (raw log preserved) unless `drop_archive: true` explicitly set on rule.
 
-**T3 — REST API for shun management**
-- `GET /api/settings/syslog/shuns` — list active rules with per-rule stats.
-- `POST /api/settings/syslog/shuns` — create rule.
-- `DELETE /api/settings/syslog/shuns/{id}` — remove rule.
-- `GET /api/settings/syslog/shuns/{id}/stats` — events shunned, last fired timestamp.
+**T3 — REST API for shun management** ✅ batch2
+- `GET /api/shun/rules`, `POST /api/shun/rules`, `POST /api/shun/rules/{id}/disable`, `POST /api/shun/rules/{id}/delete`, `GET /api/shun/stats`.
 
 **T4 — UI: Interactive Shun Panel**
 - In `Syslog.svelte` (D4-1 T7), add a "Shun Rules" tab.
@@ -229,12 +226,8 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 
 ### Tasks
 
-**T1 — Fix layout overflow + blur**
-- `device-addr`: max-width 180px, truncate with ellipsis, full address in tooltip.
-- `rule-pills`: show max 3, "+N" badge for overflow with expand on click.
-- `context-line`: `max-width: 55%; overflow: hidden; text-overflow: ellipsis`.
-- Responsive: stack `row-primary` + `row-secondary` vertically below 600px viewport.
-- Move `co_fire_signature` inline into secondary row (not just `title` tooltip).
+**T1 — Fix layout overflow + blur** ✅ batch2
+- `device-addr` max-width 240px + ellipsis; `rule-pills` min-width:0 flex-shrink; `inc-body` overflow:hidden; `det-row` grid fixed to 6-col with minmax(0,1fr); `.view` overflow-x:hidden.
 
 **T2 — Incident type taxonomy + explanatory chips**
 - Backend: classify incidents as `single_device`, `cascading_failure`, `multi_device_correlated`, `config_caused`.
@@ -726,15 +719,12 @@ Over time, `DetectionEvent` nodes, `AppFlow` nodes from heavy flow sources, and 
 - On `decrypt_entries()`: verify HMAC before attempting decryption. Return actionable error on failure: "vault integrity check failed — file may be corrupt, restore from backup."
 - Legacy vaults without HMAC accepted on read, gain HMAC on next write.
 
-**T3 — Vault re-key subcommand**
-- Add `bonsai credential rekey` CLI subcommand.
-- Flow: open vault with `BONSAI_VAULT_PASSPHRASE` → decrypt all entries → re-encrypt with new passphrase from `BONSAI_VAULT_NEW_PASSPHRASE` env var → atomic write.
-- Test: rekey → set new passphrase env var → restart bonsai → verify all credentials accessible.
+**T3 — Vault re-key subcommand** ✅ batch2
+- `vault-rekey` binary (`src/bin/vault_rekey.rs`). `CredentialVault::rekey(new_passphrase_env)` method. Registered in `Cargo.toml`.
+- Flow: `BONSAI_VAULT_PASSPHRASE=<old> BONSAI_VAULT_NEW_PASSPHRASE=<new> vault-rekey [vault-root]`.
 
-**T4 — Startup crash path audit**
-- Trace `src/server_startup.rs` initialization sequence: map all `tokio::spawn()` calls before and after vault unlock.
-- If vault unlock fails: ensure all already-spawned tasks receive the shutdown watch signal and cleanly stop before process exit.
-- Add test: simulate vault init failure (wrong passphrase) → verify clean process exit, no leaked background tasks.
+**T4 — Startup crash path audit** ✅ batch2
+- Vault open now emits structured `error!` log with path+env var before propagating `?`. Tokio `#[tokio::main]` returns non-zero exit on `Err`. No `unwrap()` on vault path.
 
 **T5 — Vault init documentation**
 - Document in `scripts/install.sh` and README: vault passphrase requirements (minimum length, complexity), what happens if passphrase is lost (credentials are unrecoverable — backup the `.age` file before any re-key operation), and how to run re-key.

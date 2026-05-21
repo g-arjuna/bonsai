@@ -1290,6 +1290,28 @@ impl GraphStore {
         )
         .context("create RELATED_TO_CHANGE rel")?;
 
+        // ── ShunRule (D4-2 T1) ───────────────────────────────────────────────
+        // Syslog shunning rules stored in graph for persistence + auditability.
+        // scope_type: "device" | "global"
+        // match_type: "substring" | "regex" | "fact_type"
+        // action: "drop" | "rate_limit"
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS ShunRule(\
+                id                STRING,\
+                scope_type        STRING,\
+                scope_value       STRING,\
+                match_type        STRING,\
+                match_value       STRING,\
+                action            STRING,\
+                rate_limit_per_min INT64,\
+                expires_at_ns     INT64,\
+                created_by        STRING,\
+                created_at_ns     INT64,\
+                enabled           BOOLEAN,\
+                PRIMARY KEY (id))",
+        )
+        .context("create ShunRule table")?;
+
         info!("graph schema initialised");
         Ok(())
     }
@@ -2512,6 +2534,131 @@ impl GraphStore {
                     })
                 })
                 .collect::<Result<Vec<_>>>()
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    // ── ShunRule CRUD (D4-2 T1) ───────────────────────────────────────────────
+
+    /// Return all ShunRule nodes ordered by created_at descending.
+    pub async fn list_shun_rules(&self) -> Result<Vec<crate::shun::ShunRule>> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("shun rules connection")?;
+            let rows = conn
+                .query(
+                    "MATCH (r:ShunRule) \
+                     RETURN r.id, r.scope_type, r.scope_value, r.match_type, r.match_value, \
+                            r.action, r.rate_limit_per_min, r.expires_at_ns, r.created_by, \
+                            r.created_at_ns, r.enabled \
+                     ORDER BY r.created_at_ns DESC",
+                )
+                .context("list shun rules query")?;
+            rows.map(|r| {
+                Ok::<_, anyhow::Error>(crate::shun::ShunRule {
+                    id: read_str(&r[0]),
+                    scope_type: read_str(&r[1]),
+                    scope_value: read_str(&r[2]),
+                    match_type: read_str(&r[3]),
+                    match_value: read_str(&r[4]),
+                    action: read_str(&r[5]),
+                    rate_limit_per_min: match &r[6] {
+                        Value::Int64(n) => *n,
+                        Value::Int32(n) => *n as i64,
+                        _ => 0,
+                    },
+                    expires_at_ns: match &r[7] {
+                        Value::Int64(n) => *n,
+                        Value::Int32(n) => *n as i64,
+                        _ => 0,
+                    },
+                    created_by: read_str(&r[8]),
+                    created_at_ns: match &r[9] {
+                        Value::Int64(n) => *n,
+                        Value::Int32(n) => *n as i64,
+                        _ => 0,
+                    },
+                    enabled: match &r[10] {
+                        Value::Bool(b) => *b,
+                        _ => true,
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    /// Upsert (create or replace) a ShunRule node.
+    pub async fn upsert_shun_rule(&self, rule: crate::shun::ShunRule) -> Result<()> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock");
+            let conn = Connection::new(&db).context("shun rule write connection")?;
+            let mut stmt = conn
+                .prepare(
+                    "MERGE (r:ShunRule {id: $id}) \
+                     SET r.scope_type        = $scope_type, \
+                         r.scope_value       = $scope_value, \
+                         r.match_type        = $match_type, \
+                         r.match_value       = $match_value, \
+                         r.action            = $action, \
+                         r.rate_limit_per_min = $rate_limit_per_min, \
+                         r.expires_at_ns     = $expires_at_ns, \
+                         r.created_by        = $created_by, \
+                         r.created_at_ns     = $created_at_ns, \
+                         r.enabled           = $enabled",
+                )
+                .context("prepare shun rule upsert")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(rule.id)),
+                    ("scope_type", Value::String(rule.scope_type)),
+                    ("scope_value", Value::String(rule.scope_value)),
+                    ("match_type", Value::String(rule.match_type)),
+                    ("match_value", Value::String(rule.match_value)),
+                    ("action", Value::String(rule.action)),
+                    ("rate_limit_per_min", Value::Int64(rule.rate_limit_per_min)),
+                    ("expires_at_ns", Value::Int64(rule.expires_at_ns)),
+                    ("created_by", Value::String(rule.created_by)),
+                    ("created_at_ns", Value::Int64(rule.created_at_ns)),
+                    ("enabled", Value::Bool(rule.enabled)),
+                ],
+            )
+            .context("execute shun rule upsert")?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    /// Delete a ShunRule node by id. Returns true if a row was deleted.
+    pub async fn delete_shun_rule(&self, id: String) -> Result<bool> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock");
+            let conn = Connection::new(&db).context("shun rule delete connection")?;
+            let mut check = conn
+                .prepare("MATCH (r:ShunRule {id: $id}) RETURN r.id")
+                .context("prepare shun rule check")?;
+            let found = conn
+                .execute(&mut check, vec![("id", Value::String(id.clone()))])
+                .context("execute shun rule check")?
+                .next()
+                .is_some();
+            if found {
+                let mut del = conn
+                    .prepare("MATCH (r:ShunRule {id: $id}) DELETE r")
+                    .context("prepare shun rule delete")?;
+                conn.execute(&mut del, vec![("id", Value::String(id))])
+                    .context("execute shun rule delete")?;
+            }
+            Ok::<_, anyhow::Error>(found)
         })
         .await
         .context("spawn_blocking panicked")?

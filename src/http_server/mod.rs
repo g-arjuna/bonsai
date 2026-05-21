@@ -59,6 +59,7 @@ mod schema_components;
 mod settings;
 mod nl_query;
 mod ha;
+mod shun;
 
 use mcp_routes::{openapi_json_handler, resolve_handler, schema_handler, swagger_ui_handler};
 use remediation::{approvals_approve_handler, approvals_create_handler, approvals_list_handler, approvals_reject_handler, approvals_rollback_handler, trust_list_handler, trust_graduate_handler, snow_integration_test_handler, servicenow_aiops_sync_handler, list_overrides, add_override, remove_override, list_investigations_handler, create_investigation_handler, get_investigation_handler, list_tool_calls_handler, complete_investigation_handler, grounded_incident_handler, webhook_change_event_handler, change_context_handler, servicenow_change_sync_handler, list_changes_handler, playbooks_catalog_handler, audit_log_handler};
@@ -72,6 +73,7 @@ use test_endpoints::{inject_detection_handler, parse_syslog_fixture_handler};
 use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler, get_ai_config_handler, post_ai_test_handler};
 use ha::{ha_status_handler, ha_settings_handler, ha_patch_settings_handler, restart_handler};
 use nl_query::{explorer_ask_handler, nl_budget_handler};
+use shun::{create_shun_rule_handler, delete_shun_rule_handler, disable_shun_rule_handler, list_shun_rules_handler, shun_stats_handler};
 
 // ── JSON response types ───────────────────────────────────────────────────────
 
@@ -666,6 +668,8 @@ pub struct AppState {
     pub ai_config: crate::config::AiConfig,
     /// D3-9: GNN inference config for score thresholding and anomaly detection.
     pub gnn_config: crate::config::GnnConfig,
+    /// D4-2: Syslog shunning engine. None if not enabled.
+    pub shun_engine: Option<Arc<crate::shun::ShunEngine>>,
 }
 
 impl axum::extract::FromRef<AppState> for Option<Arc<crate::ha_coordinator::HACoordinator>> {
@@ -713,6 +717,7 @@ pub fn router(
     ai_config: crate::config::AiConfig,
     gnn_config: crate::config::GnnConfig,
     investigation_rx: Option<tokio::sync::mpsc::Receiver<crate::write_coordinator::AutoInvestigateRequest>>,
+    shun_engine: Option<Arc<crate::shun::ShunEngine>>,
 ) -> Router {
     let state = AppState {
         store,
@@ -749,6 +754,7 @@ pub fn router(
         targets,
         ai_config,
         gnn_config,
+        shun_engine,
     };
 
     // D3-6 T6: consume auto-investigate requests from the write coordinator.
@@ -808,6 +814,7 @@ pub fn router(
         .merge(remediation_routes())
         .merge(adapter_and_schema_routes())
         .merge(settings_routes())
+        .merge(shun_routes())
         .route("/mcp", post(crate::mcp_server::mcp_handler))
         .nest_service("/bonpy", bonpy_spa)
         .fallback_service(spa)
@@ -955,6 +962,14 @@ fn settings_routes() -> Router<AppState> {
         .route("/api/ha/status", get(ha_status_handler))
         .route("/api/ha/settings", get(ha_settings_handler).patch(ha_patch_settings_handler))
         .route("/api/restart", post(restart_handler))
+}
+
+fn shun_routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/shun/rules", get(list_shun_rules_handler).post(create_shun_rule_handler))
+        .route("/api/shun/rules/{id}/disable", post(disable_shun_rule_handler))
+        .route("/api/shun/rules/{id}/delete", post(delete_shun_rule_handler))
+        .route("/api/shun/stats", get(shun_stats_handler))
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
