@@ -695,6 +695,7 @@ pub fn router(
     ha_coordinator: Option<Arc<crate::ha_coordinator::HACoordinator>>,
     targets: Vec<crate::config::TargetConfig>,
     ai_config: crate::config::AiConfig,
+    investigation_rx: Option<tokio::sync::mpsc::Receiver<crate::write_coordinator::AutoInvestigateRequest>>,
 ) -> Router {
     let state = AppState {
         store,
@@ -731,6 +732,40 @@ pub fn router(
         targets,
         ai_config,
     };
+
+    // D3-6 T6: consume auto-investigate requests from the write coordinator.
+    // Runs only when auto_investigate_unmatched is enabled and the channel was wired.
+    if let Some(mut rx) = investigation_rx {
+        let inv_state = state.clone();
+        tokio::spawn(async move {
+            while let Some(req) = rx.recv().await {
+                let store = Arc::clone(&inv_state.store);
+                match store.create_investigation(
+                    req.detection_id.clone(),
+                    req.device_address.clone(),
+                    "auto".to_string(),
+                ).await {
+                    Ok(inv) => {
+                        crate::investigation_runtime::spawn_investigation(
+                            inv.id,
+                            req.device_address,
+                            Some(req.detection_id),
+                            store,
+                            inv_state.clone(),
+                            inv_state.ai_config.clone(),
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            rule_id = %req.rule_id,
+                            "auto-investigate: create_investigation failed"
+                        );
+                    }
+                }
+            }
+        });
+    }
 
     // Serve the Svelte SPA from ui/dist/. Fall back to index.html so
     // client-side routing works (the SPA handles /events and /trace/:id paths).

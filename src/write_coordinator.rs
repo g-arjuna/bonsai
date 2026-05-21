@@ -5,6 +5,16 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
+/// Sent by the write coordinator when an unmatched detection fires and
+/// `auto_investigate_unmatched` is enabled. The HTTP layer consumes this
+/// after AppState is available to create and spawn the investigation.
+#[derive(Debug)]
+pub struct AutoInvestigateRequest {
+    pub detection_id: String,
+    pub device_address: String,
+    pub rule_id: String,
+}
+
 use crate::graph::{GraphStore, SubscriptionStatusWrite};
 use crate::resource_governor::GovernorHandle;
 use crate::telemetry::TelemetryUpdate;
@@ -83,6 +93,9 @@ pub struct WriteCoordinatorConfig {
     /// When Some, auto-proposals are enabled and this library is consulted on every Detection write.
     pub playbook_library: Option<std::sync::Arc<crate::playbook::PlaybookLibrary>>,
     pub auto_propose: bool,
+    /// When Some, unmatched detections are forwarded here so the HTTP layer
+    /// can spawn an AI investigation after AppState is available.
+    pub investigation_tx: Option<mpsc::Sender<AutoInvestigateRequest>>,
 }
 
 impl Default for WriteCoordinatorConfig {
@@ -94,6 +107,7 @@ impl Default for WriteCoordinatorConfig {
             governor: None,
             playbook_library: None,
             auto_propose: false,
+            investigation_tx: None,
         }
     }
 }
@@ -223,11 +237,12 @@ async fn run_coordinator(
                     if !sub_status_pending.is_empty() {
                         flush_sub_status_batch(&store, &mut sub_status_pending).await;
                     }
-                    let res = store.write_detection(device_address, rule_id.clone(), severity, features_json.clone(), source_types_json, latency_ns, fired_at_ns, state_change_event_id, source_event_ids).await;
-                    if cfg.auto_propose {
+                    let res = store.write_detection(device_address.clone(), rule_id.clone(), severity, features_json.clone(), source_types_json, latency_ns, fired_at_ns, state_change_event_id, source_event_ids).await;
+                    let vendor = extract_vendor(&features_json);
+                    let playbook_matched = if cfg.auto_propose {
                         if let (Ok(det_id), Some(lib)) = (&res, &cfg.playbook_library) {
-                            let vendor = extract_vendor(&features_json);
-                            if let Some(pb) = lib.find(&rule_id, vendor.as_deref()) {
+                            let vendor_ref = vendor.as_deref();
+                            if let Some(pb) = lib.find(&rule_id, vendor_ref) {
                                 let trust_key = crate::remediation::trust::TrustKey::new(
                                     &rule_id, "", "", &pb.name,
                                 ).to_storage_key();
@@ -243,6 +258,30 @@ async fn run_coordinator(
                                 ).await {
                                     warn!(error = %e, rule_id = %rule_id, "auto-proposal write failed");
                                 }
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        // When auto_propose is off we still track whether a playbook
+                        // exists so the auto-investigate gate works correctly.
+                        cfg.playbook_library.as_ref()
+                            .and_then(|lib| lib.find(&rule_id, vendor.as_deref()))
+                            .is_some()
+                    };
+
+                    if let (Ok(det_id), Some(tx)) = (&res, &cfg.investigation_tx) {
+                        if !playbook_matched {
+                            let req = AutoInvestigateRequest {
+                                detection_id: det_id.clone(),
+                                device_address: device_address.clone(),
+                                rule_id: rule_id.clone(),
+                            };
+                            if let Err(e) = tx.try_send(req) {
+                                warn!(error = %e, rule_id = %rule_id, "auto-investigate channel full or closed");
                             }
                         }
                     }

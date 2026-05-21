@@ -391,14 +391,24 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         });
     }
 
+    // D3-6 T6: channel for auto-investigate on unmatched detections.
+    // Created unconditionally so the receiver can be moved into router() regardless;
+    // the coordinator only sends when auto_investigate_unmatched=true AND the API key exists.
+    let (investigation_tx, investigation_rx) = tokio::sync::mpsc::channel::<
+        bonsai::write_coordinator::AutoInvestigateRequest,
+    >(64);
+    let auto_investigate = cfg.ai.auto_investigate_unmatched
+        && std::env::var(&cfg.ai.api_key_env).is_ok();
+
     let coordinator = if let Some(Store::Core(ref s)) = store {
-        let playbook_library = cfg.remediation.auto_propose.then(|| {
+        let playbook_library = (cfg.remediation.auto_propose || auto_investigate).then(|| {
             bonsai::playbook::PlaybookLibrary::load_dir(&cfg.remediation.playbook_library_dir)
         });
         let coordinator_cfg = bonsai::write_coordinator::WriteCoordinatorConfig {
             governor: shared_governor.clone(),
             playbook_library,
             auto_propose: cfg.remediation.auto_propose,
+            investigation_tx: auto_investigate.then_some(investigation_tx),
             ..Default::default()
         };
         Some(std::sync::Arc::new(
@@ -1289,6 +1299,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         Some(ha_coordinator),
                         cfg.target.clone(),
                         cfg.ai.clone(),
+                        auto_investigate.then_some(investigation_rx),
                     ),
                 )
                 .await
