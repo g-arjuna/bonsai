@@ -11,9 +11,33 @@ facts:
     field_schema:
       peer_address: string
       new_state: string
+  - fact_type: bgp_neighbor
+    category: protocol
+    regex: '(?i)%BGP-[35]-ADJCHANGE.*neighbor (?P<peer_address>\d{1,3}(?:\.\d{1,3}){3})\s+(?P<new_state>Down|Up|established|Established)'
+    field_schema:
+      peer_address: string
+      new_state: string
+  - fact_type: bgp_notification
+    category: protocol
+    regex: '(?i)%BGP-3-NOTIFICATION.*(?:to|from) (?P<peer_address>\d{1,3}(?:\.\d{1,3}){3}).*error (?P<error_code>[0-9]+)'
+    field_schema:
+      peer_address: string
+      error_code: string
   - fact_type: interface_state
     category: custom
-    regex: '(?i)(?:interface|port|ethernet) (?P<if_name>[A-Za-z0-9./:_-]+).*(?:state|link).*(?P<new_state>up|down|administratively down|errdisabled)'
+    regex: "(?i)(?:interface|port|ethernet) (?P<if_name>[A-Za-z0-9./:_-]+).*(?:state|link).*(?P<new_state>up|down|administratively down|errdisabled)"
+    field_schema:
+      if_name: string
+      new_state: string
+  - fact_type: interface_state
+    category: custom
+    regex: "(?i)%LINK-3-UPDOWN.*Interface (?P<if_name>[A-Za-z0-9/.:_-]+),.*changed state to (?P<new_state>up|down)"
+    field_schema:
+      if_name: string
+      new_state: string
+  - fact_type: interface_state
+    category: custom
+    regex: "(?i)%LINEPROTO-5-UPDOWN.*Line protocol on Interface (?P<if_name>[A-Za-z0-9/.:_-]+),.*changed state to (?P<new_state>up|down)"
     field_schema:
       if_name: string
       new_state: string
@@ -37,21 +61,33 @@ facts:
       neighbor_address: string
       if_name: string
       new_state: string
+  - fact_type: ospf_neighbor
+    category: protocol
+    regex: '(?i)%OSPF-5-ADJCHG.*Process \d+, Nbr (?P<neighbor_address>\d{1,3}(?:\.\d{1,3}){3}) on (?P<if_name>[A-Za-z0-9/.:_-]+) from \w+ to (?P<new_state>\w+)'
+    field_schema:
+      neighbor_address: string
+      if_name: string
+      new_state: string
   - fact_type: isis_adjacency
     category: protocol
-    regex: '(?i)is-?is.*(?:adjacency|adj).*(?:address|system-id|with) (?P<neighbor_id>[A-Fa-f0-9.:]+).*(?:interface|on) (?P<if_name>[A-Za-z0-9./:_-]+).*(?:state|to|went) (?P<new_state>up|down|init|failed)'
+    regex: "(?i)is-?is.*(?:adjacency|adj).*(?:address|system-id|with) (?P<neighbor_id>[A-Fa-f0-9.:]+).*(?:interface|on) (?P<if_name>[A-Za-z0-9./:_-]+).*(?:state|to|went) (?P<new_state>up|down|init|failed)"
     field_schema:
       neighbor_id: string
       if_name: string
       new_state: string
   - fact_type: process_restart
     category: software
-    regex: '(?i)process (?P<process_name>[A-Za-z0-9._-]+).*(?:restart(?:ed|ing)?|crash(?:ed)?|core|panic|respawn(?:ed)?)'
+    regex: "(?i)process (?P<process_name>[A-Za-z0-9._-]+).*(?:restart(?:ed|ing)?|crash(?:ed)?|core|panic|respawn(?:ed)?)"
+    field_schema:
+      process_name: string
+  - fact_type: process_restart
+    category: software
+    regex: "(?i)%SYS-5-RELOAD.*(?P<process_name>(?:Reload|System)).*(?:request|requested)"
     field_schema:
       process_name: string
   - fact_type: config_change_detail
     category: auth
-    regex: '(?i)(?:user|aaa user) (?P<username>[A-Za-z0-9._@-]+).*(?:commit(?:ted)?|applied|copied).*(?:configuration|running-config|config)'
+    regex: "(?i)(?:user|aaa user) (?P<username>[A-Za-z0-9._@-]+).*(?:commit(?:ted)?|applied|copied).*(?:configuration|running-config|config)"
     field_schema:
       username: string
   - fact_type: hardware_error
@@ -62,6 +98,6 @@ facts:
       status: string
   - fact_type: aaa_failure
     category: auth
-    regex: '(?i)(?:failed password|login failed|aaa).*?(?:for|user) (?P<username>[A-Za-z0-9._-]+)'
+    regex: "(?i)(?:failed password|login failed|aaa).*?(?:for|user) (?P<username>[A-Za-z0-9._-]+)"
     field_schema:
       username: string

@@ -1216,6 +1216,20 @@ pub(super) async fn graph_insights_handler(
     .map(Json)
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
 }
+pub(super) async fn graph_quality_handler(
+    State(state): State<AppState>,
+) -> Result<Json<crate::graph::algorithms::GraphQuality>, (StatusCode, String)> {
+    let db = state.store.db();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        crate::graph::algorithms::graph_quality(&conn).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
 pub(super) async fn explorer_query_handler(
     State(state): State<AppState>,
     Json(body): Json<ExplorerQueryBody>,

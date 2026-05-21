@@ -16,7 +16,9 @@
 
   let insights = $state(null);
   let insightsLoading = $state(false);
-  let activeTab = $state('ask'); // 'ask' | 'explorer' | 'insights'
+  let quality = $state(null);
+  let qualityLoading = $state(false);
+  let activeTab = $state('ask'); // 'ask' | 'explorer' | 'insights' | 'health'
 
   // ── NL query state ──────────────────────────────────────────────────────────
   let nlQuestion = $state('');
@@ -188,9 +190,19 @@
     insightsLoading = false;
   }
 
+  async function loadQuality() {
+    qualityLoading = true;
+    try {
+      const r = await fetch('/api/graph/quality');
+      if (r.ok) quality = await r.json();
+    } catch {}
+    qualityLoading = false;
+  }
+
   function switchTab(tab) {
     activeTab = tab;
     if (tab === 'insights' && !insights) loadInsights();
+    if (tab === 'health') loadQuality();
     if (tab === 'ask' && !nlBudget) loadNlBudget();
   }
 
@@ -254,6 +266,7 @@
       <button class="tab-btn" class:active={activeTab === 'ask'} onclick={() => switchTab('ask')}>Ask</button>
       <button class="tab-btn" class:active={activeTab === 'explorer'} onclick={() => switchTab('explorer')}>Cypher</button>
       <button class="tab-btn" class:active={activeTab === 'insights'} onclick={() => switchTab('insights')}>Insights</button>
+      <button class="tab-btn" class:active={activeTab === 'health'} onclick={() => switchTab('health')}>Graph Health</button>
     </div>
   </div>
 
@@ -459,6 +472,90 @@
             </button>
           </div>
         </div>
+      </div>
+    {/if}
+
+  {:else if activeTab === 'health'}
+    <!-- ── graph health pane ─────────────────────────────────────────────── -->
+    {#if qualityLoading}
+      <div class="loading">Computing graph quality…</div>
+    {:else if !quality}
+      <div class="empty">Could not load graph quality data.</div>
+    {:else}
+      <div class="quality-layout">
+
+        <!-- Overall score gauge -->
+        <div class="quality-score-card">
+          <div class="score-ring" style="--score: {quality.overall_score}">
+            <span class="score-val">{quality.overall_score.toFixed(1)}</span>
+            <span class="score-label">/ 100</span>
+          </div>
+          <div class="score-desc">Overall data quality score</div>
+        </div>
+
+        <!-- Coverage bars (radar-style list) -->
+        <div class="quality-bars-card">
+          <div class="card-title">Signal coverage</div>
+          {#each [
+            { label: 'gNMI subscriptions', cov: quality.gnmi_coverage, weight: '30%' },
+            { label: 'Syslog (24 h)', cov: quality.syslog_coverage, weight: '20%' },
+            { label: 'Interface counters', cov: quality.interface_counter_coverage, weight: '20%' },
+            { label: 'Topology (LLDP)', cov: quality.topology_link_coverage, weight: '15%' },
+            { label: 'BGP sessions', cov: quality.bgp_mapped_coverage, weight: '15%' },
+            { label: 'BMP sessions', cov: quality.bmp_coverage, weight: '—' },
+            { label: 'NetBox enrichment', cov: quality.netbox_enrichment_coverage, weight: '—' },
+          ] as dim}
+            <div class="cov-row">
+              <span class="cov-label">{dim.label}</span>
+              <div class="cov-bar-wrap">
+                <div
+                  class="cov-bar"
+                  class:cov-good={dim.cov.pct >= 80}
+                  class:cov-warn={dim.cov.pct >= 40 && dim.cov.pct < 80}
+                  class:cov-bad={dim.cov.pct < 40}
+                  style="width: {Math.min(dim.cov.pct, 100)}%"
+                ></div>
+              </div>
+              <span class="cov-pct {dim.cov.pct >= 80 ? 'good' : dim.cov.pct >= 40 ? 'warn' : 'bad'}">
+                {dim.cov.pct.toFixed(1)}%
+              </span>
+              <span class="cov-detail">{dim.cov.covered}/{dim.cov.total}</span>
+              <span class="cov-weight">{dim.weight}</span>
+            </div>
+          {/each}
+        </div>
+
+        <!-- Weak devices -->
+        <div class="quality-weak-card">
+          <div class="card-title">
+            Weak devices
+            <span class="card-subtitle">— missing one or more key signals</span>
+            <span class="weak-count {quality.weak_devices.length === 0 ? 'healthy' : 'warn'}">
+              {quality.weak_devices.length}
+            </span>
+          </div>
+          {#if quality.weak_devices.length === 0}
+            <div class="empty-result">All devices have full signal coverage.</div>
+          {:else}
+            <table class="result-table">
+              <thead><tr><th>Address</th><th>Hostname</th><th>Missing signals</th></tr></thead>
+              <tbody>
+                {#each quality.weak_devices as wd}
+                  <tr>
+                    <td class="mono">{wd.address}</td>
+                    <td>{wd.hostname || '—'}</td>
+                    <td>
+                      {#each wd.missing as sig}
+                        <span class="missing-badge">{sig}</span>
+                      {/each}
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
+        </div>
+
       </div>
     {/if}
 
@@ -907,5 +1004,108 @@
     font-size: 0.7rem;
     color: var(--text-muted, #888);
     font-weight: 400;
+  }
+
+  /* ── graph health pane ────────────────────────────────────────────────────── */
+  .quality-layout {
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    grid-template-rows: auto 1fr;
+    gap: 1rem;
+  }
+
+  .quality-score-card {
+    grid-row: 1 / 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: var(--surface, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    padding: 1.25rem 1rem;
+    gap: 0.5rem;
+  }
+
+  .score-ring {
+    width: 96px;
+    height: 96px;
+    border-radius: 50%;
+    border: 5px solid var(--border, #333);
+    background: conic-gradient(
+      var(--accent, #3b82f6) calc(var(--score, 0) * 1%),
+      var(--surface2, #252525) 0%
+    );
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+  .score-val { font-size: 1.5rem; font-weight: 700; line-height: 1; }
+  .score-label { font-size: 0.7rem; color: var(--text-muted, #888); }
+  .score-desc { font-size: 0.75rem; color: var(--text-muted, #888); text-align: center; }
+
+  .quality-bars-card {
+    grid-row: 1 / 2;
+    background: var(--surface, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+  }
+
+  .quality-weak-card {
+    grid-column: 1 / 3;
+    background: var(--surface, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+  }
+
+  .cov-row {
+    display: grid;
+    grid-template-columns: 160px 1fr 54px 60px 40px;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.3rem 0;
+  }
+  .cov-label { font-size: 0.82rem; color: var(--text, #ccc); }
+  .cov-bar-wrap {
+    height: 8px;
+    background: var(--surface2, #252525);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .cov-bar { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
+  .cov-bar.cov-good { background: var(--healthy, #22c55e); }
+  .cov-bar.cov-warn { background: var(--warning, #f59e0b); }
+  .cov-bar.cov-bad  { background: var(--critical, #ef4444); }
+
+  .cov-pct { font-size: 0.82rem; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+  .cov-pct.good { color: var(--healthy, #22c55e); }
+  .cov-pct.warn { color: var(--warning, #f59e0b); }
+  .cov-pct.bad  { color: var(--critical, #ef4444); }
+  .cov-detail { font-size: 0.72rem; color: var(--text-muted, #888); text-align: right; }
+  .cov-weight { font-size: 0.68rem; color: var(--text-muted, #888); text-align: right; }
+
+  .weak-count {
+    display: inline-block;
+    margin-left: 0.5rem;
+    padding: 0.1rem 0.45rem;
+    border-radius: 10px;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  .weak-count.healthy { background: var(--healthy-bg, #14532d); color: var(--healthy, #22c55e); }
+  .weak-count.warn    { background: var(--critical-bg, #450a0a); color: var(--critical, #ef4444); }
+
+  .missing-badge {
+    display: inline-block;
+    margin: 0.1rem 0.2rem 0.1rem 0;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.72rem;
+    background: var(--surface2, #252525);
+    border: 1px solid var(--border, #333);
+    color: var(--warning, #f59e0b);
   }
 </style>

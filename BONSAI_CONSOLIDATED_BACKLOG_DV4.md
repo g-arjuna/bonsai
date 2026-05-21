@@ -93,7 +93,7 @@
 - List vendor pattern files with count; add/edit/disable patterns; test regex against sample syslog message inline; hot-reload via watch channel to receiver without restart.
 - Per-device vendor override: force vendor X pattern set on device Y regardless of hostname.
 
-**T8 — Syslog: Vendor coverage expansion**
+**T8 — Syslog: Vendor coverage expansion** ✅ batch4
 - Cisco IOS-XE/XR: `%BGP-5-ADJCHANGE`, `%LINEPROTO-5-UPDOWN`, `%LINK-3-UPDOWN`, `%OSPF-5-ADJCHG`, `%SYS-5-RELOAD`.
 - Arista EOS: `%BGP-5-ESTABLISHED`, `%BGP-3-NOTIFICATION`.
 - Juniper JunOS: `rpd[*]: bgp_listen_accept_connect:`, `if.info:`.
@@ -136,7 +136,7 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 - Show live shun counter badge per rule. One-click "silence 1h / 24h / permanent" for device scope.
 - Visual indicator in Events feed when a category has an active shun rule.
 
-**T5 — Pre-seeded noise patterns**
+**T5 — Pre-seeded noise patterns** ✅ batch4
 - `config/syslog_shun_seeds.yaml`: Nokia `LICC: License warning`, Nokia `LOGGER: Timed out waiting for sync`; Cisco `%SYS-5-CONFIG_I`; FRR BGP max-prefix warning.
 - All disabled by default. Operator enables per environment.
 
@@ -328,7 +328,7 @@ There is also no UI indicator of graph health — operators have no visibility i
 
 ### Tasks
 
-**T1 — Graph quality metric model**
+**T1 — Graph quality metric model** ✅ batch4
 - Define quality dimensions computed from graph DB via Cypher:
   - **Device Coverage**: % of managed devices with gNMI subscription active, syslog received <24h, SNMP trap received <24h, BMP session active.
   - **Interface Coverage**: % of interfaces with in/out counters populated (non-zero) and last updated <5 minutes.
@@ -336,11 +336,11 @@ There is also no UI indicator of graph health — operators have no visibility i
   - **Protocol Coverage**: % of devices with BGP sessions mapped, IS-IS adjacencies mapped, BFD sessions mapped.
   - **Enrichment Coverage**: % of devices with NetBox enrichment (`netbox_site` property), % with SNOW CMDB CI linked.
 
-**T2 — `GET /api/graph/quality` endpoint**
+**T2 — `GET /api/graph/quality` endpoint** ✅ batch4
 - Returns JSON: `{overall_score, device_coverage{total, gnmi_active, syslog_recent, snmp_recent, bmp_active}, interface_coverage{total, with_counters, recently_updated}, topology_completeness{links_expected, links_discovered}, protocol_coverage{bgp_mapped, isis_mapped, bfd_mapped}, enrichment_coverage{netbox_enriched, snow_enriched}, weak_devices[]}`.
 - Computed via Cypher queries at call time or cached with 60s TTL.
 
-**T3 — Graph Health tab in Explorer UI**
+**T3 — Graph Health tab in Explorer UI** ✅ batch4
 - Add "Graph Health" tab in `Explorer.svelte`.
 - Radar/spider chart of all quality dimensions.
 - Weak devices table: devices below threshold → click to navigate to device detail.
@@ -448,7 +448,7 @@ There is also no UI indicator of graph health — operators have no visibility i
 - Append `missing_data` list: "No syslog for leaf4 in last 24h", "Interface ethernet-1/1 has no gNMI counter data", "BFD session not mapped."
 - Expose in investigation result UI card — helps operator understand why LLM result may be incomplete.
 
-**T4 — LLM provider expansion**
+**T4 — LLM provider expansion** ✅ batch4
 - Add `OpenAIProvider`: compatible with OpenAI, Azure OpenAI, Groq, Together AI, OpenRouter via `base_url` override.
 - Add `AnthropicProvider`: Claude 3.5 Sonnet and Haiku.
 - Add `OllamaProvider`: local inference, configurable `base_url` (default `http://localhost:11434`).

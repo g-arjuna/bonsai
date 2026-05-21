@@ -263,6 +263,270 @@ pub fn graph_insights(conn: &Connection<'_>) -> Result<GraphInsights> {
     })
 }
 
+// ─── graph quality ────────────────────────────────────────────────────────────
+
+/// Coverage breakdown for a single quality dimension.
+#[derive(Debug, Clone, Serialize)]
+pub struct QualityCoverage {
+    pub total: i64,
+    pub covered: i64,
+    /// 0.0–100.0
+    pub pct: f64,
+}
+
+impl QualityCoverage {
+    fn new(total: i64, covered: i64) -> Self {
+        let pct = if total == 0 { 100.0 } else { (covered as f64 / total as f64 * 100.0 * 10.0).round() / 10.0 };
+        Self { total, covered, pct }
+    }
+}
+
+/// Devices below the quality threshold (for the weak-devices table).
+#[derive(Debug, Clone, Serialize)]
+pub struct WeakDevice {
+    pub address: String,
+    pub hostname: String,
+    /// Which dimensions are missing: e.g. ["gnmi", "syslog", "bgp"]
+    pub missing: Vec<String>,
+}
+
+/// Full graph quality report returned by GET /api/graph/quality.
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphQuality {
+    /// Weighted overall score 0–100.
+    pub overall_score: f64,
+    /// % of managed devices with an active gNMI subscription.
+    pub gnmi_coverage: QualityCoverage,
+    /// % of managed devices that sent syslog in the last 24 h.
+    pub syslog_coverage: QualityCoverage,
+    /// % of managed devices with BMP session active.
+    pub bmp_coverage: QualityCoverage,
+    /// % of interfaces with in/out counters populated and updated < 5 min ago.
+    pub interface_counter_coverage: QualityCoverage,
+    /// % of device-pair links confirmed by LLDP discovery.
+    pub topology_link_coverage: QualityCoverage,
+    /// % of devices with at least one BGP session mapped.
+    pub bgp_mapped_coverage: QualityCoverage,
+    /// % of devices with NetBox enrichment (`netbox_site` property set).
+    pub netbox_enrichment_coverage: QualityCoverage,
+    /// Devices missing one or more key signals.
+    pub weak_devices: Vec<WeakDevice>,
+    /// Unix ns when this snapshot was computed.
+    pub computed_at_ns: i64,
+}
+
+/// Compute a point-in-time graph quality snapshot.
+/// All queries run synchronously inside a spawn_blocking closure.
+pub fn graph_quality(conn: &Connection<'_>) -> Result<GraphQuality> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0);
+
+    // ── Total managed device count ─────────────────────────────────────────
+    let total_devices: i64 = conn
+        .query("MATCH (d:Device) RETURN count(d)")
+        .context("quality: total_devices")?
+        .next()
+        .map(|r| read_i64(&r[0]))
+        .unwrap_or(0);
+
+    // ── gNMI active subscriptions ──────────────────────────────────────────
+    let gnmi_active: i64 = conn
+        .query(
+            "MATCH (d:Device)-[:HAS_SUBSCRIPTION_STATUS]->(ss:SubscriptionStatus) \
+             WHERE ss.status = 'active' \
+             RETURN count(DISTINCT d.address)",
+        )
+        .context("quality: gnmi_active")?
+        .next()
+        .map(|r| read_i64(&r[0]))
+        .unwrap_or(0);
+
+    // ── Syslog recently received (StateChangeEvent from syslog within 24 h) ─
+    let syslog_cutoff = ts(now_ns - 86_400_000_000_000_i64);
+    let mut syslog_stmt = conn
+        .prepare(
+            "MATCH (d:Device)-[:TRIGGERED_BY]->(e:StateChangeEvent) \
+             WHERE e.source_type = 'syslog' AND e.occurred_at > $cutoff \
+             RETURN count(DISTINCT d.address)",
+        )
+        .context("quality: syslog prepare")?;
+    let syslog_active: i64 = conn
+        .execute(&mut syslog_stmt, vec![("cutoff", syslog_cutoff)])
+        .context("quality: syslog execute")?
+        .next()
+        .map(|r| read_i64(&r[0]))
+        .unwrap_or(0);
+
+    // ── BMP sessions active ────────────────────────────────────────────────
+    let bmp_active: i64 = conn
+        .query(
+            "MATCH (d:Device)-[:HAS_BMP_SESSION]->(b:BmpSession) \
+             WHERE b.session_state = 'up' \
+             RETURN count(DISTINCT d.address)",
+        )
+        .context("quality: bmp_active")?
+        .next()
+        .map(|r| read_i64(&r[0]))
+        .unwrap_or(0);
+
+    // ── Interface counter coverage (updated in last 5 min) ────────────────
+    let iface_cutoff = ts(now_ns - 300_000_000_000_i64);
+    let total_ifaces: i64 = conn
+        .query("MATCH (:Device)-[:HAS_INTERFACE]->(i:Interface) RETURN count(i)")
+        .context("quality: total_ifaces")?
+        .next()
+        .map(|r| read_i64(&r[0]))
+        .unwrap_or(0);
+    let mut iface_stmt = conn
+        .prepare(
+            "MATCH (:Device)-[:HAS_INTERFACE]->(i:Interface) \
+             WHERE i.in_octets > 0 AND i.updated_at > $cutoff \
+             RETURN count(i)",
+        )
+        .context("quality: iface_covered prepare")?;
+    let ifaces_with_counters: i64 = conn
+        .execute(&mut iface_stmt, vec![("cutoff", iface_cutoff)])
+        .context("quality: iface_covered execute")?
+        .next()
+        .map(|r| read_i64(&r[0]))
+        .unwrap_or(0);
+
+    // ── Topology link coverage (LLDP-confirmed CONNECTED_TO edges) ────────
+    let lldp_links: i64 = conn
+        .query(
+            "MATCH (:Interface)-[c:CONNECTED_TO]->(:Interface) \
+             WHERE c.source = 'lldp' \
+             RETURN count(c)",
+        )
+        .context("quality: lldp_links")?
+        .next()
+        .map(|r| read_i64(&r[0]))
+        .unwrap_or(0);
+    // Expected: each device-to-device link appears as two directed edges
+    let expected_links: i64 = conn
+        .query(
+            "MATCH (d:Device)-[:HAS_INTERFACE]->(i:Interface)-[:CONNECTED_TO]->(:Interface) \
+             RETURN count(i)",
+        )
+        .context("quality: expected_links")?
+        .next()
+        .map(|r| read_i64(&r[0]))
+        .unwrap_or(0);
+
+    // ── BGP mapped (at least one BgpSession node per device) ──────────────
+    let bgp_mapped: i64 = conn
+        .query(
+            "MATCH (d:Device)-[:HAS_BGP_SESSION]->(:BgpSession) \
+             RETURN count(DISTINCT d.address)",
+        )
+        .context("quality: bgp_mapped")?
+        .next()
+        .map(|r| read_i64(&r[0]))
+        .unwrap_or(0);
+
+    // ── NetBox enrichment (netbox_site property set) ───────────────────────
+    let netbox_enriched: i64 = conn
+        .query(
+            "MATCH (d:Device) \
+             WHERE d.netbox_site IS NOT NULL AND d.netbox_site <> '' \
+             RETURN count(d)",
+        )
+        .context("quality: netbox_enriched")?
+        .next()
+        .map(|r| read_i64(&r[0]))
+        .unwrap_or(0);
+
+    // ── Weak devices (missing >= 1 key signal) ────────────────────────────
+    let gnmi_set: std::collections::HashSet<String> = conn
+        .query(
+            "MATCH (d:Device)-[:HAS_SUBSCRIPTION_STATUS]->(ss:SubscriptionStatus) \
+             WHERE ss.status = 'active' RETURN DISTINCT d.address",
+        )
+        .context("quality: gnmi_set")?
+        .map(|r| read_str(&r[0]))
+        .collect();
+
+    let mut syslog_stmt2 = conn
+        .prepare(
+            "MATCH (d:Device)-[:TRIGGERED_BY]->(e:StateChangeEvent) \
+             WHERE e.source_type = 'syslog' AND e.occurred_at > $cutoff \
+             RETURN DISTINCT d.address",
+        )
+        .context("quality: syslog_set prepare")?;
+    let syslog_set: std::collections::HashSet<String> = conn
+        .execute(&mut syslog_stmt2, vec![("cutoff", syslog_cutoff)])
+        .context("quality: syslog_set execute")?
+        .map(|r| read_str(&r[0]))
+        .collect();
+
+    let bgp_set: std::collections::HashSet<String> = conn
+        .query(
+            "MATCH (d:Device)-[:HAS_BGP_SESSION]->(:BgpSession) RETURN DISTINCT d.address",
+        )
+        .context("quality: bgp_set")?
+        .map(|r| read_str(&r[0]))
+        .collect();
+
+    let all_devs: Vec<(String, String)> = conn
+        .query("MATCH (d:Device) RETURN d.address, coalesce(d.hostname, '')")
+        .context("quality: all_devs")?
+        .map(|r| (read_str(&r[0]), read_str(&r[1])))
+        .collect();
+
+    let mut weak_devices: Vec<WeakDevice> = Vec::new();
+    for (addr, hostname) in &all_devs {
+        let mut missing = Vec::new();
+        if !gnmi_set.contains(addr.as_str()) { missing.push("gnmi".to_string()); }
+        if !syslog_set.contains(addr.as_str()) { missing.push("syslog".to_string()); }
+        if !bgp_set.contains(addr.as_str()) { missing.push("bgp".to_string()); }
+        if !missing.is_empty() {
+            weak_devices.push(WeakDevice {
+                address: addr.clone(),
+                hostname: hostname.clone(),
+                missing,
+            });
+        }
+    }
+    weak_devices.sort_by(|a, b| b.missing.len().cmp(&a.missing.len()).then(a.address.cmp(&b.address)));
+
+    // ── Coverage structs ───────────────────────────────────────────────────
+    let gnmi_coverage = QualityCoverage::new(total_devices, gnmi_active);
+    let syslog_coverage = QualityCoverage::new(total_devices, syslog_active);
+    let bmp_coverage = QualityCoverage::new(total_devices, bmp_active);
+    let interface_counter_coverage = QualityCoverage::new(total_ifaces, ifaces_with_counters);
+    let topology_link_coverage = QualityCoverage::new(expected_links, lldp_links);
+    let bgp_mapped_coverage = QualityCoverage::new(total_devices, bgp_mapped);
+    let netbox_enrichment_coverage = QualityCoverage::new(total_devices, netbox_enriched);
+
+    // ── Overall score (weighted average of key dimensions) ────────────────
+    // Weights: gNMI 30, syslog 20, interface counters 20, topology 15, BGP 15
+    let overall_score = (
+        gnmi_coverage.pct * 0.30
+        + syslog_coverage.pct * 0.20
+        + interface_counter_coverage.pct * 0.20
+        + topology_link_coverage.pct * 0.15
+        + bgp_mapped_coverage.pct * 0.15
+    ).min(100.0).max(0.0);
+    let overall_score = (overall_score * 10.0).round() / 10.0;
+
+    Ok(GraphQuality {
+        overall_score,
+        gnmi_coverage,
+        syslog_coverage,
+        bmp_coverage,
+        interface_counter_coverage,
+        topology_link_coverage,
+        bgp_mapped_coverage,
+        netbox_enrichment_coverage,
+        weak_devices,
+        computed_at_ns: now_ns,
+    })
+}
+
 // ─── tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

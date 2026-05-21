@@ -1,0 +1,166 @@
+# Bonsai syslog shun seed patterns (D4-2 T5)
+#
+# Pre-built noise suppression rules for common high-frequency log messages
+# that produce no actionable signals.
+#
+# All rules are DISABLED by default. Enable via UI (Syslog > Shun Rules > Common
+# Noise Patterns) or via POST /api/shun/rules with these payloads.
+#
+# Format: each entry maps directly to a CreateShunRuleRequest body.
+# Load with: python3 scripts/load_shun_seeds.py  (or import via UI)
+
+seeds:
+  # ── Nokia SR Linux ─────────────────────────────────────────────────────────
+  - vendor: nokia_srl
+    name: "Nokia SRL: License warning flood"
+    scope_type: global
+    match_type: substring
+    match_value: "LICC: License warning"
+    action: drop
+    rate_limit_per_min: 0
+    description: "Nokia SRL LICC subsystem emits this on every boot and periodically. Zero operational value."
+    enabled: false
+
+  - vendor: nokia_srl
+    name: "Nokia SRL: Logger sync timeout"
+    scope_type: global
+    match_type: substring
+    match_value: "LOGGER: Timed out waiting for sync"
+    action: drop
+    rate_limit_per_min: 0
+    description: "Internal SRL logger sync timeout — not indicative of a real fault."
+    enabled: false
+
+  - vendor: nokia_srl
+    name: "Nokia SRL: CPU threshold transient"
+    scope_type: global
+    match_type: regex
+    match_value: 'CPU threshold (exceeded|cleared)'
+    action: rate_limit
+    rate_limit_per_min: 5
+    description: "SRL CPU threshold messages are noisy in lab environments under load. Rate-limit to 5/min."
+    enabled: false
+
+  - vendor: nokia_srl
+    name: "Nokia SRL: Debug/trace messages"
+    scope_type: global
+    match_type: regex
+    match_value: '\b(?:DEBUG|TRACE|debug|trace)\b'
+    action: drop
+    rate_limit_per_min: 0
+    description: "Drop debug/trace level messages from SRL that leak into syslog stream."
+    enabled: false
+
+  # ── Cisco IOS / IOS-XE ─────────────────────────────────────────────────────
+  - vendor: cisco_ios
+    name: "Cisco: Config save notification"
+    scope_type: global
+    match_type: regex
+    match_value: '%SYS-5-CONFIG_I'
+    action: drop
+    rate_limit_per_min: 0
+    description: "Informational config-save acknowledgement. Creates noise when SNMP tooling polls config-last-changed."
+    enabled: false
+
+  - vendor: cisco_ios
+    name: "Cisco: Line protocol housekeeping"
+    scope_type: global
+    match_type: regex
+    match_value: '%LINEPROTO-5-UPDOWN.*\(notconnect\)'
+    action: drop
+    rate_limit_per_min: 0
+    description: "Unused ports cycling notconnect state repeatedly. Drop — actual link events use LINK-3-UPDOWN."
+    enabled: false
+
+  - vendor: cisco_ios
+    name: "Cisco: NTP stratum sync noise"
+    scope_type: global
+    match_type: regex
+    match_value: '%NTP-6-RESTART'
+    action: drop
+    rate_limit_per_min: 0
+    description: "NTP restart/stratum informational — not a fault."
+    enabled: false
+
+  - vendor: cisco_ios
+    name: "Cisco: CDP/LLDP neighbor churn"
+    scope_type: global
+    match_type: regex
+    match_value: '%CDP-4-NATIVE_VLAN_MISMATCH'
+    action: rate_limit
+    rate_limit_per_min: 3
+    description: "CDP native VLAN mismatches in access layer environments generate high volume."
+    enabled: false
+
+  # ── FRR (Free Range Routing) ───────────────────────────────────────────────
+  - vendor: frr
+    name: "FRR BGP: max-prefix warning"
+    scope_type: global
+    match_type: regex
+    match_value: '%BGP-3-MAXPFXEXCEED'
+    action: rate_limit
+    rate_limit_per_min: 5
+    description: "BGP max-prefix warning from FRR — in lab environments with full internet tables this fires constantly."
+    enabled: false
+
+  - vendor: frr
+    name: "FRR BGP: route refresh received"
+    scope_type: global
+    match_type: substring
+    match_value: "route-refresh request"
+    action: drop
+    rate_limit_per_min: 0
+    description: "BGP route-refresh housekeeping — informational only."
+    enabled: false
+
+  - vendor: frr
+    name: "FRR: Zebra kernel route reconciliation"
+    scope_type: global
+    match_type: regex
+    match_value: 'zebra.*(?:kernel route|rib.*update)'
+    action: rate_limit
+    rate_limit_per_min: 10
+    description: "Zebra kernel route table updates are very frequent on route-reflectors."
+    enabled: false
+
+  # ── Arista EOS ─────────────────────────────────────────────────────────────
+  - vendor: arista_eos
+    name: "Arista: BGP established (informational)"
+    scope_type: global
+    match_type: regex
+    match_value: '%BGP-5-ESTABLISHED'
+    action: drop
+    rate_limit_per_min: 0
+    description: "BGP session established (not a fault — detection rules handle this via gNMI telemetry)."
+    enabled: false
+
+  - vendor: arista_eos
+    name: "Arista: Agent health check noise"
+    scope_type: global
+    match_type: regex
+    match_value: 'Eos.*(?:AgentManager|ProcMgr).*(?:health|heartbeat)'
+    action: drop
+    rate_limit_per_min: 0
+    description: "EOS internal agent health-check messages — operational noise."
+    enabled: false
+
+  # ── Juniper JunOS ──────────────────────────────────────────────────────────
+  - vendor: juniper_junos
+    name: "Juniper: UI commit acknowledgement"
+    scope_type: global
+    match_type: substring
+    match_value: "UI_COMMIT_COMPLETED"
+    action: drop
+    rate_limit_per_min: 0
+    description: "JunOS commit-complete informational — config-change detection handles causal attribution separately."
+    enabled: false
+
+  - vendor: juniper_junos
+    name: "Juniper: SNMP trap informational"
+    scope_type: global
+    match_type: regex
+    match_value: 'SNMPD_TRAP_.*_INFO'
+    action: drop
+    rate_limit_per_min: 0
+    description: "JunOS SNMP informational traps — filtered before they re-enter the signal bus."
+    enabled: false

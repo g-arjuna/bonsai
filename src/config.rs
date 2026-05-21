@@ -138,6 +138,10 @@ pub struct AiConfig {
     /// When true and a DetectionEvent has no matching playbook, trigger an AI investigation automatically.
     #[serde(default)]
     pub auto_investigate_unmatched: bool,
+    /// Optional custom base URL — used for Ollama (e.g. "http://localhost:11434") or Azure OpenAI.
+    /// Leave empty for cloud providers (OpenAI/Anthropic/Gemini default endpoints).
+    #[serde(default)]
+    pub base_url: String,
 }
 
 impl Default for AiConfig {
@@ -149,6 +153,7 @@ impl Default for AiConfig {
             per_investigation_budget_usd: default_ai_per_investigation_budget(),
             daily_budget_usd: default_ai_daily_budget(),
             auto_investigate_unmatched: false,
+            base_url: String::new(),
         }
     }
 }
