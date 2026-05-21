@@ -9,6 +9,9 @@
   let dirty    = $state(false);
   let liveStatus = $state({});   // name → ReceiverStatusSnapshot
   let statusPollTimer = null;
+  let aiCfg = $state(null);
+  let aiTesting = $state(false);
+  let aiTestResult = $state(null);
 
   // Local editable copy — updated on load, mutated by toggles/inputs
   let cfg = $state({
@@ -63,6 +66,7 @@
   onMount(async () => {
     pollStatus();
     statusPollTimer = setInterval(pollStatus, 5000);
+    fetch('/api/ai/config').then(r => r.ok ? r.json() : null).then(d => { if (d) aiCfg = d; }).catch(() => {});
     try {
       const r = await fetch('/api/settings/streaming');
       if (!r.ok) throw new Error(await r.text());
@@ -116,6 +120,19 @@
     }
   }
 
+  async function testAi() {
+    aiTesting = true;
+    aiTestResult = null;
+    try {
+      const r = await fetch('/api/ai/test', { method: 'POST' });
+      aiTestResult = await r.json();
+    } catch (e) {
+      aiTestResult = { ok: false, error: e.message };
+    } finally {
+      aiTesting = false;
+    }
+  }
+
   function discard() {
     if (!settings) return;
     cfg = {
@@ -147,7 +164,7 @@
 
   {#if dirty}
     <div class="restart-banner">
-      ⚠ Changes require a process restart to take effect.
+      Unsaved changes — click Save &amp; Apply to apply live.
     </div>
   {/if}
 
@@ -158,7 +175,7 @@
       <h2>Streaming Receivers</h2>
       <p class="section-desc">
         Enable or disable streaming protocol receivers and configure their listen addresses.
-        BMP, BGP-LS, OTLP, and NetFlow changes apply live; syslog and SNMP changes require a process restart.
+        All changes apply live — no process restart required. Status badges update every 5s.
       </p>
 
       <div class="receiver-grid">
@@ -195,6 +212,43 @@
             </div>
           </div>
         {/each}
+      </div>
+    </section>
+  {/if}
+
+  {#if aiCfg}
+    <section class="section">
+      <h2>AI Investigations</h2>
+      <p class="section-desc">
+        Configure the AI provider used for automated investigation analysis.
+        Set <code>{aiCfg.api_key_env}</code> in the server environment to enable.
+      </p>
+      <div class="ai-grid">
+        <div class="ai-row"><span class="ai-label">Provider</span><span class="ai-value">{aiCfg.provider}</span></div>
+        <div class="ai-row"><span class="ai-label">Model</span><span class="ai-value">{aiCfg.model}</span></div>
+        <div class="ai-row">
+          <span class="ai-label">API Key</span>
+          <span class="ai-value">
+            {#if aiCfg.has_api_key}
+              <span class="key-set">set via <code>{aiCfg.api_key_env}</code></span>
+            {:else}
+              <span class="key-missing">not set — set <code>{aiCfg.api_key_env}</code> env var</span>
+            {/if}
+          </span>
+        </div>
+        <div class="ai-row"><span class="ai-label">Per-investigation budget</span><span class="ai-value">${aiCfg.per_investigation_budget_usd.toFixed(2)}</span></div>
+        <div class="ai-row"><span class="ai-label">Daily budget</span><span class="ai-value">${aiCfg.daily_budget_usd.toFixed(2)}</span></div>
+        <div class="ai-row"><span class="ai-label">Auto-investigate unmatched</span><span class="ai-value">{aiCfg.auto_investigate_unmatched ? 'enabled' : 'disabled'}</span></div>
+      </div>
+      <div class="ai-actions">
+        <button class="btn-secondary" onclick={testAi} disabled={aiTesting || !aiCfg.has_api_key}>
+          {aiTesting ? 'Testing…' : 'Test Connection'}
+        </button>
+        {#if aiTestResult}
+          <span class="ai-test-result ai-test-{aiTestResult.ok ? 'ok' : 'err'}">
+            {aiTestResult.ok ? 'Connection OK' : `Failed: ${aiTestResult.error}`}
+          </span>
+        {/if}
       </div>
     </section>
   {/if}
@@ -416,4 +470,15 @@
     opacity: 0.5;
     cursor: not-allowed;
   }
+
+  .ai-grid { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  .ai-row { display: flex; gap: 12px; align-items: baseline; font-size: 0.83rem; }
+  .ai-label { width: 200px; flex-shrink: 0; color: var(--color-muted, #6b7280); text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.05em; }
+  .ai-value { font-family: monospace; }
+  .key-set { color: #4ade80; }
+  .key-missing { color: #f87171; }
+  .ai-actions { display: flex; align-items: center; gap: 12px; }
+  .ai-test-result { font-size: 0.8rem; }
+  .ai-test-ok { color: #4ade80; }
+  .ai-test-err { color: #f87171; }
 </style>

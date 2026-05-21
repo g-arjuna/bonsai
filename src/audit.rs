@@ -196,6 +196,45 @@ pub fn append_adapter_push(
     Ok(())
 }
 
+/// Read the most recent audit entries, newest-first, up to `limit`.
+/// Returns raw JSON values (each line as parsed from JSONL files).
+pub fn read_recent(root: &Path, limit: usize) -> Vec<serde_json::Value> {
+    let dir = audit_dir(root);
+    if !dir.exists() {
+        return Vec::new();
+    }
+    // Collect all audit files, sort descending (newest day first).
+    let mut files: Vec<PathBuf> = match fs::read_dir(&dir) {
+        Ok(rd) => rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with(FILE_PREFIX) && n.ends_with(FILE_SUFFIX))
+                    .unwrap_or(false)
+            })
+            .collect(),
+        Err(_) => return Vec::new(),
+    };
+    files.sort_unstable_by(|a, b| b.cmp(a));
+
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    'outer: for path in &files {
+        let Ok(file) = fs::File::open(path) else { continue };
+        let lines: Vec<String> = BufReader::new(file).lines().flatten().collect();
+        for line in lines.into_iter().rev() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                entries.push(v);
+                if entries.len() >= limit {
+                    break 'outer;
+                }
+            }
+        }
+    }
+    entries
+}
+
 pub fn enforce_retention(root: &Path, retention_days: i64) -> Result<usize> {
     let dir = audit_dir(root);
     if !dir.exists() {

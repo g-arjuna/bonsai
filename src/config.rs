@@ -54,6 +54,8 @@ pub struct Config {
     pub gnn: GnnConfig,
     #[serde(default)]
     pub target: Vec<TargetConfig>,
+    #[serde(default)]
+    pub ai: AiConfig,
 }
 
 // ── GNN (D5-T4 DV1) ─────────────────────────────────────────────────────────
@@ -113,6 +115,49 @@ fn default_gnn_threshold() -> f64 {
 fn default_gnn_min_calibration_samples() -> usize {
     1000
 }
+
+// ── AI ───────────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct AiConfig {
+    /// AI provider to use. Default: "gemini". Options: "gemini", "moonshot", "anthropic", "openai".
+    #[serde(default = "default_ai_provider")]
+    pub provider: String,
+    /// Model name for the selected provider. Default: "gemini-2.5-pro".
+    #[serde(default = "default_ai_model")]
+    pub model: String,
+    /// Environment variable name holding the API key. Default: "BONSAI_AI_API_KEY".
+    #[serde(default = "default_ai_key_env")]
+    pub api_key_env: String,
+    /// Maximum cost (USD) per single investigation. Default: 0.10.
+    #[serde(default = "default_ai_per_investigation_budget")]
+    pub per_investigation_budget_usd: f64,
+    /// Maximum total cost (USD) across all investigations per UTC day. Default: 1.00.
+    #[serde(default = "default_ai_daily_budget")]
+    pub daily_budget_usd: f64,
+    /// When true and a DetectionEvent has no matching playbook, trigger an AI investigation automatically.
+    #[serde(default)]
+    pub auto_investigate_unmatched: bool,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_ai_provider(),
+            model: default_ai_model(),
+            api_key_env: default_ai_key_env(),
+            per_investigation_budget_usd: default_ai_per_investigation_budget(),
+            daily_budget_usd: default_ai_daily_budget(),
+            auto_investigate_unmatched: false,
+        }
+    }
+}
+
+fn default_ai_provider() -> String { "gemini".to_string() }
+fn default_ai_model() -> String { "gemini-2.5-pro".to_string() }
+fn default_ai_key_env() -> String { "BONSAI_AI_API_KEY".to_string() }
+fn default_ai_per_investigation_budget() -> f64 { 0.10 }
+fn default_ai_daily_budget() -> f64 { 1.00 }
 
 // ── Lab ──────────────────────────────────────────────────────────────────────
 
@@ -447,6 +492,13 @@ pub struct RemediationConfig {
     pub defaults: RemediationDefaultsConfig,
     #[serde(default)]
     pub rule_defaults: HashMap<String, RemediationDefaultsConfig>,
+    /// When true, a RemediationProposal is created automatically for every
+    /// DetectionEvent that has a matching entry in the playbook library.
+    #[serde(default)]
+    pub auto_propose: bool,
+    /// Directory containing YAML playbook files keyed by detection_rule_id.
+    #[serde(default = "default_playbook_library_dir")]
+    pub playbook_library_dir: String,
 }
 
 impl Default for RemediationConfig {
@@ -456,6 +508,8 @@ impl Default for RemediationConfig {
             graduation: GraduationConfig::default(),
             defaults: RemediationDefaultsConfig::default(),
             rule_defaults: HashMap::new(),
+            auto_propose: false,
+            playbook_library_dir: default_playbook_library_dir(),
         }
     }
 }
@@ -493,6 +547,9 @@ pub struct RemediationDefaultsConfig {
 
 fn default_rollback_window_secs() -> u64 {
     60
+}
+fn default_playbook_library_dir() -> String {
+    "playbooks/library".to_string()
 }
 fn default_graduation_approvals() -> u32 {
     10

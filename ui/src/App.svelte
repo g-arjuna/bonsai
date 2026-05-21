@@ -18,6 +18,7 @@
   import Explorer from './routes/Explorer.svelte';
   import Investigations from './routes/Investigations.svelte';
   import Settings from './routes/Settings.svelte';
+  import Audit from './routes/Audit.svelte';
   import DensityToggle from '$lib/components/DensityToggle.svelte';
   import HA from './routes/HA.svelte';
 
@@ -37,6 +38,7 @@
     { href: '/profiles',      label: 'Profiles',      icon: '📋' },
     { href: '/sites',         label: 'Sites',         icon: '◎' },
     { href: '/credentials',   label: 'Credentials',   icon: '⚿' },
+    { href: '/audit',         label: 'Audit',         icon: '📜' },
     { href: '/settings',      label: 'Settings',      icon: '⚙' },
   ];
 
@@ -187,6 +189,8 @@
       <Investigations />
     {:else if path() === '/ha'}
       <HA />
+    {:else if path() === '/audit'}
+      <Audit />
     {:else if path() === '/settings'}
       <Settings />
     {:else}

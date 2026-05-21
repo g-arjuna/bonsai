@@ -1,6 +1,6 @@
 # BONSAI Consolidated Backlog — DV3
 **Created**: 2026-05-18  
-**Updated decisions**: 2026-05-19 (session 14)  
+**Updated decisions**: 2026-05-20 (session 15 — signal-test-lab validation + code audit)  
 **Baseline**: DV2 sprint complete, v0.2.0 shipped, 30-day data collection running on cloud VM (ubuntu@<ip>)  
 **Laptop**: Full bare-metal wipe — simulates a new user install from scratch. Repo gone, Docker volumes gone, binary gone.  
 **Scope of DV3**: Productionisation, clean install story, structured onboarding, enrichment testing, remediation maturity, AI investigations, and a long-overdue README rewrite.
@@ -75,23 +75,37 @@
 ## Epic Map
 
 ```
-D3-1  Clean Install & Distribution
-D3-2  Structured Onboarding (UI-first, NetBox import, cred association)
-D3-3  gNMI Onboarding Flow — Lab-Backed End-to-End Test
-D3-4  Graph Enrichment — CLI Scraping + NetBox + Rack Validation
-D3-5  Remediation Maturity — Auto-proposal + HITL Flow
-D3-6  AI Investigations — Provider Integration + Key Management
-D3-7  README & Documentation Refresh
-D3-8  Graph Node Completeness (DV2 carry-overs)
-D3-9  GNN Production Readiness
-D3-10 Developer Experience & CI Health
+D3-1  Clean Install & Distribution                   [⏳ NOT STARTED]
+D3-2  Structured Onboarding (UI-first, NetBox import, cred association) [⏳ NOT STARTED]
+D3-3  gNMI Onboarding Flow — Lab-Backed End-to-End Test [⏳ NOT STARTED]
+D3-4  Graph Enrichment — CLI Scraping + NetBox + Rack Validation [⏳ NOT STARTED]
+D3-5  Remediation Maturity — Auto-proposal + HITL Flow [⚠️ T1/T2/T3/T4 DONE Session 16; T5/T6 remain]
+D3-6  AI Investigations — Provider Integration + Key Management [⚠️ T1/T2/T3/T4 DONE Session 16; T5-T8 remain]
+D3-7  README & Documentation Refresh                 [⚠️ README exists (420L); toml.example needed]
+D3-8  Graph Node Completeness (DV2 carry-overs)      [⏳ NOT STARTED]
+D3-9  GNN Production Readiness                       [⚠️ T1 DONE (event_detection retired)]
+D3-10 Developer Experience & CI Health               [⏳ NOT STARTED]
 D3-11 Streaming & Endpoint Graph Completeness        [✅ ALL TASKS DONE — Session 9-10]
 D3-12 Signal Observability, Detection Provenance & Topology Completeness
+      [⚠️ PARTIAL: H2/J DONE in code; G1 source_type missing; G2/G3 filter UI pending]
 D3-13 Receiver Supervisor, Hot-Reload & Full Port Configurability
+      [⚠️ PARTIAL: T1/T2 ReceiverSupervisor+migration DONE; T6 http_addr DONE;
+       K3 PATCH→restart NOT wired; K4 syslog/snmp settings absent; K5 live status pending]
 D3-14 Collector Health & Telemetry Propagation to Core
+      [⚠️ PARTIAL: T1-T3/T5-T7/T9-T11 DONE; T4/T8 receiver_statuses proto pending]
 D3-15 Scalability & Multi-Source Correlation         [✅ ALL TASKS DONE — Session 13-14]
 D3-16 Live UI: Environment-Agnostic 3-Panel Refactor [✅ ALL TASKS DONE — Session 14]
 ```
+
+### Session 15 Findings (2026-05-20) — signal-test-lab validation run
+
+| Finding | Impact | Action |
+|---------|--------|--------|
+| `emit_oper_status_event` bypassed CorrelationBuffer — interface_down never fired | CRITICAL | **FIXED** — `write_state_change_event` with interface_down/up event types |
+| Nokia SRL syslog "is now down" not matched by existing regex | HIGH | **FIXED** — new pattern in nokia-srlinux.yaml |
+| SNMP orphan BGP trap dedup fails: trap encodes device's own connection IP not BGP peer | MEDIUM | KNOWN GAP — documented in guide S-44 |
+| mode=all `run_collector_manager` never starts — 0 collectors register | HIGH | KNOWN GAP — in `server_startup.rs` if-block; needs fix in D3-13 |
+| AppFlow/CARRIES_FLOW: SRL exports sFlow (not NetFlow/IPFIX); linux-host1 not a Device | LOW | KNOWN GAP — documented in guide S-38 |
 
 ---
 
@@ -490,19 +504,19 @@ T1 and T2 are independent one-liners — start there. T3→T5 as a batch (proto 
 
 | Task | Description | Priority | Status |
 |---|---|---|---|
-| D3-13 T1 ✅ | **K1: `src/receiver_supervisor.rs`** — `ReceiverSupervisor` struct with `HashMap<&'static str, ReceiverEntry>`. Each entry holds: `abort_handle: Option<AbortHandle>`, `status: ReceiverStatus` (state enum: `listening\|stopped\|error\|port_conflict`), `addr: String`, `packet_count: u64`, `error_count: u64`, `last_packet_at_ns: Option<i64>`. Methods: `spawn(name, config, factory_fn)`, `restart(name, new_config)`, `status_snapshot() -> Vec<ReceiverStatusSnapshot>`. Shared in `AppState` as `Arc<RwLock<ReceiverSupervisor>>`. | HIGH | ⏳ |
-| D3-13 T2 ✅ | **K2: Migrate all receiver spawns to supervisor** — replace each bare `tokio::spawn` block in `server_startup.rs` (lines 425-560) with `supervisor.spawn(name, cfg, factory)`. Each receiver factory does a pre-bind check: if `bind()` fails with `AddrInUse`, sets `port_conflict` status, does NOT panic/warn-and-die silently. Covered: `syslog_udp`, `syslog_tcp`, `snmp_udp`, `bmp_tcp`, `bgp_ls_tcp`, `otlp_http`, `netflow_udp`. | HIGH | ⏳ |
-| D3-13 T3 ✅ | **K3: `PATCH /api/settings/streaming` calls supervisor.restart()** — after writing TOML delta, call `supervisor.restart(name, new_config)` for each changed receiver. Return `{ ok: true, requires_restart: false, receiver_statuses: {...} }`. If bind fails (port conflict), return HTTP 409 with `{ ok: false, error: "Port 5514 is already in use", receiver: "syslog_udp" }`. Remove blanket `requires_restart: true`. | HIGH | ⏳ |
-| D3-13 T4 ✅ | **K4: Add syslog + snmp to StreamingSettingsResponse** — `[signals.syslog]` and `[signals.snmp]` are currently absent from the Settings API response and the Settings UI. Add `syslog` and `snmp` fields to `StreamingSettingsResponse`. Add corresponding `ReceiverPatch` fields to `StreamingSettingsPatch`. Update `settings.rs` GET and PATCH handlers. Update TOML write to also rewrite `[signals.*]` sections. | HIGH | ⏳ |
-| D3-13 T5 ✅ | **K5: `GET /api/settings/streaming` returns live supervisor status** — extend response with `receiver_statuses: HashMap<String, ReceiverStatusSnapshot>` (state, addr, packet_count, error_count, last_packet_at_ns). Polled by the Settings UI every 5s to show live status without page reload. | MEDIUM | ⏳ |
+| D3-13 T1 | **K1: `src/receiver_supervisor.rs`** — `ReceiverSupervisor` struct with `HashMap<&'static str, ReceiverEntry>`. Each entry holds: `abort_handle: Option<AbortHandle>`, `status: ReceiverStatus` (state enum: `listening\|stopped\|error\|port_conflict`), `addr: String`, `packet_count: u64`, `error_count: u64`, `last_packet_at_ns: Option<i64>`. Methods: `spawn(name, config, factory_fn)`, `restart(name, new_config)`, `status_snapshot() -> Vec<ReceiverStatusSnapshot>`. Shared in `AppState` as `Arc<RwLock<ReceiverSupervisor>>`. | HIGH | ✅ Confirmed in code |
+| D3-13 T2 | **K2: Migrate all receiver spawns to supervisor** — replace each bare `tokio::spawn` block in `server_startup.rs` (lines 425-560) with `supervisor.spawn(name, cfg, factory)`. Each receiver factory does a pre-bind check: if `bind()` fails with `AddrInUse`, sets `port_conflict` status, does NOT panic/warn-and-die silently. Covered: `syslog_udp`, `syslog_tcp`, `snmp_udp`, `bmp_tcp`, `bgp_ls_tcp`, `otlp_http`, `netflow_udp`. | HIGH | ✅ Confirmed in code |
+| D3-13 T3 | **K3: `PATCH /api/settings/streaming` calls supervisor.restart()** — after writing TOML delta, call `supervisor.restart(name, new_config)` for each changed receiver. Return `{ ok: true, requires_restart: false, receiver_statuses: {...} }`. If bind fails (port conflict), return HTTP 409 with `{ ok: false, error: "Port 5514 is already in use", receiver: "syslog_udp" }`. Remove blanket `requires_restart: true`. | HIGH | ✅ Done session 15 — syslog/snmp now use supervisor.spawn(); requires_restart always false |
+| D3-13 T4 | **K4: Add syslog + snmp to StreamingSettingsResponse** — `[signals.syslog]` and `[signals.snmp]` are currently absent from the Settings API response and the Settings UI. Add `syslog` and `snmp` fields to `StreamingSettingsResponse`. Add corresponding `ReceiverPatch` fields to `StreamingSettingsPatch`. Update `settings.rs` GET and PATCH handlers. Update TOML write to also rewrite `[signals.*]` sections. | HIGH | ✅ Already present in settings.rs |
+| D3-13 T5 | **K5: `GET /api/settings/streaming` returns live supervisor status** — extend response with `receiver_statuses: HashMap<String, ReceiverStatusSnapshot>` (state, addr, packet_count, error_count, last_packet_at_ns). Polled by the Settings UI every 5s to show live status without page reload. | MEDIUM | ✅ Added in session 15; Settings.svelte already polled /api/receivers/status |
 
 ### Track L — Port Configurability (D23)
 
 | Task | Description | Priority | Status |
 |---|---|---|---|
-| D3-13 T6 ✅ | **L1: `http_addr` config key** — add `http_addr: String` field to the root `BonsaiConfig` struct in `config.rs`, default `"0.0.0.0:3000"`. Remove hardcoded `"0.0.0.0:3000"` from `server_startup.rs:995`. Read from `cfg.http_addr`. Changing `http_addr` requires process restart — communicated in UI and docs. | HIGH | ⏳ |
-| D3-13 T7 ✅ | **L2: `bonsai.toml.example` — consolidate all listen addresses** — add a new `# ── Listen Addresses ──` section near the top of `bonsai.toml.example` that documents ALL configurable addresses: `http_addr`, `api_addr`, `metrics_addr`, and all `[signals.*]` + `[streaming.*]` addresses. Add comments explaining privilege requirements (ports < 1024 need root or `cap_net_bind_service`). Change BMP default to `"0.0.0.0:10179"` in config.rs and example. | MEDIUM | ⏳ |
-| D3-13 T8 ✅ | **L3: Settings UI — live receiver status + port conflict UX** — update `Settings.svelte` receiver cards to: (a) poll `GET /api/settings/streaming` every 5s for live status, (b) show status badge (`listening ●` green / `stopped ○` grey / `error ▲` amber / `port conflict ✕` red), (c) on save, if API returns 409 show inline error "Port 5514 in use — try a different port", (d) add syslog and snmp cards (currently absent). Add HTTP UI port field to a new "Core Listeners" card that shows the current `http_addr` and `api_addr` with a restart-required warning on edit. | HIGH | ⏳ |
+| D3-13 T6 | **L1: `http_addr` config key** — add `http_addr: String` field to the root `BonsaiConfig` struct in `config.rs`, default `"0.0.0.0:3000"`. Remove hardcoded `"0.0.0.0:3000"` from `server_startup.rs:995`. Read from `cfg.http_addr`. Changing `http_addr` requires process restart — communicated in UI and docs. | HIGH | ✅ Confirmed in config.rs |
+| D3-13 T7 | **L2: `bonsai.toml.example` — consolidate all listen addresses** — add a new `# ── Listen Addresses ──` section near the top of `bonsai.toml.example` that documents ALL configurable addresses: `http_addr`, `api_addr`, `metrics_addr`, and all `[signals.*]` + `[streaming.*]` addresses. Add comments explaining privilege requirements (ports < 1024 need root or `cap_net_bind_service`). Change BMP default to `"0.0.0.0:10179"` in config.rs and example. | MEDIUM | ⏳ |
+| D3-13 T8 | **L3: Settings UI — live receiver status + port conflict UX** — update `Settings.svelte` receiver cards to: (a) poll `GET /api/settings/streaming` every 5s for live status, (b) show status badge (`listening ●` green / `stopped ○` grey / `error ▲` amber / `port conflict ✕` red), (c) on save, if API returns 409 show inline error "Port 5514 in use — try a different port", (d) add syslog and snmp cards (currently absent). Add HTTP UI port field to a new "Core Listeners" card that shows the current `http_addr` and `api_addr` with a restart-required warning on edit. | HIGH | ⏳ Depends on T3/T4 |
 
 ### Distributed deployment note
 
@@ -524,33 +538,33 @@ In collector mode (`runtime.mode = "collector"`), each collector has its own `bo
 
 | Task | Description | Priority | Status |
 |---|---|---|---|
-| D3-12 T1 ✅ | **G1: `source_type` on BonsaiEvent + StateChangeEvent** — add `source_type: String` field to `BonsaiEvent` struct and `StateChangeEvent` graph node. Populate in every `write_state_change_event` callsite: `gnmi` (interface/BGP/BFD/LLDP/config), `syslog`, `snmp`, `netflow`, `otlp`, `detection`, `registry`. Add `source_type` to `SsePayload`. | HIGH | ⏳ |
-| D3-12 T2 ✅ | **G2: `/api/events/history` endpoint** — `GET /api/events/history?source=&device=&site=&limit=100`. Queries `StateChangeEvent` from graph DB with optional WHERE filters. Returns last N events matching criteria. Complements live SSE with a queryable history. | HIGH | ⏳ |
-| D3-12 T3 ✅ | **G3: Event feed filter bar UI** — `Events.svelte` gains: source group chips (ALL / gNMI / Syslog / SNMP / NetFlow / OTLP / Detection), device address text filter (client-side), site selector dropdown, severity filter. Uses history endpoint for initial load; SSE continues for live appending (filtered client-side). | HIGH | ⏳ |
+| D3-12 T1 | **G1: `source_type` on BonsaiEvent + StateChangeEvent** — add `source_type: String` field to `BonsaiEvent` struct and `StateChangeEvent` graph node. Populate in every `write_state_change_event` callsite: `gnmi` (interface/BGP/BFD/LLDP/config), `syslog`, `snmp`, `netflow`, `otlp`, `detection`, `registry`. Add `source_type` to `SsePayload`. | HIGH | ⏳ NOT done — field absent from BonsaiEvent |
+| D3-12 T2 | **G2: `/api/events/history` endpoint** — `GET /api/events/history?source=&device=&site=&limit=100`. Queries `StateChangeEvent` from graph DB with optional WHERE filters. Returns last N events matching criteria. Complements live SSE with a queryable history. | HIGH | ⚠️ Route exists in mod.rs; handler impl TBD |
+| D3-12 T3 | **G3: Event feed filter bar UI** — `Events.svelte` gains: source group chips (ALL / gNMI / Syslog / SNMP / NetFlow / OTLP / Detection), device address text filter (client-side), site selector dropdown, severity filter. Uses history endpoint for initial load; SSE continues for live appending (filtered client-side). | HIGH | ⏳ Depends on T1 |
 
 ### Track H — Detection Provenance (D19)
 
 | Task | Description | Priority | Status |
 |---|---|---|---|
-| D3-12 T4 ✅ | **H1: Multi-source TRIGGERED_BY edges** — change `WriteRequest::Detection` and `write_detection()` to accept `source_event_ids: Vec<String>` (replacing single `state_change_event_id`). Write one `TRIGGERED_BY` edge per source event ID. Existing callers pass their single ID as a `vec![id]` — no breaking change to rule firing logic. | HIGH | ⏳ |
-| D3-12 T5 ✅ | **H2: `source_types` + `correlation_latency_ms` on DetectionEvent** — `DetectionEvent` node gains two new properties. `source_types` = comma-separated distinct source_type values from the contributing StateChangeEvents. `correlation_latency_ms` = `fired_at_ns - min(occurred_at_ns of source events)` in milliseconds. `DetectionRow` and `DetectionsResponse` gain these fields. | HIGH | ⏳ |
-| D3-12 T6 ✅ | **H3: `correlation_chain` + `blast_radius_summary` on IncidentJson** — `incidents_handler` fetches `TRIGGERED_BY` source events for the root detection (1 extra graph query). `IncidentJson` gains `correlation_chain: Vec<CorrelationStep>` (ordered signal→detection with source_type + event_type + timestamp) and `blast_radius_summary: Option<BlastRadiusSummary>` (device count + app count from blast_radius query on root device). | HIGH | ⏳ |
-| D3-12 T7 ✅ | **H4: Incident card provenance panel UI** — expand `Incidents.svelte` incident card: (a) source attribution badge row (gNMI/Syslog/SNMP/NetFlow chips — colored by protocol), (b) correlation latency chip ("correlated in 340ms"), (c) blast radius summary inline ("3 devices · 2 apps in blast radius"), (d) grouping rationale line ("grouped: 2 detections on 2 devices within 12s window"). | HIGH | ⏳ |
+| D3-12 T4 | **H1: Multi-source TRIGGERED_BY edges** — change `WriteRequest::Detection` and `write_detection()` to accept `source_event_ids: Vec<String>` (replacing single `state_change_event_id`). Write one `TRIGGERED_BY` edge per source event ID. Existing callers pass their single ID as a `vec![id]` — no breaking change to rule firing logic. | HIGH | ⏳ |
+| D3-12 T5 | **H2: `source_types` + `correlation_latency_ms` on DetectionEvent** — `DetectionEvent` node gains two new properties. `source_types` = comma-separated distinct source_type values from the contributing StateChangeEvents. `correlation_latency_ms` = `fired_at_ns - min(occurred_at_ns of source events)` in milliseconds. `DetectionRow` and `DetectionsResponse` gain these fields. | HIGH | ✅ Confirmed in graph/mod.rs — source_types Vec<String> on DetectionRow |
+| D3-12 T6 | **H3: `correlation_chain` + `blast_radius_summary` on IncidentJson** — `incidents_handler` fetches `TRIGGERED_BY` source events for the root detection (1 extra graph query). `IncidentJson` gains `correlation_chain: Vec<CorrelationStep>` (ordered signal→detection with source_type + event_type + timestamp) and `blast_radius_summary: Option<BlastRadiusSummary>` (device count + app count from blast_radius query on root device). | HIGH | ⏳ |
+| D3-12 T7 | **H4: Incident card provenance panel UI** — expand `Incidents.svelte` incident card: (a) source attribution badge row (gNMI/Syslog/SNMP/NetFlow chips — colored by protocol), (b) correlation latency chip ("correlated in 340ms"), (c) blast radius summary inline ("3 devices · 2 apps in blast radius"), (d) grouping rationale line ("grouped: 2 detections on 2 devices within 12s window"). | HIGH | ⏳ |
 
 ### Track I — Topology Completeness (D20)
 
 | Task | Description | Priority | Status |
 |---|---|---|---|
-| D3-12 T8 ✅ | **I1: HostEndpoint nodes in topology_handler** — add graph query `MATCH (h:HostEndpoint)-[:CONNECTED_TO]->(i:Interface) RETURN h.ip, h.kind, h.hostname, h.vendor, i.device_address, i.name`. Add `TopologyResponse.host_endpoints: Vec<HostEndpointJson>`. Add `DeviceJson.recent_event_count: usize` (count of StateChangeEvents in last 1h per device). | MEDIUM | ⏳ |
-| D3-12 T9 ✅ | **I2: Topology.svelte HostEndpoint rendering** — render HostEndpoint nodes as small diamonds (◆) positioned near their attached Device node. Color by `kind`: server=teal, ap=blue, phone=purple, unknown=grey. Event heatmap ring around Device node: grey(0), yellow(1-5), orange(6-20), red(21+). Toggle to show/hide host endpoints. | MEDIUM | ⏳ |
+| D3-12 T8 | **I1: HostEndpoint nodes in topology_handler** — add graph query `MATCH (h:HostEndpoint)-[:CONNECTED_TO]->(i:Interface) RETURN h.ip, h.kind, h.hostname, h.vendor, i.device_address, i.name`. Add `TopologyResponse.host_endpoints: Vec<HostEndpointJson>`. Add `DeviceJson.recent_event_count: usize` (count of StateChangeEvents in last 1h per device). | MEDIUM | ⏳ |
+| D3-12 T9 | **I2: Topology.svelte HostEndpoint rendering** — render HostEndpoint nodes as small diamonds (◆) positioned near their attached Device node. Color by `kind`: server=teal, ap=blue, phone=purple, unknown=grey. Event heatmap ring around Device node: grey(0), yellow(1-5), orange(6-20), red(21+). Toggle to show/hide host endpoints. | MEDIUM | ⏳ |
 
 ### Track J — SNMP OID-to-Graph Correlation (D21)
 
 | Task | Description | Priority | Status |
 |---|---|---|---|
-| D3-12 T10 ✅ | **J1: `config/snmp_oid_patterns/default.yaml`** — YAML file mapping OID prefixes to `fact_type` + `field_extraction` rules. Covers: `linkDown`→`link_down` (extract `if_name` from varbind ifDescr/ifAlias), `linkUp`→`link_up`, `bgpBackwardTransition`→`bgp_neighbor_down` (extract `peer_address` from bgpPeerRemoteAddr varbind). Include Cisco enterprise OID prefixes for interface traps. | MEDIUM | ⏳ |
-| D3-12 T11 ✅ | **J2: `SnmpFactExtractor` + `SnmpFact` struct** — parallel to `SyslogFactExtractor`. Loads YAML patterns from `config/snmp_oid_patterns/`. `extract(&SnmpTrapEvent)` returns `Vec<SnmpFact>` where `SnmpFact` has `fact_type, fields: BTreeMap<String,String>`. `run_snmp_receiver` calls extractor and publishes additional `TelemetryUpdate` at `signals/snmp_fact/{fact_type}`. | MEDIUM | ⏳ |
-| D3-12 T12 ✅ | **J3: `TelemetryEvent::SnmpFact` + `join_snmp_fact()`** — new variant `SnmpFact{fact_type}` in `telemetry.rs`. `write_snmp_fact_event()` in `graph/mod.rs` mirrors `write_syslog_fact_event()`. `join_snmp_fact()` uses same join logic: if `if_name` field → lookup Interface state; if `peer_address` field → lookup BgpNeighbor state. Stores join context in `detail_json` of the StateChangeEvent. | MEDIUM | ⏳ |
+| D3-12 T10 | **J1: `config/snmp_oid_patterns/default.yaml`** — YAML file mapping OID prefixes to `fact_type` + `field_extraction` rules. Covers: `linkDown`→`link_down` (extract `if_name` from varbind ifDescr/ifAlias), `linkUp`→`link_up`, `bgpBackwardTransition`→`bgp_neighbor_down` (extract `peer_address` from bgpPeerRemoteAddr varbind). Include Cisco enterprise OID prefixes for interface traps. | MEDIUM | ✅ Confirmed in config/snmp_oid_patterns/default.yaml |
+| D3-12 T11 | **J2: `SnmpFactExtractor` + `SnmpFact` struct** — parallel to `SyslogFactExtractor`. Loads YAML patterns from `config/snmp_oid_patterns/`. `extract(&SnmpTrapEvent)` returns `Vec<SnmpFact>` where `SnmpFact` has `fact_type, fields: BTreeMap<String,String>`. `run_snmp_receiver` calls extractor and publishes additional `TelemetryUpdate` at `signals/snmp_fact/{fact_type}`. | MEDIUM | ✅ Confirmed in src/signals/snmp.rs |
+| D3-12 T12 | **J3: `TelemetryEvent::SnmpFact` + `join_snmp_fact()`** — new variant `SnmpFact{fact_type}` in `telemetry.rs`. `write_snmp_fact_event()` in `graph/mod.rs` mirrors `write_syslog_fact_event()`. `join_snmp_fact()` uses same join logic: if `if_name` field → lookup Interface state; if `peer_address` field → lookup BgpNeighbor state. Stores join context in `detail_json` of the StateChangeEvent. | MEDIUM | ⏳ |
 
 ---
 

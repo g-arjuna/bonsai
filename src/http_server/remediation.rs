@@ -941,12 +941,29 @@ pub(super) async fn create_investigation_handler(
     State(state): State<AppState>,
     Json(body): Json<CreateInvestigationBody>,
 ) -> Result<Json<crate::graph::InvestigationRecord>, (StatusCode, String)> {
-    state
+    let detection_id = body.detection_id.clone();
+    let device_address = body.device_address.clone();
+    let inv = state
         .store
         .create_investigation(body.detection_id, body.device_address, body.trigger)
         .await
-        .map(Json)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Spawn AI investigation if provider is configured and API key is available.
+    let ai_cfg = state.ai_config.clone();
+    if std::env::var(&ai_cfg.api_key_env).is_ok() {
+        let store_arc = std::sync::Arc::clone(&state.store);
+        crate::investigation_runtime::spawn_investigation(
+            inv.id.clone(),
+            device_address,
+            if detection_id.is_empty() { None } else { Some(detection_id) },
+            store_arc,
+            state,
+            ai_cfg,
+        );
+    }
+
+    Ok(Json(inv))
 }
 pub(super) async fn get_investigation_handler(
     State(state): State<AppState>,
@@ -1184,4 +1201,46 @@ pub(super) async fn list_changes_handler(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(serde_json::json!({ "changes": rows })))
+}
+
+// ── GET /api/playbooks ────────────────────────────────────────────────────────
+
+pub async fn playbooks_catalog_handler(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let lib = crate::playbook::PlaybookLibrary::load_dir(&state.remediation_config.playbook_library_dir);
+    let entries: Vec<serde_json::Value> = lib
+        .catalog()
+        .iter()
+        .flat_map(|(rule_id, pbs)| {
+            let rid = rule_id.clone();
+            pbs.iter().map(move |pb| serde_json::json!({
+                "rule_id": rid,
+                "name": pb.name,
+                "vendor": pb.vendor,
+                "operation": pb.operation,
+                "description": pb.description,
+                "risk_tier": pb.risk_tier,
+            }))
+        })
+        .collect();
+    Json(serde_json::json!({ "playbooks": entries }))
+}
+
+// ── GET /api/audit ────────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize, Default)]
+pub struct AuditQuery {
+    #[serde(default = "default_audit_limit")]
+    limit: usize,
+}
+fn default_audit_limit() -> usize { 200 }
+
+pub async fn audit_log_handler(
+    State(state): State<AppState>,
+    Query(q): Query<AuditQuery>,
+) -> Json<serde_json::Value> {
+    let root = std::path::Path::new(&state.runtime_dir);
+    let entries = crate::audit::read_recent(root, q.limit.min(1000));
+    Json(serde_json::json!({ "entries": entries }))
 }

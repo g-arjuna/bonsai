@@ -799,6 +799,37 @@ pub async fn mcp_handler(
     Ok(Json(response))
 }
 
+/// Dispatch a single MCP tool call by name. Used by the investigation runtime.
+pub async fn call_tool(
+    state: &AppState,
+    name: &str,
+    args: &JsonValue,
+) -> Result<JsonValue, String> {
+    match name {
+        "get_incident" => tool_get_incident(state, args).await,
+        "query_devices" => tool_query_devices(state, args).await,
+        "get_device_blast_radius" => tool_get_device_blast_radius(state, args).await,
+        "list_active_detections" => tool_list_active_detections(state, args).await,
+        "query_graph" => tool_query_graph(state, args).await,
+        other => Err(format!("unknown tool: {other}")),
+    }
+}
+
+/// Return tool definitions in the `AiToolDef` format expected by the AI provider.
+pub fn ai_tool_definitions() -> Vec<crate::ai_provider::AiToolDef> {
+    let schemas = tool_schemas();
+    schemas["tools"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|t| crate::ai_provider::AiToolDef {
+            name: t["name"].as_str().unwrap_or("").to_string(),
+            description: t["description"].as_str().unwrap_or("").to_string(),
+            parameters: t["inputSchema"].clone(),
+        })
+        .collect()
+}
+
 // ── Grounded incident response types (T5-2, used by http_server) ─────────────
 
 #[derive(Serialize)]

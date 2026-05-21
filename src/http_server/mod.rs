@@ -61,7 +61,7 @@ mod nl_query;
 mod ha;
 
 use mcp_routes::{openapi_json_handler, resolve_handler, schema_handler, swagger_ui_handler};
-use remediation::{approvals_approve_handler, approvals_create_handler, approvals_list_handler, approvals_reject_handler, approvals_rollback_handler, trust_list_handler, trust_graduate_handler, snow_integration_test_handler, servicenow_aiops_sync_handler, list_overrides, add_override, remove_override, list_investigations_handler, create_investigation_handler, get_investigation_handler, list_tool_calls_handler, complete_investigation_handler, grounded_incident_handler, webhook_change_event_handler, change_context_handler, servicenow_change_sync_handler, list_changes_handler};
+use remediation::{approvals_approve_handler, approvals_create_handler, approvals_list_handler, approvals_reject_handler, approvals_rollback_handler, trust_list_handler, trust_graduate_handler, snow_integration_test_handler, servicenow_aiops_sync_handler, list_overrides, add_override, remove_override, list_investigations_handler, create_investigation_handler, get_investigation_handler, list_tool_calls_handler, complete_investigation_handler, grounded_incident_handler, webhook_change_event_handler, change_context_handler, servicenow_change_sync_handler, list_changes_handler, playbooks_catalog_handler, audit_log_handler};
 use observability::{topology_handler, path_handler, blast_radius_handler, detections_handler, trace_handler, readiness_handler, operations_handler, test_status_handler, daily_check_handler, weekly_trend_handler, events_handler, events_history_handler, incidents_handler, graph_insights_handler, explorer_query_handler, list_saved_queries_handler, create_saved_query_handler, delete_saved_query_handler, upsert_embeddings_handler, list_embeddings_handler, events_inject_handler};
 use device::{device_detail_handler, device_enrichment_handler, device_enrichment_conflicts_handler, device_cmdb_handler, device_config_history_handler, device_gnmi_readiness_handler, device_streaming_readiness_handler, device_recommendations_handler, yang_modules_handler, yang_search_handler, apply_device_selected_paths_handler, device_reparse_handler, profiles_handler, save_custom_profile_handler, enrichment_list_handler, enrichment_upsert_handler, enrichment_remove_handler, enrichment_test_handler, enrichment_run_handler, enrichment_audit_handler, netbox_import_handler};
 use device::InterfaceDetailJson;
@@ -69,7 +69,7 @@ use managed_devices::{managed_devices_handler, discover_handler, credentials_han
 use governance::{assignment_override_handler, assignment_rules_handler, assignment_status_handler, collectors_handler, create_environment_handler, environments_handler, governance_state_handler, health_handler, healthz_handler, readyz_handler, remove_environment_handler, assign_site_environment_handler, update_environment_handler, set_assignment_rules_handler, setup_status_handler, sidecars_handler};
 use outputs::{adapter_audit_handler, adapter_list_handler, adapter_remove_handler, adapter_test_handler, adapter_upsert_handler};
 use test_endpoints::{inject_detection_handler, parse_syslog_fixture_handler};
-use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler};
+use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler, get_ai_config_handler, post_ai_test_handler};
 use ha::{ha_status_handler, ha_settings_handler, ha_patch_settings_handler, restart_handler};
 use nl_query::{explorer_ask_handler, nl_budget_handler};
 
@@ -646,6 +646,10 @@ pub struct AppState {
     /// G3: HA coordinator for leader election and config replication
     pub ha_coordinator: Option<Arc<crate::ha_coordinator::HACoordinator>>,
     pub event_bus: std::sync::Arc<crate::event_bus::InProcessBus>,
+    /// K3: Static target list for hot-restarting syslog/snmp receivers.
+    pub targets: Vec<crate::config::TargetConfig>,
+    /// D3-6: AI config for investigation runtime.
+    pub ai_config: crate::config::AiConfig,
 }
 
 impl axum::extract::FromRef<AppState> for Option<Arc<crate::ha_coordinator::HACoordinator>> {
@@ -689,6 +693,8 @@ pub fn router(
     receiver_supervisor: crate::receiver_supervisor::SharedReceiverSupervisor,
     event_bus: std::sync::Arc<crate::event_bus::InProcessBus>,
     ha_coordinator: Option<Arc<crate::ha_coordinator::HACoordinator>>,
+    targets: Vec<crate::config::TargetConfig>,
+    ai_config: crate::config::AiConfig,
 ) -> Router {
     let state = AppState {
         store,
@@ -722,6 +728,8 @@ pub fn router(
         receiver_supervisor,
         ha_coordinator,
         event_bus,
+        targets,
+        ai_config,
     };
 
     // Serve the Svelte SPA from ui/dist/. Fall back to index.html so
@@ -840,6 +848,8 @@ fn governance_routes() -> Router<AppState> {
 
 fn remediation_routes() -> Router<AppState> {
     Router::new()
+        .route("/api/playbooks", get(playbooks_catalog_handler))
+        .route("/api/audit", get(audit_log_handler))
         .route("/api/approvals", get(approvals_list_handler).post(approvals_create_handler))
         .route("/api/approvals/{id}/approve", post(approvals_approve_handler))
         .route("/api/approvals/{id}/reject", post(approvals_reject_handler))
@@ -884,6 +894,8 @@ fn settings_routes() -> Router<AppState> {
             get(get_streaming_settings_handler).patch(patch_streaming_settings_handler),
         )
         .route("/api/receivers/status", get(get_receiver_status_handler))
+        .route("/api/ai/config", get(get_ai_config_handler))
+        .route("/api/ai/test", post(post_ai_test_handler))
         .route("/api/ha/status", get(ha_status_handler))
         .route("/api/ha/settings", get(ha_settings_handler).patch(ha_patch_settings_handler))
         .route("/api/restart", post(restart_handler))

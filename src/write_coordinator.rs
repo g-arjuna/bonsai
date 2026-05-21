@@ -80,6 +80,9 @@ pub struct WriteCoordinatorConfig {
     /// When set, the coordinator consults write pressure and memory pressure flags
     /// to expand the effective batch size under load (C4-N2 / T6-1).
     pub governor: Option<GovernorHandle>,
+    /// When Some, auto-proposals are enabled and this library is consulted on every Detection write.
+    pub playbook_library: Option<std::sync::Arc<crate::playbook::PlaybookLibrary>>,
+    pub auto_propose: bool,
 }
 
 impl Default for WriteCoordinatorConfig {
@@ -89,6 +92,8 @@ impl Default for WriteCoordinatorConfig {
             flush_interval: Duration::from_secs(1),
             queue_capacity: 4096,
             governor: None,
+            playbook_library: None,
+            auto_propose: false,
         }
     }
 }
@@ -218,7 +223,29 @@ async fn run_coordinator(
                     if !sub_status_pending.is_empty() {
                         flush_sub_status_batch(&store, &mut sub_status_pending).await;
                     }
-                    let res = store.write_detection(device_address, rule_id, severity, features_json, source_types_json, latency_ns, fired_at_ns, state_change_event_id, source_event_ids).await;
+                    let res = store.write_detection(device_address, rule_id.clone(), severity, features_json.clone(), source_types_json, latency_ns, fired_at_ns, state_change_event_id, source_event_ids).await;
+                    if cfg.auto_propose {
+                        if let (Ok(det_id), Some(lib)) = (&res, &cfg.playbook_library) {
+                            let vendor = extract_vendor(&features_json);
+                            if let Some(pb) = lib.find(&rule_id, vendor.as_deref()) {
+                                let trust_key = crate::remediation::trust::TrustKey::new(
+                                    &rule_id, "", "", &pb.name,
+                                ).to_storage_key();
+                                let steps = serde_json::to_string(&pb.steps)
+                                    .unwrap_or_else(|_| "[]".to_string());
+                                if let Err(e) = store.write_remediation_proposal(
+                                    det_id.clone(),
+                                    pb.name.clone(),
+                                    trust_key,
+                                    steps,
+                                    "[]".to_string(),
+                                    fired_at_ns,
+                                ).await {
+                                    warn!(error = %e, rule_id = %rule_id, "auto-proposal write failed");
+                                }
+                            }
+                        }
+                    }
                     let _ = reply_to.send(res);
                 }
                 Some(PriorityWriteRequest::Remediation { detection_id, action, status, detail_json, attempted_at_ns, completed_at_ns, reply_to }) => {
@@ -274,6 +301,14 @@ async fn flush_telemetry_batch(store: &Arc<GraphStore>, batch: &mut Vec<Telemetr
     if let Err(e) = store.write_batch(updates).await {
         warn!(error = %e, "telemetry batch write failed");
     }
+}
+
+fn extract_vendor(features_json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(features_json).ok()?;
+    v.get("vendor")
+        .or_else(|| v.get("device_vendor"))
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string())
 }
 
 async fn flush_sub_status_batch(

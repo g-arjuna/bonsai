@@ -392,8 +392,13 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     }
 
     let coordinator = if let Some(Store::Core(ref s)) = store {
+        let playbook_library = cfg.remediation.auto_propose.then(|| {
+            bonsai::playbook::PlaybookLibrary::load_dir(&cfg.remediation.playbook_library_dir)
+        });
         let coordinator_cfg = bonsai::write_coordinator::WriteCoordinatorConfig {
             governor: shared_governor.clone(),
+            playbook_library,
+            auto_propose: cfg.remediation.auto_propose,
             ..Default::default()
         };
         Some(std::sync::Arc::new(
@@ -1282,6 +1287,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         std::sync::Arc::clone(&supervisor),
                         bus_for_http,
                         Some(ha_coordinator),
+                        cfg.target.clone(),
+                        cfg.ai.clone(),
                     ),
                 )
                 .await

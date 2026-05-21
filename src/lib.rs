@@ -1,5 +1,6 @@
 #![recursion_limit = "512"]
 
+pub mod ai_provider;
 pub mod api;
 pub mod archive;
 pub mod assignment;
@@ -23,6 +24,7 @@ pub mod ha_coordinator;
 pub mod health_emitter;
 pub mod http_server;
 pub mod ingest;
+pub mod investigation_runtime;
 pub mod investigation_trigger;
 pub mod integrations;
 pub mod mcp_client;
@@ -30,6 +32,7 @@ pub mod mcp_server;
 pub mod memory_profile;
 pub mod output;
 pub mod parser_chain;
+pub mod playbook;
 pub mod receiver_supervisor;
 pub mod reconciler;
 pub mod registry;

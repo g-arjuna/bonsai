@@ -6,8 +6,26 @@
   let error = $state('');
   let busy = $state('');
   let filter = $state('pending');
+  // playbook_name → { operation, description, risk_tier }
+  let playbookMeta = $state({});
+  let now = $state(Date.now());
 
-  onMount(load);
+  onMount(async () => {
+    await Promise.all([load(), loadPlaybookMeta()]);
+    const tick = setInterval(() => { now = Date.now(); }, 1000);
+    return () => clearInterval(tick);
+  });
+
+  async function loadPlaybookMeta() {
+    try {
+      const r = await fetch('/api/playbooks');
+      if (!r.ok) return;
+      const body = await r.json();
+      const map = {};
+      for (const pb of (body.playbooks || [])) map[pb.name] = pb;
+      playbookMeta = map;
+    } catch (_) {}
+  }
 
   async function load() {
     loading = true;
@@ -86,6 +104,21 @@
   function rollbackActive(id) {
     return (data.active_rollbacks ?? []).some((r) => r.proposal_id === id && !r.rolled_back);
   }
+
+  function rollbackSecondsLeft(id) {
+    const rs = (data.active_rollbacks ?? []).find((r) => r.proposal_id === id && !r.rolled_back);
+    if (!rs) return null;
+    const expiresMs = Math.floor(rs.executed_at_ns / 1_000_000) + rs.window_secs * 1000;
+    const left = Math.ceil((expiresMs - now) / 1000);
+    return left > 0 ? left : null;
+  }
+
+  function fmtCountdown(secs) {
+    if (secs == null) return '';
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return m > 0 ? `${m}m ${s}s` : `${s}s`;
+  }
 </script>
 
 <div class="view">
@@ -137,7 +170,13 @@
               <div>
                 <span class="badge {p.status === 'pending' ? 'warn' : p.status === 'rejected' ? 'critical' : 'healthy'}">{p.status.replaceAll('_', ' ')}</span>
                 <h3>{p.playbook_id}</h3>
+                {#if playbookMeta[p.playbook_id]?.operation}
+                  <p class="playbook-op">{playbookMeta[p.playbook_id].operation}</p>
+                {/if}
                 <p>{p.device_address || 'unknown device'} · {p.rule_id || 'unknown rule'} · {p.severity || 'unknown severity'}</p>
+                {#if playbookMeta[p.playbook_id]?.description}
+                  <p class="playbook-desc">{playbookMeta[p.playbook_id].description.trim()}</p>
+                {/if}
               </div>
               <span class="time">{fmt(p.proposed_at_ns)}</span>
             </div>
@@ -165,6 +204,8 @@
                 <button class="danger" disabled={busy === p.id} onclick={() => decide(p.id, 'reject')}>Reject</button>
               {/if}
               {#if rollbackActive(p.id)}
+                {@const secsLeft = rollbackSecondsLeft(p.id)}
+                <span class="rollback-timer">Rollback window: {fmtCountdown(secsLeft)} remaining</span>
                 <button class="ghost danger" disabled={busy === p.id} onclick={() => decide(p.id, 'rollback')}>Rollback</button>
               {/if}
             </div>
@@ -210,6 +251,8 @@
   .proposal-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
   .proposal h3 { margin: 8px 0 4px; font-size: 16px; }
   .proposal p { margin: 0; color: var(--muted); font-size: 13px; }
+  .playbook-op { color: var(--fg) !important; font-weight: 500; font-size: 13px !important; margin-bottom: 2px !important; }
+  .playbook-desc { color: var(--muted); font-size: 12px !important; margin-top: 6px !important; line-height: 1.5; white-space: pre-wrap; }
   .time { color: var(--muted); font-size: 12px; white-space: nowrap; }
   .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin: 14px 0; }
   .detail-grid span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
@@ -223,6 +266,7 @@
   .hint:first-of-type { border-top: 0; }
   .hint p { margin: 3px 0 5px; color: var(--muted); font-size: 13px; }
   .danger { color: var(--red, #f85149); border-color: color-mix(in srgb, var(--red, #f85149) 40%, var(--border)); }
+  .rollback-timer { font-size: 11px; color: var(--yellow, #e3b341); align-self: center; }
   @media (max-width: 720px) {
     .proposal-head, .hint { flex-direction: column; }
     .actions { justify-content: flex-start; flex-wrap: wrap; }
