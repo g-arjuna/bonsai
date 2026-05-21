@@ -8,6 +8,42 @@ use crate::http_server::AppState;
 
 const MAX_ITERATIONS: usize = 15;
 
+/// Pre-fetch device and incident context before entering the agent loop.
+/// Returns a markdown-formatted string injected into the first user message,
+/// giving the AI situational awareness without spending iterations on basic lookups.
+async fn build_context(
+    device_address: &str,
+    detection_id: Option<&str>,
+    state: &AppState,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    // 1. Incident details if we have a detection ID
+    if let Some(did) = detection_id {
+        let args = serde_json::json!({ "id": did });
+        if let Ok(v) = crate::mcp_server::call_tool(state, "get_incident", &args).await {
+            parts.push(format!("## Incident\n```json\n{}\n```", serde_json::to_string_pretty(&v).unwrap_or_default()));
+        }
+    }
+
+    // 2. Blast radius (2 hops)
+    let args = serde_json::json!({ "address": device_address, "max_hops": 2 });
+    if let Ok(v) = crate::mcp_server::call_tool(state, "get_device_blast_radius", &args).await {
+        parts.push(format!("## Blast Radius\n```json\n{}\n```", serde_json::to_string_pretty(&v).unwrap_or_default()));
+    }
+
+    // 3. Recent detections on this device (last 10)
+    let args = serde_json::json!({ "device_address": device_address, "limit": 10 });
+    if let Ok(v) = crate::mcp_server::call_tool(state, "list_active_detections", &args).await {
+        parts.push(format!("## Recent Detections on Device\n```json\n{}\n```", serde_json::to_string_pretty(&v).unwrap_or_default()));
+    }
+
+    if parts.is_empty() {
+        return String::new();
+    }
+    format!("\n\n---\n## Pre-fetched Context\n{}", parts.join("\n\n"))
+}
+
 /// Spawn a background investigation task. Returns immediately; the investigation
 /// runs to completion (or budget/iteration limit) as a tokio task.
 pub fn spawn_investigation(
@@ -31,6 +67,34 @@ async fn run_investigation(
     state: AppState,
     ai_cfg: AiConfig,
 ) {
+    // Daily budget gate — abort before building the provider if today's spend is over limit.
+    let daily_budget = ai_cfg.daily_budget_usd;
+    if daily_budget > 0.0 {
+        match store.query_daily_investigation_cost().await {
+            Ok(spent) if spent >= daily_budget => {
+                warn!(
+                    id = %investigation_id,
+                    spent,
+                    daily_budget,
+                    "daily AI budget exceeded — investigation skipped"
+                );
+                let _ = store.complete_investigation(
+                    investigation_id,
+                    "skipped".to_string(),
+                    format!("Daily AI budget ({daily_budget:.4} USD) exceeded; today spent {spent:.4} USD."),
+                    "{}".to_string(),
+                    0,
+                    0.0,
+                ).await;
+                return;
+            }
+            Err(e) => {
+                warn!(id = %investigation_id, error = %e, "daily cost query failed — proceeding");
+            }
+            _ => {}
+        }
+    }
+
     let provider: Box<dyn AiProvider> = match build_provider(&ai_cfg) {
         Ok(p) => p,
         Err(e) => {
@@ -50,9 +114,10 @@ async fn run_investigation(
     let tools = crate::mcp_server::ai_tool_definitions();
     let per_budget = ai_cfg.per_investigation_budget_usd;
 
+    let context = build_context(&device_address, detection_id.as_deref(), &state).await;
     let mut messages = vec![
         AiMessage::system(system_prompt(&device_address, detection_id.as_deref())),
-        AiMessage::user(user_prompt(&device_address, detection_id.as_deref())),
+        AiMessage::user(format!("{}{context}", user_prompt(&device_address, detection_id.as_deref()))),
     ];
 
     let mut total_cost = 0.0f64;

@@ -2518,6 +2518,32 @@ impl GraphStore {
         .context("spawn_blocking panicked")?
     }
 
+    /// Sum cost_usd for all investigations started since UTC midnight today.
+    pub async fn query_daily_investigation_cost(&self) -> Result<f64> {
+        let day_ns: i64 = 86_400_000_000_000;
+        let today_start_ns = (now_ns() / day_ns) * day_ns;
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("query_daily_cost conn")?;
+            let cypher = format!(
+                "MATCH (i:Investigation) \
+                 WHERE i.started_at >= {today_start_ns} \
+                 RETURN i.cost_usd"
+            );
+            let rows = conn.query(&cypher).context("query_daily_cost query")?;
+            let total: f64 = rows
+                .map(|r| match &r[0] {
+                    Value::Float(f) => *f as f64,
+                    Value::Double(f) => *f,
+                    _ => 0.0,
+                })
+                .sum();
+            Ok::<_, anyhow::Error>(total)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
     pub async fn list_investigations(&self) -> Result<Vec<InvestigationRecord>> {
         let db = Arc::clone(&self.db);
         tokio::task::spawn_blocking(move || {
