@@ -832,7 +832,7 @@ fn resolve_target_credentials(
     }
     Ok(
         match (target.resolved_username(), target.resolved_password()) {
-            (Some(username), Some(password)) => Some(ResolvedCredential { username, password }),
+            (Some(username), Some(password)) => Some(ResolvedCredential { username, password: zeroize::Zeroizing::new(password) }),
             _ => None,
         },
     )

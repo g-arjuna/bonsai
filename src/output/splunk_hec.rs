@@ -362,7 +362,7 @@ fn resolve_token(
         Ok(cred) => {
             audit.log_credential_resolve(&config.credential_alias, "ok", None);
             // HEC token is stored in the password field; username is unused
-            Ok(cred.password)
+            Ok(cred.password.to_string())
         }
         Err(e) => {
             let msg = e.to_string();

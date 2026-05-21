@@ -1295,7 +1295,7 @@ fn resolve_target_credentials(
 
     Ok(
         match (target.resolved_username(), target.resolved_password()) {
-            (Some(username), Some(password)) => Some(ResolvedCredential { username, password }),
+            (Some(username), Some(password)) => Some(ResolvedCredential { username, password: zeroize::Zeroizing::new(password) }),
             _ => None,
         },
     )
@@ -1320,7 +1320,7 @@ fn resolve_request_credentials(
         .as_deref()
         .and_then(|key| std::env::var(key).ok());
     Ok(match (username, password) {
-        (Some(username), Some(password)) => Some(ResolvedCredential { username, password }),
+        (Some(username), Some(password)) => Some(ResolvedCredential { username, password: zeroize::Zeroizing::new(password) }),
         _ => None,
     })
 }

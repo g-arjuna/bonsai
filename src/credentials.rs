@@ -5,9 +5,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use age::secrecy::SecretString;
+use age::secrecy::{ExposeSecret, SecretString};
 use anyhow::{Context, Result, anyhow, bail};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+use zeroize::{Zeroize, Zeroizing};
+
+type HmacSha256 = Hmac<Sha256>;
+const HMAC_TAG_LEN: usize = 32;
 
 const VAULT_FILE: &str = "vault.age";
 const METADATA_FILE: &str = "metadata.json";
@@ -35,10 +41,10 @@ pub struct CredentialSummary {
     pub last_used_at_ns: i64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ResolvedCredential {
     pub username: String,
-    pub password: String,
+    pub password: Zeroizing<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,6 +92,23 @@ struct StoredCredential {
     password: String,
     created_at_ns: i64,
     updated_at_ns: i64,
+}
+
+impl Drop for StoredCredential {
+    fn drop(&mut self) {
+        self.password.zeroize();
+        self.username.zeroize();
+    }
+}
+
+impl Drop for VaultState {
+    fn drop(&mut self) {
+        for (_alias, entry) in self.entries.iter_mut() {
+            entry.password.zeroize();
+            entry.username.zeroize();
+        }
+        self.entries.clear();
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -328,7 +351,7 @@ impl CredentialVault {
             }
             Ok(ResolvedCredential {
                 username: entry.username,
-                password: entry.password,
+                password: Zeroizing::new(entry.password),
             })
         })();
 
@@ -380,9 +403,25 @@ fn decrypt_entries(
     root: &Path,
     passphrase: &SecretString,
 ) -> Result<BTreeMap<String, StoredCredential>> {
-    let encrypted = std::fs::read(vault_path(root))
+    let raw = std::fs::read(vault_path(root))
         .with_context(|| format!("failed to read credential vault '{}'", root.display()))?;
-    let decryptor = age::Decryptor::new_buffered(BufReader::new(&encrypted[..]))
+
+    // If file has HMAC tag prefix (>= 32 bytes), verify integrity first.
+    let encrypted = if raw.len() > HMAC_TAG_LEN {
+        let (stored_tag, ciphertext) = raw.split_at(HMAC_TAG_LEN);
+        let mut mac = HmacSha256::new_from_slice(passphrase.expose_secret().as_bytes())
+            .context("HMAC key init failed")?;
+        mac.update(ciphertext);
+        mac.verify_slice(stored_tag).context(
+            "vault integrity check failed — file may be corrupt, restore from backup",
+        )?;
+        ciphertext
+    } else {
+        // Legacy vault without HMAC — accept but will gain HMAC on next write.
+        &raw
+    };
+
+    let decryptor = age::Decryptor::new_buffered(BufReader::new(encrypted))
         .context("invalid age vault file")?;
     if !decryptor.is_scrypt() {
         bail!("credential vault is not passphrase-encrypted");
@@ -407,9 +446,9 @@ fn encrypt_entries(
     let plaintext =
         serde_json::to_vec_pretty(entries).context("failed to serialize credential vault")?;
     let encryptor = age::Encryptor::with_user_passphrase(passphrase.clone());
-    let mut encrypted = Vec::new();
+    let mut ciphertext = Vec::new();
     let mut writer = encryptor
-        .wrap_output(&mut encrypted)
+        .wrap_output(&mut ciphertext)
         .context("failed to start credential vault encryption")?;
     writer
         .write_all(&plaintext)
@@ -417,8 +456,24 @@ fn encrypt_entries(
     writer
         .finish()
         .context("failed to finish credential vault encryption")?;
-    std::fs::write(vault_path(root), encrypted)
-        .with_context(|| format!("failed to write credential vault '{}'", root.display()))?;
+
+    // Prepend HMAC-SHA256 integrity tag over the ciphertext.
+    let mut mac = HmacSha256::new_from_slice(passphrase.expose_secret().as_bytes())
+        .context("HMAC key init failed")?;
+    mac.update(&ciphertext);
+    let tag = mac.finalize().into_bytes();
+
+    let mut out = Vec::with_capacity(HMAC_TAG_LEN + ciphertext.len());
+    out.extend_from_slice(&tag);
+    out.extend_from_slice(&ciphertext);
+
+    // Atomic write: write to .tmp then rename over the real file.
+    let final_path = vault_path(root);
+    let tmp_path = final_path.with_extension("age.tmp");
+    std::fs::write(&tmp_path, &out)
+        .with_context(|| format!("failed to write vault tmp file '{}'", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, &final_path)
+        .with_context(|| format!("failed to rename vault tmp to '{}'", final_path.display()))?;
     Ok(())
 }
 
@@ -436,8 +491,13 @@ fn read_metadata(root: &Path) -> Result<BTreeMap<String, CredentialMetadata>> {
 fn write_metadata(root: &Path, metadata: &BTreeMap<String, CredentialMetadata>) -> Result<()> {
     let serialized = serde_json::to_string_pretty(metadata)
         .context("failed to serialize credential metadata")?;
-    std::fs::write(metadata_path(root), serialized)
-        .with_context(|| format!("failed to write credential metadata '{}'", root.display()))?;
+    // Atomic write for metadata too.
+    let final_path = metadata_path(root);
+    let tmp_path = final_path.with_extension("json.tmp");
+    std::fs::write(&tmp_path, &serialized)
+        .with_context(|| format!("failed to write metadata tmp file '{}'", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, &final_path)
+        .with_context(|| format!("failed to rename metadata tmp to '{}'", final_path.display()))?;
     Ok(())
 }
 
@@ -547,14 +607,14 @@ mod tests {
             .resolve("srl-lab-admin", ResolvePurpose::Test)
             .unwrap();
         assert_eq!(resolved.username, "admin");
-        assert_eq!(resolved.password, "NokiaSrl1!");
+        assert_eq!(*resolved.password, "NokiaSrl1!");
 
         let reopened = CredentialVault::open(&dir, "BONSAI_TEST_VAULT_PASSPHRASE").unwrap();
         let resolved = reopened
             .resolve("srl-lab-admin", ResolvePurpose::Test)
             .unwrap();
         assert_eq!(resolved.username, "admin");
-        assert_eq!(resolved.password, "NokiaSrl1!");
+        assert_eq!(*resolved.password, "NokiaSrl1!");
 
         let removed = reopened.remove("srl-lab-admin").unwrap();
         assert!(removed.is_some());

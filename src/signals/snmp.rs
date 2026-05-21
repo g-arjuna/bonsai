@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -80,6 +80,25 @@ struct SnmpOidPattern {
     fields: BTreeMap<String, String>,
     #[serde(default)]
     field_schema: BTreeMap<String, String>,
+    #[serde(default)]
+    index_suffix_fields: Vec<IndexSuffixField>,
+}
+
+/// Describes how to extract a field value from the OID instance suffix.
+/// For example, Nokia TIMETRA-BGP-MIB encodes the BGP peer IPv4 address
+/// as the last 4 octets of the trap OID suffix.
+#[derive(Debug, Clone, Deserialize)]
+struct IndexSuffixField {
+    field: String,
+    /// Negative = count from end. E.g. -4 means last 4 components.
+    byte_offset: i32,
+    /// "ipv4" | "string" | "integer"
+    #[serde(default = "default_suffix_type")]
+    suffix_type: String,
+}
+
+fn default_suffix_type() -> String {
+    "ipv4".to_string()
 }
 
 #[derive(Clone, Default)]
@@ -135,6 +154,23 @@ impl SnmpFactExtractor {
             }
         }
 
+        // OID index-suffix extraction: parse fields encoded in the trap OID itself.
+        // Nokia TIMETRA-BGP-MIB encodes peer IPv4 as last 4 OID components.
+        if !pattern.index_suffix_fields.is_empty() {
+            let pat_trimmed = pattern.trap_oid.trim_end_matches(".0");
+            let suffix = trap_oid.strip_prefix(pat_trimmed)
+                .and_then(|s| s.strip_prefix('.'))
+                .unwrap_or("");
+            if !suffix.is_empty() {
+                let components: Vec<&str> = suffix.split('.').collect();
+                for isf in &pattern.index_suffix_fields {
+                    if let Some(value) = parse_index_suffix(&components, isf) {
+                        fields.insert(isf.field.clone(), value);
+                    }
+                }
+            }
+        }
+
         debug!(
             fact_type = %pattern.fact_type,
             trap_oid = %event.trap_oid,
@@ -151,6 +187,51 @@ impl SnmpFactExtractor {
             field_schema: pattern.field_schema.clone(),
             fields,
         })
+    }
+}
+
+/// Parse a field value from OID suffix components using an IndexSuffixField rule.
+fn parse_index_suffix(components: &[&str], isf: &IndexSuffixField) -> Option<String> {
+    let len = components.len() as i32;
+    let count = isf.byte_offset.unsigned_abs() as usize;
+
+    // Determine the slice of components to use.
+    let slice = if isf.byte_offset < 0 {
+        // Negative: take last N components.
+        if (len as usize) < count {
+            return None;
+        }
+        &components[components.len() - count..]
+    } else {
+        // Positive: take N components starting from offset.
+        let start = isf.byte_offset as usize;
+        if start + count > components.len() {
+            return None;
+        }
+        &components[start..start + count]
+    };
+
+    match isf.suffix_type.as_str() {
+        "ipv4" => {
+            if slice.len() != 4 {
+                return None;
+            }
+            let octets: Vec<u8> = slice
+                .iter()
+                .filter_map(|s| s.parse::<u8>().ok())
+                .collect();
+            if octets.len() != 4 {
+                return None;
+            }
+            Some(format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3]))
+        }
+        "integer" => {
+            slice.first().and_then(|s| s.parse::<i64>().ok()).map(|v| v.to_string())
+        }
+        _ => {
+            // "string" — join components with dots.
+            Some(slice.join("."))
+        }
     }
 }
 
@@ -175,6 +256,11 @@ pub async fn run_snmp_receiver(
         .await
         .with_context(|| format!("bind snmp UDP listener at {}", cfg.udp_addr))?;
     info!(addr = %cfg.udp_addr, "snmp UDP listener started");
+
+    // Dedup window: suppress duplicate traps from same device+OID within 5 seconds.
+    const DEDUP_WINDOW_NS: i64 = 5_000_000_000;
+    let mut dedup_map: HashMap<(String, String), i64> = HashMap::new();
+    let mut dedup_sweep_ns: i64 = now_ns();
 
     let mut buf = vec![0_u8; cfg.max_frame_bytes.max(1)];
     loop {
@@ -209,6 +295,22 @@ pub async fn run_snmp_receiver(
                                 raw_hex: hex::encode(raw),
                                 raw_len: n,
                             });
+
+                        // Dedup check: skip if same (device, trap_oid) seen within window.
+                        let dedup_key = (peer_ip.clone(), event.trap_oid.clone());
+                        if let Some(&prev_ns) = dedup_map.get(&dedup_key) {
+                            if timestamp_ns - prev_ns < DEDUP_WINDOW_NS {
+                                metrics::counter!("bonsai_snmp_dedup_suppressed_total").increment(1);
+                                continue;
+                            }
+                        }
+                        dedup_map.insert(dedup_key, timestamp_ns);
+
+                        // Periodic sweep of stale dedup entries (every 30s).
+                        if timestamp_ns - dedup_sweep_ns > 30_000_000_000 {
+                            dedup_map.retain(|_, ts| timestamp_ns - *ts < DEDUP_WINDOW_NS);
+                            dedup_sweep_ns = timestamp_ns;
+                        }
 
                         metrics::counter!(
                             "bonsai_snmp_traps_total",
@@ -978,6 +1080,59 @@ mod tests {
         assert_eq!(resolved.address, "192.0.2.44");
         assert_eq!(resolved.hostname, "xrd-pe1");
         assert_eq!(resolved.vendor, "cisco");
+    }
+
+    #[test]
+    fn extracts_peer_address_from_oid_index_suffix() {
+        let pattern = SnmpOidPattern {
+            fact_type: "bgp_peer_backward_transition".to_string(),
+            trap_oid: "1.3.6.1.4.1.6527.3.1.3.14.0.7".to_string(),
+            fields: BTreeMap::new(),
+            field_schema: BTreeMap::from([("peer_address".to_string(), "ip".to_string())]),
+            index_suffix_fields: vec![IndexSuffixField {
+                field: "peer_address".to_string(),
+                byte_offset: -4,
+                suffix_type: "ipv4".to_string(),
+            }],
+        };
+        let extractor = SnmpFactExtractor {
+            patterns: vec![pattern],
+        };
+
+        // Nokia trap OID with peer 10.0.0.1 encoded as suffix: .1.10.0.0.1
+        let event = SnmpTrapEvent {
+            timestamp_ns: 42,
+            peer_addr: "192.168.1.100:162".to_string(),
+            version: "v2c".to_string(),
+            community: "public".to_string(),
+            event_type: "snmp_enterprise_specific".to_string(),
+            trap_oid: "1.3.6.1.4.1.6527.3.1.3.14.0.7.1.10.0.0.1".to_string(),
+            category: "enterprise".to_string(),
+            message: String::new(),
+            enterprise_oid: "1.3.6.1.4.1.6527".to_string(),
+            generic_trap: None,
+            specific_trap: None,
+            uptime_ticks: None,
+            varbinds: vec![],
+            parse_error: String::new(),
+            raw_hex: String::new(),
+            raw_len: 0,
+        };
+
+        let fact = extractor.extract(&event).expect("should extract fact");
+        assert_eq!(fact.fact_type, "bgp_peer_backward_transition");
+        assert_eq!(fact.fields.get("peer_address").unwrap(), "10.0.0.1");
+    }
+
+    #[test]
+    fn oid_suffix_too_short_returns_none_for_field() {
+        let components: Vec<&str> = vec!["10", "0", "0"];
+        let isf = IndexSuffixField {
+            field: "peer_address".to_string(),
+            byte_offset: -4,
+            suffix_type: "ipv4".to_string(),
+        };
+        assert!(parse_index_suffix(&components, &isf).is_none());
     }
 
     fn encode_varbind(oid: &str, value_tlv: Vec<u8>) -> Vec<u8> {

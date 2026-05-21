@@ -517,6 +517,7 @@ dependencies = [
  "utoipa",
  "uuid",
  "wiremock",
+ "zeroize",
  "zstd",
 ]
 

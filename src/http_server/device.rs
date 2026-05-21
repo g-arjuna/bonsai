@@ -694,7 +694,7 @@ pub(super) async fn device_gnmi_readiness_handler(
         DiscoveryInput {
             address: target.address.clone(),
             username: resolved.as_ref().map(|creds| creds.username.clone()),
-            password: resolved.as_ref().map(|creds| creds.password.clone()),
+            password: resolved.as_ref().map(|creds| creds.password.to_string()),
             username_env: None,
             password_env: None,
             ca_cert_path: target.ca_cert.clone(),
@@ -733,7 +733,7 @@ pub(super) async fn device_streaming_readiness_handler(
                 DiscoveryInput {
                     address: target.address.clone(),
                     username: resolved.as_ref().map(|creds| creds.username.clone()),
-                    password: resolved.as_ref().map(|creds| creds.password.clone()),
+                    password: resolved.as_ref().map(|creds| creds.password.to_string()),
                     username_env: None,
                     password_env: None,
                     ca_cert_path: target.ca_cert.clone(),
@@ -785,7 +785,7 @@ pub(super) async fn device_recommendations_handler(
     let discovery_input = DiscoveryInput {
         address: target.address.clone(),
         username: resolved.as_ref().map(|creds| creds.username.clone()),
-        password: resolved.as_ref().map(|creds| creds.password.clone()),
+        password: resolved.as_ref().map(|creds| creds.password.to_string()),
         username_env: None,
         password_env: None,
         ca_cert_path: target.ca_cert.clone(),
@@ -1068,7 +1068,7 @@ pub(super) fn resolve_target_credentials_for_discovery(
     }
     Ok(
         match (target.resolved_username(), target.resolved_password()) {
-            (Some(username), Some(password)) => Some(ResolvedCredential { username, password }),
+            (Some(username), Some(password)) => Some(ResolvedCredential { username, password: zeroize::Zeroizing::new(password) }),
             _ => None,
         },
     )

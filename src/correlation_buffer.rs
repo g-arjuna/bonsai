@@ -308,10 +308,16 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
                 "link_up" => Some(("interface_up".to_string(), field_str("interface_name"))),
                 "bgp_peer_state" | "bgp_peer_backward_transition" => {
                     let state = field_str("peer_state");
+                    // Peer address comes from fields.peer_address (OID-suffix parsed)
+                    // rather than top-level detail.peer_addr (which is the SNMP source IP).
+                    let bgp_peer = {
+                        let fp = field_str("peer_address");
+                        if fp.is_empty() { peer() } else { fp }
+                    };
                     if state == "established" || state == "6" {
-                        Some(("bgp_neighbor_up".to_string(), peer()))
+                        Some(("bgp_neighbor_up".to_string(), bgp_peer))
                     } else {
-                        Some(("bgp_neighbor_down".to_string(), peer()))
+                        Some(("bgp_neighbor_down".to_string(), bgp_peer))
                     }
                 }
                 _ => None,

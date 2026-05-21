@@ -830,7 +830,7 @@ pub(super) fn resolve_request_credentials(
         .as_deref()
         .and_then(|key| std::env::var(key).ok());
     Ok(match (username, password) {
-        (Some(username), Some(password)) => Some(ResolvedCredential { username, password }),
+        (Some(username), Some(password)) => Some(ResolvedCredential { username, password: zeroize::Zeroizing::new(password) }),
         _ => None,
     })
 }
