@@ -1767,3 +1767,50 @@ button.compact {
   border: 1px solid var(--border);
   border-radius: 6px;
 }
+/* ── D3-2 T4: Bulk import workspace ─────────────────────────────────────── */
+.bulk-import-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.bulk-import-tabs button {
+  padding: 4px 14px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.bulk-import-tabs button.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.bulk-import-area {
+  width: 100%;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text);
+  resize: vertical;
+  box-sizing: border-box;
+}
+.bulk-results-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.bulk-results-table th,
+.bulk-results-table td {
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.bulk-results-table th {
+  font-weight: 600;
+  color: var(--text-muted);
+}

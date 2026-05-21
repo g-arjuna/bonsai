@@ -75,8 +75,8 @@
 ## Epic Map
 
 ```
-D3-1  Clean Install & Distribution                   [⏳ NOT STARTED]
-D3-2  Structured Onboarding (UI-first, NetBox import, cred association) [⏳ NOT STARTED]
+D3-1  Clean Install & Distribution                   [⚠️ T1/T4 DONE Session 19 (install.sh + Makefile); T2 DONE Session 17; T3 pre-existing; T5 manual validation pending]
+D3-2  Structured Onboarding (UI-first, NetBox import, cred association) [⚠️ T1/T2/T3/T5/T7 pre-existing; T4/T6 DONE Session 19 (bulk import + multi-cred apply)]
 D3-3  gNMI Onboarding Flow — Lab-Backed End-to-End Test [⏳ NOT STARTED]
 D3-4  Graph Enrichment — CLI Scraping + NetBox + Rack Validation [⏳ NOT STARTED]
 D3-5  Remediation Maturity — Auto-proposal + HITL Flow [✅ ALL DONE Session 17]

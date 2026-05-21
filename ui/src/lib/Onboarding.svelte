@@ -239,6 +239,56 @@
     }
   }
 
+  // ── Bulk CSV/JSON import (D3-2 T4) ─────────────────────────────────────────
+  let bulkImportText    = $state('');
+  let bulkImportMode    = $state('csv'); // 'csv' | 'json'
+  let bulkImportResults = $state([]);
+  let bulkImporting     = $state(false);
+
+  const CSV_HEADER = 'address,hostname,vendor,role,site,credential_alias';
+  const CSV_PLACEHOLDER = `address,hostname,vendor,role,site,credential_alias
+192.0.2.1,router-1,nokia-srl,spine,dc-london,lab-creds
+192.0.2.2,router-2,frr,leaf,dc-london,lab-creds`;
+
+  function parseCsvImport(text) {
+    const lines = text.trim().split('\n').filter(l => l.trim() && !l.startsWith('#'));
+    if (!lines.length) return [];
+    const first = lines[0].trim().toLowerCase();
+    const hasHeader = first.startsWith('address');
+    const rows = hasHeader ? lines.slice(1) : lines;
+    return rows.map(line => {
+      const [address = '', hostname = '', vendor = '', role = '', site = '', credential_alias = ''] =
+        line.split(',').map(v => v.trim());
+      return { address, hostname, vendor, role, site, credential_alias };
+    }).filter(r => r.address);
+  }
+
+  async function runBulkImport() {
+    const items = bulkImportMode === 'json'
+      ? (() => { try { return JSON.parse(bulkImportText); } catch { error = 'Invalid JSON'; return null; } })()
+      : parseCsvImport(bulkImportText);
+    if (!items || !items.length) { error = 'No valid rows found.'; return; }
+    bulkImporting = true;
+    bulkImportResults = [];
+    error = '';
+    try {
+      const r = await fetch('/api/onboarding/import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(items),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const body = await r.json();
+      bulkImportResults = body.results || [];
+      message = `Imported ${body.imported} device(s)${body.failed ? `, ${body.failed} failed` : ''}.`;
+      if (body.imported) await loadDevices();
+    } catch (e) {
+      error = e.message;
+    } finally {
+      bulkImporting = false;
+    }
+  }
+
   let nbUrl         = $state('');
   let nbToken       = $state('');
   let nbSiteSlug    = $state('');
@@ -975,6 +1025,7 @@
       <button class:active={workspace === 'wizard'} onclick={() => workspace = 'wizard'}>Wizard</button>
       <button class:active={workspace === 'devices'} onclick={() => workspace = 'devices'}>Device list</button>
       <button class:active={workspace === 'netbox'} onclick={() => workspace = 'netbox'}>Import from NetBox</button>
+      <button class:active={workspace === 'import'} onclick={() => workspace = 'import'}>Bulk import</button>
       <button class="ghost" onclick={loadDevices}>Refresh</button>
     </div>
   </section>
@@ -1615,6 +1666,61 @@
         <p class="empty">No active devices with a primary IP found.</p>
       {/if}
     </section>
+  {:else if workspace === 'import'}
+    <section class="managed-section separate-workspace">
+      <div class="section-title">
+        <h3>Bulk import</h3>
+        <span>Paste a CSV or JSON array to onboard multiple devices at once</span>
+      </div>
+
+      <div class="bulk-import-tabs">
+        <button class:active={bulkImportMode === 'csv'} onclick={() => bulkImportMode = 'csv'}>CSV</button>
+        <button class:active={bulkImportMode === 'json'} onclick={() => bulkImportMode = 'json'}>JSON</button>
+      </div>
+
+      {#if bulkImportMode === 'csv'}
+        <p class="muted" style="margin-bottom:6px;">Columns: <code>{CSV_HEADER}</code> — header row optional</p>
+        <textarea
+          class="bulk-import-area"
+          bind:value={bulkImportText}
+          placeholder={CSV_PLACEHOLDER}
+          rows="8"
+          spellcheck="false"
+        ></textarea>
+      {:else}
+        <p class="muted" style="margin-bottom:6px;">Array of objects with keys: address, hostname, vendor, role, site, credential_alias</p>
+        <textarea
+          class="bulk-import-area"
+          bind:value={bulkImportText}
+          placeholder={'[{"address":"192.0.2.1","hostname":"router-1","vendor":"nokia-srl","role":"spine","site":"dc-london","credential_alias":"lab-creds"}]'}
+          rows="8"
+          spellcheck="false"
+        ></textarea>
+      {/if}
+
+      <div class="wizard-actions" style="margin-top:12px;">
+        <button onclick={runBulkImport} disabled={bulkImporting || !bulkImportText.trim()}>
+          {bulkImporting ? 'Importing…' : 'Import devices'}
+        </button>
+        <button class="ghost" onclick={() => { bulkImportText = ''; bulkImportResults = []; }}>Clear</button>
+      </div>
+
+      {#if bulkImportResults.length}
+        <table class="bulk-results-table" style="margin-top:16px;">
+          <thead><tr><th>Address</th><th>Status</th><th>Detail</th></tr></thead>
+          <tbody>
+            {#each bulkImportResults as row}
+              <tr>
+                <td><code>{row.address}</code></td>
+                <td><span class="badge {row.success ? 'healthy' : 'critical'}">{row.success ? 'imported' : 'failed'}</span></td>
+                <td class="muted">{row.error || ''}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+    </section>
+
   {:else}
     <section class="managed-section separate-workspace">
       <div class="section-title">

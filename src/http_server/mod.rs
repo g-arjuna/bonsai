@@ -65,7 +65,7 @@ use remediation::{approvals_approve_handler, approvals_create_handler, approvals
 use observability::{topology_handler, path_handler, blast_radius_handler, detections_handler, trace_handler, readiness_handler, operations_handler, test_status_handler, daily_check_handler, weekly_trend_handler, gnn_calibration_handler, gnn_score_handler, events_handler, events_history_handler, incidents_handler, graph_insights_handler, explorer_query_handler, list_saved_queries_handler, create_saved_query_handler, delete_saved_query_handler, upsert_embeddings_handler, list_embeddings_handler, events_inject_handler};
 use device::{device_detail_handler, device_enrichment_handler, device_enrichment_conflicts_handler, device_cmdb_handler, device_config_history_handler, device_gnmi_readiness_handler, device_streaming_readiness_handler, device_recommendations_handler, yang_modules_handler, yang_search_handler, apply_device_selected_paths_handler, device_reparse_handler, profiles_handler, save_custom_profile_handler, enrichment_list_handler, enrichment_upsert_handler, enrichment_remove_handler, enrichment_test_handler, enrichment_run_handler, enrichment_audit_handler, netbox_import_handler};
 use device::InterfaceDetailJson;
-use managed_devices::{managed_devices_handler, discover_handler, credentials_handler, add_credential_handler, update_credential_handler, remove_credential_handler, test_credential_handler, add_managed_device_handler, add_managed_device_with_paths_handler, sites_handler, upsert_site_handler, site_summary_handler, remove_site_handler, remove_managed_device_handler, bulk_managed_device_action_handler, remove_impact_handler};
+use managed_devices::{managed_devices_handler, discover_handler, credentials_handler, add_credential_handler, update_credential_handler, remove_credential_handler, test_credential_handler, add_managed_device_handler, add_managed_device_with_paths_handler, sites_handler, upsert_site_handler, site_summary_handler, remove_site_handler, remove_managed_device_handler, bulk_managed_device_action_handler, remove_impact_handler, bulk_import_handler};
 use governance::{assignment_override_handler, assignment_rules_handler, assignment_status_handler, collectors_handler, create_environment_handler, environments_handler, governance_state_handler, health_handler, healthz_handler, readyz_handler, remove_environment_handler, assign_site_environment_handler, update_environment_handler, set_assignment_rules_handler, setup_status_handler, sidecars_handler};
 use outputs::{adapter_audit_handler, adapter_list_handler, adapter_remove_handler, adapter_test_handler, adapter_upsert_handler};
 use test_endpoints::{inject_detection_handler, parse_syslog_fixture_handler};
@@ -412,6 +412,20 @@ pub(super) struct BulkManagedDeviceActionResponse {
     success: bool,
     error: String,
     devices: Vec<ManagedDeviceJson>,
+}
+
+#[derive(Serialize)]
+pub(super) struct BulkImportResult {
+    address: String,
+    success: bool,
+    error: String,
+}
+
+#[derive(Serialize)]
+pub(super) struct BulkImportResponse {
+    imported: usize,
+    failed: usize,
+    results: Vec<BulkImportResult>,
 }
 
 #[derive(Serialize)]
@@ -863,6 +877,7 @@ fn managed_device_routes() -> Router<AppState> {
         .route("/api/onboarding/devices/remove", post(remove_managed_device_handler))
         .route("/api/onboarding/devices/remove-impact", post(remove_impact_handler))
         .route("/api/onboarding/devices/bulk", post(bulk_managed_device_action_handler))
+        .route("/api/onboarding/import", post(bulk_import_handler))
         .route("/api/onboarding/discover", post(discover_handler))
         .route("/api/sites", get(sites_handler).post(upsert_site_handler))
         .route("/api/sites/{id}", get(site_summary_handler))

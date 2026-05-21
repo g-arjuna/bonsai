@@ -6,7 +6,7 @@ use super::AppState;
 use super::{
     ManagedDevicesResponse, ManagedDeviceJson, SubscriptionStatusJson,
     ManagedDeviceRequest, RemoveManagedDeviceRequest, BulkManagedDeviceActionRequest,
-    BulkManagedDeviceActionResponse, RemoveImpactResponse,
+    BulkManagedDeviceActionResponse, BulkImportResult, BulkImportResponse, RemoveImpactResponse,
     CredentialsResponse, CredentialJson, AddCredentialRequest,
     RemoveCredentialRequest, TestCredentialRequest, CredentialMutationResponse,
     SitesResponse, SiteJson, SiteSummaryResponse, SiteHealthJson,
@@ -632,6 +632,35 @@ pub(super) async fn bulk_managed_device_action_handler(
         devices,
     }))
 }
+pub(super) async fn bulk_import_handler(
+    State(state): State<AppState>,
+    Json(reqs): Json<Vec<ManagedDeviceRequest>>,
+) -> Result<Json<BulkImportResponse>, (StatusCode, String)> {
+    let mut results = Vec::with_capacity(reqs.len());
+    let mut imported = 0usize;
+    let mut failed = 0usize;
+
+    for req in reqs {
+        let address = req.address.clone();
+        match save_managed_device(state.clone(), req).await {
+            Ok(Json(r)) if r.success => {
+                imported += 1;
+                results.push(BulkImportResult { address, success: true, error: String::new() });
+            }
+            Ok(Json(r)) => {
+                failed += 1;
+                results.push(BulkImportResult { address, success: false, error: r.error });
+            }
+            Err((_, e)) => {
+                failed += 1;
+                results.push(BulkImportResult { address, success: false, error: e });
+            }
+        }
+    }
+
+    Ok(Json(BulkImportResponse { imported, failed, results }))
+}
+
 pub(super) async fn remove_impact_handler(
     State(state): State<AppState>,
     Json(req): Json<RemoveManagedDeviceRequest>,
