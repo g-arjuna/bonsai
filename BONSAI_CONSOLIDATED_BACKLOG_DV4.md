@@ -59,13 +59,13 @@
 
 ### Tasks
 
-**T1 — SNMP: OID index-suffix parser**
+**T1 — SNMP: OID index-suffix parser** ✅ `78b31dc`
 - Implement OID instance-suffix parsing in `SnmpFactExtractor::extract()`.
 - Nokia TIMETRA-BGP-MIB: peer IP is last 4 octets of OID suffix. Add `index_suffix_field` option to `SnmpOidPattern`: `{field: peer_address, byte_offset: -4, type: ipv4}`.
 - Update `default.yaml` Nokia entries with `index_suffix_field` config.
 - Fixes S-29 ⚠️.
 
-**T2 — SNMP: Fix CorrelationKey sub_key for BGP traps**
+**T2 — SNMP: Fix CorrelationKey sub_key for BGP traps** ✅ `78b31dc`
 - After T1 populates `peer_address`, update `semantic_key_for_event()` in `correlation_buffer.rs` to use peer IP from `snmp_fact` path instead of raw socket `peer_addr`.
 - Eliminates orphan SNMP `bgp_neighbor_down` detections. Resolves S-44 PARTIAL.
 
@@ -85,9 +85,9 @@
 - Sections: receiver config (bind addr, community allowlist, version toggles, v3 users), OID pattern library (list/edit/upload MIB), live receiver status badge from `/api/receivers/status`.
 - Save → PATCH `/api/settings/streaming` + DB update.
 
-**T6 — SNMP: Trap dedup window + community filtering**
-- Per-device per-OID dedup window (5s): same OID from same device within 5s → suppress second (prevents linkDown/linkUp oscillation storms).
-- Community allowlist: accept only configured communities; log warn on unknown community.
+**T6 — SNMP: Trap dedup window + community filtering** ⚠️ `78b31dc` (dedup done, community filtering pending)
+- Per-device per-OID dedup window (5s): same OID from same device within 5s → suppress second (prevents linkDown/linkUp oscillation storms). ✅
+- Community allowlist: accept only configured communities; log warn on unknown community. ⬜
 
 **T7 — Syslog: UI page (new `src/routes/Syslog.svelte`)**
 - List vendor pattern files with count; add/edit/disable patterns; test regex against sample syslog message inline; hot-reload via watch channel to receiver without restart.
@@ -713,17 +713,18 @@ Over time, `DetectionEvent` nodes, `AppFlow` nodes from heavy flow sources, and 
 
 ### Tasks
 
-**T1 — Zeroizing credential memory**
+**T1 — Zeroizing credential memory** ✅ `78b31dc`
 - Add `zeroize` crate to `Cargo.toml`.
 - Change `StoredCredential.password: String` → `zeroize::Zeroizing<String>`.
 - Change `ResolvedCredential.password: String` → `zeroize::Zeroizing<String>`.
 - Add `impl Drop for VaultState` that explicitly calls `.clear()` and `.zeroize()` on entries before deallocation.
 - Audit all callers of `vault.resolve()`: verify no long-lived `Arc<ResolvedCredential>` or cloned password strings in gNMI client configs, HTTP client headers, or enrichment adapter configs.
 
-**T2 — Atomic vault write + integrity checksum**
+**T2 — Atomic vault write + integrity checksum** ✅ `78b31dc`
 - In `persist_locked()`: write to `{vault_path}.tmp` first using `std::fs::write`, then `std::fs::rename` over the final path. Atomic on POSIX — crash during write leaves `.tmp`, original `vault.age` intact.
 - Add HMAC-SHA256 integrity tag over the encrypted payload bytes (key derived from passphrase). Prepend tag to vault file.
 - On `decrypt_entries()`: verify HMAC before attempting decryption. Return actionable error on failure: "vault integrity check failed — file may be corrupt, restore from backup."
+- Legacy vaults without HMAC accepted on read, gain HMAC on next write.
 
 **T3 — Vault re-key subcommand**
 - Add `bonsai credential rekey` CLI subcommand.
