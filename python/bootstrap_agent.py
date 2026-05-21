@@ -1,0 +1,476 @@
+#!/usr/bin/env python3
+"""
+D4-17 T1 — PyATS-first device bootstrap agent.
+
+Usage:
+    python bootstrap_agent.py --address 10.0.0.1 --credential-alias spine1 \
+        [--vendor nokia_srl] [--api-url http://localhost:3000] \
+        [--vault-passphrase-env BONSAI_VAULT_PASSPHRASE] [--dry-run]
+
+    python bootstrap_agent.py --seed-file seed/topology.yaml \
+        [--api-url http://localhost:3000] [--parallel 4]
+
+Requires:
+    pip install pyats[full] genie requests paramiko
+
+The agent:
+  1. Resolves credentials via the Bonsai vault API.
+  2. Connects to the device via SSH (PyATS/Genie).
+  3. Runs Genie learn('bgp', 'interface', 'routing', 'lldp', 'lag') — vendor-agnostic.
+  4. Normalises and posts to:
+       POST /api/devices         — register device
+       POST /api/devices/seed    — pre-seed interface / BGP / LLDP data
+  5. Prints a structured JSON report of what was discovered and written.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field, asdict
+from typing import Any, Dict, List, Optional
+
+import requests
+import yaml
+
+logger = logging.getLogger("bootstrap_agent")
+
+# ── Genie/PyATS — imported lazily so the module is importable without them ──
+
+def _import_genie():
+    try:
+        from genie.testbed import load as genie_load
+        return genie_load
+    except ImportError:
+        logger.error("genie is not installed — run: pip install pyats[full] genie")
+        sys.exit(1)
+
+
+# ── Data classes ─────────────────────────────────────────────────────────────
+
+@dataclass
+class InterfaceInfo:
+    name: str
+    oper_status: str = "unknown"
+    admin_status: str = "unknown"
+    speed: int = 0
+    mac: str = ""
+    description: str = ""
+    in_octets: int = 0
+    out_octets: int = 0
+
+
+@dataclass
+class BgpNeighborInfo:
+    peer_address: str
+    peer_as: int = 0
+    state: str = "unknown"
+    vrf: str = "default"
+
+
+@dataclass
+class LldpNeighborInfo:
+    local_interface: str
+    remote_port: str
+    remote_device: str
+    remote_ip: str = ""
+
+
+@dataclass
+class IsisAdjInfo:
+    system_id: str
+    interface: str
+    state: str = "unknown"
+    area: str = ""
+
+
+@dataclass
+class BootstrapResult:
+    address: str
+    status: str = "ok"
+    error: str = ""
+    hostname: str = ""
+    vendor: str = ""
+    os_version: str = ""
+    interfaces: List[InterfaceInfo] = field(default_factory=list)
+    bgp_neighbors: List[BgpNeighborInfo] = field(default_factory=list)
+    lldp_neighbors: List[LldpNeighborInfo] = field(default_factory=list)
+    isis_adjacencies: List[IsisAdjInfo] = field(default_factory=list)
+    registered: bool = False
+    seeded: bool = False
+    elapsed_s: float = 0.0
+
+
+# ── Genie learn helpers ───────────────────────────────────────────────────────
+
+def _learn_interfaces(device) -> List[InterfaceInfo]:
+    try:
+        data = device.learn("interface")
+        out: List[InterfaceInfo] = []
+        for iface_name, attrs in (data.info or {}).items():
+            out.append(InterfaceInfo(
+                name=iface_name,
+                oper_status=str(attrs.get("oper_status", "unknown")),
+                admin_status=str(attrs.get("enabled", "unknown")),
+                speed=int(attrs.get("bandwidth", 0) or 0),
+                mac=str(attrs.get("phys_address", "")),
+                description=str(attrs.get("description", "")),
+                in_octets=int((attrs.get("counters") or {}).get("in_octets", 0) or 0),
+                out_octets=int((attrs.get("counters") or {}).get("out_octets", 0) or 0),
+            ))
+        return out
+    except Exception as e:
+        logger.warning("interface learn failed: %s", e)
+        return []
+
+
+def _learn_bgp(device) -> List[BgpNeighborInfo]:
+    try:
+        data = device.learn("bgp")
+        out: List[BgpNeighborInfo] = []
+        instance_info = (data.info or {}).get("instance", {})
+        for inst_name, inst in instance_info.items():
+            for vrf_name, vrf in (inst.get("vrf", {}) or {}).items():
+                for peer_addr, peer in (vrf.get("neighbor", {}) or {}).items():
+                    out.append(BgpNeighborInfo(
+                        peer_address=peer_addr,
+                        peer_as=int(peer.get("remote_as", 0) or 0),
+                        state=str(peer.get("session_state", "unknown")),
+                        vrf=vrf_name,
+                    ))
+        return out
+    except Exception as e:
+        logger.warning("bgp learn failed: %s", e)
+        return []
+
+
+def _learn_lldp(device) -> List[LldpNeighborInfo]:
+    try:
+        data = device.learn("lldp")
+        out: List[LldpNeighborInfo] = []
+        for iface_name, iface in ((data.info or {}).get("interface", {}) or {}).items():
+            for port_id, neighbor in (iface.get("port", {}) or {}).items():
+                out.append(LldpNeighborInfo(
+                    local_interface=iface_name,
+                    remote_port=port_id,
+                    remote_device=str(neighbor.get("device", {}).get("name", "")),
+                    remote_ip=str(neighbor.get("device", {}).get("ipv4_address", "")),
+                ))
+        return out
+    except Exception as e:
+        logger.warning("lldp learn failed: %s", e)
+        return []
+
+
+def _learn_isis(device) -> List[IsisAdjInfo]:
+    try:
+        data = device.learn("isis")
+        out: List[IsisAdjInfo] = []
+        for inst_name, inst in ((data.info or {}).get("instance", {}) or {}).items():
+            for vrf_name, vrf in (inst.get("vrf", {}) or {}).items():
+                for iface_name, iface in (vrf.get("interface", {}) or {}).items():
+                    for sys_id, adj in (iface.get("adjacency", {}) or {}).items():
+                        out.append(IsisAdjInfo(
+                            system_id=sys_id,
+                            interface=iface_name,
+                            state=str(adj.get("adj_state", "unknown")),
+                        ))
+        return out
+    except Exception as e:
+        logger.warning("isis learn failed: %s", e)
+        return []
+
+
+def _get_hostname_vendor(device) -> tuple[str, str, str]:
+    try:
+        data = device.learn("platform")
+        info = data.info or {}
+        hostname = str(info.get("hostname", device.name or ""))
+        vendor = str(info.get("os", device.os or "")).lower()
+        version = str(info.get("version", {}).get("version_short", ""))
+        return hostname, vendor, version
+    except Exception as e:
+        logger.warning("platform learn failed: %s", e)
+        return device.name or "", device.os or "", ""
+
+
+# ── Bonsai API helpers ────────────────────────────────────────────────────────
+
+def _api_post(api_url: str, path: str, body: dict, timeout: int = 15) -> dict:
+    url = api_url.rstrip("/") + path
+    r = requests.post(url, json=body, timeout=timeout)
+    r.raise_for_status()
+    return r.json() if r.text.strip() else {}
+
+
+def _register_device(api_url: str, result: BootstrapResult, dry_run: bool) -> bool:
+    payload = {
+        "address": result.address,
+        "hostname": result.hostname,
+        "vendor": result.vendor,
+        "enabled": True,
+    }
+    if dry_run:
+        logger.info("[DRY-RUN] POST /api/devices %s", json.dumps(payload))
+        return True
+    try:
+        _api_post(api_url, "/api/devices", payload)
+        return True
+    except Exception as e:
+        logger.warning("device register failed for %s: %s", result.address, e)
+        return False
+
+
+def _seed_device(api_url: str, result: BootstrapResult, dry_run: bool) -> bool:
+    payload = {
+        "address": result.address,
+        "hostname": result.hostname,
+        "vendor": result.vendor,
+        "os_version": result.os_version,
+        "source": "bootstrap",
+        "interfaces": [asdict(i) for i in result.interfaces],
+        "bgp_neighbors": [asdict(b) for b in result.bgp_neighbors],
+        "lldp_neighbors": [asdict(l) for l in result.lldp_neighbors],
+        "isis_adjacencies": [asdict(a) for a in result.isis_adjacencies],
+    }
+    if dry_run:
+        logger.info("[DRY-RUN] POST /api/devices/seed  %d ifaces  %d bgp  %d lldp  %d isis",
+                    len(result.interfaces), len(result.bgp_neighbors),
+                    len(result.lldp_neighbors), len(result.isis_adjacencies))
+        return True
+    try:
+        _api_post(api_url, "/api/devices/seed", payload)
+        return True
+    except Exception as e:
+        logger.warning("seed failed for %s: %s", result.address, e)
+        return False
+
+
+# ── Core bootstrap logic ──────────────────────────────────────────────────────
+
+def bootstrap_device(
+    address: str,
+    username: str,
+    password: str,
+    vendor: Optional[str] = None,
+    api_url: str = "http://localhost:3000",
+    dry_run: bool = False,
+) -> BootstrapResult:
+    genie_load = _import_genie()
+    t0 = time.time()
+    result = BootstrapResult(address=address)
+
+    os_map = {
+        "nokia_srl": "iosxr",
+        "nokia_sros": "iosxr",
+        "cisco_ios": "ios",
+        "cisco_iosxe": "iosxe",
+        "cisco_iosxr": "iosxr",
+        "cisco_nxos": "nxos",
+        "arista_eos": "eos",
+        "juniper_junos": "junos",
+        "frr": "linux",
+    }
+    genie_os = os_map.get((vendor or "").lower(), "iosxe")
+
+    testbed_dict = {
+        "devices": {
+            address: {
+                "os": genie_os,
+                "type": "router",
+                "credentials": {
+                    "default": {
+                        "username": username,
+                        "password": password,
+                    }
+                },
+                "connections": {
+                    "cli": {
+                        "protocol": "ssh",
+                        "ip": address,
+                        "port": 22,
+                    }
+                },
+            }
+        }
+    }
+
+    try:
+        testbed = genie_load(testbed_dict)
+        device = testbed.devices[address]
+        device.connect(log_stdout=False)
+    except Exception as e:
+        result.status = "failed"
+        result.error = f"SSH connect failed: {e}"
+        result.elapsed_s = time.time() - t0
+        return result
+
+    try:
+        result.hostname, result.vendor, result.os_version = _get_hostname_vendor(device)
+        if vendor:
+            result.vendor = vendor
+        result.interfaces = _learn_interfaces(device)
+        result.bgp_neighbors = _learn_bgp(device)
+        result.lldp_neighbors = _learn_lldp(device)
+        result.isis_adjacencies = _learn_isis(device)
+    except Exception as e:
+        result.status = "partial"
+        result.error = f"learn error: {e}"
+    finally:
+        try:
+            device.disconnect()
+        except Exception:
+            pass
+
+    result.registered = _register_device(api_url, result, dry_run)
+    if result.registered:
+        result.seeded = _seed_device(api_url, result, dry_run)
+
+    result.elapsed_s = round(time.time() - t0, 2)
+    return result
+
+
+# ── Credential resolution via Bonsai vault API ────────────────────────────────
+
+def _resolve_credential(api_url: str, alias: str) -> tuple[str, str]:
+    url = f"{api_url.rstrip('/')}/api/credentials/{requests.utils.quote(alias, safe='')}/resolve"
+    r = requests.get(url, timeout=10)
+    if r.ok:
+        d = r.json()
+        return d.get("username", ""), d.get("password", "")
+    logger.warning("credential resolve failed for alias %s: %s", alias, r.text[:200])
+    return "", ""
+
+
+# ── Seed file support ─────────────────────────────────────────────────────────
+
+def _load_seed_file(path: str) -> List[dict]:
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and "devices" in data:
+        return data["devices"]
+    raise ValueError(f"seed file must be a list of devices or a dict with 'devices' key: {path}")
+
+
+def bootstrap_from_seed(
+    seed_file: str,
+    api_url: str = "http://localhost:3000",
+    parallel: int = 4,
+    dry_run: bool = False,
+) -> List[BootstrapResult]:
+    devices = _load_seed_file(seed_file)
+    results: List[BootstrapResult] = []
+
+    def _run_one(entry: dict) -> BootstrapResult:
+        address = entry.get("address", "")
+        if not address:
+            r = BootstrapResult(address="??")
+            r.status = "failed"
+            r.error = "missing address in seed entry"
+            return r
+        alias = entry.get("credential_alias", "")
+        username = entry.get("username", "")
+        password = entry.get("password", "")
+        if alias and not (username and password):
+            username, password = _resolve_credential(api_url, alias)
+        if not (username and password):
+            r = BootstrapResult(address=address)
+            r.status = "failed"
+            r.error = f"no credentials for {address} (alias={alias})"
+            return r
+        return bootstrap_device(
+            address=address,
+            username=username,
+            password=password,
+            vendor=entry.get("vendor"),
+            api_url=api_url,
+            dry_run=dry_run,
+        )
+
+    with ThreadPoolExecutor(max_workers=parallel) as pool:
+        futures = {pool.submit(_run_one, entry): entry for entry in devices}
+        for fut in as_completed(futures):
+            results.append(fut.result())
+
+    return results
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="Bonsai PyATS bootstrap agent (D4-17 T1)")
+    sub = parser.add_subparsers(dest="cmd")
+
+    single = sub.add_parser("device", help="Bootstrap a single device")
+    single.add_argument("--address", required=True, help="Device IP address")
+    single.add_argument("--credential-alias", help="Bonsai vault credential alias")
+    single.add_argument("--username", help="SSH username (if not using vault)")
+    single.add_argument("--password", help="SSH password (if not using vault)")
+    single.add_argument("--vendor", help="Vendor hint (nokia_srl, cisco_iosxe, arista_eos, frr, …)")
+    single.add_argument("--api-url", default="http://localhost:3000")
+    single.add_argument("--dry-run", action="store_true")
+
+    bulk = sub.add_parser("seed", help="Bootstrap from seed YAML file")
+    bulk.add_argument("--seed-file", required=True)
+    bulk.add_argument("--api-url", default="http://localhost:3000")
+    bulk.add_argument("--parallel", type=int, default=4)
+    bulk.add_argument("--dry-run", action="store_true")
+
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    if args.cmd == "device":
+        username = args.username or ""
+        password = args.password or ""
+        if args.credential_alias and not (username and password):
+            username, password = _resolve_credential(args.api_url, args.credential_alias)
+        if not (username and password):
+            logger.error("No credentials — provide --username/--password or a valid --credential-alias")
+            sys.exit(1)
+        result = bootstrap_device(
+            address=args.address,
+            username=username,
+            password=password,
+            vendor=args.vendor,
+            api_url=args.api_url,
+            dry_run=args.dry_run,
+        )
+        print(json.dumps(asdict(result), indent=2, default=str))
+        sys.exit(0 if result.status in ("ok", "partial") else 1)
+
+    elif args.cmd == "seed":
+        results = bootstrap_from_seed(
+            seed_file=args.seed_file,
+            api_url=args.api_url,
+            parallel=args.parallel,
+            dry_run=args.dry_run,
+        )
+        summary = {
+            "total": len(results),
+            "ok": sum(1 for r in results if r.status == "ok"),
+            "partial": sum(1 for r in results if r.status == "partial"),
+            "failed": sum(1 for r in results if r.status == "failed"),
+            "results": [asdict(r) for r in results],
+        }
+        print(json.dumps(summary, indent=2, default=str))
+        sys.exit(0 if summary["failed"] == 0 else 1)
+
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

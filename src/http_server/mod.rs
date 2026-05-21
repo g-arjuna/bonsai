@@ -184,12 +184,23 @@ pub(super) struct BlastRadiusSummary {
     pub app_count: usize,
 }
 
+/// Per-device detail for multi-device incidents (D4-4 T6).
+#[derive(Serialize, Clone)]
+pub(super) struct AffectedDeviceDetail {
+    pub address: String,
+    pub rules: Vec<String>,
+    pub is_root: bool,
+    pub detected_at_ns: i64,
+}
+
 #[derive(Serialize)]
 pub(super) struct IncidentJson {
     id: String,
     root: DetectionRow,
     cascading: Vec<DetectionRow>,
     affected_devices: Vec<String>,
+    /// Per-device breakdown for multi-device incidents (D4-4 T6).
+    affected_device_details: Vec<AffectedDeviceDetail>,
     severity: String,
     started_at_ns: i64,
     ended_at_ns: i64,
@@ -206,6 +217,11 @@ pub(super) struct IncidentJson {
     correlation_chain: Vec<CorrelationStep>,
     /// Lightweight blast-radius for the root device (reachable devices + apps).
     blast_radius_summary: Option<BlastRadiusSummary>,
+    /// D4-4 T2: incident type taxonomy.
+    /// One of: single_device | cascading_failure | multi_device_correlated | config_caused
+    incident_type: String,
+    /// D4-4 T3: human-readable explanation of why events were grouped.
+    grouping_rationale: String,
 }
 
 #[derive(Serialize)]

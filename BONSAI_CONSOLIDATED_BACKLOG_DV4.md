@@ -130,7 +130,7 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 **T3 — REST API for shun management** ✅ batch2
 - `GET /api/shun/rules`, `POST /api/shun/rules`, `POST /api/shun/rules/{id}/disable`, `POST /api/shun/rules/{id}/delete`, `GET /api/shun/stats`.
 
-**T4 — UI: Interactive Shun Panel**
+**T4 — UI: Interactive Shun Panel** ✅ batch3
 - In `Syslog.svelte` (D4-1 T7), add a "Shun Rules" tab.
 - From live syslog feed: click a message → "Shun this pattern" → auto-populates regex from message text → choose scope (this device / group / site) → set TTL → save.
 - Show live shun counter badge per rule. One-click "silence 1h / 24h / permanent" for device scope.
@@ -229,30 +229,30 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 **T1 — Fix layout overflow + blur** ✅ batch2
 - `device-addr` max-width 240px + ellipsis; `rule-pills` min-width:0 flex-shrink; `inc-body` overflow:hidden; `det-row` grid fixed to 6-col with minmax(0,1fr); `.view` overflow-x:hidden.
 
-**T2 — Incident type taxonomy + explanatory chips**
+**T2 — Incident type taxonomy + explanatory chips** ✅ batch3
 - Backend: classify incidents as `single_device`, `cascading_failure`, `multi_device_correlated`, `config_caused`.
 - UI: type chip on each card with per-type tooltip: "Cascading failure — root fault on leaf4 propagated to 2 neighboring devices."
 
-**T3 — Grouping rationale: visible in expanded view**
+**T3 — Grouping rationale: visible in expanded view** ✅ batch3
 - "Why grouped?" section in expanded body for each incident.
 - Cascading: "leaf4 lost uplink at T+0 → BGP hold timer expired 64s later → spine1 lost peer. Temporal proximity + shared blast radius."
 - Multi-source: "Same BGP state change confirmed by gNMI + SNMP trap — merged into one detection."
 - Config-caused: "Config change by operator 'admin' preceded this fault by 200ms."
 - Backend: compute `grouping_rationale` string in `/api/incidents` handler. Compute heuristically if not already in DB.
 
-**T4 — Full Trace page (replace 310-byte placeholder in `TraceRoute.svelte`)**
+**T4 — Full Trace page (replace 310-byte placeholder in `TraceRoute.svelte`)** ✅ batch3
 - Timeline: all source events contributing to this detection (gNMI/syslog/SNMP timestamps, source-type badges).
 - 45-second correlation window visualization showing event positions within the window.
 - Investigation link if an investigation exists for this detection.
 - HITL history: any approvals/rejections on remediation proposals spawned from this detection.
 - Graph context: Device → Interface/BGPPeer implicated.
 
-**T5 — Terminology clarity: trigger + trace explained**
+**T5 — Terminology clarity: trigger + trace explained** ✅ batch3
 - Persistent ℹ icon next to "trace →" explaining: "Shows the full timeline of signals (gNMI telemetry, syslog, SNMP trap) that triggered this detection."
 - Rename "trace →" to "Trace & Explain."
 - In expanded incident: "Triggered by" label already present — keep but add tooltip explaining the 45s correlation window concept.
 
-**T6 — Multi-device drill-down**
+**T6 — Multi-device drill-down** ✅ batch3
 - For `device_count > 1`: "Affected Devices" expandable section in expanded body.
 - Per device: address, rules fired, `is_root` flag, `detected_at_ns`.
 - Backend: return `affected_devices: [{address, rules, is_root, detected_at_ns}]` in `/api/incidents` response.
@@ -845,7 +845,7 @@ FRR runs as `frr-rr` in the lab topology. BMP session confirmed working (S-30/S-
 
 ### Tasks
 
-**T1 — PyATS bootstrap agent (new `python/bootstrap_agent.py`)**
+**T1 — PyATS bootstrap agent (new `python/bootstrap_agent.py`)** ✅ batch3
 - Input: device address, credentials (from vault), optional vendor hint.
 - Connect via SSH (Netmiko/PyATS connection plugin).
 - Run `device.learn('bgp', 'interface', 'routing', 'lldp', 'lag')` using Genie.

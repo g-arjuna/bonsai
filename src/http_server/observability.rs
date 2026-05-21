@@ -18,7 +18,7 @@ use super::{
     DailyCheckResponse, DailyCheckCounts, DailyCheckItem,
     WeeklyTrendDay, WeeklyTrendResponse,
     IncidentJson, IncidentsResponse, IncidentsParams,
-    CorrelationStep, BlastRadiusSummary,
+    CorrelationStep, BlastRadiusSummary, AffectedDeviceDetail,
     SsePayload, EmbeddingsResponse, UpsertEmbeddingsBody,
     ExplorerQueryBody,
     read_str, read_i64, read_ts_ns, read_subscription_statuses,
@@ -1065,11 +1065,125 @@ pub(super) fn group_into_incidents(
                 .get(&root.device_address)
                 .cloned();
 
+            // D4-4 T2: Incident type taxonomy
+            // config_caused: any rule_id contains "config" or "config_caused_fault"
+            // cascading_failure: multi-device where root has highest degree and cascading have lower degree
+            // multi_device_correlated: multiple devices but no clear upstream root
+            // single_device: only one device involved
+            let has_config_rule = rule_ids.iter().any(|r| r.contains("config"));
+            let incident_type = if has_config_rule {
+                "config_caused".to_string()
+            } else if device_count > 1 {
+                let root_degree = *degree_map.get(&root.device_address).unwrap_or(&0);
+                let any_cascading_lower = group.iter().any(|d| {
+                    *degree_map.get(&d.device_address).unwrap_or(&0) < root_degree
+                });
+                if any_cascading_lower || root_degree > 0 {
+                    "cascading_failure".to_string()
+                } else {
+                    "multi_device_correlated".to_string()
+                }
+            } else {
+                "single_device".to_string()
+            };
+
+            // D4-4 T3: Grouping rationale
+            let multi_source = std::iter::once(&root)
+                .chain(group.iter())
+                .flat_map(|d| d.source_types.iter())
+                .collect::<std::collections::HashSet<_>>()
+                .len() > 1;
+            let grouping_rationale = match incident_type.as_str() {
+                "config_caused" => {
+                    let lag_ms: Option<i64> = std::iter::once(&root)
+                        .chain(group.iter())
+                        .find(|d| d.rule_id.contains("config"))
+                        .and_then(|d| serde_json::from_str::<serde_json::Value>(&d.features_json).ok())
+                        .and_then(|v| v.get("detail").and_then(|d| d.get("config_lag_ms")).and_then(|l| l.as_i64()));
+                    if let Some(ms) = lag_ms {
+                        format!("Config change preceded this fault by {}ms — likely operator-caused.", ms)
+                    } else {
+                        "Config change correlated with this fault — likely operator-caused.".to_string()
+                    }
+                }
+                "cascading_failure" => {
+                    let span_s = (ended_at_ns - started_at_ns).max(0) / 1_000_000_000;
+                    format!(
+                        "{} lost uplink at T+0 → fault propagated to {} neighboring device{}. Temporal proximity + shared blast radius ({span_s}s window).",
+                        root.device_address,
+                        device_count - 1,
+                        if device_count - 1 == 1 { "" } else { "s" },
+                    )
+                }
+                "multi_device_correlated" => {
+                    if multi_source {
+                        format!(
+                            "Same {} event confirmed by multiple signal sources — merged into one detection. {} devices affected within {}s.",
+                            rule_ids.first().map(|s| s.as_str()).unwrap_or("fault"),
+                            device_count,
+                            window_secs_actual,
+                        )
+                    } else {
+                        format!(
+                            "{} devices fired the same rule type within {}s — grouped by temporal proximity.",
+                            device_count,
+                            window_secs_actual,
+                        )
+                    }
+                }
+                _ => {
+                    if multi_source {
+                        format!(
+                            "Same fault confirmed by {} signal sources — merged into one detection.",
+                            std::iter::once(&root)
+                                .chain(group.iter())
+                                .flat_map(|d| d.source_types.iter())
+                                .collect::<std::collections::HashSet<_>>()
+                                .len()
+                        )
+                    } else if event_count > 1 {
+                        format!("{event_count} events from the same device within {window_secs_actual}s.")
+                    } else {
+                        format!("Single detection event on {}.", root.device_address)
+                    }
+                }
+            };
+
+            // D4-4 T6: Per-device breakdown
+            let mut device_rule_map: HashMap<String, Vec<String>> = HashMap::new();
+            for d in std::iter::once(&root).chain(group.iter()) {
+                device_rule_map.entry(d.device_address.clone())
+                    .or_default()
+                    .push(d.rule_id.clone());
+            }
+            let mut affected_device_details: Vec<AffectedDeviceDetail> = device_rule_map
+                .into_iter()
+                .map(|(addr, rules)| {
+                    let is_root_dev = addr == root.device_address;
+                    let detected_at = std::iter::once(&root)
+                        .chain(group.iter())
+                        .filter(|d| d.device_address == addr)
+                        .map(|d| d.fired_at_ns)
+                        .min()
+                        .unwrap_or(started_at_ns);
+                    AffectedDeviceDetail {
+                        address: addr,
+                        rules,
+                        is_root: is_root_dev,
+                        detected_at_ns: detected_at,
+                    }
+                })
+                .collect();
+            affected_device_details.sort_by(|a, b| {
+                b.is_root.cmp(&a.is_root).then(a.detected_at_ns.cmp(&b.detected_at_ns))
+            });
+
             IncidentJson {
                 id,
                 root,
                 cascading: group,
                 affected_devices,
+                affected_device_details,
                 severity,
                 started_at_ns,
                 ended_at_ns,
@@ -1080,6 +1194,8 @@ pub(super) fn group_into_incidents(
                 event_count,
                 correlation_chain,
                 blast_radius_summary,
+                incident_type,
+                grouping_rationale,
             }
         })
         .collect();

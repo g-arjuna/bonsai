@@ -126,8 +126,15 @@
               </time>
             </div>
 
-            <!-- Secondary row: clubbing rationale + remediation tag + duration -->
+            <!-- Secondary row: type chip + clubbing rationale + remediation tag + duration -->
             <div class="row-secondary">
+              {#if inc.incident_type}
+                {@const TYPE_LABEL = { single_device: 'Single Device', cascading_failure: 'Cascading', multi_device_correlated: 'Multi-Device', config_caused: 'Config-Caused' }}
+                {@const TYPE_TIP = { single_device: 'Fault isolated to one device.', cascading_failure: `Cascading failure — root fault on ${inc.root?.device_address ?? '?'} propagated to ${(inc.device_count ?? 1) - 1} neighboring device(s).`, multi_device_correlated: 'Multiple devices affected simultaneously — grouped by temporal proximity or multi-source correlation.', config_caused: 'A config change correlated with or caused this fault.' }}
+                <span class="type-chip type-{inc.incident_type}" title={TYPE_TIP[inc.incident_type] ?? ''}>
+                  {TYPE_LABEL[inc.incident_type] ?? inc.incident_type}
+                </span>
+              {/if}
               <span
                 class="context-line"
                 title={inc.co_fire_signature ?? ''}
@@ -189,6 +196,33 @@
                   </div>
                 {/if}
 
+                <!-- D4-4 T3: Grouping rationale -->
+                {#if inc.grouping_rationale}
+                  <div class="rationale-section">
+                    <span class="rationale-label">Why grouped?</span>
+                    <span class="rationale-text">{inc.grouping_rationale}</span>
+                  </div>
+                {/if}
+
+                <!-- D4-4 T6: Affected devices drill-down -->
+                {#if (inc.affected_device_details ?? []).length > 1}
+                  <div class="affected-devices-section">
+                    <span class="section-label">Affected Devices</span>
+                    {#each inc.affected_device_details as dev}
+                      <div class="affected-row">
+                        <code class="aff-addr">{dev.address}</code>
+                        {#if dev.is_root}<span class="root-badge">root</span>{/if}
+                        <span class="aff-rules">
+                          {#each dev.rules as r}
+                            <span class="rule-pill">{r}</span>
+                          {/each}
+                        </span>
+                        <time class="aff-ts" title={absoluteTime(dev.detected_at_ns)}>{shortTime(dev.detected_at_ns)}</time>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+
                 {#each incidentDetections(inc).slice(0, 8) as det}
                   <button
                     class="det-row"
@@ -208,7 +242,7 @@
                     {#if det.latency_ns > 0}
                       <span class="det-latency">{(det.latency_ns / 1e6).toFixed(0)}ms</span>
                     {/if}
-                    {#if det.id}<span class="det-trace">trace →</span>{/if}
+                    {#if det.id}<span class="det-trace" title="Shows the full timeline of signals (gNMI telemetry, syslog, SNMP trap) that triggered this detection. 45s correlation window.">Trace &amp; Explain</span>{/if}
                   </button>
                 {/each}
                 {#if incidentDetections(inc).length > 8}
@@ -449,6 +483,98 @@
   .det-trace {
     font-size: 11px;
     color: var(--accent-primary);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  /* ── Incident type chips (D4-4 T2) ──────────────────────────────────────── */
+  .type-chip {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 1px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    cursor: default;
+  }
+  .type-single_device         { background: rgba(99,102,241,0.12); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.25); }
+  .type-cascading_failure     { background: rgba(239,68,68,0.12);  color: #fca5a5; border: 1px solid rgba(239,68,68,0.3); }
+  .type-multi_device_correlated { background: rgba(251,146,60,0.12); color: #fdba74; border: 1px solid rgba(251,146,60,0.3); }
+  .type-config_caused         { background: rgba(77,208,200,0.10); color: #4dd0c8; border: 1px solid rgba(77,208,200,0.25); }
+
+  /* ── Grouping rationale (D4-4 T3) ───────────────────────────────────────── */
+  .rationale-section {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 5px 0 4px;
+    border-bottom: 1px solid var(--border-subtle);
+    margin-bottom: 4px;
+  }
+  .rationale-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .rationale-text {
+    font-size: var(--text-small);
+    color: var(--text-secondary);
+    line-height: 1.4;
+  }
+
+  /* ── Affected devices drill-down (D4-4 T6) ──────────────────────────────── */
+  .affected-devices-section {
+    margin-top: 6px;
+    padding: 6px 0 2px;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .section-label {
+    display: block;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-tertiary);
+    margin-bottom: 4px;
+  }
+  .affected-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    font-size: var(--text-small);
+  }
+  .aff-addr {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono-sm);
+    color: var(--text-primary);
+    flex-shrink: 0;
+  }
+  .root-badge {
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(239,68,68,0.12);
+    color: #fca5a5;
+    border: 1px solid rgba(239,68,68,0.25);
+    font-weight: 600;
+    letter-spacing: 0.03em;
+  }
+  .aff-rules {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    flex: 1;
+    min-width: 0;
+  }
+  .aff-ts {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono-sm);
+    color: var(--text-tertiary);
     white-space: nowrap;
   }
   .det-sources { display: inline-flex; gap: 3px; flex-wrap: wrap; }
