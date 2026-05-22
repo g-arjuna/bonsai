@@ -312,6 +312,8 @@ pub struct StreamingConfig {
     pub otlp: OtlpConfig,
     #[serde(default)]
     pub netflow: NetflowConfig,
+    #[serde(default)]
+    pub sflow: SflowConfig,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -423,6 +425,26 @@ fn default_otlp_http_addr() -> String {
 }
 fn default_netflow_udp_addr() -> String {
     "0.0.0.0:2055".to_string()
+}
+fn default_sflow_udp_addr() -> String {
+    "0.0.0.0:6343".to_string()
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct SflowConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_sflow_udp_addr")]
+    pub udp_addr: String,
+}
+
+impl Default for SflowConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            udp_addr: default_sflow_udp_addr(),
+        }
+    }
 }
 
 fn default_bmp_tcp_addr() -> String {

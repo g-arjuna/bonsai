@@ -40,6 +40,7 @@ graph_path = "runtime/bonsai.db"
 #   [streaming.pcep]  tcp_addr = "0.0.0.0:4189"
 #   [streaming.otlp]  http_addr= "0.0.0.0:4318"
 #   [streaming.netflow]udp_addr= "0.0.0.0:2055"
+#   [streaming.sflow]  udp_addr= "0.0.0.0:6343"
 
 # ── [runtime] ────────────────────────────────────────────────────────────────
 
@@ -469,6 +470,11 @@ http_addr = "0.0.0.0:4318"
 # Enable NetFlow/IPFIX UDP receiver.
 enabled = false
 udp_addr = "0.0.0.0:2055"
+
+[streaming.sflow]
+# Enable sFlow v5 UDP receiver (RFC 3176). Default port 6343.
+enabled = false
+udp_addr = "0.0.0.0:6343"
 
 # ── [gnn] ────────────────────────────────────────────────────────────────────
 

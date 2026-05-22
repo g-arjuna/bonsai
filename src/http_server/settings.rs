@@ -10,7 +10,7 @@ use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 
 use super::AppState;
-use crate::config::{BgpLsConfig, BmpConfig, NetflowConfig, OtlpConfig, PcepConfig, SnmpConfig, SyslogConfig};
+use crate::config::{BgpLsConfig, BmpConfig, NetflowConfig, OtlpConfig, PcepConfig, SflowConfig, SnmpConfig, SyslogConfig};
 
 // ── Response / request shapes ─────────────────────────────────────────────────
 
@@ -30,6 +30,7 @@ pub struct StreamingSettingsResponse {
     pub pcep: ReceiverDetail,
     pub otlp: ReceiverDetail,
     pub netflow: ReceiverDetail,
+    pub sflow: ReceiverDetail,
     pub syslog_udp: ReceiverDetail,
     pub syslog_tcp: ReceiverDetail,
     pub snmp: ReceiverDetail,
@@ -53,6 +54,7 @@ pub struct StreamingSettingsPatch {
     pub pcep: Option<ReceiverPatch>,
     pub otlp: Option<ReceiverPatch>,
     pub netflow: Option<ReceiverPatch>,
+    pub sflow: Option<ReceiverPatch>,
     pub syslog_udp: Option<ReceiverPatch>,
     pub syslog_tcp: Option<ReceiverPatch>,
     pub snmp: Option<ReceiverPatch>,
@@ -91,6 +93,9 @@ fn otlp_detail(c: &OtlpConfig) -> ReceiverDetail {
     ReceiverDetail { enabled: c.enabled, addr: c.http_addr.clone(), protocol: "http".into() }
 }
 fn netflow_detail(c: &NetflowConfig) -> ReceiverDetail {
+    ReceiverDetail { enabled: c.enabled, addr: c.udp_addr.clone(), protocol: "udp".into() }
+}
+fn sflow_detail(c: &SflowConfig) -> ReceiverDetail {
     ReceiverDetail { enabled: c.enabled, addr: c.udp_addr.clone(), protocol: "udp".into() }
 }
 fn syslog_udp_detail(c: &SyslogConfig) -> ReceiverDetail {
@@ -134,6 +139,7 @@ pub async fn get_streaming_settings_handler(
         pcep:       pcep_detail(&s.pcep),
         otlp:       otlp_detail(&s.otlp),
         netflow:    netflow_detail(&s.netflow),
+        sflow:      sflow_detail(&s.sflow),
         syslog_udp: syslog_udp_detail(&sig.syslog),
         syslog_tcp: syslog_tcp_detail(&sig.syslog),
         snmp:       snmp_detail(&sig.snmp),
@@ -165,6 +171,9 @@ pub async fn patch_streaming_settings_handler(
 
     let new_nf_enabled = patch.netflow.as_ref().and_then(|p| p.enabled).unwrap_or(s.netflow.enabled);
     let new_nf_addr    = patch.netflow.as_ref().and_then(|p| p.addr.clone()).unwrap_or_else(|| s.netflow.udp_addr.clone());
+
+    let new_sf_enabled = patch.sflow.as_ref().and_then(|p| p.enabled).unwrap_or(s.sflow.enabled);
+    let new_sf_addr    = patch.sflow.as_ref().and_then(|p| p.addr.clone()).unwrap_or_else(|| s.sflow.udp_addr.clone());
 
     let sig = &state.signals;
     let new_syslog_enabled  = patch.syslog_udp.as_ref().and_then(|p| p.enabled)
@@ -198,6 +207,10 @@ http_addr = "{otlp_addr}"
 enabled = {nf_en}
 udp_addr = "{nf_addr}"
 
+[streaming.sflow]
+enabled = {sf_en}
+udp_addr = "{sf_addr}"
+
 [signals.syslog]
 enabled = {syslog_en}
 udp_addr = "{syslog_udp}"
@@ -217,6 +230,8 @@ udp_addr = "{snmp_udp}"
         otlp_addr = new_otlp_addr,
         nf_en = new_nf_enabled,
         nf_addr = new_nf_addr,
+        sf_en = new_sf_enabled,
+        sf_addr = new_sf_addr,
         syslog_en = new_syslog_enabled,
         syslog_udp = new_syslog_udp_addr,
         syslog_tcp = new_syslog_tcp_addr,
@@ -266,6 +281,10 @@ udp_addr = "{snmp_udp}"
         enabled: new_nf_enabled,
         udp_addr: new_nf_addr.clone(),
     });
+    let sflow_to_restart = patch.sflow.is_some().then(|| crate::config::SflowConfig {
+        enabled: new_sf_enabled,
+        udp_addr: new_sf_addr.clone(),
+    });
     let syslog_to_restart = (patch.syslog_udp.is_some() || patch.syslog_tcp.is_some()).then(|| {
         crate::config::SyslogConfig {
             enabled: new_syslog_enabled,
@@ -306,6 +325,12 @@ udp_addr = "{snmp_udp}"
             let bus2 = std::sync::Arc::clone(&bus);
             sup.spawn("netflow", new_nf_addr.clone(), move |sd| async move {
                 crate::streaming::netflow::run_netflow_receiver(c, bus2, sd).await
+            });
+        }
+        if let Some(c) = sflow_to_restart {
+            let bus2 = std::sync::Arc::clone(&bus);
+            sup.spawn("sflow", new_sf_addr.clone(), move |sd| async move {
+                crate::streaming::sflow::run_sflow_receiver(c, bus2, sd).await
             });
         }
         if let Some(c) = syslog_to_restart {

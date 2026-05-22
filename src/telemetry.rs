@@ -87,6 +87,29 @@ pub enum TelemetryEvent {
         bytes_per_sec: f64,
         packets_per_sec: f64,
     },
+    /// sFlow v5 sampled flow record — same AppFlow/CARRIES_FLOW graph path as NetflowRecord.
+    SflowRecord {
+        exporter_address: String,
+        src_address: String,
+        dst_address: String,
+        dst_port: i64,
+        protocol: String,
+        bytes_per_sec: f64,
+        packets_per_sec: f64,
+        sampling_rate: u32,
+    },
+    /// sFlow v5 counter sample — updates Interface node in/out octets + error counters.
+    SflowCounters {
+        exporter_address: String,
+        if_index: u32,
+        if_speed: u64,
+        in_octets: u64,
+        out_octets: u64,
+        in_errors: u32,
+        out_errors: u32,
+        in_discards: u32,
+        out_discards: u32,
+    },
     /// Coherent optical channel parameters (gNMI openconfig-terminal-device or SNMP DWDM MIB).
     OpticalChannel {
         channel_name: String,
@@ -446,6 +469,75 @@ impl TelemetryUpdate {
 
         if self.path == "streaming/bmp/route-monitoring" {
             return TelemetryEvent::BmpRouteMonitoring;
+        }
+
+        if self.path == "streaming/sflow/flow" {
+            let exporter_address = self
+                .value
+                .get("exporter_address")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&self.target)
+                .to_string();
+            let src_address = self
+                .value
+                .get("src_address")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let dst_address = self
+                .value
+                .get("dst_address")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let dst_port = self.value.get("dst_port").and_then(|v| v.as_i64()).unwrap_or(0);
+            let protocol = self
+                .value
+                .get("protocol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let bytes_per_sec = self.value.get("bytes_per_sec").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let packets_per_sec = self.value.get("packets_per_sec").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let sampling_rate = self.value.get("sampling_rate").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+            return TelemetryEvent::SflowRecord {
+                exporter_address,
+                src_address,
+                dst_address,
+                dst_port,
+                protocol,
+                bytes_per_sec,
+                packets_per_sec,
+                sampling_rate,
+            };
+        }
+
+        if self.path == "streaming/sflow/counters" {
+            let exporter_address = self
+                .value
+                .get("exporter_address")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&self.target)
+                .to_string();
+            let if_index = self.value.get("if_index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let if_speed = self.value.get("if_speed").and_then(|v| v.as_u64()).unwrap_or(0);
+            let in_octets = self.value.get("in_octets").and_then(|v| v.as_u64()).unwrap_or(0);
+            let out_octets = self.value.get("out_octets").and_then(|v| v.as_u64()).unwrap_or(0);
+            let in_errors = self.value.get("in_errors").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let out_errors = self.value.get("out_errors").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let in_discards = self.value.get("in_discards").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let out_discards = self.value.get("out_discards").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            return TelemetryEvent::SflowCounters {
+                exporter_address,
+                if_index,
+                if_speed,
+                in_octets,
+                out_octets,
+                in_errors,
+                out_errors,
+                in_discards,
+                out_discards,
+            };
         }
 
         if self.path == "streaming/bmp/initiation" {

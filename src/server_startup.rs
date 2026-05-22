@@ -657,6 +657,22 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         );
     }
 
+    {
+        let sflow_cfg = cfg.streaming.sflow.clone();
+        let sflow_bus = std::sync::Arc::clone(&bus);
+        spawn_or_register!(
+            "sflow",
+            cfg.streaming.sflow.udp_addr.clone(),
+            cfg.streaming.sflow.enabled,
+            run_collector,
+            |shutdown| async move {
+                bonsai::streaming::sflow::run_sflow_receiver(
+                    sflow_cfg, sflow_bus, shutdown,
+                ).await
+            }
+        );
+    }
+
     if cfg.archive.enabled && (run_collector || run_core) {
         let archive_root = std::path::PathBuf::from(&cfg.archive.path);
         let flush_interval = Duration::from_secs(cfg.archive.flush_interval_seconds);

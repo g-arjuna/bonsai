@@ -2,6 +2,7 @@ pub mod bgp_ls;
 pub mod bmp;
 pub mod netflow;
 pub mod otlp;
+pub mod sflow;
 
 use serde::{Deserialize, Serialize};
 
@@ -387,6 +388,7 @@ mod tests {
                 ..Default::default()
             },
             netflow: crate::config::NetflowConfig::default(),
+            sflow: crate::config::SflowConfig::default(),
             otlp: crate::config::OtlpConfig::default(),
             pcep: crate::config::PcepConfig::default(),
         };

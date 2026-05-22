@@ -1231,6 +1231,114 @@ pub(super) async fn graph_quality_handler(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
 }
 
+/// D4-5 T5: GET /api/flows/live
+/// Returns AppFlow nodes updated in the last 60 seconds, along with aggregate
+/// bytes_per_sec and packets_per_sec per exporter. Used by the UI liveliness indicator.
+#[derive(serde::Serialize)]
+pub struct LiveFlowSummary {
+    pub window_secs: u64,
+    pub total_flows: usize,
+    pub exporters: Vec<FlowExporterSummary>,
+    pub top_flows: Vec<LiveFlowEntry>,
+}
+
+#[derive(serde::Serialize)]
+pub struct FlowExporterSummary {
+    pub exporter_address: String,
+    pub flow_count: usize,
+    pub total_bytes_per_sec: f64,
+    pub total_packets_per_sec: f64,
+}
+
+#[derive(serde::Serialize)]
+pub struct LiveFlowEntry {
+    pub exporter_address: String,
+    pub src_address: String,
+    pub dst_address: String,
+    pub dst_port: i64,
+    pub protocol: String,
+    pub bytes_per_sec: f64,
+    pub packets_per_sec: f64,
+}
+
+pub(super) async fn flows_live_handler(
+    State(state): State<AppState>,
+) -> Result<Json<LiveFlowSummary>, (StatusCode, String)> {
+    let db = state.store.db();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        let window_secs: u64 = 60;
+        let cutoff_ns = now_ns() - (window_secs as i64 * 1_000_000_000);
+        let cutoff_val = crate::graph::common::ts(cutoff_ns);
+
+        let mut stmt = conn
+            .prepare(
+                "MATCH (f:AppFlow) \
+                 WHERE f.updated_at >= $cutoff \
+                 RETURN f.exporter_address, f.src_address, f.dst_address, \
+                        f.dst_port, f.protocol, f.bytes_per_sec, f.packets_per_sec \
+                 ORDER BY f.bytes_per_sec DESC \
+                 LIMIT 200",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let rows = conn
+            .execute(&mut stmt, vec![("cutoff", cutoff_val)])
+            .map_err(|e| e.to_string())?;
+
+        let mut flows: Vec<LiveFlowEntry> = Vec::new();
+        let mut exporter_map: std::collections::HashMap<String, (usize, f64, f64)> =
+            std::collections::HashMap::new();
+
+        for row in rows {
+            let exp  = read_str(&row[0]);
+            let src  = read_str(&row[1]);
+            let dst  = read_str(&row[2]);
+            let port = read_i64(&row[3]);
+            let proto = read_str(&row[4]);
+            let bps  = match &row[5] { lbug::Value::Double(v) => *v, _ => 0.0 };
+            let pps  = match &row[6] { lbug::Value::Double(v) => *v, _ => 0.0 };
+
+            let e = exporter_map.entry(exp.clone()).or_insert((0, 0.0, 0.0));
+            e.0 += 1;
+            e.1 += bps;
+            e.2 += pps;
+
+            flows.push(LiveFlowEntry {
+                exporter_address: exp,
+                src_address: src,
+                dst_address: dst,
+                dst_port: port,
+                protocol: proto,
+                bytes_per_sec: bps,
+                packets_per_sec: pps,
+            });
+        }
+
+        let total = flows.len();
+        let exporters: Vec<FlowExporterSummary> = exporter_map
+            .into_iter()
+            .map(|(addr, (cnt, bps, pps))| FlowExporterSummary {
+                exporter_address: addr,
+                flow_count: cnt,
+                total_bytes_per_sec: bps,
+                total_packets_per_sec: pps,
+            })
+            .collect();
+
+        Ok::<_, String>(LiveFlowSummary {
+            window_secs,
+            total_flows: total,
+            exporters,
+            top_flows: flows,
+        })
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
 pub(super) async fn explorer_query_handler(
     State(state): State<AppState>,
     Json(body): Json<ExplorerQueryBody>,

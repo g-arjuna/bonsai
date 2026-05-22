@@ -1151,6 +1151,11 @@ impl GraphStore {
         )
         .context("create LOC_PARENT_OF (Location→Location) rel")?;
 
+        // Migration: add if_index + discards to Interface for sFlow counter writes.
+        let _ = conn.query("ALTER TABLE Interface ADD if_index INT64 DEFAULT 0");
+        let _ = conn.query("ALTER TABLE Interface ADD in_discards INT64 DEFAULT 0");
+        let _ = conn.query("ALTER TABLE Interface ADD out_discards INT64 DEFAULT 0");
+
         // Migration: add full_address to Location for ServiceNow enrichment.
         let _ = conn.query("ALTER TABLE Location ADD full_address STRING DEFAULT ''");
         let _ = conn.query("ALTER TABLE Location ADD source_name STRING DEFAULT ''");
@@ -1399,6 +1404,54 @@ impl GraphStore {
                 PRIMARY KEY (id))",
         )
         .context("create ShunRule table")?;
+
+        // ── ComputeNode (D4-5 T3) ────────────────────────────────────────────
+        // Represents a server, VM, or container node discovered via sFlow
+        // counter samples or explicit provisioning (IPAM/CMDB enrichment).
+        // kind: "server" | "vm" | "container" | "bare_metal" | "unknown"
+        // source: "sflow" | "netbox" | "manual"
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS ComputeNode(\
+                id              STRING,\
+                ip              STRING,\
+                hostname        STRING,\
+                kind            STRING,\
+                os              STRING,\
+                vcpus           INT64,\
+                memory_mb       INT64,\
+                source          STRING,\
+                rack_id         STRING,\
+                site_id         STRING,\
+                updated_at      TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create ComputeNode table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS COMPUTE_CONNECTED_TO(\
+                FROM ComputeNode TO Interface, \
+                link_speed_mbps INT64, \
+                updated_at TIMESTAMP_NS)",
+        )
+        .context("create COMPUTE_CONNECTED_TO rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS CARRIES_COMPUTE(\
+                FROM Device TO ComputeNode, \
+                source  STRING, \
+                updated_at TIMESTAMP_NS)",
+        )
+        .context("create CARRIES_COMPUTE rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS FLOW_SRC_COMPUTE(FROM AppFlow TO ComputeNode)",
+        )
+        .context("create FLOW_SRC_COMPUTE rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS FLOW_DST_COMPUTE(FROM AppFlow TO ComputeNode)",
+        )
+        .context("create FLOW_DST_COMPUTE rel")?;
 
         info!("graph schema initialised");
         Ok(())
@@ -3356,6 +3409,51 @@ fn write_blocking(
             packets_per_sec,
             event_tx,
         ),
+        TelemetryEvent::SflowRecord {
+            exporter_address,
+            src_address,
+            dst_address,
+            dst_port,
+            protocol,
+            bytes_per_sec,
+            packets_per_sec,
+            sampling_rate,
+        } => write_sflow_record(
+            conn,
+            update,
+            &exporter_address,
+            &src_address,
+            &dst_address,
+            dst_port,
+            &protocol,
+            bytes_per_sec,
+            packets_per_sec,
+            sampling_rate,
+            event_tx,
+        ),
+        TelemetryEvent::SflowCounters {
+            exporter_address,
+            if_index,
+            if_speed,
+            in_octets,
+            out_octets,
+            in_errors,
+            out_errors,
+            in_discards,
+            out_discards,
+        } => write_sflow_counters(
+            conn,
+            update,
+            &exporter_address,
+            if_index,
+            if_speed,
+            in_octets,
+            out_octets,
+            in_errors,
+            out_errors,
+            in_discards,
+            out_discards,
+        ),
         TelemetryEvent::OpticalChannel { channel_name } => {
             write_optical_channel(conn, update, &channel_name)
         }
@@ -3758,6 +3856,145 @@ fn write_netflow_record(
         source_type: "netflow".to_string(),
     };
     let _ = event_tx.send(evt);
+    Ok(())
+}
+
+/// D4-5 T1: sFlow sampled flow record — same AppFlow/CARRIES_FLOW path as NetFlow.
+/// Sampling rate is recorded in the BonsaiEvent detail for downstream rate scaling.
+#[allow(clippy::too_many_arguments)]
+fn write_sflow_record(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    exporter_address: &str,
+    src_address: &str,
+    dst_address: &str,
+    dst_port: i64,
+    protocol: &str,
+    bytes_per_sec: f64,
+    packets_per_sec: f64,
+    sampling_rate: u32,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+) -> Result<()> {
+    let id = format!("{src_address}:{dst_address}:{dst_port}:{protocol}");
+    upsert_app_flow(
+        conn,
+        &id,
+        exporter_address,
+        src_address,
+        dst_address,
+        dst_port,
+        protocol,
+        bytes_per_sec,
+        packets_per_sec,
+        update.timestamp_ns,
+    )?;
+
+    let mut carries = conn
+        .prepare(
+            "MATCH (d:Device {address: $addr}), (f:AppFlow {id: $fid}) \
+             MERGE (d)-[:CARRIES_FLOW]->(f)",
+        )
+        .context("prepare CARRIES_FLOW merge (sflow)")?;
+    let _ = conn.execute(
+        &mut carries,
+        vec![
+            ("addr", Value::String(exporter_address.to_string())),
+            ("fid", Value::String(id.clone())),
+        ],
+    );
+
+    let mut src_host = conn
+        .prepare(
+            "MATCH (h:HostEndpoint {ip: $ip}), (f:AppFlow {id: $fid}) \
+             MERGE (f)-[:SRC_HOST]->(h)",
+        )
+        .context("prepare SRC_HOST merge (sflow)")?;
+    let _ = conn.execute(
+        &mut src_host,
+        vec![
+            ("ip", Value::String(src_address.to_string())),
+            ("fid", Value::String(id.clone())),
+        ],
+    );
+
+    let mut dst_host = conn
+        .prepare(
+            "MATCH (h:HostEndpoint {ip: $ip}), (f:AppFlow {id: $fid}) \
+             MERGE (f)-[:DST_HOST]->(h)",
+        )
+        .context("prepare DST_HOST merge (sflow)")?;
+    let _ = conn.execute(
+        &mut dst_host,
+        vec![
+            ("ip", Value::String(dst_address.to_string())),
+            ("fid", Value::String(id.clone())),
+        ],
+    );
+
+    let evt = BonsaiEvent {
+        device_address: exporter_address.to_string(),
+        event_type: "app_flow_event".to_string(),
+        detail_json: serde_json::json!({
+            "flow_id": id,
+            "exporter_address": exporter_address,
+            "src_address": src_address,
+            "dst_address": dst_address,
+            "dst_port": dst_port,
+            "protocol": protocol,
+            "bytes_per_sec": bytes_per_sec,
+            "packets_per_sec": packets_per_sec,
+            "sampling_rate": sampling_rate,
+        })
+        .to_string(),
+        occurred_at_ns: update.timestamp_ns,
+        state_change_event_id: String::new(),
+        source_type: "sflow".to_string(),
+    };
+    let _ = event_tx.send(evt);
+    Ok(())
+}
+
+/// D4-5 T1: sFlow counter sample — update Interface node counters by if_index lookup.
+/// Silently no-ops when no Interface with matching device+if_index exists.
+#[allow(clippy::too_many_arguments)]
+fn write_sflow_counters(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    exporter_address: &str,
+    if_index: u32,
+    _if_speed: u64,
+    in_octets: u64,
+    out_octets: u64,
+    in_errors: u32,
+    out_errors: u32,
+    in_discards: u32,
+    out_discards: u32,
+) -> Result<()> {
+    let now = ts(update.timestamp_ns);
+    let mut stmt = conn
+        .prepare(
+            "MATCH (i:Interface) \
+             WHERE i.device_address = $addr AND i.if_index = $idx \
+             SET i.in_octets = $in_oct, i.out_octets = $out_oct, \
+                 i.in_errors = $in_err, i.out_errors = $out_err, \
+                 i.in_discards = $in_dis, i.out_discards = $out_dis, \
+                 i.updated_at = $ts",
+        )
+        .context("prepare sflow counter update")?;
+    let _ = conn.execute(
+        &mut stmt,
+        vec![
+            ("addr", Value::String(exporter_address.to_string())),
+            ("idx", Value::Int64(if_index as i64)),
+            ("in_oct", Value::Int64(in_octets.min(i64::MAX as u64) as i64)),
+            ("out_oct", Value::Int64(out_octets.min(i64::MAX as u64) as i64)),
+            ("in_err", Value::Int64(in_errors as i64)),
+            ("out_err", Value::Int64(out_errors as i64)),
+            ("in_dis", Value::Int64(in_discards as i64)),
+            ("out_dis", Value::Int64(out_discards as i64)),
+            ("ts", now),
+        ],
+    );
     Ok(())
 }
 
