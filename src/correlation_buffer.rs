@@ -401,6 +401,14 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
                 .to_string();
             Some(("flow_exporter_silent".to_string(), exp))
         }
+        // D4-20 T4: Thermal sensor events — sub-keyed by component_name
+        "thermal_sensor_critical" | "thermal_sensor_warning" => {
+            let comp = detail.get("component_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Some((event_type.to_string(), comp))
+        }
         // Inherently single-source — do not buffer
         _ => None,
     }

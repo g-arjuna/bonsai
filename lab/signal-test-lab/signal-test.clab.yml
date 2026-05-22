@@ -165,6 +165,11 @@ topology:
       image: nicolaka/netshoot:latest
       mgmt-ipv4: 172.100.109.20
       memory: 256m
+      # D4-23 T1: bind startup script and run it — starts lldpd for S-45/S-46
+      binds:
+        - configs/linux-host1-startup.sh:/startup.sh:ro
+      exec:
+        - "sh /startup.sh"
       labels:
         bonsai.role: host
         bonsai.site: signal-test-lab

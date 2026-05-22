@@ -62,7 +62,7 @@ mod ha;
 mod shun;
 
 use mcp_routes::{openapi_json_handler, resolve_handler, schema_handler, swagger_ui_handler};
-use remediation::{approvals_approve_handler, approvals_create_handler, approvals_list_handler, approvals_reject_handler, approvals_rollback_handler, trust_list_handler, trust_graduate_handler, snow_integration_test_handler, servicenow_aiops_sync_handler, list_overrides, add_override, remove_override, list_investigations_handler, create_investigation_handler, get_investigation_handler, list_tool_calls_handler, complete_investigation_handler, grounded_incident_handler, webhook_change_event_handler, change_context_handler, servicenow_change_sync_handler, list_changes_handler, playbooks_catalog_handler, audit_log_handler, investigation_feedback_handler, investigation_accuracy_handler, vault_rekey_handler};
+use remediation::{approvals_approve_handler, approvals_create_handler, approvals_list_handler, approvals_reject_handler, approvals_rollback_handler, trust_list_handler, trust_graduate_handler, snow_integration_test_handler, servicenow_aiops_sync_handler, list_overrides, add_override, remove_override, list_investigations_handler, create_investigation_handler, get_investigation_handler, list_tool_calls_handler, complete_investigation_handler, grounded_incident_handler, webhook_change_event_handler, change_context_handler, servicenow_change_sync_handler, list_changes_handler, playbooks_catalog_handler, audit_log_handler, investigation_feedback_handler, investigation_accuracy_handler, vault_rekey_handler, remediation_verify_handler, list_config_items_handler, upsert_config_item_handler};
 use observability::{topology_handler, path_handler, blast_radius_handler, detections_handler, trace_handler, readiness_handler, operations_handler, test_status_handler, daily_check_handler, weekly_trend_handler, gnn_calibration_handler, gnn_score_handler, events_handler, events_history_handler, incidents_handler, graph_insights_handler, graph_quality_handler, flows_live_handler, explorer_query_handler, list_saved_queries_handler, create_saved_query_handler, delete_saved_query_handler, upsert_embeddings_handler, list_embeddings_handler, events_inject_handler, db_stats_handler, db_schema_handler, db_purge_handler, db_checkpoint_handler, db_export_handler, db_backup_handler, db_list_backups_handler};
 use device::{device_detail_handler, device_enrichment_handler, device_enrichment_conflicts_handler, device_cmdb_handler, device_config_history_handler, device_gnmi_readiness_handler, device_streaming_readiness_handler, device_recommendations_handler, yang_modules_handler, yang_search_handler, apply_device_selected_paths_handler, device_reparse_handler, profiles_handler, save_custom_profile_handler, enrichment_list_handler, enrichment_upsert_handler, enrichment_remove_handler, enrichment_test_handler, enrichment_run_handler, enrichment_audit_handler, netbox_import_handler};
 use device::InterfaceDetailJson;
@@ -962,6 +962,10 @@ fn remediation_routes() -> Router<AppState> {
         .route("/api/changes", get(list_changes_handler))
         .route("/api/changes/context/{device_address}", get(change_context_handler))
         .route("/api/integrations/servicenow/changes/sync", post(servicenow_change_sync_handler))
+        // D4-15 T3: Remediation outcome verification
+        .route("/api/remediations/{id}/verify", post(remediation_verify_handler))
+        // D4-7 T1: Config item CRUD
+        .route("/api/config-items", get(list_config_items_handler).post(upsert_config_item_handler))
 }
 
 fn adapter_and_schema_routes() -> Router<AppState> {

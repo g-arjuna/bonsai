@@ -462,6 +462,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         | "isis_adjacency_down" | "ospf_neighbor_down" => "critical",
                         "app_flow_high_utilization" | "flow_exporter_silent"
                         | "bgp_rib_prefix_spike" => "medium",
+                        "thermal_sensor_critical" => "critical",
+                        "thermal_sensor_warning" => "warning",
                         _ => "warning",
                     };
                     let source_types_json =
@@ -893,6 +895,18 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             Ok(_) => {}
             Err(error) => warn!(%error, "environment migration failed (non-fatal)"),
         }
+    }
+
+    // D4-7 T2: Boot-time YAML → ConfigItem migration (idempotent).
+    if let Some(Store::Core(ref core_store)) = store {
+        let store_clone = core_store.clone();
+        tokio::spawn(async move {
+            match store_clone.migrate_yaml_config("config").await {
+                Ok(n) if n > 0 => info!(count = n, "config YAML migration complete"),
+                Ok(_) => {}
+                Err(e) => warn!(error = %e, "config YAML migration failed (non-fatal)"),
+            }
+        });
     }
 
     // Wire the graph event channel into the collector manager so that

@@ -222,6 +222,19 @@ pub struct EnvironmentRecord {
     pub metadata_json: String,
 }
 
+/// D4-7 T1: Config item stored in the graph DB (replaces on-disk YAML config files).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigItemRecord {
+    pub id: String,
+    pub config_class: String,
+    pub vendor: String,
+    pub name: String,
+    pub version: String,
+    pub content_json: String,
+    pub enabled: bool,
+    pub created_by: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct EnvironmentWithCounts {
     pub id: String,
@@ -1468,6 +1481,23 @@ impl GraphStore {
         )
         .context("create FLOW_DST_COMPUTE rel")?;
 
+        // ── D4-7 T1: ConfigItem table (all YAML config classes, DB-backed) ──────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS ConfigItem(\
+                id             STRING,\
+                config_class   STRING,\
+                vendor         STRING,\
+                name           STRING,\
+                version        STRING,\
+                content_json   STRING,\
+                enabled        BOOLEAN,\
+                created_at     TIMESTAMP_NS,\
+                updated_at     TIMESTAMP_NS,\
+                created_by     STRING,\
+                PRIMARY KEY (id))",
+        )
+        .context("create ConfigItem table")?;
+
         info!("graph schema initialised");
         Ok(())
     }
@@ -2698,6 +2728,147 @@ impl GraphStore {
     // ── ShunRule CRUD (D4-2 T1) ───────────────────────────────────────────────
 
     /// Return all ShunRule nodes ordered by created_at descending.
+    /// D4-7 T1: List all ConfigItems optionally filtered by config_class.
+    pub async fn list_config_items(&self, config_class: Option<String>) -> Result<Vec<ConfigItemRecord>> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("config items connection")?;
+            let rows = match &config_class {
+                Some(cls) => {
+                    let mut stmt = conn.prepare(
+                        "MATCH (c:ConfigItem) WHERE c.config_class = $cls \
+                         RETURN c.id, c.config_class, c.vendor, c.name, c.version, \
+                                c.content_json, c.enabled, c.created_by",
+                    )?;
+                    conn.execute(&mut stmt, vec![("cls", Value::String(cls.clone()))])?
+                }
+                None => conn.query(
+                    "MATCH (c:ConfigItem) \
+                     RETURN c.id, c.config_class, c.vendor, c.name, c.version, \
+                            c.content_json, c.enabled, c.created_by",
+                )?,
+            };
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(ConfigItemRecord {
+                    id: read_str(&row[0]),
+                    config_class: read_str(&row[1]),
+                    vendor: read_str(&row[2]),
+                    name: read_str(&row[3]),
+                    version: read_str(&row[4]),
+                    content_json: read_str(&row[5]),
+                    enabled: match &row[6] { lbug::Value::Bool(b) => *b, _ => true },
+                    created_by: read_str(&row[7]),
+                });
+            }
+            Ok(out)
+        })
+        .await
+        .context("list_config_items task")?
+    }
+
+    /// D4-7 T1: Upsert a single ConfigItem (insert or update by id).
+    pub async fn upsert_config_item(&self, item: ConfigItemRecord) -> Result<()> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("upsert config item connection")?;
+            let now = ts(now_ns());
+            let mut stmt = conn.prepare(
+                "MERGE (c:ConfigItem {id: $id}) \
+                 ON CREATE SET c.config_class = $cls, c.vendor = $vendor, c.name = $name, \
+                   c.version = $ver, c.content_json = $content, c.enabled = $enabled, \
+                   c.created_by = $created_by, c.created_at = $ts, c.updated_at = $ts \
+                 ON MATCH SET c.content_json = $content, c.enabled = $enabled, \
+                   c.version = $ver, c.updated_at = $ts",
+            )?;
+            conn.execute(&mut stmt, vec![
+                ("id",         Value::String(item.id)),
+                ("cls",        Value::String(item.config_class)),
+                ("vendor",     Value::String(item.vendor)),
+                ("name",       Value::String(item.name)),
+                ("ver",        Value::String(item.version)),
+                ("content",    Value::String(item.content_json)),
+                ("enabled",    Value::Bool(item.enabled)),
+                ("created_by", Value::String(item.created_by)),
+                ("ts",         now),
+            ])?;
+            Ok(())
+        })
+        .await
+        .context("upsert_config_item task")?
+    }
+
+    /// D4-7 T2: Boot-time YAML migration.
+    /// Scans YAML config directories and upserts each file as a ConfigItem.
+    /// Idempotent: re-running does not duplicate entries (MERGE by id).
+    /// Called once at startup before serving requests.
+    pub async fn migrate_yaml_config(&self, config_base: &str) -> Result<usize> {
+        use std::fs;
+        use std::path::Path;
+
+        let dirs: &[(&str, &str)] = &[
+            ("syslog_pattern",     "syslog_patterns"),
+            ("snmp_oid_pattern",   "snmp_oid_patterns"),
+            ("gnmi_path_profile",  "path_profiles"),
+            ("synthesizer_rule",   "synthesizer_rules"),
+            ("vendor_state_mapping", "vendor_state_mapping"),
+            ("gnmi_known_issues",  "gnmi_known_issues"),
+        ];
+
+        let mut count = 0usize;
+        for (config_class, subdir) in dirs {
+            let dir_path = Path::new(config_base).join(subdir);
+            let Ok(entries) = fs::read_dir(&dir_path) else { continue };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("yaml") { continue; }
+                let Ok(raw) = fs::read_to_string(&path) else { continue };
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
+                let id = format!("{config_class}:{stem}");
+                // Wrap raw YAML as JSON string for storage
+                let content_json = serde_json::to_string(&raw).unwrap_or_default();
+                let item = ConfigItemRecord {
+                    id,
+                    config_class: config_class.to_string(),
+                    vendor: String::new(),
+                    name: stem,
+                    version: "1".to_string(),
+                    content_json,
+                    enabled: true,
+                    created_by: "boot_migration".to_string(),
+                };
+                self.upsert_config_item(item).await?;
+                count += 1;
+            }
+        }
+
+        // Also migrate playbooks
+        let playbook_dir = Path::new("playbooks").join("library");
+        if let Ok(entries) = fs::read_dir(&playbook_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("yaml") { continue; }
+                let Ok(raw) = fs::read_to_string(&path) else { continue };
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
+                let id = format!("playbook:{stem}");
+                let content_json = serde_json::to_string(&raw).unwrap_or_default();
+                let item = ConfigItemRecord {
+                    id,
+                    config_class: "playbook".to_string(),
+                    vendor: String::new(),
+                    name: stem,
+                    version: "1".to_string(),
+                    content_json,
+                    enabled: true,
+                    created_by: "boot_migration".to_string(),
+                };
+                self.upsert_config_item(item).await?;
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     pub async fn list_shun_rules(&self) -> Result<Vec<crate::shun::ShunRule>> {
         let db = Arc::clone(&self.db);
         tokio::task::spawn_blocking(move || {
@@ -3401,6 +3572,10 @@ fn write_blocking(
         TelemetryEvent::BmpInitiation => write_bmp_initiation(conn, update),
         TelemetryEvent::BmpStatisticsReport => write_bmp_statistics_report(conn, update, event_tx, corr_buf),
         TelemetryEvent::BgpLsState => write_bgp_ls_state(conn, update, event_tx, corr_buf),
+        TelemetryEvent::EnvSensor { component_name, sensor_type } =>
+            write_env_sensor(conn, update, &component_name, &sensor_type, event_tx, corr_buf),
+        TelemetryEvent::OpticsDiagnostics { if_name } =>
+            write_optics_diagnostics(conn, update, &if_name),
         TelemetryEvent::OtlpSpan {
             service_name,
             peer_address,
@@ -5978,6 +6153,187 @@ fn write_bmp_statistics_report(
             corr_buf,
         );
     }
+    Ok(())
+}
+
+/// D4-20 T3: Write environmental sensor reading to SensorReading node + REPORTED_BY(→Device).
+/// D4-20 T4: Fire thermal_sensor_critical or thermal_sensor_warning state change event
+///           when temperature exceeds 85°C (critical) or 75°C (warning) thresholds.
+fn write_env_sensor(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    component_name: &str,
+    sensor_type: &str,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
+) -> Result<()> {
+    use crate::telemetry::json_f64;
+    upsert_device(
+        conn,
+        &update.target,
+        &update.vendor,
+        &update.hostname,
+        &update.role,
+        &update.site,
+        ts(update.timestamp_ns),
+    )?;
+
+    let value_raw = &update.value;
+
+    let reading_value = if sensor_type == "fan" {
+        json_f64(value_raw, "fan-speed")
+    } else if sensor_type == "voltage" {
+        json_f64(value_raw, "voltage")
+    } else {
+        // temperature: pick best non-zero across multiple key names
+        let t1 = json_f64(value_raw, "temperature");
+        let t2 = json_f64(value_raw, "current-temperature");
+        let t3 = json_f64(value_raw, "temperature-input");
+        [t1, t2, t3].into_iter().find(|&v| v > 0.0).unwrap_or(0.0)
+    };
+
+    let unit = match sensor_type {
+        "temperature" => "celsius",
+        "voltage"     => "volt",
+        "fan"         => "rpm",
+        _             => "",
+    };
+
+    let sensor_id = format!("{}:{}:{}", update.target, component_name, sensor_type);
+    let now = ts(update.timestamp_ns);
+
+    let mut stmt = conn.prepare(
+        "MERGE (s:SensorReading {id: $id}) \
+         ON CREATE SET s.device_address = $dev, s.component_name = $comp, \
+           s.sensor_type = $stype, s.unit = $unit, \
+           s.threshold_warning = 75.0, s.threshold_critical = 85.0, \
+           s.value = $val, s.updated_at = $ts \
+         ON MATCH SET s.value = $val, s.updated_at = $ts",
+    )
+    .context("prepare SensorReading upsert")?;
+    conn.execute(&mut stmt, vec![
+        ("id",   Value::String(sensor_id.clone())),
+        ("dev",  Value::String(update.target.clone())),
+        ("comp", Value::String(component_name.to_string())),
+        ("stype",Value::String(sensor_type.to_string())),
+        ("unit", Value::String(unit.to_string())),
+        ("val",  Value::Double(reading_value)),
+        ("ts",   now.clone()),
+    ])
+    .context("execute SensorReading upsert")?;
+
+    // REPORTED_BY edge: SensorReading → Device
+    let mut edge_stmt = conn.prepare(
+        "MATCH (s:SensorReading {id: $id}), (d:Device {address: $dev}) \
+         MERGE (s)-[:REPORTED_BY]->(d)",
+    )
+    .context("prepare REPORTED_BY edge")?;
+    conn.execute(&mut edge_stmt, vec![
+        ("id",  Value::String(sensor_id.clone())),
+        ("dev", Value::String(update.target.clone())),
+    ])
+    .context("execute REPORTED_BY edge")?;
+
+    // D4-20 T4: Thermal detection rules
+    if sensor_type == "temperature" && reading_value > 0.0 {
+        const WARN_THRESHOLD: f64 = 75.0;
+        const CRIT_THRESHOLD: f64 = 85.0;
+        let (event_type, severity_label) = if reading_value >= CRIT_THRESHOLD {
+            ("thermal_sensor_critical", "critical")
+        } else if reading_value >= WARN_THRESHOLD {
+            ("thermal_sensor_warning", "warning")
+        } else {
+            return Ok(());
+        };
+        let detail = serde_json::json!({
+            "component_name": component_name,
+            "sensor_id": sensor_id,
+            "temperature_c": reading_value,
+            "threshold": if reading_value >= CRIT_THRESHOLD { CRIT_THRESHOLD } else { WARN_THRESHOLD },
+            "severity": severity_label,
+        })
+        .to_string();
+        let _ = write_state_change_event(
+            conn,
+            &update.target,
+            event_type,
+            &detail,
+            "gnmi",
+            ts(update.timestamp_ns),
+            update.timestamp_ns,
+            event_tx,
+            corr_buf,
+        );
+    }
+    Ok(())
+}
+
+/// D4-20 T3: Write optical transceiver diagnostics to OpticsTelemetry node + OPTICS_ON(→Interface).
+fn write_optics_diagnostics(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    if_name: &str,
+) -> Result<()> {
+    use crate::telemetry::json_f64;
+    upsert_device(
+        conn,
+        &update.target,
+        &update.vendor,
+        &update.hostname,
+        &update.role,
+        &update.site,
+        ts(update.timestamp_ns),
+    )?;
+
+    let v = &update.value;
+    let rx_power = json_f64(v, "rx-power")
+        .max(json_f64(v, "rx-optical-power"))
+        .max(json_f64(v, "receive-power"));
+    let tx_power = json_f64(v, "tx-power")
+        .max(json_f64(v, "transmit-power"))
+        .max(json_f64(v, "output-power"));
+    let temperature = json_f64(v, "temperature").max(json_f64(v, "laser-temp"));
+    let bias_current = json_f64(v, "bias-current").max(json_f64(v, "laser-bias-current"));
+    let wavelength = json_f64(v, "wavelength");
+
+    let optics_id = format!("{}:{}", update.target, if_name);
+    let now = ts(update.timestamp_ns);
+
+    let mut stmt = conn.prepare(
+        "MERGE (o:OpticsTelemetry {id: $id}) \
+         ON CREATE SET o.device_address = $dev, o.interface_name = $iface, \
+           o.rx_power_dbm = $rx, o.tx_power_dbm = $tx, o.temperature_c = $temp, \
+           o.bias_current_ma = $bias, o.wavelength_nm = $wave, o.updated_at = $ts \
+         ON MATCH SET o.rx_power_dbm = $rx, o.tx_power_dbm = $tx, o.temperature_c = $temp, \
+           o.bias_current_ma = $bias, o.wavelength_nm = $wave, o.updated_at = $ts",
+    )
+    .context("prepare OpticsTelemetry upsert")?;
+    conn.execute(&mut stmt, vec![
+        ("id",   Value::String(optics_id.clone())),
+        ("dev",  Value::String(update.target.clone())),
+        ("iface",Value::String(if_name.to_string())),
+        ("rx",   Value::Double(rx_power)),
+        ("tx",   Value::Double(tx_power)),
+        ("temp", Value::Double(temperature)),
+        ("bias", Value::Double(bias_current)),
+        ("wave", Value::Double(wavelength)),
+        ("ts",   now),
+    ])
+    .context("execute OpticsTelemetry upsert")?;
+
+    // OPTICS_ON edge: OpticsTelemetry → Interface
+    let iface_id = format!("{}:{}", update.target, if_name);
+    let mut edge_stmt = conn.prepare(
+        "MATCH (o:OpticsTelemetry {id: $oid}), (i:Interface {id: $iid}) \
+         MERGE (o)-[:OPTICS_ON]->(i)",
+    )
+    .context("prepare OPTICS_ON edge")?;
+    conn.execute(&mut edge_stmt, vec![
+        ("oid", Value::String(optics_id)),
+        ("iid", Value::String(iface_id)),
+    ])
+    .context("execute OPTICS_ON edge")?;
+
     Ok(())
 }
 

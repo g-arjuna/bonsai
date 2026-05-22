@@ -1333,3 +1333,78 @@ pub(super) async fn investigation_accuracy_handler(
         .map(Json)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
 }
+
+/// D4-15 T3: POST /api/remediations/{id}/verify
+/// Runs the `verify_graph` Cypher from the proposal's playbook step and returns
+/// {passed, details}. Surfaces in the Approvals UI as "Verified healed" / "Verification failed".
+#[derive(Serialize)]
+pub(super) struct VerifyResult {
+    passed: bool,
+    details: String,
+}
+
+pub(super) async fn remediation_verify_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<VerifyResult>, (StatusCode, String)> {
+    let proposal = find_proposal(&state, &id)
+        .await
+        .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+
+    // Extract verify_graph cypher from proposal steps
+    let cypher = serde_json::from_str::<Vec<serde_json::Value>>(&proposal.steps_json)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|step| step.get("action").and_then(|a| a.as_str()) == Some("verify_graph"))
+        .and_then(|step| step.get("cypher").and_then(|c| c.as_str()).map(str::to_string))
+        .unwrap_or_default();
+
+    if cypher.is_empty() {
+        return Ok(Json(VerifyResult {
+            passed: false,
+            details: "no verify_graph step found in playbook".to_string(),
+        }));
+    }
+
+    match verify_graph_state(&state, &cypher, 30).await {
+        Ok(()) => Ok(Json(VerifyResult {
+            passed: true,
+            details: "graph verification passed — fault condition resolved".to_string(),
+        })),
+        Err(msg) => Ok(Json(VerifyResult {
+            passed: false,
+            details: format!("verification failed — fault may still be active: {msg}"),
+        })),
+    }
+}
+
+/// D4-7 T1: GET /api/config-items[?class=<config_class>]
+#[derive(Deserialize)]
+pub(super) struct ConfigItemsParams {
+    class: Option<String>,
+}
+
+pub(super) async fn list_config_items_handler(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<ConfigItemsParams>,
+) -> Result<Json<Vec<crate::graph::ConfigItemRecord>>, (StatusCode, String)> {
+    state
+        .store
+        .list_config_items(params.class)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+}
+
+/// D4-7 T1: POST /api/config-items — upsert a single ConfigItem.
+pub(super) async fn upsert_config_item_handler(
+    State(state): State<AppState>,
+    Json(item): Json<crate::graph::ConfigItemRecord>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    state
+        .store
+        .upsert_config_item(item)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+}

@@ -76,6 +76,15 @@ pub enum TelemetryEvent {
     /// D4-11 T2: BMP STATISTICS_REPORT — update BgpSession stats counters.
     BmpStatisticsReport,
     BgpLsState,
+    /// D4-20 T3: Environmental sensor reading — temperature, voltage, power, fan speed.
+    EnvSensor {
+        component_name: String,
+        sensor_type: String,
+    },
+    /// D4-20 T3: Optical transceiver diagnostics — Rx/Tx power, temperature, bias.
+    OpticsDiagnostics {
+        if_name: String,
+    },
     OtlpSpan {
         service_name: String,
         peer_address: String,
@@ -591,6 +600,55 @@ impl TelemetryUpdate {
 
         if self.path.starts_with("streaming/bgp-ls/") {
             return TelemetryEvent::BgpLsState;
+        }
+
+        // ── D4-20 T3: Environmental sensors (SRL chassis/component temp, XR envmon, OC platform) ──
+        // SRL: platform/chassis/environment/temperature or platform/component[name=X]/temperature
+        // XR:  Cisco-IOS-XR-envmon-oper:environment-monitoring/...
+        // OC:  components/component[name=X]/state or components/component[name=X]/properties
+        if (self.path.contains("platform/chassis/environment")
+            || self.path.contains("platform/component")
+            || self.path.contains("environment-monitoring")
+            || (self.path.starts_with("components/component")
+                && (self.path.ends_with("/state") || self.path.ends_with(']'))))
+            && (json_find(&self.value, "temperature").is_some()
+                || json_find(&self.value, "current-temperature").is_some()
+                || json_find(&self.value, "temperature-input").is_some()
+                || json_find(&self.value, "voltage").is_some()
+                || json_find(&self.value, "fan-speed").is_some())
+        {
+            let component_name = extract_bracketed(&self.path, "component[name=")
+                .or_else(|| extract_bracketed(&self.path, "component["))
+                .unwrap_or_else(|| "chassis".to_string());
+            let sensor_type = if json_find(&self.value, "fan-speed").is_some() {
+                "fan"
+            } else if json_find(&self.value, "voltage").is_some() {
+                "voltage"
+            } else {
+                "temperature"
+            };
+            return TelemetryEvent::EnvSensor {
+                component_name,
+                sensor_type: sensor_type.to_string(),
+            };
+        }
+
+        // ── D4-20 T3: Optics diagnostics (SRL transceiver, XR optics-oper, OC transceiver) ──
+        // SRL: interface[name=X]/transceiver
+        // XR:  optics-oper/optics-ports/optics-port[name=X]
+        // OC:  components/component/transceiver
+        if (self.path.contains("/transceiver")
+            || self.path.contains("optics-ports/optics-port"))
+            && (json_find(&self.value, "rx-power").is_some()
+                || json_find(&self.value, "rx-optical-power").is_some()
+                || json_find(&self.value, "receive-power").is_some()
+                || json_find(&self.value, "tx-power").is_some())
+        {
+            let if_name = extract_bracketed(&self.path, "interface[name=")
+                .or_else(|| extract_bracketed(&self.path, "optics-port[name="))
+                .or_else(|| extract_bracketed(&self.path, "component[name="))
+                .unwrap_or_default();
+            return TelemetryEvent::OpticsDiagnostics { if_name };
         }
 
         TelemetryEvent::Ignored
