@@ -421,6 +421,10 @@ impl GraphStore {
         // ALTER TABLE ADD is idempotent in lbug (ignored if column already exists).
         let _ = conn.query("ALTER TABLE Device ADD role STRING DEFAULT ''");
         let _ = conn.query("ALTER TABLE Device ADD site STRING DEFAULT ''");
+        // D4-11 T4: BMP Initiation TLV identity columns
+        let _ = conn.query("ALTER TABLE Device ADD bmp_sys_name STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE Device ADD bmp_sys_descr STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE Device ADD bmp_admin_string STRING DEFAULT ''");
 
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS Site(\
@@ -1270,6 +1274,50 @@ impl GraphStore {
             "CREATE REL TABLE IF NOT EXISTS RACK_POWERED_BY(FROM Rack TO PowerUnit)",
         )
         .context("create RACK_POWERED_BY rel")?;
+
+        // ── Environmental telemetry (D4-20 T1) ────────────────────────────────
+        // SensorReading: temperature, voltage, power, current, fan speed from
+        // gNMI platform/chassis paths or SNMP environmental MIBs.
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS SensorReading(\
+                id                  STRING,\
+                device_address      STRING,\
+                component_name      STRING,\
+                sensor_type         STRING,\
+                value               DOUBLE,\
+                unit                STRING,\
+                threshold_warning   DOUBLE,\
+                threshold_critical  DOUBLE,\
+                updated_at          TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create SensorReading table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS REPORTED_BY(FROM SensorReading TO Device)",
+        )
+        .context("create REPORTED_BY rel")?;
+
+        // OpticsTelemetry: per-interface Rx/Tx power, temperature, bias for
+        // pluggable transceivers (SFP/QSFP). Distinct from OpticalChannel which
+        // models coherent DWDM channels on line-cards.
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS OpticsTelemetry(\
+                id              STRING,\
+                device_address  STRING,\
+                interface_name  STRING,\
+                rx_power_dbm    DOUBLE,\
+                tx_power_dbm    DOUBLE,\
+                wavelength_nm   DOUBLE,\
+                temperature_c   DOUBLE,\
+                bias_current_ma DOUBLE,\
+                updated_at      TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create OpticsTelemetry table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS OPTICS_ON(FROM OpticsTelemetry TO Interface)",
+        )
+        .context("create OPTICS_ON rel")?;
 
         // ── Change Management (ServiceNow CHG / AAP / manual) ────────────────
         // ChangeRequest represents a planned or in-progress change ticket.
@@ -3282,6 +3330,7 @@ fn write_blocking(
         }
         TelemetryEvent::BmpPeerState => write_bmp_peer_state(conn, update, event_tx, corr_buf),
         TelemetryEvent::BmpRouteMonitoring => write_bmp_route_monitoring(conn, update, event_tx, corr_buf),
+        TelemetryEvent::BmpInitiation => write_bmp_initiation(conn, update),
         TelemetryEvent::BgpLsState => write_bgp_ls_state(conn, update, event_tx, corr_buf),
         TelemetryEvent::OtlpSpan {
             service_name,
@@ -5356,6 +5405,50 @@ fn write_bmp_route_monitoring(
         event_tx,
         corr_buf,
     )?;
+    Ok(())
+}
+
+/// D4-11 T4: Write BMP Initiation TLVs (sysDescr, sysName) to Device node.
+/// Critical for FRR nodes which have BMP only and no gNMI — this is their
+/// only source of system identity.
+fn write_bmp_initiation(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+) -> Result<()> {
+    let event: BmpEvent =
+        serde_json::from_value(update.value.clone()).context("parse BMP initiation event")?;
+    upsert_device(
+        conn,
+        &update.target,
+        &update.vendor,
+        &update.hostname,
+        &update.role,
+        &update.site,
+        ts(update.timestamp_ns),
+    )?;
+    // Write BMP identity properties onto Device node
+    let sys_name = event.sys_name.unwrap_or_default();
+    let sys_descr = event.sys_descr.unwrap_or_default();
+    let admin_string = event.init_admin_string.unwrap_or_default();
+    if !sys_name.is_empty() || !sys_descr.is_empty() {
+        let mut stmt = conn.prepare(
+            "MATCH (d:Device {address: $addr}) \
+             SET d.bmp_sys_name = $sys_name, \
+                 d.bmp_sys_descr = $sys_descr, \
+                 d.bmp_admin_string = $admin, \
+                 d.updated_at = $ts",
+        ).context("prepare BMP initiation Device update")?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("addr", Value::String(update.target.clone())),
+                ("sys_name", Value::String(sys_name)),
+                ("sys_descr", Value::String(sys_descr)),
+                ("admin", Value::String(admin_string)),
+                ("ts", ts(update.timestamp_ns)),
+            ],
+        ).context("execute BMP initiation Device update")?;
+    }
     Ok(())
 }
 

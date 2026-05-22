@@ -68,6 +68,11 @@ facts:
     regex: "(?i)(?P<process_name>[A-Za-z0-9._-]+).*(?:restart(?:ed|ing)?|crash(?:ed)?|core|panic|respawn(?:ed)?)"
     field_schema:
       process_name: string
+  - fact_type: process_restart
+    category: software
+    regex: '(?i)(?P<process_name>bgpd|zebrad?|ospfd|isisd|staticd|bfdd|pimd|ldpd|eigrpd|fabricd):?\s+(?:starting|start|version)'
+    field_schema:
+      process_name: string
   - fact_type: config_change_detail
     category: auth
     regex: "(?i)(?:user|operator) (?P<username>[A-Za-z0-9._@-]+).*(?:write|saved|applied).*(?:configuration|config|memory)"
@@ -78,3 +83,23 @@ facts:
     regex: "(?i)bgpd.*User (?P<username>[A-Za-z0-9._@-]+).*(?:reset|cleared|shutdown).*(?:BGP|session|peer)"
     field_schema:
       username: string
+  - fact_type: config_change_detail
+    category: config
+    regex: '(?i)(?P<process_name>bgpd|zebrad?|ospfd|isisd)(?:\[\d+\])?:?\s+(?:Configuration changed|Loaded configuration)'
+    field_schema:
+      process_name: string
+  - fact_type: config_change_detail
+    category: config
+    regex: '(?i)(?P<process_name>zebrad?|staticd)(?:\[\d+\])?:?\s+route.map changed'
+    field_schema:
+      process_name: string
+  - fact_type: config_caused_bgp_down
+    category: protocol
+    regex: '(?i)%?BGP-[35]-ADJCHANGE.*neighbor (?P<peer_address>\d{1,3}(?:\.\d{1,3}){3})\s+(?:Down|down)\s+User reset'
+    field_schema:
+      peer_address: string
+  - fact_type: config_caused_bgp_down
+    category: protocol
+    regex: '(?i)bgpd.*neighbor (?P<peer_address>\d{1,3}(?:\.\d{1,3}){3}).*Down.*User reset'
+    field_schema:
+      peer_address: string

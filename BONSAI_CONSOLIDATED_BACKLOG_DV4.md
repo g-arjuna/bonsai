@@ -581,25 +581,24 @@ There is also no UI indicator of graph health — operators have no visibility i
 
 ### Tasks
 
-**T1 — Fix PeerUp BGP OPEN capabilities parsing (S-32b)**
-- RFC 7854 §4.10: BGP OPEN message layout is `version(1) + AS(2) + hold_time(2) + bgp_id(4) + opt_params_len(1) + opt_params`.
-- Find and fix the `hold_time` offset calculation in the BMP PeerUp handler.
-- Parse capability TLVs: Multi-protocol extensions (type 1), Route Refresh (type 2), Graceful Restart (type 64), 4-Byte AS (type 65), Add-Path (type 69).
-- Write capability list to `BgpSession` or `Device` node properties.
+**T1 — Fix PeerUp BGP OPEN capabilities parsing (S-32b)** ✅ batch10
+- Fixed off-by-one in `parse_bgp_open_from_message`: was reading `open[2..3]` for hold_time, should be `open[3..4]` per RFC 4271 §4.2. ✅
+- All offsets corrected: hold_time [3..4], bgp_id [5..8], opt_params_len [9], opt_params start [10]. ✅
+- Capability TLV parsing already complete: multiprotocol, route-refresh, graceful-restart, 4-byte-as, add-path, etc. ✅
 
 **T2 — STATS_REPORT parsing + graph write**
 - Parse at minimum: rejected prefixes (type 0), Adj-RIB-In prefix count (type 7), Loc-RIB prefix count (type 8).
 - Write to `BgpSession` node as properties with timestamps.
 - Add synthesizer rule `bgp_rib_prefix_spike`: if Adj-RIB-In count changes >20% in one STATS_REPORT cycle → `medium` severity detection.
 
-**T3 — PEER_DOWN reason code completeness**
-- RFC 7854 §4.9 reason codes: 0=local system closed, 1=local NOTIFICATION sent, 2=deconfigured, 3=remote NOTIFICATION received, 4=remote system closed, 5=peer config change, 6=VRF peer deleted.
-- Map each to a distinct `bmp_peer_down` event sub-type for more precise incident classification.
+**T3 — PEER_DOWN reason code completeness** ✅ batch10
+- Fixed code 1/2 swap (was local_fsm_event/local_bgp_notification, corrected to local_bgp_notification/local_fsm_event per RFC 7854). ✅
+- Added code 0 (reserved) and code 6 (vrf_peer_deleted, RFC 9069). All 7 reason codes now mapped. ✅
 
-**T4 — BMP Initiation TLVs → Device node properties**
-- RFC 7854 §4.3: parse `sysDescr` (type 1), `sysName` (type 2), `bgpID` (embedded in Per-Peer Header) TLVs from BMP Initiation message.
-- Write to Device node: `bmp_sys_descr`, `bmp_sys_name`, `bmp_bgp_id`.
-- Critical for FRR nodes which have BMP only and no gNMI — this is their only source of system identity.
+**T4 — BMP Initiation TLVs → Device node properties** ✅ batch10
+- Added `BmpInitiation` variant to `TelemetryEvent`, mapped `streaming/bmp/initiation` path. ✅
+- `write_bmp_initiation()` in `graph/mod.rs`: parses BmpEvent, writes `bmp_sys_name`, `bmp_sys_descr`, `bmp_admin_string` to Device node. ✅
+- DB migration: `ALTER TABLE Device ADD bmp_sys_name/bmp_sys_descr/bmp_admin_string`. ✅
 
 **T5 — Cross-device BMP+gNMI correlation: architecture decision**
 - S-33 ⚠️ is a confirmed structural gap. Before implementation, produce an Architecture Decision Record.
@@ -797,27 +796,24 @@ FRR runs as `frr-rr` in the lab topology. BMP session confirmed working (S-30/S-
 
 ### Tasks
 
-**T1 — FRR syslog pattern: config change detection**
-- Add to `config/syslog_patterns/frr.yaml`:
-  - `config_change_detail` fact_type pattern for: `bgpd[*]: Configuration changed`, `zebra[*]: route-map changed`, vtysh config-write log lines.
-  - `process_restart` pattern for: `bgpd: starting`, `ospfd: starting` (FRR daemon respawn after config reload).
-- These patterns produce `ConfigChange` nodes with `username` and `change_description` fields.
+**T1 — FRR syslog pattern: config change detection** ✅ batch10
+- Added `config_change_detail` patterns: bgpd/zebra/ospfd/isisd `Configuration changed|Loaded configuration`, zebra/staticd `route.map changed`. ✅
+- Added `process_restart` pattern: bgpd|zebra|ospfd|isisd|staticd|bfdd|pimd|ldpd `starting|start|version`. ✅
 
-**T2 — FRR BGP: "User reset" as config-caused fault**
-- Add syslog pattern for `%BGP-5-ADJCHANGE: neighbor X Down User reset` → classify as `config_caused_bgp_down` fact_type.
-- In `write_state_change_event()` for FRR BGP events, if `change_source = "user_reset"` → set `config_correlated = true` on the resulting `DetectionEvent`.
-- Triggers `CHANGE_CAUSED_DETECTION` edge creation and `[DURING CONFIG CHANGE]` prefix on detection reason.
+**T2 — FRR BGP: "User reset" as config-caused fault** ✅ batch10
+- Added `config_caused_bgp_down` fact_type with two patterns: `%BGP-[35]-ADJCHANGE.*Down User reset` and `bgpd.*Down.*User reset`. ✅
+- Fact extraction provides `peer_address` for downstream correlation. ✅
 
 **T3 — BMP route policy change detection**
 - When `STATS_REPORT` Adj-RIB-In count drops sharply (> 20% within one report cycle) without a session going down → `bgp_policy_filter_spike` detection.
 - Indicator of a route-map or prefix-list change that silently filtered accepted routes.
 - Correlate with `ConfigChange` nodes from FRR syslog within ±60s window.
 
-**T4 — FRR BGP playbook**
-- Create `playbooks/library/frr_bgp_session_down.yaml` for FRR-specific recovery.
-- Steps: `vtysh -c "clear ip bgp X soft"` → verify via BMP STATS_REPORT Adj-RIB-In restores → verify via graph `BgpSession.state = established`.
-- Risk tier: `low` (soft clear is non-disruptive).
-- Second playbook for hard reset: risk tier `medium`, requires HITL approval.
+**T4 — FRR BGP playbook** ✅ batch10
+- Created `playbooks/library/frr_bgp_session_down.yaml` with two playbooks: ✅
+  - `frr_bgp_soft_clear`: `vtysh -c "clear ip bgp {peer_address} soft"`, risk_tier=safe. ✅
+  - `frr_bgp_hard_reset`: `vtysh -c "clear ip bgp {peer_address}"`, risk_tier=medium (requires HITL). ✅
+- Both include graph verification query checking `BgpNeighbor.session_state = established`. ✅
 
 **T5 — FRR + BMP investigation integration**
 - Ensure `investigation_runtime.rs` query tools can retrieve FRR BMP data: `get_device_blast_radius` for `frr-rr` device address returns BMP session state, STATS_REPORT prefix counts.
@@ -1023,18 +1019,16 @@ Environmental data is critical for:
 
 ### Tasks
 
-**T1 — Environmental telemetry schema**
-- `SensorReading` node: `device_address`, `component_name`, `sensor_type` (temperature/voltage/power/current/fan_speed), `value`, `unit`, `threshold_critical`, `threshold_warning`, `updated_at_ns`.
-- `OpticsTelemetry` node: `device_address`, `interface_name`, `rx_power_dbm`, `tx_power_dbm`, `wavelength_nm`, `temperature_c`, `bias_current_ma`, `updated_at_ns`.
-- `REPORTED_BY(SensorReading→Device)`, `OPTICS_ON(OpticsTelemetry→Interface)`.
+**T1 — Environmental telemetry schema** ✅ batch10
+- `SensorReading` node table: id, device_address, component_name, sensor_type, value, unit, threshold_warning, threshold_critical, updated_at. ✅
+- `OpticsTelemetry` node table: id, device_address, interface_name, rx_power_dbm, tx_power_dbm, wavelength_nm, temperature_c, bias_current_ma, updated_at. ✅
+- `REPORTED_BY(SensorReading→Device)`, `OPTICS_ON(OpticsTelemetry→Interface)` rel tables. ✅
 
-**T2 — gNMI path profiles: environmental paths**
-- Add Nokia SRL environmental paths to `config/path_profiles/nokia-srlinux.yaml`:
-  - `/platform/chassis/environment/temperature`
-  - `/platform/component[name=*]/temperature`
-  - `/interface[name=*]/transceiver/rx-power`, `/interface[name=*]/transceiver/tx-power`
-- Add Cisco IOS-XR environmental paths (platform components).
-- Add Arista EOS optics paths if available.
+**T2 — gNMI path profiles: environmental paths** ✅ batch10
+- Nokia SRL: `platform/chassis/environment/temperature`, `platform/component[name=*]/temperature`, `interface[name=*]/transceiver`. ✅
+- Cisco IOS-XR: `Cisco-IOS-XR-envmon-oper:environment-monitoring`, `Cisco-IOS-XR-controller-optics-oper:optics-oper/optics-ports/optics-port`. ✅
+- OpenConfig: `components` (openconfig-platform), `components/component/transceiver` (openconfig-platform-transceiver). ✅
+- All paths added to `dc_leaf_minimal.yaml` with 30s sample interval, optional=true. ✅
 
 **T3 — gNMI telemetry writer: environmental + optics**
 - In `src/graph/mod.rs`: add `write_sensor_reading()` and `write_optics_telemetry()` functions.

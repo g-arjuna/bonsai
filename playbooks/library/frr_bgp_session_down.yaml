@@ -1,0 +1,75 @@
+detection_rule_id: bgp_session_down
+description: |
+  FRR-specific BGP session recovery playbooks. FRR has no gNMI, so
+  remediation uses vtysh CLI commands via SSH. Soft clear is non-disruptive;
+  hard reset tears down and re-establishes the session.
+
+playbooks:
+  - name: frr_bgp_soft_clear
+    vendor: frr
+    operation: BGP soft clear (inbound/outbound policy refresh)
+    description: |
+      Perform a soft clear of a BGP neighbor on FRR. This re-sends and
+      re-evaluates route policies without tearing down the TCP session.
+      Appropriate when the session is down due to a policy change or
+      "User reset" event.
+    risk_tier: safe
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.peer_address != ""
+    steps:
+      - cli_ssh:
+          command: 'vtysh -c "clear ip bgp {peer_address} soft"'
+          timeout_seconds: 10
+    verification:
+      wait_seconds: 30
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:PEERS_WITH]->(n:BgpNeighbor {peer_address: $peer_address})
+        WHERE n.session_state = "established"
+        RETURN count(n) > 0
+    rollback_steps: []
+    source_doc:
+      url: "https://docs.frrouting.org/en/latest/bgp.html"
+      excerpt_summary: |
+        FRR documents 'clear ip bgp <peer> soft' as a non-disruptive BGP
+        policy refresh. The session is not torn down; only route
+        advertisements are re-evaluated against current policy.
+    notes: |
+      Soft clear is the least-invasive FRR BGP remediation. It does not
+      reset the TCP session or BGP state machine. Suitable for policy-caused
+      faults (route-map change, prefix-list update, User reset events).
+
+  - name: frr_bgp_hard_reset
+    vendor: frr
+    operation: BGP session hard reset
+    description: |
+      Perform a hard reset of a BGP neighbor on FRR. This tears down
+      the TCP session and forces full re-establishment. Use only when
+      soft clear is insufficient.
+    risk_tier: medium
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.peer_address != ""
+    steps:
+      - cli_ssh:
+          command: 'vtysh -c "clear ip bgp {peer_address}"'
+          timeout_seconds: 10
+    verification:
+      wait_seconds: 60
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:PEERS_WITH]->(n:BgpNeighbor {peer_address: $peer_address})
+        WHERE n.session_state = "established"
+        RETURN count(n) > 0
+    rollback_steps: []
+    source_doc:
+      url: "https://docs.frrouting.org/en/latest/bgp.html"
+      excerpt_summary: |
+        FRR documents 'clear ip bgp <peer>' as a hard BGP session reset.
+        The TCP connection is closed and the BGP FSM transitions to Idle
+        before re-establishing.
+    notes: |
+      Hard reset requires HITL approval (risk_tier: medium). This tears
+      down the BGP session entirely. Traffic on prefixes learned from this
+      peer will be temporarily unreachable until reconvergence completes.

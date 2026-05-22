@@ -72,6 +72,7 @@ pub enum TelemetryEvent {
     },
     BmpPeerState,
     BmpRouteMonitoring,
+    BmpInitiation,
     BgpLsState,
     OtlpSpan {
         service_name: String,
@@ -445,6 +446,10 @@ impl TelemetryUpdate {
 
         if self.path == "streaming/bmp/route-monitoring" {
             return TelemetryEvent::BmpRouteMonitoring;
+        }
+
+        if self.path == "streaming/bmp/initiation" {
+            return TelemetryEvent::BmpInitiation;
         }
 
         if self.path.starts_with("streaming/bgp-ls/") {

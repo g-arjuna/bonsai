@@ -356,12 +356,15 @@ fn parse_peer_down_reason(body: &[u8]) -> (u8, String) {
         return (0, "unknown".to_string());
     }
     let reason = body[0];
+    // RFC 7854 §4.9 reason codes + RFC 9069 code 6
     let name = match reason {
-        1 => "local_fsm_event",
-        2 => "local_bgp_notification",
+        0 => "reserved",
+        1 => "local_bgp_notification",
+        2 => "local_fsm_event",
         3 => "remote_bgp_notification",
         4 => "remote_close_no_data",
         5 => "peer_de_configured",
+        6 => "vrf_peer_deleted",
         _ => "unknown",
     };
     (reason, name.to_string())
@@ -612,15 +615,16 @@ fn parse_bgp_open_from_message(data: &[u8]) -> Option<(ParsedBgpOpen, &[u8])> {
         return None;
     }
     let open = &data[BGP_HEADER_LEN..msg_len];
-    // OPEN: version(1) + AS(2) + hold_time(2) + bgp_id(4) + opt_params_len(1)
+    // RFC 4271 §4.2: version(1) + my_as(2) + hold_time(2) + bgp_id(4) + opt_params_len(1)
+    // Offsets:        [0]          [1..2]       [3..4]        [5..8]       [9]
     if open.len() < 10 {
         return None;
     }
-    let hold_time = u16::from_be_bytes([open[2], open[3]]);
-    let bgp_id = Ipv4Addr::new(open[4], open[5], open[6], open[7]).to_string();
-    let opt_params_len = open[8] as usize;
-    let opt_params = if open.len() >= 9 + opt_params_len {
-        &open[9..9 + opt_params_len]
+    let hold_time = u16::from_be_bytes([open[3], open[4]]);
+    let bgp_id = Ipv4Addr::new(open[5], open[6], open[7], open[8]).to_string();
+    let opt_params_len = open[9] as usize;
+    let opt_params = if open.len() >= 10 + opt_params_len {
+        &open[10..10 + opt_params_len]
     } else {
         &[]
     };
@@ -672,6 +676,7 @@ fn capability_name(code: u8) -> String {
         2 => "route-refresh".to_string(),
         5 => "extended-next-hop".to_string(),
         6 => "extended-message".to_string(),
+        64 => "graceful-restart".to_string(),
         65 => "4-byte-as".to_string(),
         69 => "add-path".to_string(),
         70 => "enhanced-route-refresh".to_string(),

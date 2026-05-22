@@ -79,3 +79,58 @@ paths:
     mode: ON_CHANGE
     required_models: ["openconfig-lldp"]
     rationale: "OpenConfig LLDP topology evidence."
+  # ── Environmental telemetry (D4-20 T2) ──────────────────────────────────
+  - path: "platform/chassis/environment/temperature"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 30000000000
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    optional: true
+    rationale: "SR Linux chassis temperature sensors."
+  - path: "platform/component[name=*]/temperature"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 30000000000
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    optional: true
+    rationale: "SR Linux per-component temperature (line-cards, fans, PSUs)."
+  - path: "interface[name=*]/transceiver"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 30000000000
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    optional: true
+    rationale: "SR Linux transceiver Rx/Tx power, temperature, bias per interface."
+  - path: "Cisco-IOS-XR-envmon-oper:environment-monitoring"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 30000000000
+    required_any_models: ["Cisco-IOS-XR-envmon-oper"]
+    vendor_only: ["cisco_xrd"]
+    optional: true
+    rationale: "IOS-XR environmental monitoring: temperature, voltage, fan, PSU."
+  - path: "Cisco-IOS-XR-controller-optics-oper:optics-oper/optics-ports/optics-port"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 30000000000
+    required_any_models: ["Cisco-IOS-XR-controller-optics-oper"]
+    vendor_only: ["cisco_xrd"]
+    optional: true
+    rationale: "IOS-XR optics Rx/Tx power, temperature per interface."
+  - path: "components"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 30000000000
+    required_models: ["openconfig-platform"]
+    optional: true
+    rationale: "OpenConfig platform components — temperature, PSU, fan state."
+  - path: "components/component/transceiver"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 30000000000
+    required_models: ["openconfig-platform-transceiver"]
+    optional: true
+    rationale: "OpenConfig transceiver diagnostics — Rx/Tx power, temperature, bias."
