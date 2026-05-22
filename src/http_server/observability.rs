@@ -3,8 +3,9 @@ use std::convert::Infallible;
 use std::time::{SystemTime, UNIX_EPOCH};
 use axum::{
     Json, extract::{Path, Query, State}, http::StatusCode,
-    response::sse::{Event, KeepAlive, Sse},
+    response::{IntoResponse, sse::{Event, KeepAlive, Sse}},
 };
+use serde::Deserialize;
 use futures::stream::{Stream, StreamExt};
 use lbug::Connection;
 use serde_json;
@@ -1644,6 +1645,235 @@ pub(super) async fn db_schema_handler(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .map(Json)
+}
+
+// ── D4-13 T3: Safe data management operations ─────────────────────────────
+
+#[derive(Deserialize)]
+pub(super) struct PurgeParams {
+    node_type: String,
+    older_than_days: u64,
+}
+
+pub(super) async fn db_purge_handler(
+    State(state): State<AppState>,
+    Query(params): Query<PurgeParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let allowed = [
+        "DetectionEvent", "AppFlow", "AgentToolCall", "InvestigationFeedback",
+        "GnnScore", "StateChangeEvent",
+    ];
+    if !allowed.contains(&params.node_type.as_str()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("Purge not allowed for '{}'. Allowed: {:?}", params.node_type, allowed),
+        ));
+    }
+
+    let ts_col = match params.node_type.as_str() {
+        "DetectionEvent" => "fired_at",
+        "AppFlow" => "updated_at",
+        "AgentToolCall" => "called_at",
+        "InvestigationFeedback" => "created_at",
+        "GnnScore" => "scored_at",
+        "StateChangeEvent" => "occurred_at",
+        _ => return Err((StatusCode::BAD_REQUEST, "Unknown timestamp column".into())),
+    };
+
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as i64;
+    let cutoff_ns = now_ns - (params.older_than_days as i64 * 86_400 * 1_000_000_000);
+
+    let db = state.store.db();
+    let node_type = params.node_type.clone();
+    let deleted = tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+
+        // Count first
+        let count_q = format!(
+            "MATCH (n:{node_type}) WHERE n.{ts_col} < timestamp_ns({cutoff_ns}) RETURN count(n)"
+        );
+        let count: i64 = conn
+            .query(&count_q)
+            .and_then(|mut r| {
+                if let Some(row) = r.next() {
+                    Ok(row.get_val::<i64>(0).unwrap_or(0))
+                } else {
+                    Ok(0)
+                }
+            })
+            .unwrap_or(0);
+
+        if count > 0 {
+            // Detach delete removes node and all connected edges
+            let del_q = format!(
+                "MATCH (n:{node_type}) WHERE n.{ts_col} < timestamp_ns({cutoff_ns}) DETACH DELETE n"
+            );
+            conn.query(&del_q)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        }
+
+        Ok::<_, (StatusCode, String)>(count)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+
+    tracing::info!(
+        node_type = params.node_type,
+        older_than_days = params.older_than_days,
+        deleted_count = deleted,
+        "db purge completed"
+    );
+
+    Ok(Json(serde_json::json!({
+        "node_type": params.node_type,
+        "older_than_days": params.older_than_days,
+        "deleted_count": deleted,
+    })))
+}
+
+pub(super) async fn db_checkpoint_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let db = state.store.db();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        conn.query("CALL checkpoint()")
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        Ok::<_, (StatusCode, String)>(())
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+
+    tracing::info!("db checkpoint completed");
+    Ok(Json(serde_json::json!({"status": "checkpoint_complete"})))
+}
+
+#[derive(Deserialize)]
+pub(super) struct ExportParams {
+    node_type: String,
+    #[serde(default = "default_export_limit")]
+    limit: u32,
+}
+
+fn default_export_limit() -> u32 {
+    10_000
+}
+
+pub(super) async fn db_export_handler(
+    State(state): State<AppState>,
+    Query(params): Query<ExportParams>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let allowed = [
+        "Device", "Interface", "BgpSession", "IsIsAdj", "BfdSession",
+        "DetectionEvent", "Incident", "AppFlow", "Application",
+        "Investigation", "AgentToolCall", "ConfigChange", "ChangeRequest",
+        "Location", "Prefix", "HostEndpoint", "ShunRule",
+    ];
+    if !allowed.contains(&params.node_type.as_str()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("Export not allowed for '{}'. Allowed: {:?}", params.node_type, allowed),
+        ));
+    }
+
+    let db = state.store.db();
+    let node_type = params.node_type.clone();
+    let limit = params.limit;
+    let lines = tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+
+        let q = format!("MATCH (n:{node_type}) RETURN n LIMIT {limit}");
+        let mut result = conn.query(&q)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+
+        let mut lines = Vec::new();
+        while let Some(row) = result.next() {
+            let val = row.get_val::<String>(0).unwrap_or_default();
+            lines.push(val);
+        }
+        Ok::<_, (StatusCode, String)>(lines)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+
+    let body = lines.join("\n");
+    Ok((
+        StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_TYPE, "application/x-ndjson"),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                &format!("attachment; filename=\"{}.jsonl\"", params.node_type),
+            ),
+        ],
+        body,
+    ))
+}
+
+// ── D4-13 T4: Backup + restore ──────────────────────────────────────────────
+
+pub(super) async fn db_backup_handler() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let runtime_path = std::path::Path::new("runtime");
+    if !runtime_path.exists() {
+        return Err((StatusCode::BAD_REQUEST, "runtime/ directory not found".into()));
+    }
+
+    let backups_dir = std::path::Path::new("backups");
+    std::fs::create_dir_all(backups_dir)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("create backups dir: {e}")))?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let ts = now;
+    let filename = format!("bonsai-{ts}.tar.gz");
+    let backup_path = backups_dir.join(&filename);
+
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::create(&backup_path)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("create backup: {e}")))?;
+        let enc = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+        let mut tar = tar::Builder::new(enc);
+        tar.append_dir_all("runtime", "runtime")
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("tar runtime: {e}")))?;
+        tar.finish()
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("finish tar: {e}")))?;
+        Ok::<_, (StatusCode, String)>(())
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+
+    tracing::info!(filename = %filename, "db backup created");
+    Ok(Json(serde_json::json!({
+        "status": "backup_complete",
+        "filename": filename,
+    })))
+}
+
+pub(super) async fn db_list_backups_handler() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let backups_dir = std::path::Path::new("backups");
+    if !backups_dir.exists() {
+        return Ok(Json(serde_json::json!({"backups": []})));
+    }
+    let mut backups: Vec<serde_json::Value> = Vec::new();
+    let entries = std::fs::read_dir(backups_dir)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")))?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".tar.gz") {
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            backups.push(serde_json::json!({"filename": name, "size_bytes": size}));
+        }
+    }
+    backups.sort_by(|a, b| b["filename"].as_str().cmp(&a["filename"].as_str()));
+    Ok(Json(serde_json::json!({"backups": backups})))
 }
 
 fn get_table_columns(conn: &Connection<'_>, table_name: &str) -> Vec<serde_json::Value> {

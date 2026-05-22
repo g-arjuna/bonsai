@@ -23,6 +23,7 @@
   import HA from './routes/HA.svelte';
   import Syslog from './routes/Syslog.svelte';
   import DbManagement from './routes/DbManagement.svelte';
+  import Governance from './routes/Governance.svelte';
 
   // Cmd-1..9 workspace shortcuts mirror CommandPalette WORKSPACE_SHORTCUTS
   const NAV = [
@@ -43,6 +44,7 @@
     { href: '/audit',         label: 'Audit',         icon: '📜' },
     { href: '/syslog',        label: 'Syslog / Shun', icon: '⬇' },
     { href: '/db',             label: 'Database',      icon: '🗄' },
+    { href: '/governance',     label: 'Governance',    icon: '⚖' },
     { href: '/settings',      label: 'Settings',      icon: '⚙' },
   ];
 
@@ -199,6 +201,8 @@
       <Syslog />
     {:else if path() === '/db'}
       <DbManagement />
+    {:else if path() === '/governance'}
+      <Governance />
     {:else if path() === '/settings'}
       <Settings />
     {:else}

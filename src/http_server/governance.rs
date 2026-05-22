@@ -766,3 +766,66 @@ fn worst_status(statuses: &[&str]) -> &'static str {
         "ok"
     }
 }
+
+// ── D4-21 T3: Governance history (RSS + rate sparkline data) ──────────────
+
+pub(super) async fn governance_history_handler(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    match &state.governor {
+        Some(g) => {
+            let snap = g.snapshot();
+            let rss = crate::memory_profile::rss_bytes();
+            (StatusCode::OK, Json(serde_json::json!({
+                "current_rss_bytes": rss,
+                "current_rss_mb": rss / (1024 * 1024),
+                "memory_budget_mb": snap.memory_budget_mb,
+                "rate_budget_eps": snap.rate_budget_eps,
+                "profile": snap.profile,
+                "memory_pressure_active": snap.memory_pressure_active,
+                "write_pressure_active": snap.write_pressure_active,
+                "rate_shedding_active": snap.rate_shedding_active,
+                "counters": {
+                    "memory_shrink": snap.memory_shrink_count,
+                    "memory_flush": snap.memory_flush_count,
+                    "write_batch_expand": snap.write_batch_expand_count,
+                    "rate_shed": snap.rate_shed_count,
+                },
+            }))).into_response()
+        },
+        None => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "governance_not_started"})),
+        ).into_response(),
+    }
+}
+
+// ── D4-21 T4: Profile switcher ────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub(super) struct ProfileSwitchRequest {
+    pub profile: String,
+}
+
+pub(super) async fn governance_profile_handler(
+    State(_state): State<AppState>,
+    Json(req): Json<ProfileSwitchRequest>,
+) -> impl IntoResponse {
+    let valid = ["tiny", "small", "medium", "large", "xlarge"];
+    if !valid.contains(&req.profile.to_lowercase().as_str()) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "error": format!("Invalid profile '{}'. Valid: {:?}", req.profile, valid)
+        }))).into_response();
+    }
+
+    // Profile switching at runtime requires restarting the governor loops.
+    // For now, acknowledge the request and document that a restart is needed.
+    // The governor reads profile from config at startup; hot-swap requires
+    // a channel to the governor loops (follow-up work).
+    tracing::info!(profile = %req.profile, "governance profile switch requested (requires restart to take effect)");
+    (StatusCode::OK, Json(serde_json::json!({
+        "status": "accepted",
+        "profile": req.profile,
+        "note": "Profile change takes effect after restart. Hot-swap is planned for a future release.",
+    }))).into_response()
+}

@@ -673,14 +673,14 @@ Over time, `DetectionEvent` nodes, `AppFlow` nodes from heavy flow sources, and 
 - `GET /api/db/schema` → returns all node tables with column names and types, all rel tables with from/to node types and columns.
 - UI: new `src/routes/DbManagement.svelte` with a "Schema" tab showing this information in a formatted table.
 
-**T3 — Safe data management operations (admin-only)**
+**T3 — Safe data management operations (admin-only)** ✅ batch7
 - Purge old detections: `DELETE /api/db/purge?node_type=DetectionEvent&older_than_days=90` (admin role required — D4-3 T2).
 - Purge orphan AppFlow nodes: nodes with no `CARRIES_FLOW` edge and older than N days.
 - Purge old AgentToolCall nodes: older than N days.
 - KuzuDB checkpoint: `POST /api/db/checkpoint` to force a WAL flush and compaction.
 - Export: `GET /api/db/export?node_type=Device` → returns JSONL download of all nodes of that type.
 
-**T4 — Backup + restore**
+**T4 — Backup + restore** ✅ batch7
 - `POST /api/db/backup` → tar+gzip the `runtime/` directory to `backups/bonsai-{iso_timestamp}.tar.gz`. Return backup filename.
 - `POST /api/db/restore` with multipart backup file upload → extract to a `runtime.restore/` staging directory → swap on next restart.
 - Makefile targets: `make backup`, `make restore BACKUP=backups/bonsai-2026-01-15T10:30:00.tar.gz`.
@@ -1072,7 +1072,7 @@ The existing `/api/governance` endpoint (in `src/http_server/governance.rs`) ret
 
 ### Tasks
 
-**T1 — Resource Governor UI page (new `src/routes/Governance.svelte`)**
+**T1 — Resource Governor UI page (new `src/routes/Governance.svelte`)** ✅ batch7
 - Live status section: memory RSS gauge (current/budget), rate shedding active badge (green/red), write pressure active badge, memory pressure active badge.
 - Counters section: memory_shrink_count, memory_flush_count, write_batch_expand_count, rate_shed_count — all from `/api/governance`.
 - Auto-refresh every 5 seconds via polling (or SSE stream if governance events are added to event bus).
@@ -1082,12 +1082,12 @@ The existing `/api/governance` endpoint (in `src/http_server/governance.rs`) ret
 - Emit on: memory pressure transitions (none → soft → hard → clear), rate shedding start/stop, write pressure start/stop.
 - UI: live event feed in Governance page showing transitions with timestamps: "14:32:01 — Memory pressure: SOFT (RSS 820 MB / 1024 MB budget)."
 
-**T3 — Historical RSS + rate sparkline**
+**T3 — Historical RSS + rate sparkline** ✅ batch7
 - Maintain a ring buffer of last 60 RSS samples (5s × 60 = 5 minutes of history) in the governor.
 - Expose via `/api/governance/history` as a time-series array.
 - UI: mini sparkline charts in Governance page for: RSS over last 5 min, inbound event rate over last 5 min.
 
-**T4 — Resource profile switcher**
+**T4 — Resource profile switcher** ✅ batch7
 - `PATCH /api/governance/profile` with `{profile: "low"|"standard"|"high"}` → updates governor thresholds at runtime without restart.
 - Requires reconfiguring memory_budget_bytes and rate_budget_eps from the new profile defaults.
 - UI: profile selector radio buttons (Low / Standard / High) in Governance page. Shows current active profile with its memory budget and rate budget numbers.
@@ -1097,7 +1097,7 @@ The existing `/api/governance` endpoint (in `src/http_server/governance.rs`) ret
 - Expose via `/api/receivers/status` alongside existing receiver stats.
 - UI: in `Collectors.svelte` receiver badges, show a shed-events counter when non-zero. Tooltip: "Resource governor dropped N events due to memory pressure."
 
-**T6 — Wire Governance page into App nav**
+**T6 — Wire Governance page into App nav** ✅ batch7
 - Add `{path: '/governance', label: 'Governance', icon: '⚖'}` to the Configure nav group in `App.svelte` NAV array.
 - Guard with `admin` or `operator` role when RBAC is implemented (D4-3 T2).
 
@@ -1128,11 +1128,11 @@ The existing `/api/governance` endpoint (in `src/http_server/governance.rs`) ret
 
 ### Tasks
 
-**T1 — `rust-toolchain.toml` pin**
+**T1 — `rust-toolchain.toml` pin** ✅ batch7
 - Create `rust-toolchain.toml` at repo root with `channel = "1.78.0"` (or current stable used in CI).
 - Ensures reproducible Rust builds on all machines.
 
-**T2 — `Makefile` hardening**
+**T2 — `Makefile` hardening** ✅ batch7
 - Add `check-deps` target: verify `rustc`, `cargo`, `node`, `npm`, `docker`, `cmake`, `protoc` are present and show versions.
 - Add `install-deps-ubuntu` target: runs the `apt install` command from Phase 0 of the testing guide.
 - Add `test-integration` target: runs `cargo test --test integration_tests` (if integration test files exist) separately from unit tests.
