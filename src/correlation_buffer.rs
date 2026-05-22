@@ -386,6 +386,21 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
         "ospf_neighbor_down" | "ospf_nbr_state_change" => {
             Some(("ospf_neighbor_down".to_string(), peer()))
         }
+        // Flow anomaly events — sub-keyed by exporter_address
+        "app_flow_high_utilization" => {
+            let exp = detail.get("exporter_address")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Some(("app_flow_high_utilization".to_string(), exp))
+        }
+        "flow_exporter_silent" => {
+            let exp = detail.get("exporter_address")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Some(("flow_exporter_silent".to_string(), exp))
+        }
         // Inherently single-source — do not buffer
         _ => None,
     }

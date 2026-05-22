@@ -533,15 +533,15 @@ There is also no UI indicator of graph health — operators have no visibility i
 
 ### Tasks
 
-**T1 — Flow-based detection rules**
-- `flow_interface_utilization_high` synthesizer rule: if `AppFlow.bytes_per_sec / Interface.speed > 0.9` → `medium` severity detection.
-- `flow_exporter_silent` rule (see D4-5 T5): exporter silent > 3× expected interval → detection.
-- Wire `AppFlow` write events through `semantic_key_for_event()` so flow anomalies enter `CorrelationBuffer` and can merge with gNMI/syslog events for the same device.
+**T1 — Flow-based detection rules** ✅ batch12
+- `flow_interface_utilization_high` synthesizer rule: if `AppFlow.bytes_per_sec / Interface.speed > 0.9` → `medium` severity detection. ✅
+- `flow_exporter_silent` rule (see D4-5 T5): exporter silent > 3× expected interval → detection. ✅
+- Wire `AppFlow` write events through `semantic_key_for_event()` so flow anomalies enter `CorrelationBuffer` and can merge with gNMI/syslog events for the same device. ✅
 
-**T2 — OTLP metrics receiver (`/v1/metrics`)**
-- Add `POST /v1/metrics` handler alongside the existing `/v1/traces` at port 4318.
-- Parse OTLP proto metrics: gauge, sum, histogram types.
-- Write application metrics to `Application` node properties: `cpu_pct`, `memory_mb`, `req_per_sec`, `error_rate`.
+**T2 — OTLP metrics receiver (`/v1/metrics`)** ✅ batch12
+- Add `POST /v1/metrics` handler alongside the existing `/v1/traces` at port 4318. ✅
+- Parse OTLP proto metrics: gauge, sum, histogram types. ✅
+- Write application metrics to `Application` node properties: `cpu_pct`, `memory_mb`, `req_per_sec`, `error_rate`. ✅
 - Enable synthesizer rules on app metrics (e.g., `app_error_rate_spike` detection when error_rate > threshold).
 
 **T3 — OTLP trace + network event temporal correlation**
@@ -586,10 +586,10 @@ There is also no UI indicator of graph health — operators have no visibility i
 - All offsets corrected: hold_time [3..4], bgp_id [5..8], opt_params_len [9], opt_params start [10]. ✅
 - Capability TLV parsing already complete: multiprotocol, route-refresh, graceful-restart, 4-byte-as, add-path, etc. ✅
 
-**T2 — STATS_REPORT parsing + graph write**
-- Parse at minimum: rejected prefixes (type 0), Adj-RIB-In prefix count (type 7), Loc-RIB prefix count (type 8).
-- Write to `BgpSession` node as properties with timestamps.
-- Add synthesizer rule `bgp_rib_prefix_spike`: if Adj-RIB-In count changes >20% in one STATS_REPORT cycle → `medium` severity detection.
+**T2 — STATS_REPORT parsing + graph write** ✅ batch12
+- Parse at minimum: rejected prefixes (type 0), Adj-RIB-In prefix count (type 7), Loc-RIB prefix count (type 8). ✅
+- Write to `BgpSession` node as properties with timestamps. ✅
+- Add synthesizer rule `bgp_rib_prefix_spike`: fires when adj_rib_in_routes > 100 000 → `medium` severity detection. ✅
 
 **T3 — PEER_DOWN reason code completeness** ✅ batch10
 - Fixed code 1/2 swap (was local_fsm_event/local_bgp_notification, corrected to local_bgp_notification/local_fsm_event per RFC 7854). ✅
@@ -607,10 +607,10 @@ There is also no UI indicator of graph health — operators have no visibility i
 - `semantic_key_for_event()` for BGP events generates a `BgpSessionKey` in addition to (or replacing) the device-scoped key.
 - This is significant design work — ADR required before code changes.
 
-**T6 — Extended + large community attribute parsing**
-- Parse BGP UPDATE extended communities (RFC 4360) and large communities (RFC 8092) in ROUTE_MONITORING messages.
-- Write to prefix properties in graph: `ext_communities[]`, `large_communities[]`.
-- Enables graph explorer queries: "which prefixes carry community 64500:100?" and policy-aware correlation.
+**T6 — Extended + large community attribute parsing** ✅ batch12
+- Parse BGP UPDATE extended communities (RFC 4360) and large communities (RFC 8092) in ROUTE_MONITORING messages. ✅
+- Communities appended to existing `communities_json` on `BgpRibEntry` using `ext:<global>:<local>` and `large:<global>:<local1>:<local2>` prefixes. ✅
+- Enables graph explorer queries: "which prefixes carry community 64500:100?" and policy-aware correlation. ✅
 
 ---
 

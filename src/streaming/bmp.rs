@@ -811,6 +811,10 @@ fn parse_path_attributes(attrs: &[u8], state: &mut PathState) -> Result<()> {
                 state.local_pref = Some(u32::from_be_bytes(value.try_into().unwrap_or([0; 4])))
             }
             8 => state.communities = parse_communities(value),
+            // RFC 4360 §4: Extended Communities (8-byte tuples)
+            16 => state.communities.extend(parse_extended_communities(value)),
+            // RFC 8092 §3: Large Communities (12-byte tuples: global:local1:local2)
+            32 => state.communities.extend(parse_large_communities(value)),
             14 => parse_mp_reach(value, state)?,
             15 => parse_mp_unreach(value, state)?,
             _ => {}
@@ -851,6 +855,51 @@ fn parse_communities(value: &[u8]) -> Vec<String> {
             let a = u16::from_be_bytes([chunk[0], chunk[1]]);
             let b = u16::from_be_bytes([chunk[2], chunk[3]]);
             format!("{a}:{b}")
+        })
+        .collect()
+}
+
+/// RFC 4360 §4: Extended Communities — 8 bytes each.
+/// Formats as "ext:<type_subtype_hex>:<value_hex>" for unknown types, or
+/// well-known two-octet AS specific format "ext:<global>:<local>".
+fn parse_extended_communities(value: &[u8]) -> Vec<String> {
+    value
+        .chunks_exact(8)
+        .map(|c| {
+            let type_byte = c[0];
+            let high_type = type_byte & 0x3F;
+            match high_type {
+                // Two-octet AS specific (0x00/0x40) — global:local
+                0x00 | 0x02 => {
+                    let global = u16::from_be_bytes([c[2], c[3]]);
+                    let local = u32::from_be_bytes([c[4], c[5], c[6], c[7]]);
+                    format!("ext:{global}:{local}")
+                }
+                // IPv4 address specific (0x01) — a.b.c.d:local
+                0x01 => {
+                    let ip = std::net::Ipv4Addr::new(c[2], c[3], c[4], c[5]);
+                    let local = u16::from_be_bytes([c[6], c[7]]);
+                    format!("ext:{ip}:{local}")
+                }
+                // Four-octet AS specific (0x02) handled above; opaque otherwise
+                _ => {
+                    format!("ext:{:#04x}:{}", type_byte,
+                        c[1..].iter().map(|b| format!("{b:02x}")).collect::<String>())
+                }
+            }
+        })
+        .collect()
+}
+
+/// RFC 8092 §3: Large Communities — 12 bytes each: global_administrator:local_data_1:local_data_2.
+fn parse_large_communities(value: &[u8]) -> Vec<String> {
+    value
+        .chunks_exact(12)
+        .map(|c| {
+            let global = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+            let local1  = u32::from_be_bytes([c[4], c[5], c[6], c[7]]);
+            let local2  = u32::from_be_bytes([c[8], c[9], c[10], c[11]]);
+            format!("large:{global}:{local1}:{local2}")
         })
         .collect()
 }

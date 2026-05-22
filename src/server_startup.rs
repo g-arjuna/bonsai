@@ -460,6 +460,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                     let severity = match slot.key.semantic_type.as_str() {
                         "bgp_neighbor_down" | "interface_down" | "bfd_session_down"
                         | "isis_adjacency_down" | "ospf_neighbor_down" => "critical",
+                        "app_flow_high_utilization" | "flow_exporter_silent"
+                        | "bgp_rib_prefix_spike" => "medium",
                         _ => "warning",
                     };
                     let source_types_json =
@@ -505,6 +507,78 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                                 semantic = %slot.key.semantic_type,
                                 "failed to write detection event from correlation buffer"
                             );
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // ── D4-10 T1: flow_exporter_silent sweep ─────────────────────────────────
+    // Every 5 minutes: detect exporters that have stopped sending flows.
+    // An AppFlow node is considered silent if updated_at has not changed in
+    // >300s (5× the expected 60s sFlow/NetFlow cycle).
+    if let Some(Store::Core(ref s)) = store {
+        let db_for_silent = s.db();
+        let detection_for_silent = std::sync::Arc::clone(s);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let result: Result<Vec<(String, String, i64)>, _> =
+                    tokio::task::spawn_blocking({
+                        let db = db_for_silent.clone();
+                        move || -> anyhow::Result<Vec<(String, String, i64)>> {
+                            use bonsai::graph::common::{now_ns, ts};
+                            use lbug::Connection;
+                            let conn = Connection::new(&db)?;
+                            let cutoff_ns = now_ns() - 300_000_000_000_i64;
+                            let cutoff_val = ts(cutoff_ns);
+                            let mut stmt = conn.prepare(
+                                "MATCH (f:AppFlow) \
+                                 WHERE f.updated_at < $cutoff \
+                                 RETURN f.exporter_address, f.id, f.updated_at",
+                            )?;
+                            let rows = conn.execute(&mut stmt, vec![("cutoff", cutoff_val)])?;
+                            let mut out = Vec::new();
+                            for row in rows {
+                                let exp = match &row[0] { lbug::Value::String(s) => s.clone(), _ => continue };
+                                let fid = match &row[1] { lbug::Value::String(s) => s.clone(), _ => continue };
+                                let last_ns = match &row[2] {
+                                    lbug::Value::TimestampNs(dt) => dt.unix_timestamp_nanos() as i64,
+                                    _ => 0,
+                                };
+                                out.push((exp, fid, last_ns));
+                            }
+                            Ok(out)
+                        }
+                    })
+                    .await;
+                if let Ok(Ok(silent)) = result {
+                    // Deduplicate by exporter — fire one detection per silent exporter
+                    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                    for (exp, _fid, last_ns) in silent {
+                        if seen.insert(exp.clone()) {
+                            let detail = serde_json::json!({
+                                "exporter_address": exp,
+                                "last_seen_ns": last_ns,
+                                "silent_seconds": 300,
+                            })
+                            .to_string();
+                            let _ = detection_for_silent
+                                .write_detection(
+                                    exp,
+                                    "flow_exporter_silent".to_string(),
+                                    "medium".to_string(),
+                                    detail,
+                                    "[\"flow\"]".to_string(),
+                                    0,
+                                    last_ns,
+                                    String::new(),
+                                    vec![],
+                                )
+                                .await;
                         }
                     }
                 }

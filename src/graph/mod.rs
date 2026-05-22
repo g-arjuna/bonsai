@@ -1227,6 +1227,21 @@ impl GraphStore {
         // created before D3-11. Silently ignored on fresh installs.
         let _ = conn.query("ALTER TABLE AppFlow ADD exporter_address STRING DEFAULT ''");
 
+        // ── D4-11 T2: BmpSession stats columns ───────────────────────────────
+        let _ = conn.query("ALTER TABLE BmpSession ADD adj_rib_in_routes INT64 DEFAULT 0");
+        let _ = conn.query("ALTER TABLE BmpSession ADD loc_rib_routes INT64 DEFAULT 0");
+        let _ = conn.query("ALTER TABLE BmpSession ADD prefixes_rejected INT64 DEFAULT 0");
+        let _ = conn.query("ALTER TABLE BmpSession ADD updates_invalid INT64 DEFAULT 0");
+        let _ = conn.query("ALTER TABLE BmpSession ADD stats_updated_at TIMESTAMP_NS DEFAULT timestamp_ns('1970-01-01')");
+
+        // ── D4-10 T2: Application metric columns (OTLP /v1/metrics) ──────────
+        let _ = conn.query("ALTER TABLE Application ADD source STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE Application ADD cpu_pct DOUBLE DEFAULT 0.0");
+        let _ = conn.query("ALTER TABLE Application ADD memory_mb DOUBLE DEFAULT 0.0");
+        let _ = conn.query("ALTER TABLE Application ADD req_per_sec DOUBLE DEFAULT 0.0");
+        let _ = conn.query("ALTER TABLE Application ADD error_rate DOUBLE DEFAULT 0.0");
+        let _ = conn.query("ALTER TABLE Application ADD metric_json STRING DEFAULT ''");
+
         // ── OpticalChannel (D3-8 T5) ─────────────────────────────────────────
         // One row per DWDM/coherent optical channel on a transponder or router
         // line-card. Populated by gNMI (openconfig-terminal-device) or SNMP.
@@ -3384,11 +3399,18 @@ fn write_blocking(
         TelemetryEvent::BmpPeerState => write_bmp_peer_state(conn, update, event_tx, corr_buf),
         TelemetryEvent::BmpRouteMonitoring => write_bmp_route_monitoring(conn, update, event_tx, corr_buf),
         TelemetryEvent::BmpInitiation => write_bmp_initiation(conn, update),
+        TelemetryEvent::BmpStatisticsReport => write_bmp_statistics_report(conn, update, event_tx, corr_buf),
         TelemetryEvent::BgpLsState => write_bgp_ls_state(conn, update, event_tx, corr_buf),
         TelemetryEvent::OtlpSpan {
             service_name,
             peer_address,
         } => write_otlp_span(conn, update, &service_name, &peer_address, event_tx),
+        TelemetryEvent::OtlpMetrics {
+            service_name,
+            metric_name,
+            value,
+            peer_address,
+        } => write_otlp_metrics(conn, update, &service_name, &metric_name, value, &peer_address),
         TelemetryEvent::NetflowRecord {
             exporter_address,
             src_address,
@@ -3408,6 +3430,7 @@ fn write_blocking(
             bytes_per_sec,
             packets_per_sec,
             event_tx,
+            corr_buf,
         ),
         TelemetryEvent::SflowRecord {
             exporter_address,
@@ -3430,6 +3453,7 @@ fn write_blocking(
             packets_per_sec,
             sampling_rate,
             event_tx,
+            corr_buf,
         ),
         TelemetryEvent::SflowCounters {
             exporter_address,
@@ -3765,6 +3789,116 @@ fn write_otlp_span(
     Ok(())
 }
 
+/// D4-10 T2: Write OTLP metric data point to Application node.
+/// Maps well-known OpenTelemetry metric names to typed columns:
+///   system.cpu.utilization / process.cpu.utilization → cpu_pct
+///   system.memory.usage / process.memory.usage      → memory_mb (bytes→MB)
+///   http.server.request_count / rpc.server.requests  → req_per_sec
+///   http.server.error_count                          → error_rate
+/// Unknown metric names are stored in the generic `metric_json` column.
+fn write_otlp_metrics(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    service_name: &str,
+    metric_name: &str,
+    value: f64,
+    peer_address: &str,
+) -> Result<()> {
+    if service_name.is_empty() {
+        return Ok(());
+    }
+    let app_id = if !peer_address.is_empty() {
+        format!("{}:{}", peer_address, service_name)
+    } else {
+        service_name.to_string()
+    };
+    let now = ts(update.timestamp_ns);
+
+    // Upsert Application node (CREATE if new, no-op ON MATCH for identity fields)
+    let mut stmt = conn
+        .prepare(
+            "MERGE (a:Application {id: $id}) \
+             ON CREATE SET a.name = $name, a.source = $src, a.updated_at = $ts \
+             ON MATCH SET a.updated_at = $ts",
+        )
+        .context("prepare Application upsert (metrics)")?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id",   Value::String(app_id.clone())),
+            ("name", Value::String(service_name.to_string())),
+            ("src",  Value::String("otlp".to_string())),
+            ("ts",   now.clone()),
+        ],
+    )
+    .context("execute Application upsert (metrics)")?;
+
+    // Map metric name to Application column
+    let set_clause = match metric_name {
+        "system.cpu.utilization" | "process.cpu.utilization" => {
+            let pct = (value * 100.0).clamp(0.0, 100.0);
+            let mut s = conn.prepare(
+                "MATCH (a:Application {id: $id}) SET a.cpu_pct = $v, a.updated_at = $ts",
+            )?;
+            conn.execute(&mut s, vec![
+                ("id", Value::String(app_id.clone())),
+                ("v",  Value::Double(pct)),
+                ("ts", now.clone()),
+            ])?;
+            None::<()>
+        }
+        "system.memory.usage" | "process.memory.usage" => {
+            let mb = (value / 1_048_576.0).max(0.0);
+            let mut s = conn.prepare(
+                "MATCH (a:Application {id: $id}) SET a.memory_mb = $v, a.updated_at = $ts",
+            )?;
+            conn.execute(&mut s, vec![
+                ("id", Value::String(app_id.clone())),
+                ("v",  Value::Double(mb)),
+                ("ts", now.clone()),
+            ])?;
+            None
+        }
+        "http.server.request_count" | "rpc.server.requests" | "http.server.requests_total" => {
+            let mut s = conn.prepare(
+                "MATCH (a:Application {id: $id}) SET a.req_per_sec = $v, a.updated_at = $ts",
+            )?;
+            conn.execute(&mut s, vec![
+                ("id", Value::String(app_id.clone())),
+                ("v",  Value::Double(value)),
+                ("ts", now.clone()),
+            ])?;
+            None
+        }
+        "http.server.error_count" | "http.server.errors_total" => {
+            let mut s = conn.prepare(
+                "MATCH (a:Application {id: $id}) SET a.error_rate = $v, a.updated_at = $ts",
+            )?;
+            conn.execute(&mut s, vec![
+                ("id", Value::String(app_id.clone())),
+                ("v",  Value::Double(value)),
+                ("ts", now.clone()),
+            ])?;
+            None
+        }
+        _ => {
+            // Store unknown metric as JSON blob in metric_json column
+            let blob = serde_json::json!({"metric": metric_name, "value": value}).to_string();
+            let mut s = conn.prepare(
+                "MATCH (a:Application {id: $id}) SET a.metric_json = $v, a.updated_at = $ts",
+            )?;
+            let _ = conn.execute(&mut s, vec![
+                ("id", Value::String(app_id.clone())),
+                ("v",  Value::String(blob)),
+                ("ts", now),
+            ]);
+            None
+        }
+    };
+    drop(set_clause);
+    Ok(())
+}
+
 fn write_netflow_record(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
@@ -3776,6 +3910,7 @@ fn write_netflow_record(
     bytes_per_sec: f64,
     packets_per_sec: f64,
     event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
     let id = format!("{src_address}:{dst_address}:{dst_port}:{protocol}");
     upsert_app_flow(
@@ -3837,6 +3972,8 @@ fn write_netflow_record(
         ],
     );
 
+    emit_flow_utilization_event(conn, update, exporter_address, &id, bytes_per_sec, event_tx, corr_buf);
+
     let evt = BonsaiEvent {
         device_address: exporter_address.to_string(),
         event_type: "app_flow_event".to_string(),
@@ -3874,6 +4011,7 @@ fn write_sflow_record(
     packets_per_sec: f64,
     sampling_rate: u32,
     event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
     let id = format!("{src_address}:{dst_address}:{dst_port}:{protocol}");
     upsert_app_flow(
@@ -3930,6 +4068,8 @@ fn write_sflow_record(
             ("fid", Value::String(id.clone())),
         ],
     );
+
+    emit_flow_utilization_event(conn, update, exporter_address, &id, bytes_per_sec, event_tx, corr_buf);
 
     let evt = BonsaiEvent {
         device_address: exporter_address.to_string(),
@@ -3996,6 +4136,70 @@ fn write_sflow_counters(
         ],
     );
     Ok(())
+}
+
+/// D4-10 T1: Check if a new AppFlow record implies interface utilization > 90%.
+/// Queries the exporter device's max interface speed from the graph and compares
+/// `bytes_per_sec * 8` against that speed.  Fires an `app_flow_high_utilization`
+/// StateChangeEvent if the threshold is breached.  Silent no-op when no Interface
+/// speed is known (avoids false positives for unregistered exporters).
+#[allow(clippy::too_many_arguments)]
+fn emit_flow_utilization_event(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    exporter_address: &str,
+    flow_id: &str,
+    bytes_per_sec: f64,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
+) {
+    const UTIL_THRESHOLD: f64 = 0.90;
+    let mut stmt = match conn.prepare(
+        "MATCH (d:Device {address: $addr})-[:HAS_INTERFACE]->(i:Interface) \
+         WHERE i.speed > 0 \
+         RETURN i.speed ORDER BY i.speed DESC LIMIT 1",
+    ) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let mut rows = match conn.execute(&mut stmt, vec![("addr", Value::String(exporter_address.to_string()))]) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let speed_bps = match rows.next() {
+        Some(row) => match &row[0] {
+            Value::Int64(s) => *s as f64,
+            Value::Double(s) => *s,
+            _ => return,
+        },
+        None => return,
+    };
+    if speed_bps <= 0.0 {
+        return;
+    }
+    let utilization = (bytes_per_sec * 8.0) / speed_bps;
+    if utilization < UTIL_THRESHOLD {
+        return;
+    }
+    let detail = serde_json::json!({
+        "exporter_address": exporter_address,
+        "flow_id": flow_id,
+        "bytes_per_sec": bytes_per_sec,
+        "interface_speed_bps": speed_bps,
+        "utilization_pct": (utilization * 100.0).round() as i64,
+    })
+    .to_string();
+    let _ = write_state_change_event(
+        conn,
+        exporter_address,
+        "app_flow_high_utilization",
+        &detail,
+        "flow",
+        ts(update.timestamp_ns),
+        update.timestamp_ns,
+        event_tx,
+        corr_buf,
+    );
 }
 
 fn write_interface_summary(
@@ -5685,6 +5889,94 @@ fn write_bmp_initiation(
                 ("ts", ts(update.timestamp_ns)),
             ],
         ).context("execute BMP initiation Device update")?;
+    }
+    Ok(())
+}
+
+/// D4-11 T2: Write BMP STATISTICS_REPORT counters to BmpSession node.
+/// Updates adj_rib_in_routes, loc_rib_routes, prefixes_rejected, updates_invalid.
+/// Fires a `bgp_rib_prefix_spike` StateChangeEvent when adj_rib_in_routes > 100 000,
+/// which enters the CorrelationBuffer and may produce a detection.
+fn write_bmp_statistics_report(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
+) -> Result<()> {
+    use crate::streaming::bmp::BmpEvent;
+    let event: BmpEvent =
+        serde_json::from_value(update.value.clone()).context("parse BMP statistics event")?;
+    upsert_device(
+        conn,
+        &update.target,
+        &update.vendor,
+        &update.hostname,
+        &update.role,
+        &update.site,
+        ts(update.timestamp_ns),
+    )?;
+    upsert_bmp_session(conn, update, &event)?;
+
+    // Aggregate the stats entries into named counters
+    let mut adj_rib_in: i64 = 0;
+    let mut loc_rib: i64 = 0;
+    let mut prefixes_rejected: i64 = 0;
+    let mut updates_invalid: i64 = 0;
+    for s in &event.stats {
+        match s.stat_type {
+            0 => prefixes_rejected += s.value as i64,
+            3 | 4 | 5 | 6 => updates_invalid += s.value as i64,
+            7 => adj_rib_in = s.value.min(i64::MAX as u64) as i64,
+            8 => loc_rib = s.value.min(i64::MAX as u64) as i64,
+            _ => {}
+        }
+    }
+
+    let session_id = format!("{}:{}", update.target, event.peer_address);
+    let now = ts(update.timestamp_ns);
+    let mut stmt = conn
+        .prepare(
+            "MATCH (s:BmpSession {id: $id}) \
+             SET s.adj_rib_in_routes = $adj, s.loc_rib_routes = $loc, \
+                 s.prefixes_rejected = $rej, s.updates_invalid = $inv, \
+                 s.stats_updated_at = $ts",
+        )
+        .context("prepare BmpSession stats update")?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id",  Value::String(session_id.clone())),
+            ("adj", Value::Int64(adj_rib_in)),
+            ("loc", Value::Int64(loc_rib)),
+            ("rej", Value::Int64(prefixes_rejected)),
+            ("inv", Value::Int64(updates_invalid)),
+            ("ts",  now),
+        ],
+    )
+    .context("execute BmpSession stats update")?;
+
+    // bgp_rib_prefix_spike: fire when adj_rib_in > 100 000 prefixes
+    const PREFIX_SPIKE_THRESHOLD: i64 = 100_000;
+    if adj_rib_in > PREFIX_SPIKE_THRESHOLD {
+        let detail = serde_json::json!({
+            "peer_address": event.peer_address,
+            "session_id": session_id,
+            "adj_rib_in_routes": adj_rib_in,
+            "loc_rib_routes": loc_rib,
+            "threshold": PREFIX_SPIKE_THRESHOLD,
+        })
+        .to_string();
+        let _ = write_state_change_event(
+            conn,
+            &update.target,
+            "bgp_rib_prefix_spike",
+            &detail,
+            "bmp",
+            ts(update.timestamp_ns),
+            update.timestamp_ns,
+            event_tx,
+            corr_buf,
+        );
     }
     Ok(())
 }

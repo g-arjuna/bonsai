@@ -73,9 +73,18 @@ pub enum TelemetryEvent {
     BmpPeerState,
     BmpRouteMonitoring,
     BmpInitiation,
+    /// D4-11 T2: BMP STATISTICS_REPORT — update BgpSession stats counters.
+    BmpStatisticsReport,
     BgpLsState,
     OtlpSpan {
         service_name: String,
+        peer_address: String,
+    },
+    /// D4-10 T2: OTLP metric data point — updates Application node properties.
+    OtlpMetrics {
+        service_name: String,
+        metric_name: String,
+        value: f64,
         peer_address: String,
     },
     NetflowRecord {
@@ -409,6 +418,38 @@ impl TelemetryUpdate {
             };
         }
 
+        if self.path == "streaming/otlp/metrics" {
+            let service_name = self
+                .value
+                .get("service_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let metric_name = self
+                .value
+                .get("metric_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let value = self
+                .value
+                .get("value")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let peer_address = self
+                .value
+                .get("peer_address")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            return TelemetryEvent::OtlpMetrics {
+                service_name,
+                metric_name,
+                value,
+                peer_address,
+            };
+        }
+
         if self.path == "streaming/netflow/flow" {
             let exporter_address = self
                 .value
@@ -469,6 +510,10 @@ impl TelemetryUpdate {
 
         if self.path == "streaming/bmp/route-monitoring" {
             return TelemetryEvent::BmpRouteMonitoring;
+        }
+
+        if self.path == "streaming/bmp/statistics" {
+            return TelemetryEvent::BmpStatisticsReport;
         }
 
         if self.path == "streaming/sflow/flow" {
