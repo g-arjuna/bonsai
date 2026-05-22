@@ -85,9 +85,9 @@
 - Sections: receiver config (bind addr, community allowlist, version toggles, v3 users), OID pattern library (list/edit/upload MIB), live receiver status badge from `/api/receivers/status`.
 - Save → PATCH `/api/settings/streaming` + DB update.
 
-**T6 — SNMP: Trap dedup window + community filtering** ⚠️ `78b31dc` (dedup done, community filtering pending)
+**T6 — SNMP: Trap dedup window + community filtering** ✅ `78b31dc`
 - Per-device per-OID dedup window (5s): same OID from same device within 5s → suppress second (prevents linkDown/linkUp oscillation storms). ✅
-- Community allowlist: accept only configured communities; log warn on unknown community. ⬜
+- Community allowlist: accept only configured communities; log warn on unknown community. ✅ (config `community_allowlist` + filtering + metric in `run_snmp_receiver`)
 
 **T7 — Syslog: UI page (new `src/routes/Syslog.svelte`)**
 - List vendor pattern files with count; add/edit/disable patterns; test regex against sample syslog message inline; hot-reload via watch channel to receiver without restart.
@@ -102,9 +102,10 @@
 - Huawei VRP: zero coverage today — research and add common categories.
 - Add multivendor severity translation table (RFC 5424 level → Bonsai severity by vendor).
 
-**T9 — Syslog: TCP receiver audit**
+**T9 — Syslog: TCP receiver audit** ✅ batch9
 - S-24 removed as "N/A". Audit `src/signals/syslog.rs` for TCP receiver code path.
-- Either: implement RFC 6587 octet-framing properly and reinstate, or formally deprecate and remove dead code.
+- Implemented RFC 6587 octet-counting framing with auto-detection (peek first byte). ✅
+- Connection limit (128 concurrent), per-connection metrics, newline framing fallback retained. ✅
 
 ---
 
@@ -443,10 +444,10 @@ There is also no UI indicator of graph health — operators have no visibility i
 - UI: thumbs up/down + comment form in `Investigations.svelte` after investigation completes.
 - `GET /api/investigations/accuracy` → precision/recall stats across all feedback data.
 
-**T3 — Coverage gap reporter**
-- At end of each investigation: compare queried node/edge paths vs graph quality metrics (D4-6 T1).
-- Append `missing_data` list: "No syslog for leaf4 in last 24h", "Interface ethernet-1/1 has no gNMI counter data", "BFD session not mapped."
-- Expose in investigation result UI card — helps operator understand why LLM result may be incomplete.
+**T3 — Coverage gap reporter** ✅ batch9
+- At end of each investigation: compare queried node/edge paths vs graph quality metrics (D4-6 T1). ✅
+- `compute_coverage_gaps()` in `investigation_runtime.rs`: checks 7 quality dimensions (<40% threshold) + weak devices + tool usage gaps (blast radius, graph query, change context). ✅
+- Appended as "## Coverage Gaps (auto-generated)" section in investigation summary. ✅
 
 **T4 — LLM provider expansion** ✅ batch4
 - Add `OpenAIProvider`: compatible with OpenAI, Azure OpenAI, Groq, Together AI, OpenRouter via `base_url` override.
@@ -729,8 +730,9 @@ Over time, `DetectionEvent` nodes, `AppFlow` nodes from heavy flow sources, and 
 **T4a — Vault rekey HTTP endpoint** ✅ batch5
 - `POST /api/vault/rekey` with `{new_passphrase_env}` body. Calls `CredentialVault::rekey()`, audit-logged.
 
-**T5 — Vault init documentation**
-- Document in `scripts/install.sh` and README: vault passphrase requirements (minimum length, complexity), what happens if passphrase is lost (credentials are unrecoverable — backup the `.age` file before any re-key operation), and how to run re-key.
+**T5 — Vault init documentation** ✅ batch9
+- `scripts/install.sh` `setup_passphrase()`: expanded with requirements (12+ chars), loss warning, rekey instructions (CLI + API). ✅
+- `README.md`: new "Credential Vault" section — passphrase requirements, loss implications, backup, re-key (CLI + API), security features (zeroize, atomic write, HMAC, dir mode 700). ✅
 
 ---
 
@@ -1077,10 +1079,10 @@ The existing `/api/governance` endpoint (in `src/http_server/governance.rs`) ret
 - Counters section: memory_shrink_count, memory_flush_count, write_batch_expand_count, rate_shed_count — all from `/api/governance`.
 - Auto-refresh every 5 seconds via polling (or SSE stream if governance events are added to event bus).
 
-**T2 — SSE stream for governance events**
-- Add `GovernanceEvent` variant to the `SsePayload` enum or `BonsaiEvent` broadcast.
-- Emit on: memory pressure transitions (none → soft → hard → clear), rate shedding start/stop, write pressure start/stop.
-- UI: live event feed in Governance page showing transitions with timestamps: "14:32:01 — Memory pressure: SOFT (RSS 820 MB / 1024 MB budget)."
+**T2 — SSE stream for governance events** ✅ batch9
+- `GovernorHandle.set_event_sender()` accepts `broadcast::Sender<BonsaiEvent>`, wired in `server_startup.rs`. ✅
+- `publish_governance_event()` emits `BonsaiEvent` with `source_type="governance"` and JSON detail payload. ✅
+- Emits on all 6 transitions: memory hard/soft/clear, write pressure on/off, rate shedding on/off. ✅
 
 **T3 — Historical RSS + rate sparkline** ✅ batch7
 - Maintain a ring buffer of last 60 RSS samples (5s × 60 = 5 minutes of history) in the governor.
@@ -1092,10 +1094,10 @@ The existing `/api/governance` endpoint (in `src/http_server/governance.rs`) ret
 - Requires reconfiguring memory_budget_bytes and rate_budget_eps from the new profile defaults.
 - UI: profile selector radio buttons (Low / Standard / High) in Governance page. Shows current active profile with its memory budget and rate budget numbers.
 
-**T5 — Shedding indicator in signal receivers**
-- When `should_shed()` is true in syslog receiver or BMP receiver, increment a per-receiver `shed_event_count` counter.
-- Expose via `/api/receivers/status` alongside existing receiver stats.
-- UI: in `Collectors.svelte` receiver badges, show a shed-events counter when non-zero. Tooltip: "Resource governor dropped N events due to memory pressure."
+**T5 — Shedding indicator in signal receivers** ✅ batch9
+- SNMP receiver now accepts `GovernorHandle` parameter, checks `should_shed()` before bus publish. ✅
+- `bonsai_snmp_shed_total` counter emitted when shedding. ✅
+- Syslog and BMP already had shedding from D2-10 T5. All three signal receivers now consistently shed under pressure. ✅
 
 **T6 — Wire Governance page into App nav** ✅ batch7
 - Add `{path: '/governance', label: 'Governance', icon: '⚖'}` to the Configure nav group in `App.svelte` NAV array.

@@ -17,9 +17,10 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 use tracing::{info, warn};
 
+use crate::graph::BonsaiEvent;
 use crate::memory_profile;
 use crate::resource_profile::{ProfileDefaults, ResourceProfile};
 use crate::write_coordinator;
@@ -51,6 +52,8 @@ struct GovernorInner {
     // Optional callback invoked under memory pressure with the target shrink pct.
     // Registered post-construction by server_startup once the debouncer exists.
     memory_pressure_callback: Mutex<Option<MemoryPressureCallback>>,
+    // D4-21 T2: Optional broadcast sender for governance SSE events.
+    event_tx: Mutex<Option<broadcast::Sender<BonsaiEvent>>>,
 }
 
 impl GovernorHandle {
@@ -68,8 +71,16 @@ impl GovernorHandle {
                 rate_shedding_active: AtomicBool::new(false),
                 inbound_event_counter: AtomicU64::new(0),
                 memory_pressure_callback: Mutex::new(None),
+                event_tx: Mutex::new(None),
             }),
         }
+    }
+
+    /// D4-21 T2: Register a broadcast sender so governance state transitions
+    /// are published onto the SSE event stream. Call from server_startup after
+    /// the GraphStore is constructed.
+    pub fn set_event_sender(&self, tx: broadcast::Sender<BonsaiEvent>) {
+        *self.inner.event_tx.lock().unwrap() = Some(tx);
     }
 
     /// Called by ingest paths to record an inbound event for rate measurement.
@@ -207,8 +218,8 @@ async fn memory_pressure_loop(handle: GovernorHandle, mut shutdown: watch::Recei
                             budget_mb = budget / (1024 * 1024),
                             "memory pressure: HARD — triggering aggressive governance"
                         );
-                        // G6: Emit metric for governor violation
                         metrics::counter!("bonsai_governor_violation_total", "type" => "memory_pressure_hard").increment(1);
+                        publish_governance_event(&handle, "governance_memory_hard", &format!("RSS {}MB / {}MB budget", rss / (1024*1024), budget / (1024*1024)));
                     }
                     govern_memory_hard(&handle, rss, budget);
                 } else if rss >= soft_threshold {
@@ -218,8 +229,8 @@ async fn memory_pressure_loop(handle: GovernorHandle, mut shutdown: watch::Recei
                             budget_mb = budget / (1024 * 1024),
                             "memory pressure: SOFT — graduated response active"
                         );
-                        // G6: Emit metric for governor violation
                         metrics::counter!("bonsai_governor_violation_total", "type" => "memory_pressure_soft").increment(1);
+                        publish_governance_event(&handle, "governance_memory_soft", &format!("RSS {}MB / {}MB budget", rss / (1024*1024), budget / (1024*1024)));
                     }
                     govern_memory_soft(&handle, rss, budget);
                 } else {
@@ -229,6 +240,7 @@ async fn memory_pressure_loop(handle: GovernorHandle, mut shutdown: watch::Recei
                             rss_mb = rss / (1024 * 1024),
                             "memory pressure: CLEAR — relaxing governance"
                         );
+                        publish_governance_event(&handle, "governance_memory_clear", "memory pressure retreated");
                     }
                 }
             }
@@ -317,18 +329,18 @@ async fn write_pressure_loop(handle: GovernorHandle, mut shutdown: watch::Receiv
                     let since = pressure_since.get_or_insert_with(Instant::now);
                     if since.elapsed() >= sustained_threshold {
                         govern_write_pressure(&handle, pct);
-                        // Reset timer to avoid continuous rapid-fire actions.
                         pressure_since = Some(Instant::now());
                     }
                     if !handle.inner.write_pressure_active.swap(true, Ordering::Relaxed) {
                         info!(queue_pct = pct, "write pressure: queue > 50%");
-                        // G6: Emit metric for governor violation
                         metrics::counter!("bonsai_governor_violation_total", "type" => "write_pressure").increment(1);
+                        publish_governance_event(&handle, "governance_write_pressure", &format!("queue at {pct}%"));
                     }
                 } else {
                     pressure_since = None;
                     if handle.inner.write_pressure_active.swap(false, Ordering::Relaxed) {
                         info!(queue_pct = pct, "write pressure: queue retreated below 50%");
+                        publish_governance_event(&handle, "governance_write_clear", &format!("queue at {pct}%"));
                     }
                 }
             }
@@ -414,12 +426,13 @@ async fn rate_governance_loop(handle: GovernorHandle, mut shutdown: watch::Recei
                             excess_events = excess,
                             "rate governance: budget exceeded — shedding low-priority events"
                         );
-                        // G6: Emit metric for governor violation
                         metrics::counter!("bonsai_governor_violation_total", "type" => "rate_shedding").increment(1);
+                        publish_governance_event(&handle, "governance_rate_shedding", &format!("{eps} eps vs {budget_eps} budget"));
                     }
                 } else {
                     if handle.inner.rate_shedding_active.swap(false, Ordering::Relaxed) {
                         info!(eps, budget_eps, "rate governance: within budget — shedding cleared");
+                        publish_governance_event(&handle, "governance_rate_clear", &format!("{eps} eps within {budget_eps} budget"));
                     }
                 }
             }
@@ -427,4 +440,35 @@ async fn rate_governance_loop(handle: GovernorHandle, mut shutdown: watch::Recei
     }
 
     info!("rate governance loop stopped");
+}
+
+// ── D4-21 T2: Governance SSE event publisher ──────────────────────────────────
+
+/// Publish a governance state transition onto the SSE event stream so the UI
+/// (and any SSE subscriber) can react in real time.
+fn publish_governance_event(handle: &GovernorHandle, event_type: &str, detail: &str) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0);
+
+    let event = BonsaiEvent {
+        device_address: String::new(), // governance events are system-wide
+        event_type: event_type.to_string(),
+        detail_json: serde_json::json!({
+            "profile": handle.inner.profile.as_str(),
+            "detail": detail,
+            "memory_pressure_active": handle.inner.memory_pressure_active.load(Ordering::Relaxed),
+            "write_pressure_active": handle.inner.write_pressure_active.load(Ordering::Relaxed),
+            "rate_shedding_active": handle.inner.rate_shedding_active.load(Ordering::Relaxed),
+        })
+        .to_string(),
+        occurred_at_ns: now_ns,
+        state_change_event_id: String::new(),
+        source_type: "governance".to_string(),
+    };
+    if let Some(tx) = handle.inner.event_tx.lock().unwrap().as_ref() {
+        let _ = tx.send(event);
+    }
 }

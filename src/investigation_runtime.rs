@@ -155,6 +155,9 @@ async fn run_investigation(
     let mut total_cost = 0.0f64;
     let mut total_tokens = 0i64;
 
+    // D4-8 T3: Track which tool calls the agent used (for coverage gap analysis).
+    let mut queried_paths: Vec<String> = Vec::new();
+
     info!(id = %investigation_id, "investigation started");
 
     for iteration in 0..MAX_ITERATIONS {
@@ -185,11 +188,17 @@ async fn run_investigation(
             let raw_summary = resp.content.unwrap_or_else(|| "Investigation complete.".into());
             // D4-8 T1: Structured RCA extraction pass.
             let result_json = extract_rca_json(&raw_summary);
+            // D4-8 T3: Append coverage gap report.
+            let gap_report = compute_coverage_gaps(&quality, &queried_paths, &device_address);
             // D4-6 T4: Prefix quality warning if graph was sparse.
-            let summary = match &quality_warning {
+            let mut summary = match &quality_warning {
                 Some(warning) => format!("{warning}\n\n{raw_summary}"),
                 None => raw_summary,
             };
+            if !gap_report.is_empty() {
+                summary.push_str("\n\n");
+                summary.push_str(&gap_report);
+            }
             let _ = store.complete_investigation(
                 investigation_id.clone(),
                 "completed".to_string(),
@@ -203,6 +212,9 @@ async fn run_investigation(
         }
 
         for tc in &resp.tool_calls {
+            // D4-8 T3: Record tool call names for coverage gap analysis.
+            queried_paths.push(tc.name.clone());
+
             let input_json = serde_json::to_string(&tc.arguments).unwrap_or_default();
             let tool_result = crate::mcp_server::call_tool(&state, &tc.name, &tc.arguments).await;
             let output_json = match &tool_result {
@@ -229,10 +241,15 @@ async fn run_investigation(
         .unwrap_or_else(|| "Investigation terminated at iteration or budget limit.".into());
 
     let result_json = extract_rca_json(&raw_fallback);
-    let fallback_summary = match &quality_warning {
+    let gap_report = compute_coverage_gaps(&quality, &queried_paths, &device_address);
+    let mut fallback_summary = match &quality_warning {
         Some(warning) => format!("{warning}\n\n{raw_fallback}"),
         None => raw_fallback,
     };
+    if !gap_report.is_empty() {
+        fallback_summary.push_str("\n\n");
+        fallback_summary.push_str(&gap_report);
+    }
 
     let _ = store.complete_investigation(
         investigation_id.clone(),
@@ -243,6 +260,90 @@ async fn run_investigation(
         total_cost,
     ).await;
     info!(id = %investigation_id, cost = total_cost, quality_score, "investigation hit limit");
+}
+
+// ── D4-8 T3: Coverage gap reporter ─────────────────────────────────────────
+
+/// Compare graph quality data and agent tool usage to produce a structured
+/// "Missing Data" report appended to the investigation summary. This helps
+/// the operator understand why the LLM's findings may be incomplete.
+fn compute_coverage_gaps(
+    quality: &Option<GraphQuality>,
+    queried_paths: &[String],
+    device_address: &str,
+) -> String {
+    let mut gaps: Vec<String> = Vec::new();
+
+    // 1. Graph quality dimension gaps — flag any coverage < 40%.
+    if let Some(q) = quality {
+        if q.gnmi_coverage.pct < 40.0 {
+            gaps.push(format!(
+                "gNMI telemetry coverage is low ({:.0}%) — real-time interface and BGP state may be unavailable for {}.",
+                q.gnmi_coverage.pct, device_address
+            ));
+        }
+        if q.syslog_coverage.pct < 40.0 {
+            gaps.push(format!(
+                "Syslog coverage is low ({:.0}%) — fault events from device logs may be missing.",
+                q.syslog_coverage.pct
+            ));
+        }
+        if q.bmp_coverage.pct < 40.0 {
+            gaps.push(format!(
+                "BMP coverage is low ({:.0}%) — BGP route-level analysis is limited.",
+                q.bmp_coverage.pct
+            ));
+        }
+        if q.interface_counter_coverage.pct < 40.0 {
+            gaps.push(format!(
+                "Interface counter coverage is low ({:.0}%) — traffic utilization and error analysis may be incomplete.",
+                q.interface_counter_coverage.pct
+            ));
+        }
+        if q.topology_link_coverage.pct < 40.0 {
+            gaps.push(format!(
+                "Topology link coverage is low ({:.0}%) — blast radius calculation may miss physical paths.",
+                q.topology_link_coverage.pct
+            ));
+        }
+        if q.netbox_enrichment_coverage.pct < 20.0 {
+            gaps.push("NetBox enrichment is absent — site, rack, and role context unavailable.".to_string());
+        }
+
+        // Check if this device is in the weak devices list.
+        for weak in &q.weak_devices {
+            if weak.address == device_address {
+                for missing in &weak.missing {
+                    gaps.push(format!(
+                        "Device {} is missing {missing} signal data.",
+                        device_address
+                    ));
+                }
+            }
+        }
+    }
+
+    // 2. Tool usage gaps — agent didn't query certain data that could help.
+    let has = |name: &str| queried_paths.iter().any(|p| p == name);
+    if !has("get_device_blast_radius") {
+        gaps.push("Blast radius was not checked — nearby device impact is unknown.".to_string());
+    }
+    if !has("query_graph") {
+        gaps.push("No direct graph queries were performed — deeper Cypher analysis may reveal additional context.".to_string());
+    }
+    if !has("check_change_context") {
+        gaps.push("Change management context was not checked — this fault may be correlated with an active change window.".to_string());
+    }
+
+    if gaps.is_empty() {
+        return String::new();
+    }
+
+    let mut report = String::from("---\n## Coverage Gaps (auto-generated)\nThe following data gaps may affect investigation accuracy:\n");
+    for gap in &gaps {
+        report.push_str(&format!("- {gap}\n"));
+    }
+    report
 }
 
 fn system_prompt(device_address: &str, detection_id: Option<&str>) -> String {

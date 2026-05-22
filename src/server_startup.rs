@@ -570,6 +570,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         let snmp_cfg  = cfg.signals.snmp.clone();
         let targets   = cfg.target.clone();
         let snmp_bus  = std::sync::Arc::clone(&bus);
+        let snmp_gov  = shared_governor.clone().map(std::sync::Arc::new);
         spawn_or_register!(
             "snmp",
             cfg.signals.snmp.udp_addr.clone(),
@@ -577,7 +578,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             run_collector,
             |shutdown| async move {
                 bonsai::signals::snmp::run_snmp_receiver(
-                    snmp_cfg, targets, snmp_bus, shutdown,
+                    snmp_cfg, targets, snmp_bus, shutdown, snmp_gov,
                 ).await
             }
         );
@@ -808,6 +809,11 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     // collector connect/disconnect events appear on the SSE stream.
     if let (Some(Store::Core(core_store)), Some(manager)) = (&store, &collector_manager) {
         manager.set_event_sender(core_store.event_sender());
+    }
+
+    // D4-21 T2: Wire governance state transitions into the SSE event stream.
+    if let (Some(Store::Core(core_store)), Some(ref gov)) = (&store, &shared_governor) {
+        gov.set_event_sender(core_store.event_sender());
     }
 
     // D4-9 T3: In mode=all, auto-register the in-process collector so

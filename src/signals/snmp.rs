@@ -14,6 +14,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::{SnmpConfig, TargetConfig};
 use crate::event_bus::InProcessBus;
+use crate::resource_governor::GovernorHandle;
 use crate::telemetry::TelemetryUpdate;
 
 const OID_SYS_UPTIME: &str = "1.3.6.1.2.1.1.3.0";
@@ -240,6 +241,7 @@ pub async fn run_snmp_receiver(
     targets: Vec<TargetConfig>,
     bus: Arc<InProcessBus>,
     mut shutdown: watch::Receiver<bool>,
+    governor: Option<Arc<GovernorHandle>>,
 ) -> Result<()> {
     let archive = SnmpArchive::open(&cfg.archive_path).await?;
     let target_map = SnmpTargetMap::new(&targets);
@@ -337,6 +339,13 @@ pub async fn run_snmp_receiver(
                                 "snmp trap from unknown community — dropping (not in allowlist)"
                             );
                             metrics::counter!("bonsai_snmp_community_blocked_total").increment(1);
+                            continue;
+                        }
+
+                        // D4-21 T5: Under rate shedding or memory pressure, skip bus
+                        // publish. Archived data above is preserved for forensic review.
+                        if governor.as_deref().is_some_and(|g| g.should_shed()) {
+                            metrics::counter!("bonsai_snmp_shed_total").increment(1);
                             continue;
                         }
 

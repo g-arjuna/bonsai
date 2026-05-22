@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::{Mutex, watch};
 use tracing::{info, warn};
@@ -197,6 +197,9 @@ async fn run_udp(
     }
 }
 
+// D4-1 T9: Maximum concurrent TCP connections to prevent resource exhaustion.
+const MAX_TCP_CONNECTIONS: usize = 128;
+
 #[allow(clippy::too_many_arguments)]
 async fn run_tcp(
     listener: TcpListener,
@@ -209,6 +212,8 @@ async fn run_tcp(
     governor: Option<Arc<GovernorHandle>>,
     shun_engine: Option<Arc<ShunEngine>>,
 ) {
+    let conn_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
     loop {
         tokio::select! {
             _ = shutdown.changed() => {
@@ -218,48 +223,171 @@ async fn run_tcp(
             accept = listener.accept() => {
                 match accept {
                     Ok((stream, peer)) => {
+                        let current = conn_count.load(std::sync::atomic::Ordering::Relaxed);
+                        if current >= MAX_TCP_CONNECTIONS {
+                            warn!(peer = %peer, limit = MAX_TCP_CONNECTIONS, "syslog TCP connection limit reached — rejecting");
+                            metrics::counter!("bonsai_syslog_tcp_rejected_total").increment(1);
+                            drop(stream);
+                            continue;
+                        }
+                        conn_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        metrics::gauge!("bonsai_syslog_tcp_connections").set((current + 1) as f64);
+
                         let bus = Arc::clone(&bus);
                         let archive = archive.clone();
                         let fact_extractor = Arc::clone(&fact_extractor);
                         let target_map = Arc::clone(&target_map);
                         let governor = governor.clone();
                         let shun_engine = shun_engine.clone();
+                        let conn_count = Arc::clone(&conn_count);
                         tokio::spawn(async move {
+                            // D4-1 T9: RFC 6587 dual-mode TCP framing.
+                            // Auto-detect: if stream starts with an ASCII digit, use
+                            // octet-counting (e.g. "128 <pri>..."). Otherwise newline framing.
                             let mut reader = BufReader::new(stream);
-                            let mut line = String::new();
-                            loop {
-                                line.clear();
-                                match reader.read_line(&mut line).await {
-                                    Ok(0) => break,
-                                    Ok(n) if n > max_frame_bytes => {
-                                        warn!(peer = %peer, bytes = n, "syslog TCP frame exceeded limit");
-                                        break;
-                                    }
-                                    Ok(_) => {
-                                        handle_frame(
-                                            line.trim_end().to_string(),
-                                            "tcp",
-                                            peer.to_string(),
-                                            &bus,
-                                            &archive,
-                                            &fact_extractor,
-                                            &target_map,
-                                            governor.as_deref(),
-                                            shun_engine.as_deref(),
-                                        ).await;
-                                    }
-                                    Err(error) => {
-                                        warn!(%error, peer = %peer, "syslog TCP read failed");
-                                        break;
-                                    }
-                                }
+                            let peer_str = peer.to_string();
+
+                            // Peek first byte to detect framing mode.
+                            let octet_counting = match reader.fill_buf().await {
+                                Ok(buf) if !buf.is_empty() => buf[0].is_ascii_digit(),
+                                _ => false,
+                            };
+
+                            if octet_counting {
+                                run_tcp_octet_counting(
+                                    &mut reader, max_frame_bytes, &peer_str,
+                                    &bus, &archive, &fact_extractor, &target_map,
+                                    governor.as_deref(), shun_engine.as_deref(),
+                                ).await;
+                            } else {
+                                run_tcp_newline(
+                                    &mut reader, max_frame_bytes, &peer_str,
+                                    &bus, &archive, &fact_extractor, &target_map,
+                                    governor.as_deref(), shun_engine.as_deref(),
+                                ).await;
                             }
+
+                            let prev = conn_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                            metrics::gauge!("bonsai_syslog_tcp_connections").set((prev.saturating_sub(1)) as f64);
                         });
                     }
                     Err(error) => warn!(%error, "syslog TCP accept failed"),
                 }
             }
         }
+    }
+}
+
+// D4-1 T9: Newline-delimited TCP framing (legacy BSD syslog).
+#[allow(clippy::too_many_arguments)]
+async fn run_tcp_newline<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max_frame_bytes: usize,
+    peer_str: &str,
+    bus: &Arc<InProcessBus>,
+    archive: &SyslogArchive,
+    fact_extractor: &SyslogFactExtractor,
+    target_map: &SyslogTargetMap,
+    governor: Option<&GovernorHandle>,
+    shun_engine: Option<&ShunEngine>,
+) {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) => break,
+            Ok(n) if n > max_frame_bytes => {
+                warn!(peer = %peer_str, bytes = n, "syslog TCP frame exceeded limit");
+                break;
+            }
+            Ok(_) => {
+                handle_frame(
+                    line.trim_end().to_string(), "tcp", peer_str.to_string(),
+                    bus, archive, fact_extractor, target_map, governor, shun_engine,
+                ).await;
+            }
+            Err(error) => {
+                warn!(%error, peer = %peer_str, "syslog TCP read failed");
+                break;
+            }
+        }
+    }
+}
+
+// D4-1 T9: RFC 6587 octet-counting TCP framing.
+// Format: "<MSG_LEN> <syslog message>" where MSG_LEN is ASCII decimal length of the
+// syslog message that follows the space after the length.
+#[allow(clippy::too_many_arguments)]
+async fn run_tcp_octet_counting<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max_frame_bytes: usize,
+    peer_str: &str,
+    bus: &Arc<InProcessBus>,
+    archive: &SyslogArchive,
+    fact_extractor: &SyslogFactExtractor,
+    target_map: &SyslogTargetMap,
+    governor: Option<&GovernorHandle>,
+    shun_engine: Option<&ShunEngine>,
+) {
+    let mut len_buf = String::with_capacity(8);
+    loop {
+        // Read the length prefix: digits followed by a space.
+        len_buf.clear();
+        let mut found_space = false;
+        loop {
+            let available = match reader.fill_buf().await {
+                Ok(buf) if buf.is_empty() => return, // EOF
+                Ok(buf) => buf,
+                Err(error) => {
+                    warn!(%error, peer = %peer_str, "syslog TCP octet-counting read failed");
+                    return;
+                }
+            };
+            // Scan for space separator within available bytes.
+            let mut consumed = 0;
+            for &b in available {
+                consumed += 1;
+                if b == b' ' {
+                    found_space = true;
+                    break;
+                }
+                if !b.is_ascii_digit() || len_buf.len() > 7 {
+                    // Not a valid octet-counting length; abort.
+                    warn!(peer = %peer_str, "syslog TCP octet-counting: invalid length prefix");
+                    return;
+                }
+                len_buf.push(b as char);
+            }
+            reader.consume(consumed);
+            if found_space {
+                break;
+            }
+        }
+
+        let msg_len: usize = match len_buf.parse() {
+            Ok(n) if n <= max_frame_bytes => n,
+            Ok(n) => {
+                warn!(peer = %peer_str, bytes = n, "syslog TCP octet-counted frame exceeded limit");
+                return;
+            }
+            Err(_) => {
+                warn!(peer = %peer_str, len = %len_buf, "syslog TCP octet-counting: invalid length");
+                return;
+            }
+        };
+
+        // Read exactly msg_len bytes.
+        let mut msg_buf = vec![0u8; msg_len];
+        if let Err(error) = reader.read_exact(&mut msg_buf).await {
+            warn!(%error, peer = %peer_str, "syslog TCP octet-counting: incomplete frame");
+            return;
+        }
+
+        let raw = String::from_utf8_lossy(&msg_buf).trim_end().to_string();
+        handle_frame(
+            raw, "tcp", peer_str.to_string(),
+            bus, archive, fact_extractor, target_map, governor, shun_engine,
+        ).await;
     }
 }
 

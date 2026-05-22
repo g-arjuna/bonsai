@@ -197,6 +197,56 @@ The sidebar is grouped into three sections. All primary workspaces have `⌘1`�
 
 ---
 
+## Credential vault
+
+Bonsai encrypts all device credentials (gNMI passwords, SNMP community strings, API keys) in a local vault file (`runtime/vault.age`) using age encryption with an HMAC-SHA256 integrity tag.
+
+### Passphrase requirements
+
+- **Minimum 12 characters** — longer is better.
+- Avoid dictionary words. Use a password manager or let `install.sh` auto-generate one.
+- The passphrase is read from `BONSAI_VAULT_PASSPHRASE` on every startup.
+
+### What happens if the passphrase is lost
+
+Credentials are **unrecoverable**. The vault file cannot be decrypted without the original passphrase. Always keep a secure backup of the passphrase.
+
+### Backup
+
+Back up `runtime/vault.age` before any re-key operation:
+
+```bash
+cp runtime/vault.age runtime/vault.age.bak
+```
+
+### Re-keying (changing the passphrase)
+
+**CLI** (offline):
+```bash
+BONSAI_VAULT_PASSPHRASE="old-pass" \
+BONSAI_VAULT_NEW_PASSPHRASE="new-pass" \
+  ./target/release/vault-rekey runtime/
+```
+
+**API** (while bonsai is running):
+```bash
+export BONSAI_VAULT_NEW_PASSPHRASE="new-pass"
+curl -X POST http://localhost:3000/api/vault/rekey \
+  -H 'Content-Type: application/json' \
+  -d '{"new_passphrase_env": "BONSAI_VAULT_NEW_PASSPHRASE"}'
+```
+
+After re-key, update `BONSAI_VAULT_PASSPHRASE` in `.env` (or your shell profile) to the new passphrase before the next restart.
+
+### Security features
+
+- **zeroize**: Decrypted credentials are zeroed from memory on drop (`zeroize` crate).
+- **Atomic write**: Vault persists via write-to-tmp + rename — crash-safe on POSIX.
+- **HMAC-SHA256**: Integrity tag verified before decryption. Legacy vaults without HMAC gain one on next write.
+- **Runtime directory**: `runtime/` directory is set to mode `700` at startup.
+
+---
+
 ## Output adapter port customisation
 
 Each output adapter exposes **four independent fields** in the Integrations UI:
