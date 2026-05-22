@@ -9,9 +9,11 @@
   let overrideAddress = $state('');
   let overrideCollector = $state('');
   let saving = $state(false);
+  let sidecarStatus = $state([]);
 
   onMount(() => {
     loadStatus();
+    loadSidecarStatus();
 
     // Subscribe to SSE for live collector status updates.
     let es;
@@ -26,7 +28,7 @@
     } catch {}
 
     // 60s polling fallback (covers browsers without SSE and missed events).
-    const poll = setInterval(loadStatus, 60_000);
+    const poll = setInterval(() => { loadStatus(); loadSidecarStatus(); }, 60_000);
 
     return () => {
       clearInterval(poll);
@@ -77,6 +79,16 @@
     } finally {
       saving = false;
     }
+  }
+
+  async function loadSidecarStatus() {
+    try {
+      const r = await fetch('/api/sidecar/status');
+      if (r.ok) {
+        const data = await r.json();
+        sidecarStatus = data.sidecars || [];
+      }
+    } catch (_) {}
   }
 
   function observedRatio(col) {
@@ -259,6 +271,45 @@
           {/each}
         </div>
       </div>
+    {/if}
+
+    {#if sidecarStatus.length > 0}
+      <section style="margin-top: 20px;">
+        <h3 style="font-size:15px; margin-bottom: 10px;">Sidecars</h3>
+        <div class="collector-grid">
+          {#each sidecarStatus as sc (sc.name)}
+            <div class="card collector-card">
+              <div class="collector-header">
+                <div>
+                  <div class="collector-id">{sc.name}</div>
+                  <div class="muted small">{sc.kind} v{sc.version}</div>
+                </div>
+                <span class="badge {sc.status === 'healthy' ? 'healthy' : sc.status === 'stale' ? 'warn' : 'critical'}">
+                  {sc.status}{sc.health_reachable ? '' : ' (unreachable)'}
+                </span>
+              </div>
+              <div class="collector-stats">
+                <div class="stat">
+                  <span class="stat-label">Rules</span>
+                  <span class="stat-val">{sc.rules_loaded}</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">Detections today</span>
+                  <span class="stat-val">{sc.detections_today}</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">Queue</span>
+                  <span class="stat-val">{sc.queue_depth}</span>
+                </div>
+              </div>
+              <div class="collector-detail-grid" style="margin-top: 10px;">
+                <div><span class="muted">Uptime</span> {sc.uptime_secs ? duration(0, sc.uptime_secs * 1_000_000_000) : '—'}</div>
+                <div><span class="muted">Last detection</span> {sc.last_detection_at_ns ? relativeTime(sc.last_detection_at_ns) : '—'}</div>
+              </div>
+            </div>
+          {/each}
+        </div>
+      </section>
     {/if}
 
     <div class="card" style="margin-top: 16px;">

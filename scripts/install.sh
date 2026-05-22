@@ -13,6 +13,8 @@
 #
 #   --source    Force build from source even if Docker is available.
 #   --no-open   Do not open the browser after startup.
+#   --containerlab  Also install ContainerLab (Linux only).
+#   --uninstall     Remove bonsai binary, systemd units, and optionally containers.
 #   --help      Show this message.
 
 set -euo pipefail
@@ -28,10 +30,14 @@ die()     { error "$*"; exit 1; }
 # ── Flags ─────────────────────────────────────────────────────────────────────
 FORCE_SOURCE=false
 NO_OPEN=false
+INSTALL_CLAB=false
+DO_UNINSTALL=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --source)   FORCE_SOURCE=true ;;
-        --no-open)  NO_OPEN=true ;;
+        --source)       FORCE_SOURCE=true ;;
+        --no-open)      NO_OPEN=true ;;
+        --containerlab) INSTALL_CLAB=true ;;
+        --uninstall)    DO_UNINSTALL=true ;;
         --help|-h)
             sed -n '2,20p' "$0" | grep '^#' | sed 's/^# \?//'
             exit 0
@@ -40,6 +46,30 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+# ── Uninstall ─────────────────────────────────────────────────────────────────
+if $DO_UNINSTALL; then
+    step "Uninstalling bonsai"
+    if command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; then
+        info "Stopping Docker Compose services..."
+        docker compose --profile standalone down 2>/dev/null || true
+    fi
+    for UNIT in bonsai bonsai-chaos bonsai-rules-sidecar; do
+        if systemctl is-enabled "$UNIT" &>/dev/null 2>&1; then
+            info "Disabling systemd unit $UNIT..."
+            sudo systemctl stop "$UNIT" 2>/dev/null || true
+            sudo systemctl disable "$UNIT" 2>/dev/null || true
+        fi
+    done
+    for BIN in /usr/local/bin/bonsai "$HOME/.local/bin/bonsai"; do
+        if [[ -f "$BIN" ]]; then
+            info "Removing $BIN"
+            rm -f "$BIN" 2>/dev/null || sudo rm -f "$BIN" 2>/dev/null || true
+        fi
+    done
+    info "Uninstall complete. Repository and config files are preserved."
+    exit 0
+fi
 
 # ── Detect OS / arch ─────────────────────────────────────────────────────────
 OS="$(uname -s)"
@@ -55,6 +85,41 @@ case "$ARCH" in
     *)              die "Unsupported architecture: $ARCH." ;;
 esac
 info "Platform: ${PLATFORM}/${ARCH_TAG}"
+
+# ── Dependency version checks (D4-22 T3) ───────────────────────────────────────
+version_ge() {
+    # Returns 0 (true) if $1 >= $2 using sort -V
+    printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1 | grep -qxF "$2"
+}
+
+check_rust_version() {
+    if command -v rustc &>/dev/null; then
+        local ver
+        ver="$(rustc --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+        if ! version_ge "$ver" "1.70.0"; then
+            warn "Rust $ver found but >= 1.70.0 recommended. Consider: rustup update stable"
+        fi
+    fi
+}
+
+check_docker_version() {
+    if command -v docker &>/dev/null; then
+        local ver
+        ver="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '0.0.0')"
+        if ! version_ge "$ver" "24.0.0"; then
+            warn "Docker $ver found but >= 24.0 recommended for BuildKit support."
+        fi
+    fi
+}
+
+check_rust_version
+check_docker_version
+
+# ── Idempotency check ─────────────────────────────────────────────────────
+if command -v bonsai &>/dev/null; then
+    INSTALLED_VER="$(bonsai --version 2>/dev/null || echo 'unknown')"
+    info "Bonsai already installed ($INSTALLED_VER). Re-running will upgrade in place."
+fi
 
 # ── Locate repo root ──────────────────────────────────────────────────────────
 # When piped through bash the script may run from a temp file. Try to find
@@ -282,3 +347,15 @@ case "$INSTALL_PATH" in
     docker) install_docker ;;
     source) install_source ;;
 esac
+
+# ── Optional: ContainerLab install (D4-22 T3) ─────────────────────────────────
+if $INSTALL_CLAB; then
+    if [[ "$PLATFORM" != "linux" ]]; then
+        warn "ContainerLab is only supported on Linux — skipping."
+    elif command -v containerlab &>/dev/null; then
+        info "ContainerLab already installed: $(containerlab version 2>/dev/null | head -1)"
+    else
+        step "Installing ContainerLab"
+        bash -c "$(curl -sL https://get.containerlab.dev)" || warn "ContainerLab install failed — install manually from https://containerlab.dev"
+    fi
+fi

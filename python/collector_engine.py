@@ -16,6 +16,8 @@ Usage:
     export BONSAI_LOCAL_ADDR="localhost:50052"
     python python/collector_engine.py
 """
+import http.server
+import json
 import os
 import queue
 import sys
@@ -41,6 +43,59 @@ HEARTBEAT_PERIOD = 15.0          # seconds — matches src/sidecar_registry.rs
 # Running counters surfaced via SidecarHeartbeat. Updated under the GIL — no
 # explicit lock needed for monotonically-increasing int reads/writes.
 _metrics = {"events_in_total": 0, "detections_out_total": 0}
+
+# D4-9 T1: Health HTTP endpoint state
+_start_time = time.monotonic()
+_last_detection_at_ns: int = 0
+_detections_today: int = 0
+_detections_today_date: str = ""
+_rules_loaded: int = 0
+
+HEALTH_PORT = int(os.environ.get("BONSAI_SIDECAR_HEALTH_PORT", "9200"))
+
+
+class _HealthHandler(http.server.BaseHTTPRequestHandler):
+    """Lightweight handler for GET /health — no dependencies outside stdlib."""
+
+    def do_GET(self):
+        if self.path.rstrip("/") != "/health":
+            self.send_error(404)
+            return
+
+        today = time.strftime("%Y-%m-%d")
+        global _detections_today, _detections_today_date
+        if today != _detections_today_date:
+            _detections_today = 0
+            _detections_today_date = today
+
+        body = json.dumps({
+            "status": "ok",
+            "uptime_secs": round(time.monotonic() - _start_time, 1),
+            "rules_loaded": _rules_loaded,
+            "last_detection_at_ns": _last_detection_at_ns,
+            "detections_today": _detections_today,
+            "queue_depth": forward_queue.qsize(),
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass  # silence per-request logs
+
+
+def _start_health_server():
+    """Start the health HTTP server in a daemon thread."""
+    try:
+        server = http.server.HTTPServer(("0.0.0.0", HEALTH_PORT), _HealthHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True, name="health-http")
+        thread.start()
+        print(f"[collector-engine] health endpoint listening on :{HEALTH_PORT}/health")
+    except Exception as exc:
+        print(f"[collector-engine] WARNING: failed to start health server on :{HEALTH_PORT}: {exc}")
+
 
 def detection_ingest_generator() -> Generator[pb.DetectionEventIngest, None, None]:
     collector_id = os.environ.get("BONSAI_COLLECTOR_ID", "unknown-collector")
@@ -76,8 +131,15 @@ def core_forwarder_thread(core_addr: str):
             time.sleep(5)
 
 def on_detection(detection: Detection, local_client: BonsaiClient) -> None:
+    global _last_detection_at_ns, _detections_today, _detections_today_date
     ts = time.strftime("%H:%M:%S")
     print(f"[{ts}] LOCAL DETECTION: {detection.rule_id} on {detection.features.device_address}")
+    _last_detection_at_ns = detection.features.occurred_at_ns or int(time.time() * 1e9)
+    today = time.strftime("%Y-%m-%d")
+    if today != _detections_today_date:
+        _detections_today = 0
+        _detections_today_date = today
+    _detections_today += 1
 
     # 1. Persist to LOCAL collector graph
     try:
@@ -166,6 +228,9 @@ def main():
     print(f"  core ingest:     {core_addr}")
     print(f"  sidecar name:    {sidecar_name} (kind={SIDECAR_KIND})")
 
+    # D4-9 T1: Start health HTTP endpoint
+    _start_health_server()
+
     # Start core forwarder in background
     threading.Thread(target=core_forwarder_thread, args=(core_addr,), daemon=True).start()
 
@@ -211,6 +276,8 @@ def main():
                     run_scope="local",
                 )
                 engine_holder["engine"] = engine
+                global _rules_loaded
+                _rules_loaded = len(_gather_capabilities())
                 engine.start()
 
                 while True:

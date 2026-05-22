@@ -166,7 +166,7 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 
 ### Tasks
 
-**T1 — Secure credential memory (zeroize)**
+**T1 — Secure credential memory (zeroize)** ✅ batch8
 - Add `zeroize` crate. Replace `StoredCredential.password: String` with `zeroize::Zeroizing<String>`. Same for `ResolvedCredential.password`.
 - Implement `Drop` on `VaultState` to zero `entries` BTreeMap contents.
 - Audit all `resolve()` call sites — ensure no long-lived clones of password into gNMI client config or HTTP request headers.
@@ -185,7 +185,7 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 **T4 — UI user management (new `src/routes/Users.svelte`)**
 - List users with role badges, last login, created_at. Add/edit/delete local users (admin only). LDAP settings panel + test connection button.
 
-**T5 — UI-based LLM API key management**
+**T5 — UI-based LLM API key management** ✅ batch8
 - In `Settings.svelte` or new `src/routes/AiKeys.svelte`.
 - Per-provider entry: name, model, API key (stored in vault under alias `llm-{provider}`, masked in UI), custom base URL (for Ollama/LM Studio/vLLM), active toggle.
 - "Test connection" → `POST /api/ai/test` → minimal prompt → shows model name, latency, estimated token cost.
@@ -196,7 +196,7 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 - `POST /api/auth/apikeys` → generate scoped key (read/remediation/webhook) → return once, store hash.
 - Key rotation endpoint. UI list: key alias, last-used timestamp, scope, expiry.
 
-**T7 — DB + transport security**
+**T7 — DB + transport security** ✅ batch8
 - Enforce `runtime/` directory mode 700 in server startup.
 - TLS for HTTP API: `[server.tls]` cert/key config using axum-server + rustls. Self-signed cert auto-generated at startup if none provided, with warning log.
 - Makefile: `make backup` → tarballs `runtime/` with timestamp to `backups/`.
@@ -479,11 +479,11 @@ There is also no UI indicator of graph health — operators have no visibility i
 
 ### Tasks
 
-**T1 — Python sidecar health HTTP endpoint**
+**T1 — Python sidecar health HTTP endpoint** ✅ batch8
 - Add lightweight HTTP server to `collector_engine.py`: `GET /health` returns `{status, uptime_secs, rules_loaded, last_detection_at_ns, detections_today, queue_depth}`.
 - `[sidecar] health_port = 9200` in TOML config.
 
-**T2 — Rust backend: `/api/sidecar/status`**
+**T2 — Rust backend: `/api/sidecar/status`** ✅ batch8
 - New endpoint that proxies to sidecar health URL or returns last-known gRPC heartbeat timestamp.
 - Show sidecar as a card in `Collectors.svelte`: rules count, last detection, queue depth, health badge (green/yellow/red/grey).
 
@@ -1142,14 +1142,14 @@ The existing `/api/governance` endpoint (in `src/http_server/governance.rs`) ret
 - Add `release` target: `cargo build --release` + `cd ui && npm run build` + create `dist/` tarball for Ubuntu distribution.
 - Add `db-migrate` target: runs any pending graph schema migrations.
 
-**T3 — `install.sh` hardening**
+**T3 — `install.sh` hardening** ✅ batch8
 - Add idempotency check: detect if Bonsai is already installed at target path, prompt for upgrade vs fresh install.
 - Add dependency version checks before starting install: Rust ≥ 1.70, Docker ≥ 24.0, Docker Compose ≥ 2.20.
 - Add ContainerLab install option (currently documented only in testing guide troubleshooting).
 - Add rollback: if install fails, restore previous binary from backup.
 - Add `--uninstall` flag: remove bonsai binary, service file, and (optionally) runtime data.
 
-**T4 — GitHub Actions CI workflow**
+**T4 — GitHub Actions CI workflow** ✅ batch8
 - Create `.github/workflows/ci.yml`.
 - Jobs:
   - `build`: `cargo build --release` on Ubuntu 22.04.
@@ -1160,7 +1160,7 @@ The existing `/api/governance` endpoint (in `src/http_server/governance.rs`) ret
 - Cache: `~/.cargo/registry`, `target/`, `ui/node_modules`.
 - Fail fast: if `build` fails, skip `test`.
 
-**T5 — `ui/package-lock.json` and dependency audit**
+**T5 — `ui/package-lock.json` and dependency audit** ✅ batch8
 - Verify `package-lock.json` is committed to the repo (enables reproducible `npm ci`).
 - Run `npm audit` and document/fix any high-severity vulnerabilities.
 - Pin major dependency versions: Svelte, Vite, D3 to avoid breaking changes on fresh installs.

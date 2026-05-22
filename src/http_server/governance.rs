@@ -829,3 +829,79 @@ pub(super) async fn governance_profile_handler(
         "note": "Profile change takes effect after restart. Hot-swap is planned for a future release.",
     }))).into_response()
 }
+
+// ── D4-9 T2: Sidecar status (proxied health + registry snapshot) ─────────
+
+#[derive(Serialize)]
+pub(super) struct SidecarStatusResponse {
+    pub sidecars: Vec<SidecarStatusEntry>,
+}
+
+#[derive(Serialize)]
+pub(super) struct SidecarStatusEntry {
+    pub name: String,
+    pub kind: String,
+    pub status: String,
+    pub version: String,
+    pub rules_loaded: i64,
+    pub last_detection_at_ns: u64,
+    pub detections_today: i64,
+    pub uptime_secs: f64,
+    pub queue_depth: i64,
+    pub health_reachable: bool,
+}
+
+pub(super) async fn sidecar_status_handler(
+    State(state): State<AppState>,
+) -> Json<SidecarStatusResponse> {
+    let snapshots = state.sidecar_registry.snapshot().await;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .unwrap_or_default();
+
+    let mut entries = Vec::new();
+    for snap in &snapshots {
+        let addr = &snap.entry.address;
+        // Try to reach the sidecar's health HTTP endpoint.
+        // The Python sidecar runs health on port 9200 by default; try to
+        // derive the health URL from the registered gRPC address by using
+        // the same host with port 9200, or fall back to the sidecar address.
+        let host = addr.split(':').next().unwrap_or("127.0.0.1");
+        let health_port = std::env::var("BONSAI_SIDECAR_HEALTH_PORT").unwrap_or_else(|_| "9200".to_string());
+        let health_url = format!("http://{}:{}/health", host, health_port);
+
+        let (health_reachable, rules_loaded, last_det, det_today, uptime, queue) =
+            match client.get(&health_url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    if let Ok(body) = resp.json::<serde_json::Value>().await {
+                        (
+                            true,
+                            body.get("rules_loaded").and_then(|v| v.as_i64()).unwrap_or(0),
+                            body.get("last_detection_at_ns").and_then(|v| v.as_u64()).unwrap_or(0),
+                            body.get("detections_today").and_then(|v| v.as_i64()).unwrap_or(0),
+                            body.get("uptime_secs").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                            body.get("queue_depth").and_then(|v| v.as_i64()).unwrap_or(0),
+                        )
+                    } else {
+                        (true, 0, 0, 0, 0.0, 0)
+                    }
+                }
+                _ => (false, 0, snap.entry.last_heartbeat_ns, 0, 0.0, 0),
+            };
+
+        entries.push(SidecarStatusEntry {
+            name: snap.entry.name.clone(),
+            kind: snap.entry.kind.clone(),
+            status: format!("{:?}", snap.status).to_lowercase(),
+            version: snap.entry.version.clone(),
+            rules_loaded,
+            last_detection_at_ns: last_det,
+            detections_today: det_today,
+            uptime_secs: uptime,
+            queue_depth: queue,
+            health_reachable,
+        });
+    }
+    Json(SidecarStatusResponse { sidecars: entries })
+}

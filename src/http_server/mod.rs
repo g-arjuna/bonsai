@@ -67,10 +67,10 @@ use observability::{topology_handler, path_handler, blast_radius_handler, detect
 use device::{device_detail_handler, device_enrichment_handler, device_enrichment_conflicts_handler, device_cmdb_handler, device_config_history_handler, device_gnmi_readiness_handler, device_streaming_readiness_handler, device_recommendations_handler, yang_modules_handler, yang_search_handler, apply_device_selected_paths_handler, device_reparse_handler, profiles_handler, save_custom_profile_handler, enrichment_list_handler, enrichment_upsert_handler, enrichment_remove_handler, enrichment_test_handler, enrichment_run_handler, enrichment_audit_handler, netbox_import_handler};
 use device::InterfaceDetailJson;
 use managed_devices::{managed_devices_handler, discover_handler, credentials_handler, add_credential_handler, update_credential_handler, remove_credential_handler, test_credential_handler, add_managed_device_handler, add_managed_device_with_paths_handler, sites_handler, upsert_site_handler, site_summary_handler, remove_site_handler, remove_managed_device_handler, bulk_managed_device_action_handler, remove_impact_handler, bulk_import_handler, bootstrap_device_handler, device_seed_handler, bulk_bootstrap_handler};
-use governance::{assignment_override_handler, assignment_rules_handler, assignment_status_handler, collectors_handler, create_environment_handler, environments_handler, governance_state_handler, governance_history_handler, governance_profile_handler, health_handler, healthz_handler, readyz_handler, remove_environment_handler, assign_site_environment_handler, update_environment_handler, set_assignment_rules_handler, setup_status_handler, sidecars_handler};
+use governance::{assignment_override_handler, assignment_rules_handler, assignment_status_handler, collectors_handler, create_environment_handler, environments_handler, governance_state_handler, governance_history_handler, governance_profile_handler, health_handler, healthz_handler, readyz_handler, remove_environment_handler, assign_site_environment_handler, update_environment_handler, set_assignment_rules_handler, setup_status_handler, sidecars_handler, sidecar_status_handler};
 use outputs::{adapter_audit_handler, adapter_list_handler, adapter_remove_handler, adapter_test_handler, adapter_upsert_handler};
 use test_endpoints::{inject_detection_handler, parse_syslog_fixture_handler};
-use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler, get_ai_config_handler, post_ai_test_handler};
+use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler, get_ai_config_handler, post_ai_test_handler, list_ai_providers_handler, upsert_ai_provider_handler, remove_ai_provider_handler, test_ai_provider_handler};
 use ha::{ha_status_handler, ha_settings_handler, ha_patch_settings_handler, restart_handler};
 use nl_query::{explorer_ask_handler, nl_budget_handler};
 use shun::{create_shun_rule_handler, delete_shun_rule_handler, disable_shun_rule_handler, list_shun_rules_handler, shun_stats_handler};
@@ -974,6 +974,7 @@ fn adapter_and_schema_routes() -> Router<AppState> {
         .route("/api/docs", get(swagger_ui_handler))
         .route("/api/openapi.json", get(openapi_json_handler))
         .route("/api/sidecars", get(sidecars_handler))
+        .route("/api/sidecar/status", get(sidecar_status_handler))
         .route("/health", get(health_handler))
         .route("/healthz", get(healthz_handler))
         .route("/readyz", get(readyz_handler))
@@ -991,6 +992,9 @@ fn settings_routes() -> Router<AppState> {
         .route("/api/receivers/status", get(get_receiver_status_handler))
         .route("/api/ai/config", get(get_ai_config_handler))
         .route("/api/ai/test", post(post_ai_test_handler))
+        .route("/api/ai/providers", get(list_ai_providers_handler).post(upsert_ai_provider_handler))
+        .route("/api/ai/providers/remove", post(remove_ai_provider_handler))
+        .route("/api/ai/providers/test", post(test_ai_provider_handler))
         .route("/api/ha/status", get(ha_status_handler))
         .route("/api/ha/settings", get(ha_settings_handler).patch(ha_patch_settings_handler))
         .route("/api/restart", post(restart_handler))

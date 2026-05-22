@@ -1180,6 +1180,26 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 catalogue::load_catalogue(std::path::Path::new(&catalogue_dir)),
             ));
             let runtime_dir = "runtime".to_string();
+
+            // D4-3 T7: Enforce runtime/ directory permissions (mode 700)
+            {
+                let rd = std::path::Path::new(&runtime_dir);
+                if !rd.exists() {
+                    fs::create_dir_all(rd).context("failed to create runtime/ directory")?;
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let meta = fs::metadata(rd).context("failed to stat runtime/ directory")?;
+                    let mode = meta.permissions().mode() & 0o777;
+                    if mode != 0o700 {
+                        info!("runtime/ directory mode is {mode:03o}, enforcing 0700");
+                        fs::set_permissions(rd, std::fs::Permissions::from_mode(0o700))
+                            .context("failed to set runtime/ directory to mode 0700")?;
+                    }
+                }
+            }
+
             let sqlite_store = std::sync::Arc::new(
                 bonsai::sqlite_store::SqliteStore::open(std::path::Path::new(&runtime_dir))
                     .unwrap_or_else(|e| {

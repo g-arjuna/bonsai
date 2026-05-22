@@ -56,6 +56,20 @@ pub struct Config {
     pub target: Vec<TargetConfig>,
     #[serde(default)]
     pub ai: AiConfig,
+    #[serde(default)]
+    pub tls: HttpTlsConfig,
+}
+
+// ── HTTP TLS (D4-3 T7) ──────────────────────────────────────────────────────
+
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct HttpTlsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub cert_path: String,
+    #[serde(default)]
+    pub key_path: String,
 }
 
 // ── GNN (D5-T4 DV1) ─────────────────────────────────────────────────────────

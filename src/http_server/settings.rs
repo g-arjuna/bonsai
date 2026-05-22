@@ -403,6 +403,8 @@ pub struct AiTestResponse {
     pub error: Option<String>,
     pub provider: String,
     pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
 }
 
 pub async fn post_ai_test_handler(
@@ -417,15 +419,199 @@ pub async fn post_ai_test_handler(
             error: Some(e.to_string()),
             provider: provider_name,
             model: model_name,
+            latency_ms: None,
         }),
         Ok(provider) => {
             let msgs = vec![crate::ai_provider::AiMessage::user(
                 "Reply with exactly the word: pong",
             )];
+            let start = std::time::Instant::now();
             match provider.complete(msgs, vec![]).await {
-                Ok(_) => Json(AiTestResponse { ok: true, error: None, provider: provider_name, model: model_name }),
-                Err(e) => Json(AiTestResponse { ok: false, error: Some(e.to_string()), provider: provider_name, model: model_name }),
+                Ok(_) => Json(AiTestResponse {
+                    ok: true, error: None, provider: provider_name, model: model_name,
+                    latency_ms: Some(start.elapsed().as_millis() as u64),
+                }),
+                Err(e) => Json(AiTestResponse {
+                    ok: false, error: Some(e.to_string()), provider: provider_name, model: model_name,
+                    latency_ms: Some(start.elapsed().as_millis() as u64),
+                }),
             }
         }
     }
+}
+
+// ── LLM Provider management (D4-3 T5) ────────────────────────────────────────
+
+/// A configured LLM provider stored in the vault under alias `llm-{name}`.
+/// The vault username stores a JSON blob with provider metadata.
+/// The vault password stores the API key.
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct LlmProviderEntry {
+    pub name: String,
+    pub provider: String,
+    pub model: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default = "default_provider_active")]
+    pub active: bool,
+    #[serde(default)]
+    pub has_api_key: bool,
+}
+
+fn default_provider_active() -> bool { true }
+
+fn llm_alias(name: &str) -> String {
+    format!("llm-{}", name.trim().to_lowercase().replace(' ', "-"))
+}
+
+pub async fn list_ai_providers_handler(
+    State(state): State<AppState>,
+) -> Json<Vec<LlmProviderEntry>> {
+    let summaries = state.credentials.list().unwrap_or_default();
+    let mut providers: Vec<LlmProviderEntry> = Vec::new();
+    for s in &summaries {
+        if !s.alias.starts_with("llm-") {
+            continue;
+        }
+        let username = state.credentials.username_for_alias(&s.alias).unwrap_or_default();
+        if let Ok(mut entry) = serde_json::from_str::<LlmProviderEntry>(&username) {
+            let has_key = state.credentials.resolve(&s.alias, crate::credentials::ResolvePurpose::Test)
+                .map(|r| !r.password.is_empty())
+                .unwrap_or(false);
+            entry.has_api_key = has_key;
+            providers.push(entry);
+        }
+    }
+    Json(providers)
+}
+
+#[derive(serde::Deserialize)]
+pub struct UpsertAiProviderRequest {
+    pub name: String,
+    pub provider: String,
+    pub model: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default = "default_provider_active")]
+    pub active: bool,
+    #[serde(default)]
+    pub api_key: String,
+}
+
+pub async fn upsert_ai_provider_handler(
+    State(state): State<AppState>,
+    Json(body): Json<UpsertAiProviderRequest>,
+) -> Result<Json<LlmProviderEntry>, (StatusCode, String)> {
+    let alias = llm_alias(&body.name);
+    let meta = LlmProviderEntry {
+        name: body.name.clone(),
+        provider: body.provider.clone(),
+        model: body.model.clone(),
+        base_url: body.base_url.clone(),
+        active: body.active,
+        has_api_key: false,
+    };
+    let username_json = serde_json::to_string(&meta)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let api_key = if body.api_key.is_empty() {
+        state.credentials
+            .resolve(&alias, crate::credentials::ResolvePurpose::Test)
+            .map(|r| r.password.to_string())
+            .unwrap_or_default()
+    } else {
+        body.api_key.clone()
+    };
+
+    let exists = state.credentials.list().unwrap_or_default().iter().any(|s| s.alias == alias);
+    let result = if exists {
+        state.credentials.update(&alias, &username_json, &api_key)
+    } else {
+        state.credentials.add(&alias, &username_json, &api_key)
+    };
+    result.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(LlmProviderEntry {
+        has_api_key: !api_key.is_empty(),
+        ..meta
+    }))
+}
+
+#[derive(serde::Deserialize)]
+pub struct RemoveAiProviderRequest {
+    pub name: String,
+}
+
+pub async fn remove_ai_provider_handler(
+    State(state): State<AppState>,
+    Json(body): Json<RemoveAiProviderRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let alias = llm_alias(&body.name);
+    state.credentials.remove(&alias)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({"ok": true})))
+}
+
+#[derive(serde::Deserialize)]
+pub struct TestAiProviderRequest {
+    pub name: String,
+}
+
+pub async fn test_ai_provider_handler(
+    State(state): State<AppState>,
+    Json(body): Json<TestAiProviderRequest>,
+) -> Json<AiTestResponse> {
+    let alias = llm_alias(&body.name);
+    let username = match state.credentials.username_for_alias(&alias) {
+        Ok(u) => u,
+        Err(e) => return Json(AiTestResponse {
+            ok: false, error: Some(e.to_string()),
+            provider: String::new(), model: String::new(), latency_ms: None,
+        }),
+    };
+    let meta: LlmProviderEntry = match serde_json::from_str(&username) {
+        Ok(m) => m,
+        Err(e) => return Json(AiTestResponse {
+            ok: false, error: Some(e.to_string()),
+            provider: String::new(), model: String::new(), latency_ms: None,
+        }),
+    };
+    let api_key = state.credentials
+        .resolve(&alias, crate::credentials::ResolvePurpose::Test)
+        .map(|r| r.password.to_string())
+        .unwrap_or_default();
+
+    let tmp_env = format!("_BONSAI_AI_TEST_{}", std::process::id());
+    std::env::set_var(&tmp_env, &api_key);
+    let cfg = crate::config::AiConfig {
+        provider: meta.provider.clone(),
+        model: meta.model.clone(),
+        api_key_env: tmp_env.clone(),
+        base_url: meta.base_url.clone(),
+        ..Default::default()
+    };
+    let result = match crate::ai_provider::build_provider(&cfg) {
+        Err(e) => AiTestResponse {
+            ok: false, error: Some(e.to_string()),
+            provider: meta.provider.clone(), model: meta.model.clone(), latency_ms: None,
+        },
+        Ok(prov) => {
+            let msgs = vec![crate::ai_provider::AiMessage::user("Reply with exactly the word: pong")];
+            let start = std::time::Instant::now();
+            match prov.complete(msgs, vec![]).await {
+                Ok(_) => AiTestResponse {
+                    ok: true, error: None,
+                    provider: meta.provider.clone(), model: meta.model.clone(),
+                    latency_ms: Some(start.elapsed().as_millis() as u64),
+                },
+                Err(e) => AiTestResponse {
+                    ok: false, error: Some(e.to_string()),
+                    provider: meta.provider.clone(), model: meta.model.clone(),
+                    latency_ms: Some(start.elapsed().as_millis() as u64),
+                },
+            }
+        }
+    };
+    std::env::remove_var(&tmp_env);
+    Json(result)
 }

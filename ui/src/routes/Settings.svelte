@@ -13,6 +13,21 @@
   let aiTesting = $state(false);
   let aiTestResult = $state(null);
 
+  // ── LLM Provider management (D4-3 T5) ─────────────────────────────────────
+  let llmProviders = $state([]);
+  let showProviderForm = $state(false);
+  let providerForm = $state({ name: '', provider: 'anthropic', model: '', base_url: '', api_key: '', active: true });
+  let providerSaving = $state(false);
+  let providerTesting = $state({});   // name → {loading, result}
+
+  const PROVIDER_OPTIONS = [
+    { value: 'anthropic', label: 'Anthropic', defaultModel: 'claude-opus-4-5' },
+    { value: 'openai',    label: 'OpenAI',    defaultModel: 'gpt-4o' },
+    { value: 'gemini',    label: 'Gemini',     defaultModel: 'gemini-2.5-pro' },
+    { value: 'ollama',    label: 'Ollama',     defaultModel: 'llama3' },
+    { value: 'moonshot',  label: 'Moonshot',   defaultModel: 'moonshot-v1-128k' },
+  ];
+
   // Local editable copy — updated on load, mutated by toggles/inputs
   let cfg = $state({
     bmp:        { enabled: false, addr: '' },
@@ -67,6 +82,7 @@
     pollStatus();
     statusPollTimer = setInterval(pollStatus, 5000);
     fetch('/api/ai/config').then(r => r.ok ? r.json() : null).then(d => { if (d) aiCfg = d; }).catch(() => {});
+    loadProviders();
     try {
       const r = await fetch('/api/settings/streaming');
       if (!r.ok) throw new Error(await r.text());
@@ -131,6 +147,68 @@
     } finally {
       aiTesting = false;
     }
+  }
+
+  async function loadProviders() {
+    try {
+      const r = await fetch('/api/ai/providers');
+      if (r.ok) llmProviders = await r.json();
+    } catch (_) {}
+  }
+
+  async function saveProvider() {
+    providerSaving = true;
+    try {
+      const r = await fetch('/api/ai/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(providerForm),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      toast('Provider saved', 'success');
+      showProviderForm = false;
+      providerForm = { name: '', provider: 'anthropic', model: '', base_url: '', api_key: '', active: true };
+      await loadProviders();
+    } catch (e) {
+      toast(`Save failed: ${e.message}`, 'error');
+    } finally {
+      providerSaving = false;
+    }
+  }
+
+  async function removeProvider(name) {
+    try {
+      const r = await fetch('/api/ai/providers/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      toast(`Removed ${name}`, 'info');
+      await loadProviders();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  async function testProvider(name) {
+    providerTesting = { ...providerTesting, [name]: { loading: true, result: null } };
+    try {
+      const r = await fetch('/api/ai/providers/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const data = await r.json();
+      providerTesting = { ...providerTesting, [name]: { loading: false, result: data } };
+    } catch (e) {
+      providerTesting = { ...providerTesting, [name]: { loading: false, result: { ok: false, error: e.message } } };
+    }
+  }
+
+  function editProvider(p) {
+    providerForm = { name: p.name, provider: p.provider, model: p.model, base_url: p.base_url || '', api_key: '', active: p.active };
+    showProviderForm = true;
   }
 
   function discard() {
@@ -246,12 +324,98 @@
         </button>
         {#if aiTestResult}
           <span class="ai-test-result ai-test-{aiTestResult.ok ? 'ok' : 'err'}">
-            {aiTestResult.ok ? 'Connection OK' : `Failed: ${aiTestResult.error}`}
+            {aiTestResult.ok ? `Connection OK (${aiTestResult.latency_ms ?? '?'}ms)` : `Failed: ${aiTestResult.error}`}
           </span>
         {/if}
       </div>
     </section>
   {/if}
+
+  <section class="section">
+    <div class="section-header-row">
+      <div>
+        <h2>LLM Providers</h2>
+        <p class="section-desc">Manage API keys for AI providers. Keys are stored in the encrypted vault.</p>
+      </div>
+      <button class="btn-primary" onclick={() => { showProviderForm = !showProviderForm; }}>+ Add Provider</button>
+    </div>
+
+    {#if showProviderForm}
+      <div class="provider-form">
+        <div class="pf-row">
+          <label>Name<input type="text" bind:value={providerForm.name} placeholder="e.g. prod-anthropic" /></label>
+          <label>Provider
+            <select bind:value={providerForm.provider} onchange={() => {
+              const opt = PROVIDER_OPTIONS.find(o => o.value === providerForm.provider);
+              if (opt && !providerForm.model) providerForm.model = opt.defaultModel;
+            }}>
+              {#each PROVIDER_OPTIONS as opt}
+                <option value={opt.value}>{opt.label}</option>
+              {/each}
+            </select>
+          </label>
+        </div>
+        <div class="pf-row">
+          <label>Model<input type="text" bind:value={providerForm.model} placeholder="model name" /></label>
+          <label>Base URL (optional)<input type="text" bind:value={providerForm.base_url} placeholder="https://..." /></label>
+        </div>
+        <div class="pf-row">
+          <label>API Key<input type="password" bind:value={providerForm.api_key} placeholder="leave blank to keep existing" /></label>
+          <label class="toggle-label">
+            <input type="checkbox" bind:checked={providerForm.active} /> Active
+          </label>
+        </div>
+        <div class="pf-actions">
+          <button class="btn-primary" onclick={saveProvider} disabled={providerSaving || !providerForm.name.trim()}>
+            {providerSaving ? 'Saving…' : 'Save'}
+          </button>
+          <button class="btn-secondary" onclick={() => { showProviderForm = false; }}>Cancel</button>
+        </div>
+      </div>
+    {/if}
+
+    {#if llmProviders.length > 0}
+      <div class="provider-grid">
+        {#each llmProviders as p (p.name)}
+          <div class="provider-card" class:inactive={!p.active}>
+            <div class="prov-header">
+              <div>
+                <span class="prov-name">{p.name}</span>
+                <span class="prov-type">{p.provider}</span>
+              </div>
+              <span class="badge {p.active ? 'healthy' : 'critical'}">{p.active ? 'active' : 'inactive'}</span>
+            </div>
+            <div class="prov-detail">
+              <span class="ai-label">Model</span><span class="ai-value">{p.model}</span>
+            </div>
+            {#if p.base_url}
+              <div class="prov-detail">
+                <span class="ai-label">Base URL</span><span class="ai-value">{p.base_url}</span>
+              </div>
+            {/if}
+            <div class="prov-detail">
+              <span class="ai-label">API Key</span>
+              <span class="ai-value">{p.has_api_key ? '••••••••' : '<not set>'}</span>
+            </div>
+            <div class="prov-actions">
+              <button class="btn-secondary btn-sm" onclick={() => editProvider(p)}>Edit</button>
+              <button class="btn-secondary btn-sm" onclick={() => testProvider(p.name)} disabled={providerTesting[p.name]?.loading || !p.has_api_key}>
+                {providerTesting[p.name]?.loading ? 'Testing…' : 'Test'}
+              </button>
+              <button class="btn-danger btn-sm" onclick={() => removeProvider(p.name)}>Remove</button>
+              {#if providerTesting[p.name]?.result}
+                <span class="ai-test-result ai-test-{providerTesting[p.name].result.ok ? 'ok' : 'err'}">
+                  {providerTesting[p.name].result.ok ? `OK (${providerTesting[p.name].result.latency_ms ?? '?'}ms)` : providerTesting[p.name].result.error}
+                </span>
+              {/if}
+            </div>
+          </div>
+        {/each}
+      </div>
+    {:else if !showProviderForm}
+      <p class="muted-hint">No LLM providers configured yet. Click "+ Add Provider" to store one in the vault.</p>
+    {/if}
+  </section>
 </div>
 
 <style>
@@ -481,4 +645,29 @@
   .ai-test-result { font-size: 0.8rem; }
   .ai-test-ok { color: #4ade80; }
   .ai-test-err { color: #f87171; }
+
+  .section-header-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+  .section-header-row h2 { margin: 0 0 4px; }
+  .section-header-row .section-desc { margin: 0; }
+
+  .provider-form { background: var(--color-surface, #1a1a2e); border: 1px solid #4c6ef5; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .pf-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px; }
+  .pf-row label { display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; color: var(--color-muted, #6b7280); text-transform: uppercase; letter-spacing: 0.04em; }
+  .pf-row input, .pf-row select { font-size: 0.84rem; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--color-border, #2d2d44); background: var(--color-bg, #111827); color: inherit; font-family: monospace; }
+  .pf-actions { display: flex; gap: 8px; margin-top: 6px; }
+  .toggle-label { display: flex; align-items: center; gap: 6px; font-size: 0.84rem; cursor: pointer; }
+  .toggle-label input { width: auto; }
+
+  .provider-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+  .provider-card { background: var(--color-surface, #1a1a2e); border: 1px solid var(--color-border, #2d2d44); border-radius: 8px; padding: 14px 16px; }
+  .provider-card.inactive { opacity: 0.6; }
+  .prov-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .prov-name { font-weight: 700; font-size: 0.95rem; }
+  .prov-type { font-size: 0.72rem; font-weight: 600; padding: 1px 6px; border-radius: 4px; background: #1e3a5f; color: #60a5fa; margin-left: 8px; }
+  .prov-detail { display: flex; gap: 12px; font-size: 0.82rem; margin-bottom: 4px; }
+  .prov-actions { display: flex; gap: 6px; align-items: center; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--color-border, #2d2d44); flex-wrap: wrap; }
+  .btn-sm { padding: 3px 10px; font-size: 0.75rem; }
+  .btn-danger { background: #7f1d1d; color: #fca5a5; border: 1px solid #f8717144; border-radius: 6px; padding: 3px 10px; font-size: 0.75rem; cursor: pointer; }
+  .btn-danger:hover { background: #991b1b; }
+  .muted-hint { color: var(--color-muted, #6b7280); font-size: 0.82rem; }
 </style>
