@@ -95,7 +95,12 @@
       <p class="eyebrow">ML / Detection Engine</p>
       <h2>Sidecars</h2>
     </div>
-    <button class="ghost" onclick={() => activeTab === 'rules' ? loadRules() : loadStatus()}>Refresh</button>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <a href="/bonpy/" class="bonpy-link" target="_self" title="Open the Bonpy Python/ML/AIOps dashboard">
+        <span class="bonpy-icon">🐍</span> Bonpy Dashboard →
+      </a>
+      <button class="ghost" onclick={() => activeTab === 'rules' ? loadRules() : loadStatus()}>Refresh</button>
+    </div>
   </div>
 
   <div class="tabs">
@@ -267,4 +272,24 @@
   .toggle-btn { background: none; border: 1px solid var(--border-subtle); border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 11px; color: var(--text-tertiary); }
   .toggle-btn.on { color: var(--state-healthy, #22c55e); border-color: rgba(34,197,94,0.3); }
   .toggle-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .bonpy-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 12px;
+    border: 1px solid rgba(99,102,241,0.35);
+    border-radius: 4px;
+    font-size: 12px;
+    color: #818cf8;
+    text-decoration: none;
+    background: rgba(99,102,241,0.08);
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .bonpy-link:hover {
+    background: rgba(99,102,241,0.18);
+    border-color: rgba(99,102,241,0.6);
+    color: #a5b4fc;
+  }
+  .bonpy-icon { font-size: 14px; }
 </style>
