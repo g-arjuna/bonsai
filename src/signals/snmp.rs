@@ -112,6 +112,10 @@ pub struct SnmpFactExtractor {
 }
 
 impl SnmpFactExtractor {
+    pub fn pattern_count(&self) -> usize {
+        self.patterns.len()
+    }
+
     pub fn load_from_dir(dir: &str) -> Self {
         if dir.trim().is_empty() {
             return Self::default();
@@ -246,12 +250,13 @@ pub async fn run_snmp_receiver(
     bus: Arc<InProcessBus>,
     mut shutdown: watch::Receiver<bool>,
     governor: Option<Arc<GovernorHandle>>,
+    mut pattern_rx: Option<watch::Receiver<Arc<SnmpFactExtractor>>>,
 ) -> Result<()> {
     let archive = SnmpArchive::open(&cfg.archive_path).await?;
     let target_map = SnmpTargetMap::new(&targets);
-    let fact_extractor = SnmpFactExtractor::load_from_dir(
+    let mut fact_extractor = Arc::new(SnmpFactExtractor::load_from_dir(
         cfg.oid_pattern_dir.as_deref().unwrap_or("config/snmp_oid_patterns"),
-    );
+    ));
     let community_allowlist: Vec<String> = cfg.community_allowlist.clone();
     let v3_users: Vec<crate::config::SnmpV3User> = cfg.v3_users.clone();
 
@@ -272,10 +277,22 @@ pub async fn run_snmp_receiver(
 
     let mut buf = vec![0_u8; cfg.max_frame_bytes.max(1)];
     loop {
+        let pattern_changed = async {
+            match pattern_rx.as_mut() {
+                Some(rx) => { rx.changed().await.ok(); true }
+                None => { std::future::pending::<bool>().await }
+            }
+        };
         tokio::select! {
             _ = shutdown.changed() => {
                 info!("snmp UDP listener stopping");
                 break;
+            }
+            _ = pattern_changed => {
+                if let Some(rx) = pattern_rx.as_ref() {
+                    fact_extractor = rx.borrow().clone();
+                    info!("snmp: hot-reloaded OID pattern extractor");
+                }
             }
             recv = socket.recv_from(&mut buf) => {
                 match recv {

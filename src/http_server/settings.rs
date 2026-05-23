@@ -640,3 +640,62 @@ pub async fn test_ai_provider_handler(
     std::env::remove_var(&tmp_env);
     Json(result)
 }
+
+#[derive(Serialize)]
+pub struct PatternReloadResponse {
+    pub syslog_reloaded: bool,
+    pub snmp_reloaded: bool,
+    pub syslog_pattern_count: usize,
+    pub snmp_pattern_count: usize,
+    pub error: Option<String>,
+}
+
+/// POST /api/config/reload-patterns
+/// Hot-reload syslog and SNMP OID pattern extractors from disk without restart.
+pub async fn reload_patterns_handler(
+    State(state): State<super::AppState>,
+) -> Result<Json<PatternReloadResponse>, (StatusCode, String)> {
+    use crate::signals::syslog::SyslogFactExtractor;
+    use crate::signals::snmp::SnmpFactExtractor;
+    use std::sync::Arc;
+
+    let mut syslog_reloaded = false;
+    let mut syslog_count = 0;
+    let mut snmp_reloaded = false;
+    let mut snmp_count = 0;
+    let mut errors: Vec<String> = Vec::new();
+
+    if let Some(tx) = &state.syslog_pattern_tx {
+        let dir = &state.syslog_pattern_dir;
+        let extractor = SyslogFactExtractor::load_from_dir(dir);
+        syslog_count = extractor.pattern_count();
+        match tx.send(Arc::new(extractor)) {
+            Ok(_) => {
+                syslog_reloaded = true;
+                tracing::info!(dir = %dir, patterns = syslog_count, "syslog patterns hot-reloaded");
+            }
+            Err(e) => errors.push(format!("syslog: {e}")),
+        }
+    }
+
+    if let Some(tx) = &state.snmp_pattern_tx {
+        let dir = &state.snmp_oid_pattern_dir;
+        let extractor = SnmpFactExtractor::load_from_dir(dir);
+        snmp_count = extractor.pattern_count();
+        match tx.send(Arc::new(extractor)) {
+            Ok(_) => {
+                snmp_reloaded = true;
+                tracing::info!(dir = %dir, patterns = snmp_count, "snmp OID patterns hot-reloaded");
+            }
+            Err(e) => errors.push(format!("snmp: {e}")),
+        }
+    }
+
+    Ok(Json(PatternReloadResponse {
+        syslog_reloaded,
+        snmp_reloaded,
+        syslog_pattern_count: syslog_count,
+        snmp_pattern_count: snmp_count,
+        error: if errors.is_empty() { None } else { Some(errors.join("; ")) },
+    }))
+}

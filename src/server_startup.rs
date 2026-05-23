@@ -400,6 +400,26 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     let auto_investigate = cfg.ai.auto_investigate_unmatched
         && std::env::var(&cfg.ai.api_key_env).is_ok();
 
+    // D4-7 T3: Hot-reload watch channels for syslog and SNMP OID pattern extractors.
+    let init_syslog_extractor = std::sync::Arc::new(
+        bonsai::signals::syslog::SyslogFactExtractor::load_from_dir(
+            &cfg.layered_ingestion.syslog_patterns_path,
+        ),
+    );
+    let (syslog_pattern_tx, syslog_pattern_rx) =
+        tokio::sync::watch::channel(std::sync::Arc::clone(&init_syslog_extractor));
+    let syslog_pattern_tx = std::sync::Arc::new(syslog_pattern_tx);
+
+    let snmp_oid_dir = cfg.signals.snmp.oid_pattern_dir
+        .clone()
+        .unwrap_or_else(|| "config/snmp_oid_patterns".to_string());
+    let init_snmp_extractor = std::sync::Arc::new(
+        bonsai::signals::snmp::SnmpFactExtractor::load_from_dir(&snmp_oid_dir),
+    );
+    let (snmp_pattern_tx, snmp_pattern_rx) =
+        tokio::sync::watch::channel(std::sync::Arc::clone(&init_snmp_extractor));
+    let snmp_pattern_tx = std::sync::Arc::new(snmp_pattern_tx);
+
     let coordinator = if let Some(Store::Core(ref s)) = store {
         let playbook_library = (cfg.remediation.auto_propose || auto_investigate).then(|| {
             bonsai::playbook::PlaybookLibrary::load_dir(&cfg.remediation.playbook_library_dir)
@@ -639,6 +659,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 bonsai::signals::syslog::run_syslog_receiver(
                     syslog_cfg, pattern_dir, targets, syslog_bus, shutdown, governor,
                     shun_engine_for_syslog,
+                    Some(syslog_pattern_rx),
                 ).await
             }
         );
@@ -657,6 +678,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             |shutdown| async move {
                 bonsai::signals::snmp::run_snmp_receiver(
                     snmp_cfg, targets, snmp_bus, shutdown, snmp_gov,
+                    Some(snmp_pattern_rx),
                 ).await
             }
         );
@@ -1478,6 +1500,10 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         cfg.gnn.clone(),
                         auto_investigate.then_some(investigation_rx),
                         Some(std::sync::Arc::clone(&shun_engine)),
+                        Some(std::sync::Arc::clone(&syslog_pattern_tx)),
+                        Some(std::sync::Arc::clone(&snmp_pattern_tx)),
+                        cfg.layered_ingestion.syslog_patterns_path.clone(),
+                        snmp_oid_dir.clone(),
                     ),
                 )
                 .await

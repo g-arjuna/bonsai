@@ -70,7 +70,7 @@ use managed_devices::{managed_devices_handler, discover_handler, credentials_han
 use governance::{assignment_override_handler, assignment_rules_handler, assignment_status_handler, collectors_handler, create_environment_handler, environments_handler, governance_state_handler, governance_history_handler, governance_profile_handler, health_handler, healthz_handler, readyz_handler, remove_environment_handler, assign_site_environment_handler, update_environment_handler, set_assignment_rules_handler, setup_status_handler, sidecars_handler, sidecar_status_handler};
 use outputs::{adapter_audit_handler, adapter_list_handler, adapter_remove_handler, adapter_test_handler, adapter_upsert_handler};
 use test_endpoints::{inject_detection_handler, parse_syslog_fixture_handler};
-use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler, get_ai_config_handler, post_ai_test_handler, list_ai_providers_handler, upsert_ai_provider_handler, remove_ai_provider_handler, test_ai_provider_handler};
+use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler, get_ai_config_handler, post_ai_test_handler, list_ai_providers_handler, upsert_ai_provider_handler, remove_ai_provider_handler, test_ai_provider_handler, reload_patterns_handler};
 use ha::{ha_status_handler, ha_settings_handler, ha_patch_settings_handler, restart_handler};
 use nl_query::{explorer_ask_handler, nl_budget_handler};
 use shun::{create_shun_rule_handler, delete_shun_rule_handler, disable_shun_rule_handler, list_shun_rules_handler, shun_stats_handler};
@@ -686,6 +686,12 @@ pub struct AppState {
     pub gnn_config: crate::config::GnnConfig,
     /// D4-2: Syslog shunning engine. None if not enabled.
     pub shun_engine: Option<Arc<crate::shun::ShunEngine>>,
+    /// D4-7 T3: Hot-reload senders for syslog and SNMP pattern extractors.
+    pub syslog_pattern_tx: Option<Arc<tokio::sync::watch::Sender<Arc<crate::signals::syslog::SyslogFactExtractor>>>>,
+    pub snmp_pattern_tx: Option<Arc<tokio::sync::watch::Sender<Arc<crate::signals::snmp::SnmpFactExtractor>>>>,
+    /// D4-7 T3: Pattern directories for reload.
+    pub syslog_pattern_dir: String,
+    pub snmp_oid_pattern_dir: String,
 }
 
 impl axum::extract::FromRef<AppState> for Option<Arc<crate::ha_coordinator::HACoordinator>> {
@@ -734,6 +740,10 @@ pub fn router(
     gnn_config: crate::config::GnnConfig,
     investigation_rx: Option<tokio::sync::mpsc::Receiver<crate::write_coordinator::AutoInvestigateRequest>>,
     shun_engine: Option<Arc<crate::shun::ShunEngine>>,
+    syslog_pattern_tx: Option<Arc<tokio::sync::watch::Sender<Arc<crate::signals::syslog::SyslogFactExtractor>>>>,
+    snmp_pattern_tx: Option<Arc<tokio::sync::watch::Sender<Arc<crate::signals::snmp::SnmpFactExtractor>>>>,
+    syslog_pattern_dir: String,
+    snmp_oid_pattern_dir: String,
 ) -> Router {
     let state = AppState {
         store,
@@ -771,6 +781,10 @@ pub fn router(
         ai_config,
         gnn_config,
         shun_engine,
+        syslog_pattern_tx,
+        snmp_pattern_tx,
+        syslog_pattern_dir,
+        snmp_oid_pattern_dir,
     };
 
     // D3-6 T6: consume auto-investigate requests from the write coordinator.
@@ -1006,6 +1020,7 @@ fn settings_routes() -> Router<AppState> {
         .route("/api/ha/status", get(ha_status_handler))
         .route("/api/ha/settings", get(ha_settings_handler).patch(ha_patch_settings_handler))
         .route("/api/restart", post(restart_handler))
+        .route("/api/config/reload-patterns", post(reload_patterns_handler))
 }
 
 fn shun_routes() -> Router<AppState> {

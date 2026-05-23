@@ -393,7 +393,7 @@ There is also no UI indicator of graph health — operators have no visibility i
 - Subsequent boots: load config from DB. Fall back to YAML only if DB is empty (graceful degradation during migration window).
 - Migration is idempotent: detect already-migrated state by checking for existing rows in `ConfigItem` table.
 
-**T3 — Hot-reload architecture per config class**
+**T3 — Hot-reload architecture per config class** ✅ batch17
 - Syslog patterns: `watch::Sender<Arc<SyslogFactExtractor>>` — send updated extractor on PATCH API without process restart.
 - SNMP OID patterns: same watch channel approach.
 - Synthesizer rules: SIGHUP to Python sidecar or dedicated reload API endpoint on sidecar.
@@ -407,7 +407,7 @@ There is also no UI indicator of graph health — operators have no visibility i
 - SNMP OID pattern manager already planned in D4-1 T5 (`Snmp.svelte`).
 - Navigation path: Settings → Advanced Config → {Syslog Patterns | SNMP OID Patterns | Detection Rules | gNMI Paths | Playbooks}.
 
-**T5 — Minimal TOML after migration**
+**T5 — Minimal TOML after migration** ✅ batch17
 - Post-migration, reduce `bonsai.toml` to: server bind address, mode, DB path, vault passphrase env var name, resource profile.
 - Everything else managed via UI + DB.
 - Update `bonsai.toml.example` to reflect the minimal config and add comments pointing to UI for further configuration.
@@ -466,7 +466,7 @@ There is also no UI indicator of graph health — operators have no visibility i
 - Inject graph schema as additional system context so LLM knows available node types, relationships, and properties before it starts querying.
 - Add few-shot investigation examples covering: BGP session down, interface down, 30% packet loss, config-caused fault, redundancy loss.
 
-**T6 — Fault injection RCA test harness**
+**T6 — Fault injection RCA test harness** ✅ batch17
 - `python/inject_fault.py` (26KB, existing) — audit current capabilities, then extend: `--inject-packet-loss 30`, `--inject-bgp-flap`, `--inject-config-change`, `--inject-interface-down`.
 - After each injection: trigger investigation programmatically → wait for completion → compare `root_cause_type` vs expected value.
 - Test matrix: interface_down (gNMI only), bgp_neighbor_down (gNMI+syslog), 30% packet loss, config-caused fault, redundancy degraded.

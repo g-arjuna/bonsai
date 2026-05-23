@@ -96,6 +96,7 @@ pub async fn run_syslog_receiver(
     shutdown: watch::Receiver<bool>,
     governor: Option<GovernorHandle>,
     shun_engine: Option<Arc<ShunEngine>>,
+    pattern_rx: Option<watch::Receiver<Arc<SyslogFactExtractor>>>,
 ) -> Result<()> {
     let archive = SyslogArchive::open(&cfg.archive_path).await?;
     let fact_extractor = Arc::new(SyslogFactExtractor::load_from_dir(&pattern_dir));
@@ -119,6 +120,7 @@ pub async fn run_syslog_receiver(
             shutdown.clone(),
             governor.clone(),
             shun_engine.clone(),
+            pattern_rx.clone(),
         )));
     }
 
@@ -159,19 +161,32 @@ async fn run_udp(
     socket: UdpSocket,
     bus: Arc<InProcessBus>,
     archive: SyslogArchive,
-    fact_extractor: Arc<SyslogFactExtractor>,
+    mut fact_extractor: Arc<SyslogFactExtractor>,
     target_map: Arc<SyslogTargetMap>,
     max_frame_bytes: usize,
     mut shutdown: watch::Receiver<bool>,
     governor: Option<Arc<GovernorHandle>>,
     shun_engine: Option<Arc<ShunEngine>>,
+    mut pattern_rx: Option<watch::Receiver<Arc<SyslogFactExtractor>>>,
 ) {
     let mut buf = vec![0_u8; max_frame_bytes.max(1)];
     loop {
+        let pattern_changed = async {
+            match pattern_rx.as_mut() {
+                Some(rx) => { rx.changed().await.ok(); true }
+                None => { std::future::pending::<bool>().await }
+            }
+        };
         tokio::select! {
             _ = shutdown.changed() => {
                 info!("syslog UDP listener stopping");
                 break;
+            }
+            _ = pattern_changed => {
+                if let Some(rx) = pattern_rx.as_ref() {
+                    fact_extractor = rx.borrow().clone();
+                    info!("syslog UDP: hot-reloaded pattern extractor");
+                }
             }
             recv = socket.recv_from(&mut buf) => {
                 match recv {
@@ -542,8 +557,14 @@ struct SyslogFactPattern {
 }
 
 #[derive(Clone, Default)]
-struct SyslogFactExtractor {
+pub struct SyslogFactExtractor {
     patterns: Vec<CompiledSyslogFactPattern>,
+}
+
+impl SyslogFactExtractor {
+    pub fn pattern_count(&self) -> usize {
+        self.patterns.len()
+    }
 }
 
 #[derive(Clone)]
@@ -637,7 +658,7 @@ impl SyslogTargetMap {
 }
 
 impl SyslogFactExtractor {
-    fn load_from_dir(dir: &str) -> Self {
+    pub fn load_from_dir(dir: &str) -> Self {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return Self::default();
         };
