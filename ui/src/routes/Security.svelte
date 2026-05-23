@@ -8,7 +8,19 @@
   let securityIncidents = $state([]);
   let vulnerabilities = $state([]);
   let securityPolicies = $state([]);
-  let selectedTab = $state('posture');
+  let selectedTab = $state('settings');
+  
+  // Security configuration state
+  let securityConfig = $state({
+    database: { enabled: false },
+    mfa: { enabled: false },
+    session: { enabled: false },
+    threat_intel: { enabled: false },
+    incident_response: { enabled: false },
+    anomaly_detection: { enabled: false }
+  });
+  let configLoading = $state(false);
+  let configSaving = $state(false);
 
   // ── Data Loading ─────────────────────────────────────────────────────────────
   async function loadSecurityPosture() {
@@ -103,6 +115,64 @@
     }
   }
 
+  // ── Security Configuration Functions ─────────────────────────────────────
+  async function loadSecurityConfig() {
+    try {
+      configLoading = true;
+      const r = await fetch('/api/settings/security');
+      if (r.ok) {
+        const config = await r.json();
+        securityConfig = config;
+      } else {
+        toast.error('Failed to load security configuration');
+      }
+    } catch (error) {
+      toast.error('Failed to load security configuration');
+    } finally {
+      configLoading = false;
+    }
+  }
+
+  async function saveSecurityConfig() {
+    try {
+      configSaving = true;
+      const r = await fetch('/api/settings/security', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(securityConfig)
+      });
+      if (r.ok) {
+        toast.success('Security configuration saved successfully');
+      } else {
+        const error = await r.text();
+        toast.error(`Failed to save security configuration: ${error}`);
+      }
+    } catch (error) {
+      toast.error('Failed to save security configuration');
+    } finally {
+      configSaving = false;
+    }
+  }
+
+  async function toggleSecurityModule(module, enabled) {
+    securityConfig[module].enabled = enabled;
+    await saveSecurityConfig();
+  }
+
+  async function enableAllSecurity() {
+    for (const module in securityConfig) {
+      securityConfig[module].enabled = true;
+    }
+    await saveSecurityConfig();
+  }
+
+  async function disableAllSecurity() {
+    for (const module in securityConfig) {
+      securityConfig[module].enabled = false;
+    }
+    await saveSecurityConfig();
+  }
+
   function formatTimestamp(ns) {
     return new Date(ns / 1_000_000).toLocaleString();
   }
@@ -126,6 +196,7 @@
 
   onMount(async () => {
     await Promise.all([
+      loadSecurityConfig(),
       loadSecurityPosture(),
       loadSecurityIncidents(),
       loadVulnerabilities(),
@@ -146,6 +217,12 @@
   {:else}
     <!-- Tab Navigation -->
     <div class="tabs">
+      <button 
+        class={selectedTab === 'settings' ? 'active' : ''}
+        onclick={() => selectedTab = 'settings'}
+      >
+        ⚙️ Security Settings
+      </button>
       <button 
         class={selectedTab === 'posture' ? 'active' : ''}
         onclick={() => selectedTab = 'posture'}
@@ -172,6 +249,318 @@
       </button>
     </div>
 
+    <!-- Security Settings Tab -->
+    {#if selectedTab === 'settings'}
+      <div class="tab-content">
+        <div class="settings-header">
+          <h2>⚙️ Advanced Security Settings</h2>
+          <p>Enable or disable security features. All features are disabled by default for testing environments.</p>
+          <div class="bulk-actions">
+            <button 
+              class="btn btn-success" 
+              onclick={enableAllSecurity}
+              disabled={configSaving}
+            >
+              {configSaving ? '...' : '✅ Enable All'}
+            </button>
+            <button 
+              class="btn btn-danger" 
+              onclick={disableAllSecurity}
+              disabled={configSaving}
+            >
+              {configSaving ? '...' : '❌ Disable All'}
+            </button>
+          </div>
+        </div>
+
+        {#if configLoading}
+          <div class="loading">Loading security configuration...</div>
+        {:else}
+          <div class="security-modules">
+            <!-- Database Security -->
+            <div class="security-module">
+              <div class="module-header">
+                <div class="module-info">
+                  <h3>🗄️ Database Security</h3>
+                  <p>Encryption, auditing, access controls, and data masking</p>
+                </div>
+                <label class="toggle-switch">
+                  <input 
+                    type="checkbox" 
+                    checked={securityConfig.database.enabled}
+                    onchange={(e) => toggleSecurityModule('database', e.target.checked)}
+                    disabled={configSaving}
+                  />
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="module-details">
+                <div class="feature-list">
+                  <div class="feature-item">
+                    <span class="feature-name">🔐 Data Encryption</span>
+                    <span class="feature-status" class:enabled={securityConfig.database.enabled}>{
+                      securityConfig.database.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">📊 Security Auditing</span>
+                    <span class="feature-status" class:enabled={securityConfig.database.enabled}>{
+                      securityConfig.database.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">🔑 Access Controls</span>
+                    <span class="feature-status" class:enabled={securityConfig.database.enabled}>{
+                      securityConfig.database.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">🎭 Data Masking</span>
+                    <span class="feature-status" class:enabled={securityConfig.database.enabled}>{
+                      securityConfig.database.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- MFA -->
+            <div class="security-module">
+              <div class="module-header">
+                <div class="module-info">
+                  <h3>🔐 Multi-Factor Authentication</h3>
+                  <p>TOTP, SMS, Email, and backup codes</p>
+                </div>
+                <label class="toggle-switch">
+                  <input 
+                    type="checkbox" 
+                    checked={securityConfig.mfa.enabled}
+                    onchange={(e) => toggleSecurityModule('mfa', e.target.checked)}
+                    disabled={configSaving}
+                  />
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="module-details">
+                <div class="feature-list">
+                  <div class="feature-item">
+                    <span class="feature-name">📱 TOTP (Time-based OTP)</span>
+                    <span class="feature-status" class:enabled={securityConfig.mfa.enabled}>{
+                      securityConfig.mfa.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">💬 SMS Authentication</span>
+                    <span class="feature-status" class:enabled={securityConfig.mfa.enabled}>{
+                      securityConfig.mfa.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">📧 Email Authentication</span>
+                    <span class="feature-status" class:enabled={securityConfig.mfa.enabled}>{
+                      securityConfig.mfa.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">🔢 Backup Codes</span>
+                    <span class="feature-status" class:enabled={securityConfig.mfa.enabled}>{
+                      securityConfig.mfa.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Session Management -->
+            <div class="security-module">
+              <div class="module-header">
+                <div class="module-info">
+                  <h3>🎫 Session Management</h3>
+                  <p>JWT tokens, revocation, and automatic cleanup</p>
+                </div>
+                <label class="toggle-switch">
+                  <input 
+                    type="checkbox" 
+                    checked={securityConfig.session.enabled}
+                    onchange={(e) => toggleSecurityModule('session', e.target.checked)}
+                    disabled={configSaving}
+                  />
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="module-details">
+                <div class="feature-list">
+                  <div class="feature-item">
+                    <span class="feature-name">🔑 JWT Token Management</span>
+                    <span class="feature-status" class:enabled={securityConfig.session.enabled}>{
+                      securityConfig.session.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">🚫 Token Revocation</span>
+                    <span class="feature-status" class:enabled={securityConfig.session.enabled}>{
+                      securityConfig.session.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">⏰ Session Timeout</span>
+                    <span class="feature-status" class:enabled={securityConfig.session.enabled}>{
+                      securityConfig.session.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">🧹 Auto Cleanup</span>
+                    <span class="feature-status" class:enabled={securityConfig.session.enabled}>{
+                      securityConfig.session.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Threat Intelligence -->
+            <div class="security-module">
+              <div class="module-header">
+                <div class="module-info">
+                  <h3>🛡️ Threat Intelligence</h3>
+                  <p>Real-time threat feeds and automated blocking</p>
+                </div>
+                <label class="toggle-switch">
+                  <input 
+                    type="checkbox" 
+                    checked={securityConfig.threat_intel.enabled}
+                    onchange={(e) => toggleSecurityModule('threat_intel', e.target.checked)}
+                    disabled={configSaving}
+                  />
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="module-details">
+                <div class="feature-list">
+                  <div class="feature-item">
+                    <span class="feature-name">📡 Real-time Threat Feeds</span>
+                    <span class="feature-status" class:enabled={securityConfig.threat_intel.enabled}>{
+                      securityConfig.threat_intel.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">🎯 Indicator Caching</span>
+                    <span class="feature-status" class:enabled={securityConfig.threat_intel.enabled}>{
+                      securityConfig.threat_intel.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">🚫 Automated IP Blocking</span>
+                    <span class="feature-status" class:enabled={securityConfig.threat_intel.enabled}>{
+                      securityConfig.threat_intel.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">📈 Threat Analytics</span>
+                    <span class="feature-status" class:enabled={securityConfig.threat_intel.enabled}>{
+                      securityConfig.threat_intel.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Incident Response -->
+            <div class="security-module">
+              <div class="module-header">
+                <div class="module-info">
+                  <h3>🚨 Incident Response</h3>
+                  <p>Automated workflows and notification systems</p>
+                </div>
+                <label class="toggle-switch">
+                  <input 
+                    type="checkbox" 
+                    checked={securityConfig.incident_response.enabled}
+                    onchange={(e) => toggleSecurityModule('incident_response', e.target.checked)}
+                    disabled={configSaving}
+                  />
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="module-details">
+                <div class="feature-list">
+                  <div class="feature-item">
+                    <span class="feature-name">⚡ Automated Workflows</span>
+                    <span class="feature-status" class:enabled={securityConfig.incident_response.enabled}>{
+                      securityConfig.incident_response.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">✅ Approval Chains</span>
+                    <span class="feature-status" class:enabled={securityConfig.incident_response.enabled}>{
+                      securityConfig.incident_response.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">📢 Notification Systems</span>
+                    <span class="feature-status" class:enabled={securityConfig.incident_response.enabled}>{
+                      securityConfig.incident_response.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">📊 Incident Analytics</span>
+                    <span class="feature-status" class:enabled={securityConfig.incident_response.enabled}>{
+                      securityConfig.incident_response.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Anomaly Detection -->
+            <div class="security-module">
+              <div class="module-header">
+                <div class="module-info">
+                  <h3>🔍 Anomaly Detection</h3>
+                  <p>Statistical analysis and pattern detection</p>
+                </div>
+                <label class="toggle-switch">
+                  <input 
+                    type="checkbox" 
+                    checked={securityConfig.anomaly_detection.enabled}
+                    onchange={(e) => toggleSecurityModule('anomaly_detection', e.target.checked)}
+                    disabled={configSaving}
+                  />
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="module-details">
+                <div class="feature-list">
+                  <div class="feature-item">
+                    <span class="feature-name">📊 Statistical Analysis</span>
+                    <span class="feature-status" class:enabled={securityConfig.anomaly_detection.enabled}>{
+                      securityConfig.anomaly_detection.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">🎯 Pattern Detection</span>
+                    <span class="feature-status" class:enabled={securityConfig.anomaly_detection.enabled}>{
+                      securityConfig.anomaly_detection.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">👤 User Behavior Analysis</span>
+                    <span class="feature-status" class:enabled={securityConfig.anomaly_detection.enabled}>{
+                      securityConfig.anomaly_detection.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                  <div class="feature-item">
+                    <span class="feature-name">🤖 ML-based Detection</span>
+                    <span class="feature-status" class:enabled={securityConfig.anomaly_detection.enabled}>{
+                      securityConfig.anomaly_detection.enabled ? 'Available' : 'Disabled'
+                    }</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        {/if}
+      </div>
     <!-- Security Posture Tab -->
     {#if selectedTab === 'posture'}
       <div class="tab-content">
@@ -535,5 +924,180 @@
   .unpatched {
     color: #dc2626;
     font-weight: 500;
+  }
+
+  /* Security Settings Styles */
+  .settings-header {
+    margin-bottom: 2rem;
+  }
+
+  .settings-header h2 {
+    margin-bottom: 0.5rem;
+    color: #1f2937;
+  }
+
+  .settings-header p {
+    color: #6b7280;
+    margin-bottom: 1rem;
+  }
+
+  .bulk-actions {
+    display: flex;
+    gap: 1rem;
+  }
+
+  .btn {
+    padding: 0.5rem 1rem;
+    border: none;
+    border-radius: 6px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .btn-success {
+    background-color: #059669;
+    color: white;
+  }
+
+  .btn-success:hover:not(:disabled) {
+    background-color: #047857;
+  }
+
+  .btn-danger {
+    background-color: #dc2626;
+    color: white;
+  }
+
+  .btn-danger:hover:not(:disabled) {
+    background-color: #b91c1c;
+  }
+
+  .security-modules {
+    display: grid;
+    gap: 1.5rem;
+  }
+
+  .security-module {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+    border: 1px solid #e5e7eb;
+  }
+
+  .module-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1.5rem;
+    background: #f9fafb;
+    border-bottom: 1px solid #e5e7eb;
+  }
+
+  .module-info h3 {
+    margin: 0 0 0.5rem 0;
+    color: #1f2937;
+    font-size: 1.25rem;
+  }
+
+  .module-info p {
+    margin: 0;
+    color: #6b7280;
+    font-size: 0.875rem;
+  }
+
+  /* Toggle Switch */
+  .toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 60px;
+    height: 34px;
+  }
+
+  .toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+
+  .slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #ccc;
+    transition: .4s;
+    border-radius: 34px;
+  }
+
+  .slider:before {
+    position: absolute;
+    content: "";
+    height: 26px;
+    width: 26px;
+    left: 4px;
+    bottom: 4px;
+    background-color: white;
+    transition: .4s;
+    border-radius: 50%;
+  }
+
+  input:checked + .slider {
+    background-color: #059669;
+  }
+
+  input:checked + .slider:before {
+    transform: translateX(26px);
+  }
+
+  input:disabled + .slider {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .module-details {
+    padding: 1.5rem;
+  }
+
+  .feature-list {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .feature-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem;
+    background: #f9fafb;
+    border-radius: 6px;
+    border: 1px solid #e5e7eb;
+  }
+
+  .feature-name {
+    font-weight: 500;
+    color: #374151;
+  }
+
+  .feature-status {
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    background-color: #fca5a5;
+    color: #7f1d1d;
+  }
+
+  .feature-status.enabled {
+    background-color: #86efac;
+    color: #14532d;
   }
 </style>
