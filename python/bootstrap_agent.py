@@ -90,6 +90,46 @@ class IsisAdjInfo:
 
 
 @dataclass
+class LagInfo:
+    """LAG / port-channel / bond group."""
+    name: str
+    members: List[str] = field(default_factory=list)
+    oper_status: str = "unknown"
+    protocol: str = ""  # lacp, static, none
+    min_links: int = 0
+
+
+@dataclass
+class VrrpInfo:
+    """VRRP / HSRP virtual router instance."""
+    group_id: int = 0
+    interface: str = ""
+    virtual_ip: str = ""
+    state: str = "unknown"  # master/backup/init
+    priority: int = 100
+    protocol: str = "vrrp"  # vrrp or hsrp
+
+
+@dataclass
+class RouteInfo:
+    """IP route entry — used for ECMP detection."""
+    prefix: str = ""
+    next_hops: List[str] = field(default_factory=list)
+    protocol: str = ""  # bgp, ospf, isis, connected, static
+    metric: int = 0
+    is_ecmp: bool = False  # True if >1 next-hop
+
+
+@dataclass
+class ArpEntry:
+    """ARP / neighbor table entry."""
+    ip_address: str = ""
+    mac_address: str = ""
+    interface: str = ""
+    state: str = ""  # reachable, stale, etc.
+
+
+@dataclass
 class BootstrapResult:
     address: str
     status: str = "ok"
@@ -101,6 +141,10 @@ class BootstrapResult:
     bgp_neighbors: List[BgpNeighborInfo] = field(default_factory=list)
     lldp_neighbors: List[LldpNeighborInfo] = field(default_factory=list)
     isis_adjacencies: List[IsisAdjInfo] = field(default_factory=list)
+    lag_groups: List[LagInfo] = field(default_factory=list)
+    vrrp_instances: List[VrrpInfo] = field(default_factory=list)
+    routes: List[RouteInfo] = field(default_factory=list)
+    arp_entries: List[ArpEntry] = field(default_factory=list)
     registered: bool = False
     seeded: bool = False
     elapsed_s: float = 0.0
@@ -186,6 +230,139 @@ def _learn_isis(device) -> List[IsisAdjInfo]:
         return []
 
 
+def _learn_lag(device) -> List[LagInfo]:
+    """Learn LAG/port-channel/bond membership from Genie."""
+    try:
+        data = device.learn("lag")
+        out: List[LagInfo] = []
+        # Genie lag.info structure varies by platform; handle common shapes
+        info = data.info if hasattr(data, "info") else {}
+        for lag_name, lag_data in info.items():
+            if isinstance(lag_data, dict):
+                members = []
+                # Cisco: lag_data['members'] = {'GigabitEthernet0/0': {...}, ...}
+                # Arista: similar
+                for m_name in (lag_data.get("members") or lag_data.get("member") or {}).keys():
+                    members.append(str(m_name))
+                out.append(LagInfo(
+                    name=str(lag_name),
+                    members=members,
+                    oper_status=str(lag_data.get("oper_status", lag_data.get("status", "unknown"))),
+                    protocol=str(lag_data.get("protocol", "")),
+                    min_links=int(lag_data.get("min_links", 0) or 0),
+                ))
+        return out
+    except Exception as e:
+        logger.warning("lag learn failed: %s", e)
+        return []
+
+
+def _learn_vrrp(device) -> List[VrrpInfo]:
+    """Learn VRRP/HSRP state from Genie."""
+    out: List[VrrpInfo] = []
+    # Try VRRP first
+    try:
+        data = device.learn("vrrp")
+        info = data.info if hasattr(data, "info") else {}
+        for iface_name, iface_data in info.items():
+            if isinstance(iface_data, dict):
+                for group_id, grp in (iface_data.get("address_family", {}) or {}).items():
+                    for vr_id, vr in (grp.get("vrid", {}) or grp.get("group", {}) or {}).items():
+                        out.append(VrrpInfo(
+                            group_id=int(vr_id) if str(vr_id).isdigit() else 0,
+                            interface=str(iface_name),
+                            virtual_ip=str(vr.get("virtual_ip_address", "")),
+                            state=str(vr.get("state", "unknown")),
+                            priority=int(vr.get("priority", 100) or 100),
+                            protocol="vrrp",
+                        ))
+    except Exception as e:
+        logger.debug("vrrp learn failed (may not be configured): %s", e)
+
+    # Try HSRP if no VRRP found
+    if not out:
+        try:
+            data = device.learn("hsrp")
+            info = data.info if hasattr(data, "info") else {}
+            for iface_name, iface_data in info.items():
+                if isinstance(iface_data, dict):
+                    for group_id, grp in (iface_data.get("group_number", {}) or {}).items():
+                        out.append(VrrpInfo(
+                            group_id=int(group_id) if str(group_id).isdigit() else 0,
+                            interface=str(iface_name),
+                            virtual_ip=str(grp.get("virtual_ip_address", "")),
+                            state=str(grp.get("hsrp_router_state", "unknown")),
+                            priority=int(grp.get("priority", 100) or 100),
+                            protocol="hsrp",
+                        ))
+        except Exception as e:
+            logger.debug("hsrp learn failed (may not be configured): %s", e)
+
+    return out
+
+
+def _learn_routes(device) -> List[RouteInfo]:
+    """Learn routing table from Genie. Identifies ECMP routes (>1 next-hop)."""
+    try:
+        data = device.learn("routing")
+        out: List[RouteInfo] = []
+        info = data.info if hasattr(data, "info") else {}
+        # Structure: info['vrf']['default']['address_family']['ipv4']['routes']
+        for vrf_name, vrf_data in info.get("vrf", info).items() if isinstance(info.get("vrf", info), dict) else []:
+            af_data = vrf_data if not isinstance(vrf_data, dict) else vrf_data
+            for af_name, af in (af_data.get("address_family", {}) or {}).items():
+                for prefix, route_data in (af.get("routes", {}) or {}).items():
+                    next_hops = []
+                    nh_data = route_data.get("next_hop", {})
+                    # next_hop can be dict with 'next_hop_list' keyed by index
+                    for nh_idx, nh in (nh_data.get("next_hop_list", {}) or {}).items():
+                        nh_addr = str(nh.get("next_hop", nh.get("index", "")))
+                        if nh_addr:
+                            next_hops.append(nh_addr)
+                    # Also check for direct next_hop dict entries
+                    if not next_hops and isinstance(nh_data, dict):
+                        for key, val in nh_data.items():
+                            if isinstance(val, dict) and "next_hop" in val:
+                                next_hops.append(str(val["next_hop"]))
+                    protocol = str(route_data.get("source_protocol", route_data.get("route_preference", "")))
+                    out.append(RouteInfo(
+                        prefix=str(prefix),
+                        next_hops=next_hops,
+                        protocol=protocol,
+                        metric=int(route_data.get("metric", 0) or 0),
+                        is_ecmp=len(next_hops) > 1,
+                    ))
+        return out
+    except Exception as e:
+        logger.warning("routing learn failed: %s", e)
+        return []
+
+
+def _learn_arp(device) -> List[ArpEntry]:
+    """Learn ARP/neighbor table from Genie."""
+    try:
+        data = device.learn("arp")
+        out: List[ArpEntry] = []
+        info = data.info if hasattr(data, "info") else {}
+        # Structure: info['interfaces']['GigabitEthernet0/0']['ipv4']['neighbors']
+        for iface_name, iface_data in info.get("interfaces", info).items() if isinstance(info.get("interfaces", info), dict) else []:
+            neighbors = {}
+            if isinstance(iface_data, dict):
+                for af in ("ipv4", "ipv6"):
+                    neighbors.update((iface_data.get(af, {}) or {}).get("neighbors", {}))
+            for ip_addr, entry in neighbors.items():
+                out.append(ArpEntry(
+                    ip_address=str(ip_addr),
+                    mac_address=str(entry.get("link_layer_address", entry.get("mac_address", ""))),
+                    interface=str(iface_name),
+                    state=str(entry.get("origin", entry.get("state", ""))),
+                ))
+        return out
+    except Exception as e:
+        logger.warning("arp learn failed: %s", e)
+        return []
+
+
 def _get_hostname_vendor(device) -> tuple[str, str, str]:
     try:
         data = device.learn("platform")
@@ -237,11 +414,19 @@ def _seed_device(api_url: str, result: BootstrapResult, dry_run: bool) -> bool:
         "bgp_neighbors": [asdict(b) for b in result.bgp_neighbors],
         "lldp_neighbors": [asdict(l) for l in result.lldp_neighbors],
         "isis_adjacencies": [asdict(a) for a in result.isis_adjacencies],
+        "lag_groups": [asdict(l) for l in result.lag_groups],
+        "vrrp_instances": [asdict(v) for v in result.vrrp_instances],
+        "routes": [asdict(r) for r in result.routes],
+        "arp_entries": [asdict(a) for a in result.arp_entries],
     }
     if dry_run:
-        logger.info("[DRY-RUN] POST /api/devices/seed  %d ifaces  %d bgp  %d lldp  %d isis",
-                    len(result.interfaces), len(result.bgp_neighbors),
-                    len(result.lldp_neighbors), len(result.isis_adjacencies))
+        logger.info(
+            "[DRY-RUN] POST /api/devices/seed  %d ifaces  %d bgp  %d lldp  %d isis  %d lag  %d vrrp  %d routes  %d arp",
+            len(result.interfaces), len(result.bgp_neighbors),
+            len(result.lldp_neighbors), len(result.isis_adjacencies),
+            len(result.lag_groups), len(result.vrrp_instances),
+            len(result.routes), len(result.arp_entries),
+        )
         return True
     try:
         _api_post(api_url, "/api/devices/seed", payload)
@@ -318,6 +503,10 @@ def bootstrap_device(
         result.bgp_neighbors = _learn_bgp(device)
         result.lldp_neighbors = _learn_lldp(device)
         result.isis_adjacencies = _learn_isis(device)
+        result.lag_groups = _learn_lag(device)
+        result.vrrp_instances = _learn_vrrp(device)
+        result.routes = _learn_routes(device)
+        result.arp_entries = _learn_arp(device)
     except Exception as e:
         result.status = "partial"
         result.error = f"learn error: {e}"
@@ -488,14 +677,20 @@ def preseed_graph(api_url: str, result: "BootstrapResult", dry_run: bool = False
         "bgp_neighbors": [asdict(b) for b in result.bgp_neighbors],
         "lldp_neighbors": [asdict(l) for l in result.lldp_neighbors],
         "isis_adjacencies": [asdict(a) for a in result.isis_adjacencies],
+        "lag_groups": [asdict(l) for l in result.lag_groups],
+        "vrrp_instances": [asdict(v) for v in result.vrrp_instances],
+        "routes": [asdict(r) for r in result.routes],
+        "arp_entries": [asdict(a) for a in result.arp_entries],
         "preseed": True,
     }
 
     if dry_run:
         logger.info(
-            "[DRY-RUN] pre-seed for %s: %d ifaces, %d BGP, %d LLDP, %d ISIS",
+            "[DRY-RUN] pre-seed for %s: %d ifaces, %d BGP, %d LLDP, %d ISIS, %d LAG, %d VRRP, %d routes, %d ARP",
             result.address, len(result.interfaces), len(result.bgp_neighbors),
             len(result.lldp_neighbors), len(result.isis_adjacencies),
+            len(result.lag_groups), len(result.vrrp_instances),
+            len(result.routes), len(result.arp_entries),
         )
         return True
 

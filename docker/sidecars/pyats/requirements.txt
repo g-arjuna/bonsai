@@ -1,2 +1,6 @@
 fastapi==0.115.12
 uvicorn==0.34.2
+pyats[full]>=24.5
+genie>=24.5
+textfsm>=1.1.3
+ntc-templates>=7.1.0

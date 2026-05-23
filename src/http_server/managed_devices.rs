@@ -917,6 +917,14 @@ pub(super) struct DeviceSeedRequest {
     lldp_neighbors: Vec<SeedLldpNeighbor>,
     #[serde(default)]
     isis_adjacencies: Vec<SeedIsisAdj>,
+    #[serde(default)]
+    lag_groups: Vec<SeedLagGroup>,
+    #[serde(default)]
+    vrrp_instances: Vec<SeedVrrpInstance>,
+    #[serde(default)]
+    routes: Vec<SeedRoute>,
+    #[serde(default)]
+    arp_entries: Vec<SeedArpEntry>,
 }
 
 #[derive(serde::Deserialize)]
@@ -963,6 +971,63 @@ struct SeedIsisAdj {
     state: String,
 }
 
+#[derive(serde::Deserialize)]
+struct SeedLagGroup {
+    name: String,
+    #[serde(default)]
+    members: Vec<String>,
+    #[serde(default)]
+    oper_status: String,
+    #[serde(default)]
+    protocol: String,
+    #[serde(default)]
+    min_links: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct SeedVrrpInstance {
+    #[serde(default)]
+    group_id: i64,
+    #[serde(default)]
+    interface: String,
+    #[serde(default)]
+    virtual_ip: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default = "default_vrrp_priority")]
+    priority: i64,
+    #[serde(default)]
+    protocol: String,
+}
+
+fn default_vrrp_priority() -> i64 { 100 }
+
+#[derive(serde::Deserialize)]
+struct SeedRoute {
+    #[serde(default)]
+    prefix: String,
+    #[serde(default)]
+    next_hops: Vec<String>,
+    #[serde(default)]
+    protocol: String,
+    #[serde(default)]
+    metric: i64,
+    #[serde(default)]
+    is_ecmp: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct SeedArpEntry {
+    #[serde(default)]
+    ip_address: String,
+    #[serde(default)]
+    mac_address: String,
+    #[serde(default)]
+    interface: String,
+    #[serde(default)]
+    state: String,
+}
+
 pub(super) async fn device_seed_handler(
     State(state): State<AppState>,
     Json(req): Json<DeviceSeedRequest>,
@@ -979,6 +1044,10 @@ pub(super) async fn device_seed_handler(
     let bgp_count = req.bgp_neighbors.len();
     let lldp_count = req.lldp_neighbors.len();
     let isis_count = req.isis_adjacencies.len();
+    let lag_count = req.lag_groups.len();
+    let vrrp_count = req.vrrp_instances.len();
+    let route_count = req.routes.len();
+    let arp_count = req.arp_entries.len();
 
     tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db)
@@ -1035,6 +1104,95 @@ pub(super) async fn device_seed_handler(
             )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
+        // D4-12 T2: Seed LAG groups → RedundancyGroup(type=lag) + MEMBER_OF edges
+        for lag in &req.lag_groups {
+            let rg_id = format!("lag-{}-{}", address, lag.name);
+            let member_count = lag.members.len() as i64;
+            conn.query(&format!(
+                "MERGE (rg:RedundancyGroup {{id: '{}'}}) \
+                 SET rg.type = 'lag', rg.name = '{}', rg.member_count = {}, \
+                     rg.original_member_count = {}, rg.oper_status = '{}', \
+                     rg.protocol = '{}', rg.min_links = {}, \
+                     rg.protects_node_id = '{}', rg.source = '{}', rg.updated_at_ns = {}",
+                rg_id, lag.name, member_count, member_count,
+                lag.oper_status, lag.protocol, lag.min_links, address, source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            // Link each member interface
+            for member_iface in &lag.members {
+                conn.query(&format!(
+                    "MATCH (i:Interface {{device_address: '{}', name: '{}'}}) \
+                     MATCH (rg:RedundancyGroup {{id: '{}'}}) \
+                     MERGE (i)-[:MEMBER_OF {{role: 'member', updated_at_ns: {}}}]->(rg)",
+                    address, member_iface, rg_id, now,
+                )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            }
+            // Link lag interface itself to device
+            conn.query(&format!(
+                "MERGE (i:Interface {{device_address: '{}', name: '{}'}}) \
+                 SET i.is_lag = true, i.lag_members = '{}', i.source = '{}', i.updated_at_ns = {}",
+                address, lag.name, lag.members.join(","), source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        }
+
+        // D4-12 T2: Seed VRRP instances → RedundancyGroup(type=vrrp|hsrp)
+        for vrrp in &req.vrrp_instances {
+            let rg_id = format!("{}-{}-{}-{}", vrrp.protocol, address, vrrp.interface, vrrp.group_id);
+            conn.query(&format!(
+                "MERGE (rg:RedundancyGroup {{id: '{}'}}) \
+                 SET rg.type = '{}', rg.name = '{} group {} on {}', \
+                     rg.virtual_ip = '{}', rg.state = '{}', rg.priority = {}, \
+                     rg.member_count = 1, rg.original_member_count = 1, \
+                     rg.protects_node_id = '{}', rg.source = '{}', rg.updated_at_ns = {}",
+                rg_id, vrrp.protocol, vrrp.protocol, vrrp.group_id, vrrp.interface,
+                vrrp.virtual_ip, vrrp.state, vrrp.priority, address, source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            // Link device to this VRRP group
+            conn.query(&format!(
+                "MATCH (d:Device {{address: '{}'}}) \
+                 MATCH (rg:RedundancyGroup {{id: '{}'}}) \
+                 MERGE (d)-[:MEMBER_OF {{role: '{}', interface: '{}', updated_at_ns: {}}}]->(rg)",
+                address, rg_id, vrrp.state, vrrp.interface, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        }
+
+        // D4-12 T2: Seed ECMP routes → RedundancyGroup(type=ecmp) for multi-next-hop
+        for route in &req.routes {
+            if !route.is_ecmp || route.next_hops.len() < 2 { continue; }
+            let rg_id = format!("ecmp-{}-{}", address, route.prefix);
+            let nh_count = route.next_hops.len() as i64;
+            conn.query(&format!(
+                "MERGE (rg:RedundancyGroup {{id: '{}'}}) \
+                 SET rg.type = 'ecmp', rg.name = 'ECMP {}', \
+                     rg.prefix = '{}', rg.protocol = '{}', rg.metric = {}, \
+                     rg.member_count = {}, rg.original_member_count = {}, \
+                     rg.protects_node_id = '{}', rg.source = '{}', rg.updated_at_ns = {}",
+                rg_id, route.prefix, route.prefix, route.protocol, route.metric,
+                nh_count, nh_count, address, source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            // Link each next-hop device (if it exists in graph)
+            for nh in &route.next_hops {
+                conn.query(&format!(
+                    "OPTIONAL MATCH (d:Device {{address: '{}'}}) \
+                     WITH d WHERE d IS NOT NULL \
+                     MATCH (rg:RedundancyGroup {{id: '{}'}}) \
+                     MERGE (d)-[:MEMBER_OF {{role: 'next_hop', updated_at_ns: {}}}]->(rg)",
+                    nh, rg_id, now,
+                )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            }
+        }
+
+        // D4-12 T2: Seed ARP entries (for dual-homed host detection)
+        for arp in &req.arp_entries {
+            if arp.ip_address.is_empty() || arp.mac_address.is_empty() { continue; }
+            conn.query(&format!(
+                "MERGE (ae:ArpEntry {{device_address: '{}', ip_address: '{}'}}) \
+                 SET ae.mac_address = '{}', ae.interface = '{}', ae.state = '{}', \
+                     ae.source = '{}', ae.updated_at_ns = {}",
+                address, arp.ip_address, arp.mac_address, arp.interface,
+                arp.state, source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        }
+
         Ok::<_, (StatusCode, String)>(())
     })
     .await
@@ -1048,6 +1206,10 @@ pub(super) async fn device_seed_handler(
             "bgp_neighbors": bgp_count,
             "lldp_neighbors": lldp_count,
             "isis_adjacencies": isis_count,
+            "lag_groups": lag_count,
+            "vrrp_instances": vrrp_count,
+            "ecmp_routes": route_count,
+            "arp_entries": arp_count,
         }
     })))
 }
