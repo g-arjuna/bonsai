@@ -1498,6 +1498,43 @@ impl GraphStore {
         )
         .context("create ConfigItem table")?;
 
+        // ── RedundancyGroup (D4-12 T1) ───────────────────────────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS RedundancyGroup(\
+                id              STRING,\
+                name            STRING,\
+                kind            STRING,\
+                protocol        STRING,\
+                site_id         STRING,\
+                status          STRING,\
+                member_count    INT32,\
+                active_count    INT32,\
+                source          STRING,\
+                discovered_at   TIMESTAMP_NS,\
+                updated_at      TIMESTAMP_NS,\
+                PRIMARY KEY (id))",
+        )
+        .context("create RedundancyGroup table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS MEMBER_OF(\
+                FROM Device TO RedundancyGroup,\
+                role        STRING,\
+                priority    INT32,\
+                state       STRING,\
+                updated_at  TIMESTAMP_NS)",
+        )
+        .context("create MEMBER_OF rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS REDUNDANT_WITH(\
+                FROM Device TO Device,\
+                group_id    STRING,\
+                protocol    STRING,\
+                updated_at  TIMESTAMP_NS)",
+        )
+        .context("create REDUNDANT_WITH rel")?;
+
         info!("graph schema initialised");
         Ok(())
     }
@@ -2986,6 +3023,116 @@ impl GraphStore {
                     .context("execute shun rule delete")?;
             }
             Ok::<_, anyhow::Error>(found)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    // ── D4-12 T1: RedundancyGroup helpers ────────────────────────────────────
+
+    pub async fn upsert_redundancy_group(
+        &self,
+        id: String,
+        name: String,
+        kind: String,
+        protocol: String,
+        site_id: String,
+        status: String,
+        member_count: i32,
+        active_count: i32,
+        source: String,
+    ) -> Result<()> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock");
+            let conn = Connection::new(&db).context("upsert_redundancy_group conn")?;
+            let now = now_ns();
+            let mut stmt = conn.prepare(
+                "MERGE (r:RedundancyGroup {id: $id}) \
+                 SET r.name=$name, r.kind=$kind, r.protocol=$protocol, \
+                     r.site_id=$site, r.status=$status, \
+                     r.member_count=$mc, r.active_count=$ac, \
+                     r.source=$src, r.discovered_at=coalesce(r.discovered_at,$ts), \
+                     r.updated_at=$ts",
+            ).context("prepare upsert_redundancy_group")?;
+            conn.execute(&mut stmt, vec![
+                ("id",     Value::String(id)),
+                ("name",   Value::String(name)),
+                ("kind",   Value::String(kind)),
+                ("protocol", Value::String(protocol)),
+                ("site",   Value::String(site_id)),
+                ("status", Value::String(status)),
+                ("mc",     Value::Int32(member_count)),
+                ("ac",     Value::Int32(active_count)),
+                ("src",    Value::String(source)),
+                ("ts",     Value::Int64(now as i64)),
+            ]).context("execute upsert_redundancy_group")?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn write_redundancy_member(
+        &self,
+        device_address: String,
+        group_id: String,
+        role: String,
+        priority: i32,
+        state: String,
+    ) -> Result<()> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock");
+            let conn = Connection::new(&db).context("write_redundancy_member conn")?;
+            let now = now_ns();
+            let mut stmt = conn.prepare(
+                "MATCH (d:Device {address: $addr}), (g:RedundancyGroup {id: $gid}) \
+                 MERGE (d)-[m:MEMBER_OF]->(g) \
+                 SET m.role=$role, m.priority=$pri, m.state=$state, m.updated_at=$ts",
+            ).context("prepare write_redundancy_member")?;
+            conn.execute(&mut stmt, vec![
+                ("addr",  Value::String(device_address)),
+                ("gid",   Value::String(group_id)),
+                ("role",  Value::String(role)),
+                ("pri",   Value::Int32(priority)),
+                ("state", Value::String(state)),
+                ("ts",    Value::Int64(now as i64)),
+            ]).context("execute write_redundancy_member")?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    pub async fn list_redundancy_groups(&self) -> Result<Vec<serde_json::Value>> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("list_redundancy_groups conn")?;
+            let rows = conn.query(
+                "MATCH (g:RedundancyGroup) \
+                 RETURN g.id, g.name, g.kind, g.protocol, g.site_id, \
+                        g.status, g.member_count, g.active_count, g.source, g.updated_at \
+                 ORDER BY g.name",
+            ).context("list_redundancy_groups query")?;
+            let mut out = Vec::new();
+            for row in rows {
+                let row = row.context("row")?;
+                out.push(serde_json::json!({
+                    "id":           row.get::<String>(0).unwrap_or_default(),
+                    "name":         row.get::<String>(1).unwrap_or_default(),
+                    "kind":         row.get::<String>(2).unwrap_or_default(),
+                    "protocol":     row.get::<String>(3).unwrap_or_default(),
+                    "site_id":      row.get::<String>(4).unwrap_or_default(),
+                    "status":       row.get::<String>(5).unwrap_or_default(),
+                    "member_count": row.get::<i32>(6).unwrap_or(0),
+                    "active_count": row.get::<i32>(7).unwrap_or(0),
+                    "source":       row.get::<String>(8).unwrap_or_default(),
+                }));
+            }
+            Ok::<_, anyhow::Error>(out)
         })
         .await
         .context("spawn_blocking panicked")?

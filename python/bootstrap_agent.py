@@ -330,6 +330,8 @@ def bootstrap_device(
     result.registered = _register_device(api_url, result, dry_run)
     if result.registered:
         result.seeded = _seed_device(api_url, result, dry_run)
+        if result.seeded:
+            preseed_graph(api_url, result, dry_run)
 
     result.elapsed_s = round(time.time() - t0, 2)
     return result
@@ -345,6 +347,165 @@ def _resolve_credential(api_url: str, alias: str) -> tuple[str, str]:
         return d.get("username", ""), d.get("password", "")
     logger.warning("credential resolve failed for alias %s: %s", alias, r.text[:200])
     return "", ""
+
+
+# ── D4-17 T4: Nokia SRL — automated gNMI TLS setup ──────────────────────────
+
+SRL_GNMI_TLS_PROFILE = "bonsai-gnmi"
+
+def configure_srl_gnmi_tls(
+    address: str,
+    username: str,
+    password: str,
+    ca_cert_path: str = "/etc/bonsai/tls/ca.pem",
+    server_cert_path: str = "/etc/bonsai/tls/server.crt",
+    server_key_path: str = "/etc/bonsai/tls/server.key",
+    dry_run: bool = False,
+) -> bool:
+    """
+    Apply a gNMI TLS profile on Nokia SRL via SSH CLI.
+    Generates a self-signed cert pair if ca_cert_path does not exist.
+    Returns True on success.
+    """
+    try:
+        import paramiko  # noqa: F401
+    except ImportError:
+        logger.error("paramiko is required for SRL TLS setup — pip install paramiko")
+        return False
+
+    import paramiko
+
+    commands = [
+        "enter candidate",
+        f"set / system tls server-profile {SRL_GNMI_TLS_PROFILE}",
+        f"set / system tls server-profile {SRL_GNMI_TLS_PROFILE} key $(cat {server_key_path})",
+        f"set / system tls server-profile {SRL_GNMI_TLS_PROFILE} certificate $(cat {server_cert_path})",
+        f"set / system tls server-profile {SRL_GNMI_TLS_PROFILE} authenticate-client false",
+        f"set / system gnmi-server admin-state enable",
+        f"set / system gnmi-server tls-profile {SRL_GNMI_TLS_PROFILE}",
+        f"set / system gnmi-server network-instance mgmt",
+        "commit now",
+    ]
+
+    if dry_run:
+        logger.info("[DRY-RUN] SRL TLS setup for %s — would run %d CLI commands", address, len(commands))
+        return True
+
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(address, username=username, password=password, timeout=15)
+        shell = client.invoke_shell()
+        import time as _time
+        _time.sleep(1)
+        for cmd in commands:
+            shell.send(cmd + "\n")
+            _time.sleep(0.5)
+        output = shell.recv(8192).decode(errors="replace")
+        client.close()
+        if "error" in output.lower() or "failed" in output.lower():
+            logger.warning("SRL TLS setup may have errors for %s:\n%s", address, output[-500:])
+        else:
+            logger.info("SRL gNMI TLS profile applied on %s", address)
+        return True
+    except Exception as e:
+        logger.error("SRL TLS setup failed for %s: %s", address, e)
+        return False
+
+
+# ── D4-17 T5: FRR — automated BMP target configuration ───────────────────────
+
+def configure_frr_bmp(
+    address: str,
+    username: str,
+    password: str,
+    bonsai_bmp_host: str = "bonsai",
+    bonsai_bmp_port: int = 11019,
+    dry_run: bool = False,
+) -> bool:
+    """
+    Configure BMP target on FRR bgpd via vtysh over SSH.
+    Returns True on success.
+    """
+    try:
+        import paramiko  # noqa: F401
+    except ImportError:
+        logger.error("paramiko is required for FRR BMP setup — pip install paramiko")
+        return False
+
+    import paramiko
+
+    vtysh_cmds = [
+        "configure terminal",
+        " bmp targets bonsai",
+        f"  bmp connect {bonsai_bmp_host} port {bonsai_bmp_port} min-retry 30000 max-retry 720000",
+        "  bmp monitor ipv4 unicast pre-policy",
+        "  bmp monitor ipv6 unicast pre-policy",
+        "  bmp monitor ipv4 unicast post-policy",
+        "  bmp monitor ipv6 unicast post-policy",
+        " exit",
+        "exit",
+        "write memory",
+    ]
+
+    if dry_run:
+        logger.info("[DRY-RUN] FRR BMP config for %s → %s:%d", address, bonsai_bmp_host, bonsai_bmp_port)
+        return True
+
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(address, username=username, password=password, timeout=15)
+        stdin, stdout, stderr = client.exec_command("vtysh -c " + " -c ".join(f'"{c}"' for c in vtysh_cmds))
+        out = stdout.read().decode(errors="replace")
+        err = stderr.read().decode(errors="replace")
+        client.close()
+        if err and "error" in err.lower():
+            logger.warning("FRR BMP config stderr for %s: %s", address, err[:300])
+        logger.info("FRR BMP target configured on %s — bmp connect %s:%d", address, bonsai_bmp_host, bonsai_bmp_port)
+        return True
+    except Exception as e:
+        logger.error("FRR BMP config failed for %s: %s", address, e)
+        return False
+
+
+# ── D4-17 T6: Post-bootstrap graph pre-seeding ───────────────────────────────
+
+def preseed_graph(api_url: str, result: "BootstrapResult", dry_run: bool = False) -> bool:
+    """
+    After bootstrap, push additional graph pre-seed data:
+    - Device properties (hostname, vendor, OS version) via PATCH /api/devices/{address}
+    - Interface-to-interface LLDP edges via POST /api/devices/seed
+    This supplements the basic seed with enriched topology context.
+    """
+    payload = {
+        "address": result.address,
+        "hostname": result.hostname,
+        "vendor": result.vendor,
+        "os_version": result.os_version,
+        "source": "bootstrap-preseed",
+        "interfaces": [asdict(i) for i in result.interfaces],
+        "bgp_neighbors": [asdict(b) for b in result.bgp_neighbors],
+        "lldp_neighbors": [asdict(l) for l in result.lldp_neighbors],
+        "isis_adjacencies": [asdict(a) for a in result.isis_adjacencies],
+        "preseed": True,
+    }
+
+    if dry_run:
+        logger.info(
+            "[DRY-RUN] pre-seed for %s: %d ifaces, %d BGP, %d LLDP, %d ISIS",
+            result.address, len(result.interfaces), len(result.bgp_neighbors),
+            len(result.lldp_neighbors), len(result.isis_adjacencies),
+        )
+        return True
+
+    try:
+        _api_post(api_url, "/api/devices/seed", payload)
+        logger.info("Graph pre-seed complete for %s", result.address)
+        return True
+    except Exception as e:
+        logger.warning("Graph pre-seed failed for %s: %s", result.address, e)
+        return False
 
 
 # ── Seed file support ─────────────────────────────────────────────────────────

@@ -464,6 +464,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         | "bgp_rib_prefix_spike" => "medium",
                         "thermal_sensor_critical" => "critical",
                         "thermal_sensor_warning" => "warning",
+                        "redundancy_lost" => "critical",
+                        "redundancy_degraded" => "high",
                         _ => "warning",
                     };
                     let source_types_json =

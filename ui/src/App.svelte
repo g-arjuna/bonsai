@@ -24,6 +24,9 @@
   import Syslog from './routes/Syslog.svelte';
   import DbManagement from './routes/DbManagement.svelte';
   import Governance from './routes/Governance.svelte';
+  import Snmp from './routes/Snmp.svelte';
+  import Sidecar from './routes/Sidecar.svelte';
+  import Users from './routes/Users.svelte';
 
   // Cmd-1..9 workspace shortcuts mirror CommandPalette WORKSPACE_SHORTCUTS
   const NAV = [
@@ -45,6 +48,9 @@
     { href: '/syslog',        label: 'Syslog / Shun', icon: '⬇' },
     { href: '/db',             label: 'Database',      icon: '🗄' },
     { href: '/governance',     label: 'Governance',    icon: '⚖' },
+    { href: '/snmp',          label: 'SNMP',           icon: '📡' },
+    { href: '/sidecars',      label: 'Sidecars',       icon: '🤖' },
+    { href: '/users',         label: 'Users &amp; Access', icon: '👤' },
     { href: '/settings',      label: 'Settings',      icon: '⚙' },
   ];
 
@@ -203,6 +209,12 @@
       <DbManagement />
     {:else if path() === '/governance'}
       <Governance />
+    {:else if path() === '/snmp'}
+      <Snmp />
+    {:else if path() === '/sidecars'}
+      <Sidecar />
+    {:else if path() === '/users'}
+      <Users />
     {:else if path() === '/settings'}
       <Settings />
     {:else}

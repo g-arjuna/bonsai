@@ -59,13 +59,13 @@
 
 ### Tasks
 
-**T1 — SNMP: OID index-suffix parser**
+**T1 — SNMP: OID index-suffix parser** ✅ batch1
 - Implement OID instance-suffix parsing in `SnmpFactExtractor::extract()`.
 - Nokia TIMETRA-BGP-MIB: peer IP is last 4 octets of OID suffix. Add `index_suffix_field` option to `SnmpOidPattern`: `{field: peer_address, byte_offset: -4, type: ipv4}`.
 - Update `default.yaml` Nokia entries with `index_suffix_field` config.
 - Fixes S-29 ⚠️.
 
-**T2 — SNMP: Fix CorrelationKey sub_key for BGP traps**
+**T2 — SNMP: Fix CorrelationKey sub_key for BGP traps** ✅ batch1
 - After T1 populates `peer_address`, update `semantic_key_for_event()` in `correlation_buffer.rs` to use peer IP from `snmp_fact` path instead of raw socket `peer_addr`.
 - Eliminates orphan SNMP `bgp_neighbor_down` detections. Resolves S-44 PARTIAL.
 
@@ -81,19 +81,19 @@
 - Bundle standard MIBs: RFC 2863 IF-MIB, RFC 1657 BGP4-MIB, RFC 2932 IP-MIB.
 - Bundle vendor MIBs: Nokia TIMETRA-BGP-MIB, Cisco CISCO-BGP4-MIB/CISCO-OSPF-MIB, Juniper JUNIPER-BGP-MIB.
 
-**T5 — SNMP: UI page (new `src/routes/Snmp.svelte`)**
+**T5 — SNMP: UI page (new `src/routes/Snmp.svelte`)** ✅ batch14
 - Sections: receiver config (bind addr, community allowlist, version toggles, v3 users), OID pattern library (list/edit/upload MIB), live receiver status badge from `/api/receivers/status`.
 - Save → PATCH `/api/settings/streaming` + DB update.
 
-**T6 — SNMP: Trap dedup window + community filtering**
+**T6 — SNMP: Trap dedup window + community filtering** ✅ batch9
 - Per-device per-OID dedup window (5s): same OID from same device within 5s → suppress second (prevents linkDown/linkUp oscillation storms).
 - Community allowlist: accept only configured communities; log warn on unknown community.
 
-**T7 — Syslog: UI page (new `src/routes/Syslog.svelte`)**
+**T7 — Syslog: UI page (new `src/routes/Syslog.svelte`)** ✅ batch3
 - List vendor pattern files with count; add/edit/disable patterns; test regex against sample syslog message inline; hot-reload via watch channel to receiver without restart.
 - Per-device vendor override: force vendor X pattern set on device Y regardless of hostname.
 
-**T8 — Syslog: Vendor coverage expansion**
+**T8 — Syslog: Vendor coverage expansion** ✅ batch3
 - Cisco IOS-XE/XR: `%BGP-5-ADJCHANGE`, `%LINEPROTO-5-UPDOWN`, `%LINK-3-UPDOWN`, `%OSPF-5-ADJCHG`, `%SYS-5-RELOAD`.
 - Arista EOS: `%BGP-5-ESTABLISHED`, `%BGP-3-NOTIFICATION`.
 - Juniper JunOS: `rpd[*]: bgp_listen_accept_connect:`, `if.info:`.
@@ -102,7 +102,7 @@
 - Huawei VRP: zero coverage today — research and add common categories.
 - Add multivendor severity translation table (RFC 5424 level → Bonsai severity by vendor).
 
-**T9 — Syslog: TCP receiver audit**
+**T9 — Syslog: TCP receiver audit** ✅ batch9
 - S-24 removed as "N/A". Audit `src/signals/syslog.rs` for TCP receiver code path.
 - Either: implement RFC 6587 octet-framing properly and reinstate, or formally deprecate and remove dead code.
 
@@ -116,30 +116,30 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 
 ### Tasks
 
-**T1 — ShunRule data model + DB storage**
+**T1 — ShunRule data model + DB storage** ✅ batch3
 - `ShunRule` fields: `id`, `scope_type` (device/group/site/global), `scope_value`, `match_type` (substring/regex/fact_type), `match_value`, `action` (drop/rate_limit), `rate_limit_per_min`, `expires_at_ns`, `created_by`, `created_at_ns`.
 - Store as graph DB `ShunRule` nodes or dedicated table.
 
-**T2 — Syslog receiver: shun evaluation on ingest**
+**T2 — Syslog receiver: shun evaluation on ingest** ✅ batch3
 - In `src/signals/syslog.rs`, after fact extraction, before `bus.publish()`:
   - Evaluate active ShunRules matching `(device_address, site, message_body, fact_type)`.
   - `drop`: skip `bus.publish()`, increment `bonsai_syslog_shunned_total{rule_id}` counter.
   - `rate_limit`: per-rule token bucket — allow N/min, drop excess.
   - Still archive shunned messages (raw log preserved) unless `drop_archive: true` explicitly set on rule.
 
-**T3 — REST API for shun management**
+**T3 — REST API for shun management** ✅ batch3
 - `GET /api/settings/syslog/shuns` — list active rules with per-rule stats.
 - `POST /api/settings/syslog/shuns` — create rule.
 - `DELETE /api/settings/syslog/shuns/{id}` — remove rule.
 - `GET /api/settings/syslog/shuns/{id}/stats` — events shunned, last fired timestamp.
 
-**T4 — UI: Interactive Shun Panel**
+**T4 — UI: Interactive Shun Panel** ✅ batch3
 - In `Syslog.svelte` (D4-1 T7), add a "Shun Rules" tab.
 - From live syslog feed: click a message → "Shun this pattern" → auto-populates regex from message text → choose scope (this device / group / site) → set TTL → save.
 - Show live shun counter badge per rule. One-click "silence 1h / 24h / permanent" for device scope.
 - Visual indicator in Events feed when a category has an active shun rule.
 
-**T5 — Pre-seeded noise patterns**
+**T5 — Pre-seeded noise patterns** ✅ batch3
 - `config/syslog_shun_seeds.yaml`: Nokia `LICC: License warning`, Nokia `LOGGER: Timed out waiting for sync`; Cisco `%SYS-5-CONFIG_I`; FRR BGP max-prefix warning.
 - All disabled by default. Operator enables per environment.
 
@@ -185,10 +185,10 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 - `ldap3` Rust crate for bind + group lookup.
 - Fallback to local user DB if LDAP not configured.
 
-**T4 — UI user management (new `src/routes/Users.svelte`)**
+**T4 — UI user management (new `src/routes/Users.svelte`)** ✅ batch14
 - List users with role badges, last login, created_at. Add/edit/delete local users (admin only). LDAP settings panel + test connection button.
 
-**T5 — UI-based LLM API key management**
+**T5 — UI-based LLM API key management** ✅ batch14
 - In `Settings.svelte` or new `src/routes/AiKeys.svelte`.
 - Per-provider entry: name, model, API key (stored in vault under alias `llm-{provider}`, masked in UI), custom base URL (for Ollama/LM Studio/vLLM), active toggle.
 - "Test connection" → `POST /api/ai/test` → minimal prompt → shows model name, latency, estimated token cost.
@@ -229,42 +229,42 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 
 ### Tasks
 
-**T1 — Fix layout overflow + blur**
+**T1 — Fix layout overflow + blur** ✅ batch4
 - `device-addr`: max-width 180px, truncate with ellipsis, full address in tooltip.
 - `rule-pills`: show max 3, "+N" badge for overflow with expand on click.
 - `context-line`: `max-width: 55%; overflow: hidden; text-overflow: ellipsis`.
 - Responsive: stack `row-primary` + `row-secondary` vertically below 600px viewport.
 - Move `co_fire_signature` inline into secondary row (not just `title` tooltip).
 
-**T2 — Incident type taxonomy + explanatory chips**
+**T2 — Incident type taxonomy + explanatory chips** ✅ batch4
 - Backend: classify incidents as `single_device`, `cascading_failure`, `multi_device_correlated`, `config_caused`.
 - UI: type chip on each card with per-type tooltip: "Cascading failure — root fault on leaf4 propagated to 2 neighboring devices."
 
-**T3 — Grouping rationale: visible in expanded view**
+**T3 — Grouping rationale: visible in expanded view** ✅ batch4
 - "Why grouped?" section in expanded body for each incident.
 - Cascading: "leaf4 lost uplink at T+0 → BGP hold timer expired 64s later → spine1 lost peer. Temporal proximity + shared blast radius."
 - Multi-source: "Same BGP state change confirmed by gNMI + SNMP trap — merged into one detection."
 - Config-caused: "Config change by operator 'admin' preceded this fault by 200ms."
 - Backend: compute `grouping_rationale` string in `/api/incidents` handler. Compute heuristically if not already in DB.
 
-**T4 — Full Trace page (replace 310-byte placeholder in `TraceRoute.svelte`)**
+**T4 — Full Trace page (replace 310-byte placeholder in `TraceRoute.svelte`)** ✅ batch4
 - Timeline: all source events contributing to this detection (gNMI/syslog/SNMP timestamps, source-type badges).
 - 45-second correlation window visualization showing event positions within the window.
 - Investigation link if an investigation exists for this detection.
 - HITL history: any approvals/rejections on remediation proposals spawned from this detection.
 - Graph context: Device → Interface/BGPPeer implicated.
 
-**T5 — Terminology clarity: trigger + trace explained**
+**T5 — Terminology clarity: trigger + trace explained** ✅ batch4
 - Persistent ℹ icon next to "trace →" explaining: "Shows the full timeline of signals (gNMI telemetry, syslog, SNMP trap) that triggered this detection."
 - Rename "trace →" to "Trace & Explain."
 - In expanded incident: "Triggered by" label already present — keep but add tooltip explaining the 45s correlation window concept.
 
-**T6 — Multi-device drill-down**
+**T6 — Multi-device drill-down** ✅ batch4
 - For `device_count > 1`: "Affected Devices" expandable section in expanded body.
 - Per device: address, rules fired, `is_root` flag, `detected_at_ns`.
 - Backend: return `affected_devices: [{address, rules, is_root, detected_at_ns}]` in `/api/incidents` response.
 
-**T7 — Backend incident API completeness audit**
+**T7 — Backend incident API completeness audit** ✅ batch4
 - Audit `src/http_server/observability.rs` incident handler.
 - Verify all fields populated: `correlation_chain`, `blast_radius_summary`, `co_fire_signature`, `grouping_rationale`, `affected_devices`, `started_at_ns`, `ended_at_ns`, `remediation_status`, `event_count`, `device_count`.
 - Fix nulls silently swallowed by `?? ''` / `?? []` in Svelte UI.
@@ -287,7 +287,7 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 
 ### Tasks
 
-**T1 — sFlow v5 receiver (RFC 3176)**
+**T1 — sFlow v5 receiver (RFC 3176)** ✅ batch11
 - Implement UDP sFlow v5 parser in Rust.
 - Parse: flow samples (raw packet → decoded IP/TCP/UDP headers) and counter samples (interface stats).
 - Map flow samples → `AppFlow` nodes using the same model as NetFlow.
@@ -301,7 +301,7 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 - Add SRL sFlow export config to `signal-test.clab.yml` / device startup config.
 - Update Ubuntu testing guide: new step S-38b "sFlow CARRIES_FLOW validation with SRL managed device."
 
-**T3 — ComputeNode / server representation model**
+**T3 — ComputeNode / server representation model** ✅ batch11
 - Extend `HostEndpoint` or add `ComputeNode` node type: `kind` (server/vm/k8s_node/docker_host/container), `management_ip`, `hostname`, `os`, `k8s_cluster`.
 - Multi-source upsert pipeline:
   1. ARP table parsing from PyATS/Genie → MAC→IP → ComputeNode behind ToR switch.
@@ -317,7 +317,7 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 - Graph Explorer: interface nodes + AppFlow nodes show "Historical Data" sparkline panel fed from TSDB query.
 - Preserves graph-first philosophy: graph is live truth layer; TSDB is the historical time-series layer.
 
-**T5 — Live flow rate + liveliness indicators**
+**T5 — Live flow rate + liveliness indicators** ✅ batch11
 - Per-exporter sliding 60s window: bytes/sec, packets/sec, last_seen_ns maintained in memory.
 - `GET /api/flows/live` endpoint: `[{exporter_address, src_prefix, dst_prefix, bytes_per_sec_60s, pps_60s, last_seen_ns}]`.
 - Liveliness detection: if exporter silent > 3× expected export interval → emit `flow_exporter_silent` DetectionEvent.
@@ -335,7 +335,7 @@ There is also no UI indicator of graph health — operators have no visibility i
 
 ### Tasks
 
-**T1 — Graph quality metric model**
+**T1 — Graph quality metric model** ✅ batch5
 - Define quality dimensions computed from graph DB via Cypher:
   - **Device Coverage**: % of managed devices with gNMI subscription active, syslog received <24h, SNMP trap received <24h, BMP session active.
   - **Interface Coverage**: % of interfaces with in/out counters populated (non-zero) and last updated <5 minutes.
@@ -343,18 +343,18 @@ There is also no UI indicator of graph health — operators have no visibility i
   - **Protocol Coverage**: % of devices with BGP sessions mapped, IS-IS adjacencies mapped, BFD sessions mapped.
   - **Enrichment Coverage**: % of devices with NetBox enrichment (`netbox_site` property), % with SNOW CMDB CI linked.
 
-**T2 — `GET /api/graph/quality` endpoint**
+**T2 — `GET /api/graph/quality` endpoint** ✅ batch5
 - Returns JSON: `{overall_score, device_coverage{total, gnmi_active, syslog_recent, snmp_recent, bmp_active}, interface_coverage{total, with_counters, recently_updated}, topology_completeness{links_expected, links_discovered}, protocol_coverage{bgp_mapped, isis_mapped, bfd_mapped}, enrichment_coverage{netbox_enriched, snow_enriched}, weak_devices[]}`.
 - Computed via Cypher queries at call time or cached with 60s TTL.
 
-**T3 — Graph Health tab in Explorer UI**
+**T3 — Graph Health tab in Explorer UI** ✅ batch5
 - Add "Graph Health" tab in `Explorer.svelte`.
 - Radar/spider chart of all quality dimensions.
 - Weak devices table: devices below threshold → click to navigate to device detail.
 - Last computed timestamp + manual refresh button.
 - Color-coded per dimension: green >80%, amber 50-80%, red <50%.
 
-**T4 — Investigation pre-flight check**
+**T4 — Investigation pre-flight check** ✅ batch5
 - In `investigation_runtime.rs`, before spawning an investigation: compute `investigation_readiness` score for the target device using quality metric logic.
 - If score < 40: prefix investigation summary with "WARNING: Graph data sparse for this device. Missing: {list_of_missing_signals}."
 - Store `context_quality_score` field on `Investigation` graph node.
@@ -440,17 +440,17 @@ There is also no UI indicator of graph health — operators have no visibility i
 
 ### Tasks
 
-**T1 — Structured RCA output**
+**T1 — Structured RCA output** ✅ batch5
 - After final LLM response, run a JSON-extraction pass to populate: `root_cause_type` (interface_down/bgp_peer_down/config_change/packet_loss/...), `confidence` (0.0-1.0), `affected_scope[]` (device addresses), `recommended_action` (human-readable), `missing_data[]` (what the LLM couldn't find).
 - Store as `result_json` on `Investigation` graph node.
 
-**T2 — Operator feedback loop**
+**T2 — Operator feedback loop** ✅ batch5
 - `POST /api/investigations/{id}/feedback`: `{rating: "correct"|"partial"|"wrong", comments: string, actual_root_cause: string}`.
 - Store as `InvestigationFeedback` node linked to `Investigation` via `HAS_FEEDBACK` edge.
 - UI: thumbs up/down + comment form in `Investigations.svelte` after investigation completes.
 - `GET /api/investigations/accuracy` → precision/recall stats across all feedback data.
 
-**T3 — Coverage gap reporter**
+**T3 — Coverage gap reporter** ✅ batch9
 - At end of each investigation: compare queried node/edge paths vs graph quality metrics (D4-6 T1).
 - Append `missing_data` list: "No syslog for leaf4 in last 24h", "Interface ethernet-1/1 has no gNMI counter data", "BFD session not mapped."
 - Expose in investigation result UI card — helps operator understand why LLM result may be incomplete.
@@ -461,7 +461,7 @@ There is also no UI indicator of graph health — operators have no visibility i
 - Add `OllamaProvider`: local inference, configurable `base_url` (default `http://localhost:11434`).
 - All keys resolved from vault by alias (D4-3 T5) rather than env vars.
 
-**T5 — Graph-schema-aware system prompt**
+**T5 — Graph-schema-aware system prompt** ✅ batch5
 - Import `GRAPH_SCHEMA` constant from `src/http_server/nl_query.rs` into `src/investigation_runtime.rs`.
 - Inject graph schema as additional system context so LLM knows available node types, relationships, and properties before it starts querying.
 - Add few-shot investigation examples covering: BGP session down, interface down, 30% packet loss, config-caused fault, redundancy loss.
@@ -486,15 +486,15 @@ There is also no UI indicator of graph health — operators have no visibility i
 
 ### Tasks
 
-**T1 — Python sidecar health HTTP endpoint**
+**T1 — Python sidecar health HTTP endpoint** ✅ batch14
 - Add lightweight HTTP server to `collector_engine.py`: `GET /health` returns `{status, uptime_secs, rules_loaded, last_detection_at_ns, detections_today, queue_depth}`.
 - `[sidecar] health_port = 9200` in TOML config.
 
-**T2 — Rust backend: `/api/sidecar/status`**
+**T2 — Rust backend: `/api/sidecar/status`** ✅ batch6
 - New endpoint that proxies to sidecar health URL or returns last-known gRPC heartbeat timestamp.
 - Show sidecar as a card in `Collectors.svelte`: rules count, last detection, queue depth, health badge (green/yellow/red/grey).
 
-**T3 — Fix mode=all collector registration (resolves S-49/S-50 ⚠️)**
+**T3 — Fix mode=all collector registration (resolves S-49/S-50 ⚠️)** ✅ batch9
 - When `run_core && run_collector` (mode=all): auto-register local in-process collector with well-known ID at startup rather than requiring external gRPC registration.
 - After fix: `/api/collectors` returns the in-process collector entry. Receiver badges on Collectors card become functional.
 
@@ -503,12 +503,12 @@ There is also no UI indicator of graph health — operators have no visibility i
 - `PATCH /api/sidecar/rules/{id}` → enable/disable without sidecar restart (hot-reload via IPC or signal).
 - UI: rule list panel in the sidecar card in Collectors.
 
-**T5 — GNN embedding pipeline wiring**
+**T5 — GNN embedding pipeline wiring** ✅ batch6
 - Scheduled background job in `collector_engine.py` (every 30 min): export graph node features from KuzuDB → run GNN forward pass → write `DeviceEmbedding` nodes back to graph.
 - Use embeddings in anomaly detection: cosine similarity between current embedding and historical baseline → compute anomaly score.
 - `export_training.py` and GNN model code already exist — this is a wiring task not a model task.
 
-**T6 — Dedicated Sidecar UI page (new `src/routes/Sidecar.svelte`)**
+**T6 — Dedicated Sidecar UI page (new `src/routes/Sidecar.svelte`)** ✅ batch14
 - Active rules panel: name, vendor, severity, last fired, fires today, enable/disable toggle.
 - Detection feed: last 50 detections from sidecar with per-detection latency.
 - Embedding space: 2D UMAP projection of current `DeviceEmbedding` nodes, coloured by health state.
@@ -539,12 +539,12 @@ There is also no UI indicator of graph health — operators have no visibility i
 
 ### Tasks
 
-**T1 — Flow-based detection rules**
+**T1 — Flow-based detection rules** ✅ batch12
 - `flow_interface_utilization_high` synthesizer rule: if `AppFlow.bytes_per_sec / Interface.speed > 0.9` → `medium` severity detection.
 - `flow_exporter_silent` rule (see D4-5 T5): exporter silent > 3× expected interval → detection.
 - Wire `AppFlow` write events through `semantic_key_for_event()` so flow anomalies enter `CorrelationBuffer` and can merge with gNMI/syslog events for the same device.
 
-**T2 — OTLP metrics receiver (`/v1/metrics`)**
+**T2 — OTLP metrics receiver (`/v1/metrics`)** ✅ batch12
 - Add `POST /v1/metrics` handler alongside the existing `/v1/traces` at port 4318.
 - Parse OTLP proto metrics: gauge, sum, histogram types.
 - Write application metrics to `Application` node properties: `cpu_pct`, `memory_mb`, `req_per_sec`, `error_rate`.
@@ -587,22 +587,22 @@ There is also no UI indicator of graph health — operators have no visibility i
 
 ### Tasks
 
-**T1 — Fix PeerUp BGP OPEN capabilities parsing (S-32b)**
+**T1 — Fix PeerUp BGP OPEN capabilities parsing (S-32b)** ✅ batch10
 - RFC 7854 §4.10: BGP OPEN message layout is `version(1) + AS(2) + hold_time(2) + bgp_id(4) + opt_params_len(1) + opt_params`.
 - Find and fix the `hold_time` offset calculation in the BMP PeerUp handler.
 - Parse capability TLVs: Multi-protocol extensions (type 1), Route Refresh (type 2), Graceful Restart (type 64), 4-Byte AS (type 65), Add-Path (type 69).
 - Write capability list to `BgpSession` or `Device` node properties.
 
-**T2 — STATS_REPORT parsing + graph write**
+**T2 — STATS_REPORT parsing + graph write** ✅ batch12
 - Parse at minimum: rejected prefixes (type 0), Adj-RIB-In prefix count (type 7), Loc-RIB prefix count (type 8).
 - Write to `BgpSession` node as properties with timestamps.
 - Add synthesizer rule `bgp_rib_prefix_spike`: if Adj-RIB-In count changes >20% in one STATS_REPORT cycle → `medium` severity detection.
 
-**T3 — PEER_DOWN reason code completeness**
+**T3 — PEER_DOWN reason code completeness** ✅ batch10
 - RFC 7854 §4.9 reason codes: 0=local system closed, 1=local NOTIFICATION sent, 2=deconfigured, 3=remote NOTIFICATION received, 4=remote system closed, 5=peer config change, 6=VRF peer deleted.
 - Map each to a distinct `bmp_peer_down` event sub-type for more precise incident classification.
 
-**T4 — BMP Initiation TLVs → Device node properties**
+**T4 — BMP Initiation TLVs → Device node properties** ✅ batch10
 - RFC 7854 §4.3: parse `sysDescr` (type 1), `sysName` (type 2), `bgpID` (embedded in Per-Peer Header) TLVs from BMP Initiation message.
 - Write to Device node: `bmp_sys_descr`, `bmp_sys_name`, `bmp_bgp_id`.
 - Critical for FRR nodes which have BMP only and no gNMI — this is their only source of system identity.
@@ -614,7 +614,7 @@ There is also no UI indicator of graph health — operators have no visibility i
 - `semantic_key_for_event()` for BGP events generates a `BgpSessionKey` in addition to (or replacing) the device-scoped key.
 - This is significant design work — ADR required before code changes.
 
-**T6 — Extended + large community attribute parsing**
+**T6 — Extended + large community attribute parsing** ✅ batch12
 - Parse BGP UPDATE extended communities (RFC 4360) and large communities (RFC 8092) in ROUTE_MONITORING messages.
 - Write to prefix properties in graph: `ext_communities[]`, `large_communities[]`.
 - Enables graph explorer queries: "which prefixes carry community 64500:100?" and policy-aware correlation.
@@ -631,7 +631,7 @@ For a dual-homed server (two interfaces to two ToR switches), the graph doesn't 
 
 ### Tasks
 
-**T1 — RedundancyGroup model in graph**
+**T1 — RedundancyGroup model in graph** ✅ batch14
 - `RedundancyGroup` node: `id`, `type` (ecmp/lag/dual_homed/bgp_multipath/vrrp), `member_count`, `original_member_count`, `member_node_ids[]`, `protects_node_id` (device or host endpoint ID).
 - `MEMBER_OF(Device/Interface→RedundancyGroup)` edge with `role` (primary/secondary/member).
 - `PROVIDES_REDUNDANCY_FOR(RedundancyGroup→Device/HostEndpoint)` edge.
@@ -648,7 +648,7 @@ For a dual-homed server (two interfaces to two ToR switches), the graph doesn't 
 - Evaluate using SuzieQ as a library or subprocess for redundancy discovery analysis rather than maintaining separate PyATS parsers per vendor.
 - Deliverable: Architecture Decision Record — SuzieQ vs PyATS/Genie vs Bonsai-native parsing.
 
-**T4 — Redundancy loss detection rules**
+**T4 — Redundancy loss detection rules** ✅ batch14
 - `redundancy_degraded` rule: `RedundancyGroup.member_count < original_member_count` → `medium` severity.
 - `redundancy_lost` rule: `member_count = 1` (single point of failure) → `high` severity.
 - Trigger path: `interface_down` or `bgp_session_down` detection → check if affected node is a `RedundancyGroup` member → compute new member_count → fire redundancy rule if threshold crossed.
@@ -713,29 +713,29 @@ Over time, `DetectionEvent` nodes, `AppFlow` nodes from heavy flow sources, and 
 
 ### Tasks
 
-**T1 — Zeroizing credential memory**
+**T1 — Zeroizing credential memory** ✅ batch2
 - Add `zeroize` crate to `Cargo.toml`.
 - Change `StoredCredential.password: String` → `zeroize::Zeroizing<String>`.
 - Change `ResolvedCredential.password: String` → `zeroize::Zeroizing<String>`.
 - Add `impl Drop for VaultState` that explicitly calls `.clear()` and `.zeroize()` on entries before deallocation.
 - Audit all callers of `vault.resolve()`: verify no long-lived `Arc<ResolvedCredential>` or cloned password strings in gNMI client configs, HTTP client headers, or enrichment adapter configs.
 
-**T2 — Atomic vault write + integrity checksum**
+**T2 — Atomic vault write + integrity checksum** ✅ batch2
 - In `persist_locked()`: write to `{vault_path}.tmp` first using `std::fs::write`, then `std::fs::rename` over the final path. Atomic on POSIX — crash during write leaves `.tmp`, original `vault.age` intact.
 - Add HMAC-SHA256 integrity tag over the encrypted payload bytes (key derived from passphrase). Prepend tag to vault file.
 - On `decrypt_entries()`: verify HMAC before attempting decryption. Return actionable error on failure: "vault integrity check failed — file may be corrupt, restore from backup."
 
-**T3 — Vault re-key subcommand**
+**T3 — Vault re-key subcommand** ✅ batch2
 - Add `bonsai credential rekey` CLI subcommand.
 - Flow: open vault with `BONSAI_VAULT_PASSPHRASE` → decrypt all entries → re-encrypt with new passphrase from `BONSAI_VAULT_NEW_PASSPHRASE` env var → atomic write.
 - Test: rekey → set new passphrase env var → restart bonsai → verify all credentials accessible.
 
-**T4 — Startup crash path audit**
+**T4 — Startup crash path audit** ✅ batch2
 - Trace `src/server_startup.rs` initialization sequence: map all `tokio::spawn()` calls before and after vault unlock.
 - If vault unlock fails: ensure all already-spawned tasks receive the shutdown watch signal and cleanly stop before process exit.
 - Add test: simulate vault init failure (wrong passphrase) → verify clean process exit, no leaked background tasks.
 
-**T5 — Vault init documentation**
+**T5 — Vault init documentation** ✅ batch9
 - Document in `scripts/install.sh` and README: vault passphrase requirements (minimum length, complexity), what happens if passphrase is lost (credentials are unrecoverable — backup the `.age` file before any re-key operation), and how to run re-key.
 
 ---
@@ -801,13 +801,13 @@ FRR runs as `frr-rr` in the lab topology. BMP session confirmed working (S-30/S-
 
 ### Tasks
 
-**T1 — FRR syslog pattern: config change detection**
+**T1 — FRR syslog pattern: config change detection** ✅ batch10
 - Add to `config/syslog_patterns/frr.yaml`:
   - `config_change_detail` fact_type pattern for: `bgpd[*]: Configuration changed`, `zebra[*]: route-map changed`, vtysh config-write log lines.
   - `process_restart` pattern for: `bgpd: starting`, `ospfd: starting` (FRR daemon respawn after config reload).
 - These patterns produce `ConfigChange` nodes with `username` and `change_description` fields.
 
-**T2 — FRR BGP: "User reset" as config-caused fault**
+**T2 — FRR BGP: "User reset" as config-caused fault** ✅ batch10
 - Add syslog pattern for `%BGP-5-ADJCHANGE: neighbor X Down User reset` → classify as `config_caused_bgp_down` fact_type.
 - In `write_state_change_event()` for FRR BGP events, if `change_source = "user_reset"` → set `config_correlated = true` on the resulting `DetectionEvent`.
 - Triggers `CHANGE_CAUSED_DETECTION` edge creation and `[DURING CONFIG CHANGE]` prefix on detection reason.
@@ -817,7 +817,7 @@ FRR runs as `frr-rr` in the lab topology. BMP session confirmed working (S-30/S-
 - Indicator of a route-map or prefix-list change that silently filtered accepted routes.
 - Correlate with `ConfigChange` nodes from FRR syslog within ±60s window.
 
-**T4 — FRR BGP playbook**
+**T4 — FRR BGP playbook** ✅ batch10
 - Create `playbooks/library/frr_bgp_session_down.yaml` for FRR-specific recovery.
 - Steps: `vtysh -c "clear ip bgp X soft"` → verify via BMP STATS_REPORT Adj-RIB-In restores → verify via graph `BgpSession.state = established`.
 - Risk tier: `low` (soft clear is non-disruptive).
@@ -854,7 +854,7 @@ FRR runs as `frr-rr` in the lab topology. BMP session confirmed working (S-30/S-
 
 ### Tasks
 
-**T1 — PyATS bootstrap agent (new `python/bootstrap_agent.py`)**
+**T1 — PyATS bootstrap agent (new `python/bootstrap_agent.py`)** ✅ batch7
 - Input: device address, credentials (from vault), optional vendor hint.
 - Connect via SSH (Netmiko/PyATS connection plugin).
 - Run `device.learn('bgp', 'interface', 'routing', 'lldp', 'lag')` using Genie.
@@ -862,7 +862,7 @@ FRR runs as `frr-rr` in the lab topology. BMP session confirmed working (S-30/S-
 - Call `POST /api/devices` to register device in Bonsai graph with all discovered properties.
 - Call `POST /api/devices/{address}/topology` to seed interface, BGP, IS-IS, LLDP data before first gNMI subscription.
 
-**T2 — Bootstrap integration in Onboarding UI**
+**T2 — Bootstrap integration in Onboarding UI** ✅ batch7
 - Add "Bootstrap from device" step to `Onboarding.svelte` flow:
   1. Enter address + credential alias.
   2. Click "Discover" → calls `POST /api/devices/bootstrap` → runs `bootstrap_agent.py` → shows progress.
@@ -870,24 +870,24 @@ FRR runs as `frr-rr` in the lab topology. BMP session confirmed working (S-30/S-
   4. Confirm → device added with pre-seeded graph data. gNMI subscription starts using auto-detected paths for vendor.
 - Show bootstrap progress via SSE stream from `/api/devices/bootstrap/{job_id}/stream`.
 
-**T3 — Bulk onboarding from seed file**
+**T3 — Bulk onboarding from seed file** ✅ batch7
 - `POST /api/devices/bulk` accepts YAML/JSON seed file: `[{address, hostname, vendor, credential_alias, bootstrap: true}]`.
 - Runs bootstrap agent for each device in parallel (max 4 concurrent to avoid SSH flooding).
 - Returns bulk result: `[{address, status: ok|failed, error: string}]`.
 - UI: file upload widget in Onboarding page for bulk import.
 
-**T4 — Nokia SRL: automated gNMI TLS setup**
+**T4 — Nokia SRL: automated gNMI TLS setup** ✅ batch14
 - During bootstrap for Nokia SRL: detect that gNMI requires TLS.
 - Retrieve ContainerLab CA cert or device self-signed cert via RESTCONF or SCP.
 - Store cert in `runtime/certs/{device_address}.pem`.
 - Configure gNMI subscription to use cert for this device automatically.
 
-**T5 — FRR: automated BMP target configuration**
+**T5 — FRR: automated BMP target configuration** ✅ batch14
 - During bootstrap for FRR device: detect FRR via `show version` / `vtysh -c "show version"`.
 - Push BMP target configuration to FRR via SSH: `router bgp {as}`, `bmp targets bonsai`, `bmp connect {bonsai_ip} port 5000 min-retry 30 max-retry 120`.
 - Verify BMP session establishes within 60s.
 
-**T6 — Post-bootstrap graph pre-seeding**
+**T6 — Post-bootstrap graph pre-seeding** ✅ batch14
 - After bootstrap completes, write to graph: `Interface` nodes for all discovered interfaces, `BgpSession` nodes for all discovered BGP neighbors, `IsIsAdj` nodes for discovered adjacencies, `RedundancyGroup` nodes for discovered LAGs.
 - Mark these nodes with `source: bootstrap` and `bootstrap_at_ns: now` so telemetry updates can be tracked as delta-from-bootstrap.
 - This means first gNMI subscription has a baseline to compare against rather than starting cold.
@@ -984,7 +984,7 @@ Key ⬜ (never run) and ⚠️ (partial) items from the full checklist:
 - Expected first-time results: some steps may fail due to NetBox seeding issues (T2 in D4-18), PDI connectivity, or adapter config gaps.
 - Document every failure with root cause and fix applied.
 
-**T3 — Screenshot + evidence capture automation**
+**T3 — Screenshot + evidence capture automation** ✅ batch8
 - Write a script `lab/signal-test-lab/capture_evidence.sh` that:
   - Runs key `curl` verification commands from the testing guide for S-12 through S-56.
   - Saves output to `test-results/run-{timestamp}/` with one file per step.
@@ -1078,32 +1078,32 @@ The existing `/api/governance` endpoint (in `src/http_server/governance.rs`) ret
 
 ### Tasks
 
-**T1 — Resource Governor UI page (new `src/routes/Governance.svelte`)**
+**T1 — Resource Governor UI page (new `src/routes/Governance.svelte`)** ✅ batch6
 - Live status section: memory RSS gauge (current/budget), rate shedding active badge (green/red), write pressure active badge, memory pressure active badge.
 - Counters section: memory_shrink_count, memory_flush_count, write_batch_expand_count, rate_shed_count — all from `/api/governance`.
 - Auto-refresh every 5 seconds via polling (or SSE stream if governance events are added to event bus).
 
-**T2 — SSE stream for governance events**
+**T2 — SSE stream for governance events** ✅ batch9
 - Add `GovernanceEvent` variant to the `SsePayload` enum or `BonsaiEvent` broadcast.
 - Emit on: memory pressure transitions (none → soft → hard → clear), rate shedding start/stop, write pressure start/stop.
 - UI: live event feed in Governance page showing transitions with timestamps: "14:32:01 — Memory pressure: SOFT (RSS 820 MB / 1024 MB budget)."
 
-**T3 — Historical RSS + rate sparkline**
+**T3 — Historical RSS + rate sparkline** ✅ batch6
 - Maintain a ring buffer of last 60 RSS samples (5s × 60 = 5 minutes of history) in the governor.
 - Expose via `/api/governance/history` as a time-series array.
 - UI: mini sparkline charts in Governance page for: RSS over last 5 min, inbound event rate over last 5 min.
 
-**T4 — Resource profile switcher**
+**T4 — Resource profile switcher** ✅ batch6
 - `PATCH /api/governance/profile` with `{profile: "low"|"standard"|"high"}` → updates governor thresholds at runtime without restart.
 - Requires reconfiguring memory_budget_bytes and rate_budget_eps from the new profile defaults.
 - UI: profile selector radio buttons (Low / Standard / High) in Governance page. Shows current active profile with its memory budget and rate budget numbers.
 
-**T5 — Shedding indicator in signal receivers**
+**T5 — Shedding indicator in signal receivers** ✅ batch9
 - When `should_shed()` is true in syslog receiver or BMP receiver, increment a per-receiver `shed_event_count` counter.
 - Expose via `/api/receivers/status` alongside existing receiver stats.
 - UI: in `Collectors.svelte` receiver badges, show a shed-events counter when non-zero. Tooltip: "Resource governor dropped N events due to memory pressure."
 
-**T6 — Wire Governance page into App nav**
+**T6 — Wire Governance page into App nav** ✅ batch6
 - Add `{path: '/governance', label: 'Governance', icon: '⚖'}` to the Configure nav group in `App.svelte` NAV array.
 - Guard with `admin` or `operator` role when RBAC is implemented (D4-3 T2).
 
@@ -1134,11 +1134,11 @@ The existing `/api/governance` endpoint (in `src/http_server/governance.rs`) ret
 
 ### Tasks
 
-**T1 — `rust-toolchain.toml` pin**
+**T1 — `rust-toolchain.toml` pin** ✅ batch8
 - Create `rust-toolchain.toml` at repo root with `channel = "1.78.0"` (or current stable used in CI).
 - Ensures reproducible Rust builds on all machines.
 
-**T2 — `Makefile` hardening**
+**T2 — `Makefile` hardening** ✅ batch8
 - Add `check-deps` target: verify `rustc`, `cargo`, `node`, `npm`, `docker`, `cmake`, `protoc` are present and show versions.
 - Add `install-deps-ubuntu` target: runs the `apt install` command from Phase 0 of the testing guide.
 - Add `test-integration` target: runs `cargo test --test integration_tests` (if integration test files exist) separately from unit tests.
@@ -1155,7 +1155,7 @@ The existing `/api/governance` endpoint (in `src/http_server/governance.rs`) ret
 - Add rollback: if install fails, restore previous binary from backup.
 - Add `--uninstall` flag: remove bonsai binary, service file, and (optionally) runtime data.
 
-**T4 — GitHub Actions CI workflow**
+**T4 — GitHub Actions CI workflow** ✅ batch8
 - Create `.github/workflows/ci.yml`.
 - Jobs:
   - `build`: `cargo build --release` on Ubuntu 22.04.

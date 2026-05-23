@@ -1984,6 +1984,17 @@ pub(super) async fn db_list_backups_handler() -> Result<Json<serde_json::Value>,
     Ok(Json(serde_json::json!({"backups": backups})))
 }
 
+/// D4-12 T1: GET /api/redundancy/groups
+pub(super) async fn list_redundancy_groups_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let groups = state.store
+        .list_redundancy_groups()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({"groups": groups})))
+}
+
 fn get_table_columns(conn: &Connection<'_>, table_name: &str) -> Vec<serde_json::Value> {
     let mut columns = Vec::new();
     if let Ok(mut result) = conn.query(&format!(

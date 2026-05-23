@@ -409,6 +409,14 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
                 .to_string();
             Some((event_type.to_string(), comp))
         }
+        // D4-12 T4: Redundancy group events — sub-keyed by group_id
+        "redundancy_lost" | "redundancy_degraded" => {
+            let group = detail.get("group_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Some((event_type.to_string(), group))
+        }
         // Inherently single-source — do not buffer
         _ => None,
     }
