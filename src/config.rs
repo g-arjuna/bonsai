@@ -58,6 +58,59 @@ pub struct Config {
     pub ai: AiConfig,
     #[serde(default)]
     pub tls: HttpTlsConfig,
+    #[serde(default)]
+    pub auth: AuthConfig,
+}
+
+// ── Auth / LDAP (D4-3 T2/T3) ────────────────────────────────────────────────
+
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct AuthConfig {
+    #[serde(default)]
+    pub ldap: LdapConfig,
+}
+
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct LdapConfig {
+    /// Enable LDAP authentication. When false, only local users + env bootstrap.
+    #[serde(default)]
+    pub enabled: bool,
+    /// LDAP server URL, e.g. "ldap://ldap.example.com:389" or "ldaps://ldap.example.com:636".
+    #[serde(default)]
+    pub server_url: String,
+    /// Bind DN for LDAP search (service account).
+    #[serde(default)]
+    pub bind_dn: String,
+    /// Environment variable containing the bind password.
+    #[serde(default)]
+    pub bind_password_env: String,
+    /// Base DN for user search, e.g. "ou=users,dc=example,dc=com".
+    #[serde(default)]
+    pub user_search_base: String,
+    /// User search filter. Use `{username}` as placeholder.
+    /// Default: "(&(objectClass=person)(sAMAccountName={username}))"
+    #[serde(default = "default_ldap_user_filter")]
+    pub user_search_filter: String,
+    /// Base DN for group search.
+    #[serde(default)]
+    pub group_search_base: String,
+    /// Mapping of LDAP group CN → Bonsai role.
+    /// Example: { "Network Admins" = "admin", "NOC" = "operator", "Viewers" = "viewer" }
+    #[serde(default)]
+    pub role_mapping: std::collections::HashMap<String, String>,
+    /// Default role if no group mapping matches. Default: "viewer".
+    #[serde(default = "default_ldap_role")]
+    pub default_role: String,
+    /// TLS: skip certificate verification (for self-signed certs). Default: false.
+    #[serde(default)]
+    pub tls_skip_verify: bool,
+}
+
+fn default_ldap_user_filter() -> String {
+    "(&(objectClass=person)(sAMAccountName={username}))".to_string()
+}
+fn default_ldap_role() -> String {
+    "viewer".to_string()
 }
 
 // ── HTTP TLS (D4-3 T7) ──────────────────────────────────────────────────────

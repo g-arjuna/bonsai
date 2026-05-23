@@ -174,13 +174,13 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 - Implement `Drop` on `VaultState` to zero `entries` BTreeMap contents.
 - Audit all `resolve()` call sites — ensure no long-lived clones of password into gNMI client config or HTTP request headers.
 
-**T2 — RBAC model**
+**T2 — RBAC model** ✅ batch20
 - Roles: `admin`, `operator`, `viewer`, `api_readonly`.
 - `User` + `Role` nodes in graph DB or dedicated users table.
 - JWT sessions. Axum middleware in `src/http_server/mod.rs` checks role before dispatching route handlers.
 - Scope enforcement: GET topology = viewer+; POST remediation = operator+; vault/user management = admin only.
 
-**T3 — LDAP / Active Directory integration**
+**T3 — LDAP / Active Directory integration** ✅ batch20
 - `[auth.ldap]` config block: `server_url`, `bind_dn`, `bind_password_env`, `user_search_base`, `group_search_base`, `role_mapping` (LDAP group → Bonsai role).
 - `ldap3` Rust crate for bind + group lookup.
 - Fallback to local user DB if LDAP not configured.
@@ -607,7 +607,7 @@ There is also no UI indicator of graph health — operators have no visibility i
 - Write to Device node: `bmp_sys_descr`, `bmp_sys_name`, `bmp_bgp_id`.
 - Critical for FRR nodes which have BMP only and no gNMI — this is their only source of system identity.
 
-**T5 — Cross-device BMP+gNMI correlation: architecture decision**
+**T5 — Cross-device BMP+gNMI correlation: architecture decision** ✅ batch20
 - S-33 ⚠️ is a confirmed structural gap. Before implementation, produce an Architecture Decision Record.
 - Proposed design: introduce `BgpSessionKey(lower_ip, higher_ip)` as a canonical cross-device session identifier (canonical form: IPs sorted lexicographically).
 - Extend `CorrelationBuffer` to support cross-device slot merging via `BgpSessionKey` lookup.
@@ -812,7 +812,7 @@ FRR runs as `frr-rr` in the lab topology. BMP session confirmed working (S-30/S-
 - In `write_state_change_event()` for FRR BGP events, if `change_source = "user_reset"` → set `config_correlated = true` on the resulting `DetectionEvent`.
 - Triggers `CHANGE_CAUSED_DETECTION` edge creation and `[DURING CONFIG CHANGE]` prefix on detection reason.
 
-**T3 — BMP route policy change detection**
+**T3 — BMP route policy change detection** ✅ batch20
 - When `STATS_REPORT` Adj-RIB-In count drops sharply (> 20% within one report cycle) without a session going down → `bgp_policy_filter_spike` detection.
 - Indicator of a route-map or prefix-list change that silently filtered accepted routes.
 - Correlate with `ConfigChange` nodes from FRR syslog within ±60s window.
@@ -919,7 +919,7 @@ FRR runs as `frr-rr` in the lab topology. BMP session confirmed working (S-30/S-
 - Verify HostEndpoint nodes created for server-role devices with `CONNECTED_TO` edges.
 - Document results in Ubuntu testing guide.
 
-**T2 — NetBox bulk seed script hardening**
+**T2 — NetBox bulk seed script hardening** ✅ batch20
 - The S-61 seed script uses `device_type:1, role:1, site:1` as hardcoded IDs — these are not guaranteed to exist in a fresh NetBox install.
 - Rewrite: auto-create or discover `device_type`, `device_role`, `site` via NetBox API before creating devices.
 - Add error handling: if device already exists → skip with "already exists" log.

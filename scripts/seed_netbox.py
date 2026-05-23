@@ -108,20 +108,32 @@ def api(session: requests.Session, base_url: str, method: str, path: str, **kwar
     url = f"{base_url}/api/{path}"
     resp = getattr(session, method)(url, **kwargs)
     if resp.status_code not in (200, 201):
+        # Return None on conflict / already-exists for graceful handling
+        if resp.status_code == 400 and 'already exists' in resp.text.lower():
+            print(f"  SKIP {path}: already exists", file=sys.stderr)
+            return None
         print(f"  ERROR {method.upper()} {url}: {resp.status_code} — {resp.text[:200]}", file=sys.stderr)
         resp.raise_for_status()
     return resp.json()
 
 
 def get_or_create(session, base_url, endpoint, lookup_field, lookup_value, payload):
-    """Upsert: look up by lookup_field, create if missing, update if present."""
-    resp = api(session, base_url, "get", f"{endpoint}/?{lookup_field}={lookup_value}")
-    results = resp.get("results", [])
-    if results:
-        obj_id = results[0]["id"]
-        api(session, base_url, "patch", f"{endpoint}/{obj_id}/", json=payload)
-        return results[0]
-    return api(session, base_url, "post", f"{endpoint}/", json=payload)
+    """Upsert: look up by lookup_field, create if missing, update if present.
+    Returns the object dict, or a minimal dict with 'id' on failure."""
+    try:
+        resp = api(session, base_url, "get", f"{endpoint}/?{lookup_field}={lookup_value}")
+        if resp is None:
+            return {"id": 0}
+        results = resp.get("results", [])
+        if results:
+            obj_id = results[0]["id"]
+            api(session, base_url, "patch", f"{endpoint}/{obj_id}/", json=payload)
+            return results[0]
+        result = api(session, base_url, "post", f"{endpoint}/", json=payload)
+        return result if result else {"id": 0}
+    except requests.exceptions.HTTPError as e:
+        print(f"  WARNING: {endpoint} '{lookup_value}': {e}", file=sys.stderr)
+        return {"id": 0}
 
 
 def wait_for_netbox(base_url: str, token: str, timeout: int = 120):
@@ -141,8 +153,35 @@ def wait_for_netbox(base_url: str, token: str, timeout: int = 120):
     sys.exit(1)
 
 
+def validate_topology(topo: dict) -> list:
+    """Validate topology.yaml structure, return list of errors."""
+    errors = []
+    if "sites" not in topo or not topo["sites"]:
+        errors.append("topology.yaml missing 'sites' list")
+    if "devices" not in topo or not topo["devices"]:
+        errors.append("topology.yaml missing 'devices' list")
+    for i, dev in enumerate(topo.get("devices", [])):
+        for field in ("name", "address", "vendor", "role"):
+            if field not in dev:
+                errors.append(f"device[{i}] missing required field '{field}'")
+        if "site" not in dev:
+            errors.append(f"device[{i}] ({dev.get('name', '?')}) missing 'site'")
+    for i, site in enumerate(topo.get("sites", [])):
+        if "name" not in site or "id" not in site:
+            errors.append(f"site[{i}] missing 'name' or 'id'")
+    return errors
+
+
 def seed(base_url: str, token: str):
     topo = load_topology()
+
+    # Validate topology before proceeding
+    errors = validate_topology(topo)
+    if errors:
+        for e in errors:
+            print(f"  ERROR: {e}", file=sys.stderr)
+        print("Aborting: topology.yaml validation failed.", file=sys.stderr)
+        sys.exit(1)
 
     session = requests.Session()
     session.headers.update({
@@ -293,7 +332,23 @@ def main():
     parser.add_argument("--token", default="bonsai-dev-token")
     parser.add_argument("--reset", action="store_true",
                         help="Delete bonsai-managed objects before re-seeding (NetBox stays up)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Validate topology and print plan without making changes")
     args = parser.parse_args()
+
+    if args.dry_run:
+        topo = load_topology()
+        errors = validate_topology(topo)
+        if errors:
+            for e in errors:
+                print(f"  ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Topology valid: {len(topo['sites'])} sites, {len(topo['devices'])} devices")
+        for d in topo['devices']:
+            print(f"  {d['name']}: {d['address']} ({d['vendor']}, {d['role']}, site={d.get('site', '?')})")
+        print("Dry-run complete — no changes made.")
+        return
+
     if args.reset:
         reset(args.url, args.token)
     seed(args.url, args.token)

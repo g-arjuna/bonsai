@@ -75,7 +75,7 @@ use settings::{get_streaming_settings_handler, patch_streaming_settings_handler,
 use ha::{ha_status_handler, ha_settings_handler, ha_patch_settings_handler, restart_handler};
 use nl_query::{explorer_ask_handler, nl_budget_handler};
 use shun::{create_shun_rule_handler, delete_shun_rule_handler, disable_shun_rule_handler, list_shun_rules_handler, shun_stats_handler};
-use auth::{list_api_keys_handler, create_api_key_handler, delete_api_key_handler, rotate_api_key_handler};
+use auth::{list_api_keys_handler, create_api_key_handler, delete_api_key_handler, rotate_api_key_handler, login_handler, logout_handler, list_users_handler, create_user_handler, delete_user_handler, ldap_config_handler, ldap_test_handler};
 
 // ── JSON response types ───────────────────────────────────────────────────────
 
@@ -694,6 +694,8 @@ pub struct AppState {
     /// D4-7 T3: Pattern directories for reload.
     pub syslog_pattern_dir: String,
     pub snmp_oid_pattern_dir: String,
+    /// D4-3 T3: LDAP/AD authentication config.
+    pub ldap_config: crate::config::LdapConfig,
 }
 
 impl axum::extract::FromRef<AppState> for Option<Arc<crate::ha_coordinator::HACoordinator>> {
@@ -746,6 +748,7 @@ pub fn router(
     snmp_pattern_tx: Option<Arc<tokio::sync::watch::Sender<Arc<crate::signals::snmp::SnmpFactExtractor>>>>,
     syslog_pattern_dir: String,
     snmp_oid_pattern_dir: String,
+    ldap_config: crate::config::LdapConfig,
 ) -> Router {
     let state = AppState {
         store,
@@ -787,6 +790,7 @@ pub fn router(
         snmp_pattern_tx,
         syslog_pattern_dir,
         snmp_oid_pattern_dir,
+        ldap_config,
     };
 
     // D3-6 T6: consume auto-investigate requests from the write coordinator.
@@ -1006,6 +1010,14 @@ fn adapter_and_schema_routes() -> Router<AppState> {
         .route("/api/auth/apikeys", get(list_api_keys_handler).post(create_api_key_handler))
         .route("/api/auth/apikeys/{id}", delete(delete_api_key_handler))
         .route("/api/auth/apikeys/{id}/rotate", post(rotate_api_key_handler))
+        // D4-3 T2: RBAC — login/logout, user management
+        .route("/api/auth/login", post(login_handler))
+        .route("/api/auth/logout", post(logout_handler))
+        .route("/api/auth/users", get(list_users_handler).post(create_user_handler))
+        .route("/api/auth/users/{id}", delete(delete_user_handler))
+        // D4-3 T3: LDAP/AD integration
+        .route("/api/auth/ldap/config", get(ldap_config_handler))
+        .route("/api/auth/ldap/test", post(ldap_test_handler))
         .route("/health", get(health_handler))
         .route("/healthz", get(healthz_handler))
         .route("/readyz", get(readyz_handler))

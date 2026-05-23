@@ -6256,6 +6256,29 @@ fn write_bmp_statistics_report(
 
     let session_id = format!("{}:{}", update.target, event.peer_address);
     let now = ts(update.timestamp_ns);
+
+    // D4-16 T3: Read previous adj_rib_in BEFORE we overwrite it (for policy filter spike detection).
+    let prev_adj: i64 = if adj_rib_in > 0 {
+        let mut q = conn
+            .prepare("MATCH (s:BmpSession {id: $id}) RETURN s.adj_rib_in_routes")
+            .unwrap_or_else(|_| conn.prepare("RETURN 0").unwrap());
+        conn.execute(&mut q, vec![("id", Value::String(session_id.clone()))])
+            .and_then(|qr| {
+                let val = qr.get_flat_tuples()
+                    .first()
+                    .and_then(|row| row.first())
+                    .and_then(|v| match v {
+                        Value::Int64(n) => Some(*n),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                Ok(val)
+            })
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
     let mut stmt = conn
         .prepare(
             "MATCH (s:BmpSession {id: $id}) \
@@ -6276,6 +6299,63 @@ fn write_bmp_statistics_report(
         ],
     )
     .context("execute BmpSession stats update")?;
+
+    // D4-16 T3: bgp_policy_filter_spike — Adj-RIB-In drops >20% without session going down
+    if adj_rib_in > 0 {
+        // Fire if previous was meaningful and current dropped >20%
+        if prev_adj > 10 && adj_rib_in < (prev_adj * 80 / 100) {
+            let drop_pct = ((prev_adj - adj_rib_in) as f64 / prev_adj as f64 * 100.0) as i64;
+            // Check if there's a recent ConfigChange within ±60s
+            let config_change_corr: String = {
+                let window_ns = 60_000_000_000_i64;
+                let ts_val = update.timestamp_ns;
+                let mut cq = conn
+                    .prepare(
+                        "MATCH (c:ConfigChange)-[:CHANGED_ON]->(d:Device {address: $addr}) \
+                         WHERE c.timestamp > $lo AND c.timestamp < $hi \
+                         RETURN c.change_description LIMIT 1"
+                    )
+                    .unwrap_or_else(|_| conn.prepare("RETURN ''").unwrap());
+                conn.execute(&mut cq, vec![
+                    ("addr", Value::String(update.target.clone())),
+                    ("lo", Value::Int64(ts_val - window_ns)),
+                    ("hi", Value::Int64(ts_val + window_ns)),
+                ])
+                .ok()
+                .and_then(|qr| {
+                    qr.get_flat_tuples()
+                        .first()
+                        .and_then(|row| row.first())
+                        .and_then(|v| match v {
+                            Value::String(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                })
+                .unwrap_or_default()
+            };
+            let detail = serde_json::json!({
+                "peer_address": event.peer_address,
+                "session_id": session_id,
+                "previous_adj_rib_in": prev_adj,
+                "current_adj_rib_in": adj_rib_in,
+                "drop_percent": drop_pct,
+                "config_change_correlated": !config_change_corr.is_empty(),
+                "config_change_description": config_change_corr,
+            })
+            .to_string();
+            let _ = write_state_change_event(
+                conn,
+                &update.target,
+                "bgp_policy_filter_spike",
+                &detail,
+                "bmp",
+                ts(update.timestamp_ns),
+                update.timestamp_ns,
+                event_tx,
+                corr_buf,
+            );
+        }
+    }
 
     // bgp_rib_prefix_spike: fire when adj_rib_in > 100 000 prefixes
     const PREFIX_SPIKE_THRESHOLD: i64 = 100_000;

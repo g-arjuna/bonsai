@@ -417,6 +417,14 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
                 .to_string();
             Some((event_type.to_string(), group))
         }
+        // D4-16 T3: BMP policy filter spike + prefix spike — sub-keyed by session_id
+        "bgp_policy_filter_spike" | "bgp_rib_prefix_spike" => {
+            let sid = detail.get("session_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Some((event_type.to_string(), sid))
+        }
         // Inherently single-source — do not buffer
         _ => None,
     }

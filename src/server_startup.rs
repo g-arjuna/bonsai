@@ -481,7 +481,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         "bgp_neighbor_down" | "interface_down" | "bfd_session_down"
                         | "isis_adjacency_down" | "ospf_neighbor_down" => "critical",
                         "app_flow_high_utilization" | "flow_exporter_silent"
-                        | "bgp_rib_prefix_spike" => "medium",
+                        | "bgp_rib_prefix_spike" | "bgp_policy_filter_spike" => "medium",
                         "thermal_sensor_critical" => "critical",
                         "thermal_sensor_warning" => "warning",
                         "redundancy_lost" => "critical",
@@ -1504,6 +1504,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         Some(std::sync::Arc::clone(&snmp_pattern_tx)),
                         cfg.layered_ingestion.syslog_patterns_path.clone(),
                         snmp_oid_dir.clone(),
+                        cfg.auth.ldap.clone(),
                     ),
                 )
                 .await

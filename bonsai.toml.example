@@ -677,6 +677,27 @@ config_prefix = "/bonsai/config"
 # credential_alias = "dc-east-gnmi"                 # vault alias (added via UI or CLI)
 # collector_id     = "site-a-collector-1"           # omit for single-collector setups
 #
+# ── Authentication / LDAP ────────────────────────────────────────────────────
+#
+# RBAC is enforced when BONSAI_REQUIRE_AUTH=1 env var is set.
+# Bootstrap admin: set BONSAI_ADMIN_USER and BONSAI_ADMIN_PASS env vars.
+#
+# [auth.ldap]
+# enabled             = true
+# server_url          = "ldap://ldap.example.com:389"
+# bind_dn             = "CN=svc-bonsai,OU=Service Accounts,DC=example,DC=com"
+# bind_password_env   = "BONSAI_LDAP_BIND_PASSWORD"
+# user_search_base    = "OU=Users,DC=example,DC=com"
+# user_search_filter  = "(&(objectClass=person)(sAMAccountName={username}))"
+# group_search_base   = "OU=Groups,DC=example,DC=com"
+# default_role        = "viewer"
+# tls_skip_verify     = false
+#
+# [auth.ldap.role_mapping]
+# "Network Admins" = "admin"
+# "NOC"            = "operator"
+# "Viewers"        = "viewer"
+
 # Env-var credentials (useful for CI / container deployments):
 # [[target]]
 # address      = "10.0.1.2:57400"
