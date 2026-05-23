@@ -3,6 +3,7 @@ use std::time::Duration;
 use tonic::Request;
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig};
+use tracing::warn;
 
 use crate::proto::gnmi::g_nmi_client::GNmiClient;
 use crate::proto::gnmi::{Path, PathElem, SetRequest, TypedValue, Update, typed_value};
@@ -18,6 +19,13 @@ pub async fn gnmi_set(
     yang_path: &str,
     json_value: &str,
 ) -> Result<()> {
+    if ca_cert_pem.is_none() && (username.is_some() || password.is_some()) {
+        warn!(
+            %address,
+            "SECURITY: gNMI Set is sending credentials over a plaintext (non-TLS) channel. \
+             Set ca_cert on this target to enable TLS."
+        );
+    }
     let channel = open_channel(address, ca_cert_pem, tls_domain).await?;
     let user = username.map(str::to_owned);
     let pass = password.map(str::to_owned);

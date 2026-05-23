@@ -20,6 +20,7 @@ use axum::{
     routing::get,
 };
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
@@ -139,7 +140,8 @@ async fn status_handler(
     State(state): State<DiagnosticState>,
     headers: HeaderMap,
 ) -> Result<Json<CollectorStatusResponse>, StatusCode> {
-    // Optional basic auth — check BONSAI_COLLECTOR_DIAG_PASSWORD if set.
+    // Optional auth — check BONSAI_COLLECTOR_DIAG_PASSWORD if set.
+    // Timing-safe comparison prevents password oracle attacks.
     if let Ok(required) = std::env::var("BONSAI_COLLECTOR_DIAG_PASSWORD")
         && !required.is_empty()
     {
@@ -147,7 +149,13 @@ async fn status_handler(
             .get("x-diag-password")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        if provided != required {
+        // Pad to equal length before comparing to prevent length-based timing leak
+        let req_bytes = required.as_bytes();
+        let prov_bytes = provided.as_bytes();
+        let len_ok = req_bytes.len() == prov_bytes.len();
+        // Always run ct_eq even on length mismatch to avoid timing short-circuit
+        let content_ok = req_bytes.ct_eq(prov_bytes).unwrap_u8() == 1;
+        if !(len_ok && content_ok) {
             return Err(StatusCode::UNAUTHORIZED);
         }
     }
@@ -182,6 +190,20 @@ pub async fn start(port: u16, state: DiagnosticState, mut shutdown: watch::Recei
         }
     };
 
+    // Security advisory: this server runs plain HTTP; the x-diag-password header
+    // travels in cleartext. Restrict diagnostic_port to loopback-only (127.x.x.x)
+    // or place behind a TLS-terminating proxy in any non-isolated environment.
+    let has_password = std::env::var("BONSAI_COLLECTOR_DIAG_PASSWORD")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if has_password {
+        warn!(
+            %addr,
+            "SECURITY: collector diagnostic server is running plain HTTP — \
+             BONSAI_COLLECTOR_DIAG_PASSWORD will be transmitted in cleartext. \
+             Bind to 127.0.0.1 or use a TLS-terminating proxy."
+        );
+    }
     info!(%addr, "collector diagnostic server listening");
 
     let app = Router::new()

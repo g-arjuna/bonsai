@@ -1457,13 +1457,27 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             let http_listener = tokio::net::TcpListener::bind(http_addr)
                 .await
                 .with_context(|| format!("failed to bind HTTP port at {http_addr}"))?;
-            info!(addr = %http_addr, "HTTP listener bound");
+
+            // D4-3 T7: HTTPS — when tls.enabled, build a rustls acceptor from the
+            // configured cert/key and wrap each accepted TCP stream before handing
+            // it to Axum. Plain HTTP is still the default for local/lab deployments.
+            let http_tls_acceptor: Option<tokio_rustls::TlsAcceptor> = if cfg.tls.enabled {
+                let acceptor = build_http_tls_acceptor(&cfg.tls)
+                    .context("failed to configure HTTP TLS")?;
+                info!(
+                    addr = %http_addr,
+                    cert = %cfg.tls.cert_path,
+                    "HTTPS listener bound (TLS enabled)"
+                );
+                Some(acceptor)
+            } else {
+                info!(addr = %http_addr, "HTTP listener bound");
+                None
+            };
 
             let bus_for_http = std::sync::Arc::clone(&bus);
             http_task = Some(tokio::spawn(async move {
-                if let Err(error) = axum::serve(
-                    http_listener,
-                    bonsai::http_server::router(
+                let router = bonsai::http_server::router(
                         http_store,
                         registry_for_http,
                         credentials_for_http,
@@ -1506,11 +1520,46 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         snmp_oid_dir.clone(),
                         cfg.auth.ldap.clone(),
                         cfg.integrations.tsdb.clone(),
-                    ),
-                )
-                .await
-                {
-                    warn!(%error, "HTTP server exited with error");
+                );
+                let serve_result = if let Some(tls) = http_tls_acceptor {
+                    // HTTPS: accept each TCP connection, upgrade to TLS, then serve.
+                    use tokio_rustls::TlsAcceptor;
+                    use tower::ServiceExt as _;
+                    let mut join_set: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+                    loop {
+                        let (tcp, _peer) = match http_listener.accept().await {
+                            Ok(p) => p,
+                            Err(e) => { warn!(%e, "HTTPS accept error"); continue; }
+                        };
+                        let tls_clone = tls.clone();
+                        let svc = router.clone();
+                        join_set.spawn(async move {
+                            match tls_clone.accept(tcp).await {
+                                Ok(stream) => {
+                                    let io = hyper_util::rt::TokioIo::new(stream);
+                                    let _ = hyper_util::server::conn::auto::Builder::new(
+                                        hyper_util::rt::TokioExecutor::new(),
+                                    )
+                                    .serve_connection(io, hyper::service::service_fn(move |req| {
+                                        let mut svc = svc.clone();
+                                        async move { tower::Service::call(&mut svc, req).await }
+                                    }))
+                                    .await;
+                                }
+                                Err(e) => warn!(%e, "TLS handshake failed"),
+                            }
+                        });
+                    }
+                    #[allow(unreachable_code)]
+                    Ok::<_, std::convert::Infallible>(())
+                } else {
+                    axum::serve(http_listener, router).await.map_err(|e| {
+                        warn!(%e, "HTTP server exited with error");
+                    }).ok();
+                    Ok(())
+                };
+                if let Err(e) = serve_result {
+                    warn!(error = %e, "HTTP server exited with error");
                 }
             }));
 
@@ -1778,6 +1827,50 @@ fn required_tls_path<'a>(value: Option<&'a str>, field: &str) -> Result<&'a str>
     value
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| anyhow::anyhow!("{field} is required when runtime.tls.enabled = true"))
+}
+
+/// Build a `tokio_rustls::TlsAcceptor` from `[tls]` cert/key in bonsai.toml.
+/// Called only when `tls.enabled = true` for the HTTP API server.
+fn build_http_tls_acceptor(
+    tls: &config::HttpTlsConfig,
+) -> Result<tokio_rustls::TlsAcceptor> {
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+    let cert_path = if tls.cert_path.trim().is_empty() {
+        anyhow::bail!("tls.cert_path is required when tls.enabled = true");
+    } else {
+        &tls.cert_path
+    };
+    let key_path = if tls.key_path.trim().is_empty() {
+        anyhow::bail!("tls.key_path is required when tls.enabled = true");
+    } else {
+        &tls.key_path
+    };
+
+    let cert_pem = fs::read(cert_path)
+        .with_context(|| format!("failed to read tls.cert_path '{cert_path}'"))?;
+    let key_pem = fs::read(key_path)
+        .with_context(|| format!("failed to read tls.key_path '{key_path}'"))?;
+
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_pem.as_slice())
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("failed to parse TLS certificate PEM")?;
+    if certs.is_empty() {
+        anyhow::bail!("no certificates found in tls.cert_path '{cert_path}'");
+    }
+
+    let key = rustls_pemfile::private_key(&mut key_pem.as_slice())
+        .context("failed to parse TLS private key PEM")?
+        .ok_or_else(|| anyhow::anyhow!("no private key found in tls.key_path '{key_path}'"))?;
+
+    let server_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, PrivateKeyDer::try_from(key).context("invalid private key")?)
+        .context("failed to build rustls ServerConfig for HTTP TLS")?;
+
+    Ok(tokio_rustls::TlsAcceptor::from(
+        std::sync::Arc::new(server_config),
+    ))
 }
 
 // ── Subscriber lifecycle ──────────────────────────────────────────────────────

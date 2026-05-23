@@ -8,6 +8,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 use crate::catalogue::load_catalogue;
 
@@ -722,7 +723,8 @@ fn sign_bytes(key: &[u8], bytes: &[u8]) -> Result<String> {
 
 fn verify_signature(key: &[u8], bytes: &[u8], expected: &str) -> Result<()> {
     let actual = sign_bytes(key, bytes)?;
-    if actual == expected {
+    // Constant-time comparison — prevents timing side-channel on HMAC output
+    if actual.as_bytes().ct_eq(expected.as_bytes()).unwrap_u8() == 1 {
         Ok(())
     } else {
         bail!("YANG bundle signature verification failed")

@@ -36,6 +36,7 @@ class BonsaiClient:
         key: str | None = None,
         server_name: str | None = None,
         http_base_url: str = "http://127.0.0.1:3000",
+        http_token: str | None = None,
     ):
         self._address = address
         self._ca_cert = ca_cert
@@ -43,8 +44,10 @@ class BonsaiClient:
         self._key = key
         self._server_name = server_name
         self._http_base_url = http_base_url.rstrip("/")
+        self._http_token = http_token
         self._channel: grpc.Channel | None = None
         self._stub: pb_grpc.BonsaiGraphStub | None = None
+        self._grpc_is_insecure: bool = True
 
     # ── context manager ───────────────────────────────────────────────────────
 
@@ -73,15 +76,24 @@ class BonsaiClient:
                 cert_chain = f.read()
             with open(self._key, "rb") as f:
                 private_key = f.read()
-            
+
             creds = grpc.ssl_channel_credentials(
                 root_certificates=root_certs,
                 private_key=private_key,
                 certificate_chain=cert_chain,
             )
             self._channel = grpc.secure_channel(self._address, creds, options=options)
+            self._grpc_is_insecure = False
         else:
+            import warnings
+            warnings.warn(
+                "BonsaiClient: gRPC channel is INSECURE (no ca_cert/cert/key). "
+                "Credential operations will transmit secrets in cleartext. "
+                "Pass ca_cert, cert, and key to enable mTLS.",
+                stacklevel=2,
+            )
             self._channel = grpc.insecure_channel(self._address, options=options)
+            self._grpc_is_insecure = True
         
         self._stub = pb_grpc.BonsaiGraphStub(self._channel)
 
@@ -196,6 +208,13 @@ class BonsaiClient:
 
     def add_credential(self, alias: str, username: str, password: str):
         """Store or update a credential alias in the local encrypted vault."""
+        if self._grpc_is_insecure:
+            import warnings
+            warnings.warn(
+                "add_credential called over an insecure gRPC channel — "
+                "password will be transmitted in cleartext. Use mTLS.",
+                stacklevel=2,
+            )
         resp = self.stub.AddCredential(
             pb.AddCredentialRequest(alias=alias, username=username, password=password)
         )
@@ -371,11 +390,14 @@ class BonsaiClient:
 
     def _http_json(self, method: str, path: str, payload: dict | None = None) -> dict:
         data = None if payload is None else json.dumps(payload).encode("utf-8")
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self._http_token:
+            headers["Authorization"] = f"Bearer {self._http_token}"
         req = urllib.request.Request(
             f"{self._http_base_url}{path}",
             data=data,
             method=method,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:

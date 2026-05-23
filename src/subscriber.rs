@@ -120,6 +120,14 @@ impl GnmiSubscriber {
         let channel = self.connect().await?;
         let target = self.target.clone();
 
+        if self.ca_cert_pem.is_none() && (self.username.is_some() || self.password.is_some()) {
+            warn!(
+                target = %self.target,
+                "SECURITY: gNMI Subscribe is sending credentials over a plaintext (non-TLS) channel. \
+                 Set ca_cert on this target to enable TLS."
+            );
+        }
+
         // Always call Capabilities — encoding and supported models come from the device.
         // vendor_hint overrides the label; when Capabilities fails, it also seeds the fallback.
         let mut bare = GNmiClient::new(channel.clone());

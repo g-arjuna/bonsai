@@ -60,6 +60,14 @@ impl MultiSourceEnricher for GnmiGetConfigEnricher {
         let username = credentials.map(|creds| creds.username.clone());
         let password = credentials.map(|creds| creds.password.clone());
 
+        if target.ca_cert.is_none() && (username.is_some() || password.is_some()) {
+            tracing::warn!(
+                address = %target.address,
+                "SECURITY: gNMI Get is sending credentials over a plaintext (non-TLS) channel. \
+                 Set ca_cert on this target to enable TLS."
+            );
+        }
+
         #[allow(clippy::result_large_err)]
         let mut client = GNmiClient::with_interceptor(channel, move |mut req: Request<()>| {
             if let Some(ref username) = username

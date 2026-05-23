@@ -141,11 +141,14 @@ pub(super) struct InvestigationDetailResponse {
 }
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
-use axum::{Json, extract::{Path, Query, State}, http::StatusCode, response::IntoResponse};
+use axum::{Json, body::Bytes, extract::{Path, Query, State}, http::{HeaderMap, StatusCode}, response::IntoResponse};
 use lbug::{Connection, Value};
 
 use super::AppState;
 use super::{default_proposal_status, default_verify_wait_secs, default_limit, default_trigger, now_ns};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use subtle::ConstantTimeEq;
 use crate::audit;
 use crate::config::TargetConfig;
 use crate::credentials::{CredentialVault, ResolvePurpose, ResolvedCredential};
@@ -1081,9 +1084,14 @@ pub(super) async fn grounded_incident_handler(
 
 /// POST /api/webhooks/change-event — ingest a change event from AAP, Ansible
 /// Tower, ServiceNow business rule, or any external system.
+///
+/// Security: when `change_management.webhook_secret_env` is set, the request
+/// MUST include an `X-Hub-Signature-256` header containing `sha256=<hex>` of
+/// the raw body signed with the secret.  Validated via constant-time compare.
 pub(super) async fn webhook_change_event_handler(
     State(state): State<AppState>,
-    Json(body): Json<crate::integrations::change_management::WebhookChangeEvent>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     if !state.servicenow_config.change_management.webhook_enabled {
         return Err((
@@ -1091,7 +1099,47 @@ pub(super) async fn webhook_change_event_handler(
             "change management webhook is not enabled".to_string(),
         ));
     }
-    let record = crate::integrations::change_management::ingest_webhook_change(&state.store, body)
+
+    // ── HMAC-SHA256 signature validation ────────────────────────────────────
+    let secret_env = &state.servicenow_config.change_management.webhook_secret_env;
+    if !secret_env.is_empty() {
+        let secret = std::env::var(secret_env).unwrap_or_default();
+        if secret.is_empty() {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("webhook_secret_env '{secret_env}' is not set"),
+            ));
+        }
+        let sig_header = headers
+            .get("x-hub-signature-256")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        // Header must be "sha256=<hex>"
+        let provided_hex = sig_header.strip_prefix("sha256=").unwrap_or("");
+        if provided_hex.is_empty() {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "missing or malformed X-Hub-Signature-256 header".to_string(),
+            ));
+        }
+        let provided_bytes = hex::decode(provided_hex).map_err(|_| {
+            (StatusCode::UNAUTHORIZED, "invalid hex in X-Hub-Signature-256".to_string())
+        })?;
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("HMAC key error: {e}")))?;
+        mac.update(&body);
+        let expected_bytes = mac.finalize().into_bytes();
+        // Constant-time comparison — prevents timing oracle attacks
+        if expected_bytes.as_slice().ct_eq(provided_bytes.as_slice()).unwrap_u8() == 0 {
+            return Err((StatusCode::UNAUTHORIZED, "webhook signature mismatch".to_string()));
+        }
+    }
+
+    let event: crate::integrations::change_management::WebhookChangeEvent =
+        serde_json::from_slice(&body)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid JSON body: {e}")))?;
+
+    let record = crate::integrations::change_management::ingest_webhook_change(&state.store, event)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
     Ok(Json(serde_json::json!({
