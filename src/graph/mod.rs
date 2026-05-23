@@ -1248,6 +1248,9 @@ impl GraphStore {
         let _ = conn.query("ALTER TABLE BmpSession ADD stats_updated_at TIMESTAMP_NS DEFAULT timestamp_ns('1970-01-01')");
 
         // ── D4-10 T2: Application metric columns (OTLP /v1/metrics) ──────────
+        // D4-10 T3: APP_IMPACTED_BY_NETWORK edge — OTLP + network event correlation
+        conn.query("CREATE REL TABLE IF NOT EXISTS APP_IMPACTED_BY_NETWORK(FROM Application TO DetectionEvent)")
+            .context("create APP_IMPACTED_BY_NETWORK rel")?;
         let _ = conn.query("ALTER TABLE Application ADD source STRING DEFAULT ''");
         let _ = conn.query("ALTER TABLE Application ADD cpu_pct DOUBLE DEFAULT 0.0");
         let _ = conn.query("ALTER TABLE Application ADD memory_mb DOUBLE DEFAULT 0.0");
@@ -4093,6 +4096,27 @@ fn write_otlp_span(
                 ("aid", Value::String(app_id.clone())),
             ],
         );
+    }
+
+    // D4-10 T3: OTLP trace + network event temporal correlation.
+    // If the peer device (or any device hosting this application) has an active
+    // DetectionEvent within ±30s, create an APP_IMPACTED_BY_NETWORK edge.
+    if !peer_address.is_empty() {
+        let window_ns = 30_000_000_000_i64;
+        let ts_lo = update.timestamp_ns - window_ns;
+        let ts_hi = update.timestamp_ns + window_ns;
+        let mut corr_stmt = conn.prepare(
+            "MATCH (d:Device)-[:RUNS_SERVICE]->(a:Application {id: $aid}), \
+                   (de:DetectionEvent)-[:DETECTED_ON]->(d) \
+             WHERE de.severity IN ['critical', 'high'] \
+               AND de.occurred_at > $lo AND de.occurred_at < $hi \
+             MERGE (a)-[:APP_IMPACTED_BY_NETWORK]->(de)"
+        ).unwrap_or_else(|_| conn.prepare("RETURN 0").unwrap());
+        let _ = conn.execute(&mut corr_stmt, vec![
+            ("aid", Value::String(app_id.clone())),
+            ("lo",  Value::Int64(ts_lo)),
+            ("hi",  Value::Int64(ts_hi)),
+        ]);
     }
 
     let _ = event_tx.send(BonsaiEvent {

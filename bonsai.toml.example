@@ -698,6 +698,19 @@ config_prefix = "/bonsai/config"
 # "NOC"            = "operator"
 # "Viewers"        = "viewer"
 
+# ── TSDB Integration ─────────────────────────────────────────────────────────
+#
+# Graph is the live truth layer; TSDB provides the historical time-series layer.
+# GET /api/tsdb/query?metric=interface_octets&device=leaf1&start=1h
+#
+# [integrations.tsdb]
+# enabled          = true
+# tsdb_type        = "prometheus"             # prometheus | victoria_metrics | influxdb | thanos
+# query_url        = "http://prometheus:9090"
+# credential_alias = ""                       # vault alias for basic auth (optional)
+# default_lookback = "1h"
+# max_range        = "24h"
+
 # Env-var credentials (useful for CI / container deployments):
 # [[target]]
 # address      = "10.0.1.2:57400"

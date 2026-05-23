@@ -1505,6 +1505,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         cfg.layered_ingestion.syslog_patterns_path.clone(),
                         snmp_oid_dir.clone(),
                         cfg.auth.ldap.clone(),
+                        cfg.integrations.tsdb.clone(),
                     ),
                 )
                 .await

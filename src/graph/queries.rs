@@ -74,6 +74,18 @@ pub struct BlastRadiusResult {
     pub neighbor_apps: Vec<String>,
     /// Active detection events on devices in the reachable set.
     pub active_detections: Vec<String>,
+    /// D4-16 T5: BMP sessions on origin device (for FRR + BMP investigation).
+    pub bmp_sessions: Vec<BmpSessionRef>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BmpSessionRef {
+    pub session_id: String,
+    pub peer_address: String,
+    pub adj_rib_in_routes: i64,
+    pub loc_rib_routes: i64,
+    pub prefixes_rejected: i64,
+    pub session_state: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -348,6 +360,30 @@ pub fn blast_radius(
         active_detections.extend(dets);
     }
 
+    // D4-16 T5: BMP sessions on the origin device (for FRR + BMP investigation).
+    let bmp_sessions: Vec<BmpSessionRef> = {
+        let mut bmp_stmt = conn
+            .prepare(
+                "MATCH (d:Device {address: $addr})-[:HAS_BMP_SESSION]->(s:BmpSession) \
+                 RETURN s.id, s.peer_address, s.adj_rib_in_routes, s.loc_rib_routes, \
+                        s.prefixes_rejected, s.session_state",
+            )
+            .unwrap_or_else(|_| conn.prepare("RETURN 0, '', 0, 0, 0, ''").unwrap());
+        conn.execute(&mut bmp_stmt, vec![("addr", Value::String(address.to_string()))])
+            .map(|qr| {
+                qr.map(|row| BmpSessionRef {
+                    session_id: read_str(&row[0]),
+                    peer_address: read_str(&row[1]),
+                    adj_rib_in_routes: read_i64(&row[2]),
+                    loc_rib_routes: read_i64(&row[3]),
+                    prefixes_rejected: read_i64(&row[4]),
+                    session_state: read_str(&row[5]),
+                })
+                .collect()
+            })
+            .unwrap_or_default()
+    };
+
     Ok(BlastRadiusResult {
         origin_address: address.to_string(),
         origin_hostname,
@@ -357,6 +393,7 @@ pub fn blast_radius(
         direct_apps,
         neighbor_apps,
         active_detections,
+        bmp_sessions,
     })
 }
 

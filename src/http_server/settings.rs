@@ -794,3 +794,167 @@ pub(super) async fn mib_upload_handler(
         error: None,
     }))
 }
+
+// ── D4-5 T4: TSDB query proxy ─────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct TsdbQueryParams {
+    pub metric: String,
+    #[serde(default)]
+    pub device: Option<String>,
+    #[serde(default)]
+    pub interface: Option<String>,
+    #[serde(default)]
+    pub start: Option<String>,
+    #[serde(default)]
+    pub end: Option<String>,
+    #[serde(default)]
+    pub step: Option<String>,
+}
+
+/// GET /api/tsdb/config — return TSDB integration status (no secrets).
+pub(super) async fn tsdb_config_handler(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let cfg = &state.tsdb_config;
+    Json(serde_json::json!({
+        "enabled": cfg.enabled,
+        "tsdb_type": cfg.tsdb_type,
+        "query_url": cfg.query_url,
+        "default_lookback": cfg.default_lookback,
+        "max_range": cfg.max_range,
+        "has_credential": !cfg.credential_alias.is_empty(),
+    }))
+}
+
+/// GET /api/tsdb/query — proxy a metric query to the configured TSDB backend.
+/// Supports Prometheus/Thanos/VictoriaMetrics query_range API and InfluxDB query API.
+pub(super) async fn tsdb_query_handler(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<TsdbQueryParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let cfg = &state.tsdb_config;
+    if !cfg.enabled || cfg.query_url.is_empty() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "TSDB integration not enabled".into()));
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("HTTP client: {e}")))?;
+
+    // Build query based on TSDB type
+    let response = match cfg.tsdb_type.as_str() {
+        "prometheus" | "victoria_metrics" | "thanos" => {
+            tsdb_prometheus_query(&client, cfg, &state, &params).await?
+        }
+        "influxdb" => {
+            tsdb_influxdb_query(&client, cfg, &state, &params).await?
+        }
+        other => {
+            return Err((StatusCode::BAD_REQUEST, format!("unsupported TSDB type: {other}")));
+        }
+    };
+
+    Ok(Json(response))
+}
+
+async fn tsdb_prometheus_query(
+    client: &reqwest::Client,
+    cfg: &crate::config::TsdbConfig,
+    state: &AppState,
+    params: &TsdbQueryParams,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let base = cfg.query_url.trim_end_matches('/');
+    let start = params.start.as_deref().unwrap_or(&cfg.default_lookback);
+    let end = params.end.as_deref().unwrap_or("now");
+    let step = params.step.as_deref().unwrap_or("60s");
+
+    // Build PromQL expression with optional label matchers
+    let mut expr = params.metric.clone();
+    let mut labels = Vec::new();
+    if let Some(ref dev) = params.device {
+        labels.push(format!("instance=~\"{}.*\"", dev));
+    }
+    if let Some(ref iface) = params.interface {
+        labels.push(format!("interface=\"{}\"", iface));
+    }
+    if !labels.is_empty() && !expr.contains('{') {
+        expr = format!("{}{{{}}}", expr, labels.join(","));
+    }
+
+    let url = format!("{base}/api/v1/query_range");
+    let mut req = client.get(&url)
+        .query(&[("query", &expr), ("start", &start.to_string()), ("end", &end.to_string()), ("step", &step.to_string())]);
+
+    // Add auth if credential configured
+    if !cfg.credential_alias.is_empty() {
+        if let Ok(cred) = state.credentials.resolve(&cfg.credential_alias, crate::credentials::ResolvePurpose::Enrich) {
+            req = req.basic_auth(&cred.username, Some(&*cred.password));
+        }
+    }
+
+    let resp = req.send().await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("TSDB request failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err((StatusCode::BAD_GATEWAY, format!("TSDB returned {status}: {body}")));
+    }
+
+    resp.json::<serde_json::Value>().await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("TSDB response parse: {e}")))
+}
+
+async fn tsdb_influxdb_query(
+    client: &reqwest::Client,
+    cfg: &crate::config::TsdbConfig,
+    state: &AppState,
+    params: &TsdbQueryParams,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let base = cfg.query_url.trim_end_matches('/');
+    let start = params.start.as_deref().unwrap_or(&cfg.default_lookback);
+
+    // Build Flux query
+    let mut flux = format!(
+        "from(bucket: \"bonsai\") |> range(start: -{start}) |> filter(fn: (r) => r._measurement == \"{}\")",
+        params.metric
+    );
+    if let Some(ref dev) = params.device {
+        flux.push_str(&format!(" |> filter(fn: (r) => r.device == \"{}\")", dev));
+    }
+    if let Some(ref iface) = params.interface {
+        flux.push_str(&format!(" |> filter(fn: (r) => r.interface == \"{}\")", iface));
+    }
+
+    let url = format!("{base}/api/v2/query");
+    let mut req = client.post(&url)
+        .header("Content-Type", "application/vnd.flux")
+        .body(flux);
+
+    if !cfg.credential_alias.is_empty() {
+        if let Ok(cred) = state.credentials.resolve(&cfg.credential_alias, crate::credentials::ResolvePurpose::Enrich) {
+            req = req.bearer_auth(&*cred.password);
+        }
+    }
+
+    let resp = req.send().await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("InfluxDB request failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err((StatusCode::BAD_GATEWAY, format!("InfluxDB returned {status}: {body}")));
+    }
+
+    let body = resp.text().await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("InfluxDB response: {e}")))?;
+
+    // Wrap CSV/annotated response in JSON
+    Ok(serde_json::json!({
+        "status": "success",
+        "tsdb_type": "influxdb",
+        "raw": body,
+    }))
+}

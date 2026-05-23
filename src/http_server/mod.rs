@@ -71,7 +71,7 @@ use managed_devices::{managed_devices_handler, discover_handler, credentials_han
 use governance::{assignment_override_handler, assignment_rules_handler, assignment_status_handler, collectors_handler, create_environment_handler, environments_handler, governance_state_handler, governance_history_handler, governance_profile_handler, health_handler, healthz_handler, readyz_handler, remove_environment_handler, assign_site_environment_handler, update_environment_handler, set_assignment_rules_handler, setup_status_handler, sidecars_handler, sidecar_status_handler, sidecar_rules_handler, sidecar_rule_toggle_handler};
 use outputs::{adapter_audit_handler, adapter_list_handler, adapter_remove_handler, adapter_test_handler, adapter_upsert_handler};
 use test_endpoints::{inject_detection_handler, parse_syslog_fixture_handler};
-use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler, get_ai_config_handler, post_ai_test_handler, list_ai_providers_handler, upsert_ai_provider_handler, remove_ai_provider_handler, test_ai_provider_handler, reload_patterns_handler, mib_upload_handler};
+use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler, get_ai_config_handler, post_ai_test_handler, list_ai_providers_handler, upsert_ai_provider_handler, remove_ai_provider_handler, test_ai_provider_handler, reload_patterns_handler, mib_upload_handler, tsdb_config_handler, tsdb_query_handler};
 use ha::{ha_status_handler, ha_settings_handler, ha_patch_settings_handler, restart_handler};
 use nl_query::{explorer_ask_handler, nl_budget_handler};
 use shun::{create_shun_rule_handler, delete_shun_rule_handler, disable_shun_rule_handler, list_shun_rules_handler, shun_stats_handler};
@@ -696,6 +696,8 @@ pub struct AppState {
     pub snmp_oid_pattern_dir: String,
     /// D4-3 T3: LDAP/AD authentication config.
     pub ldap_config: crate::config::LdapConfig,
+    /// D4-5 T4: TSDB integration config.
+    pub tsdb_config: crate::config::TsdbConfig,
 }
 
 impl axum::extract::FromRef<AppState> for Option<Arc<crate::ha_coordinator::HACoordinator>> {
@@ -749,6 +751,7 @@ pub fn router(
     syslog_pattern_dir: String,
     snmp_oid_pattern_dir: String,
     ldap_config: crate::config::LdapConfig,
+    tsdb_config: crate::config::TsdbConfig,
 ) -> Router {
     let state = AppState {
         store,
@@ -791,6 +794,7 @@ pub fn router(
         syslog_pattern_dir,
         snmp_oid_pattern_dir,
         ldap_config,
+        tsdb_config,
     };
 
     // D3-6 T6: consume auto-investigate requests from the write coordinator.
@@ -1044,6 +1048,9 @@ fn settings_routes() -> Router<AppState> {
         .route("/api/config/reload-patterns", post(reload_patterns_handler))
         // D4-1 T4: MIB upload + compile pipeline
         .route("/api/snmp/mibs", post(mib_upload_handler))
+        // D4-5 T4: Bidirectional TSDB integration
+        .route("/api/tsdb/config", get(tsdb_config_handler))
+        .route("/api/tsdb/query", get(tsdb_query_handler))
 }
 
 fn shun_routes() -> Router<AppState> {

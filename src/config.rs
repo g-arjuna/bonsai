@@ -689,7 +689,38 @@ fn default_graduation_approvals() -> u32 {
 pub struct IntegrationsConfig {
     #[serde(default)]
     pub servicenow: ServiceNowConfig,
+    /// D4-5 T4: External TSDB for historical time-series queries.
+    #[serde(default)]
+    pub tsdb: TsdbConfig,
 }
+
+/// D4-5 T4: External TSDB integration for historical metric queries.
+/// Graph is the live truth layer; TSDB provides the historical time-series layer.
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct TsdbConfig {
+    /// Enable TSDB integration.
+    #[serde(default)]
+    pub enabled: bool,
+    /// TSDB backend type: "prometheus", "victoria_metrics", "influxdb", "thanos".
+    #[serde(default = "default_tsdb_type")]
+    pub tsdb_type: String,
+    /// Query endpoint URL, e.g. "http://localhost:9090" for Prometheus.
+    #[serde(default)]
+    pub query_url: String,
+    /// Vault credential alias for TSDB authentication (basic auth or token).
+    #[serde(default)]
+    pub credential_alias: String,
+    /// Default lookback window for queries when not specified. Default: "1h".
+    #[serde(default = "default_tsdb_lookback")]
+    pub default_lookback: String,
+    /// Maximum query range to prevent expensive queries. Default: "24h".
+    #[serde(default = "default_tsdb_max_range")]
+    pub max_range: String,
+}
+
+fn default_tsdb_type() -> String { "prometheus".to_string() }
+fn default_tsdb_lookback() -> String { "1h".to_string() }
+fn default_tsdb_max_range() -> String { "24h".to_string() }
 
 #[derive(Deserialize, Clone, Debug, Default)]
 pub struct ServiceNowConfig {

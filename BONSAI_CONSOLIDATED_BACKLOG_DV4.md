@@ -311,7 +311,7 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 - Link ComputeNode to uplink via `CONNECTED_TO(ComputeNode→Interface)`.
 - UI: clicking a ToR/leaf in topology canvas reveals "Connected Compute" side panel listing attached servers/VMs/containers.
 
-**T4 — Bidirectional TSDB integration**
+**T4 — Bidirectional TSDB integration** ✅ batch21
 - `[integrations.tsdb]` config: `type` (prometheus/victoria_metrics/influxdb/thanos), `query_url`, `credential_alias`.
 - `GET /api/tsdb/query?metric=...&device=...&start=1h` → proxies to configured TSDB → returns series data.
 - Graph Explorer: interface nodes + AppFlow nodes show "Historical Data" sparkline panel fed from TSDB query.
@@ -550,7 +550,7 @@ There is also no UI indicator of graph health — operators have no visibility i
 - Write application metrics to `Application` node properties: `cpu_pct`, `memory_mb`, `req_per_sec`, `error_rate`.
 - Enable synthesizer rules on app metrics (e.g., `app_error_rate_spike` detection when error_rate > threshold).
 
-**T3 — OTLP trace + network event temporal correlation**
+**T3 — OTLP trace + network event temporal correlation** ✅ batch21
 - If an `Application` node has a `RUNS_SERVICE` Device that has an active `DetectionEvent` within ±30s of a trace span latency anomaly → create `APP_IMPACTED_BY_NETWORK(Application→DetectionEvent)` edge.
 - Surface in incident detail: "Application bonsai-test-app experienced 3× p99 latency during leaf4 BGP reconvergence."
 - Threshold for "latency anomaly": configurable in config, default 3× p50 baseline.
@@ -643,7 +643,7 @@ For a dual-homed server (two interfaces to two ToR switches), the graph doesn't 
   - Dual-homed server detection: ARP table shows same MAC IP on two different interfaces of the same ToR → dual-homed host.
   - Dual-uplink ToR: LLDP shows same host on two leaf switches → dual-homed endpoint.
 
-**T3 — SuzieQ integration evaluation**
+**T3 — SuzieQ integration evaluation** ✅ batch21
 - SuzieQ (suzieq OSS) parses and normalises multi-vendor topology, LLDP, BGP, routing, interfaces across Cisco/Arista/Juniper/Nokia/FRR.
 - Evaluate using SuzieQ as a library or subprocess for redundancy discovery analysis rather than maintaining separate PyATS parsers per vendor.
 - Deliverable: Architecture Decision Record — SuzieQ vs PyATS/Genie vs Bonsai-native parsing.
@@ -823,7 +823,7 @@ FRR runs as `frr-rr` in the lab topology. BMP session confirmed working (S-30/S-
 - Risk tier: `low` (soft clear is non-disruptive).
 - Second playbook for hard reset: risk tier `medium`, requires HITL approval.
 
-**T5 — FRR + BMP investigation integration**
+**T5 — FRR + BMP investigation integration** ✅ batch21
 - Ensure `investigation_runtime.rs` query tools can retrieve FRR BMP data: `get_device_blast_radius` for `frr-rr` device address returns BMP session state, STATS_REPORT prefix counts.
 - Test: inject FRR BGP fault → trigger investigation → verify LLM identifies FRR as root cause using BMP data.
 
