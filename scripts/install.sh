@@ -32,12 +32,14 @@ FORCE_SOURCE=false
 NO_OPEN=false
 INSTALL_CLAB=false
 DO_UNINSTALL=false
+DO_VERIFY=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --source)       FORCE_SOURCE=true ;;
         --no-open)      NO_OPEN=true ;;
         --containerlab) INSTALL_CLAB=true ;;
         --uninstall)    DO_UNINSTALL=true ;;
+        --verify)       DO_VERIFY=true ;;
         --help|-h)
             sed -n '2,20p' "$0" | grep '^#' | sed 's/^# \?//'
             exit 0
@@ -114,6 +116,51 @@ check_docker_version() {
 
 check_rust_version
 check_docker_version
+
+check_disk_space() {
+    local target="${1:-.}"
+    local required_kb="${2:-2097152}"   # 2 GB default
+    local avail_kb
+    if [[ "$(uname)" == "Darwin" ]]; then
+        avail_kb=$(df -k "$target" | awk 'NR==2 {print $4}')
+    else
+        avail_kb=$(df -k --output=avail "$target" | tail -1)
+    fi
+    if [[ -n "$avail_kb" ]] && (( avail_kb < required_kb )); then
+        local avail_gb=$(( avail_kb / 1024 / 1024 ))
+        warn "Only ${avail_gb} GB free at ${target} — Bonsai source build needs ~2 GB. Consider freeing space."
+    fi
+}
+
+check_disk_space "$(pwd)"
+
+# ── --verify mode: post-install smoke test ────────────────────────────────────
+if $DO_VERIFY; then
+    step "Post-install verification"
+    BONSAI_URL="${BONSAI_URL:-http://localhost:3000}"
+    PASS=0; FAIL=0
+    smoke() {
+        local label="$1"; local check="$2"
+        if eval "$check" &>/dev/null; then
+            info "  ✅  $label"
+            (( PASS++ )) || true
+        else
+            warn "  ❌  $label"
+            (( FAIL++ )) || true
+        fi
+    }
+    smoke "bonsai binary in PATH" "command -v bonsai"
+    smoke "/api/health returns ok" \
+        "curl -sf --max-time 5 ${BONSAI_URL}/api/health | python3 -c \"import sys,json; assert json.load(sys.stdin).get('status')=='ok'\""
+    smoke "runtime/ dir exists" "test -d runtime"
+    smoke "runtime/ permissions are 700 or stricter" \
+        "test \$(stat -c '%a' runtime 2>/dev/null || stat -f '%A' runtime 2>/dev/null) = '700'"
+    smoke "vault file exists" "test -f runtime/vault.age"
+    smoke "KuzuDB dir exists" "test -d runtime/bonsai.db"
+    echo ""
+    info "Verification: ${PASS} passed, ${FAIL} failed"
+    [[ $FAIL -eq 0 ]] && exit 0 || exit 1
+fi
 
 # ── Idempotency check ─────────────────────────────────────────────────────
 if command -v bonsai &>/dev/null; then
@@ -291,6 +338,12 @@ install_source() {
     fi
 
     setup_passphrase
+
+    # Enforce secure permissions on runtime directory
+    mkdir -p "$REPO_ROOT/runtime"
+    chmod 700 "$REPO_ROOT/runtime"
+    info "Runtime directory secured: $REPO_ROOT/runtime (mode 700)"
+
     # Write passphrase to shell profile for convenience
     SHELL_RC="$HOME/.bashrc"
     [[ "$SHELL" == */zsh ]] && SHELL_RC="$HOME/.zshrc"

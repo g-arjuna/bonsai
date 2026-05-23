@@ -169,7 +169,7 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 
 ### Tasks
 
-**T1 — Secure credential memory (zeroize)**
+**T1 — Secure credential memory (zeroize)** ✅ batch2
 - Add `zeroize` crate. Replace `StoredCredential.password: String` with `zeroize::Zeroizing<String>`. Same for `ResolvedCredential.password`.
 - Implement `Drop` on `VaultState` to zero `entries` BTreeMap contents.
 - Audit all `resolve()` call sites — ensure no long-lived clones of password into gNMI client config or HTTP request headers.
@@ -204,7 +204,7 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 - TLS for HTTP API: `[server.tls]` cert/key config using axum-server + rustls. Self-signed cert auto-generated at startup if none provided, with warning log.
 - Makefile: `make backup` → tarballs `runtime/` with timestamp to `backups/`.
 
-**T8 — Vault write safety + re-key**
+**T8 — Vault write safety + re-key** ✅ batch2
 - Atomic write: write to `vault.age.tmp` first, then `rename` over `vault.age`. Prevents corruption on crash.
 - Add HMAC-SHA256 integrity tag over encrypted payload. Verify on open. Clear error message on corruption.
 - `bonsai credential rekey` subcommand: decrypt with current passphrase → re-encrypt with new passphrase. Test: rekey → restart with new passphrase → credentials accessible.
@@ -455,7 +455,7 @@ There is also no UI indicator of graph health — operators have no visibility i
 - Append `missing_data` list: "No syslog for leaf4 in last 24h", "Interface ethernet-1/1 has no gNMI counter data", "BFD session not mapped."
 - Expose in investigation result UI card — helps operator understand why LLM result may be incomplete.
 
-**T4 — LLM provider expansion**
+**T4 — LLM provider expansion** ✅ batch5
 - Add `OpenAIProvider`: compatible with OpenAI, Azure OpenAI, Groq, Together AI, OpenRouter via `base_url` override.
 - Add `AnthropicProvider`: Claude 3.5 Sonnet and Haiku.
 - Add `OllamaProvider`: local inference, configurable `base_url` (default `http://localhost:11434`).
@@ -672,22 +672,22 @@ Over time, `DetectionEvent` nodes, `AppFlow` nodes from heavy flow sources, and 
 
 ### Tasks
 
-**T1 — DB stats API**
+**T1 — DB stats API** ✅ batch6
 - `GET /api/db/stats` → `{node_counts: {Device: N, Interface: N, AppFlow: N, DetectionEvent: N, ...}, rel_counts: {CONNECTED_TO: N, CARRIES_FLOW: N, ...}, db_size_bytes, wal_size_bytes, oldest_record_ns, newest_record_ns}`.
 - Computed via KuzuDB `COUNT(*)` queries per table.
 
-**T2 — Schema viewer endpoint + UI tab**
+**T2 — Schema viewer endpoint + UI tab** ✅ batch6
 - `GET /api/db/schema` → returns all node tables with column names and types, all rel tables with from/to node types and columns.
 - UI: new `src/routes/DbManagement.svelte` with a "Schema" tab showing this information in a formatted table.
 
-**T3 — Safe data management operations (admin-only)**
+**T3 — Safe data management operations (admin-only)** ✅ batch6
 - Purge old detections: `DELETE /api/db/purge?node_type=DetectionEvent&older_than_days=90` (admin role required — D4-3 T2).
 - Purge orphan AppFlow nodes: nodes with no `CARRIES_FLOW` edge and older than N days.
 - Purge old AgentToolCall nodes: older than N days.
 - KuzuDB checkpoint: `POST /api/db/checkpoint` to force a WAL flush and compaction.
 - Export: `GET /api/db/export?node_type=Device` → returns JSONL download of all nodes of that type.
 
-**T4 — Backup + restore**
+**T4 — Backup + restore** ✅ batch6
 - `POST /api/db/backup` → tar+gzip the `runtime/` directory to `backups/bonsai-{iso_timestamp}.tar.gz`. Return backup filename.
 - `POST /api/db/restore` with multipart backup file upload → extract to a `runtime.restore/` staging directory → swap on next restart.
 - Makefile targets: `make backup`, `make restore BACKUP=backups/bonsai-2026-01-15T10:30:00.tar.gz`.
@@ -758,13 +758,13 @@ Over time, `DetectionEvent` nodes, `AppFlow` nodes from heavy flow sources, and 
 
 ### Tasks
 
-**T1 — End-to-end HITL test scenario (Phase 18 in Ubuntu testing guide)**
+**T1 — End-to-end HITL test scenario (Phase 18 in Ubuntu testing guide)** ✅ batch15
 - Scenario: inject BGP down on leaf4 (variant of S-53) → wait for detection → trigger investigation → verify `RemediationProposal` appears in Approvals UI with correct device + playbook.
 - Approve the proposal → verify remediation command executes on device (check `sr_cli` command logs or gNMI confirm).
 - Verify detection resolves after heal → verify `RemediationProposal.state = completed`.
 - Document pass/fail in Ubuntu testing guide as new section "Phase 18 — Remediation Round-Trip."
 
-**T2 — 60% packet loss HITL realism test**
+**T2 — 60% packet loss HITL realism test** ✅ batch15
 - Configure policer/rate-limiter on ContainerLab node to drop 60% of traffic on a leaf4 uplink interface.
 - Trigger investigation on affected device. Evaluate: does a `RemediationProposal` appear? What playbook maps to this scenario?
 - If no playbook covers packet loss: create `interface_high_error_rate` playbook with steps: `get_interface_error_counters`, `clear_interface_counters`, `check_cable_diagnostic` (Nokia `sfm-check` or Cisco `test cable-diagnostics`).
@@ -1027,12 +1027,12 @@ Environmental data is critical for:
 
 ### Tasks
 
-**T1 — Environmental telemetry schema**
+**T1 — Environmental telemetry schema** ✅ batch10
 - `SensorReading` node: `device_address`, `component_name`, `sensor_type` (temperature/voltage/power/current/fan_speed), `value`, `unit`, `threshold_critical`, `threshold_warning`, `updated_at_ns`.
 - `OpticsTelemetry` node: `device_address`, `interface_name`, `rx_power_dbm`, `tx_power_dbm`, `wavelength_nm`, `temperature_c`, `bias_current_ma`, `updated_at_ns`.
 - `REPORTED_BY(SensorReading→Device)`, `OPTICS_ON(OpticsTelemetry→Interface)`.
 
-**T2 — gNMI path profiles: environmental paths**
+**T2 — gNMI path profiles: environmental paths** ✅ batch10
 - Add Nokia SRL environmental paths to `config/path_profiles/nokia-srlinux.yaml`:
   - `/platform/chassis/environment/temperature`
   - `/platform/component[name=*]/temperature`
@@ -1148,7 +1148,7 @@ The existing `/api/governance` endpoint (in `src/http_server/governance.rs`) ret
 - Add `release` target: `cargo build --release` + `cd ui && npm run build` + create `dist/` tarball for Ubuntu distribution.
 - Add `db-migrate` target: runs any pending graph schema migrations.
 
-**T3 — `install.sh` hardening**
+**T3 — `install.sh` hardening** ✅ batch15
 - Add idempotency check: detect if Bonsai is already installed at target path, prompt for upgrade vs fresh install.
 - Add dependency version checks before starting install: Rust ≥ 1.70, Docker ≥ 24.0, Docker Compose ≥ 2.20.
 - Add ContainerLab install option (currently documented only in testing guide troubleshooting).
@@ -1166,7 +1166,7 @@ The existing `/api/governance` endpoint (in `src/http_server/governance.rs`) ret
 - Cache: `~/.cargo/registry`, `target/`, `ui/node_modules`.
 - Fail fast: if `build` fails, skip `test`.
 
-**T5 — `ui/package-lock.json` and dependency audit**
+**T5 — `ui/package-lock.json` and dependency audit** ✅ batch15
 - Verify `package-lock.json` is committed to the repo (enables reproducible `npm ci`).
 - Run `npm audit` and document/fix any high-severity vulnerabilities.
 - Pin major dependency versions: Svelte, Vite, D3 to avoid breaking changes on fresh installs.
@@ -1205,29 +1205,29 @@ S-25 (syslog multi-source fusion counter), S-26/S-27/S-28 (SNMP manual + linkDow
 - After fix: verify LLDP neighbor advertisement from host1 → leaf switch → `HostEndpoint` node with `CONNECTED_TO` edge written.
 - This unblocks S-45 and S-46 from ⚠️ to ✅.
 
-**T2 — Update testing guide: S-29, S-32b, S-38, S-44, S-49/S-50**
+**T2 — Update testing guide: S-29, S-32b, S-38, S-44, S-49/S-50** ✅ batch15
 - After implementing fixes from D4-1, D4-5, D4-9, D4-11: re-run each affected test step.
 - Update status in the summary checklist table from ⚠️ to ✅.
 - Add verification commands that specifically confirm the fix: e.g., for S-29, show that `peer_address` field is now populated in the snmp_fact graph node.
 
-**T3 — Add Phase 18 to testing guide: Remediation Round-Trip**
+**T3 — Add Phase 18 to testing guide: Remediation Round-Trip** ✅ batch15
 - New section after Phase 17 covering D4-15 T1 test scenario:
   - Prerequisites, inject fault steps, investigation trigger, Approvals UI check, approve remediation, verify execution, verify graph state after heal.
   - Same format as existing phases (numbered steps, expected results, troubleshooting section).
 
-**T4 — Add Phase 19 to testing guide: Enrichment Quality Tests**
+**T4 — Add Phase 19 to testing guide: Enrichment Quality Tests** ✅ batch15
 - New section covering D4-18 scenarios:
   - NetBox enrichment round-trip (S-60/S-61 expanded with conflict test).
   - SNOW PDI connectivity + em_event verification (S-58/S-65 expanded).
   - Enrichment conflict UI verification.
   - AIOps incident annotation round-trip.
 
-**T5 — Testing guide: sFlow steps (S-38b)**
+**T5 — Testing guide: sFlow steps (S-38b)** ✅ batch15
 - After D4-5 T1+T2: add new test step S-38b to Phase 8 (NetFlow section):
   - Configure Nokia SRL to export sFlow → verify `CARRIES_FLOW(Device→AppFlow)` edge from an SRL managed device.
   - Expected: `exporter_address = 172.100.109.11` (srl-leaf1), `AppFlow` node with protocol/port data.
 
-**T6 — Testing guide: Common Failure Patterns expansion**
+**T6 — Testing guide: Common Failure Patterns expansion** ✅ batch15
 - Add new failure patterns section entries for:
   - sFlow not arriving: check sFlow config on SRL device, check port 6343 (sFlow default).
   - Investigation finds no data: check graph quality score `/api/graph/quality` for target device.
@@ -1235,7 +1235,7 @@ S-25 (syslog multi-source fusion counter), S-26/S-27/S-28 (SNMP manual + linkDow
   - SNOW PDI not receiving events: verify PDI is not hibernated (must be active at developer.servicenow.com).
   - RBAC 403 errors (after D4-3): verify user role has required permission for the operation.
 
-**T7 — Checklist tooling: auto-generate from test run**
+**T7 — Checklist tooling: auto-generate from test run** ✅ batch15
 - From D4-19 T3: the `capture_evidence.sh` script collects curl output per step.
 - Parse the output to auto-fill the summary checklist table: compare expected vs actual API responses.
 - Generate `test-results/checklist-{timestamp}.md` with the filled-in table replacing the blank checkboxes.

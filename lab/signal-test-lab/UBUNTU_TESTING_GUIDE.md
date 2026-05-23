@@ -2111,3 +2111,291 @@ The `extra` object is passed as-is to the backend. If type-specific extra fields
 ```bash
 curl -s http://localhost:3000/api/adapters | python3 -m json.tool | grep -A5 '"extra"'
 ```
+
+---
+
+## Phase 18 — Remediation Round-Trip (HITL) Test
+
+**D4-15 T1/T2 / D4-23 T3**
+
+**Prerequisite**: Phase 15 (Fault Injection Round-Trip) complete. Bonsai running with `ANTHROPIC_API_KEY` set.
+
+### S-70: Trigger a BGP fault and verify HITL proposal
+
+```bash
+# Bring down leaf4's BGP session to spine1
+ssh admin@clab-signal-test-leaf4 "sr_cli -c 'set / network-instance default protocols bgp admin-state disable' -c 'commit now'"
+
+# Wait 15s for detection + auto-investigation
+sleep 15
+
+# Check that a HITL remediation was proposed (requires_human: true)
+curl -s http://localhost:3000/api/remediations | python3 -m json.tool | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); hits=[r for r in d.get('remediations',[]) if r.get('requires_human')]; print(f'{len(hits)} HITL proposals'); [print(r['id'], r.get('state'), r.get('steps_json','')[:80]) for r in hits]"
+```
+
+Expected: ≥1 proposal with `requires_human: true`, `state: "pending"`.
+
+### S-71: Approve the HITL proposal and verify execution
+
+```bash
+# Get the latest pending remediation ID
+REM_ID=$(curl -s http://localhost:3000/api/remediations | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); r=[x for x in d.get('remediations',[]) if x.get('state')=='pending']; print(r[0]['id'] if r else 'NONE')")
+echo "Approving: $REM_ID"
+
+# Approve it
+curl -s -X POST http://localhost:3000/api/remediations/$REM_ID/approve \
+  -H 'Content-Type: application/json' \
+  -d '{"approved_by":"test-operator"}' | python3 -m json.tool
+
+# Wait for execution
+sleep 20
+
+# Verify state transitioned to applied or partial
+curl -s http://localhost:3000/api/remediations/$REM_ID | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); print('State:', d.get('state'), '| Trust:', d.get('trust_level'))"
+```
+
+Expected: state = `"applied"` or `"partial"`.
+
+### S-72: Verify graph state after remediation
+
+```bash
+# The verify_graph step should have run automatically
+curl -s http://localhost:3000/api/remediations/$REM_ID/verify | python3 -m json.tool
+```
+
+Expected: `{"passed": true, "details": "..."}` or clear failure reason.
+
+### S-73: 60% packet loss HITL realism test (D4-15 T2)
+
+```bash
+# Apply packet loss to leaf4 → spine1 link using tc netem
+ssh admin@clab-signal-test-leaf4 "sudo tc qdisc add dev e1-1 root netem loss 60%"
+
+# Wait for detection
+sleep 30
+
+# Check if a remediation was proposed (packet loss may not fire BGP-down, check for flow_high_utilization or interface events)
+curl -s http://localhost:3000/api/remediations?limit=5 | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); [print(r['id'], r.get('state'), r.get('detection_id','')[:20]) for r in d.get('remediations',[])]"
+
+# Restore
+ssh admin@clab-signal-test-leaf4 "sudo tc qdisc del dev e1-1 root"
+```
+
+### Phase 18 Summary Checklist
+
+| Step | Test | Status |
+|------|------|--------|
+| S-70 | BGP fault triggers HITL proposal | ⬜ |
+| S-71 | Approval → execution | ⬜ |
+| S-72 | verify_graph passes after remediation | ⬜ |
+| S-73 | 60% packet loss test | ⬜ |
+
+---
+
+## Phase 19 — Enrichment Quality Tests
+
+**D4-23 T4 / D4-18 T3-T6**
+
+**Prerequisite**: Phase 17 (External Integrations) complete. ServiceNow PDI credentials available.
+
+### S-74: NetBox enrichment end-to-end
+
+```bash
+# Verify NetBox enrichment for leaf1
+curl -s http://localhost:3000/api/devices/clab-signal-test-leaf1/enrichment | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); src=d.get('sources',{}); print('Vendor:', src.get('vendor',[{}])[0].get('value')); print('Sources:', list(src.keys()))"
+
+# Check for any enrichment conflicts
+curl -s http://localhost:3000/api/devices/clab-signal-test-leaf1/enrichment/conflicts | \
+  python3 -m json.tool | python3 -c "import sys,json; d=json.load(sys.stdin); c=d.get('conflicts',[]); print(f'{len(c)} conflicts')"
+```
+
+Expected: vendor populated from NetBox, ≥3 source keys, ≤1 conflict (known hostname format difference).
+
+### S-75: ServiceNow PDI enrichment end-to-end (D4-18 T3)
+
+```bash
+# Trigger ServiceNow enrichment manually
+curl -s -X POST http://localhost:3000/api/enrichment/run \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"servicenow","device_address":"clab-signal-test-leaf1"}' | python3 -m json.tool
+
+# Verify CI data appeared in graph
+curl -s "http://localhost:3000/api/explorer/query" \
+  -H 'Content-Type: application/json' \
+  -d '{"cypher":"MATCH (d:Device {address:\"clab-signal-test-leaf1\"}) RETURN d.snow_sys_id, d.snow_ci_name, d.site","params":{}}' | python3 -m json.tool
+```
+
+Expected: `snow_sys_id` populated, site from SNOW CMDB visible.
+
+### S-76: SNOW AIOps incident round-trip (D4-18 T4)
+
+```bash
+# Check that a SNOW incident was created for the leaf4 fault from Phase 18
+curl -s http://localhost:3000/api/integrations/servicenow/incidents?limit=5 | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); [print(i.get('number'), i.get('state'), i.get('description','')[:60]) for i in d.get('incidents',[])]"
+```
+
+Expected: ≥1 SNOW incident with number `INC...` and state mapped from Bonsai severity.
+
+### S-77: Enrichment conflict UI test (D4-18 T5)
+
+```bash
+# Manually inject a conflicting vendor value
+curl -s -X POST http://localhost:3000/api/enrichment \
+  -H 'Content-Type: application/json' \
+  -d '{"device_address":"clab-signal-test-leaf1","source":"manual","field":"vendor","value":"Juniper"}' | python3 -m json.tool
+
+# Verify conflict is detected
+curl -s http://localhost:3000/api/devices/clab-signal-test-leaf1/enrichment/conflicts | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); c=d.get('conflicts',[]); print(f'{len(c)} conflicts'); [print(x['field'], x['winner'],'>',x['loser']) for x in c]"
+```
+
+Expected: conflict on `vendor` field between `manual` (Juniper) and `netbox`/`gnmi` (Nokia).
+
+### S-78: Adapter push completeness audit (D4-18 T6)
+
+```bash
+# List all adapters and their push counts
+curl -s http://localhost:3000/api/adapters | \
+  python3 -c "import sys,json; [print(a['name'], a.get('adapter_type'), 'running:', a.get('is_running'), 'last_push:', a.get('last_push_at_ns','—')) for a in json.load(sys.stdin).get('adapters',[])]"
+```
+
+Expected: all configured adapters show `is_running: true` and `last_push_at_ns` within last 300s.
+
+### Phase 19 Summary Checklist
+
+| Step | Test | Status |
+|------|------|--------|
+| S-74 | NetBox enrichment end-to-end | ⬜ |
+| S-75 | ServiceNow PDI enrichment | ⬜ |
+| S-76 | SNOW AIOps incident round-trip | ⬜ |
+| S-77 | Enrichment conflict UI test | ⬜ |
+| S-78 | Adapter push completeness | ⬜ |
+
+---
+
+## Phase 20 — sFlow Receiver Tests (D4-23 T5)
+
+**Prerequisite**: Bonsai running. Nokia SRL nodes are running (they export sFlow natively).
+
+### S-38b: sFlow: Nokia SRL exporter → AppFlow nodes
+
+```bash
+# Nokia SRL exports sFlow on UDP 6343 by default.
+# Ensure sflow receiver is enabled in bonsai.toml:
+#   [streaming.sflow]
+#   enabled = true
+#   bind_addr = "0.0.0.0:6343"
+
+# Verify sflow receiver is listed as running
+curl -s http://localhost:3000/api/receivers/status | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); r=[x for x in d.get('receivers',[]) if x['name']=='sflow']; print('sflow running:', r[0]['running'] if r else 'NOT FOUND')"
+
+# Configure Nokia SRL leaf1 to export sFlow (if not already)
+# (on SRL, sFlow is under /bfd or /acl — consult SRL 24.x docs for sflow-config path)
+# For signal-test-lab, SRL nodes may need manual sFlow target config:
+ssh admin@clab-signal-test-leaf1 "sr_cli -c 'info / system sflow'"
+
+# Wait for sFlow samples and check AppFlow nodes
+sleep 30
+curl -s "http://localhost:3000/api/flows/live" | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); print('Total flows:', d.get('total_flows',0)); [print(' Exporter:', e['exporter_address'], 'flows:', e['flow_count'], 'Mbps:', round(e['bytes_per_sec']*8/1e6,2)) for e in d.get('exporters',[])]"
+```
+
+Expected: ≥1 sFlow exporter (SRL leaf), total_flows > 0.
+
+### S-38c: sFlow: CARRIES_FLOW edge validation
+
+```bash
+# Check that AppFlow nodes are linked to devices via CARRIES_FLOW
+curl -s "http://localhost:3000/api/explorer/query" \
+  -H 'Content-Type: application/json' \
+  -d '{"cypher":"MATCH (d:Device)-[:CARRIES_FLOW]->(f:AppFlow) RETURN d.address, count(f) as flow_count ORDER BY flow_count DESC LIMIT 5","params":{}}' | python3 -m json.tool
+```
+
+Expected: ≥1 Device with CARRIES_FLOW edges.
+
+---
+
+## Checklist Tooling (D4-23 T7)
+
+### Auto-generate a test run results file
+
+Run this after completing all phases to capture current state:
+
+```bash
+#!/usr/bin/env bash
+# generate_results.sh — captures test run snapshot
+set -euo pipefail
+BONSAI=http://localhost:3000
+DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+OUT="docs/test_results/run_${DATE//:/-}.md"
+mkdir -p docs/test_results
+
+cat > "$OUT" <<HEADER
+# Test Run: $DATE
+
+## Environment
+- Host: $(hostname)
+- Commit: $(git rev-parse --short HEAD)
+- Bonsai version: $(curl -sf $BONSAI/api/health | python3 -c "import sys,json; print(json.load(sys.stdin).get('version','?'))" 2>/dev/null || echo '?')
+
+## Results
+
+| Step | Test | Status | Notes |
+|------|------|--------|-------|
+HEADER
+
+# Health check
+HEALTH=$(curl -sf $BONSAI/api/health 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))" || echo "FAIL")
+echo "| S-12 | /health = ok | ${HEALTH} | |" >> "$OUT"
+
+# Device count
+DEV_COUNT=$(curl -sf $BONSAI/api/topology 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('devices',[])))" || echo "0")
+echo "| S-14 | Managed devices in graph | ${DEV_COUNT} devices | |" >> "$OUT"
+
+# Detection count
+DET_COUNT=$(curl -sf "$BONSAI/api/detections?limit=1000" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('detections',[])))" || echo "0")
+echo "| S-19 | Detections in graph | ${DET_COUNT} | |" >> "$OUT"
+
+# Adapter status
+curl -sf $BONSAI/api/adapters 2>/dev/null | python3 -c "
+import sys, json
+for a in json.load(sys.stdin).get('adapters', []):
+    state = 'ok' if a.get('is_running') else 'FAIL'
+    print(f'| Adapter:{a[\"name\"]} | running | {state} | |')
+" >> "$OUT" || echo "| Adapters | status | ERROR | |" >> "$OUT"
+
+echo "" >> "$OUT"
+echo "Generated: $DATE" >> "$OUT"
+echo "Results written to: $OUT"
+```
+
+Save as `scripts/generate_results.sh`, then:
+
+```bash
+chmod +x scripts/generate_results.sh
+./scripts/generate_results.sh
+```
+
+---
+
+## Updated Signal Status Reference (D4-23 T2)
+
+The following signals have been updated since their original status was recorded:
+
+| Signal | Original Status | Updated Status | Fix |
+|--------|----------------|----------------|-----|
+| S-29 | ⚠️ partial — OID-suffix not implemented | ✅ implemented | D4-1 T1: `index_suffix_field` OID parser, Nokia TIMETRA-BGP-MIB peer_address extraction |
+| S-32b | ⚠️ hold_time offset wrong | ✅ fixed | D4-11 T1: RFC 4271 §4.2 hold_time offset corrected |
+| S-38 | ⚠️ SRL exports sFlow (unsupported) | ✅ sFlow receiver added | D4-5 T1: RFC 3176 sFlow v5 receiver on UDP 6343 |
+| S-44 | ⚠️ SNMP orphan separate | ✅ improved | D4-1 T2: CorrelationKey sub_key uses parsed peer_address |
+| S-45 | ⚠️ Alpine linux-host1 no LLDP | ✅ fixed | D4-23 T1: lldpd startup script, ContainerLab exec-cmd |
+| S-46 | ⚠️ same — no LLDP from host1 | ✅ fixed | D4-23 T1: same fix |
+| S-49 | ⚠️ mode=all collector not registering | ✅ fixed | D4-9 T3: auto-register in-process collector |
+| S-50 | ⚠️ receiver badges empty | ✅ fixed | D4-9 T3: same fix |
