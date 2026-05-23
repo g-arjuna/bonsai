@@ -97,6 +97,8 @@ pub const GRAPH_SCHEMA: &str = "\
 - ConfigSnapshot(id PK, device_address, trigger, summary, confidence, parser, captured_at)
 - ConfigChange(id PK, device_address, trigger, summary, confidence, parser, added_lines, removed_lines, changed_at)
 - ChangeRequest(id PK, number, source, snow_sys_id, short_description, state, change_type, risk, assigned_to, assignment_group, affected_cis_json, planned_start_ns INT64, planned_end_ns INT64, correlation_id, external_ref, updated_at)
+- SensorReading(id PK, device_address, component_name, sensor_type, temperature_c DOUBLE, power_w DOUBLE, fan_rpm INT64, humidity_pct DOUBLE, updated_at)
+- OpticsTelemetry(id PK, device_address, if_name, rx_power_dbm DOUBLE, tx_power_dbm DOUBLE, laser_bias_ma DOUBLE, temperature_c DOUBLE, voltage_v DOUBLE, updated_at)
 
 ### Relationship Tables
 - HAS_INTERFACE(Device → Interface)
@@ -136,6 +138,8 @@ pub const GRAPH_SCHEMA: &str = "\
 - CHANGE_CAUSED_CONFIG(ConfigChange → ChangeRequest)
 - CHANGE_CAUSED_DETECTION(DetectionEvent → ChangeRequest)
 - RELATED_TO_CHANGE(Incident → ChangeRequest)
+- SENSOR_REPORTED_BY(SensorReading → Device)
+- OPTICS_ON(OpticsTelemetry → Interface)
 
 ### Notes
 - Device.address is the primary key and main join field (IP or IP:port).
@@ -151,6 +155,13 @@ pub const GRAPH_SCHEMA: &str = "\
 - Remediation is created AFTER a proposal is approved and execution succeeds/fails.
 - Investigation nodes record LLM-driven analysis of detections (agent tool calls, summary, cost).
 - Incident nodes link to ServiceNow incidents (snow_sys_id) and to DetectionEvents.
+
+### Environmental Telemetry
+- SensorReading captures chassis/component temperature, fan RPM, power draw, and humidity from gNMI paths.
+- OpticsTelemetry captures optical interface metrics (RX/TX power dBm, laser bias, temperature) from transceivers.
+- sensor_type: 'temperature', 'fan', 'power', 'humidity'.
+- Use SensorReading to find overheating components (temperature_c > 75) or thermal_sensor_critical events.
+- Use OpticsTelemetry to diagnose optical degradation (rx_power_dbm < -20 is typical alarm threshold).
 
 ### Change Management
 - ChangeRequest represents a planned or in-progress change (ServiceNow CHG, AAP/Ansible job, manual maintenance).
@@ -223,6 +234,15 @@ Cypher: MATCH (de:DetectionEvent)-[:CHANGE_CAUSED_DETECTION]->(c:ChangeRequest) 
 
 User: Are there any incidents linked to change tickets?
 Cypher: MATCH (i:Incident)-[:RELATED_TO_CHANGE]->(c:ChangeRequest) RETURN i.number, i.short_description, i.state, c.number AS change_number, c.short_description AS change_desc ORDER BY i.updated_at DESC LIMIT 30
+
+User: Which devices have overheating components?
+Cypher: MATCH (s:SensorReading)-[:SENSOR_REPORTED_BY]->(d:Device) WHERE s.temperature_c > 75 RETURN d.hostname, d.address, s.component_name, s.sensor_type, s.temperature_c ORDER BY s.temperature_c DESC LIMIT 50
+
+User: Show me optical interface health for spine1
+Cypher: MATCH (d:Device)-[:HAS_INTERFACE]->(i:Interface)<-[:OPTICS_ON]-(o:OpticsTelemetry) WHERE d.hostname = 'spine1' RETURN i.name, o.rx_power_dbm, o.tx_power_dbm, o.laser_bias_ma, o.temperature_c, o.updated_at ORDER BY i.name
+
+User: Which interfaces have low RX optical power?
+Cypher: MATCH (o:OpticsTelemetry)-[:OPTICS_ON]->(i:Interface)<-[:HAS_INTERFACE]-(d:Device) WHERE o.rx_power_dbm < -20 RETURN d.hostname, i.name, o.rx_power_dbm, o.tx_power_dbm, o.updated_at ORDER BY o.rx_power_dbm ASC LIMIT 30
 ";
 
 const SYSTEM_PROMPT: &str = "\

@@ -69,7 +69,7 @@
 - After T1 populates `peer_address`, update `semantic_key_for_event()` in `correlation_buffer.rs` to use peer IP from `snmp_fact` path instead of raw socket `peer_addr`.
 - Eliminates orphan SNMP `bgp_neighbor_down` detections. Resolves S-44 PARTIAL.
 
-**T3 — SNMP: SNMPv3 USM auth + priv**
+**T3 — SNMP: SNMPv3 USM auth + priv** ✅ batch16
 - Add v3 USM: MD5/SHA auth, DES/AES-128 priv in BER parser.
 - `[[signals.snmp.v3_users]]` config: `security_name`, `auth_protocol`, `auth_key_env`, `priv_protocol`, `priv_key_env`.
 - Keys stored in vault by alias — never plaintext in TOML.
@@ -1051,11 +1051,11 @@ Environmental data is critical for:
 - `optics_rx_power_degrading`: Rx power dropped >3dB in 5 minutes (trending) → `medium` severity.
 - `fan_failure`: fan RPM = 0 → `critical` severity.
 
-**T5 — Environmental context in investigations**
+**T5 — Environmental context in investigations** ✅ batch16
 - Inject `SensorReading` and `OpticsTelemetry` data into investigation context (`investigation_runtime.rs`).
 - LLM can then correlate: "Temperature on leaf3 chassis reached 68°C (warning threshold: 65°C) 5 minutes before the BGP session dropped — possible thermal-induced process restart."
 
-**T6 — UI: Optics + sensor panel in DeviceDrawer**
+**T6 — UI: Optics + sensor panel in DeviceDrawer** ✅ batch16
 - New "Physical" tab in `DeviceDrawer.svelte`.
 - Per-interface: Rx/Tx power with colour coding (green/amber/red vs vendor thresholds).
 - Per-device: temperature graph (sparkline from TSDB query if configured, or latest value).

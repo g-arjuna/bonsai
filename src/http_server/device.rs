@@ -1622,3 +1622,107 @@ pub(super) fn read_recent_enrichment_audit(
     }
     entries
 }
+
+#[derive(Serialize)]
+pub(super) struct SensorReadingJson {
+    pub id: String,
+    pub component_name: String,
+    pub sensor_type: String,
+    pub temperature_c: Option<f64>,
+    pub power_w: Option<f64>,
+    pub fan_rpm: Option<i64>,
+    pub humidity_pct: Option<f64>,
+    pub updated_at: Option<i64>,
+}
+
+pub(super) async fn device_sensors_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<Json<Vec<SensorReadingJson>>, (StatusCode, String)> {
+    let db = state.store.db();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "MATCH (s:SensorReading)-[:SENSOR_REPORTED_BY]->(d:Device {address: $addr}) \
+                 RETURN s.id, s.component_name, s.sensor_type, s.temperature_c, \
+                        s.power_w, s.fan_rpm, s.humidity_pct, s.updated_at \
+                 ORDER BY s.component_name",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows_iter = conn
+            .execute(&mut stmt, vec![("addr", Value::String(address))])
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows_iter {
+            let vals: Vec<Value> = row.map_err(|e| e.to_string())?;
+            out.push(SensorReadingJson {
+                id: vals.get(0).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).unwrap_or_default(),
+                component_name: vals.get(1).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).unwrap_or_default(),
+                sensor_type: vals.get(2).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).unwrap_or_default(),
+                temperature_c: vals.get(3).and_then(|v| if let Value::Double(f) = v { Some(*f) } else { None }),
+                power_w: vals.get(4).and_then(|v| if let Value::Double(f) = v { Some(*f) } else { None }),
+                fan_rpm: vals.get(5).and_then(|v| if let Value::Int64(i) = v { Some(*i) } else { None }),
+                humidity_pct: vals.get(6).and_then(|v| if let Value::Double(f) = v { Some(*f) } else { None }),
+                updated_at: vals.get(7).and_then(|v| if let Value::Int64(i) = v { Some(*i) } else { None }),
+            });
+        }
+        Ok::<_, String>(out)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(result))
+}
+
+#[derive(Serialize)]
+pub(super) struct OpticsTelemetryJson {
+    pub id: String,
+    pub if_name: String,
+    pub rx_power_dbm: Option<f64>,
+    pub tx_power_dbm: Option<f64>,
+    pub laser_bias_ma: Option<f64>,
+    pub temperature_c: Option<f64>,
+    pub voltage_v: Option<f64>,
+    pub updated_at: Option<i64>,
+}
+
+pub(super) async fn device_optics_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<Json<Vec<OpticsTelemetryJson>>, (StatusCode, String)> {
+    let db = state.store.db();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "MATCH (o:OpticsTelemetry {device_address: $addr})-[:OPTICS_ON]->(i:Interface) \
+                 RETURN o.id, i.name, o.rx_power_dbm, o.tx_power_dbm, \
+                        o.laser_bias_ma, o.temperature_c, o.voltage_v, o.updated_at \
+                 ORDER BY i.name",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows_iter = conn
+            .execute(&mut stmt, vec![("addr", Value::String(address))])
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows_iter {
+            let vals: Vec<Value> = row.map_err(|e| e.to_string())?;
+            out.push(OpticsTelemetryJson {
+                id: vals.get(0).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).unwrap_or_default(),
+                if_name: vals.get(1).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).unwrap_or_default(),
+                rx_power_dbm: vals.get(2).and_then(|v| if let Value::Double(f) = v { Some(*f) } else { None }),
+                tx_power_dbm: vals.get(3).and_then(|v| if let Value::Double(f) = v { Some(*f) } else { None }),
+                laser_bias_ma: vals.get(4).and_then(|v| if let Value::Double(f) = v { Some(*f) } else { None }),
+                temperature_c: vals.get(5).and_then(|v| if let Value::Double(f) = v { Some(*f) } else { None }),
+                voltage_v: vals.get(6).and_then(|v| if let Value::Double(f) = v { Some(*f) } else { None }),
+                updated_at: vals.get(7).and_then(|v| if let Value::Int64(i) = v { Some(*i) } else { None }),
+            });
+        }
+        Ok::<_, String>(out)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(result))
+}

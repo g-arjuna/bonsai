@@ -229,6 +229,34 @@ pub struct SnmpConfig {
     /// not in this list are dropped (still archived) with a warn log. Empty list = accept all.
     #[serde(default)]
     pub community_allowlist: Vec<String>,
+    /// SNMPv3 USM users. Each entry defines a user for v3 trap authentication.
+    #[serde(default)]
+    pub v3_users: Vec<SnmpV3User>,
+}
+
+/// SNMPv3 USM user configuration for trap receiver authentication.
+#[derive(Deserialize, Clone, Debug)]
+pub struct SnmpV3User {
+    /// Security name (user name) as sent in the USM security parameters.
+    pub security_name: String,
+    /// Authentication protocol: "md5", "sha", "sha256", "sha512". Default: "sha".
+    #[serde(default = "default_snmpv3_auth_protocol")]
+    pub auth_protocol: String,
+    /// Environment variable holding the authentication key (hex or passphrase).
+    pub auth_key_env: String,
+    /// Privacy/encryption protocol: "des", "aes128", "aes256". Default: "aes128".
+    #[serde(default = "default_snmpv3_priv_protocol")]
+    pub priv_protocol: String,
+    /// Environment variable holding the privacy key. Empty = auth-only (no priv).
+    #[serde(default)]
+    pub priv_key_env: String,
+}
+
+fn default_snmpv3_auth_protocol() -> String {
+    "sha".to_string()
+}
+fn default_snmpv3_priv_protocol() -> String {
+    "aes128".to_string()
 }
 
 impl Default for SnmpConfig {
@@ -240,6 +268,7 @@ impl Default for SnmpConfig {
             max_frame_bytes: default_snmp_max_frame_bytes(),
             oid_pattern_dir: None,
             community_allowlist: Vec::new(),
+            v3_users: Vec::new(),
         }
     }
 }

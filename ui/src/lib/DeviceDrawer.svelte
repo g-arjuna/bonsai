@@ -31,8 +31,10 @@
   let customSampleSeconds = $state('10');
   let reparseBusy = $state(false);
   let reparseMessage = $state('');
+  let telemetryData = $state(null);
+  let telemetryLoading = $state(false);
 
-  const TABS = ['interfaces', 'peers', 'paths', 'recommendations', 'events', 'detections', 'readiness', 'config', 'enrichment', 'cmdb', 'audit'];
+  const TABS = ['interfaces', 'peers', 'paths', 'recommendations', 'events', 'detections', 'readiness', 'config', 'enrichment', 'cmdb', 'telemetry', 'audit'];
 
   $effect(() => {
     if (address) {
@@ -156,6 +158,19 @@
         .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(t); }))
         .then(d => { cmdbData = d; cmdbLoading = false; })
         .catch(() => { cmdbLoading = false; });
+    }
+  });
+
+  $effect(() => {
+    if (activeTab === 'telemetry' && address && !telemetryLoading && !telemetryData) {
+      telemetryLoading = true;
+      Promise.all([
+        fetch('/api/devices/' + encodeURIComponent(address) + '/sensors').then(r => r.ok ? r.json() : []),
+        fetch('/api/devices/' + encodeURIComponent(address) + '/optics').then(r => r.ok ? r.json() : []),
+      ]).then(([sensors, optics]) => {
+        telemetryData = { sensors, optics };
+        telemetryLoading = false;
+      }).catch(() => { telemetryLoading = false; });
     }
   });
 
@@ -858,6 +873,62 @@
           {/if}
         {/if}
 
+      {:else if activeTab === 'telemetry'}
+        {#if telemetryLoading}
+          <div class="loading">Loading telemetry…</div>
+        {:else if !telemetryData}
+          <div class="empty">No telemetry data loaded.</div>
+        {:else}
+          <section class="telem-section">
+            <h4>Sensor Readings</h4>
+            {#if !telemetryData.sensors || telemetryData.sensors.length === 0}
+              <div class="empty">No sensor readings available.</div>
+            {:else}
+              <table class="telem-table">
+                <thead>
+                  <tr><th>Component</th><th>Type</th><th>Temp °C</th><th>Power W</th><th>Fan RPM</th><th>Updated</th></tr>
+                </thead>
+                <tbody>
+                  {#each telemetryData.sensors as s}
+                    <tr class={s.temperature_c >= 85 ? 'crit' : s.temperature_c >= 75 ? 'warn' : ''}>
+                      <td>{s.component_name || '—'}</td>
+                      <td>{s.sensor_type || '—'}</td>
+                      <td>{s.temperature_c != null ? s.temperature_c.toFixed(1) : '—'}</td>
+                      <td>{s.power_w != null ? s.power_w.toFixed(1) : '—'}</td>
+                      <td>{s.fan_rpm != null ? s.fan_rpm : '—'}</td>
+                      <td class="muted">{s.updated_at ? relativeTime(s.updated_at) : '—'}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            {/if}
+          </section>
+          <section class="telem-section">
+            <h4>Optical Interfaces</h4>
+            {#if !telemetryData.optics || telemetryData.optics.length === 0}
+              <div class="empty">No optics telemetry available.</div>
+            {:else}
+              <table class="telem-table">
+                <thead>
+                  <tr><th>Interface</th><th>RX dBm</th><th>TX dBm</th><th>Bias mA</th><th>Temp °C</th><th>Updated</th></tr>
+                </thead>
+                <tbody>
+                  {#each telemetryData.optics as o}
+                    <tr class={o.rx_power_dbm != null && o.rx_power_dbm < -20 ? 'warn' : ''}>
+                      <td>{o.if_name || '—'}</td>
+                      <td class={o.rx_power_dbm != null && o.rx_power_dbm < -20 ? 'critical' : ''}>{o.rx_power_dbm != null ? o.rx_power_dbm.toFixed(2) : '—'}</td>
+                      <td>{o.tx_power_dbm != null ? o.tx_power_dbm.toFixed(2) : '—'}</td>
+                      <td>{o.laser_bias_ma != null ? o.laser_bias_ma.toFixed(2) : '—'}</td>
+                      <td>{o.temperature_c != null ? o.temperature_c.toFixed(1) : '—'}</td>
+                      <td class="muted">{o.updated_at ? relativeTime(o.updated_at) : '—'}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            {/if}
+          </section>
+        {/if}
+
       {:else if activeTab === 'audit'}
         <div class="audit-grid">
           <span class="muted">Created</span>
@@ -1078,4 +1149,15 @@
   }
   .conflict-pip.winner { background: var(--state-healthy-border, #3fb950); }
   .conflict-pip.loser  { background: var(--state-degraded-border, #f5a623); opacity: 0.6; }
+
+  .telem-section { margin-bottom: 20px; }
+  .telem-section h4 { font-size: 12px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--muted); margin: 0 0 8px; padding: 0 16px; }
+  .telem-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .telem-table th { text-align: left; padding: 4px 8px; font-size: 11px; font-weight: 600;
+    color: var(--muted); border-bottom: 1px solid var(--border); }
+  .telem-table td { padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+  .telem-table tr.warn  { background: rgba(245,166,35,0.08); }
+  .telem-table tr.crit  { background: rgba(248,81,73,0.10); }
+  .telem-table td.critical { color: var(--state-critical-text, #f85149); font-weight: 600; }
 </style>
