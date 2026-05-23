@@ -1538,6 +1538,157 @@ impl GraphStore {
         )
         .context("create REDUNDANT_WITH rel")?;
 
+        // ── OspfNeighbor (batch23: expanded bootstrap parsing) ────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS OspfNeighbor(\
+                id              STRING,\
+                device_address  STRING,\
+                neighbor_id     STRING,\
+                interface       STRING,\
+                state           STRING,\
+                area            STRING,\
+                dr              STRING,\
+                bdr             STRING,\
+                priority        INT64,\
+                source          STRING,\
+                updated_at_ns   INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create OspfNeighbor table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_OSPF_NEIGHBOR(FROM Device TO OspfNeighbor)",
+        )
+        .context("create HAS_OSPF_NEIGHBOR rel")?;
+
+        // ── StpInstance (batch23) ────────────────────────────────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS StpInstance(\
+                id                STRING,\
+                device_address    STRING,\
+                vlan_id           INT64,\
+                instance          STRING,\
+                root_bridge       STRING,\
+                root_port         STRING,\
+                bridge_priority   INT64,\
+                is_root           BOOLEAN,\
+                topology_changes  INT64,\
+                protocol          STRING,\
+                source            STRING,\
+                updated_at_ns     INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create StpInstance table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_STP_INSTANCE(FROM Device TO StpInstance)",
+        )
+        .context("create HAS_STP_INSTANCE rel")?;
+
+        // ── Vrf (batch23) ────────────────────────────────────────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS Vrf(\
+                id                      STRING,\
+                device_address          STRING,\
+                name                    STRING,\
+                rd                      STRING,\
+                rt_import_json          STRING,\
+                rt_export_json          STRING,\
+                interfaces_json         STRING,\
+                address_families_json   STRING,\
+                source                  STRING,\
+                updated_at_ns           INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create Vrf table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_VRF(FROM Device TO Vrf)",
+        )
+        .context("create HAS_VRF rel")?;
+
+        // ── NtpPeer (batch23) ────────────────────────────────────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS NtpPeer(\
+                id              STRING,\
+                device_address  STRING,\
+                peer_address    STRING,\
+                stratum         INT64,\
+                state           STRING,\
+                offset_ms       DOUBLE,\
+                reach           INT64,\
+                ref_id          STRING,\
+                is_synchronized BOOLEAN,\
+                source          STRING,\
+                updated_at_ns   INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create NtpPeer table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_NTP_PEER(FROM Device TO NtpPeer)",
+        )
+        .context("create HAS_NTP_PEER rel")?;
+
+        // ── AclSummary (batch23) ─────────────────────────────────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS AclSummary(\
+                id                      STRING,\
+                device_address          STRING,\
+                name                    STRING,\
+                acl_type                STRING,\
+                ace_count               INT64,\
+                applied_interfaces_json STRING,\
+                total_matches           INT64,\
+                source                  STRING,\
+                updated_at_ns           INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create AclSummary table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_ACL(FROM Device TO AclSummary)",
+        )
+        .context("create HAS_ACL rel")?;
+
+        // ── MplsLsp (batch23) ────────────────────────────────────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS MplsLsp(\
+                id              STRING,\
+                device_address  STRING,\
+                name            STRING,\
+                destination     STRING,\
+                state           STRING,\
+                in_label        INT64,\
+                out_label       INT64,\
+                out_interface   STRING,\
+                next_hop        STRING,\
+                protocol        STRING,\
+                source          STRING,\
+                updated_at_ns   INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create MplsLsp table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_MPLS_LSP(FROM Device TO MplsLsp)",
+        )
+        .context("create HAS_MPLS_LSP rel")?;
+
+        // Migration: add columns used by expanded bootstrap to Device
+        let _ = conn.query("ALTER TABLE Device ADD model STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE Device ADD serial_number STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE Device ADD cpu_util_pct DOUBLE DEFAULT 0.0");
+        let _ = conn.query("ALTER TABLE Device ADD memory_used_mb DOUBLE DEFAULT 0.0");
+        let _ = conn.query("ALTER TABLE Device ADD memory_total_mb DOUBLE DEFAULT 0.0");
+        let _ = conn.query("ALTER TABLE Device ADD uptime_seconds INT64 DEFAULT 0");
+        let _ = conn.query("ALTER TABLE Device ADD boot_image STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE Device ADD hardware_rev STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE Device ADD slot_inventory_json STRING DEFAULT ''");
+
+        // Migration: add columns used by BFD bootstrap seeding
+        let _ = conn.query("ALTER TABLE BfdSession ADD registered_protocols STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE BfdSession ADD local_diag STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE BfdSession ADD detect_multiplier INT64 DEFAULT 3");
+        let _ = conn.query("ALTER TABLE BfdSession ADD interval_ms INT64 DEFAULT 0");
+        let _ = conn.query("ALTER TABLE BfdSession ADD source STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE BfdSession ADD updated_at_ns INT64 DEFAULT 0");
+        let _ = conn.query("ALTER TABLE BfdSession ADD peer_address STRING DEFAULT ''");
+
         info!("graph schema initialised");
         Ok(())
     }

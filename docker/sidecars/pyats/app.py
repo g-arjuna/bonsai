@@ -97,12 +97,32 @@ class ParseRequest(BaseModel):
     raw_output: str
 
 
+GENIE_FEATURES_ALL = [
+    "interface", "bgp", "lldp", "lag", "vrrp", "routing", "arp",
+    "ospf", "isis", "bfd", "stp", "vlan", "vrf", "ntp", "platform", "acl", "mpls",
+]
+
+# Topology-aware feature profiles: use `profile` field instead of listing features
+TOPOLOGY_PROFILES = {
+    "dc_leaf": ["interface", "bgp", "lldp", "vlan", "vrf", "lag", "bfd", "vrrp", "platform", "acl"],
+    "dc_spine": ["interface", "bgp", "lldp", "lag", "bfd", "platform"],
+    "campus_access": ["interface", "lldp", "stp", "vlan", "vrrp", "arp", "ospf", "ntp", "acl", "platform"],
+    "campus_core": ["interface", "bgp", "ospf", "lldp", "lag", "bfd", "vrf", "ntp", "platform"],
+    "campus_distribution": ["interface", "ospf", "lldp", "stp", "vlan", "vrf", "lag", "vrrp", "ntp", "acl", "platform"],
+    "sp_pe": ["interface", "bgp", "isis", "mpls", "lldp", "bfd", "vrf", "lag", "platform"],
+    "sp_p": ["interface", "isis", "mpls", "lldp", "bfd", "lag", "platform"],
+    "homelab": ["interface", "bgp", "lldp", "routing", "arp", "ntp", "platform"],
+    "full": GENIE_FEATURES_ALL,
+}
+
+
 class LearnRequest(BaseModel):
     address: str
     username: str
     password: str
     vendor: str = ""
-    features: list[str] = ["interface", "bgp", "lldp", "lag", "vrrp", "routing", "arp"]
+    features: list[str] = GENIE_FEATURES_ALL
+    profile: str = ""  # optional: dc_leaf, campus_access, sp_pe, etc.
     port: int = 22
 
 
@@ -171,6 +191,8 @@ def healthz() -> dict:
         "service": "pyats-sidecar",
         "genie_available": _genie_parse is not None,
         "textfsm_available": _textfsm_index is not None,
+        "features": GENIE_FEATURES_ALL,
+        "profiles": list(TOPOLOGY_PROFILES.keys()),
     }
 
 
@@ -225,6 +247,12 @@ def learn(request: LearnRequest) -> dict:
     vendor = request.vendor.lower()
     genie_os = VENDOR_TO_GENIE_OS.get(vendor, "iosxe")
 
+    # Resolve topology profile → feature list (profile overrides explicit features)
+    if request.profile and request.profile in TOPOLOGY_PROFILES:
+        features_to_learn = TOPOLOGY_PROFILES[request.profile]
+    else:
+        features_to_learn = request.features
+
     testbed_dict = {
         "devices": {
             request.address: {
@@ -255,7 +283,7 @@ def learn(request: LearnRequest) -> dict:
         return {"success": False, "error": f"SSH connect failed: {e}"}
 
     results: dict[str, Any] = {}
-    for feature in request.features:
+    for feature in features_to_learn:
         try:
             data = device.learn(feature)
             info = data.info if hasattr(data, "info") else {}
@@ -274,7 +302,13 @@ def learn(request: LearnRequest) -> dict:
     except Exception:
         pass
 
-    return {"success": True, "address": request.address, "features": results}
+    return {
+        "success": True,
+        "address": request.address,
+        "profile": request.profile or "custom",
+        "features_requested": len(features_to_learn),
+        "features": results,
+    }
 
 
 def _serialize_genie(obj: Any) -> Any:

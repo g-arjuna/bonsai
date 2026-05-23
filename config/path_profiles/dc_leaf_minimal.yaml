@@ -134,3 +134,38 @@ paths:
     required_models: ["openconfig-platform-transceiver"]
     optional: true
     rationale: "OpenConfig transceiver diagnostics — Rx/Tx power, temperature, bias."
+  # ── Expanded protocol telemetry (batch23) ──────────────────────────────
+  - path: "network-instances/network-instance/protocols/protocol/ospfv2"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-ospfv2"]
+    optional: true
+    rationale: "OpenConfig OSPFv2 neighbor state — topology evidence for campus/hybrid DC."
+  - path: "system/ntp"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 60000000000
+    required_models: ["openconfig-system"]
+    optional: true
+    rationale: "OpenConfig NTP peer state — clock sync drift is an early warning signal."
+  - path: "network-instances/network-instance[name=*]"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-network-instance"]
+    optional: true
+    rationale: "OpenConfig VRF / network-instance state — multi-tenant awareness."
+  - path: "network-instance[name=*]/protocols/ospf"
+    origin: ""
+    mode: ON_CHANGE
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    optional: true
+    rationale: "SR Linux native OSPF neighbor state."
+  - path: "system/ntp"
+    origin: ""
+    mode: SAMPLE
+    sample_interval_ns: 60000000000
+    required_any_models: ["srl_nokia"]
+    vendor_only: ["nokia_srl"]
+    optional: true
+    rationale: "SR Linux NTP peer and clock state."

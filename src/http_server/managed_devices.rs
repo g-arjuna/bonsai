@@ -925,6 +925,24 @@ pub(super) struct DeviceSeedRequest {
     routes: Vec<SeedRoute>,
     #[serde(default)]
     arp_entries: Vec<SeedArpEntry>,
+    #[serde(default)]
+    ospf_neighbors: Vec<SeedOspfNeighbor>,
+    #[serde(default)]
+    bfd_sessions: Vec<SeedBfdSession>,
+    #[serde(default)]
+    stp_instances: Vec<SeedStpInstance>,
+    #[serde(default)]
+    vlans: Vec<SeedVlan>,
+    #[serde(default)]
+    vrfs: Vec<SeedVrf>,
+    #[serde(default)]
+    ntp_peers: Vec<SeedNtpPeer>,
+    #[serde(default)]
+    platform_detail: Option<SeedPlatformDetail>,
+    #[serde(default)]
+    acl_summaries: Vec<SeedAclSummary>,
+    #[serde(default)]
+    mpls_lsps: Vec<SeedMplsLsp>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1028,6 +1046,170 @@ struct SeedArpEntry {
     state: String,
 }
 
+#[derive(serde::Deserialize)]
+struct SeedOspfNeighbor {
+    #[serde(default)]
+    neighbor_id: String,
+    #[serde(default)]
+    interface: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    area: String,
+    #[serde(default)]
+    dr: String,
+    #[serde(default)]
+    bdr: String,
+    #[serde(default)]
+    priority: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct SeedBfdSession {
+    #[serde(default)]
+    peer_address: String,
+    #[serde(default)]
+    interface: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    protocol: String,
+    #[serde(default)]
+    local_diag: String,
+    #[serde(default = "default_bfd_mult")]
+    detect_multiplier: i64,
+    #[serde(default)]
+    interval_ms: i64,
+}
+
+fn default_bfd_mult() -> i64 { 3 }
+
+#[derive(serde::Deserialize)]
+struct SeedStpInstance {
+    #[serde(default)]
+    vlan_id: i64,
+    #[serde(default)]
+    instance: String,
+    #[serde(default)]
+    root_bridge: String,
+    #[serde(default)]
+    root_port: String,
+    #[serde(default = "default_stp_priority")]
+    bridge_priority: i64,
+    #[serde(default)]
+    is_root: bool,
+    #[serde(default)]
+    topology_changes: i64,
+    #[serde(default)]
+    protocol: String,
+}
+
+fn default_stp_priority() -> i64 { 32768 }
+
+#[derive(serde::Deserialize)]
+struct SeedVlan {
+    #[serde(default)]
+    vlan_id: i64,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    interfaces: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct SeedVrf {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    rd: String,
+    #[serde(default)]
+    rt_import: Vec<String>,
+    #[serde(default)]
+    rt_export: Vec<String>,
+    #[serde(default)]
+    interfaces: Vec<String>,
+    #[serde(default)]
+    address_families: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct SeedNtpPeer {
+    #[serde(default)]
+    peer_address: String,
+    #[serde(default = "default_ntp_stratum")]
+    stratum: i64,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    offset_ms: f64,
+    #[serde(default)]
+    reach: i64,
+    #[serde(default)]
+    ref_id: String,
+    #[serde(default)]
+    is_synchronized: bool,
+}
+
+fn default_ntp_stratum() -> i64 { 16 }
+
+#[derive(serde::Deserialize)]
+struct SeedPlatformDetail {
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    serial: String,
+    #[serde(default)]
+    cpu_util_pct: f64,
+    #[serde(default)]
+    memory_used_mb: f64,
+    #[serde(default)]
+    memory_total_mb: f64,
+    #[serde(default)]
+    uptime_seconds: i64,
+    #[serde(default)]
+    boot_image: String,
+    #[serde(default)]
+    hardware_rev: String,
+    #[serde(default)]
+    slot_inventory: Vec<serde_json::Value>,
+}
+
+#[derive(serde::Deserialize)]
+struct SeedAclSummary {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    r#type: String,
+    #[serde(default)]
+    ace_count: i64,
+    #[serde(default)]
+    applied_interfaces: Vec<String>,
+    #[serde(default)]
+    total_matches: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct SeedMplsLsp {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    destination: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    in_label: i64,
+    #[serde(default)]
+    out_label: i64,
+    #[serde(default)]
+    out_interface: String,
+    #[serde(default)]
+    next_hop: String,
+    #[serde(default)]
+    protocol: String,
+}
+
 pub(super) async fn device_seed_handler(
     State(state): State<AppState>,
     Json(req): Json<DeviceSeedRequest>,
@@ -1048,6 +1230,15 @@ pub(super) async fn device_seed_handler(
     let vrrp_count = req.vrrp_instances.len();
     let route_count = req.routes.len();
     let arp_count = req.arp_entries.len();
+    let ospf_count = req.ospf_neighbors.len();
+    let bfd_count = req.bfd_sessions.len();
+    let stp_count = req.stp_instances.len();
+    let vlan_count = req.vlans.len();
+    let vrf_count = req.vrfs.len();
+    let ntp_count = req.ntp_peers.len();
+    let has_platform = req.platform_detail.is_some();
+    let acl_count = req.acl_summaries.len();
+    let mpls_count = req.mpls_lsps.len();
 
     tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db)
@@ -1193,6 +1384,167 @@ pub(super) async fn device_seed_handler(
             )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
+        // Seed OSPF neighbors
+        for ospf in &req.ospf_neighbors {
+            if ospf.neighbor_id.is_empty() { continue; }
+            let ospf_id = format!("ospf-{}-{}-{}", address, ospf.neighbor_id, ospf.interface);
+            conn.query(&format!(
+                "MERGE (o:OspfNeighbor {{id: '{}'}}) \
+                 SET o.device_address = '{}', o.neighbor_id = '{}', o.interface = '{}', \
+                     o.state = '{}', o.area = '{}', o.dr = '{}', o.bdr = '{}', \
+                     o.priority = {}, o.source = '{}', o.updated_at_ns = {}",
+                ospf_id, address, ospf.neighbor_id, ospf.interface, ospf.state,
+                ospf.area, ospf.dr, ospf.bdr, ospf.priority, source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        }
+
+        // Seed BFD sessions → BfdSession node (already exists in schema)
+        for bfd in &req.bfd_sessions {
+            if bfd.peer_address.is_empty() { continue; }
+            let bfd_id = format!("bfd-{}-{}", address, bfd.peer_address);
+            conn.query(&format!(
+                "MERGE (b:BfdSession {{id: '{}'}}) \
+                 SET b.device_address = '{}', b.peer_address = '{}', \
+                     b.if_name = '{}', b.session_state = '{}', \
+                     b.registered_protocols = '{}', b.local_diag = '{}', \
+                     b.detect_multiplier = {}, b.interval_ms = {}, \
+                     b.source = '{}', b.updated_at_ns = {}",
+                bfd_id, address, bfd.peer_address, bfd.interface,
+                bfd.state, bfd.protocol, bfd.local_diag,
+                bfd.detect_multiplier, bfd.interval_ms, source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            // HAS_BFD_SESSION edge
+            conn.query(&format!(
+                "MATCH (d:Device {{address: '{}'}}) \
+                 MATCH (b:BfdSession {{id: '{}'}}) \
+                 MERGE (d)-[:HAS_BFD_SESSION]->(b)",
+                address, bfd_id,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        }
+
+        // Seed STP instances
+        for stp in &req.stp_instances {
+            let stp_id = format!("stp-{}-{}", address, stp.instance);
+            conn.query(&format!(
+                "MERGE (s:StpInstance {{id: '{}'}}) \
+                 SET s.device_address = '{}', s.vlan_id = {}, s.instance = '{}', \
+                     s.root_bridge = '{}', s.root_port = '{}', \
+                     s.bridge_priority = {}, s.is_root = {}, \
+                     s.topology_changes = {}, s.protocol = '{}', \
+                     s.source = '{}', s.updated_at_ns = {}",
+                stp_id, address, stp.vlan_id, stp.instance,
+                stp.root_bridge, stp.root_port, stp.bridge_priority,
+                stp.is_root, stp.topology_changes, stp.protocol, source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        }
+
+        // Seed VLANs → VLAN node (already exists in schema) + ACCESS_VLAN edges
+        for vlan in &req.vlans {
+            if vlan.vlan_id == 0 { continue; }
+            let vlan_id_str = format!("vlan-{}", vlan.vlan_id);
+            conn.query(&format!(
+                "MERGE (v:VLAN {{id: '{}'}}) \
+                 SET v.vid = {}, v.name = '{}', v.source_name = '{}', v.updated_at_ns = {}",
+                vlan_id_str, vlan.vlan_id, vlan.name, source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            // Link member interfaces
+            for iface_name in &vlan.interfaces {
+                conn.query(&format!(
+                    "MATCH (i:Interface {{device_address: '{}', name: '{}'}}) \
+                     MATCH (v:VLAN {{id: '{}'}}) \
+                     MERGE (i)-[:ACCESS_VLAN]->(v)",
+                    address, iface_name, vlan_id_str,
+                )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            }
+        }
+
+        // Seed VRFs
+        for vrf in &req.vrfs {
+            if vrf.name.is_empty() { continue; }
+            let vrf_id = format!("vrf-{}-{}", address, vrf.name);
+            let rt_import_json = serde_json::to_string(&vrf.rt_import).unwrap_or_default();
+            let rt_export_json = serde_json::to_string(&vrf.rt_export).unwrap_or_default();
+            let ifaces_json = serde_json::to_string(&vrf.interfaces).unwrap_or_default();
+            let afs_json = serde_json::to_string(&vrf.address_families).unwrap_or_default();
+            conn.query(&format!(
+                "MERGE (v:Vrf {{id: '{}'}}) \
+                 SET v.device_address = '{}', v.name = '{}', v.rd = '{}', \
+                     v.rt_import_json = '{}', v.rt_export_json = '{}', \
+                     v.interfaces_json = '{}', v.address_families_json = '{}', \
+                     v.source = '{}', v.updated_at_ns = {}",
+                vrf_id, address, vrf.name, vrf.rd,
+                rt_import_json.replace('\'', "\\'"),
+                rt_export_json.replace('\'', "\\'"),
+                ifaces_json.replace('\'', "\\'"),
+                afs_json.replace('\'', "\\'"),
+                source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        }
+
+        // Seed NTP peers
+        for ntp in &req.ntp_peers {
+            if ntp.peer_address.is_empty() { continue; }
+            let ntp_id = format!("ntp-{}-{}", address, ntp.peer_address);
+            conn.query(&format!(
+                "MERGE (n:NtpPeer {{id: '{}'}}) \
+                 SET n.device_address = '{}', n.peer_address = '{}', \
+                     n.stratum = {}, n.state = '{}', n.offset_ms = {}, \
+                     n.reach = {}, n.ref_id = '{}', n.is_synchronized = {}, \
+                     n.source = '{}', n.updated_at_ns = {}",
+                ntp_id, address, ntp.peer_address, ntp.stratum,
+                ntp.state, ntp.offset_ms, ntp.reach, ntp.ref_id,
+                ntp.is_synchronized, source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        }
+
+        // Seed platform detail → enrich Device node
+        if let Some(ref plat) = req.platform_detail {
+            let slots_json = serde_json::to_string(&plat.slot_inventory).unwrap_or_default();
+            conn.query(&format!(
+                "MERGE (d:Device {{address: '{}'}}) \
+                 SET d.model = '{}', d.serial_number = '{}', \
+                     d.cpu_util_pct = {}, d.memory_used_mb = {}, d.memory_total_mb = {}, \
+                     d.uptime_seconds = {}, d.boot_image = '{}', \
+                     d.hardware_rev = '{}', d.slot_inventory_json = '{}'",
+                address, plat.model, plat.serial,
+                plat.cpu_util_pct, plat.memory_used_mb, plat.memory_total_mb,
+                plat.uptime_seconds, plat.boot_image, plat.hardware_rev,
+                slots_json.replace('\'', "\\'"),
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        }
+
+        // Seed ACL summaries
+        for acl in &req.acl_summaries {
+            if acl.name.is_empty() { continue; }
+            let acl_id = format!("acl-{}-{}", address, acl.name);
+            let ifaces_json = serde_json::to_string(&acl.applied_interfaces).unwrap_or_default();
+            conn.query(&format!(
+                "MERGE (a:AclSummary {{id: '{}'}}) \
+                 SET a.device_address = '{}', a.name = '{}', a.acl_type = '{}', \
+                     a.ace_count = {}, a.applied_interfaces_json = '{}', \
+                     a.total_matches = {}, a.source = '{}', a.updated_at_ns = {}",
+                acl_id, address, acl.name, acl.r#type,
+                acl.ace_count, ifaces_json.replace('\'', "\\'"),
+                acl.total_matches, source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        }
+
+        // Seed MPLS LSPs
+        for lsp in &req.mpls_lsps {
+            if lsp.name.is_empty() && lsp.destination.is_empty() { continue; }
+            let lsp_id = format!("mpls-{}-{}", address, if lsp.name.is_empty() { &lsp.destination } else { &lsp.name });
+            conn.query(&format!(
+                "MERGE (m:MplsLsp {{id: '{}'}}) \
+                 SET m.device_address = '{}', m.name = '{}', m.destination = '{}', \
+                     m.state = '{}', m.in_label = {}, m.out_label = {}, \
+                     m.out_interface = '{}', m.next_hop = '{}', m.protocol = '{}', \
+                     m.source = '{}', m.updated_at_ns = {}",
+                lsp_id, address, lsp.name, lsp.destination,
+                lsp.state, lsp.in_label, lsp.out_label,
+                lsp.out_interface, lsp.next_hop, lsp.protocol, source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        }
+
         Ok::<_, (StatusCode, String)>(())
     })
     .await
@@ -1210,6 +1562,15 @@ pub(super) async fn device_seed_handler(
             "vrrp_instances": vrrp_count,
             "ecmp_routes": route_count,
             "arp_entries": arp_count,
+            "ospf_neighbors": ospf_count,
+            "bfd_sessions": bfd_count,
+            "stp_instances": stp_count,
+            "vlans": vlan_count,
+            "vrfs": vrf_count,
+            "ntp_peers": ntp_count,
+            "platform_detail": has_platform,
+            "acl_summaries": acl_count,
+            "mpls_lsps": mpls_count,
         }
     })))
 }

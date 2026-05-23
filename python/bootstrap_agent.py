@@ -130,6 +130,112 @@ class ArpEntry:
 
 
 @dataclass
+class OspfNeighborInfo:
+    """OSPF neighbor adjacency."""
+    neighbor_id: str = ""
+    interface: str = ""
+    state: str = "unknown"  # full, 2way, init, down
+    area: str = ""
+    dr: str = ""         # designated router
+    bdr: str = ""        # backup designated router
+    priority: int = 0
+
+
+@dataclass
+class BfdSessionInfo:
+    """BFD session state."""
+    peer_address: str = ""
+    interface: str = ""
+    state: str = "unknown"  # up, down, adminDown, init
+    protocol: str = ""      # bgp, ospf, isis, static
+    local_diag: str = ""
+    detect_multiplier: int = 3
+    interval_ms: int = 0
+
+
+@dataclass
+class StpInfo:
+    """Spanning tree instance state."""
+    vlan_id: int = 0
+    instance: str = ""       # MST instance or VLAN id
+    root_bridge: str = ""
+    root_port: str = ""
+    bridge_priority: int = 32768
+    is_root: bool = False
+    topology_changes: int = 0
+    protocol: str = ""       # rstp, mstp, pvst
+
+
+@dataclass
+class VlanInfo:
+    """VLAN entry."""
+    vlan_id: int = 0
+    name: str = ""
+    state: str = "active"    # active, suspend, act/unsup
+    interfaces: List[str] = field(default_factory=list)
+
+
+@dataclass
+class VrfInfo:
+    """VRF / routing-instance."""
+    name: str = ""
+    rd: str = ""              # route-distinguisher
+    rt_import: List[str] = field(default_factory=list)
+    rt_export: List[str] = field(default_factory=list)
+    interfaces: List[str] = field(default_factory=list)
+    address_families: List[str] = field(default_factory=list)
+
+
+@dataclass
+class NtpPeerInfo:
+    """NTP peer/server state."""
+    peer_address: str = ""
+    stratum: int = 16
+    state: str = ""           # sys.peer, candidate, reject
+    offset_ms: float = 0.0
+    reach: int = 0
+    ref_id: str = ""
+    is_synchronized: bool = False
+
+
+@dataclass
+class PlatformDetail:
+    """Extended platform/inventory information."""
+    model: str = ""
+    serial: str = ""
+    cpu_util_pct: float = 0.0
+    memory_used_mb: float = 0.0
+    memory_total_mb: float = 0.0
+    uptime_seconds: int = 0
+    boot_image: str = ""
+    hardware_rev: str = ""
+    slot_inventory: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class AclSummary:
+    """ACL summary — not full ACE dump, just names and stats."""
+    name: str = ""
+    type: str = ""            # standard, extended, ipv6
+    ace_count: int = 0
+    applied_interfaces: List[str] = field(default_factory=list)
+    total_matches: int = 0
+
+
+@dataclass
+class MplsLspInfo:
+    """MPLS LSP / label binding."""
+    name: str = ""
+    destination: str = ""
+    state: str = ""           # up, down
+    in_label: int = 0
+    out_label: int = 0
+    out_interface: str = ""
+    next_hop: str = ""
+    protocol: str = ""        # ldp, rsvp, sr
+
+
+@dataclass
 class BootstrapResult:
     address: str
     status: str = "ok"
@@ -145,6 +251,15 @@ class BootstrapResult:
     vrrp_instances: List[VrrpInfo] = field(default_factory=list)
     routes: List[RouteInfo] = field(default_factory=list)
     arp_entries: List[ArpEntry] = field(default_factory=list)
+    ospf_neighbors: List[OspfNeighborInfo] = field(default_factory=list)
+    bfd_sessions: List[BfdSessionInfo] = field(default_factory=list)
+    stp_instances: List[StpInfo] = field(default_factory=list)
+    vlans: List[VlanInfo] = field(default_factory=list)
+    vrfs: List[VrfInfo] = field(default_factory=list)
+    ntp_peers: List[NtpPeerInfo] = field(default_factory=list)
+    platform_detail: Optional[PlatformDetail] = None
+    acl_summaries: List[AclSummary] = field(default_factory=list)
+    mpls_lsps: List[MplsLspInfo] = field(default_factory=list)
     registered: bool = False
     seeded: bool = False
     elapsed_s: float = 0.0
@@ -363,6 +478,309 @@ def _learn_arp(device) -> List[ArpEntry]:
         return []
 
 
+def _learn_ospf(device) -> List[OspfNeighborInfo]:
+    """Learn OSPF neighbor adjacencies from Genie."""
+    try:
+        data = device.learn("ospf")
+        out: List[OspfNeighborInfo] = []
+        info = data.info if hasattr(data, "info") else {}
+        for vrf_name, vrf_data in (info.get("vrf", {}) or {}).items():
+            for af_name, af in (vrf_data.get("address_family", {}) or {}).items():
+                for inst_name, inst in (af.get("instance", {}) or {}).items():
+                    for area_id, area in (inst.get("area", {}) or inst.get("areas", {}) or {}).items():
+                        for iface_name, iface in (area.get("interfaces", {}) or area.get("interface", {}) or {}).items():
+                            for nbr_id, nbr in (iface.get("neighbors", {}) or {}).items():
+                                out.append(OspfNeighborInfo(
+                                    neighbor_id=str(nbr_id),
+                                    interface=str(iface_name),
+                                    state=str(nbr.get("state", nbr.get("neighbor_state", "unknown"))),
+                                    area=str(area_id),
+                                    dr=str(nbr.get("dr_ip_addr", "")),
+                                    bdr=str(nbr.get("bdr_ip_addr", "")),
+                                    priority=int(nbr.get("priority", 0) or 0),
+                                ))
+        return out
+    except Exception as e:
+        logger.debug("ospf learn failed (may not be configured): %s", e)
+        return []
+
+
+def _learn_bfd(device) -> List[BfdSessionInfo]:
+    """Learn BFD session state from Genie."""
+    try:
+        data = device.learn("bfd")
+        out: List[BfdSessionInfo] = []
+        info = data.info if hasattr(data, "info") else {}
+        # Genie bfd.info varies: sometimes keyed by interface, sometimes by session
+        for key, session in info.items():
+            if isinstance(session, dict):
+                # Handle common Genie shapes
+                neighbors = session.get("neighbors", session.get("sessions", {}))
+                if isinstance(neighbors, dict):
+                    for peer, peer_data in neighbors.items():
+                        if isinstance(peer_data, dict):
+                            out.append(BfdSessionInfo(
+                                peer_address=str(peer),
+                                interface=str(key),
+                                state=str(peer_data.get("session_state", peer_data.get("state", "unknown"))),
+                                protocol=str(peer_data.get("registered_protocols", peer_data.get("protocol", ""))),
+                                local_diag=str(peer_data.get("local_diag", "")),
+                                detect_multiplier=int(peer_data.get("detect_mult", peer_data.get("detect_multiplier", 3)) or 3),
+                                interval_ms=int(peer_data.get("desired_min_tx_interval", peer_data.get("interval", 0)) or 0),
+                            ))
+                elif not neighbors:
+                    # Flat session entry
+                    out.append(BfdSessionInfo(
+                        peer_address=str(session.get("remote_addr", session.get("peer", key))),
+                        interface=str(session.get("interface", "")),
+                        state=str(session.get("session_state", session.get("state", "unknown"))),
+                        protocol=str(session.get("registered_protocols", "")),
+                    ))
+        return out
+    except Exception as e:
+        logger.debug("bfd learn failed (may not be configured): %s", e)
+        return []
+
+
+def _learn_stp(device) -> List[StpInfo]:
+    """Learn spanning tree state from Genie."""
+    try:
+        data = device.learn("stp")
+        out: List[StpInfo] = []
+        info = data.info if hasattr(data, "info") else {}
+        # Genie stp.info: info['global']['pvst|rstp|mstp']['vlans'][vlan_id] or ['mst_instances'][inst]
+        for mode_name, mode_data in info.items():
+            if not isinstance(mode_data, dict):
+                continue
+            # PVST / Rapid-PVST
+            for vlan_id, vlan_data in (mode_data.get("vlans", {}) or {}).items():
+                if isinstance(vlan_data, dict):
+                    root = vlan_data.get("root", vlan_data.get("designated_root", {}))
+                    out.append(StpInfo(
+                        vlan_id=int(vlan_id) if str(vlan_id).isdigit() else 0,
+                        instance=str(vlan_id),
+                        root_bridge=str(root.get("address", root.get("root_id", ""))) if isinstance(root, dict) else str(root),
+                        root_port=str(vlan_data.get("root_port", "")),
+                        bridge_priority=int(vlan_data.get("bridge_priority", 32768) or 32768),
+                        is_root=bool(vlan_data.get("is_root", False)),
+                        topology_changes=int(vlan_data.get("topology_changes", vlan_data.get("topology_change_count", 0)) or 0),
+                        protocol=str(mode_name),
+                    ))
+            # MST instances
+            for inst_id, inst_data in (mode_data.get("mst_instances", {}) or {}).items():
+                if isinstance(inst_data, dict):
+                    out.append(StpInfo(
+                        vlan_id=0,
+                        instance=str(inst_id),
+                        root_bridge=str(inst_data.get("root", {}).get("address", "")) if isinstance(inst_data.get("root"), dict) else "",
+                        root_port=str(inst_data.get("root_port", "")),
+                        bridge_priority=int(inst_data.get("bridge_priority", 32768) or 32768),
+                        is_root=bool(inst_data.get("is_root", False)),
+                        topology_changes=int(inst_data.get("topology_changes", 0) or 0),
+                        protocol="mstp",
+                    ))
+        return out
+    except Exception as e:
+        logger.debug("stp learn failed (may not be configured): %s", e)
+        return []
+
+
+def _learn_vlans(device) -> List[VlanInfo]:
+    """Learn VLAN database from Genie."""
+    try:
+        data = device.learn("vlan")
+        out: List[VlanInfo] = []
+        info = data.info if hasattr(data, "info") else {}
+        vlans = info.get("vlans", info)
+        if isinstance(vlans, dict):
+            for vid, vlan_data in vlans.items():
+                if isinstance(vlan_data, dict):
+                    ifaces = list((vlan_data.get("interfaces", {}) or {}).keys()) if isinstance(vlan_data.get("interfaces"), dict) else []
+                    out.append(VlanInfo(
+                        vlan_id=int(vid) if str(vid).isdigit() else 0,
+                        name=str(vlan_data.get("name", vlan_data.get("vlan_name", ""))),
+                        state=str(vlan_data.get("state", vlan_data.get("status", "active"))),
+                        interfaces=ifaces,
+                    ))
+        return out
+    except Exception as e:
+        logger.debug("vlan learn failed (may not be configured): %s", e)
+        return []
+
+
+def _learn_vrfs(device) -> List[VrfInfo]:
+    """Learn VRF / routing-instance list from Genie."""
+    try:
+        data = device.learn("vrf")
+        out: List[VrfInfo] = []
+        info = data.info if hasattr(data, "info") else {}
+        vrfs = info.get("vrfs", info)
+        if isinstance(vrfs, dict):
+            for vrf_name, vrf_data in vrfs.items():
+                if isinstance(vrf_data, dict):
+                    rd = str(vrf_data.get("route_distinguisher", ""))
+                    ifaces = list((vrf_data.get("interfaces", {}) or {}).keys()) if isinstance(vrf_data.get("interfaces"), dict) else []
+                    afs = list((vrf_data.get("address_family", {}) or {}).keys()) if isinstance(vrf_data.get("address_family"), dict) else []
+                    rt_imp = []
+                    rt_exp = []
+                    for af_name, af in (vrf_data.get("address_family", {}) or {}).items():
+                        if isinstance(af, dict):
+                            for rt in (af.get("route_target", {}) or {}).values():
+                                if isinstance(rt, dict):
+                                    rt_imp.extend(list((rt.get("import", {}) or {}).keys()))
+                                    rt_exp.extend(list((rt.get("export", {}) or {}).keys()))
+                    out.append(VrfInfo(
+                        name=str(vrf_name),
+                        rd=rd,
+                        rt_import=rt_imp,
+                        rt_export=rt_exp,
+                        interfaces=ifaces,
+                        address_families=afs,
+                    ))
+        return out
+    except Exception as e:
+        logger.debug("vrf learn failed: %s", e)
+        return []
+
+
+def _learn_ntp(device) -> List[NtpPeerInfo]:
+    """Learn NTP peer/server state from Genie."""
+    try:
+        data = device.learn("ntp")
+        out: List[NtpPeerInfo] = []
+        info = data.info if hasattr(data, "info") else {}
+        # Genie ntp.info: info['clock_state']['system_status'] + info['peer']
+        clock_state = (info.get("clock_state", {}) or {}).get("system_status", {})
+        sys_peer = str(clock_state.get("associations_address", ""))
+        peers = info.get("peer", info.get("peers", {}))
+        if isinstance(peers, dict):
+            for peer_addr, peer_data in peers.items():
+                if isinstance(peer_data, dict):
+                    # peer_data can be nested: peer_data['local_mode']['client']['...']
+                    flat = peer_data
+                    for k, v in peer_data.items():
+                        if isinstance(v, dict) and isinstance(list(v.values())[0] if v else None, dict):
+                            flat = list(v.values())[0]
+                            break
+                    out.append(NtpPeerInfo(
+                        peer_address=str(peer_addr),
+                        stratum=int(flat.get("stratum", 16) or 16),
+                        state=str(flat.get("mode", flat.get("peer_status", ""))),
+                        offset_ms=float(flat.get("offset", 0.0) or 0.0),
+                        reach=int(flat.get("reach", 0) or 0),
+                        ref_id=str(flat.get("refid", flat.get("ref_id", ""))),
+                        is_synchronized=(str(peer_addr) == sys_peer),
+                    ))
+        return out
+    except Exception as e:
+        logger.debug("ntp learn failed (may not be configured): %s", e)
+        return []
+
+
+def _learn_platform_detail(device) -> Optional[PlatformDetail]:
+    """Extract extended platform/inventory detail from Genie platform learn."""
+    try:
+        data = device.learn("platform")
+        info = data.info if hasattr(data, "info") else {}
+        if not info:
+            return None
+        chassis = info.get("chassis", info.get("hardware", {}))
+        if isinstance(chassis, str):
+            chassis = {}
+        slots = []
+        for slot_name, slot_data in (info.get("slot", {}) or {}).items():
+            if isinstance(slot_data, dict):
+                rp = slot_data.get("rp", slot_data.get("lc", {}))
+                if isinstance(rp, dict):
+                    for sub_name, sub_data in rp.items():
+                        if isinstance(sub_data, dict):
+                            slots.append({
+                                "slot": str(slot_name),
+                                "name": str(sub_name),
+                                "state": str(sub_data.get("state", sub_data.get("oper_state", ""))),
+                                "serial": str(sub_data.get("sn", sub_data.get("serial_number", ""))),
+                            })
+        return PlatformDetail(
+            model=str(chassis.get("model", info.get("chassis", ""))),
+            serial=str(chassis.get("sn", chassis.get("serial_number", info.get("chassis_sn", "")))),
+            cpu_util_pct=float(info.get("cpu_utilization", 0.0) or 0.0),
+            memory_used_mb=float(info.get("memory_used", 0) or 0) / 1024.0 / 1024.0 if info.get("memory_used") else 0.0,
+            memory_total_mb=float(info.get("memory_total", 0) or 0) / 1024.0 / 1024.0 if info.get("memory_total") else 0.0,
+            uptime_seconds=int(info.get("uptime", 0) or 0),
+            boot_image=str(info.get("image", info.get("running_image", ""))),
+            hardware_rev=str(chassis.get("revision", chassis.get("hw_rev", ""))),
+            slot_inventory=slots,
+        )
+    except Exception as e:
+        logger.debug("platform detail learn failed: %s", e)
+        return None
+
+
+def _learn_acl(device) -> List[AclSummary]:
+    """Learn ACL summary from Genie."""
+    try:
+        data = device.learn("acl")
+        out: List[AclSummary] = []
+        info = data.info if hasattr(data, "info") else {}
+        acls = info.get("acls", info)
+        if isinstance(acls, dict):
+            for acl_name, acl_data in acls.items():
+                if isinstance(acl_data, dict):
+                    aces = acl_data.get("aces", {})
+                    ace_count = len(aces) if isinstance(aces, dict) else 0
+                    total_matches = 0
+                    for ace_id, ace in (aces if isinstance(aces, dict) else {}).items():
+                        if isinstance(ace, dict):
+                            total_matches += int(ace.get("statistics", {}).get("matched_packets", 0) or 0)
+                    out.append(AclSummary(
+                        name=str(acl_name),
+                        type=str(acl_data.get("type", acl_data.get("acl_type", ""))),
+                        ace_count=ace_count,
+                        applied_interfaces=list((acl_data.get("interfaces", {}) or {}).keys()),
+                        total_matches=total_matches,
+                    ))
+        return out
+    except Exception as e:
+        logger.debug("acl learn failed (may not be configured): %s", e)
+        return []
+
+
+def _learn_mpls(device) -> List[MplsLspInfo]:
+    """Learn MPLS LSP / label information from Genie."""
+    try:
+        data = device.learn("mpls")
+        out: List[MplsLspInfo] = []
+        info = data.info if hasattr(data, "info") else {}
+        # Genie mpls.info: info['vrf']['default']['local_labels'][label] or info['lsp']
+        for vrf_name, vrf_data in (info.get("vrf", {}) or {}).items():
+            if isinstance(vrf_data, dict):
+                for label_key, label_data in (vrf_data.get("local_labels", {}) or {}).items():
+                    if isinstance(label_data, dict):
+                        out.append(MplsLspInfo(
+                            name=str(label_data.get("label_name", label_key)),
+                            destination=str(label_data.get("prefix", label_data.get("destination", ""))),
+                            state=str(label_data.get("state", label_data.get("oper_state", ""))),
+                            in_label=int(label_key) if str(label_key).isdigit() else 0,
+                            out_label=int(label_data.get("outgoing_label", 0) or 0),
+                            out_interface=str(label_data.get("outgoing_interface", "")),
+                            next_hop=str(label_data.get("next_hop", "")),
+                            protocol=str(label_data.get("protocol", label_data.get("owner", ""))),
+                        ))
+        # Also check for top-level lsp entries
+        for lsp_name, lsp_data in (info.get("lsp", info.get("te_tunnels", {})) or {}).items():
+            if isinstance(lsp_data, dict):
+                out.append(MplsLspInfo(
+                    name=str(lsp_name),
+                    destination=str(lsp_data.get("destination", "")),
+                    state=str(lsp_data.get("oper_state", lsp_data.get("state", ""))),
+                    protocol=str(lsp_data.get("signalling_type", "rsvp")),
+                ))
+        return out
+    except Exception as e:
+        logger.debug("mpls learn failed (may not be configured): %s", e)
+        return []
+
+
 def _get_hostname_vendor(device) -> tuple[str, str, str]:
     try:
         data = device.learn("platform")
@@ -418,14 +836,30 @@ def _seed_device(api_url: str, result: BootstrapResult, dry_run: bool) -> bool:
         "vrrp_instances": [asdict(v) for v in result.vrrp_instances],
         "routes": [asdict(r) for r in result.routes],
         "arp_entries": [asdict(a) for a in result.arp_entries],
+        "ospf_neighbors": [asdict(o) for o in result.ospf_neighbors],
+        "bfd_sessions": [asdict(b) for b in result.bfd_sessions],
+        "stp_instances": [asdict(s) for s in result.stp_instances],
+        "vlans": [asdict(v) for v in result.vlans],
+        "vrfs": [asdict(v) for v in result.vrfs],
+        "ntp_peers": [asdict(n) for n in result.ntp_peers],
+        "platform_detail": asdict(result.platform_detail) if result.platform_detail else None,
+        "acl_summaries": [asdict(a) for a in result.acl_summaries],
+        "mpls_lsps": [asdict(m) for m in result.mpls_lsps],
     }
     if dry_run:
         logger.info(
-            "[DRY-RUN] POST /api/devices/seed  %d ifaces  %d bgp  %d lldp  %d isis  %d lag  %d vrrp  %d routes  %d arp",
+            "[DRY-RUN] POST /api/devices/seed  %d ifaces  %d bgp  %d lldp  %d isis  "
+            "%d lag  %d vrrp  %d routes  %d arp  %d ospf  %d bfd  %d stp  "
+            "%d vlans  %d vrfs  %d ntp  platform=%s  %d acls  %d mpls",
             len(result.interfaces), len(result.bgp_neighbors),
             len(result.lldp_neighbors), len(result.isis_adjacencies),
             len(result.lag_groups), len(result.vrrp_instances),
             len(result.routes), len(result.arp_entries),
+            len(result.ospf_neighbors), len(result.bfd_sessions),
+            len(result.stp_instances), len(result.vlans),
+            len(result.vrfs), len(result.ntp_peers),
+            bool(result.platform_detail),
+            len(result.acl_summaries), len(result.mpls_lsps),
         )
         return True
     try:
@@ -507,6 +941,15 @@ def bootstrap_device(
         result.vrrp_instances = _learn_vrrp(device)
         result.routes = _learn_routes(device)
         result.arp_entries = _learn_arp(device)
+        result.ospf_neighbors = _learn_ospf(device)
+        result.bfd_sessions = _learn_bfd(device)
+        result.stp_instances = _learn_stp(device)
+        result.vlans = _learn_vlans(device)
+        result.vrfs = _learn_vrfs(device)
+        result.ntp_peers = _learn_ntp(device)
+        result.platform_detail = _learn_platform_detail(device)
+        result.acl_summaries = _learn_acl(device)
+        result.mpls_lsps = _learn_mpls(device)
     except Exception as e:
         result.status = "partial"
         result.error = f"learn error: {e}"
@@ -681,16 +1124,32 @@ def preseed_graph(api_url: str, result: "BootstrapResult", dry_run: bool = False
         "vrrp_instances": [asdict(v) for v in result.vrrp_instances],
         "routes": [asdict(r) for r in result.routes],
         "arp_entries": [asdict(a) for a in result.arp_entries],
+        "ospf_neighbors": [asdict(o) for o in result.ospf_neighbors],
+        "bfd_sessions": [asdict(b) for b in result.bfd_sessions],
+        "stp_instances": [asdict(s) for s in result.stp_instances],
+        "vlans": [asdict(v) for v in result.vlans],
+        "vrfs": [asdict(v) for v in result.vrfs],
+        "ntp_peers": [asdict(n) for n in result.ntp_peers],
+        "platform_detail": asdict(result.platform_detail) if result.platform_detail else None,
+        "acl_summaries": [asdict(a) for a in result.acl_summaries],
+        "mpls_lsps": [asdict(m) for m in result.mpls_lsps],
         "preseed": True,
     }
 
     if dry_run:
         logger.info(
-            "[DRY-RUN] pre-seed for %s: %d ifaces, %d BGP, %d LLDP, %d ISIS, %d LAG, %d VRRP, %d routes, %d ARP",
+            "[DRY-RUN] pre-seed for %s: %d ifaces, %d BGP, %d LLDP, %d ISIS, %d LAG, "
+            "%d VRRP, %d routes, %d ARP, %d OSPF, %d BFD, %d STP, %d VLANs, "
+            "%d VRFs, %d NTP, platform=%s, %d ACLs, %d MPLS",
             result.address, len(result.interfaces), len(result.bgp_neighbors),
             len(result.lldp_neighbors), len(result.isis_adjacencies),
             len(result.lag_groups), len(result.vrrp_instances),
             len(result.routes), len(result.arp_entries),
+            len(result.ospf_neighbors), len(result.bfd_sessions),
+            len(result.stp_instances), len(result.vlans),
+            len(result.vrfs), len(result.ntp_peers),
+            bool(result.platform_detail),
+            len(result.acl_summaries), len(result.mpls_lsps),
         )
         return True
 
