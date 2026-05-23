@@ -102,6 +102,18 @@ sha2 = "0.10"
 hmac = "0.12"
 zeroize = { version = "1", features = ["derive"] }
 hex = "0.4"
+# Password hashing (OWASP recommended: Argon2id)
+argon2 = "0.5"
+# JWT signing + verification (HS256)
+jsonwebtoken = "9"
+# Constant-time comparison (timing-attack resistance)
+subtle = "2"
+# Lazy static initialization for rate-limit table
+lazy_static = "1"
+# TLS connector for ldaps:// support
+tokio-rustls = "0.26"
+# WebPKI root certificates for ldaps:// TLS verification
+webpki-roots = "0.26"
 snap = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 libc = "0.2"
