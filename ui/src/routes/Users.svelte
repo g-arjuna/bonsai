@@ -195,7 +195,7 @@ LDAP: configure [auth.ldap] in bonsai.toml (server, bind_dn, search_base, group_
                   <span class="key-missing">not set</span>
                 {/if}
               </td>
-              <td>{p.active ? <span class="active-pill">active</span> : ''}</td>
+              <td>{#if p.active}<span class="active-pill">active</span>{/if}</td>
               <td class="actions-cell">
                 <button class="ghost-sm" onclick={() => testProvider(p.name)} disabled={testResult === 'testing'}>
                   {testResult === 'testing' ? '…' : 'Test'}
@@ -293,10 +293,7 @@ curl -H "Authorization: Bearer &lt;key&gt;" http://bonsai:8080/api/incidents</pr
       <p class="muted small">
         Change the vault passphrase via the API (requires existing valid credentials):
       </p>
-      <pre class="code-block">
-POST /api/vault/rekey
-{"new_passphrase_env": "BONSAI_VAULT_NEW_PASSPHRASE"}
-# Set the env var before calling, then restart with the new passphrase</pre>
+      <pre class="code-block">{'POST /api/vault/rekey\n{"new_passphrase_env": "BONSAI_VAULT_NEW_PASSPHRASE"}\n# Set the env var before calling, then restart with the new passphrase'}</pre>
     </div>
   {/if}
 </div>

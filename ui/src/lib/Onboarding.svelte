@@ -9,9 +9,11 @@
 
   const SETUP_STEPS = [
     { id: 1, label: 'Welcome' },
-    { id: 2, label: 'Environment' },
-    { id: 3, label: 'Site' },
-    { id: 4, label: 'Credential' },
+    { id: 2, label: 'Resource Profile' },
+    { id: 3, label: 'Environment' },
+    { id: 4, label: 'Site' },
+    { id: 5, label: 'Credential' },
+    { id: 6, label: 'Vendor Defaults' },
   ];
 
   const DEVICE_STEPS = [
@@ -23,12 +25,94 @@
 
   // Logical steps exposed to the template
   let STEPS = $derived(first_run
-    ? [...SETUP_STEPS, ...DEVICE_STEPS.map(s => ({ id: s.id + 4, label: s.label }))]
+    ? [...SETUP_STEPS, ...DEVICE_STEPS.map(s => ({ id: s.id + 6, label: s.label }))]
     : DEVICE_STEPS
   );
 
   // Offset applied to device wizard step numbers when first_run is active
-  let stepOffset = $derived(first_run ? 4 : 0);
+  let stepOffset = $derived(first_run ? 6 : 0);
+
+  // ── D4-7 T6: Blank-boot wizard — resource profile + vendor auto-load ───────
+  const RESOURCE_PROFILES = [
+    { value: 'low',      label: 'Low',      desc: '≤8 devices, 512 MB memory budget. Ideal for home labs.' },
+    { value: 'standard', label: 'Standard', desc: '8–50 devices, 1 GB memory budget. Campus or small DC.' },
+    { value: 'high',     label: 'High',     desc: '50+ devices, 2 GB+ memory budget. Production DC fabric.' },
+  ];
+
+  const VENDOR_DEFAULTS = [
+    { value: 'nokia-srl',    label: 'Nokia SR Linux',  patterns: ['syslog_patterns/nokia-srlinux', 'path_profiles/nokia-srlinux', 'snmp_oid_patterns/default'] },
+    { value: 'nokia-sros',   label: 'Nokia SR-OS',     patterns: ['syslog_patterns/nokia-sros', 'path_profiles/nokia-sros'] },
+    { value: 'cisco-iosxr',  label: 'Cisco IOS-XR',    patterns: ['syslog_patterns/cisco-iosxr', 'path_profiles/cisco-iosxr'] },
+    { value: 'cisco-iosxe',  label: 'Cisco IOS-XE',    patterns: ['syslog_patterns/cisco-iosxe', 'path_profiles/cisco-iosxe'] },
+    { value: 'arista-eos',   label: 'Arista EOS',      patterns: ['syslog_patterns/arista-eos', 'path_profiles/arista-eos'] },
+    { value: 'juniper-junos', label: 'Juniper JunOS',  patterns: ['syslog_patterns/juniper-junos', 'path_profiles/juniper-junos'] },
+    { value: 'frr',          label: 'FRRouting',       patterns: ['syslog_patterns/frr'] },
+  ];
+
+  let frResourceProfile = $state('standard');
+  let frResourceSaving  = $state(false);
+  let frSelectedVendors = $state([]);
+  let frVendorLoading   = $state(false);
+  let frVendorDone      = $state(false);
+
+  async function frSaveResourceProfile() {
+    frResourceSaving = true;
+    try {
+      const r = await fetch('/api/governance/profile', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile: frResourceProfile }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      toast(`Resource profile set to "${frResourceProfile}".`, 'success');
+      step = 3;
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      frResourceSaving = false;
+    }
+  }
+
+  function frToggleVendor(v) {
+    if (frSelectedVendors.includes(v)) {
+      frSelectedVendors = frSelectedVendors.filter(x => x !== v);
+    } else {
+      frSelectedVendors = [...frSelectedVendors, v];
+    }
+  }
+
+  async function frLoadVendorDefaults() {
+    if (!frSelectedVendors.length) { step = 7; return; }
+    frVendorLoading = true;
+    frVendorDone = false;
+    try {
+      // Enable the matching config items in the DB
+      for (const vendor of frSelectedVendors) {
+        const vd = VENDOR_DEFAULTS.find(v => v.value === vendor);
+        if (!vd) continue;
+        // Fetch all config items and enable those matching this vendor's patterns
+        const r = await fetch('/api/config-items');
+        if (!r.ok) continue;
+        const items = await r.json();
+        for (const item of items) {
+          const matchesVendor = vd.patterns.some(p => item.id.includes(vendor) || item.id.includes(p));
+          if (matchesVendor && !item.enabled) {
+            await fetch('/api/config-items', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ...item, enabled: true }),
+            });
+          }
+        }
+      }
+      frVendorDone = true;
+      toast(`Enabled default patterns for ${frSelectedVendors.length} vendor(s).`, 'success');
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      frVendorLoading = false;
+    }
+  }
 
   // ── First-run setup state ─────────────────────────────────────────────────
   const ARCHETYPES = [
@@ -113,7 +197,7 @@
       form.credential_alias = frCredAlias.trim();
       toast(`Credential alias "${frCredAlias.trim()}" stored in vault.`, 'success');
       await loadCredentials();
-      step = 5;  // first device — Identity
+      step = 6;  // vendor defaults
     } catch (e) {
       toast(e.message, 'error');
     } finally {
@@ -1079,7 +1163,33 @@
 
         {:else if first_run && step === 2}
           <div class="panel-heading">
-            <p class="eyebrow">Step 2 of 8</p>
+            <p class="eyebrow">Step 2 of 10</p>
+            <h3>Choose a resource profile</h3>
+            <p class="muted">
+              The resource profile controls memory budget, write batch sizes, and rate shedding thresholds.
+              Pick one that matches your deployment scale. You can change it later from the Governance page.
+            </p>
+          </div>
+          <div class="archetype-grid">
+            {#each RESOURCE_PROFILES as rp}
+              <label class="archetype-option" class:selected={frResourceProfile === rp.value}>
+                <input type="radio" name="fr-resource-profile" value={rp.value} bind:group={frResourceProfile} />
+                <strong>{rp.label}</strong>
+                <span class="muted small">{rp.desc}</span>
+              </label>
+            {/each}
+          </div>
+          <div class="wizard-actions">
+            <button type="button" class="ghost" onclick={() => step = 1}>Back</button>
+            <button type="button" onclick={frSaveResourceProfile} disabled={frResourceSaving}>
+              {frResourceSaving ? 'Saving…' : 'Set profile & continue'}
+            </button>
+            <button type="button" class="ghost" onclick={() => step = 3}>Skip</button>
+          </div>
+
+        {:else if first_run && step === 3}
+          <div class="panel-heading">
+            <p class="eyebrow">Step 3 of 10</p>
             <h3>Define an environment</h3>
             <p class="muted">
               An environment groups sites and devices by operational context.
@@ -1105,16 +1215,16 @@
             </div>
           </div>
           <div class="wizard-actions">
-            <button type="button" class="ghost" onclick={() => step = 1}>Back</button>
+            <button type="button" class="ghost" onclick={() => step = 2}>Back</button>
             <button type="button" onclick={frCreateEnvironment} disabled={frEnvSaving || !frEnvName.trim()}>
               {frEnvSaving ? 'Creating…' : 'Create environment'}
             </button>
-            <button type="button" class="ghost" onclick={() => step = 3}>Skip this step</button>
+            <button type="button" class="ghost" onclick={() => step = 4}>Skip this step</button>
           </div>
 
-        {:else if first_run && step === 3}
+        {:else if first_run && step === 4}
           <div class="panel-heading">
-            <p class="eyebrow">Step 3 of 8</p>
+            <p class="eyebrow">Step 4 of 10</p>
             <h3>Add a top-level site</h3>
             {#if frEnvCreated}
               <p class="muted">Environment <strong>{frEnvCreated.name}</strong> created. Now define your first site.</p>
@@ -1139,16 +1249,16 @@
             </div>
           </div>
           <div class="wizard-actions">
-            <button type="button" class="ghost" onclick={() => step = 2}>Back</button>
+            <button type="button" class="ghost" onclick={() => step = 3}>Back</button>
             <button type="button" onclick={frCreateSite} disabled={frSiteSaving || !frSiteName.trim()}>
               {frSiteSaving ? 'Creating…' : 'Create site'}
             </button>
-            <button type="button" class="ghost" onclick={() => step = 4}>Skip this step</button>
+            <button type="button" class="ghost" onclick={() => step = 5}>Skip this step</button>
           </div>
 
-        {:else if first_run && step === 4}
+        {:else if first_run && step === 5}
           <div class="panel-heading">
-            <p class="eyebrow">Step 4 of 8</p>
+            <p class="eyebrow">Step 5 of 10</p>
             <h3>Store a device credential</h3>
             {#if frSiteCreated}
               <p class="muted">Site <strong>{frSiteCreated.name}</strong> created. Now store a credential alias. The username and password are encrypted in the local vault and never exposed in the API or UI.</p>
@@ -1171,16 +1281,49 @@
             </div>
           </div>
           <div class="wizard-actions">
-            <button type="button" class="ghost" onclick={() => step = 3}>Back</button>
+            <button type="button" class="ghost" onclick={() => step = 4}>Back</button>
             <button type="button" onclick={frCreateCredential} disabled={frCredSaving || !frCredAlias.trim() || !frCredUser.trim() || !frCredPass}>
               {frCredSaving ? 'Saving…' : 'Save credential'}
             </button>
-            <button type="button" class="ghost" onclick={() => step = 5}>Skip this step</button>
+            <button type="button" class="ghost" onclick={() => step = 6}>Skip this step</button>
+          </div>
+
+        {:else if first_run && step === 6}
+          <div class="panel-heading">
+            <p class="eyebrow">Step 6 of 10</p>
+            <h3>Select your vendors</h3>
+            <p class="muted">
+              Choose which network vendors are in your environment. Bonsai will enable the matching
+              syslog patterns, gNMI path profiles, and SNMP OID patterns from the bundled defaults.
+            </p>
+          </div>
+          <div class="vendor-grid">
+            {#each VENDOR_DEFAULTS as vd}
+              <label class="vendor-option" class:selected={frSelectedVendors.includes(vd.value)}>
+                <input type="checkbox" checked={frSelectedVendors.includes(vd.value)} onchange={() => frToggleVendor(vd.value)} />
+                <strong>{vd.label}</strong>
+                <span class="muted small">{vd.patterns.length} pattern set{vd.patterns.length !== 1 ? 's' : ''}</span>
+              </label>
+            {/each}
+          </div>
+          {#if frVendorDone}
+            <p class="success-msg">Vendor defaults loaded. Proceed to add your first device.</p>
+          {/if}
+          <div class="wizard-actions">
+            <button type="button" class="ghost" onclick={() => step = 5}>Back</button>
+            {#if frVendorDone}
+              <button type="button" onclick={() => step = 7}>Add first device</button>
+            {:else}
+              <button type="button" onclick={frLoadVendorDefaults} disabled={frVendorLoading}>
+                {frVendorLoading ? 'Loading…' : frSelectedVendors.length ? 'Load defaults & continue' : 'Skip — add device'}
+              </button>
+            {/if}
+            <button type="button" class="ghost" onclick={() => step = 7}>Skip</button>
           </div>
 
         {:else if step === 1 + stepOffset}
           <div class="panel-heading">
-            <p class="eyebrow">{first_run ? 'Step 5 of 8' : 'Step 1'}</p>
+            <p class="eyebrow">{first_run ? 'Step 7 of 10' : 'Step 1'}</p>
             <h3>{editingDeviceAddress ? 'Review address and credentials' : 'Address and credentials'}</h3>
             <p class="muted">Vault aliases are preferred. Env vars remain available for lab compatibility, but secrets never enter the registry JSON.</p>
           </div>
@@ -1314,7 +1457,7 @@
           </div>
         {:else if step === 2 + stepOffset}
           <div class="panel-heading">
-            <p class="eyebrow">{first_run ? 'Step 6 of 8' : 'Step 2'}</p>
+            <p class="eyebrow">{first_run ? 'Step 8 of 10' : 'Step 2'}</p>
             <h3>Discovery report</h3>
             <p class="muted">Bonsai calls gNMI Capabilities with the chosen credential alias or env vars, then ranks path profiles for this role.</p>
           </div>
@@ -1366,7 +1509,7 @@
           {/if}
         {:else if step === 3 + stepOffset}
           <div class="panel-heading">
-            <p class="eyebrow">{first_run ? 'Step 7 of 8' : 'Step 3'}</p>
+            <p class="eyebrow">{first_run ? 'Step 9 of 10' : 'Step 3'}</p>
             <h3>Profile and path selection</h3>
             <p class="muted">Required paths stay armed. Optional paths can be removed if the lab image advertises them but you do not want that stream yet.</p>
           </div>
@@ -1557,7 +1700,7 @@
           {/if}
         {:else}
           <div class="panel-heading">
-            <p class="eyebrow">{first_run ? 'Step 8 of 8' : 'Step 4'}</p>
+            <p class="eyebrow">{first_run ? 'Step 10 of 10' : 'Step 4'}</p>
             <h3>Confirm subscriber plan</h3>
             <p class="muted">Saving writes the registry entry and selected paths, then the runtime subscriber manager starts or restarts the device.</p>
           </div>

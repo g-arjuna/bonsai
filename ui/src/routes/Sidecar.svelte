@@ -5,12 +5,58 @@
   let loading = $state(true);
   let error = $state('');
   let interval;
+  let activeTab = $state('status');
+
+  // D4-9 T4: Rules visibility
+  let rulesData = $state(null);
+  let rulesLoading = $state(false);
+  let rulesFilter = $state('');
+  let togglingRule = $state('');
 
   onMount(() => {
     loadStatus();
     interval = setInterval(loadStatus, 8000);
   });
   onDestroy(() => clearInterval(interval));
+
+  async function loadRules() {
+    rulesLoading = true;
+    try {
+      const r = await fetch('/api/sidecar/rules');
+      if (!r.ok) throw new Error(await r.text());
+      rulesData = await r.json();
+    } catch (e) {
+      error = e.message;
+    } finally {
+      rulesLoading = false;
+    }
+  }
+
+  async function toggleRule(ruleId) {
+    togglingRule = ruleId;
+    try {
+      const r = await fetch(`/api/sidecar/rules/${encodeURIComponent(ruleId)}/toggle`, { method: 'POST' });
+      if (!r.ok) throw new Error(await r.text());
+      await loadRules();
+    } catch (e) {
+      error = e.message;
+    } finally {
+      togglingRule = '';
+    }
+  }
+
+  function switchTab(tab) {
+    activeTab = tab;
+    if (tab === 'rules' && !rulesData) loadRules();
+  }
+
+  let filteredRules = $derived(
+    rulesData?.rules
+      ? (rulesFilter.trim()
+          ? rulesData.rules.filter(r => r.rule_id.includes(rulesFilter) || r.sidecar_name.includes(rulesFilter))
+          : rulesData.rules)
+      : []
+  );
 
   async function loadStatus() {
     try {
@@ -49,10 +95,49 @@
       <p class="eyebrow">ML / Detection Engine</p>
       <h2>Sidecars</h2>
     </div>
-    <button class="ghost" onclick={loadStatus}>Refresh</button>
+    <button class="ghost" onclick={() => activeTab === 'rules' ? loadRules() : loadStatus()}>Refresh</button>
   </div>
 
-  {#if loading}
+  <div class="tabs">
+    <button class="tab" class:active={activeTab === 'status'} onclick={() => switchTab('status')}>Status</button>
+    <button class="tab" class:active={activeTab === 'rules'} onclick={() => switchTab('rules')}>Rules</button>
+  </div>
+
+  {#if activeTab === 'rules'}
+    {#if rulesLoading}
+      <p class="muted">Loading rules…</p>
+    {:else if !rulesData?.rules?.length}
+      <div class="empty-state">
+        <p>No sidecar rules found.</p>
+        <p class="muted small">Rules appear once a sidecar registers with its capabilities list.</p>
+      </div>
+    {:else}
+      <div class="rules-toolbar">
+        <input bind:value={rulesFilter} placeholder="Filter by rule ID or sidecar…" class="rules-filter" />
+        <span class="muted" style="font-size:12px;">{filteredRules.length} / {rulesData.rules.length} rules</span>
+      </div>
+      <div class="rules-list">
+        {#each filteredRules as rule}
+          <div class="rule-row" class:disabled={!rule.enabled}>
+            <div class="rule-info">
+              <span class="rule-id">{rule.rule_id}</span>
+              <span class="rule-sidecar muted">{rule.sidecar_name} · {rule.sidecar_kind}</span>
+            </div>
+            <button
+              class="toggle-btn"
+              class:on={rule.enabled}
+              disabled={togglingRule === rule.rule_id}
+              onclick={() => toggleRule(rule.rule_id)}
+              title={rule.enabled ? 'Disable rule' : 'Enable rule'}
+            >
+              {rule.enabled ? '● Enabled' : '○ Disabled'}
+            </button>
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+  {:else if loading}
     <p class="muted">Loading sidecar status…</p>
   {:else if error}
     <p class="error-msg">{error}</p>
@@ -157,4 +242,29 @@
 
   button.ghost { padding: 5px 12px; background: none; border: 1px solid var(--border-subtle); border-radius: 4px; color: var(--text-secondary); cursor: pointer; font-size: 12px; }
   button.ghost:hover { border-color: var(--border-default); color: var(--text-primary); }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 8px; }
+  .tab { background: transparent; border: none; color: var(--text-tertiary); font-size: 13px; cursor: pointer; padding: 6px 12px; border-radius: 4px; }
+  .tab:hover { background: rgba(255,255,255,0.05); }
+  .tab.active { color: var(--text-primary); font-weight: 600; background: rgba(255,255,255,0.08); }
+
+  /* Rules tab */
+  .rules-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .rules-filter { flex: 1; max-width: 340px; padding: 6px 10px; font-size: 12px; border: 1px solid var(--border-subtle); border-radius: 4px; background: var(--bg-elevated); color: var(--text-primary); }
+  .rules-list { display: flex; flex-direction: column; gap: 4px; }
+  .rule-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 12px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    transition: opacity 0.15s;
+  }
+  .rule-row.disabled { opacity: 0.5; }
+  .rule-info { display: flex; flex-direction: column; gap: 2px; }
+  .rule-id { font-size: 13px; font-weight: 600; font-family: var(--font-mono); color: var(--text-primary); }
+  .rule-sidecar { font-size: 11px; }
+  .toggle-btn { background: none; border: 1px solid var(--border-subtle); border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 11px; color: var(--text-tertiary); }
+  .toggle-btn.on { color: var(--state-healthy, #22c55e); border-color: rgba(34,197,94,0.3); }
+  .toggle-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

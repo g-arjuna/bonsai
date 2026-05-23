@@ -851,6 +851,88 @@ pub(super) struct SidecarStatusEntry {
     pub health_reachable: bool,
 }
 
+// ── D4-9 T4: Sidecar rules visibility ─────────────────────────────────────
+
+#[derive(Serialize)]
+pub(super) struct SidecarRulesResponse {
+    pub rules: Vec<SidecarRuleEntry>,
+}
+
+#[derive(Serialize)]
+pub(super) struct SidecarRuleEntry {
+    pub rule_id: String,
+    pub sidecar_name: String,
+    pub sidecar_kind: String,
+    pub enabled: bool,
+}
+
+/// GET /api/sidecar/rules — list all rule_ids advertised by registered sidecars.
+/// Each rule_id comes from the `capabilities` field set at RegisterSidecar.
+/// The `enabled` flag reads from a ConfigItem with id=`sidecar-rule:{rule_id}`;
+/// if no ConfigItem exists, the rule is considered enabled by default.
+pub(super) async fn sidecar_rules_handler(
+    State(state): State<AppState>,
+) -> Result<Json<SidecarRulesResponse>, (StatusCode, String)> {
+    let snapshots = state.sidecar_registry.snapshot().await;
+    // Load disable-list from ConfigItem DB
+    let disabled_items = state
+        .store
+        .list_config_items(Some("sidecar_rule_toggle".to_string()))
+        .await
+        .unwrap_or_default();
+    let disabled_set: std::collections::HashSet<String> = disabled_items
+        .iter()
+        .filter(|ci| !ci.enabled)
+        .map(|ci| ci.id.clone())
+        .collect();
+
+    let mut rules = Vec::new();
+    for snap in &snapshots {
+        for cap in &snap.entry.capabilities {
+            let toggle_id = format!("sidecar-rule:{}", cap);
+            rules.push(SidecarRuleEntry {
+                rule_id: cap.clone(),
+                sidecar_name: snap.entry.name.clone(),
+                sidecar_kind: snap.entry.kind.clone(),
+                enabled: !disabled_set.contains(&toggle_id),
+            });
+        }
+    }
+    Ok(Json(SidecarRulesResponse { rules }))
+}
+
+/// POST /api/sidecar/rules/{rule_id}/toggle — flip the enabled state.
+/// Persists a ConfigItem with config_class=sidecar_rule_toggle.
+pub(super) async fn sidecar_rule_toggle_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(rule_id): axum::extract::Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let toggle_id = format!("sidecar-rule:{}", rule_id);
+    let existing = state
+        .store
+        .list_config_items(Some("sidecar_rule_toggle".to_string()))
+        .await
+        .unwrap_or_default();
+    let current = existing.iter().find(|ci| ci.id == toggle_id);
+    let new_enabled = current.map(|ci| !ci.enabled).unwrap_or(false); // first toggle disables
+    let item = crate::graph::ConfigItemRecord {
+        id: toggle_id,
+        config_class: "sidecar_rule_toggle".to_string(),
+        vendor: String::new(),
+        name: rule_id,
+        version: String::new(),
+        content_json: "{}".to_string(),
+        enabled: new_enabled,
+        created_by: "ui".to_string(),
+    };
+    state
+        .store
+        .upsert_config_item(item)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+}
+
 pub(super) async fn sidecar_status_handler(
     State(state): State<AppState>,
 ) -> Json<SidecarStatusResponse> {

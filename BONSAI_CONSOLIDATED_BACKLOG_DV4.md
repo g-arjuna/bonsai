@@ -400,7 +400,7 @@ There is also no UI indicator of graph health — operators have no visibility i
 - Playbooks: reload on PATCH; `PlaybookLibrary.load_dir()` in `src/playbook.rs` becomes a DB-backed call.
 - gNMI path profiles: complex (subscription restart needed) — flag "apply on next device reconnect" and log notice.
 
-**T4 — UI pages for each config class**
+**T4 — UI pages for each config class** ✅ batch18
 - Existing `Profiles.svelte` (16KB) — audit what it currently covers, extend for gNMI path profiles.
 - New `SynthesizerRules.svelte`: list/edit detection rules, enable/disable per rule, test rule against historical detection events.
 - Syslog pattern manager already planned in D4-1 T7 (`Syslog.svelte`).
@@ -412,7 +412,7 @@ There is also no UI indicator of graph health — operators have no visibility i
 - Everything else managed via UI + DB.
 - Update `bonsai.toml.example` to reflect the minimal config and add comments pointing to UI for further configuration.
 
-**T6 — Blank-boot wizard**
+**T6 — Blank-boot wizard** ✅ batch18
 - On first boot with empty DB + no managed devices: show onboarding wizard flow:
   1. Set vault passphrase.
   2. Choose resource profile.
@@ -498,7 +498,7 @@ There is also no UI indicator of graph health — operators have no visibility i
 - When `run_core && run_collector` (mode=all): auto-register local in-process collector with well-known ID at startup rather than requiring external gRPC registration.
 - After fix: `/api/collectors` returns the in-process collector entry. Receiver badges on Collectors card become functional.
 
-**T4 — Rules visibility + hot-reload from UI**
+**T4 — Rules visibility + hot-reload from UI** ✅ batch18
 - `GET /api/sidecar/rules` → list loaded detection rules: `rule_id`, enabled, description, last_fired_at_ns, fires_today.
 - `PATCH /api/sidecar/rules/{id}` → enable/disable without sidecar restart (hot-reload via IPC or signal).
 - UI: rule list panel in the sidecar card in Collectors.
@@ -775,12 +775,12 @@ Over time, `DetectionEvent` nodes, `AppFlow` nodes from heavy flow sources, and 
 - `POST /api/remediations/{id}/verify` endpoint → executes verify_graph Cypher → returns `{passed: bool, details: string}`.
 - Surface verification result in Approvals UI: green "Verified healed" or red "Verification failed — fault may still be active."
 
-**T4 — Rejection path test**
+**T4 — Rejection path test** ✅ batch18
 - Test operator rejecting a `RemediationProposal`.
 - Verify: `RemediationProposal.state = rejected`, zero device commands dispatched, audit log entry created with operator identity + timestamp.
 - Test: partial approval workflow — operator edits proposal steps before approving (if this capability is intended).
 
-**T5 — Playbook library gap analysis**
+**T5 — Playbook library gap analysis** ✅ batch18
 - Audit the 9 existing playbooks against common detection rule IDs in `config/synthesizer_rules/*.yaml`.
 - For each detection rule that fires in S-53 lab scenario: verify a matching playbook exists.
 - Document missing playbooks as items: `ospf_neighbor_down`, `isis_adjacency_down`, `config_caused_fault` recovery, `flow_exporter_silent` recovery.
@@ -991,7 +991,7 @@ Key ⬜ (never run) and ⚠️ (partial) items from the full checklist:
   - Summarises pass/fail to stdout and writes `test-results/run-{timestamp}/summary.md`.
 - This replaces manual note-taking and enables CI-like test runs.
 
-**T4 — Live UI smoke test coverage (S-51)**
+**T4 — Live UI smoke test coverage (S-51)** ✅ batch18
 - S-51 is ⬜ "manual — requires browser." Write a Playwright smoke test instead:
   - Opens `http://localhost:3000`.
   - Navigates to each route in NAV array (Live, Incidents, Explorer, Collectors, Integrations, Settings).
