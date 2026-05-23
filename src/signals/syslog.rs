@@ -707,6 +707,52 @@ impl SyslogFactExtractor {
         Self { patterns }
     }
 
+    /// Load patterns from in-memory YAML strings (typically from ConfigItem DB).
+    /// Each entry is (name, yaml_content). Falls back to `load_from_dir` if empty.
+    pub fn load_from_yaml_strings(items: &[(String, String)], fallback_dir: &str) -> Self {
+        if items.is_empty() {
+            return Self::load_from_dir(fallback_dir);
+        }
+        let mut patterns = Vec::new();
+        for (name, raw) in items {
+            let Ok(catalog) = serde_yaml::from_str::<SyslogPatternCatalog>(raw) else {
+                warn!(name = %name, "skipping invalid syslog pattern from DB");
+                continue;
+            };
+            for fact in catalog.facts {
+                if fact.fact_type.trim().is_empty() || fact.regex.trim().is_empty() {
+                    continue;
+                }
+                let regex = match Regex::new(&fact.regex) {
+                    Ok(regex) => regex,
+                    Err(error) => {
+                        warn!(
+                            name = %name,
+                            fact_type = %fact.fact_type,
+                            %error,
+                            "invalid syslog fact regex from DB"
+                        );
+                        continue;
+                    }
+                };
+                let category = if fact.category.trim().is_empty() {
+                    None
+                } else {
+                    SyslogCategory::from_str(&fact.category)
+                };
+                patterns.push(CompiledSyslogFactPattern {
+                    vendor: catalog.vendor.to_ascii_lowercase(),
+                    fact_type: fact.fact_type,
+                    category,
+                    regex,
+                    field_schema: fact.field_schema,
+                });
+            }
+        }
+        info!(source = "db", count = patterns.len(), "loaded syslog fact patterns");
+        Self { patterns }
+    }
+
     fn extract(&self, event: &SyslogEvent, vendor: &str) -> Vec<SyslogFact> {
         let vendor = vendor.to_ascii_lowercase();
         self.patterns

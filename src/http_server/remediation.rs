@@ -1445,10 +1445,29 @@ pub(super) async fn list_config_items_handler(
 }
 
 /// D4-7 T1: POST /api/config-items — upsert a single ConfigItem.
+/// Security: validates id length, config_class allowlist, and content_json size cap.
+const MAX_CONFIG_ITEM_CONTENT_BYTES: usize = 512 * 1024; // 512 KB
+const ALLOWED_CONFIG_CLASSES: &[&str] = &[
+    "syslog_pattern", "snmp_oid_pattern", "gnmi_path_profile", "synthesizer_rule",
+    "vendor_state_mapping", "gnmi_known_issues", "playbook", "runtime_config",
+    "api_key", "user", "jwt_revoked", "jwt_secret", "app_config",
+];
+
 pub(super) async fn upsert_config_item_handler(
     State(state): State<AppState>,
     Json(item): Json<crate::graph::ConfigItemRecord>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    if item.id.is_empty() || item.id.len() > 256 {
+        return Err((StatusCode::BAD_REQUEST, "id must be 1–256 characters".into()));
+    }
+    if !ALLOWED_CONFIG_CLASSES.contains(&item.config_class.as_str()) {
+        return Err((StatusCode::BAD_REQUEST, format!("disallowed config_class: {}", item.config_class)));
+    }
+    if item.content_json.len() > MAX_CONFIG_ITEM_CONTENT_BYTES {
+        return Err((StatusCode::PAYLOAD_TOO_LARGE, format!(
+            "content_json exceeds {} byte limit", MAX_CONFIG_ITEM_CONTENT_BYTES
+        )));
+    }
     state
         .store
         .upsert_config_item(item)

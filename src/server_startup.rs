@@ -400,22 +400,52 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     let auto_investigate = cfg.ai.auto_investigate_unmatched
         && std::env::var(&cfg.ai.api_key_env).is_ok();
 
-    // D4-7 T3: Hot-reload watch channels for syslog and SNMP OID pattern extractors.
-    let init_syslog_extractor = std::sync::Arc::new(
-        bonsai::signals::syslog::SyslogFactExtractor::load_from_dir(
-            &cfg.layered_ingestion.syslog_patterns_path,
-        ),
-    );
+    // D4-7 T5: Run YAML→ConfigItem migration synchronously BEFORE loading patterns,
+    // so DB-first loaders see the migrated data on first boot.
+    if let Some(Store::Core(ref core_store)) = store {
+        match core_store.migrate_yaml_config("config").await {
+            Ok(n) if n > 0 => info!(count = n, "config YAML migration complete"),
+            Ok(_) => {}
+            Err(e) => warn!(error = %e, "config YAML migration failed (non-fatal, will use disk fallback)"),
+        }
+    }
+
+    // D4-7 T5: Restore all runtime config overrides from DB (streaming, retention, ai, etc.).
+    if let Some(Store::Core(ref core_store)) = store {
+        let n = bonsai::http_server::settings::apply_runtime_overrides_from_db(core_store, &mut cfg).await;
+        if n > 0 {
+            info!(count = n, "applied runtime config overrides from DB");
+        }
+    }
+
+    // D4-7 T5: Load syslog/SNMP patterns from ConfigItem DB with disk fallback.
+    let syslog_pattern_dir = cfg.layered_ingestion.syslog_patterns_path.clone();
+    let snmp_oid_dir = cfg.signals.snmp.oid_pattern_dir
+        .clone()
+        .unwrap_or_else(|| "config/snmp_oid_patterns".to_string());
+
+    let init_syslog_extractor = if let Some(Store::Core(ref core_store)) = store {
+        let items = core_store.load_config_yaml_by_class("syslog_pattern").await.unwrap_or_default();
+        std::sync::Arc::new(bonsai::signals::syslog::SyslogFactExtractor::load_from_yaml_strings(
+            &items, &syslog_pattern_dir,
+        ))
+    } else {
+        std::sync::Arc::new(bonsai::signals::syslog::SyslogFactExtractor::load_from_dir(
+            &syslog_pattern_dir,
+        ))
+    };
     let (syslog_pattern_tx, syslog_pattern_rx) =
         tokio::sync::watch::channel(std::sync::Arc::clone(&init_syslog_extractor));
     let syslog_pattern_tx = std::sync::Arc::new(syslog_pattern_tx);
 
-    let snmp_oid_dir = cfg.signals.snmp.oid_pattern_dir
-        .clone()
-        .unwrap_or_else(|| "config/snmp_oid_patterns".to_string());
-    let init_snmp_extractor = std::sync::Arc::new(
-        bonsai::signals::snmp::SnmpFactExtractor::load_from_dir(&snmp_oid_dir),
-    );
+    let init_snmp_extractor = if let Some(Store::Core(ref core_store)) = store {
+        let items = core_store.load_config_yaml_by_class("snmp_oid_pattern").await.unwrap_or_default();
+        std::sync::Arc::new(bonsai::signals::snmp::SnmpFactExtractor::load_from_yaml_strings(
+            &items, &snmp_oid_dir,
+        ))
+    } else {
+        std::sync::Arc::new(bonsai::signals::snmp::SnmpFactExtractor::load_from_dir(&snmp_oid_dir))
+    };
     let (snmp_pattern_tx, snmp_pattern_rx) =
         tokio::sync::watch::channel(std::sync::Arc::clone(&init_snmp_extractor));
     let snmp_pattern_tx = std::sync::Arc::new(snmp_pattern_tx);
@@ -921,17 +951,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         }
     }
 
-    // D4-7 T2: Boot-time YAML → ConfigItem migration (idempotent).
-    if let Some(Store::Core(ref core_store)) = store {
-        let store_clone = core_store.clone();
-        tokio::spawn(async move {
-            match store_clone.migrate_yaml_config("config").await {
-                Ok(n) if n > 0 => info!(count = n, "config YAML migration complete"),
-                Ok(_) => {}
-                Err(e) => warn!(error = %e, "config YAML migration failed (non-fatal)"),
-            }
-        });
-    }
+    // (D4-7 T2 migration now runs synchronously before pattern loading — see above.)
 
     // Wire the graph event channel into the collector manager so that
     // collector connect/disconnect events appear on the SSE stream.
@@ -1310,9 +1330,13 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 .expect("change detection runtime should exist in core mode");
             let collector_manager_for_http = collector_manager.clone();
             let catalogue_dir = "config/path_profiles".to_string();
-            let catalogue = std::sync::Arc::new(tokio::sync::RwLock::new(
-                catalogue::load_catalogue(std::path::Path::new(&catalogue_dir)),
-            ));
+            let catalogue_state = if let Some(Store::Core(ref cs)) = store {
+                let items = cs.load_config_yaml_by_class("gnmi_path_profile").await.unwrap_or_default();
+                catalogue::load_catalogue_from_yaml_strings(&items, std::path::Path::new(&catalogue_dir))
+            } else {
+                catalogue::load_catalogue(std::path::Path::new(&catalogue_dir))
+            };
+            let catalogue = std::sync::Arc::new(tokio::sync::RwLock::new(catalogue_state));
             let runtime_dir = "runtime".to_string();
 
             // D4-3 T7: Enforce runtime/ directory permissions (mode 700)
@@ -1476,6 +1500,12 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             };
 
             let bus_for_http = std::sync::Arc::clone(&bus);
+            
+            // Initialize security module with selective feature enablement
+            if let Err(e) = bonsai::security::initialize_security(cfg.security.clone()).await {
+                error!(error = %e, "failed to initialize security module");
+            }
+            
             http_task = Some(tokio::spawn(async move {
                 let router = bonsai::http_server::router(
                         http_store,

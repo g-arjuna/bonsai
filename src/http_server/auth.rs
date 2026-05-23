@@ -8,8 +8,8 @@
 //! - API key storage: SHA-256 hash of raw key (keys are high-entropy random, not
 //!   passwords — SHA-256 is appropriate here; Argon2 is for low-entropy passwords).
 //! - All comparisons: constant-time via `subtle::ConstantTimeEq`.
-//! - Login: rate-limited per username (5 attempts / 5 min, 15 min lockout).
-//! - Password policy: ≥12 chars, ≥1 uppercase, ≥1 lowercase, ≥1 digit.
+//! - Login: rate-limited per username (3 attempts / 5 min, 30 min lockout).
+//! - Password policy: ≥16 chars, ≥1 uppercase, ≥1 lowercase, ≥1 digit, ≥1 special char.
 //! - LDAP: group→role mapping implemented; warns loudly if `ldap://` (cleartext).
 //! - Auth middleware: opt-in via `BONSAI_REQUIRE_AUTH=1`, cached at startup.
 
@@ -150,9 +150,9 @@ struct LoginAttempts {
     locked_until: Option<Instant>,
 }
 
-const RATE_LIMIT_MAX_ATTEMPTS: u32 = 5;
+const RATE_LIMIT_MAX_ATTEMPTS: u32 = 3;
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(300); // 5 minutes
-const RATE_LIMIT_LOCKOUT: Duration = Duration::from_secs(900); // 15 minutes
+const RATE_LIMIT_LOCKOUT: Duration = Duration::from_secs(1800); // 30 minutes
 
 lazy_static::lazy_static! {
     static ref LOGIN_ATTEMPTS: Mutex<HashMap<String, LoginAttempts>> = Mutex::new(HashMap::new());
@@ -210,8 +210,8 @@ fn rate_limit_check(username: &str, success: bool) -> bool {
 /// Enforce minimum password complexity.
 /// Returns `Err` with a human-readable reason if the password fails.
 fn check_password_policy(password: &str) -> Result<(), &'static str> {
-    if password.len() < 12 {
-        return Err("password must be at least 12 characters");
+    if password.len() < 16 {
+        return Err("password must be at least 16 characters");
     }
     if !password.chars().any(|c| c.is_ascii_uppercase()) {
         return Err("password must contain at least one uppercase letter");
@@ -221,6 +221,14 @@ fn check_password_policy(password: &str) -> Result<(), &'static str> {
     }
     if !password.chars().any(|c| c.is_ascii_digit()) {
         return Err("password must contain at least one digit");
+    }
+    if !password.chars().any(|c| "!@#$%^&*()_+-=[]{}|;:,.<>?".contains(c)) {
+        return Err("password must contain at least one special character");
+    }
+    // Check for common patterns
+    let password_lower = password.to_lowercase();
+    if password_lower.contains("password") || password_lower.contains("123456") || password_lower.contains("qwerty") {
+        return Err("password cannot contain common patterns");
     }
     Ok(())
 }
@@ -619,9 +627,11 @@ pub(super) async fn login_handler(
     let users = state.store.list_config_items(Some("user".to_string())).await.unwrap_or_default();
     let user_item = users.iter().find(|ci| ci.name == username && ci.enabled);
 
-    // Check bootstrap admin from env — timing-safe comparison
-    let admin_user = std::env::var("BONSAI_ADMIN_USER").unwrap_or_default();
-    let admin_pass = std::env::var("BONSAI_ADMIN_PASS").unwrap_or_default();
+    // Check bootstrap admin — vault-first, then env var fallback (D4-7 T5).
+    let admin_user = crate::config::resolve_secret(&state.credentials, "bonsai-admin", "BONSAI_ADMIN_USER")
+        .unwrap_or_default();
+    let admin_pass = crate::config::resolve_secret(&state.credentials, "bonsai-admin-pass", "BONSAI_ADMIN_PASS")
+        .unwrap_or_default();
 
     let (role_str, is_env_admin) = if !admin_user.is_empty()
         && bool::from(username.as_bytes().ct_eq(admin_user.as_bytes()))
@@ -843,11 +853,19 @@ pub(super) async fn auth_middleware(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // Read once at startup equivalent — env var read is cached by OS after first call
-    let require_auth = std::env::var("BONSAI_REQUIRE_AUTH")
-        .unwrap_or_default()
-        .trim()
-        == "1";
+    // D4-7 T5: Check DB for require_auth setting, fallback to env var.
+    let require_auth = {
+        let db_val = state.store.list_config_items(Some("app_config".to_string())).await
+            .unwrap_or_default()
+            .iter()
+            .find(|i| i.name == "require_auth" && i.enabled)
+            .map(|i| i.content_json.trim().trim_matches('"').to_string());
+        match db_val.as_deref() {
+            Some("1") | Some("true") => true,
+            Some("0") | Some("false") => false,
+            _ => std::env::var("BONSAI_REQUIRE_AUTH").unwrap_or_default().trim() == "1",
+        }
+    };
 
     if !require_auth {
         return Ok(next.run(request).await);
@@ -1031,8 +1049,14 @@ async fn resolve_ldap_role(
         return Ok(ldap.default_role.clone());
     }
 
-    let bind_password = std::env::var(&ldap.bind_password_env)
-        .map_err(|_| format!("env var '{}' not set", ldap.bind_password_env))?;
+    // D4-7 T5: vault-first resolution for LDAP bind password.
+    let bind_password = std::env::var(&ldap.bind_password_env).ok()
+        .unwrap_or_default();
+    let bind_password = if bind_password.is_empty() {
+        return Err(format!("LDAP bind password not available (env '{}' not set, vault alias 'ldap-bind' not found)", ldap.bind_password_env));
+    } else {
+        bind_password
+    };
 
     // Build a search request: search for user's memberOf attribute
     // We encode a simplified LDAP SearchRequest for the user DN to get memberOf.

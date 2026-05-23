@@ -80,6 +80,25 @@ facts:
     regex: "(?i)process (?P<process_name>[A-Za-z0-9._-]+).*(?:restart(?:ed|ing)?|crash(?:ed)?|core|panic|respawn(?:ed)?)"
     field_schema:
       process_name: string
+  - fact_type: service_process
+    category: application
+    regex: "(?i)(?P<service_name>nginx|haproxy|envoy|istio|postgres|redis|kafka|mongodb|elasticsearch|rabbitmq|consul|vault).*?(?P<action>started|stopped|restart|crash|shutdown|exit|segfault|core)"
+    field_schema:
+      service_name: string
+      action: string
+  - fact_type: qos_policy_change
+    category: network
+    regex: "(?i)qos.*?(?P<action>applied|modified|removed|changed|updated).*?(?P<policy_name>[A-Za-z0-9._-]+).*?(?P<interface_name>[A-Za-z0-9./:_-]+)?"
+    field_schema:
+      action: string
+      policy_name: string
+      interface_name: string
+  - fact_type: connection_anomaly
+    category: application
+    regex: "(?i)(?P<service_type>api|database|cache|message_queue|service_mesh).*?(?P<anomaly_type>timeout|connection_refused|high_latency|connection_pool_exhausted|circuit_breaker_open|rate_limit_exceeded)"
+    field_schema:
+      service_type: string
+      anomaly_type: string
   - fact_type: process_restart
     category: software
     regex: "(?i)%SYS-5-RELOAD.*(?P<process_name>(?:Reload|System)).*(?:request|requested)"

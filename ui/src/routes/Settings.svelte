@@ -211,6 +211,80 @@
     showProviderForm = true;
   }
 
+  // ── D4-7 T7: Runtime config sections ─────────────────────────────────────
+  let configSections = $state([]);
+  let configLoading = $state(true);
+  let expandedSection = $state(null);
+  let sectionEdits = $state({});   // section → JSON string being edited
+  let sectionSaving = $state({});  // section → boolean
+
+  async function loadConfigSections() {
+    configLoading = true;
+    try {
+      const r = await fetch('/api/settings');
+      if (!r.ok) throw new Error(await r.text());
+      const data = await r.json();
+      configSections = data.sections || [];
+    } catch (e) {
+      toast(`Failed to load config sections: ${e.message}`, 'error');
+    } finally {
+      configLoading = false;
+    }
+  }
+
+  async function expandSection(section) {
+    if (expandedSection === section) { expandedSection = null; return; }
+    expandedSection = section;
+    try {
+      const r = await fetch(`/api/settings/${section}`);
+      if (!r.ok) throw new Error(await r.text());
+      const data = await r.json();
+      const val = data.value != null ? JSON.stringify(data.value, null, 2) : '';
+      sectionEdits = { ...sectionEdits, [section]: val };
+    } catch (e) {
+      toast(`Failed to load ${section}: ${e.message}`, 'error');
+    }
+  }
+
+  async function saveSection(section) {
+    sectionSaving = { ...sectionSaving, [section]: true };
+    try {
+      const json = sectionEdits[section];
+      if (!json || !json.trim()) throw new Error('Empty body');
+      JSON.parse(json); // validate
+      const r = await fetch(`/api/settings/${section}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: json,
+      });
+      if (!r.ok) throw new Error(await r.text());
+      toast(`Saved ${section}`, 'success');
+      await loadConfigSections();
+    } catch (e) {
+      toast(`Save ${section} failed: ${e.message}`, 'error');
+    } finally {
+      sectionSaving = { ...sectionSaving, [section]: false };
+    }
+  }
+
+  async function exportAllSettings() {
+    try {
+      const r = await fetch('/api/settings/export', { method: 'POST' });
+      if (!r.ok) throw new Error(await r.text());
+      const data = await r.json();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'bonsai-settings-export.json'; a.click();
+      URL.revokeObjectURL(url);
+      toast('Settings exported', 'success');
+    } catch (e) {
+      toast(`Export failed: ${e.message}`, 'error');
+    }
+  }
+
+  onMount(() => { loadConfigSections(); });
+
   function discard() {
     if (!settings) return;
     cfg = {
@@ -414,6 +488,55 @@
       </div>
     {:else if !showProviderForm}
       <p class="muted-hint">No LLM providers configured yet. Click "+ Add Provider" to store one in the vault.</p>
+    {/if}
+  </section>
+
+  <!-- D4-7 T7: Runtime Config Sections -->
+  <section class="section">
+    <div class="section-header-row">
+      <div>
+        <h2>Runtime Configuration</h2>
+        <p class="section-desc">
+          All tunables are stored in the database. Edit a section and click Save to persist.
+          Changes take effect on next boot or hot-reload.
+        </p>
+      </div>
+      <button class="btn-secondary" onclick={exportAllSettings}>Export All</button>
+    </div>
+
+    {#if configLoading}
+      <p class="loading-msg">Loading config sections…</p>
+    {:else}
+      <div class="config-section-list">
+        {#each configSections as s (s.section)}
+          <div class="config-section-row">
+            <button class="config-section-header" onclick={() => expandSection(s.section)}>
+              <span class="config-section-name">{s.section.replace(/_/g, ' ')}</span>
+              <div class="config-section-meta">
+                <span class="badge {s.in_db ? 'healthy' : 'muted'}">{s.in_db ? 'DB' : 'default'}</span>
+                <span class="expand-icon">{expandedSection === s.section ? '▾' : '▸'}</span>
+              </div>
+            </button>
+            {#if expandedSection === s.section}
+              <div class="config-section-body">
+                <textarea
+                  class="config-json-editor"
+                  value={sectionEdits[s.section] || ''}
+                  oninput={(e) => { sectionEdits = { ...sectionEdits, [s.section]: e.target.value }; }}
+                  rows="10"
+                  spellcheck="false"
+                  placeholder="Enter JSON config for this section…"
+                ></textarea>
+                <div class="config-section-actions">
+                  <button class="btn-primary btn-sm" onclick={() => saveSection(s.section)} disabled={sectionSaving[s.section]}>
+                    {sectionSaving[s.section] ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+              </div>
+            {/if}
+          </div>
+        {/each}
+      </div>
     {/if}
   </section>
 </div>
@@ -670,4 +793,26 @@
   .btn-danger { background: #7f1d1d; color: #fca5a5; border: 1px solid #f8717144; border-radius: 6px; padding: 3px 10px; font-size: 0.75rem; cursor: pointer; }
   .btn-danger:hover { background: #991b1b; }
   .muted-hint { color: var(--color-muted, #6b7280); font-size: 0.82rem; }
+
+  /* D4-7 T7: Runtime config sections */
+  .config-section-list { display: flex; flex-direction: column; gap: 2px; }
+  .config-section-row { border: 1px solid var(--color-border, #2d2d44); border-radius: 6px; overflow: hidden; }
+  .config-section-header {
+    display: flex; justify-content: space-between; align-items: center;
+    width: 100%; padding: 10px 14px; background: var(--color-surface, #1a1a2e);
+    border: none; color: inherit; cursor: pointer; font-size: 0.88rem; text-align: left;
+  }
+  .config-section-header:hover { background: #1e2940; }
+  .config-section-name { font-weight: 600; text-transform: capitalize; }
+  .config-section-meta { display: flex; align-items: center; gap: 8px; }
+  .expand-icon { font-size: 0.75rem; color: var(--color-muted, #6b7280); }
+  .badge.healthy { background: #14532d; color: #4ade80; font-size: 0.65rem; font-weight: 700; padding: 1px 6px; border-radius: 4px; }
+  .badge.muted { background: #1f2937; color: #6b7280; font-size: 0.65rem; font-weight: 700; padding: 1px 6px; border-radius: 4px; }
+  .config-section-body { padding: 0 14px 14px; background: var(--color-surface, #1a1a2e); }
+  .config-json-editor {
+    width: 100%; box-sizing: border-box; font-family: monospace; font-size: 0.78rem;
+    background: var(--color-bg, #111827); border: 1px solid var(--color-border, #2d2d44);
+    border-radius: 4px; padding: 8px; color: inherit; resize: vertical; tab-size: 2;
+  }
+  .config-section-actions { display: flex; gap: 8px; margin-top: 8px; }
 </style>

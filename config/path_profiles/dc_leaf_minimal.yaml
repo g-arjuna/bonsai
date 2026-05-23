@@ -169,3 +169,35 @@ paths:
     vendor_only: ["nokia_srl"]
     optional: true
     rationale: "SR Linux NTP peer and clock state."
+  # ─── Service Discovery & Performance Baseline Paths ─────────────────────
+  - path: "interface[name=*]/description"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 30000000000
+    required_models: ["openconfig-interfaces"]
+    optional: true
+    rationale: "Service discovery from interface descriptions (api_gateway, database, etc.)"
+  - path: "interface[name=*]/state/counters/out-octets"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_models: ["openconfig-interfaces"]
+    rationale: "Enhanced utilization tracking for performance baselines"
+  - path: "interface[name=*]/state/counters/in-octets"
+    origin: openconfig
+    mode: SAMPLE
+    sample_interval_ns: 10000000000
+    required_models: ["openconfig-interfaces"]
+    rationale: "Bidirectional utilization for comprehensive baselines"
+  - path: "system/aaa"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-system"]
+    optional: true
+    rationale: "AAA configuration changes for security posture tracking"
+  - path: "qos"
+    origin: openconfig
+    mode: ON_CHANGE
+    required_models: ["openconfig-qos"]
+    optional: true
+    rationale: "QoS policy changes and queue statistics"

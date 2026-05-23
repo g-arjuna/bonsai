@@ -1669,6 +1669,192 @@ impl GraphStore {
         )
         .context("create HAS_MPLS_LSP rel")?;
 
+        // ─── Performance Baseline Schema (Immediate Win) ────────────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS PerformanceBaseline(\
+                id                    STRING,\
+                device_address        STRING,\
+                metric_type           STRING,\
+                metric_key            STRING,\
+                baseline_mean         DOUBLE,\
+                baseline_stddev       DOUBLE,\
+                baseline_min          DOUBLE,\
+                baseline_max          DOUBLE,\
+                sample_count          INT64,\
+                computed_at_ns        INT64,\
+                lookback_hours        INT32,\
+                confidence_level      DOUBLE,\
+                PRIMARY KEY (id))",
+        )
+        .context("create PerformanceBaseline table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_BASELINE(\
+                FROM Device TO PerformanceBaseline,\
+                updated_at INT64)",
+        )
+        .context("create HAS_BASELINE rel")?;
+
+        // ─── Service Endpoint Schema (Service Mesh Discovery) ─────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS ServiceEndpoint(\
+                id                    STRING,\
+                device_address        STRING,\
+                interface_name        STRING,\
+                service_type          STRING,\
+                service_name          STRING,\
+                endpoint_type         STRING,\
+                connection_count      INT64,\
+                avg_throughput_mbps   DOUBLE,\
+                discovered_via        STRING,\
+                confidence_score      DOUBLE,\
+                updated_at_ns         INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create ServiceEndpoint table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HOSTS_SERVICE(\
+                FROM Device TO ServiceEndpoint,\
+                role STRING,\
+                updated_at INT64)",
+        )
+        .context("create HOSTS_SERVICE rel")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS COMMUNICATES_WITH(\
+                FROM ServiceEndpoint TO ServiceEndpoint,\
+                protocol STRING,\
+                avg_flow_rate_mbps DOUBLE,\
+                connection_count INT64,\
+                updated_at INT64)",
+        )
+        .context("create COMMUNICATES_WITH rel")?;
+
+        // ─── QoS Policy Schema ────────────────────────────────────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS QoSPolicy(\
+                id                    STRING,\
+                device_address        STRING,\
+                policy_name           STRING,\
+                traffic_class         STRING,\
+                dscp_value            INT32,\
+                queue_id              INT32,\
+                min_bandwidth_mbps    DOUBLE,\
+                max_bandwidth_mbps    DOUBLE,\
+                priority_level        INT32,\
+                policy_type           STRING,\
+                updated_at_ns         INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create QoSPolicy table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS APPLIES_QOS(\
+                FROM Interface TO QoSPolicy,\
+                direction STRING,\
+                updated_at INT64)",
+        )
+        .context("create APPLIES_QOS rel")?;
+
+        // ─── Security Posture Schema ───────────────────────────────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS SecurityPosture(\
+                id                    STRING,\
+                device_address        STRING,\
+                aaa_failure_count     INT64,\
+                config_change_count   INT64,\
+                process_crash_count   INT64,\
+                last_auth_failure_ns  INT64,\
+                last_config_change_ns INT64,\
+                risk_score            DOUBLE,\
+                updated_at_ns         INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create SecurityPosture table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_POSTURE(\
+                FROM Device TO SecurityPosture,\
+                updated_at INT64)",
+        )
+        .context("create HAS_POSTURE rel")?;
+
+        // ─── Security Incident Schema ────────────────────────────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS SecurityIncident(\
+                id                    STRING,\
+                incident_type         STRING,\
+                severity              STRING,\
+                title                 STRING,\
+                description           STRING,\
+                source_ip             STRING,\
+                target_device         STRING,\
+                mitre_technique       STRING,\
+                status                STRING,\
+                detected_at_ns        INT64,\
+                resolved_at_ns        INT64,\
+                assigned_to           STRING,\
+                PRIMARY KEY (id))",
+        )
+        .context("create SecurityIncident table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_SECURITY_INCIDENT(\
+                FROM Device TO SecurityIncident,\
+                role STRING,\
+                updated_at INT64)",
+        )
+        .context("create HAS_SECURITY_INCIDENT rel")?;
+
+        // ─── Vulnerability Schema ─────────────────────────────────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS Vulnerability(\
+                id                    STRING,\
+                cve_id                STRING,\
+                title                 STRING,\
+                description           STRING,\
+                severity              STRING,\
+                cvss_score            DOUBLE,\
+                affected_component    STRING,\
+                discovered_at_ns      INT64,\
+                patched_at_ns         INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create Vulnerability table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS VULNERABLE_TO(\
+                FROM Device TO Vulnerability,\
+                affected_version STRING,\
+                patch_available BOOL,\
+                updated_at INT64)",
+        )
+        .context("create VULNERABLE_TO rel")?;
+
+        // ─── Security Policy Schema ───────────────────────────────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS SecurityPolicy(\
+                id                    STRING,\
+                policy_name           STRING,\
+                policy_type           STRING,\
+                description           STRING,\
+                compliance_framework  STRING,\
+                enforcement_status    STRING,\
+                created_at_ns         INT64,\
+                updated_at_ns         INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create SecurityPolicy table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS MITIGATED_BY(\
+                FROM Vulnerability TO SecurityPolicy,\
+                mitigation_type STRING,\
+                effectiveness DOUBLE,\
+                updated_at INT64)",
+        )
+        .context("create MITIGATED_BY rel")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS ENFORCES_POLICY(\
+                FROM Device TO SecurityPolicy,\
+                compliance_status STRING,\
+                last_checked_ns INT64)",
+        )
+        .context("create ENFORCES_POLICY rel")?;
+
         // Migration: add columns used by expanded bootstrap to Device
         let _ = conn.query("ALTER TABLE Device ADD model STRING DEFAULT ''");
         let _ = conn.query("ALTER TABLE Device ADD serial_number STRING DEFAULT ''");
@@ -2431,6 +2617,213 @@ impl GraphStore {
         .context("spawn_blocking panicked")?
     }
 
+    /// Compute and store performance baselines for all devices
+    pub async fn compute_performance_baselines(&self, lookback_hours: i32) -> Result<Vec<PerformanceBaselineRow>> {
+        let db = Arc::clone(&self.db);
+        let lookback = lookback_hours;
+        
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("baseline computation connection")?;
+            
+            // Get all devices with interface data
+            let device_rows = conn
+                .query(
+                    "MATCH (d:Device)-[:HAS_INTERFACE]->(i:Interface) \
+                     WHERE i.in_octets > 0 OR i.out_octets > 0 \
+                     RETURN DISTINCT d.address",
+                )
+                .context("get devices for baseline computation")?;
+            
+            let mut all_baselines = Vec::new();
+            
+            for row in device_rows {
+                let device_address = read_str(&row[0]);
+                
+                // Compute baselines for this device
+                let baselines = crate::graph::algorithms::compute_interface_utilization_baseline(
+                    &conn,
+                    &device_address,
+                    lookback,
+                )?;
+                
+                // Store baselines in graph
+                for baseline in &baselines {
+                    crate::graph::algorithms::store_performance_baseline(&conn, baseline)?;
+                }
+                
+                all_baselines.extend(baselines);
+            }
+            
+            Ok::<_, anyhow::Error>(all_baselines)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    /// Discover service endpoints from interface descriptions
+    pub async fn discover_service_endpoints(&self) -> Result<Vec<crate::service_discovery::ServiceEndpoint>> {
+        let db = Arc::clone(&self.db);
+        
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("service discovery connection")?;
+            
+            // Get all devices with interface descriptions
+            let device_rows = conn
+                .query(
+                    "MATCH (d:Device)-[:HAS_INTERFACE]->(i:Interface) \
+                     WHERE i.description IS NOT NULL AND i.description <> '' \
+                     RETURN DISTINCT d.address",
+                )
+                .context("get devices for service discovery")?;
+            
+            let service_config = crate::service_discovery::ServiceDiscoveryConfig::default();
+            let discovery = crate::service_discovery::ServiceDiscovery::new(service_config);
+            let mut all_endpoints = Vec::new();
+            
+            for row in device_rows {
+                let device_address = read_str(&row[0]);
+                
+                // Discover services from descriptions
+                let endpoints = discovery.discover_from_descriptions(&conn, &device_address)?;
+                
+                // Store endpoints in graph
+                for endpoint in &endpoints {
+                    discovery.store_service_endpoint(&conn, endpoint)?;
+                }
+                
+                all_endpoints.extend(endpoints);
+            }
+            
+            Ok::<_, anyhow::Error>(all_endpoints)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    /// Update security posture for devices based on recent events
+    pub async fn update_security_posture(&self) -> Result<Vec<String>> {
+        let db = Arc::clone(&self.db);
+        
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("security posture connection")?;
+            
+            // Get recent security-related events
+            let cutoff_ns = crate::graph::common::now_ns() - (15 * 60 * 1_000_000_000); // 15 minutes
+            
+            let device_rows = conn
+                .query(
+                    "MATCH (d:Device) \
+                     OPTIONAL MATCH (d)-[:HAS_EVENT]->(e:StateChangeEvent) \
+                     WHERE e.fired_at_ns > $cutoff_ns AND (e.source_type = 'syslog' OR e.source_type = 'snmp') \
+                     RETURN DISTINCT d.address",
+                    vec![("cutoff_ns", Value::Int64(cutoff_ns))],
+                )
+                .context("get devices for security posture")?;
+            
+            let mut updated_devices = Vec::new();
+            
+            for row in device_rows {
+                let device_address = read_str(&row[0]);
+                
+                // Count AAA failures
+                let aaa_failures = conn
+                    .query(
+                        "MATCH (d:Device {address: $device_address})-[:HAS_EVENT]->(e:StateChangeEvent) \
+                         WHERE e.fired_at_ns > $cutoff_ns AND e.source_type = 'syslog' \
+                         AND e.event_type = 'aaa_failure' \
+                         RETURN count(e)",
+                        vec![
+                            ("device_address", Value::String(device_address.clone())),
+                            ("cutoff_ns", Value::Int64(cutoff_ns)),
+                        ],
+                    )
+                    .context("count aaa failures")?
+                    .next()
+                    .map(|r| read_i64(&r[0]))
+                    .unwrap_or(0);
+                
+                // Count config changes
+                let config_changes = conn
+                    .query(
+                        "MATCH (d:Device {address: $device_address})-[:HAS_EVENT]->(e:StateChangeEvent) \
+                         WHERE e.fired_at_ns > $cutoff_ns AND e.source_type = 'syslog' \
+                         AND e.event_type = 'config_change_detail' \
+                         RETURN count(e)",
+                        vec![
+                            ("device_address", Value::String(device_address.clone())),
+                            ("cutoff_ns", Value::Int64(cutoff_ns)),
+                        ],
+                    )
+                    .context("count config changes")?
+                    .next()
+                    .map(|r| read_i64(&r[0]))
+                    .unwrap_or(0);
+                
+                // Count process crashes
+                let process_crashes = conn
+                    .query(
+                        "MATCH (d:Device {address: $device_address})-[:HAS_EVENT]->(e:StateChangeEvent) \
+                         WHERE e.fired_at_ns > $cutoff_ns AND e.source_type = 'syslog' \
+                         AND e.event_type = 'process_restart' \
+                         RETURN count(e)",
+                        vec![
+                            ("device_address", Value::String(device_address.clone())),
+                            ("cutoff_ns", Value::Int64(cutoff_ns)),
+                        ],
+                    )
+                    .context("count process crashes")?
+                    .next()
+                    .map(|r| read_i64(&r[0]))
+                    .unwrap_or(0);
+                
+                // Calculate risk score
+                let risk_score = (aaa_failures as f64 * 0.4) 
+                    + (config_changes as f64 * 0.3) 
+                    + (process_crashes as f64 * 0.3);
+                
+                // Update or create SecurityPosture node
+                let posture_id = format!("posture-{}", device_address);
+                conn.query(
+                    "MERGE (sp:SecurityPosture {id: $posture_id}) \
+                     SET sp.device_address = $device_address, \
+                         sp.aaa_failure_count = $aaa_failures, \
+                         sp.config_change_count = $config_changes, \
+                         sp.process_crash_count = $process_crashes, \
+                         sp.risk_score = $risk_score, \
+                         sp.updated_at_ns = $updated_at_ns",
+                    vec![
+                        ("posture_id", Value::String(posture_id)),
+                        ("device_address", Value::String(device_address.clone())),
+                        ("aaa_failures", Value::Int64(aaa_failures)),
+                        ("config_changes", Value::Int64(config_changes)),
+                        ("process_crashes", Value::Int64(process_crashes)),
+                        ("risk_score", Value::Double(risk_score)),
+                        ("updated_at_ns", Value::Int64(crate::graph::common::now_ns())),
+                    ],
+                )
+                .context("update security posture")?;
+                
+                // Create relationship to device
+                conn.query(
+                    "MATCH (d:Device {address: $device_address}), (sp:SecurityPosture {id: $posture_id}) \
+                     MERGE (d)-[:HAS_POSTURE {updated_at: $updated_at}]->(sp)",
+                    vec![
+                        ("device_address", Value::String(device_address.clone())),
+                        ("posture_id", Value::String(posture_id)),
+                        ("updated_at", Value::Int64(crate::graph::common::now_ns())),
+                    ],
+                )
+                .context("create security posture relationship")?;
+                
+                updated_devices.push(device_address);
+            }
+            
+            Ok::<_, anyhow::Error>(updated_devices)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
     /// Query persisted StateChangeEvent nodes with optional filters.
     pub async fn read_events_history(
         &self,
@@ -2956,6 +3349,22 @@ impl GraphStore {
         })
         .await
         .context("list_config_items task")?
+    }
+
+    /// D4-7 T4: Load raw YAML content strings for a config_class.
+    /// Returns `Vec<(name, yaml_content)>` for enabled items only.
+    /// The content_json field is a JSON-escaped YAML string; this unwraps it.
+    pub async fn load_config_yaml_by_class(&self, config_class: &str) -> Result<Vec<(String, String)>> {
+        let items = self.list_config_items(Some(config_class.to_string())).await?;
+        let mut out = Vec::new();
+        for item in items {
+            if !item.enabled { continue; }
+            // content_json is a JSON string wrapping YAML text (via serde_json::to_string)
+            let yaml: String = serde_json::from_str(&item.content_json)
+                .unwrap_or(item.content_json.clone());
+            out.push((item.name, yaml));
+        }
+        Ok(out)
     }
 
     /// D4-7 T1: Upsert a single ConfigItem (insert or update by id).
@@ -3877,6 +4286,12 @@ fn write_blocking(
             write_env_sensor(conn, update, &component_name, &sensor_type, event_tx, corr_buf),
         TelemetryEvent::OpticsDiagnostics { if_name } =>
             write_optics_diagnostics(conn, update, &if_name),
+        TelemetryEvent::InterfaceDescription { if_name, description } =>
+            write_interface_description(conn, update, &if_name, &description),
+        TelemetryEvent::ServiceEndpoint { if_name, service_type, service_name, confidence } =>
+            write_service_endpoint(conn, update, &if_name, &service_type, &service_name, confidence),
+        TelemetryEvent::QoSPolicyChange { policy_name, action, interface_name } =>
+            write_qos_policy_change(conn, update, &policy_name, &action, interface_name.as_deref()),
         TelemetryEvent::OtlpSpan {
             service_name,
             peer_address,
@@ -5637,6 +6052,21 @@ fn join_syslog_fact(
     }
     if fact.fact_type == "isis_adjacency" {
         return join_isis_fact(conn, update, fact, event_tx, corr_buf);
+    }
+    
+    // Service process syslog facts - create ServiceEndpoint nodes
+    if fact.fact_type == "service_process" {
+        return join_service_process_fact(conn, update, fact);
+    }
+    
+    // QoS policy change syslog facts - create QoSPolicy nodes
+    if fact.fact_type == "qos_policy_change" {
+        return join_qos_policy_fact(conn, update, fact);
+    }
+    
+    // Connection anomaly syslog facts - update ServiceEndpoint health
+    if fact.fact_type == "connection_anomaly" {
+        return join_connection_anomaly_fact(conn, update, fact);
     }
 
     if let Some(peer_address) = fact
@@ -8719,4 +9149,340 @@ mod tests {
             .expect("list should not error");
         assert!(results.is_empty());
     }
+}
+
+// ─── New Telemetry Event Handlers for Immediate Wins ────────────────────────
+
+/// Write interface description for service discovery
+fn write_interface_description(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    if_name: &str,
+    description: &str,
+) -> Result<()> {
+    let now = ts(update.timestamp_ns);
+    
+    // Update Interface node with description
+    conn.query(
+        "MATCH (d:Device {address: $device_address})-[:HAS_INTERFACE]->(i:Interface {name: $if_name}) \
+         SET i.description = $description, i.updated_at_ns = $timestamp_ns",
+        vec![
+            ("device_address", Value::String(update.target.clone())),
+            ("if_name", Value::String(if_name.to_string())),
+            ("description", Value::String(description.to_string())),
+            ("timestamp_ns", Value::Int64(update.timestamp_ns)),
+        ],
+    )
+    .context("update interface description")?;
+    
+    // Trigger service discovery if description contains service indicators
+    if description.to_lowercase().contains("api") 
+        || description.to_lowercase().contains("database")
+        || description.to_lowercase().contains("cache")
+        || description.to_lowercase().contains("gateway")
+        || description.to_lowercase().contains("load")
+        || description.to_lowercase().contains("service")
+    {
+        // Create a state change event for service discovery
+        let _ = write_state_change_event(
+            conn,
+            &update.target,
+            "service_discovery_candidate",
+            &serde_json::json!({
+                "interface": if_name,
+                "description": description,
+                "discovery_method": "interface_description"
+            }),
+            "gNMI",
+            now,
+            update.timestamp_ns,
+            &broadcast::Sender::new(1),
+            &crate::correlation_buffer::CorrelationBuffer::new(45),
+        );
+    }
+    
+    Ok(())
+}
+
+/// Write service endpoint from telemetry
+fn write_service_endpoint(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    if_name: &str,
+    service_type: &str,
+    service_name: &str,
+    confidence: f64,
+) -> Result<()> {
+    let endpoint_id = format!("service-{}-{}-{}", update.target, if_name, service_type);
+    let now = ts(update.timestamp_ns);
+    
+    // Create or update ServiceEndpoint node
+    conn.query(
+        "MERGE (se:ServiceEndpoint {id: $endpoint_id}) \
+         SET se.device_address = $device_address, \
+             se.interface_name = $interface_name, \
+             se.service_type = $service_type, \
+             se.service_name = $service_name, \
+             se.endpoint_type = $endpoint_type, \
+             se.discovered_via = $discovered_via, \
+             se.confidence_score = $confidence_score, \
+             se.updated_at_ns = $updated_at_ns",
+        vec![
+            ("endpoint_id", Value::String(endpoint_id)),
+            ("device_address", Value::String(update.target.clone())),
+            ("interface_name", Value::String(if_name.to_string())),
+            ("service_type", Value::String(service_type.to_string())),
+            ("service_name", Value::String(service_name.to_string())),
+            ("endpoint_type", Value::String("internal".to_string())),
+            ("discovered_via", Value::String("telemetry".to_string())),
+            ("confidence_score", Value::Double(confidence)),
+            ("updated_at_ns", Value::Int64(update.timestamp_ns)),
+        ],
+    )
+    .context("create service endpoint")?;
+    
+    // Create relationship to device
+    conn.query(
+        "MATCH (d:Device {address: $device_address}), (se:ServiceEndpoint {id: $endpoint_id}) \
+         MERGE (d)-[:HOSTS_SERVICE {role: $endpoint_type, updated_at: $updated_at}]->(se)",
+        vec![
+            ("device_address", Value::String(update.target.clone())),
+            ("endpoint_id", Value::String(endpoint_id)),
+            ("endpoint_type", Value::String("internal".to_string())),
+            ("updated_at", Value::Int64(update.timestamp_ns)),
+        ],
+    )
+    .context("create service endpoint relationship")?;
+    
+    Ok(())
+}
+
+/// Write QoS policy change
+fn write_qos_policy_change(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    policy_name: &str,
+    action: &str,
+    interface_name: Option<&str>,
+) -> Result<()> {
+    let policy_id = format!("qos-{}-{}", update.target, policy_name);
+    let now = ts(update.timestamp_ns);
+    
+    // Create or update QoSPolicy node
+    conn.query(
+        "MERGE (qp:QoSPolicy {id: $policy_id}) \
+         SET qp.device_address = $device_address, \
+             qp.policy_name = $policy_name, \
+             qp.policy_type = $policy_type, \
+             qp.updated_at_ns = $updated_at_ns",
+        vec![
+            ("policy_id", Value::String(policy_id)),
+            ("device_address", Value::String(update.target.clone())),
+            ("policy_name", Value::String(policy_name.to_string())),
+            ("policy_type", Value::String("dynamic".to_string())),
+            ("updated_at_ns", Value::Int64(update.timestamp_ns)),
+        ],
+    )
+    .context("create qos policy")?;
+    
+    // If interface is specified, create relationship
+    if let Some(if_name) = interface_name {
+        conn.query(
+            "MATCH (i:Interface {name: $if_name}), (qp:QoSPolicy {id: $policy_id}) \
+             WHERE i.device_address = $device_address \
+             MERGE (i)-[:APPLIES_QOS {direction: $direction, updated_at: $updated_at}]->(qp)",
+            vec![
+                ("if_name", Value::String(if_name.to_string())),
+                ("policy_id", Value::String(policy_id)),
+                ("device_address", Value::String(update.target.clone())),
+                ("direction", Value::String("ingress".to_string())),
+                ("updated_at", Value::Int64(update.timestamp_ns)),
+            ],
+        )
+        .context("create qos interface relationship")?;
+    }
+    
+    Ok(())
+}
+
+// ─── Syslog Fact Join Handlers for Immediate Wins ─────────────────────────────
+
+/// Join service process syslog facts to create ServiceEndpoint nodes
+fn join_service_process_fact(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    fact: &SyslogFact,
+) -> Result<JsonValue> {
+    let service_name = fact.fields.get("service_name").unwrap_or(&"unknown".to_string());
+    let action = fact.fields.get("action").unwrap_or(&"unknown".to_string());
+    
+    // Determine service type from service name
+    let service_type = if service_name.contains("nginx") || service_name.contains("haproxy") || service_name.contains("envoy") {
+        "load_balancer"
+    } else if service_name.contains("postgres") || service_name.contains("mysql") || service_name.contains("mongodb") {
+        "database"
+    } else if service_name.contains("redis") || service_name.contains("memcached") {
+        "cache"
+    } else if service_name.contains("kafka") || service_name.contains("rabbitmq") {
+        "message_queue"
+    } else if service_name.contains("elasticsearch") || service_name.contains("solr") {
+        "search_engine"
+    } else if service_name.contains("istio") || service_name.contains("consul") {
+        "service_mesh"
+    } else {
+        "application_server"
+    };
+    
+    // Create ServiceEndpoint node
+    let endpoint_id = format!("service-{}-{}-{}", update.target, service_name, service_type);
+    
+    conn.query(
+        "MERGE (se:ServiceEndpoint {id: $endpoint_id}) \
+         SET se.device_address = $device_address, \
+             se.service_name = $service_name, \
+             se.service_type = $service_type, \
+             se.endpoint_type = $endpoint_type, \
+             se.discovered_via = $discovered_via, \
+             se.confidence_score = $confidence_score, \
+             se.updated_at_ns = $updated_at_ns",
+        vec![
+            ("endpoint_id", Value::String(endpoint_id)),
+            ("device_address", Value::String(update.target.clone())),
+            ("service_name", Value::String(service_name.clone())),
+            ("service_type", Value::String(service_type.to_string())),
+            ("endpoint_type", Value::String("internal".to_string())),
+            ("discovered_via", Value::String("syslog".to_string())),
+            ("confidence_score", Value::Double(0.8)),
+            ("updated_at_ns", Value::Int64(update.timestamp_ns)),
+        ],
+    )
+    .context("create service endpoint from syslog")?;
+    
+    // Create relationship to device
+    conn.query(
+        "MATCH (d:Device {address: $device_address}), (se:ServiceEndpoint {id: $endpoint_id}) \
+         MERGE (d)-[:HOSTS_SERVICE {role: $endpoint_type, updated_at: $updated_at}]->(se)",
+        vec![
+            ("device_address", Value::String(update.target.clone())),
+            ("endpoint_id", Value::String(endpoint_id)),
+            ("endpoint_type", Value::String("internal".to_string())),
+            ("updated_at", Value::Int64(update.timestamp_ns)),
+        ],
+    )
+    .context("create service endpoint relationship")?;
+    
+    Ok(json!({
+        "status": "joined",
+        "kind": "service_endpoint",
+        "service_name": service_name,
+        "service_type": service_type,
+        "action": action
+    }))
+}
+
+/// Join QoS policy change syslog facts to create QoSPolicy nodes
+fn join_qos_policy_fact(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    fact: &SyslogFact,
+) -> Result<JsonValue> {
+    let policy_name = fact.fields.get("policy_name").unwrap_or(&"unknown".to_string());
+    let action = fact.fields.get("action").unwrap_or(&"unknown".to_string());
+    let interface_name = fact.fields.get("interface_name").cloned();
+    
+    // Create QoSPolicy node
+    let policy_id = format!("qos-{}-{}", update.target, policy_name);
+    
+    conn.query(
+        "MERGE (qp:QoSPolicy {id: $policy_id}) \
+         SET qp.device_address = $device_address, \
+             qp.policy_name = $policy_name, \
+             qp.policy_type = $policy_type, \
+             qp.updated_at_ns = $updated_at_ns",
+        vec![
+            ("policy_id", Value::String(policy_id)),
+            ("device_address", Value::String(update.target.clone())),
+            ("policy_name", Value::String(policy_name.clone())),
+            ("policy_type", Value::String("syslog_triggered".to_string())),
+            ("updated_at_ns", Value::Int64(update.timestamp_ns)),
+        ],
+    )
+    .context("create qos policy from syslog")?;
+    
+    // If interface is specified, create relationship
+    if let Some(if_name) = &interface_name {
+        conn.query(
+            "MATCH (i:Interface {name: $if_name}), (qp:QoSPolicy {id: $policy_id}) \
+             WHERE i.device_address = $device_address \
+             MERGE (i)-[:APPLIES_QOS {direction: $direction, updated_at: $updated_at}]->(qp)",
+            vec![
+                ("if_name", Value::String(if_name.clone())),
+                ("policy_id", Value::String(policy_id)),
+                ("device_address", Value::String(update.target.clone())),
+                ("direction", Value::String("ingress".to_string())),
+                ("updated_at", Value::Int64(update.timestamp_ns)),
+            ],
+        )
+        .context("create qos interface relationship")?;
+    }
+    
+    Ok(json!({
+        "status": "joined",
+        "kind": "qos_policy",
+        "policy_name": policy_name,
+        "action": action,
+        "interface_name": interface_name
+    }))
+}
+
+/// Join connection anomaly syslog facts to update ServiceEndpoint health
+fn join_connection_anomaly_fact(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    fact: &SyslogFact,
+) -> Result<JsonValue> {
+    let service_type = fact.fields.get("service_type").unwrap_or(&"unknown".to_string());
+    let anomaly_type = fact.fields.get("anomaly_type").unwrap_or(&"unknown".to_string());
+    
+    // Look for existing ServiceEndpoint nodes of this type on the device
+    let rows = conn.query(
+        "MATCH (d:Device {address: $device_address})-[:HOSTS_SERVICE]->(se:ServiceEndpoint) \
+         WHERE se.service_type = $service_type \
+         RETURN se.id, se.service_name",
+        vec![
+            ("device_address", Value::String(update.target.clone())),
+            ("service_type", Value::String(service_type.clone())),
+        ],
+    )
+    .context("find service endpoints for anomaly")?;
+    
+    for row in rows {
+        let endpoint_id = read_str(&row[0]);
+        let service_name = read_str(&row[1]);
+        
+        // Update ServiceEndpoint with anomaly information
+        conn.query(
+            "MATCH (se:ServiceEndpoint {id: $endpoint_id}) \
+             SET se.last_anomaly_type = $anomaly_type, \
+                 se.last_anomaly_at_ns = $timestamp_ns, \
+                 se.health_status = $health_status, \
+                 se.updated_at_ns = $updated_at_ns",
+            vec![
+                ("endpoint_id", Value::String(endpoint_id)),
+                ("anomaly_type", Value::String(anomaly_type.clone())),
+                ("timestamp_ns", Value::Int64(update.timestamp_ns)),
+                ("health_status", Value::String("degraded".to_string())),
+                ("updated_at_ns", Value::Int64(update.timestamp_ns)),
+            ],
+        )
+        .context("update service endpoint health")?;
+    }
+    
+    Ok(json!({
+        "status": "joined",
+        "kind": "connection_anomaly",
+        "service_type": service_type,
+        "anomaly_type": anomaly_type,
+        "affected_endpoints": rows.len()
+    }))
 }

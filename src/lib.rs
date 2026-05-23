@@ -20,6 +20,8 @@ pub mod enrichment;
 pub mod event_bus;
 pub mod gnmi_set;
 pub mod graph;
+pub mod service_discovery;
+pub mod security;
 pub mod ha_coordinator;
 pub mod health_emitter;
 pub mod http_server;

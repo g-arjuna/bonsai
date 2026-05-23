@@ -290,6 +290,38 @@ pub fn load_catalogue(base_dir: &Path) -> CatalogueState {
     state
 }
 
+/// Load catalogue profiles from in-memory YAML strings (typically from ConfigItem DB).
+/// Falls back to `load_catalogue(base_dir)` if items is empty.
+/// Plugins are always loaded from disk (they require MANIFEST.yaml + directory structure).
+pub fn load_catalogue_from_yaml_strings(items: &[(String, String)], base_dir: &Path) -> CatalogueState {
+    if items.is_empty() {
+        return load_catalogue(base_dir);
+    }
+    let mut state = CatalogueState::default();
+    for (name, raw) in items {
+        match serde_yaml::from_str::<CatalogueProfile>(raw) {
+            Ok(profile) => {
+                info!(name = %profile.name, "loaded catalogue profile from DB");
+                state.profiles.push(profile);
+            }
+            Err(e) => {
+                warn!(name = %name, error = %e, "skipping invalid catalogue profile from DB");
+                state.load_errors.push(format!("DB:{name}: {e}"));
+            }
+        }
+    }
+    state.profiles.sort_by(|a, b| a.name.cmp(&b.name));
+
+    // Still load plugins from disk — they require directory structure + MANIFEST.yaml
+    let plugins_dir = base_dir.join("plugins");
+    if plugins_dir.exists() {
+        let disk_state = load_catalogue(base_dir);
+        state.plugins = disk_state.plugins;
+    }
+
+    state
+}
+
 fn load_plugin_manifest(path: &Path) -> anyhow::Result<PluginManifest> {
     let raw = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("cannot read MANIFEST.yaml: {e}"))?;

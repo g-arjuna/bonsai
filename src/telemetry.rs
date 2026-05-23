@@ -22,6 +22,10 @@ pub enum TelemetryEvent {
     InterfaceSummary {
         if_name: String,
     },
+    InterfaceDescription {
+        if_name: String,
+        description: String,
+    },
     BfdSessionState {
         if_name: String,
         local_discriminator: String,
@@ -45,6 +49,19 @@ pub enum TelemetryEvent {
         /// Pre-normalized `{"chassis-id", "system-name", "port-id"}` for vendors
         /// whose native format differs from the flat-field shape expected by graph.rs.
         state_value: Option<serde_json::Value>,
+    },
+    /// Service discovery from interface descriptions
+    ServiceEndpoint {
+        if_name: String,
+        service_type: String,
+        service_name: String,
+        confidence: f64,
+    },
+    /// QoS policy changes
+    QoSPolicyChange {
+        policy_name: String,
+        action: String,
+        interface_name: Option<String>,
     },
     /// Interface operational status change (up/down). Emitted as a BonsaiEvent;
     /// the Interface node itself is not updated (oper-status is not a counter).
@@ -215,6 +232,26 @@ impl TelemetryUpdate {
         // interfaces/interface[name=X]/state/counters
         if self.path.contains("interfaces/interface[name=")
             && self.path.ends_with("/state/counters")
+            && let Some(name) = extract_bracketed(&self.path, "interfaces/interface[name=")
+        {
+            return TelemetryEvent::InterfaceStats { if_name: name };
+        }
+
+        // Interface description for service discovery
+        if self.path.contains("interfaces/interface[name=")
+            && self.path.ends_with("/state/description")
+            && let Some(name) = extract_bracketed(&self.path, "interfaces/interface[name=")
+            && let Some(description) = self.value.as_str()
+        {
+            return TelemetryEvent::InterfaceDescription {
+                if_name: name,
+                description: description.to_string(),
+            };
+        }
+
+        // Enhanced interface counters for baseline computation
+        if self.path.contains("interfaces/interface[name=")
+            && (self.path.ends_with("/state/counters/in-octets") || self.path.ends_with("/state/counters/out-octets"))
             && let Some(name) = extract_bracketed(&self.path, "interfaces/interface[name=")
         {
             return TelemetryEvent::InterfaceStats { if_name: name };

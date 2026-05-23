@@ -257,6 +257,27 @@ fn load_known_issues(path: &str) -> Vec<KnownGnmiIssue> {
         .unwrap_or_default()
 }
 
+/// Load gNMI known issues from in-memory YAML strings (from DB ConfigItem).
+/// Falls back to disk file if items is empty.
+pub fn load_known_issues_from_yaml_strings(items: &[(String, String)], fallback_path: &str) -> Vec<KnownGnmiIssue> {
+    if items.is_empty() {
+        return load_known_issues(fallback_path);
+    }
+    let mut issues = Vec::new();
+    for (_name, raw) in items {
+        match serde_yaml::from_str::<Vec<KnownGnmiIssue>>(raw) {
+            Ok(mut parsed) => issues.append(&mut parsed),
+            Err(_) => {
+                // Try single item
+                if let Ok(issue) = serde_yaml::from_str::<KnownGnmiIssue>(raw) {
+                    issues.push(issue);
+                }
+            }
+        }
+    }
+    issues
+}
+
 fn matching_known_issues(
     issues: &[KnownGnmiIssue],
     summary: &CapabilitySummary,

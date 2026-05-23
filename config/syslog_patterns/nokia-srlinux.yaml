@@ -25,7 +25,7 @@ facts:
       new_state: string
   - fact_type: interface_state
     category: custom
-    regex: '(?i)interface (?P<if_name>[A-Za-z0-9./:_-]+).*(?:state|link).*(?P<new_state>up|down|administratively down|errdisabled)'
+    regex: "(?i)interface (?P<if_name>[A-Za-z0-9./:_-]+).*(?:state|link).*(?P<new_state>up|down|administratively down|errdisabled)"
     field_schema:
       if_name: string
       new_state: string
@@ -37,7 +37,7 @@ facts:
       new_state: string
   - fact_type: bfd_session
     category: protocol
-    regex: '(?i)bfd.*(?:session|neighbor).*(?:interface|on) (?P<if_name>[A-Za-z0-9./:_-]+).*(?:state|to|went) (?P<new_state>up|down|admin-down|init|failing)'
+    regex: "(?i)bfd.*(?:session|neighbor).*(?:interface|on) (?P<if_name>[A-Za-z0-9./:_-]+).*(?:state|to|went) (?P<new_state>up|down|admin-down|init|failing)"
     field_schema:
       if_name: string
       new_state: string
@@ -56,25 +56,25 @@ facts:
       new_state: string
   - fact_type: isis_adjacency
     category: protocol
-    regex: '(?i)is-?is.*(?:adjacency|adj).*(?:system-id|router-id|with|peer) (?P<neighbor_id>[A-Fa-f0-9.:]+).*(?:interface|on) (?P<if_name>[A-Za-z0-9./:_-]+).*(?:state|to|went) (?P<new_state>up|down|init|failed)'
+    regex: "(?i)is-?is.*(?:adjacency|adj).*(?:system-id|router-id|with|peer) (?P<neighbor_id>[A-Fa-f0-9.:]+).*(?:interface|on) (?P<if_name>[A-Za-z0-9./:_-]+).*(?:state|to|went) (?P<new_state>up|down|init|failed)"
     field_schema:
       neighbor_id: string
       if_name: string
       new_state: string
   - fact_type: mpls_lsp_state
     category: protocol
-    regex: '(?i)(?:mpls|sr|segment-routing).*(?:lsp|path|tunnel|sr-policy) (?P<lsp_name>[A-Za-z0-9./:_-]+).*(?:state|to|went) (?P<new_state>up|down|active|inactive|degraded)'
+    regex: "(?i)(?:mpls|sr|segment-routing).*(?:lsp|path|tunnel|sr-policy) (?P<lsp_name>[A-Za-z0-9./:_-]+).*(?:state|to|went) (?P<new_state>up|down|active|inactive|degraded)"
     field_schema:
       lsp_name: string
       new_state: string
   - fact_type: process_restart
     category: software
-    regex: '(?i)(?P<process_name>[A-Za-z0-9._-]+).*(?:restart(?:ed|ing)?|crash(?:ed)?|core|panic|respawn(?:ed)?|seg[_ ]?fault)'
+    regex: "(?i)(?P<process_name>[A-Za-z0-9._-]+).*(?:restart(?:ed|ing)?|crash(?:ed)?|core|panic|respawn(?:ed)?|seg[_ ]?fault)"
     field_schema:
       process_name: string
   - fact_type: config_change_detail
     category: auth
-    regex: '(?i)(?:user|operator) (?P<username>[A-Za-z0-9._@-]+).*(?:commit(?:ted)?|applied|saved).*(?:configuration|config)'
+    regex: "(?i)(?:user|operator) (?P<username>[A-Za-z0-9._@-]+).*(?:commit(?:ted)?|applied|saved).*(?:configuration|config)"
     field_schema:
       username: string
   - fact_type: hardware_error
@@ -85,6 +85,25 @@ facts:
       status: string
   - fact_type: aaa_failure
     category: auth
-    regex: '(?i)(?:failed password|login failed|aaa).*?(?:for|user) (?P<username>[A-Za-z0-9._-]+)'
+    regex: "(?i)(?:failed password|login failed|aaa).*?(?:for|user) (?P<username>[A-Za-z0-9._-]+)"
     field_schema:
       username: string
+  - fact_type: service_process
+    category: application
+    regex: "(?i)(?P<service_name>nginx|haproxy|envoy|istio|postgres|redis|kafka|mongodb|elasticsearch|rabbitmq|consul|vault).*?(?P<action>started|stopped|restart|crash|shutdown|exit|segfault|core)"
+    field_schema:
+      service_name: string
+      action: string
+  - fact_type: qos_policy_change
+    category: network
+    regex: "(?i)qos.*?(?P<action>applied|modified|removed|changed|updated).*?(?P<policy_name>[A-Za-z0-9._-]+).*?(?P<interface_name>[A-Za-z0-9./:_-]+)?"
+    field_schema:
+      action: string
+      policy_name: string
+      interface_name: string
+  - fact_type: connection_anomaly
+    category: application
+    regex: "(?i)(?P<service_type>api|database|cache|message_queue|service_mesh).*?(?P<anomaly_type>timeout|connection_refused|high_latency|connection_pool_exhausted|circuit_breaker_open|rate_limit_exceeded)"
+    field_schema:
+      service_type: string
+      anomaly_type: string

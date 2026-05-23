@@ -119,6 +119,161 @@ pub async fn get_receiver_status_handler(
     })
 }
 
+// ── D4-7 T5: DB-backed streaming settings snapshot ──────────────────────────
+
+/// Persisted to ConfigItem DB as `runtime_config:streaming`.
+/// Restored on boot to override TOML defaults.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct StreamingSnapshot {
+    #[serde(default)] pub bmp_enabled: bool,
+    #[serde(default)] pub bmp_addr: String,
+    #[serde(default)] pub bgpls_enabled: bool,
+    #[serde(default)] pub bgpls_addr: String,
+    #[serde(default)] pub pcep_enabled: bool,
+    #[serde(default)] pub pcep_addr: String,
+    #[serde(default)] pub otlp_enabled: bool,
+    #[serde(default)] pub otlp_addr: String,
+    #[serde(default)] pub netflow_enabled: bool,
+    #[serde(default)] pub netflow_addr: String,
+    #[serde(default)] pub sflow_enabled: bool,
+    #[serde(default)] pub sflow_addr: String,
+    #[serde(default)] pub syslog_enabled: bool,
+    #[serde(default)] pub syslog_udp_addr: String,
+    #[serde(default)] pub syslog_tcp_addr: String,
+    #[serde(default)] pub snmp_enabled: bool,
+    #[serde(default)] pub snmp_udp_addr: String,
+}
+
+impl StreamingSnapshot {
+    /// Apply this DB snapshot onto the TOML-based streaming/signals configs.
+    /// DB values override TOML defaults.
+    pub fn apply_to_config(&self, streaming: &mut crate::config::StreamingConfig, signals: &mut crate::config::SignalsConfig) {
+        if !self.bmp_addr.is_empty() {
+            streaming.bmp.enabled = self.bmp_enabled;
+            streaming.bmp.tcp_addr = self.bmp_addr.clone();
+        }
+        if !self.bgpls_addr.is_empty() {
+            streaming.bgp_ls.enabled = self.bgpls_enabled;
+            streaming.bgp_ls.tcp_addr = self.bgpls_addr.clone();
+        }
+        if !self.pcep_addr.is_empty() {
+            streaming.pcep.enabled = self.pcep_enabled;
+            streaming.pcep.tcp_addr = self.pcep_addr.clone();
+        }
+        if !self.otlp_addr.is_empty() {
+            streaming.otlp.enabled = self.otlp_enabled;
+            streaming.otlp.http_addr = self.otlp_addr.clone();
+        }
+        if !self.netflow_addr.is_empty() {
+            streaming.netflow.enabled = self.netflow_enabled;
+            streaming.netflow.udp_addr = self.netflow_addr.clone();
+        }
+        if !self.sflow_addr.is_empty() {
+            streaming.sflow.enabled = self.sflow_enabled;
+            streaming.sflow.udp_addr = self.sflow_addr.clone();
+        }
+        if !self.syslog_udp_addr.is_empty() || !self.syslog_tcp_addr.is_empty() {
+            signals.syslog.enabled = self.syslog_enabled;
+            if !self.syslog_udp_addr.is_empty() {
+                signals.syslog.udp_addr = self.syslog_udp_addr.clone();
+            }
+            if !self.syslog_tcp_addr.is_empty() {
+                signals.syslog.tcp_addr = self.syslog_tcp_addr.clone();
+            }
+        }
+        if !self.snmp_udp_addr.is_empty() {
+            signals.snmp.enabled = self.snmp_enabled;
+            signals.snmp.udp_addr = self.snmp_udp_addr.clone();
+        }
+    }
+}
+
+// ── D4-7 T5: Runtime config snapshot (all non-bootstrap tunables) ─────────────
+
+/// Each tunable TOML section is stored as a separate ConfigItem row keyed by
+/// `runtime_config:{section}`. On boot, any DB-stored section overrides the
+/// TOML default. On PATCH /api/settings/{section}, the new value is written
+/// to the DB and applied to the live config.
+///
+/// Sections: retention, ingest, archive, storage, event_bus, remediation, gnn,
+///           logging, ai, lab, integrations_servicenow, integrations_tsdb, assignment
+pub const RUNTIME_CONFIG_SECTIONS: &[&str] = &[
+    "retention", "ingest", "archive", "storage", "event_bus", "remediation",
+    "gnn", "logging", "ai", "lab", "integrations_servicenow", "integrations_tsdb",
+    "assignment", "streaming", "security",
+];
+
+/// Boot-time: load all `runtime_config:*` items from DB and apply overrides to `cfg`.
+/// Returns the count of sections overridden.
+pub async fn apply_runtime_overrides_from_db(
+    store: &crate::graph::GraphStore,
+    cfg: &mut crate::config::Config,
+) -> usize {
+    let items = match store.list_config_items(Some("runtime_config".to_string())).await {
+        Ok(items) => items,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load runtime config from DB");
+            return 0;
+        }
+    };
+    let mut count = 0;
+    for item in &items {
+        if !item.enabled { continue; }
+        let section = item.name.as_str();
+        let json = &item.content_json;
+        let ok = match section {
+            "retention" => serde_json::from_str(json).map(|v| cfg.retention = v).is_ok(),
+            "ingest" => serde_json::from_str(json).map(|v| cfg.ingest = v).is_ok(),
+            "archive" => serde_json::from_str(json).map(|v| cfg.archive = v).is_ok(),
+            "storage" => serde_json::from_str(json).map(|v| cfg.storage = v).is_ok(),
+            "event_bus" => serde_json::from_str(json).map(|v| cfg.event_bus = v).is_ok(),
+            "remediation" => serde_json::from_str(json).map(|v| cfg.remediation = v).is_ok(),
+            "gnn" => serde_json::from_str(json).map(|v| cfg.gnn = v).is_ok(),
+            "logging" => serde_json::from_str(json).map(|v| cfg.logging = v).is_ok(),
+            "ai" => serde_json::from_str(json).map(|v| cfg.ai = v).is_ok(),
+            "lab" => serde_json::from_str(json).map(|v| cfg.lab = v).is_ok(),
+            "assignment" => serde_json::from_str(json).map(|v| cfg.assignment = v).is_ok(),
+            "integrations_servicenow" => serde_json::from_str(json).map(|v| cfg.integrations.servicenow = v).is_ok(),
+            "integrations_tsdb" => serde_json::from_str(json).map(|v| cfg.integrations.tsdb = v).is_ok(),
+            "streaming" => {
+                // Streaming uses StreamingSnapshot which has its own apply logic.
+                match serde_json::from_str::<StreamingSnapshot>(json) {
+                    Ok(snap) => { snap.apply_to_config(&mut cfg.streaming, &mut cfg.signals); true }
+                    Err(_) => false,
+                }
+            }
+            "security" => serde_json::from_str(json).map(|v| cfg.security = v).is_ok(),
+            _ => false,
+        };
+        if ok {
+            count += 1;
+            tracing::info!(section, "applied runtime config override from DB");
+        } else {
+            tracing::warn!(section, "failed to parse runtime config from DB, using TOML default");
+        }
+    }
+    count
+}
+
+/// Persist a single runtime config section to the DB.
+pub async fn persist_runtime_section(
+    store: &crate::graph::GraphStore,
+    section: &str,
+    json: &str,
+) -> anyhow::Result<()> {
+    let item = crate::graph::ConfigItemRecord {
+        id: format!("runtime_config:{section}"),
+        config_class: "runtime_config".to_string(),
+        vendor: String::new(),
+        name: section.to_string(),
+        version: "1".to_string(),
+        content_json: json.to_string(),
+        enabled: true,
+        created_by: "settings_api".to_string(),
+    };
+    store.upsert_config_item(item).await
+}
+
 // ── GET /api/settings/streaming ───────────────────────────────────────────────
 
 pub async fn get_streaming_settings_handler(
@@ -184,75 +339,31 @@ pub async fn patch_streaming_settings_handler(
     let new_snmp_enabled    = patch.snmp.as_ref().and_then(|p| p.enabled).unwrap_or(sig.snmp.enabled);
     let new_snmp_udp_addr   = patch.snmp.as_ref().and_then(|p| p.addr.clone()).unwrap_or_else(|| sig.snmp.udp_addr.clone());
 
-    // Build the TOML fragment for both [streaming.*] and [signals.*] sections.
-    let toml_fragment = format!(
-        r#"
-[streaming.bmp]
-enabled = {bmp_en}
-tcp_addr = "{bmp_addr}"
-
-[streaming.bgp_ls]
-enabled = {bgpls_en}
-tcp_addr = "{bgpls_addr}"
-
-[streaming.pcep]
-enabled = {pcep_en}
-tcp_addr = "{pcep_addr}"
-
-[streaming.otlp]
-enabled = {otlp_en}
-http_addr = "{otlp_addr}"
-
-[streaming.netflow]
-enabled = {nf_en}
-udp_addr = "{nf_addr}"
-
-[streaming.sflow]
-enabled = {sf_en}
-udp_addr = "{sf_addr}"
-
-[signals.syslog]
-enabled = {syslog_en}
-udp_addr = "{syslog_udp}"
-tcp_addr = "{syslog_tcp}"
-
-[signals.snmp]
-enabled = {snmp_en}
-udp_addr = "{snmp_udp}"
-"#,
-        bmp_en = new_bmp_enabled,
-        bmp_addr = new_bmp_addr,
-        bgpls_en = new_bgpls_enabled,
-        bgpls_addr = new_bgpls_addr,
-        pcep_en = new_pcep_enabled,
-        pcep_addr = new_pcep_addr,
-        otlp_en = new_otlp_enabled,
-        otlp_addr = new_otlp_addr,
-        nf_en = new_nf_enabled,
-        nf_addr = new_nf_addr,
-        sf_en = new_sf_enabled,
-        sf_addr = new_sf_addr,
-        syslog_en = new_syslog_enabled,
-        syslog_udp = new_syslog_udp_addr,
-        syslog_tcp = new_syslog_tcp_addr,
-        snmp_en = new_snmp_enabled,
-        snmp_udp = new_snmp_udp_addr,
-    );
-
-    // Locate the config file.
-    let config_path = std::env::var("BONSAI_CONFIG").unwrap_or_else(|_| "bonsai.toml".to_string());
-
-    let current = tokio::fs::read_to_string(&config_path)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("read config: {e}")))?;
-
-    // Surgical replacement: remove existing [streaming.*] and [signals.*] blocks.
-    let stripped = strip_streaming_section(&strip_signals_section(&current));
-    let updated = format!("{}\n{}", stripped.trim_end(), toml_fragment);
-
-    tokio::fs::write(&config_path, updated)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("write config: {e}")))?;
+    // D4-7 T5: Persist streaming/signals settings to ConfigItem DB instead of TOML file.
+    let snapshot = StreamingSnapshot {
+        bmp_enabled: new_bmp_enabled, bmp_addr: new_bmp_addr.clone(),
+        bgpls_enabled: new_bgpls_enabled, bgpls_addr: new_bgpls_addr.clone(),
+        pcep_enabled: new_pcep_enabled, pcep_addr: new_pcep_addr.clone(),
+        otlp_enabled: new_otlp_enabled, otlp_addr: new_otlp_addr.clone(),
+        netflow_enabled: new_nf_enabled, netflow_addr: new_nf_addr.clone(),
+        sflow_enabled: new_sf_enabled, sflow_addr: new_sf_addr.clone(),
+        syslog_enabled: new_syslog_enabled, syslog_udp_addr: new_syslog_udp_addr.clone(),
+        syslog_tcp_addr: new_syslog_tcp_addr.clone(),
+        snmp_enabled: new_snmp_enabled, snmp_udp_addr: new_snmp_udp_addr.clone(),
+    };
+    let content_json = serde_json::to_string(&snapshot).unwrap_or_default();
+    let item = crate::graph::ConfigItemRecord {
+        id: "runtime_config:streaming".to_string(),
+        config_class: "runtime_config".to_string(),
+        vendor: String::new(),
+        name: "streaming".to_string(),
+        version: "1".to_string(),
+        content_json,
+        enabled: true,
+        created_by: "settings_api".to_string(),
+    };
+    state.store.upsert_config_item(item).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("persist streaming config: {e}")))?;
 
     // K3: Live restart of changed receivers via ReceiverSupervisor.
     // All receivers — including syslog/snmp — are now supervised, so no
@@ -651,7 +762,7 @@ pub struct PatternReloadResponse {
 }
 
 /// POST /api/config/reload-patterns
-/// Hot-reload syslog and SNMP OID pattern extractors from disk without restart.
+/// Hot-reload syslog and SNMP OID pattern extractors from ConfigItem DB (with disk fallback).
 pub async fn reload_patterns_handler(
     State(state): State<super::AppState>,
 ) -> Result<Json<PatternReloadResponse>, (StatusCode, String)> {
@@ -665,14 +776,19 @@ pub async fn reload_patterns_handler(
     let mut snmp_count = 0;
     let mut errors: Vec<String> = Vec::new();
 
+    // D4-7 T5: Reload from ConfigItem DB with disk fallback.
+    let syslog_items = state.store.load_config_yaml_by_class("syslog_pattern").await.unwrap_or_default();
+    let snmp_items = state.store.load_config_yaml_by_class("snmp_oid_pattern").await.unwrap_or_default();
+
     if let Some(tx) = &state.syslog_pattern_tx {
         let dir = &state.syslog_pattern_dir;
-        let extractor = SyslogFactExtractor::load_from_dir(dir);
+        let extractor = SyslogFactExtractor::load_from_yaml_strings(&syslog_items, dir);
         syslog_count = extractor.pattern_count();
         match tx.send(Arc::new(extractor)) {
             Ok(_) => {
                 syslog_reloaded = true;
-                tracing::info!(dir = %dir, patterns = syslog_count, "syslog patterns hot-reloaded");
+                tracing::info!(source = if syslog_items.is_empty() { "disk" } else { "db" },
+                    patterns = syslog_count, "syslog patterns hot-reloaded");
             }
             Err(e) => errors.push(format!("syslog: {e}")),
         }
@@ -680,12 +796,13 @@ pub async fn reload_patterns_handler(
 
     if let Some(tx) = &state.snmp_pattern_tx {
         let dir = &state.snmp_oid_pattern_dir;
-        let extractor = SnmpFactExtractor::load_from_dir(dir);
+        let extractor = SnmpFactExtractor::load_from_yaml_strings(&snmp_items, dir);
         snmp_count = extractor.pattern_count();
         match tx.send(Arc::new(extractor)) {
             Ok(_) => {
                 snmp_reloaded = true;
-                tracing::info!(dir = %dir, patterns = snmp_count, "snmp OID patterns hot-reloaded");
+                tracing::info!(source = if snmp_items.is_empty() { "disk" } else { "db" },
+                    patterns = snmp_count, "snmp OID patterns hot-reloaded");
             }
             Err(e) => errors.push(format!("snmp: {e}")),
         }
@@ -957,4 +1074,72 @@ async fn tsdb_influxdb_query(
         "tsdb_type": "influxdb",
         "raw": body,
     }))
+}
+
+// ── D4-7 T5: Unified settings API ──────────────────────────────────────────
+
+/// GET /api/settings — list all available config sections and their DB status.
+pub async fn list_settings_handler(
+    State(state): State<super::AppState>,
+) -> Json<serde_json::Value> {
+    let items = state.store.list_config_items(Some("runtime_config".to_string())).await.unwrap_or_default();
+    let sections: Vec<serde_json::Value> = RUNTIME_CONFIG_SECTIONS.iter().map(|s| {
+        let in_db = items.iter().any(|i| i.name == *s && i.enabled);
+        serde_json::json!({ "section": s, "in_db": in_db })
+    }).collect();
+    Json(serde_json::json!({ "sections": sections }))
+}
+
+/// GET /api/settings/:section — return the current value of a config section.
+/// If stored in DB, returns the DB value; otherwise returns "not_in_db".
+pub async fn get_settings_section_handler(
+    State(state): State<super::AppState>,
+    axum::extract::Path(section): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !RUNTIME_CONFIG_SECTIONS.contains(&section.as_str()) {
+        return Err((StatusCode::NOT_FOUND, format!("unknown config section: {section}")));
+    }
+    let items = state.store.list_config_items(Some("runtime_config".to_string())).await.unwrap_or_default();
+    if let Some(item) = items.iter().find(|i| i.name == section && i.enabled) {
+        let val: serde_json::Value = serde_json::from_str(&item.content_json)
+            .unwrap_or(serde_json::Value::String(item.content_json.clone()));
+        Ok(Json(serde_json::json!({ "section": section, "source": "db", "value": val })))
+    } else {
+        Ok(Json(serde_json::json!({ "section": section, "source": "toml_default", "value": null })))
+    }
+}
+
+/// PATCH /api/settings/:section — write a config section to DB.
+/// Body is the JSON value for the section.
+pub async fn patch_settings_section_handler(
+    State(state): State<super::AppState>,
+    axum::extract::Path(section): axum::extract::Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !RUNTIME_CONFIG_SECTIONS.contains(&section.as_str()) {
+        return Err((StatusCode::NOT_FOUND, format!("unknown config section: {section}")));
+    }
+    let json = serde_json::to_string(&body)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid JSON: {e}")))?;
+    if json.len() > 512 * 1024 {
+        return Err((StatusCode::PAYLOAD_TOO_LARGE, "config section exceeds 512 KB limit".into()));
+    }
+    persist_runtime_section(&state.store, &section, &json).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("persist failed: {e}")))?;
+    Ok(Json(serde_json::json!({ "ok": true, "section": section })))
+}
+
+/// POST /api/settings/export — dump all DB-stored runtime config as JSON.
+pub async fn export_settings_handler(
+    State(state): State<super::AppState>,
+) -> Json<serde_json::Value> {
+    let items = state.store.list_config_items(Some("runtime_config".to_string())).await.unwrap_or_default();
+    let mut map = serde_json::Map::new();
+    for item in &items {
+        if !item.enabled { continue; }
+        let val: serde_json::Value = serde_json::from_str(&item.content_json)
+            .unwrap_or(serde_json::Value::String(item.content_json.clone()));
+        map.insert(item.name.clone(), val);
+    }
+    Json(serde_json::Value::Object(map))
 }

@@ -2,6 +2,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+// Import security configuration
+use crate::security::SecurityConfig;
+
 #[derive(Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -60,17 +63,19 @@ pub struct Config {
     pub tls: HttpTlsConfig,
     #[serde(default)]
     pub auth: AuthConfig,
+    #[serde(default)]
+    pub security: SecurityConfig,
 }
 
 // ── Auth / LDAP (D4-3 T2/T3) ────────────────────────────────────────────────
 
-#[derive(Deserialize, Clone, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct AuthConfig {
     #[serde(default)]
     pub ldap: LdapConfig,
 }
 
-#[derive(Deserialize, Clone, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct LdapConfig {
     /// Enable LDAP authentication. When false, only local users + env bootstrap.
     #[serde(default)]
@@ -131,7 +136,7 @@ pub struct HttpTlsConfig {
 /// Set `inference_mode = "production"` after reviewing the 7-day calibration
 /// score distribution. During calibration, scores are persisted to the
 /// `gnn_calibration_scores` table but do not flow to the Detection table.
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct GnnConfig {
     /// ``"calibration"`` — scores accumulate but no detections fire.
     /// ``"production"`` — scores above threshold produce Detection rows.
@@ -185,7 +190,7 @@ fn default_gnn_min_calibration_samples() -> usize {
 
 // ── AI ───────────────────────────────────────────────────────────────────────
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct AiConfig {
     /// AI provider to use. Default: "gemini". Options: "gemini", "moonshot", "anthropic", "openai".
     #[serde(default = "default_ai_provider")]
@@ -236,7 +241,7 @@ fn default_ai_daily_budget() -> f64 { 1.00 }
 /// Active lab identity. Declares the management subnet as an explicit config
 /// key so scripts and tooling don't infer it from device addresses.
 /// All fields are optional — omitting [lab] is valid for non-lab deployments.
-#[derive(Deserialize, Clone, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct LabConfig {
     /// Active topology identifier: "dc" | "sp" | "fast-iteration" | "cloud-dc".
     #[serde(default)]
@@ -559,7 +564,7 @@ fn default_pcep_max_frame_bytes() -> usize {
 
 // ── Logging ───────────────────────────────────────────────────────────────────
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct LoggingConfig {
     /// Path for the rotating log file. Disabled (stderr only) when empty. Default: "".
     #[serde(default)]
@@ -609,7 +614,7 @@ fn default_log_min_free_bytes() -> u64 {
 
 // ── Remediation ───────────────────────────────────────────────────────────────
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct RemediationConfig {
     /// Seconds an AutoWithNotification execution stays eligible for rollback. Default: 60.
     #[serde(default = "default_rollback_window_secs")]
@@ -642,7 +647,7 @@ impl Default for RemediationConfig {
     }
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct GraduationConfig {
     /// Consecutive operator approvals required before a graduation hint is surfaced. Default: 10.
     #[serde(default = "default_graduation_approvals")]
@@ -659,7 +664,7 @@ impl Default for GraduationConfig {
 
 /// Per-archetype default TrustState for new (rule, env, site, playbook) tuples.
 /// Values: "suggest_only" | "approve_each" | "auto_with_notification" | "auto_silent".
-#[derive(Deserialize, Clone, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct RemediationDefaultsConfig {
     #[serde(default)]
     pub home_lab: String,
@@ -685,7 +690,7 @@ fn default_graduation_approvals() -> u32 {
 
 // ── Integrations ──────────────────────────────────────────────────────────────
 
-#[derive(Deserialize, Clone, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct IntegrationsConfig {
     #[serde(default)]
     pub servicenow: ServiceNowConfig,
@@ -696,7 +701,7 @@ pub struct IntegrationsConfig {
 
 /// D4-5 T4: External TSDB integration for historical metric queries.
 /// Graph is the live truth layer; TSDB provides the historical time-series layer.
-#[derive(Deserialize, Clone, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct TsdbConfig {
     /// Enable TSDB integration.
     #[serde(default)]
@@ -722,7 +727,7 @@ fn default_tsdb_type() -> String { "prometheus".to_string() }
 fn default_tsdb_lookback() -> String { "1h".to_string() }
 fn default_tsdb_max_range() -> String { "24h".to_string() }
 
-#[derive(Deserialize, Clone, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct ServiceNowConfig {
     /// Enable ServiceNow integration. Requires `instance_url` + `credential_alias`.
     #[serde(default)]
@@ -744,7 +749,7 @@ pub struct ServiceNowConfig {
     pub change_management: ServiceNowChangeManagementConfig,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ServiceNowEventFilterConfig {
     /// Minimum severity to push: "critical" | "warning" | "info". Default: "warning".
     #[serde(default = "default_snow_min_severity")]
@@ -767,7 +772,7 @@ impl Default for ServiceNowEventFilterConfig {
     }
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ServiceNowAiopsConfig {
     /// Enable Sprint 6 incident sync and playbook bridge.
     #[serde(default)]
@@ -822,7 +827,7 @@ impl Default for ServiceNowAiopsConfig {
     }
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ServiceNowChangeManagementConfig {
     /// Enable polling ServiceNow change_request table.
     #[serde(default)]
@@ -1094,7 +1099,7 @@ impl RuntimeConfig {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct RetentionConfig {
     /// Enable periodic pruning of old StateChangeEvents. Default: true.
     #[serde(default = "default_retention_enabled")]
@@ -1118,7 +1123,7 @@ impl Default for RetentionConfig {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct EventBusConfig {
     /// broadcast channel capacity. Default: 2048.
     #[serde(default = "default_bus_capacity")]
@@ -1188,7 +1193,7 @@ fn default_debounce_memory_bytes() -> usize {
     16 * 1024 * 1024 // 16 MiB
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct ArchiveConfig {
     /// Enable the Parquet archive consumer. Default: false.
     #[serde(default)]
@@ -1229,7 +1234,7 @@ impl Default for ArchiveConfig {
 }
 
 /// Disk-usage guard for the archive and graph database directories.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct StorageConfig {
     /// Maximum bytes the archive directory may use before aggressive retention kicks in.
     /// 0 = unlimited. Default: 10 GB.
@@ -1676,6 +1681,60 @@ impl TargetConfig {
     pub fn uses_tls(&self) -> bool {
         self.ca_cert.is_some()
     }
+}
+
+// ── D4-7 T5: Env var consolidation helpers ──────────────────────────────────
+
+/// Resolve a secret value from the credential vault, falling back to env var.
+/// Priority: vault alias → env var → None.
+/// Use for: API keys, admin passwords, LDAP bind password, SNMP keys, JWT secret.
+pub fn resolve_secret(
+    vault: &crate::credentials::CredentialVault,
+    vault_alias: &str,
+    env_var: &str,
+) -> Option<String> {
+    // Try vault first
+    if !vault_alias.is_empty() {
+        if let Ok(cred) = vault.resolve(vault_alias, crate::credentials::ResolvePurpose::Internal) {
+            return Some(cred.password);
+        }
+    }
+    // Fall back to env var
+    if !env_var.is_empty() {
+        if let Ok(val) = std::env::var(env_var) {
+            if !val.is_empty() {
+                return Some(val);
+            }
+        }
+    }
+    None
+}
+
+/// Resolve a non-secret config value from DB ConfigItem, falling back to env var.
+/// Priority: DB (runtime_config:{key}) → env var → default.
+/// Use for: BONSAI_ADMIN_USER, BONSAI_REQUIRE_AUTH, BONSAI_OPERATOR, etc.
+pub fn resolve_config_or_env(
+    db_items: &[crate::graph::ConfigItemRecord],
+    config_key: &str,
+    env_var: &str,
+    default: &str,
+) -> String {
+    // Try DB
+    if let Some(item) = db_items.iter().find(|i| i.name == config_key && i.enabled) {
+        let val: String = serde_json::from_str(&item.content_json).unwrap_or(item.content_json.clone());
+        if !val.is_empty() {
+            return val;
+        }
+    }
+    // Fall back to env var
+    if !env_var.is_empty() {
+        if let Ok(val) = std::env::var(env_var) {
+            if !val.is_empty() {
+                return val;
+            }
+        }
+    }
+    default.to_string()
 }
 
 pub async fn load(path: &str) -> Result<Config> {

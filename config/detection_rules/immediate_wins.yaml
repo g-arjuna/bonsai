@@ -1,0 +1,149 @@
+# Immediate Win Detection Rules for Performance Baselines & Service Mesh
+# High-value rules that leverage new graph schema and telemetry extensions
+
+rules:
+  - rule_id: "interface_utilization_drift"
+    severity: "medium"
+    description: "Interface utilization exceeds 2-sigma baseline threshold"
+    condition: "current_utilization > baseline_mean + (2 * baseline_stddev)"
+    window: "5m"
+    requires_baseline: true
+    metric_type: "interface_utilization"
+    threshold_sigma: 2.0
+    min_samples: 10
+    tags: ["performance", "baseline", "utilization"]
+
+  - rule_id: "service_endpoint_unhealthy"
+    severity: "high"
+    description: "Service endpoint showing abnormal error patterns or connection failures"
+    condition: "connection_errors > baseline_errors * 1.5 OR connection_count < baseline_connections * 0.5"
+    window: "2m"
+    requires_baseline: true
+    metric_type: "service_health"
+    service_types: ["api", "database", "cache", "message_queue", "service_mesh"]
+    tags: ["service_mesh", "application", "health"]
+
+  - rule_id: "service_process_crash_spike"
+    severity: "high"
+    description: "Multiple service process crashes within short time window"
+    condition: "COUNT(service_process_crash) > 3"
+    window: "10m"
+    fact_types: ["service_process"]
+    action_filter: "crash"
+    tags: ["service_mesh", "application", "reliability"]
+
+  - rule_id: "qos_violation_detected"
+    severity: "medium"
+    description: "QoS policy change indicates potential SLA violation"
+    condition: "qos_policy_change AND (bandwidth_exceeded OR priority_violation)"
+    window: "1m"
+    fact_types: ["qos_policy_change"]
+    qos_types: ["bandwidth", "priority", "latency"]
+    tags: ["qos", "policy", "sla"]
+
+  - rule_id: "security_posture_degraded"
+    severity: "high"
+    description: "Security posture showing multiple risk factors"
+    condition: "aaa_failure_count > 10 OR (config_change_count > 5 AND process_crash_count > 2)"
+    window: "15m"
+    fact_types: ["aaa_failure", "config_change_detail", "process_restart"]
+    risk_factors: ["authentication", "configuration", "process_stability"]
+    tags: ["security", "posture", "risk"]
+
+  - rule_id: "service_mesh_topology_change"
+    severity: "medium"
+    description: "Service mesh communication pattern changed significantly"
+    condition: "NEW service_endpoint OR REMOVED service_endpoint OR communication_pattern_shift"
+    window: "5m"
+    fact_types: ["service_process", "connection_anomaly"]
+    topology_change: true
+    tags: ["service_mesh", "topology", "discovery"]
+
+  - rule_id: "baseline_computation_needed"
+    severity: "low"
+    description: "Trigger baseline computation for devices with sufficient data"
+    condition: "interface_samples > 100 AND last_baseline_computed > 24h"
+    window: "1h"
+    metric_type: "interface_utilization"
+    min_samples: 100
+    max_baseline_age_hours: 24
+    tags: ["performance", "baseline", "maintenance"]
+
+  - rule_id: "connection_anomaly_pattern"
+    severity: "medium"
+    description: "Service connection anomalies indicating application issues"
+    condition: "connection_anomaly AND (timeout_count > 5 OR connection_refused_count > 3)"
+    window: "5m"
+    fact_types: ["connection_anomaly"]
+    anomaly_types: ["timeout", "connection_refused", "high_latency", "connection_pool_exhausted"]
+    tags: ["service_mesh", "application", "connectivity"]
+
+# Baseline computation configuration
+baseline_config:
+  interface_utilization:
+    lookback_hours: 24
+    min_samples: 10
+    confidence_level: 0.95
+    computation_interval_hours: 6
+    sigma_threshold: 2.0
+  
+  service_health:
+    lookback_hours: 12
+    min_samples: 20
+    error_threshold_multiplier: 1.5
+    connection_threshold_multiplier: 0.5
+
+# Service discovery heuristics
+service_discovery:
+  interface_descriptions:
+    patterns:
+      - "api[_-]?gateway"
+      - "database[_-]?server"
+      - "cache[_-]?server"
+      - "load[_-]?balancer"
+      - "web[_-]?server"
+      - "application[_-]?server"
+    confidence_threshold: 0.7
+  
+  traffic_patterns:
+    high_connection_threshold: 1000
+    periodic_traffic_threshold: 0.8
+    service_ports: [80, 443, 3306, 5432, 6379, 9092, 27017, 9200]
+    confidence_threshold: 0.6
+
+# QoS policy mapping
+qos_mapping:
+  dscp_mappings:
+    "46": "EF"  # Expedited Forwarding
+    "34": "AF41" # Assured Forwarding
+    "26": "AF31"
+    "18": "AF21"
+    "10": "AF11"
+    "0": "BE"   # Best Effort
+  
+  policy_types:
+    - "ingress"
+    - "egress"
+    - "queue_scheduler"
+    - "rate_limiter"
+
+# Security posture calculation
+security_posture:
+  risk_factors:
+    aaa_failures:
+      weight: 0.4
+      threshold_high: 10
+      threshold_medium: 5
+    
+    config_changes:
+      weight: 0.3
+      threshold_high: 10
+      threshold_medium: 5
+    
+    process_crashes:
+      weight: 0.3
+      threshold_high: 5
+      threshold_medium: 2
+  
+  risk_score_calculation: "weighted_sum"
+  update_interval_minutes: 15

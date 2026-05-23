@@ -147,6 +147,25 @@ impl SnmpFactExtractor {
         Self { patterns }
     }
 
+    /// Load patterns from in-memory YAML strings (typically from ConfigItem DB).
+    /// Each entry is (name, yaml_content). Falls back to `load_from_dir` if empty.
+    pub fn load_from_yaml_strings(items: &[(String, String)], fallback_dir: &str) -> Self {
+        if items.is_empty() {
+            return Self::load_from_dir(fallback_dir);
+        }
+        let mut patterns: Vec<SnmpOidPattern> = Vec::new();
+        for (name, raw) in items {
+            match serde_yaml::from_str::<SnmpOidPatternFile>(raw) {
+                Ok(file) => {
+                    info!(name = %name, count = file.patterns.len(), "loaded snmp OID patterns from DB");
+                    patterns.extend(file.patterns);
+                }
+                Err(e) => warn!(name = %name, error = %e, "failed to parse snmp OID pattern from DB"),
+            }
+        }
+        Self { patterns }
+    }
+
     /// Try to match a parsed trap against OID patterns. Returns `Some(SnmpFact)` on first match.
     pub fn extract(&self, event: &SnmpTrapEvent) -> Option<SnmpFact> {
         let trap_oid = event.trap_oid.trim_end_matches(".0");

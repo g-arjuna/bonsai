@@ -9,9 +9,9 @@ Bonsai collects streaming telemetry from network devices via gNMI, builds a live
 ## What bonsai does
 
 ```
-gNMI   syslog   SNMP   BGP-LS   BMP   OTLP   NetFlow   PCEP
-  │       │       │       │       │      │       │        │
-  └───────┴───────┴───────┴───────┴──────┴───────┴────────┘
+gNMI   syslog   SNMP   BGP-LS   BMP   OTLP   NetFlow   sFlow   PCEP
+  │       │       │       │       │      │       │        │       │
+  └───────┴───────┴───────┴───────┴──────┴───────┴────────┴───────┘
                               │
                  ┌────────────▼────────────┐
                  │  Collector(s)            │  gNMI ON_CHANGE + SAMPLE
@@ -20,15 +20,15 @@ gNMI   syslog   SNMP   BGP-LS   BMP   OTLP   NetFlow   PCEP
                  └────────────┬────────────┘
                               │ gRPC (mTLS optional)
                  ┌────────────▼────────────┐
-                 │  Core                    │  lbug embedded graph DB
+                 │  Core                    │  lbug embedded graph DB (56 node types)
                  │  (mode=core / all)       │  change detection (priority lane)
-                 │                          │  enrichment + HostEndpoint model
+                 │                          │  enrichment + RBAC + HA (etcd)
                  └──┬──────────┬────────────┘
                     │          │
           ┌─────────▼──┐  ┌───▼──────────────┐
           │  REST/SSE   │  │  AI Agent         │
           │  API + UI   │  │  MCP tools +      │
-          │  (Svelte)   │  │  LLM loop         │
+          │  (Svelte 5) │  │  LLM loop         │
           └─────────┬──┘  └───────────────────┘
                     │
        ┌────────────▼──────────────────────────────┐
@@ -45,16 +45,21 @@ gNMI   syslog   SNMP   BGP-LS   BMP   OTLP   NetFlow   PCEP
 ```
 
 **Core capabilities:**
-- **Graph database**: lbug (LadybugDB) — embedded, zero external dependencies
-- **Telemetry sources**: gNMI (ON_CHANGE + SAMPLE), syslog, SNMP traps, BGP-LS, BMP, PCEP, OTLP spans, NetFlow v5/v9/IPFIX
-- **Graph model**: Device, Interface, BgpNeighbor, VRF, AppFlow, Application, **HostEndpoint**, VLAN, Prefix, Rack, Location nodes
-- **Multi-source correlation**: `CorrelationBuffer` deduplicates BGP/BFD/interface/OSPF/ISIS events across gNMI+syslog+SNMP within a 45-second window
-- **Change detection**: config-state diff, pyATS/Genie parser chain, native YANG parser — all on a dedicated priority write channel
-- **Enrichment**: NetBox (3.x + 4.x auto-detected), ServiceNow CMDB, CLI scraping — managed via unified **Integrations** UI
-- **Output adapters**: Prometheus Remote Write, Splunk HEC, Elasticsearch Bulk, ServiceNow Event Mgmt — each with customisable scheme/host/**port**/path
-- **Remediation**: playbook-based, trust-graduated, rollback window, auto-proposal
-- **AI investigations**: MCP tool server + LLM agent loop (Gemini, Moonshot, Anthropic, OpenAI)
+- **Graph database**: lbug (LadybugDB) — embedded, zero external dependencies, Cypher query interface
+- **Telemetry sources**: gNMI (ON_CHANGE + SAMPLE), syslog (UDP + TCP), SNMP traps (v1/v2c/v3 USM), BGP-LS (via GoBGP sidecar), BMP (RFC 7854), PCEP, OTLP spans + metrics (HTTP), NetFlow v5/v9/IPFIX, sFlow v5 (RFC 3176)
+- **Graph model (56 node types)**: Device, Interface, BgpNeighbor, BfdSession, IsisAdjacency, OspfNeighbor, Vrf, VLAN, StpInstance, NtpPeer, AclSummary, MplsLsp, AppFlow, Application, HostEndpoint, ComputeNode, SensorReading, OpticsTelemetry, PowerUnit, OpticalChannel, RedundancyGroup, BmpSession, BgpRibEntry, BgpLsNode, BgpLsLink, SrPolicy, Location, Rack, Prefix, Site, Environment, ConfigSnapshot, ConfigChange, ConfigItem, Investigation, Incident, ChangeRequest, and more
+- **Multi-source correlation**: `CorrelationBuffer` deduplicates BGP/BFD/interface/OSPF/ISIS events across gNMI+syslog+SNMP within a 45-second window, keyed by `(device_address, semantic_type, sub_key)`
+- **Change detection**: config-state diff, pyATS/Genie parser chain (17 learn features), native YANG parser — all on a dedicated priority write channel
+- **Enrichment**: NetBox (3.x + 4.x auto-detected), ServiceNow CMDB (9 table fetches + provenance reconciliation), CLI scraping — with conflict detection and source-priority ranking (cli > netbox > servicenow)
+- **Output adapters**: Prometheus Remote Write, Splunk HEC, Elasticsearch Bulk, ServiceNow Event Mgmt — each with customisable scheme/host/port/path
+- **Remediation**: playbook-based, trust-graduated, rollback window, auto-proposal, graph-verified outcome
+- **AI investigations**: MCP tool server + LLM agent loop (Gemini, Moonshot, OpenAI, Anthropic, Ollama) with structured RCA, operator feedback loop, per-investigation + daily budget caps
 - **GNN**: graph neural network anomaly detection — accumulate → train → calibrate → promote
+- **Auth**: JWT session tokens, RBAC (admin/operator/viewer/api_readonly), LDAP/AD integration, scoped API keys
+- **Syslog shunning**: per-device/per-category noise suppression with rate-limiting and regex-based rules
+- **HA**: etcd-based leader election, config replication across core nodes
+- **TSDB integration**: bidirectional Prometheus/Thanos/VictoriaMetrics/InfluxDB query proxy via `/api/tsdb/query`
+- **Bootstrap agent**: PyATS/Genie-based device onboarding with topology-aware feature profiles (dc_leaf, dc_spine, campus_access, campus_core, sp_pe, homelab, etc.)
 
 ---
 
@@ -82,7 +87,7 @@ On first launch, the UI shows the **Onboarding** wizard — create your environm
 
 ## Quick start — native binary (macOS / Linux)
 
-Requires: Rust 1.82+, clang, cmake.
+Requires: Rust 1.95+ (pinned in `rust-toolchain.toml`), clang, cmake, protoc.
 
 ```bash
 git clone https://github.com/g-arjuna/bonsai && cd bonsai
@@ -90,15 +95,19 @@ git clone https://github.com/g-arjuna/bonsai && cd bonsai
 # Build
 cargo build --release
 
-# Configure
+# Build the UI (Svelte 5 + Vite)
+cd ui && npm ci && npm run build && cd ..
+cd ui-bonpy && npm ci && npm run build && cd ..
+
+# Configure (minimal bootstrap — runtime tunables are managed via UI/API)
 cp bonsai.toml.example bonsai.toml
-# Edit bonsai.toml: set graph_path, http_addr, and add [[target]] blocks.
 
 export BONSAI_VAULT_PASSPHRASE="your-passphrase"
 ./target/release/bonsai --config bonsai.toml
+# Add devices via the UI (Settings → Devices) or POST /api/onboarding/devices
 ```
 
-The UI is served at `http_addr` (default `0.0.0.0:3000`). The gRPC ingest API is at `api_addr` (default `0.0.0.0:50051`).
+The UI is served at `http_addr` (default `0.0.0.0:3000`). The Bonpy Python/ML dashboard is at `/bonpy/` on the same port. The gRPC ingest API is at `api_addr` (default `[::1]:50051` — use `0.0.0.0:50051` in Docker or distributed deployments).
 
 ---
 
@@ -117,83 +126,113 @@ The UI is served at `http_addr` (default `0.0.0.0:3000`). The gRPC ingest API is
 
 ## Configuration
 
-All configuration lives in `bonsai.toml`. Copy and edit the reference file:
+Bonsai uses a **DB-first configuration model**. Only bootstrap settings (graph path, mode, credentials) live in `bonsai.toml`. All runtime tunables — retention, ingest, streaming, AI, remediation, logging, integrations, etc. — are stored in the embedded graph database and managed via the **Settings UI** or REST API.
+
+### Bootstrap config (TOML)
 
 ```bash
 cp bonsai.toml.example bonsai.toml
 ```
 
-`bonsai.toml.example` documents every field with its default and when to change it.
-
-### Minimum required fields
+`bonsai.toml.example` is a minimal 67-line file with only the essentials:
 
 ```toml
 graph_path = "runtime/bonsai.db"
-http_addr  = "0.0.0.0:3000"
-api_addr   = "0.0.0.0:50051"
 
-[[target]]
-address          = "10.0.0.1:57400"
-hostname         = "leaf-01"
-credential_alias = "lab-gnmi"    # add via UI → Credentials
+[runtime]
+mode = "all"    # "all" | "core" | "collector"
+
+[credentials]
+path = "bonsai-credentials"
+passphrase_env = "BONSAI_VAULT_PASSPHRASE"
 ```
 
+Devices are preferably added via the UI or `POST /api/devices`.
+
+### Runtime config (DB-backed)
+
+On first boot, YAML files under `config/` are migrated into the `ConfigItem` database table. Subsequent changes via the API or Settings UI are persisted to DB and override TOML defaults.
+
+| API | Description |
+|---|---|
+| `GET /api/settings` | List all config sections with DB status |
+| `GET /api/settings/{section}` | Read a section (DB value or TOML default) |
+| `PATCH /api/settings/{section}` | Write a section to DB (512 KB limit) |
+| `POST /api/settings/export` | Export all DB-stored config as JSON |
+
+Managed sections: `retention`, `ingest`, `archive`, `storage`, `event_bus`, `remediation`, `gnn`, `logging`, `ai`, `lab`, `assignment`, `integrations_servicenow`, `integrations_tsdb`, `streaming`.
+
 ### Key environment variables
+
+Most env vars now have DB or vault-first equivalents. Env vars serve as fallbacks:
 
 | Variable | Required | Description |
 |---|---|---|
 | `BONSAI_VAULT_PASSPHRASE` | **Yes** | Passphrase for the encrypted credential vault. |
-| `BONSAI_AI_API_KEY` | No | API key for the AI investigation engine. Set to a Gemini (Google AI Studio) or Moonshot key. If unset, AI investigations are silently disabled. The env var name is configurable via `[ai] api_key_env`. |
+| `BONSAI_AI_API_KEY` | No | Default API key for AI investigations. Per-provider keys can also be stored in the vault via the UI (Settings → AI Providers). |
+| `BONSAI_REQUIRE_AUTH` | No | Set to `1` to enforce RBAC. Also settable via DB (`app_config:require_auth`). |
+| `BONSAI_ADMIN_USER` / `BONSAI_ADMIN_PASS` | No | Bootstrap admin credentials. Vault aliases `bonsai-admin` / `bonsai-admin-pass` take priority. |
 | `BONSAI_YANG_BUNDLE_KEY` | No | Decryption key for the YANG model bundle (enterprise). |
 | `BONSAI_COLLECTOR_DIAG_PASSWORD` | No | Auth for the collector diagnostic HTTP server. |
+| `BONSAI_REQUIRE_SIDECAR` | No | Comma-separated sidecar kinds that must register before health reports `ok` (e.g. `collector-engine`). |
 | `RUST_LOG` | No | Log filter — e.g. `info,bonsai=debug`. |
 
 ### Streaming receiver ports (configurable via UI or TOML)
 
-All receiver ports are configurable. Change them live in **Settings → Streaming** — no restart required.
+All receiver ports are configurable. Change them live in **Settings → Streaming** — no restart required. Ports below 1024 require root or `cap_net_bind_service`.
 
-| Receiver | Default port | Protocol |
-|---|---|---|
-| gNMI | `57400` (per device) | gRPC |
-| Syslog | `10514` | UDP/TCP |
-| SNMP traps | `10162` | UDP |
-| BMP | `10179` | TCP |
-| BGP-LS | `10179` | TCP (GoBGP sidecar) |
-| NetFlow / IPFIX | `2055` | UDP |
-| OTLP gRPC | `4317` | gRPC |
-| PCEP | `4189` | TCP |
+| Receiver | Default port | Protocol | TOML key |
+|---|---|---|---|
+| gNMI | per device (e.g. `57400`) | gRPC | `[[target]]` |
+| Syslog | `5514` (UDP), `6514` (TCP) | UDP + TCP | `[signals.syslog]` |
+| SNMP traps | `9162` | UDP | `[signals.snmp]` |
+| BMP | `5000` | TCP | `[streaming.bmp]` |
+| BGP-LS | `15071` | TCP (GoBGP sidecar) | `[streaming.bgp_ls]` |
+| NetFlow / IPFIX | `2055` | UDP | `[streaming.netflow]` |
+| sFlow v5 | `6343` | UDP | `[streaming.sflow]` |
+| OTLP | `4318` | HTTP | `[streaming.otlp]` |
+| PCEP | `4189` | TCP | `[streaming.pcep]` |
 
 ---
 
 ## UI — navigation
 
-The sidebar is grouped into three sections. All primary workspaces have `⌘1`–`⌘9` keyboard shortcuts.
+The sidebar is grouped into three sections. Primary workspaces have `⌘1`–`⌘9` keyboard shortcuts. `Ctrl+K` opens the command palette.
 
 ### Monitor
 | Workspace | Kbd | Description |
 |---|---|---|
 | **Live** | `⌘1` | 3-panel view: site rail · topology map (auto-tiered) · event stream + active incidents |
 | **Incidents** | `⌘2` | Detection events with severity, rule, blast-radius chain, multi-source provenance |
-| **Devices** | `⌘3` | Managed devices, per-device gNMI readiness, config history, HostEndpoint graph |
+| **Devices** | `⌘3` | Managed devices, per-device gNMI/streaming readiness, config history, CMDB tab, enrichment conflicts |
 | **Operations** | `⌘4` | Daily health check, GNN calibration dashboard, weekly trend |
 | **Collectors** | `⌘5` | Distributed collector status, queue depth, receiver badges |
 
 ### Operate
 | Workspace | Kbd | Description |
 |---|---|---|
-| **Integrations** | `⌘6` | Unified: enrichment sources (NetBox, ServiceNow) + output adapters (Prometheus, Splunk, Elastic, ServiceNow EM). Each adapter has dedicated **scheme / host / port / path** fields. |
-| **Approvals** | `⌘7` | Pending remediation proposals, trust state per playbook, one-click approve/reject |
-| **Explorer** | `⌘8` | Raw Cypher graph query interface |
-| **Investigations** | `⌘9` | AI investigation records, reasoning trails, MCP tool calls |
+| **Integrations** | `⌘6` | Enrichment sources (NetBox, ServiceNow CMDB) + output adapters (Prometheus, Splunk, Elastic, ServiceNow EM) with scheme/host/port/path fields |
+| **Approvals** | `⌘7` | Pending remediation proposals, trust state per playbook, one-click approve/reject/rollback |
+| **Explorer** | `⌘8` | Cypher query interface, saved queries, natural-language graph questions (AI), graph health tab with coverage scores |
+| **Investigations** | `⌘9` | AI investigation records, reasoning trails, MCP tool calls, operator feedback, accuracy metrics |
 
 ### Configure
 | Workspace | Description |
 |---|---|
+| **HA** | High availability status, leader/follower state, etcd config |
 | **Environments** | Logical groupings (data_center, campus, cloud, service_provider) |
 | **Profiles** | Per-environment archetype config, path profiles, chaos plans |
 | **Sites** | Physical/logical site registry |
 | **Credentials** | Encrypted vault — add tokens, passwords, API keys |
-| **Settings** | Streaming receiver toggle + port config (hot-reload, no restart) |
+| **Audit** | Timestamped audit log of all remediation, approval, and config change events |
+| **Syslog / Shun** | Syslog vendor pattern management, hot-reload, regex tester; shun rules for noise suppression |
+| **Database** | DB stats, schema viewer, purge operations, backup/restore, export |
+| **Governance** | Resource governor state, pressure history, profile switcher, RSS sparkline |
+| **SNMP** | SNMP receiver config, OID pattern library, MIB upload + compile, v3 USM user management |
+| **Sidecars** | Python sidecar registry, rule visibility + toggle, link to Bonpy dashboard (`/bonpy/`) |
+| **Users & Access** | Local user management, RBAC role badges, LDAP settings + test connection |
+| **Config Library** | Synthesizer rule library |
+| **Settings** | Streaming receivers (hot-reload), AI providers, runtime config editor (14 DB-backed sections with JSON editor + export) |
 
 ---
 
@@ -275,29 +314,133 @@ Changing the type (Prometheus / Splunk HEC / Elastic / ServiceNow EM) auto-fills
 
 REST API served on `http_addr`. gRPC ingest on `api_addr`.
 
-OpenAPI schema: `GET /openapi.json`
+OpenAPI schema: `GET /api/openapi.json` · Swagger UI: `GET /api/docs`
+
+### Core endpoints
 
 ```
-GET  /health                                  health + version + git SHA
-GET  /api/devices                             list managed devices
-POST /api/devices                             add / update a device
-GET  /api/devices/{addr}/gnmi-readiness       readiness check
-GET  /api/incidents                           detection events
-GET  /api/approvals                           remediation proposals
-POST /api/approvals/{id}/approve              approve a proposal
-POST /api/approvals/{id}/reject               reject a proposal
-POST /api/enrichment/{name}/run               trigger enricher immediately
-GET  /api/enrichment/{name}/audit             enrichment run history
+GET  /health                                  health + version + git SHA + sidecar status
+GET  /healthz                                 Kubernetes liveness probe
+GET  /readyz                                  Kubernetes readiness probe
+```
+
+### Topology & Observability
+
+```
+GET  /api/topology                            full topology graph (nodes + edges)
+GET  /api/path?src=X&dst=Y                    shortest path between devices
+GET  /api/blast-radius/{address}              blast radius analysis from a device
+GET  /api/incidents                            detection events (grouped)
+GET  /api/detections                          raw detection list
+GET  /api/events                              SSE live event stream
+GET  /api/events/history                      paginated event history
+GET  /api/flows/live                          live flow data
+GET  /api/graph/quality                       graph quality score + coverage dimensions
+GET  /api/graph/insights                      graph topology insights
+GET  /api/redundancy/groups                   redundancy group inventory
+GET  /api/operations/daily-check              daily health summary
+GET  /api/operations/weekly-trend             weekly trend data
+GET  /api/operations/gnn-calibration          GNN calibration scores
+```
+
+### Devices & Onboarding
+
+```
+GET  /api/onboarding/devices                  list managed devices
+POST /api/onboarding/devices                  add a managed device
+POST /api/onboarding/devices/bulk             bulk add/remove devices
+POST /api/onboarding/import                   bulk import from CSV/YAML
+POST /api/onboarding/discover                 auto-discover device capabilities
+POST /api/devices/bootstrap                   trigger PyATS bootstrap for a device
+POST /api/devices/bootstrap/bulk              bulk PyATS bootstrap
+POST /api/devices/seed                        seed device data (17 data types)
+GET  /api/devices/{addr}                      device detail
+GET  /api/devices/{addr}/gnmi-readiness       gNMI readiness check
+GET  /api/devices/{addr}/streaming-readiness   multi-protocol readiness
+GET  /api/devices/{addr}/config-history        config snapshot history
+GET  /api/devices/{addr}/enrichment/conflicts  enrichment source conflicts
+GET  /api/devices/{addr}/cmdb                  CMDB CI hierarchy + business services
+GET  /api/devices/{addr}/sensors               sensor/environmental data
+GET  /api/devices/{addr}/optics                optical telemetry
+```
+
+### Enrichment & Integrations
+
+```
+GET  /api/enrichment                          list enrichment sources
+POST /api/enrichment                          upsert enrichment source
+POST /api/enrichment/run                      trigger enricher immediately
+GET  /api/enrichment/audit                    enrichment run history
 GET  /api/adapters                            list output adapters
 POST /api/adapters                            upsert output adapter
-POST /api/adapters/{name}/test                test adapter connectivity
+POST /api/adapters/test                       test adapter connectivity
 GET  /api/adapters/audit                      adapter push history
+GET  /api/tsdb/config                         TSDB integration config
+GET  /api/tsdb/query                          proxy query to Prometheus/Thanos/InfluxDB
+```
+
+### AI & Investigations
+
+```
 POST /api/investigations                      create AI investigation
-GET  /api/operations/daily-check              health summary
-GET  /api/settings/streaming                  get streaming receiver config
-PATCH /api/settings/streaming                 update streaming receiver config
-GET  /events                                  SSE stream (live events)
-GET  /api/events/history                      paginated event history
+GET  /api/investigations/{id}                 investigation detail
+GET  /api/investigations/{id}/tool-calls       MCP tool call log
+POST /api/investigations/{id}/feedback         operator feedback (agree/disagree/comment)
+GET  /api/investigations/accuracy              accuracy metrics over time
+POST /api/ai/test                             test AI provider connectivity
+GET  /api/ai/providers                        list configured AI providers
+POST /api/ai/providers                        add/update AI provider (vault-backed keys)
+```
+
+### Remediation & Approvals
+
+```
+GET  /api/approvals                           list remediation proposals
+POST /api/approvals/{id}/approve              approve a proposal
+POST /api/approvals/{id}/reject               reject a proposal
+POST /api/approvals/{id}/rollback             roll back an executed remediation
+POST /api/remediations/{id}/verify            verify remediation outcome via graph
+GET  /api/trust                               trust state per (rule, env, site, playbook)
+POST /api/trust/graduate                      graduate trust level
+GET  /api/playbooks                           playbook catalogue
+GET  /api/audit                               audit log
+```
+
+### Auth & RBAC
+
+```
+POST /api/auth/login                          login (returns session token)
+POST /api/auth/logout                         invalidate session
+GET  /api/auth/users                          list users
+POST /api/auth/users                          create user
+GET  /api/auth/apikeys                        list scoped API keys
+POST /api/auth/apikeys                        create scoped API key
+GET  /api/auth/ldap/config                    LDAP configuration
+POST /api/auth/ldap/test                      test LDAP connectivity
+```
+
+### Administration
+
+```
+GET  /api/settings                            list all config sections (DB status)
+GET  /api/settings/{section}                  read a config section
+PATCH /api/settings/{section}                 write a config section to DB
+POST /api/settings/export                     export all DB-stored config as JSON
+GET  /api/settings/streaming                  streaming receiver config
+PATCH /api/settings/streaming                 update receiver config (hot-reload)
+GET  /api/receivers/status                    live receiver status badges
+GET  /api/config-items                        list ConfigItem records
+POST /api/config-items                        upsert ConfigItem (validated)
+GET  /api/shun/rules                          syslog shun rules
+POST /api/shun/rules                          create shun rule
+GET  /api/db/stats                            database size + row counts
+GET  /api/db/schema                           graph schema introspection
+POST /api/db/backup                           trigger database backup
+GET  /api/ha/status                           HA cluster status + leader info
+POST /api/snmp/mibs                           upload + compile MIB file
+POST /api/explorer/query                      execute Cypher query
+POST /api/explorer/ask                        natural-language graph question (AI)
+POST /mcp                                     MCP tool server endpoint
 ```
 
 ---
@@ -311,13 +454,17 @@ Managed entirely via **Integrations → Enrichment Sources** in the UI — no TO
 - Writes: `netbox_*` properties on graph nodes + VLAN, Prefix, Rack, Location, **HostEndpoint** nodes
 - Extra options: REST vs MCP transport, endpoint role list (classify APs/servers/phones as HostEndpoints), max concurrent requests
 
-**ServiceNow CMDB**:
-- Reads CI records from a configurable table (default `cmdb_ci_netgear`)
-- Writes: `snow_*` properties on graph Device nodes
+**ServiceNow CMDB** (full deep integration — 9 concurrent table fetches):
+- **Phase 1**: business services (`cmdb_ci_business_service`), network CIs (`cmdb_ci_netgear`), CI relationships (`cmdb_rel_ci`), incidents
+- **Phase 2**: servers (`cmdb_ci_server`), locations (`cmn_location`), subnets (`cmdb_ci_ip_network`), IP addresses (`cmdb_ci_ip_address`), network adapters (`cmdb_ci_network_adapter`)
+- Writes: `snow_*` properties, `Application` nodes, `RUNS_SERVICE` edges, `CMDB_PARENT_OF` edges, `LOC_PARENT_OF` location hierarchy, `Incident` nodes
+- Provenance reconciliation: source-priority ranking (`cli > netbox > servicenow`), conflict detection, `PropertyProvenance` nodes
+- AIOps: incident upsert, playbook bridge (parse `bonsai:playbook <id>` from SNOW comments), change request correlation
+- Paginated fetch with `sysparm_offset` (500 per page, up to 200 pages)
 
 **Stub**: no-op enricher for CI pipelines.
 
-Enrichers run on a configurable schedule (default 3600 s) or on-demand via UI or `POST /api/enrichment/{name}/run`.
+Enrichers run on a configurable schedule (default 3600 s) or on-demand via UI or `POST /api/enrichment/run`.
 
 ---
 
@@ -337,9 +484,9 @@ collector_id         = "site-a-col-1"
 core_ingest_endpoint = "http://core.example.com:50051"
 ```
 
-- Collectors poll `GET /api/settings/streaming` from Core every 60 s — streaming config is owned by Core.
-- Optional mTLS on the collector→core channel via `[runtime.tls]`.
-- Per-collector path profiles and per-site gNMI targets live in `config/path_profiles/`.
+- Collectors poll `GET /api/settings/streaming` from Core every 60 s — streaming config is DB-backed and owned by Core.
+- Optional mTLS on the collector→core channel via `[runtime.tls]` in `bonsai.toml`.
+- Path profiles are migrated to the ConfigItem DB on first boot from `config/path_profiles/`.
 
 ---
 
@@ -351,6 +498,8 @@ Bonsai maps detection events to playbooks via a trust-graduated pipeline:
 2. **`approve_each`** — execute after human approval via UI or API
 3. **`auto_with_notification`** — auto-execute, notify operator, rollback window open
 4. **`auto_silent`** — fully autonomous (graduate to this deliberately)
+
+Remediation settings are DB-backed (via `PATCH /api/settings/remediation`) with TOML fallback:
 
 ```toml
 [remediation]
@@ -365,9 +514,9 @@ Playbooks live in `playbooks/library/`. Each has a `rule_id`, `steps` (gNMI SET 
 
 Graph Neural Network pipeline for unsupervised anomaly detection:
 
-1. **Accumulate**: run with `[archive] enabled = true` for 7–30 days
+1. **Accumulate**: enable archive via `PATCH /api/settings/archive` (or `[archive] enabled = true` in TOML) for 7–30 days
 2. **Train**: `python python/bonsai_ml/gnn/train_anomaly.py`
-3. **Calibrate**: set `[gnn] inference_mode = "calibration"` — review score distribution via **Operations → GNN Calibration**
+3. **Calibrate**: set `inference_mode = "calibration"` via `PATCH /api/settings/gnn` — review score distribution via **Operations → GNN Calibration**
 4. **Promote**: set `inference_mode = "production"` when P95 score is below your threshold
 
 ---
@@ -385,9 +534,10 @@ cd lab/fast-iteration
 cd lab/dc
 make deploy
 
-# External integrations (Prometheus, Splunk, Elastic, ServiceNow mock, NetBox)
+# External integrations (Prometheus, Splunk, Elastic, NetBox)
 cd docker
 docker compose -f compose-signal-test.yml up -d
+# ServiceNow: uses a real PDI (developer.servicenow.com), not a mock
 ```
 
 Lab credentials are documented in `lab/signal-test-lab/UBUNTU_TESTING_GUIDE.md` (Phase 17).
@@ -396,7 +546,7 @@ See `lab/` for topology YAML files and `scripts/` for seed scripts.
 
 ---
 
-## Python SDK
+## Python SDK & Sidecars
 
 ```bash
 pip install -e python/   # from repo root (local dev)
@@ -414,33 +564,38 @@ d = Detection(rule_id="bgp-all-peers-down", device_address="10.0.0.1",
 client.create_detection(d)
 ```
 
-See `python/bonsai_sdk/` for the full SDK. `python/bonsai_agent/` contains the AI investigation agent. `python/bonsai_ml/` contains the GNN pipeline.
+**Python components:**
+- `python/bonsai_sdk/` — SDK: client, detection, streaming rules, windowing, rule loader
+- `python/bonsai_agent/` — AI investigation agent with budget control
+- `python/bonsai_ml/` — GNN pipeline (embeddings, feature schema, training)
+- `python/bootstrap_agent.py` — PyATS/Genie device bootstrap (17 learn features: interfaces, BGP, BFD, OSPF, STP, VLAN, VRF, NTP, ACL, MPLS, platform, routing, ARP, HSRP, config, LLDP, MAC table)
+- `python/collector_engine.py` — Python rule engine sidecar
+- `docker/sidecars/pyats/app.py` — PyATS sidecar with topology-aware feature profiles
 
 ---
 
 ## Development
 
 ```bash
-# Rust (full suite)
+# Rust (full suite — requires cmake + protoc)
 cargo build
 cargo test --workspace
 
-# UI — dev server (Svelte 5 + Vite)
-cd ui && npm install && npm run dev
+# Bonsai UI — dev server (Svelte 5 + Vite)
+cd ui && npm ci && npm run dev
 # Production build
 cd ui && npm run build
+
+# Bonpy UI — Python/ML/AIOps dashboard (Svelte 5 + Vite)
+cd ui-bonpy && npm ci && npm run dev   # dev: proxies /api to localhost:3000
+cd ui-bonpy && npm run build           # prod: built assets served at /bonpy/
 
 # Python SDK
 cd python && pip install -e ".[dev]"
 pytest
 
-# Svelte compile check (zero-error gate)
-cd ui && node -e "
-  const s = require('svelte/compiler'), fs = require('fs');
-  const f = process.argv[1];
-  const r = s.compile(fs.readFileSync(f,'utf8'), {generate:'client',filename:f});
-  console.log(r.warnings.filter(w=>w.code!='a11y_autofocus').length,'warnings');
-" src/routes/Integrations.svelte
+# Playwright smoke tests (requires running bonsai instance)
+cd ui && npm run test:smoke
 ```
 
 See `docs/DEVELOPMENT.md` for full dev environment setup including ContainerLab, NetBox, and the parser sidecar stack.
@@ -449,16 +604,37 @@ See `docs/DEVELOPMENT.md` for full dev environment setup including ContainerLab,
 
 ## Architecture decisions
 
-See `DECISIONS.md` for the rationale behind key choices:
+See `DECISIONS.md` and `docs/architecture/` for rationale behind key choices:
 
 - **lbug (LadybugDB)** — embedded graph database, zero runtime deps, Cypher query interface
 - **Rust binary + Python sidecar** — telemetry + graph in Rust; ML + rules in Python
-- **Priority write channel** — detection/remediation events never queued behind telemetry batches
-- **CorrelationBuffer** — 45 s multi-source dedup keyed by `(device, semantic_type, sub_key)`
-- **MCP server** — AI agent uses read-only tool calls (graph query, incident fetch, topology)
-- **Two-binary model** — `bonsai` (main process) + `healthcheck` (container liveness probe)
-- **Trust model** — `suggest_only → approve_each → auto_with_notification → auto_silent`
+- **Priority write channel** — detection/remediation events never queued behind telemetry batches (biased `select` on separate mpsc channel)
+- **CorrelationBuffer** — 45 s multi-source dedup keyed by `(device, semantic_type, sub_key)` with 10 s sweep
+- **MCP server** — AI agent uses read-only tool calls (graph query, incident fetch, topology, blast radius)
+- **Two-binary model** — `bonsai` (main process) + `healthcheck` (container liveness probe) + `vault-rekey` (offline re-key) + `query` (CLI graph query)
+- **Trust model** — `suggest_only → approve_each → auto_with_notification → auto_silent` with per-environment defaults
 - **HostEndpoint node** — arch-agnostic, optional; SP deployments = zero HostEndpoints
+- **PyATS-first bootstrap** — see `docs/architecture/adr_suzieq_vs_pyats.md`
+- **Cross-device correlation** — see `docs/architecture/adr_cross_device_correlation.md`
+
+---
+
+## Project structure
+
+```
+src/                  Rust codebase (Axum HTTP, gRPC, graph, collectors, signals)
+ui/                   Bonsai UI (Svelte 5, served at /)
+ui-bonpy/             Bonpy Python/ML dashboard (Svelte 5, served at /bonpy/)
+python/               Python SDK, bootstrap agent, collector engine, ML pipeline
+proto/                Protobuf definitions (bonsai_service.proto, gnmi.proto)
+config/               Path profiles, syslog patterns, SNMP OID patterns, shun seeds (migrated to DB on first boot)
+playbooks/            Remediation playbook library
+lab/                  ContainerLab topologies (DC, SP, fast-iteration, cloud-DC, signal-test)
+docker/               Dockerfiles, compose configs, Grafana/Prometheus dashboards, sidecars
+scripts/              Operational scripts (cloud, dev, lab, ops)
+docs/                 Architecture docs, ADRs, development guide
+tests/                CLI fixtures, chaos harness, API/event drivers
+```
 
 ---
 
@@ -466,6 +642,7 @@ See `DECISIONS.md` for the rationale behind key choices:
 
 1. Fork and branch from `main`.
 2. `cargo test --workspace` must pass.
-3. `cd ui && npm run build` must succeed with zero Svelte compile errors.
+3. `cd ui && npm run build` and `cd ui-bonpy && npm run build` must succeed.
 4. New API endpoints must update `src/http_server/schema.rs`.
 5. New UI routes must be added to `NAV` in `ui/src/App.svelte` and `WORKSPACE_SHORTCUTS` in `CommandPalette.svelte`.
+6. New RBAC-protected endpoints must call `required_role()` middleware.

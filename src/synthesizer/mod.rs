@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::catalogue::{
     CataloguePath, CatalogueProfile, canonical_role, is_sp_role, load_catalogue,
+    load_catalogue_from_yaml_strings,
 };
 use crate::config::{SelectedSubscriptionPath, TargetConfig};
 use crate::discovery::{DiscoveryReport, GnmiReadinessReport, PathProfileMatch, SubscriptionPath};
@@ -520,6 +521,23 @@ fn load_rules(base_dir: &Path) -> Vec<SynthesizerRule> {
         };
         if let Ok(rule) = serde_yaml::from_str::<SynthesizerRule>(&raw) {
             rules.push(rule);
+        }
+    }
+    rules.sort_by(|a, b| a.name.cmp(&b.name));
+    rules
+}
+
+/// Load synthesizer rules from in-memory YAML strings (from DB ConfigItem).
+/// Falls back to `load_rules(base_dir)` if items is empty.
+pub fn load_rules_from_yaml_strings(items: &[(String, String)], fallback_dir: &Path) -> Vec<SynthesizerRule> {
+    if items.is_empty() {
+        return load_rules(fallback_dir);
+    }
+    let mut rules = Vec::new();
+    for (name, raw) in items {
+        match serde_yaml::from_str::<SynthesizerRule>(raw) {
+            Ok(rule) => rules.push(rule),
+            Err(e) => tracing::warn!(name = %name, error = %e, "skipping invalid synthesizer rule from DB"),
         }
     }
     rules.sort_by(|a, b| a.name.cmp(&b.name));

@@ -638,3 +638,180 @@ mod tests {
         );
     }
 }
+
+// ─── Performance Baseline Algorithms ──────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PerformanceBaselineRow {
+    pub id: String,
+    pub device_address: String,
+    pub metric_type: String,
+    pub metric_key: String,
+    pub baseline_mean: f64,
+    pub baseline_stddev: f64,
+    pub baseline_min: f64,
+    pub baseline_max: f64,
+    pub sample_count: i64,
+    pub computed_at_ns: i64,
+    pub lookback_hours: i32,
+    pub confidence_level: f64,
+}
+
+/// Compute interface utilization baseline for a device over lookback period
+pub fn compute_interface_utilization_baseline(
+    conn: &Connection<'_>,
+    device_address: &str,
+    lookback_hours: i32,
+) -> Result<Vec<PerformanceBaselineRow>> {
+    let cutoff_ns = now_ns() - (lookback_hours as i64 * 3600 * 1_000_000_000);
+    
+    let rows = conn
+        .query(
+            "MATCH (d:Device {address: $device_address})-[:HAS_INTERFACE]->(i:Interface) \
+             WHERE i.updated_at_ns > $cutoff_ns \
+             RETURN i.name, i.in_octets, i.out_octets, i.speed, i.updated_at_ns \
+             ORDER BY i.updated_at_ns",
+        )
+        .context("interface baseline query")?;
+
+    // Group by interface and compute statistics
+    let mut interface_data: HashMap<String, Vec<(f64, i64)>> = HashMap::new();
+    
+    for row in rows {
+        let if_name = read_str(&row[0]);
+        let in_octets = read_i64(&row[1]) as f64;
+        let out_octets = read_i64(&row[2]) as f64;
+        let speed = read_i64(&row[3]) as f64;
+        let timestamp = read_i64(&row[4]);
+        
+        if speed > 0.0 {
+            let utilization = ((in_octets + out_octets) * 8.0 / speed) * 100.0; // Percentage
+            interface_data.entry(if_name).or_insert_with(Vec::new).push((utilization, timestamp));
+        }
+    }
+    
+    let mut baselines = Vec::new();
+    
+    for (if_name, samples) in interface_data {
+        if samples.len() < 10 {
+            continue; // Need sufficient samples for meaningful baseline
+        }
+        
+        let values: Vec<f64> = samples.iter().map(|(v, _)| *v).collect();
+        let mean = values.iter().sum::<f64>() / values.len() as f64;
+        let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
+        let stddev = variance.sqrt();
+        let min_val = values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let max_val = values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        
+        let baseline = PerformanceBaselineRow {
+            id: format!("baseline-{}-{}-{}", device_address, "interface_utilization", if_name),
+            device_address: device_address.to_string(),
+            metric_type: "interface_utilization".to_string(),
+            metric_key: if_name,
+            baseline_mean: mean,
+            baseline_stddev: stddev,
+            baseline_min: min_val,
+            baseline_max: max_val,
+            sample_count: samples.len() as i64,
+            computed_at_ns: now_ns(),
+            lookback_hours,
+            confidence_level: 0.95,
+        };
+        
+        baselines.push(baseline);
+    }
+    
+    Ok(baselines)
+}
+
+/// Store computed baseline in the graph database
+pub fn store_performance_baseline(
+    conn: &Connection<'_>,
+    baseline: &PerformanceBaselineRow,
+) -> Result<()> {
+    conn.query(
+        "MERGE (pb:PerformanceBaseline {id: $id}) \
+         SET pb.device_address = $device_address, \
+             pb.metric_type = $metric_type, \
+             pb.metric_key = $metric_key, \
+             pb.baseline_mean = $baseline_mean, \
+             pb.baseline_stddev = $baseline_stddev, \
+             pb.baseline_min = $baseline_min, \
+             pb.baseline_max = $baseline_max, \
+             pb.sample_count = $sample_count, \
+             pb.computed_at_ns = $computed_at_ns, \
+             pb.lookback_hours = $lookback_hours, \
+             pb.confidence_level = $confidence_level",
+        vec![
+            ("id", Value::String(baseline.id.clone())),
+            ("device_address", Value::String(baseline.device_address.clone())),
+            ("metric_type", Value::String(baseline.metric_type.clone())),
+            ("metric_key", Value::String(baseline.metric_key.clone())),
+            ("baseline_mean", Value::Double(baseline.baseline_mean)),
+            ("baseline_stddev", Value::Double(baseline.baseline_stddev)),
+            ("baseline_min", Value::Double(baseline.baseline_min)),
+            ("baseline_max", Value::Double(baseline.baseline_max)),
+            ("sample_count", Value::Int64(baseline.sample_count)),
+            ("computed_at_ns", Value::Int64(baseline.computed_at_ns)),
+            ("lookback_hours", Value::Int32(baseline.lookback_hours)),
+            ("confidence_level", Value::Double(baseline.confidence_level)),
+        ],
+    )
+    .context("store performance baseline")?;
+    
+    // Create relationship to device
+    conn.query(
+        "MATCH (d:Device {address: $device_address}), (pb:PerformanceBaseline {id: $id}) \
+         MERGE (d)-[:HAS_BASELINE {updated_at: $updated_at}]->(pb)",
+        vec![
+            ("device_address", Value::String(baseline.device_address.clone())),
+            ("id", Value::String(baseline.id.clone())),
+            ("updated_at", Value::Int64(now_ns())),
+        ],
+    )
+    .context("create baseline relationship")?;
+    
+    Ok(())
+}
+
+/// Check if current value exceeds baseline threshold (mean + 2*stddev)
+pub fn check_baseline_drift(
+    conn: &Connection<'_>,
+    device_address: &str,
+    metric_type: &str,
+    metric_key: &str,
+    current_value: f64,
+) -> Result<bool> {
+    let rows = conn
+        .query(
+            "MATCH (d:Device {address: $device_address})-[:HAS_BASELINE]->(pb:PerformanceBaseline) \
+             WHERE pb.metric_type = $metric_type AND pb.metric_key = $metric_key \
+             RETURN pb.baseline_mean, pb.baseline_stddev",
+            vec![
+                ("device_address", Value::String(device_address.to_string())),
+                ("metric_type", Value::String(metric_type.to_string())),
+                ("metric_key", Value::String(metric_key.to_string())),
+            ],
+        )
+        .context("baseline drift check query")?;
+    
+    if let Some(row) = rows.next() {
+        let baseline_mean = read_f64(&row[0]);
+        let baseline_stddev = read_f64(&row[1]);
+        let threshold = baseline_mean + 2.0 * baseline_stddev;
+        Ok(current_value > threshold)
+    } else {
+        Ok(false) // No baseline available
+    }
+}
+
+fn read_f64(v: &Value) -> f64 {
+    match v {
+        Value::Double(n) => *n,
+        Value::Float(n) => *n as f64,
+        Value::Int64(n) => *n as f64,
+        Value::Int32(n) => *n as f64,
+        _ => 0.0,
+    }
+}
