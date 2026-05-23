@@ -60,6 +60,7 @@ mod settings;
 mod nl_query;
 mod ha;
 mod shun;
+mod auth;
 
 use mcp_routes::{openapi_json_handler, resolve_handler, schema_handler, swagger_ui_handler};
 use remediation::{approvals_approve_handler, approvals_create_handler, approvals_list_handler, approvals_reject_handler, approvals_rollback_handler, trust_list_handler, trust_graduate_handler, snow_integration_test_handler, servicenow_aiops_sync_handler, list_overrides, add_override, remove_override, list_investigations_handler, create_investigation_handler, get_investigation_handler, list_tool_calls_handler, complete_investigation_handler, grounded_incident_handler, webhook_change_event_handler, change_context_handler, servicenow_change_sync_handler, list_changes_handler, playbooks_catalog_handler, audit_log_handler, investigation_feedback_handler, investigation_accuracy_handler, vault_rekey_handler, remediation_verify_handler, list_config_items_handler, upsert_config_item_handler};
@@ -70,10 +71,11 @@ use managed_devices::{managed_devices_handler, discover_handler, credentials_han
 use governance::{assignment_override_handler, assignment_rules_handler, assignment_status_handler, collectors_handler, create_environment_handler, environments_handler, governance_state_handler, governance_history_handler, governance_profile_handler, health_handler, healthz_handler, readyz_handler, remove_environment_handler, assign_site_environment_handler, update_environment_handler, set_assignment_rules_handler, setup_status_handler, sidecars_handler, sidecar_status_handler, sidecar_rules_handler, sidecar_rule_toggle_handler};
 use outputs::{adapter_audit_handler, adapter_list_handler, adapter_remove_handler, adapter_test_handler, adapter_upsert_handler};
 use test_endpoints::{inject_detection_handler, parse_syslog_fixture_handler};
-use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler, get_ai_config_handler, post_ai_test_handler, list_ai_providers_handler, upsert_ai_provider_handler, remove_ai_provider_handler, test_ai_provider_handler, reload_patterns_handler};
+use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler, get_ai_config_handler, post_ai_test_handler, list_ai_providers_handler, upsert_ai_provider_handler, remove_ai_provider_handler, test_ai_provider_handler, reload_patterns_handler, mib_upload_handler};
 use ha::{ha_status_handler, ha_settings_handler, ha_patch_settings_handler, restart_handler};
 use nl_query::{explorer_ask_handler, nl_budget_handler};
 use shun::{create_shun_rule_handler, delete_shun_rule_handler, disable_shun_rule_handler, list_shun_rules_handler, shun_stats_handler};
+use auth::{list_api_keys_handler, create_api_key_handler, delete_api_key_handler, rotate_api_key_handler};
 
 // ── JSON response types ───────────────────────────────────────────────────────
 
@@ -1000,6 +1002,10 @@ fn adapter_and_schema_routes() -> Router<AppState> {
         // D4-9 T4: Sidecar rules visibility
         .route("/api/sidecar/rules", get(sidecar_rules_handler))
         .route("/api/sidecar/rules/{rule_id}/toggle", post(sidecar_rule_toggle_handler))
+        // D4-3 T6: Scoped API keys
+        .route("/api/auth/apikeys", get(list_api_keys_handler).post(create_api_key_handler))
+        .route("/api/auth/apikeys/{id}", delete(delete_api_key_handler))
+        .route("/api/auth/apikeys/{id}/rotate", post(rotate_api_key_handler))
         .route("/health", get(health_handler))
         .route("/healthz", get(healthz_handler))
         .route("/readyz", get(readyz_handler))
@@ -1024,6 +1030,8 @@ fn settings_routes() -> Router<AppState> {
         .route("/api/ha/settings", get(ha_settings_handler).patch(ha_patch_settings_handler))
         .route("/api/restart", post(restart_handler))
         .route("/api/config/reload-patterns", post(reload_patterns_handler))
+        // D4-1 T4: MIB upload + compile pipeline
+        .route("/api/snmp/mibs", post(mib_upload_handler))
 }
 
 fn shun_routes() -> Router<AppState> {

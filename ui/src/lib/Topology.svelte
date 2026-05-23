@@ -17,6 +17,9 @@
 
   let incidentDevices = $state(new Map()); // address -> 'critical' | 'warn'
 
+  // D4-12 T5: Redundancy group indication
+  let redundancyMap = $state(new Map()); // address -> { state: 'ok'|'degraded'|'lost', group_type, protects }
+
   let layerFilter  = $state('combined');
   let selectedDevice = $state(null);
   let traceSrc     = $state(null);
@@ -139,6 +142,26 @@
         incidentDevices = map;
         onIncidentMapChange?.(map);
       }
+      // D4-12 T5: Fetch redundancy groups
+      try {
+        const rgRes = await fetch('/api/redundancy/groups');
+        if (rgRes.ok) {
+          const rgData = await rgRes.json();
+          const rMap = new Map();
+          for (const rg of rgData.groups ?? []) {
+            const state = rg.member_count <= 1 ? 'lost' : rg.member_count < rg.original_member_count ? 'degraded' : 'ok';
+            for (const memberId of rg.member_node_ids ?? []) {
+              const existing = rMap.get(memberId);
+              // Keep worst state
+              if (!existing || (state === 'lost') || (state === 'degraded' && existing.state === 'ok')) {
+                rMap.set(memberId, { state, group_type: rg.group_type || rg.type, protects: rg.protects_node_id || '' });
+              }
+            }
+          }
+          redundancyMap = rMap;
+        }
+      } catch {}
+
       onTopoLoad?.(topology);
       lastRefresh = Date.now();
       error = null;
@@ -388,6 +411,27 @@
 
       if (isTraceSrc) el.append('circle').attr('r', 5).attr('cx', 17).attr('cy', -17).attr('fill', C.accentPrimary);
       if (isTraceDst) el.append('circle').attr('r', 5).attr('cx', 17).attr('cy', -17).attr('fill', C.stateDegraded);
+
+      // D4-12 T5: Redundancy group icon (chain link)
+      const rgInfo = redundancyMap.get(d.address);
+      if (rgInfo) {
+        const rgColor = rgInfo.state === 'lost' ? C.stateFailed
+                      : rgInfo.state === 'degraded' ? C.stateDegraded
+                      : 'rgba(88,166,255,0.6)';
+        // Small chain-link icon at bottom-right of node
+        const iconG = el.append('g').attr('transform', 'translate(20, 18)');
+        iconG.append('circle').attr('r', 8).attr('fill', C.bgSurface).attr('stroke', rgColor).attr('stroke-width', 1.5);
+        // Two interlocking rings (simplified chain icon)
+        iconG.append('circle').attr('cx', -2).attr('cy', 0).attr('r', 3.5)
+          .attr('fill', 'none').attr('stroke', rgColor).attr('stroke-width', 1.2);
+        iconG.append('circle').attr('cx', 2).attr('cy', 0).attr('r', 3.5)
+          .attr('fill', 'none').attr('stroke', rgColor).attr('stroke-width', 1.2);
+        iconG.append('title').text(
+          rgInfo.state === 'lost' ? `Redundancy LOST (${rgInfo.group_type}) — single point of failure${rgInfo.protects ? '\nProtects: ' + rgInfo.protects : ''}`
+          : rgInfo.state === 'degraded' ? `Redundancy DEGRADED (${rgInfo.group_type})${rgInfo.protects ? '\nProtects: ' + rgInfo.protects : ''}`
+          : `Redundancy OK (${rgInfo.group_type})${rgInfo.protects ? '\nProtects: ' + rgInfo.protects : ''}`
+        );
+      }
     });
 
     node.append('text')

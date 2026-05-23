@@ -14,11 +14,18 @@
   let adding = $state(false);
   let testing = $state({});
 
-  // ── RBAC / API keys ──
-  const RBAC_NOTE = `RBAC and scoped API keys are enforced via the BONSAI_REQUIRE_AUTH and BONSAI_API_KEY environment variables.
-Set BONSAI_REQUIRE_AUTH=1 to require bearer tokens on all API calls.
-Scoped API keys: stored in vault under alias "apikey-<name>", resolved at request time.
-LDAP: configure [auth.ldap] in bonsai.toml (server, bind_dn, search_base, group_filter).`;
+  // ── API Keys (D4-3 T6) ──
+  let apiKeys = $state([]);
+  let apiKeysLoading = $state(false);
+  let apiKeysError = $state('');
+  let apiKeysMsg = $state('');
+  let newKeyAlias = $state('');
+  let newKeyScope = $state('read');
+  let newKeyExpiry = $state(0);
+  let creatingKey = $state(false);
+  let lastCreatedKey = $state('');
+
+  const SCOPES = ['read', 'write', 'remediation', 'webhook', 'admin', '*'];
 
   const PROVIDERS = [
     { value: 'anthropic',  label: 'Anthropic (Claude)',   default_model: 'claude-3-5-sonnet-20241022' },
@@ -29,8 +36,67 @@ LDAP: configure [auth.ldap] in bonsai.toml (server, bind_dn, search_base, group_
   ];
 
   onMount(async () => {
-    await Promise.all([loadProviders(), loadCurrentAi()]);
+    await Promise.all([loadProviders(), loadCurrentAi(), loadApiKeys()]);
   });
+
+  async function loadApiKeys() {
+    apiKeysLoading = true;
+    try {
+      const r = await fetch('/api/auth/apikeys');
+      if (!r.ok) throw new Error(await r.text());
+      const data = await r.json();
+      apiKeys = data.keys || [];
+      apiKeysError = '';
+    } catch (e) { apiKeysError = e.message; }
+    finally { apiKeysLoading = false; }
+  }
+
+  async function createApiKey() {
+    creatingKey = true; apiKeysMsg = ''; lastCreatedKey = '';
+    try {
+      const r = await fetch('/api/auth/apikeys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ alias: newKeyAlias, scope: newKeyScope, expires_in_secs: newKeyExpiry }),
+      });
+      const res = await r.json();
+      if (!res.success) throw new Error(res.error || 'Failed to create key');
+      lastCreatedKey = res.api_key;
+      apiKeysMsg = `Key "${res.alias}" created. Copy the key below — it will not be shown again.`;
+      newKeyAlias = ''; newKeyScope = 'read'; newKeyExpiry = 0;
+      await loadApiKeys();
+    } catch (e) { apiKeysMsg = e.message; }
+    finally { creatingKey = false; }
+  }
+
+  async function revokeApiKey(id) {
+    try {
+      await fetch(`/api/auth/apikeys/${id}`, { method: 'DELETE' });
+      await loadApiKeys();
+    } catch {}
+  }
+
+  async function rotateApiKey(id) {
+    lastCreatedKey = ''; apiKeysMsg = '';
+    try {
+      const r = await fetch(`/api/auth/apikeys/${id}/rotate`, { method: 'POST' });
+      const res = await r.json();
+      if (!res.success) throw new Error(res.error || 'Failed to rotate key');
+      lastCreatedKey = res.api_key;
+      apiKeysMsg = `Key "${res.alias}" rotated. Copy the new key below — it will not be shown again.`;
+      await loadApiKeys();
+    } catch (e) { apiKeysMsg = e.message; }
+  }
+
+  function formatExpiry(ns) {
+    if (!ns || ns <= 0) return 'never';
+    return new Date(ns / 1e6).toLocaleDateString();
+  }
+
+  function formatLastUsed(ns) {
+    if (!ns || ns <= 0) return 'never';
+    return new Date(ns / 1e6).toLocaleString();
+  }
 
   async function loadProviders() {
     llmLoading = true;
@@ -271,29 +337,82 @@ readonly_group = "bonsai-readonly"</pre>
 
   <!-- ── Scoped API Keys (D4-3 T6) ── -->
   {:else if tab === 'apikeys'}
-    <div class="info-section">
-      <h3>Scoped API Keys</h3>
-      <p class="muted small">
-        API keys are stored in the vault under the alias <code>apikey-&lt;name&gt;</code>.
-        Create keys via the vault CLI or the re-key API:
-      </p>
-      <pre class="code-block">
-# Create a new scoped key (example via vault CLI)
-BONSAI_VAULT_PASSPHRASE=... ./vault-rekey --add-apikey monitoring-system
+    <div class="form-section">
+      <h3>Create API Key</h3>
+      <div class="prov-form">
+        <label>
+          Alias
+          <input bind:value={newKeyAlias} placeholder="monitoring-system" />
+        </label>
+        <label>
+          Scope
+          <select bind:value={newKeyScope}>
+            {#each SCOPES as s}
+              <option value={s}>{s === '*' ? 'all (admin)' : s}</option>
+            {/each}
+          </select>
+        </label>
+        <label>
+          Expires in (seconds, 0 = never)
+          <input type="number" bind:value={newKeyExpiry} min="0" step="3600" />
+        </label>
+        <button class="primary" onclick={createApiKey} disabled={creatingKey || !newKeyAlias}>
+          {creatingKey ? 'Creating…' : 'Generate Key'}
+        </button>
+      </div>
+      {#if apiKeysMsg}<p class="msg">{apiKeysMsg}</p>{/if}
+      {#if lastCreatedKey}
+        <div class="key-reveal">
+          <span class="key-reveal-label">API Key (copy now — shown only once):</span>
+          <code class="key-reveal-value">{lastCreatedKey}</code>
+        </div>
+      {/if}
+    </div>
 
-# Use the key in requests
-curl -H "Authorization: Bearer &lt;key&gt;" http://bonsai:8080/api/incidents</pre>
+    {#if apiKeysLoading}
+      <p class="muted">Loading…</p>
+    {:else if apiKeysError}
+      <p class="error-msg">{apiKeysError}</p>
+    {:else if apiKeys.length === 0}
+      <p class="muted">No API keys created yet.</p>
+    {:else}
+      <table class="data-table">
+        <thead>
+          <tr><th>Alias</th><th>Scope</th><th>Expires</th><th>Last Used</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody>
+          {#each apiKeys as k}
+            <tr class:disabled-row={!k.enabled}>
+              <td><code>{k.alias}</code></td>
+              <td><span class="scope-badge">{k.scope}</span></td>
+              <td>{formatExpiry(k.expires_at_ns)}</td>
+              <td>{formatLastUsed(k.last_used_at_ns)}</td>
+              <td>
+                {#if k.enabled}
+                  <span class="active-pill">active</span>
+                {:else}
+                  <span class="revoked-pill">revoked</span>
+                {/if}
+              </td>
+              <td class="actions-cell">
+                {#if k.enabled}
+                  <button class="ghost-sm" onclick={() => rotateApiKey(k.id)}>Rotate</button>
+                  <button class="ghost-sm danger" onclick={() => revokeApiKey(k.id)}>Revoke</button>
+                {/if}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+
+    <div class="info-section" style="margin-top:16px">
+      <h3>Usage</h3>
+      <pre class="code-block">{'curl -H "Authorization: Bearer bsk_..." http://bonsai:8080/api/incidents'}</pre>
       <p class="muted small" style="margin-top:8px">
-        Keys can be restricted to specific API path prefixes by setting a <code>scope</code> field
-        (e.g. <code>scope=/api/incidents,/api/devices</code>) in the vault entry metadata.
-        This is enforced by the JWT middleware when <code>BONSAI_REQUIRE_AUTH=1</code>.
+        Set <code>BONSAI_REQUIRE_AUTH=1</code> to enforce bearer token validation on all API calls.
+        Health endpoints (<code>/health</code>, <code>/healthz</code>, <code>/readyz</code>) are always open.
       </p>
-
-      <h3 style="margin-top:20px">Vault Re-Key</h3>
-      <p class="muted small">
-        Change the vault passphrase via the API (requires existing valid credentials):
-      </p>
-      <pre class="code-block">{'POST /api/vault/rekey\n{"new_passphrase_env": "BONSAI_VAULT_NEW_PASSPHRASE"}\n# Set the env var before calling, then restart with the new passphrase'}</pre>
     </div>
   {/if}
 </div>
@@ -368,4 +487,22 @@ curl -H "Authorization: Bearer &lt;key&gt;" http://bonsai:8080/api/incidents</pr
   .muted { color: var(--text-tertiary); }
   .small { font-size: 11px; }
   .error-msg { color: #fca5a5; font-size: 12px; }
+
+  .key-reveal {
+    margin-top: 12px; padding: 10px 14px; background: rgba(34,197,94,0.06);
+    border: 1px solid rgba(34,197,94,0.25); border-radius: 6px;
+  }
+  .key-reveal-label { font-size: 11px; color: var(--state-healthy, #22c55e); display: block; margin-bottom: 4px; }
+  .key-reveal-value { font-size: 12px; font-family: var(--font-mono); word-break: break-all; user-select: all; color: var(--text-primary); }
+
+  .scope-badge {
+    font-size: 10px; font-family: var(--font-mono); background: rgba(88,166,255,0.08);
+    border: 1px solid rgba(88,166,255,0.2); padding: 1px 6px; border-radius: 3px;
+    color: var(--accent-primary, #58a6ff);
+  }
+  .revoked-pill {
+    font-size: 10px; background: rgba(239,68,68,0.1); color: #fca5a5;
+    border: 1px solid rgba(239,68,68,0.25); padding: 1px 6px; border-radius: 3px; font-weight: 600;
+  }
+  .disabled-row td { opacity: 0.5; }
 </style>

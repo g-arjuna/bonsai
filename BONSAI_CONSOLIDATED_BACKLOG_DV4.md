@@ -74,7 +74,7 @@
 - `[[signals.snmp.v3_users]]` config: `security_name`, `auth_protocol`, `auth_key_env`, `priv_protocol`, `priv_key_env`.
 - Keys stored in vault by alias — never plaintext in TOML.
 
-**T4 — SNMP: MIB upload + compile pipeline**
+**T4 — SNMP: MIB upload + compile pipeline** ✅ batch19
 - UI: upload `.mib` text files.
 - Backend: Python subprocess via `pysmi`/`mibdump.py` to compile OID name → numeric OID mapping.
 - Auto-generate `SnmpOidPattern` entries from compiled MIB. Store in DB (not just disk YAML).
@@ -195,11 +195,11 @@ Zero suppression capability exists today. All matching syslog messages emit to t
 - `build_provider()` resolves key from vault by alias rather than env var.
 - New providers: OpenAI-compatible (covers OpenAI, Azure OpenAI, Groq, Together, OpenRouter via `base_url` override), Anthropic (Claude 3.5 Sonnet/Haiku), Ollama (local, configurable base URL).
 
-**T6 — Scoped API keys for external consumers**
+**T6 — Scoped API keys for external consumers** ✅ batch19
 - `POST /api/auth/apikeys` → generate scoped key (read/remediation/webhook) → return once, store hash.
 - Key rotation endpoint. UI list: key alias, last-used timestamp, scope, expiry.
 
-**T7 — DB + transport security**
+**T7 — DB + transport security** ✅ batch19
 - Enforce `runtime/` directory mode 700 in server startup.
 - TLS for HTTP API: `[server.tls]` cert/key config using axum-server + rustls. Self-signed cert auto-generated at startup if none provided, with warning log.
 - Makefile: `make backup` → tarballs `runtime/` with timestamp to `backups/`.
@@ -654,7 +654,7 @@ For a dual-homed server (two interfaces to two ToR switches), the graph doesn't 
 - Trigger path: `interface_down` or `bgp_session_down` detection → check if affected node is a `RedundancyGroup` member → compute new member_count → fire redundancy rule if threshold crossed.
 - Severity escalation: if the protected host is a critical application server → escalate to `critical`.
 
-**T5 — UI: Redundancy indication in topology canvas**
+**T5 — UI: Redundancy indication in topology canvas** ✅ batch19
 - Redundancy group members shown with chain/link icon on their topology node.
 - When redundancy degrades: icon turns amber; when lost: icon turns red.
 - Tooltip on red icon: "Server X was dual-homed to leaf1+leaf2. leaf2 uplink is down — single point of failure."
@@ -999,7 +999,7 @@ Key ⬜ (never run) and ⚠️ (partial) items from the full checklist:
   - Saves screenshot per page to `test-results/screenshots/`.
 - Add to `package.json` as `npm run test:smoke` script.
 
-**T5 — Summary checklist integration**
+**T5 — Summary checklist integration** ✅ batch19
 - After each test run (from T1 evidence script + T4 Playwright), auto-generate the summary checklist table (format matching the existing table at the bottom of UBUNTU_TESTING_GUIDE.md).
 - Fill ✅/❌ based on actual command output rather than manual marking.
 - Produce a Markdown diff against the previous run showing regressions or improvements.

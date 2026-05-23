@@ -699,3 +699,98 @@ pub async fn reload_patterns_handler(
         error: if errors.is_empty() { None } else { Some(errors.join("; ")) },
     }))
 }
+
+// ── D4-1 T4: MIB upload + compile pipeline ─────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct MibUploadRequest {
+    pub filename: String,
+    pub content: String,
+}
+
+#[derive(Serialize)]
+pub struct MibUploadResponse {
+    pub success: bool,
+    pub filename: String,
+    pub oid_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// POST /api/snmp/mibs — Upload a MIB file, compile it, and store OID patterns.
+pub(super) async fn mib_upload_handler(
+    State(state): State<AppState>,
+    Json(req): Json<MibUploadRequest>,
+) -> Result<Json<MibUploadResponse>, (StatusCode, String)> {
+    let filename = req.filename.trim().to_string();
+    if filename.is_empty() || req.content.is_empty() {
+        return Ok(Json(MibUploadResponse {
+            success: false,
+            filename,
+            oid_count: 0,
+            error: Some("filename and content are required".to_string()),
+        }));
+    }
+
+    // Write MIB to runtime/mibs/
+    let mibs_dir = std::path::Path::new("runtime").join("mibs");
+    std::fs::create_dir_all(&mibs_dir)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to create mibs dir: {e}")))?;
+
+    let mib_path = mibs_dir.join(&filename);
+    std::fs::write(&mib_path, &req.content)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to write MIB file: {e}")))?;
+
+    // Run compile_mib.py
+    let output = tokio::process::Command::new("python3")
+        .args(["scripts/compile_mib.py", &mib_path.to_string_lossy()])
+        .output()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to run compile_mib.py: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Ok(Json(MibUploadResponse {
+            success: false,
+            filename,
+            oid_count: 0,
+            error: Some(format!("MIB compile failed: {}", stderr.trim())),
+        }));
+    }
+
+    // Parse the JSON output
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let oid_entries: Vec<serde_json::Value> = serde_json::from_str(&stdout)
+        .unwrap_or_default();
+
+    let oid_count = oid_entries.len();
+
+    // Store each OID pattern as a ConfigItem
+    for entry in &oid_entries {
+        let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let oid_prefix = entry.get("oid_prefix").and_then(|v| v.as_str()).unwrap_or("");
+        let mib_module = entry.get("mib_module").and_then(|v| v.as_str()).unwrap_or("");
+
+        let item = crate::graph::ConfigItemRecord {
+            id: format!("mib-oid-{}-{}", mib_module.to_lowercase(), name.to_lowercase()),
+            config_class: "snmp_oid_pattern".to_string(),
+            vendor: mib_module.to_string(),
+            name: name.to_string(),
+            version: String::new(),
+            content_json: serde_json::to_string(entry).unwrap_or_default(),
+            enabled: true,
+            created_by: "mib_upload".to_string(),
+        };
+
+        if let Err(e) = state.store.upsert_config_item(item).await {
+            tracing::warn!(error = %e, name = name, "failed to store OID pattern from MIB upload");
+        }
+    }
+
+    Ok(Json(MibUploadResponse {
+        success: true,
+        filename,
+        oid_count,
+        error: None,
+    }))
+}
