@@ -309,7 +309,7 @@
             disabled={nlRunning}
           />
           <button class="btn-primary ask-btn" onclick={askQuestion} disabled={nlRunning || !nlQuestion.trim()}>
-            {nlRunning ? 'Thinking…' : 'Ask'}
+            {nlRunning ? 'Investigating…' : 'Ask'}
           </button>
         </div>
         {#if nlBudget}
@@ -326,53 +326,71 @@
         <div class="error-banner">{nlError}</div>
       {/if}
 
+      {#if nlRunning}
+        <div class="ask-thinking">
+          <div class="ask-thinking-spinner"></div>
+          <span>Investigating your question…</span>
+        </div>
+      {/if}
+
       {#if nlResult}
         <div class="ask-result-card">
           <div class="ask-question-echo">{nlResult.question}</div>
 
-          {#if nlResult.answer_template && !nlResult.error}
-            <div class="ask-answer-summary">{nlResult.answer_template}</div>
-          {/if}
-
-          {#if nlResult.explanation}
-            <div class="ask-explanation">{nlResult.explanation}</div>
-          {/if}
-
           {#if nlResult.error}
             <div class="error-banner" style="margin-top:0.75rem;">{nlResult.error}</div>
-          {:else if nlResult.rows.length > 0}
-            <div class="result-meta" style="margin-top:0.75rem;">{nlResult.row_count} row{nlResult.row_count !== 1 ? 's' : ''}</div>
-            <div class="result-table-wrap">
-              <table class="result-table">
-                <thead>
-                  <tr>
-                    {#each nlResult.columns as col}
-                      <th>{col}</th>
-                    {/each}
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each nlResult.rows as row}
-                    <tr>
-                      {#each row as cell}
-                        <td>{cellStr(cell)}</td>
-                      {/each}
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
-          {:else}
-            <div class="empty-result" style="margin-top:0.5rem;">Query returned 0 rows — the graph may not have data matching this query yet.</div>
           {/if}
 
-          <details class="ask-cypher-details">
-            <summary class="ask-cypher-summary">View generated Cypher <span class="ask-tokens">{nlResult.tokens_used} tokens</span></summary>
-            <pre class="ask-cypher-pre">{nlResult.cypher}</pre>
-            <button class="btn-secondary ask-use-btn" onclick={() => { cypher = nlResult.cypher; activeTab = 'explorer'; result = null; error = null; }}>
-              Open in Cypher editor
-            </button>
-          </details>
+          {#if nlResult.answer}
+            <div class="ask-answer">{@html nlResult.answer.replace(/\n/g, '<br/>')}</div>
+          {/if}
+
+          {#if nlResult.steps && nlResult.steps.length > 0}
+            <details class="ask-steps-details">
+              <summary class="ask-steps-summary">Investigation steps ({nlResult.steps.length}) <span class="ask-tokens">{nlResult.tokens_used} tokens</span></summary>
+              <div class="ask-steps-list">
+                {#each nlResult.steps as step, i}
+                  <div class="ask-step">
+                    <div class="ask-step-header">
+                      <span class="ask-step-num">{i + 1}</span>
+                      <span class="ask-step-tool">{step.tool}</span>
+                      {#if step.row_count !== null && step.row_count !== undefined}
+                        <span class="ask-step-rows">{step.row_count} rows</span>
+                      {/if}
+                    </div>
+                    <div class="ask-step-input"><code>{step.input}</code></div>
+                    <div class="ask-step-output">{step.output_summary}</div>
+                  </div>
+                {/each}
+              </div>
+            </details>
+          {/if}
+
+          {#if !nlResult.error && nlResult.rows && nlResult.rows.length > 0}
+            <details class="ask-data-details" open>
+              <summary class="ask-data-summary">Data ({nlResult.row_count} row{nlResult.row_count !== 1 ? 's' : ''})</summary>
+              <div class="result-table-wrap">
+                <table class="result-table">
+                  <thead>
+                    <tr>
+                      {#each nlResult.columns as col}
+                        <th>{col}</th>
+                      {/each}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each nlResult.rows as row}
+                      <tr>
+                        {#each row as cell}
+                          <td>{cellStr(cell)}</td>
+                        {/each}
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          {/if}
         </div>
       {:else if !nlRunning && !nlError}
         <div class="ask-examples">
@@ -1013,18 +1031,39 @@
     color: var(--text, #e5e5e5);
   }
 
-  .ask-explanation {
-    font-size: 0.82rem;
+  .ask-answer {
+    font-size: 0.92rem;
+    color: var(--text, #e5e5e5);
+    margin: 0.75rem 0;
+    padding: 0.75rem 1rem;
+    background: color-mix(in srgb, var(--accent, #3b82f6) 6%, transparent);
+    border-left: 3px solid var(--accent, #3b82f6);
+    border-radius: 0 6px 6px 0;
+    line-height: 1.65;
+    white-space: pre-wrap;
+  }
+
+  .ask-thinking {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1rem;
     color: var(--text-muted, #aaa);
-    margin-bottom: 0.75rem;
-    line-height: 1.5;
+    font-size: 0.88rem;
   }
-
-  .ask-cypher-details {
-    margin-top: 0.25rem;
+  .ask-thinking-spinner {
+    width: 18px; height: 18px;
+    border: 2px solid var(--border, #333);
+    border-top-color: var(--accent, #3b82f6);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
   }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
-  .ask-cypher-summary {
+  .ask-steps-details, .ask-data-details {
+    margin-top: 0.75rem;
+  }
+  .ask-steps-summary, .ask-data-summary {
     font-size: 0.75rem;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -1033,8 +1072,8 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    padding: 0.4rem 0;
   }
-
   .ask-tokens {
     font-size: 0.68rem;
     color: var(--text-muted, #666);
@@ -1042,38 +1081,58 @@
     text-transform: none;
     letter-spacing: 0;
   }
-
-  .ask-cypher-pre {
-    background: var(--bg, #111);
+  .ask-steps-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.4rem;
+  }
+  .ask-step {
+    background: var(--surface, #1a1a1a);
     border: 1px solid var(--border, #333);
-    border-radius: 4px;
-    padding: 0.6rem 0.75rem;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    border-radius: 6px;
+    padding: 0.5rem 0.75rem;
     font-size: 0.78rem;
-    line-height: 1.6;
-    overflow-x: auto;
-    margin: 0.4rem 0;
-    white-space: pre-wrap;
-    word-break: break-all;
-    color: var(--accent, #58a6ff);
   }
-
-  .ask-use-btn {
+  .ask-step-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.3rem;
+  }
+  .ask-step-num {
+    background: var(--accent, #3b82f6);
+    color: #fff;
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.68rem;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .ask-step-tool {
+    font-family: 'JetBrains Mono', monospace;
     font-size: 0.72rem;
-    padding: 0.2rem 0.5rem;
-    margin-top: 0.25rem;
-  }
-
-  .ask-answer-summary {
-    font-size: 1rem;
-    font-weight: 500;
     color: var(--accent, #58a6ff);
-    margin-bottom: 0.75rem;
-    padding: 0.6rem 0.85rem;
-    background: color-mix(in srgb, var(--accent, #3b82f6) 8%, transparent);
-    border-left: 3px solid var(--accent, #3b82f6);
-    border-radius: 0 4px 4px 0;
-    line-height: 1.5;
+    font-weight: 600;
+  }
+  .ask-step-rows {
+    font-size: 0.68rem;
+    color: var(--text-muted, #888);
+    margin-left: auto;
+  }
+  .ask-step-input code {
+    font-size: 0.72rem;
+    color: var(--text, #ccc);
+    word-break: break-all;
+  }
+  .ask-step-output {
+    font-size: 0.72rem;
+    color: var(--text-muted, #999);
+    margin-top: 0.25rem;
+    max-height: 4rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .ask-examples {

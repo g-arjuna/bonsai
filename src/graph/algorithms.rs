@@ -102,14 +102,10 @@ pub fn site_dependency_depth(conn: &Connection<'_>) -> Result<Vec<SiteDependency
         .map(|row| (read_str(&row[0]), read_i64(&row[1])))
         .collect();
 
-    // Cross-site reachability: devices in OTHER sites reachable via topology.
-    // Two separate MATCH clauses so lbug handles the variable-length segment first.
+    // Cross-site reachability: devices in OTHER sites reachable via direct LLDP links.
     let cross: HashMap<String, i64> = conn
         .query(
-            "MATCH (s:Site)<-[:LOCATED_AT]-(d:Device) \
-             MATCH (d)-[:HAS_INTERFACE|CONNECTED_TO*1..10]-(n:Device) \
-             WHERE n.address <> d.address \
-             MATCH (n)-[:LOCATED_AT]->(other_s:Site) \
+            "MATCH (s:Site)<-[:LOCATED_AT]-(d:Device)-[:HAS_INTERFACE]->(i:Interface)-[:CONNECTED_TO]-(ri:Interface)<-[:HAS_INTERFACE]-(n:Device)-[:LOCATED_AT]->(other_s:Site) \
              WHERE other_s.name <> s.name \
              RETURN s.name, count(DISTINCT n) AS reach",
         )
@@ -427,12 +423,12 @@ pub fn graph_quality(conn: &Connection<'_>) -> Result<GraphQuality> {
         .map(|r| read_i64(&r[0]))
         .unwrap_or(0);
 
-    // ── NetBox enrichment (netbox_site property set) ───────────────────────
+    // ── NetBox enrichment (devices with at least one netbox EnrichmentProperty) ─
     let netbox_enriched: i64 = conn
         .query(
-            "MATCH (d:Device) \
-             WHERE d.netbox_site IS NOT NULL AND d.netbox_site <> '' \
-             RETURN count(d)",
+            "MATCH (d:Device)-[:HAS_ENRICHMENT_PROPERTY]->(ep:EnrichmentProperty) \
+             WHERE ep.source_name = 'netbox' \
+             RETURN count(DISTINCT d.address)",
         )
         .context("quality: netbox_enriched")?
         .next()

@@ -253,23 +253,6 @@ User: Show detections that fired during a planned change
 Cypher: MATCH (de:DetectionEvent)-[:CHANGE_CAUSED_DETECTION]->(c:ChangeRequest) RETURN de.device_address, de.rule_id, de.severity, de.fired_at, c.number, c.short_description ORDER BY de.fired_at DESC LIMIT 30
 ";
 
-const SYSTEM_PROMPT: &str = "\
-You are a network intelligence assistant for the Bonsai network state engine graph database.
-
-Given a user's natural-language question about the network, generate a single read-only Cypher query that answers it, along with an explanation of the answer.
-
-Rules:
-1. Output ONLY a JSON object: {\"cypher\": \"...\", \"explanation\": \"...\", \"answer_template\": \"...\"}
-2. The cypher field must be valid openCypher (LadybugDB/Kuzu dialect).
-3. NEVER use mutation keywords: CREATE, SET, DELETE, MERGE, REMOVE, DETACH, DROP, ALTER.
-4. Always include ORDER BY and LIMIT where sensible (default LIMIT 50).
-5. Use the schema below. Do NOT invent node labels or relationship types.
-6. The explanation field should be 1-2 sentences describing what the query does.
-7. The answer_template field should be a natural-language template that can summarize the results for the user. Use placeholders like {row_count} for the number of rows returned. Example: 'Found {row_count} devices connected to spine1.' or 'There are {row_count} active detections in the network.'
-8. If the question is ambiguous, make a reasonable assumption and note it in the explanation.
-9. Use case-insensitive matching (CONTAINS or toLower) for hostname/name searches when the user gives a partial name.
-10. CRITICAL: Only use node labels and relationship types that exist in the schema. Do NOT invent columns or relationships.
-";
 
 // ── Request / Response types ─────────────────────────────────────────────────
 
@@ -278,18 +261,222 @@ pub(super) struct AskBody {
     question: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub(super) struct AskResponse {
     question: String,
-    cypher: String,
-    explanation: String,
-    answer_template: String,
+    answer: String,
+    steps: Vec<AgentStep>,
     columns: Vec<String>,
     rows: Vec<Vec<serde_json::Value>>,
     row_count: usize,
     tokens_used: u64,
     error: Option<String>,
 }
+
+#[derive(Serialize, Clone)]
+pub(super) struct AgentStep {
+    tool: String,
+    input: String,
+    output_summary: String,
+    row_count: Option<usize>,
+}
+
+// ── Tool definitions for the agentic loop ───────────────────────────────────
+
+fn agent_tools() -> Vec<crate::ai_provider::AiToolDef> {
+    use crate::ai_provider::AiToolDef;
+    vec![
+        AiToolDef {
+            name: "run_cypher".to_string(),
+            description: "Execute a read-only Cypher query against the network graph database. Returns columns and rows as JSON. Use this to investigate the user's question. If the query returns 0 rows, consider searching for similar names or trying a different approach.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "cypher": { "type": "string", "description": "The Cypher query to execute (read-only, no CREATE/SET/DELETE/MERGE)" },
+                    "reason": { "type": "string", "description": "Brief explanation of why you are running this query" }
+                },
+                "required": ["cypher", "reason"]
+            }),
+        },
+        AiToolDef {
+            name: "search_devices".to_string(),
+            description: "Fuzzy search for devices by hostname. Use this when the user mentions a device name and you need to find the exact hostname/address before querying. Returns matching devices with address, hostname, vendor, role, and site.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Partial hostname to search for (case-insensitive substring match)" }
+                },
+                "required": ["pattern"]
+            }),
+        },
+    ]
+}
+
+/// Bootstrap a compact inventory snapshot so the LLM knows what's in the graph.
+fn build_graph_context(db: &std::sync::Arc<lbug::Database>) -> String {
+    let conn = match Connection::new(db) {
+        Ok(c) => c,
+        Err(_) => return "Graph database unavailable.".to_string(),
+    };
+
+    let mut ctx = String::from("## Live Graph Inventory\n\n");
+
+    // Device count
+    if let Ok(mut rows) = conn.query("MATCH (d:Device) RETURN count(d)") {
+        if let Some(row) = rows.next() {
+            ctx.push_str(&format!("Total devices: {}\n", val_str(&row[0])));
+        }
+    }
+
+    // Hostnames sample (all, capped at 100)
+    if let Ok(rows) = conn.query("MATCH (d:Device) RETURN d.hostname, d.address, d.vendor, d.role, d.site ORDER BY d.hostname LIMIT 100") {
+        let devs: Vec<String> = rows.map(|r| {
+            format!("  {} ({}, vendor={}, role={}, site={})",
+                val_str(&r[0]), val_str(&r[1]), val_str(&r[2]), val_str(&r[3]), val_str(&r[4]))
+        }).collect();
+        if !devs.is_empty() {
+            ctx.push_str(&format!("\nDevices ({}):\n{}\n", devs.len(), devs.join("\n")));
+        }
+    }
+
+    // Sites
+    if let Ok(rows) = conn.query("MATCH (s:Site) RETURN s.name, s.location LIMIT 50") {
+        let sites: Vec<String> = rows.map(|r| format!("  {} ({})", val_str(&r[0]), val_str(&r[1]))).collect();
+        if !sites.is_empty() {
+            ctx.push_str(&format!("\nSites ({}):\n{}\n", sites.len(), sites.join("\n")));
+        }
+    }
+
+    // Quick counts
+    for (label, q) in [
+        ("BGP neighbors", "MATCH (n:BgpNeighbor) RETURN count(n)"),
+        ("Interfaces", "MATCH (i:Interface) RETURN count(i)"),
+        ("Detections", "MATCH (d:DetectionEvent) RETURN count(d)"),
+        ("BMP sessions", "MATCH (b:BmpSession) RETURN count(b)"),
+        ("State change events", "MATCH (e:StateChangeEvent) RETURN count(e)"),
+    ] {
+        if let Ok(mut rows) = conn.query(q) {
+            if let Some(row) = rows.next() {
+                ctx.push_str(&format!("{}: {}\n", label, val_str(&row[0])));
+            }
+        }
+    }
+
+    ctx
+}
+
+fn val_str(v: &lbug::Value) -> String {
+    match v {
+        lbug::Value::String(s) => if s.is_empty() { "—".to_string() } else { s.clone() },
+        lbug::Value::Int64(n) => n.to_string(),
+        lbug::Value::Int32(n) => n.to_string(),
+        lbug::Value::Double(f) => format!("{f:.2}"),
+        lbug::Value::Bool(b) => b.to_string(),
+        lbug::Value::Null => "—".to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Execute a tool call from the LLM agent.
+fn execute_tool(
+    db: &std::sync::Arc<lbug::Database>,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> (String, Option<crate::graph::explorer::ExplorerResult>) {
+    match tool_name {
+        "run_cypher" => {
+            let cypher = args["cypher"].as_str().unwrap_or("");
+            if cypher.is_empty() {
+                return ("Error: empty cypher query".to_string(), None);
+            }
+            if !crate::mcp_server::is_readonly_cypher(cypher) {
+                return ("Error: mutation queries are not allowed. Use read-only MATCH...RETURN only.".to_string(), None);
+            }
+            let conn = match Connection::new(db) {
+                Ok(c) => c,
+                Err(e) => return (format!("Error: {e}"), None),
+            };
+            match crate::graph::explorer::execute_query(&conn, cypher) {
+                Ok(result) => {
+                    let summary = if result.row_count == 0 {
+                        format!("Query returned 0 rows. Columns: [{}]. The query executed successfully but found no matching data. Consider: (1) searching for similar hostnames with search_devices, (2) using case-insensitive CONTAINS instead of exact match, (3) checking if the node/relationship type has any data.",
+                            result.columns.join(", "))
+                    } else {
+                        // Return first 15 rows as compact JSON for LLM context
+                        let preview_rows: Vec<&Vec<serde_json::Value>> = result.rows.iter().take(15).collect();
+                        let table = serde_json::json!({
+                            "columns": result.columns,
+                            "rows": preview_rows,
+                            "total_rows": result.row_count,
+                            "truncated": result.truncated,
+                        });
+                        format!("Success: {} row(s). Data:\n{}", result.row_count, serde_json::to_string_pretty(&table).unwrap_or_default())
+                    };
+                    (summary, Some(result))
+                }
+                Err(e) => (format!("Query error: {e:#}. Check your Cypher syntax and that all node labels and relationship types exist in the schema."), None),
+            }
+        }
+        "search_devices" => {
+            let pattern = args["pattern"].as_str().unwrap_or("").to_lowercase();
+            if pattern.is_empty() {
+                return ("Error: empty search pattern".to_string(), None);
+            }
+            let conn = match Connection::new(db) {
+                Ok(c) => c,
+                Err(e) => return (format!("Error: {e}"), None),
+            };
+            let query = "MATCH (d:Device) WHERE toLower(d.hostname) CONTAINS $pat OR toLower(d.address) CONTAINS $pat RETURN d.address, d.hostname, d.vendor, d.role, d.site LIMIT 20";
+            match conn.prepare(query) {
+                Ok(mut stmt) => {
+                    match conn.execute(&mut stmt, vec![("pat", lbug::Value::String(pattern.clone()))]) {
+                        Ok(rows) => {
+                            let matches: Vec<String> = rows.map(|r| {
+                                format!("  {} (address={}, vendor={}, role={}, site={})",
+                                    val_str(&r[1]), val_str(&r[0]), val_str(&r[2]), val_str(&r[3]), val_str(&r[4]))
+                            }).collect();
+                            if matches.is_empty() {
+                                (format!("No devices found matching '{pattern}'. Try a shorter or different search term."), None)
+                            } else {
+                                (format!("Found {} device(s) matching '{pattern}':\n{}", matches.len(), matches.join("\n")), None)
+                            }
+                        }
+                        Err(e) => (format!("Search error: {e}"), None),
+                    }
+                }
+                Err(e) => (format!("Search error: {e}"), None),
+            }
+        }
+        _ => (format!("Unknown tool: {tool_name}"), None),
+    }
+}
+
+const AGENT_SYSTEM_PROMPT: &str = "\
+You are Bonsai Explorer — an AI assistant that helps network engineers investigate their network by querying a live graph database.
+
+Your workflow:
+1. ALWAYS start by understanding what the user is asking. If they mention a device name, use search_devices first to find the exact hostname.
+2. Use run_cypher to query the graph. If a query returns 0 rows, DON'T give up — try alternative approaches:
+   - Search for similar hostnames with search_devices
+   - Use CONTAINS for partial matching instead of exact equality
+   - Try querying a broader scope first, then narrow down
+   - Check if the relevant data exists at all (e.g., 'MATCH (n:BgpNeighbor) RETURN count(n)')
+3. You can run MULTIPLE queries to build up a complete picture before answering.
+4. When you have enough information, provide a clear, concise natural-language answer.
+
+IMPORTANT RULES:
+- Only use MATCH ... RETURN queries. Never mutate data.
+- Use the schema provided. Don't invent node labels or relationships.
+- Device.hostname is the human-friendly name. Device.address is the IP/key.
+- For topology: Device -[:HAS_INTERFACE]-> Interface -[:CONNECTED_TO]- Interface <-[:HAS_INTERFACE]- Device
+- For BGP: Device -[:PEERS_WITH]-> BgpNeighbor
+- For detections: Device -[:TRIGGERED]-> DetectionEvent
+- For syslog events: Device -[:REPORTED_BY]-> StateChangeEvent
+- When the user says a name like 'spine1', it might be 'srl-spine1' or 'spine-1' etc. Always search first.
+
+After investigating, give a final answer in natural language that directly addresses the user's question. Include specific data points, numbers, and names. If the graph has no relevant data, say so clearly and explain what data would be needed.";
+
+const MAX_AGENT_ROUNDS: usize = 6;
 
 // ── Handler ──────────────────────────────────────────────────────────────────
 
@@ -302,14 +489,13 @@ pub(super) async fn explorer_ask_handler(
         return Err((StatusCode::BAD_REQUEST, "question is required".to_string()));
     }
 
-    // 1. Resolve the active AI provider (vault-first, env-var fallback)
+    // 1. Resolve the active AI provider
     let (ai_cfg, api_key) = crate::http_server::settings::resolve_active_ai_provider(&state)
         .await
         .ok_or_else(|| (
             StatusCode::SERVICE_UNAVAILABLE,
             "Explorer Ask unavailable: no AI provider configured. Add a provider in Settings → LLM Providers and activate it.".to_string(),
         ))?;
-    let provider_name = ai_cfg.provider.clone();
     let provider = build_provider_with_key(&ai_cfg, api_key).map_err(|e| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -317,67 +503,136 @@ pub(super) async fn explorer_ask_handler(
         )
     })?;
 
-    let (cypher, explanation, answer_template, tokens) = generate_cypher(provider.as_ref(), &question)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("AI provider '{provider_name}' error: {e}"),
-            )
-        })?;
-
-    // 2. Validate read-only
-    if !crate::mcp_server::is_readonly_cypher(&cypher) {
-        return Ok(Json(AskResponse {
-            question,
-            cypher,
-            explanation: "Generated query contained mutation keywords and was rejected.".to_string(),
-            answer_template: String::new(),
-            columns: vec![],
-            rows: vec![],
-            row_count: 0,
-            tokens_used: tokens,
-            error: Some("LLM generated a mutating query — rejected for safety".to_string()),
-        }));
-    }
-
-    // 3. Execute against graph
+    // 2. Bootstrap graph context (device inventory, sites, counts)
     let db = state.store.db();
-    let cypher_clone = cypher.clone();
-    let exec_result = tokio::task::spawn_blocking(move || {
-        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
-        crate::graph::explorer::execute_query(&conn, &cypher_clone).map_err(|e| format!("{e:#}"))
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let db_clone = db.clone();
+    let graph_ctx = tokio::task::spawn_blocking(move || build_graph_context(&db_clone))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    match exec_result {
-        Ok(result) => {
-            let summary = answer_template.replace("{row_count}", &result.row_count.to_string());
-            Ok(Json(AskResponse {
+    // 3. Build initial messages with full context
+    let system_msg = format!(
+        "{AGENT_SYSTEM_PROMPT}\n\n{GRAPH_SCHEMA}\n\n{FEW_SHOT_EXAMPLES}\n\n{graph_ctx}"
+    );
+    let tools = agent_tools();
+    let mut messages = vec![
+        AiMessage::system(system_msg),
+        AiMessage::user(question.clone()),
+    ];
+
+    // 4. Agentic loop: let the LLM call tools iteratively
+    let mut steps: Vec<AgentStep> = Vec::new();
+    let mut last_result: Option<crate::graph::explorer::ExplorerResult> = None;
+    let mut total_tokens: u64 = 0;
+
+    for _round in 0..MAX_AGENT_ROUNDS {
+        let resp = provider
+            .complete(messages.clone(), tools.clone())
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("AI error: {e}")))?;
+
+        charge_tokens(0, resp.tokens_used)
+            .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e))?;
+        total_tokens += resp.tokens_used;
+
+        // If the model produced a text response with no tool calls, it's the final answer
+        if resp.tool_calls.is_empty() {
+            let answer = resp.content.unwrap_or_default();
+            let (columns, rows, row_count) = if let Some(ref r) = last_result {
+                (r.columns.clone(), r.rows.clone(), r.row_count)
+            } else {
+                (vec![], vec![], 0)
+            };
+            return Ok(Json(AskResponse {
                 question,
-                cypher,
-                explanation,
-                answer_template: summary,
-                columns: result.columns,
-                rows: result.rows,
-                row_count: result.row_count,
-                tokens_used: tokens,
+                answer,
+                steps,
+                columns,
+                rows,
+                row_count,
+                tokens_used: total_tokens,
                 error: None,
-            }))
+            }));
         }
-        Err(e) => Ok(Json(AskResponse {
-            question,
-            cypher,
-            explanation,
-            answer_template: String::new(),
-            columns: vec![],
-            rows: vec![],
-            row_count: 0,
-            tokens_used: tokens,
-            error: Some(format!("Query execution failed: {e}")),
-        })),
+
+        // Process tool calls
+        // Add assistant message with tool calls to conversation
+        messages.push(AiMessage {
+            role: "assistant".to_string(),
+            content: resp.content.clone(),
+            tool_calls: resp.tool_calls.clone(),
+            tool_call_id: None,
+        });
+
+        for tc in &resp.tool_calls {
+            let args = &tc.arguments;
+            let reason = args["reason"].as_str().unwrap_or("").to_string();
+            let input_display = match tc.name.as_str() {
+                "run_cypher" => args["cypher"].as_str().unwrap_or("").to_string(),
+                "search_devices" => args["pattern"].as_str().unwrap_or("").to_string(),
+                _ => tc.arguments.to_string(),
+            };
+
+            // Execute tool
+            let db_ref = db.clone();
+            let tool_name = tc.name.clone();
+            let args_clone = args.clone();
+            let (output, exec_result) = tokio::task::spawn_blocking(move || {
+                execute_tool(&db_ref, &tool_name, &args_clone)
+            })
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+            let row_count = exec_result.as_ref().map(|r| r.row_count);
+            if exec_result.is_some() {
+                last_result = exec_result;
+            }
+
+            steps.push(AgentStep {
+                tool: tc.name.clone(),
+                input: if reason.is_empty() { input_display } else { format!("{reason}: {input_display}") },
+                output_summary: if output.len() > 200 {
+                    format!("{}… [truncated]", &output[..200])
+                } else {
+                    output.clone()
+                },
+                row_count,
+            });
+
+            // Add tool result to conversation
+            messages.push(AiMessage::tool_result(tc.id.clone(), output));
+        }
     }
+
+    // Exhausted rounds — ask for a final answer
+    messages.push(AiMessage::user(
+        "You've used all your investigation rounds. Please provide your best answer now based on what you've found.".to_string()
+    ));
+    let final_resp = provider
+        .complete(messages, vec![])
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("AI error: {e}")))?;
+    charge_tokens(0, final_resp.tokens_used)
+        .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e))?;
+    total_tokens += final_resp.tokens_used;
+
+    let answer = final_resp.content.unwrap_or_default();
+    let (columns, rows, row_count) = if let Some(ref r) = last_result {
+        (r.columns.clone(), r.rows.clone(), r.row_count)
+    } else {
+        (vec![], vec![], 0)
+    };
+
+    Ok(Json(AskResponse {
+        question,
+        answer,
+        steps,
+        columns,
+        rows,
+        row_count,
+        tokens_used: total_tokens,
+        error: None,
+    }))
 }
 
 /// Budget status endpoint for the UI.
@@ -399,117 +654,9 @@ pub(super) async fn nl_budget_handler() -> Json<NlBudgetResponse> {
     })
 }
 
-// ── AI provider call ─────────────────────────────────────────────────────────
-
-async fn generate_cypher(
-    provider: &dyn crate::ai_provider::AiProvider,
-    question: &str,
-) -> Result<(String, String, String, u64), String> {
-    let system = format!("{SYSTEM_PROMPT}\n\n{GRAPH_SCHEMA}\n\n{FEW_SHOT_EXAMPLES}");
-    let messages = vec![
-        AiMessage::system(system),
-        AiMessage::user(question.to_string()),
-    ];
-    let resp = provider
-        .complete(messages, vec![])
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Charge budget
-    charge_tokens(0, resp.tokens_used)?;
-    let total = resp.tokens_used;
-
-    let text = resp
-        .content
-        .as_deref()
-        .ok_or("No text content in AI provider response")?;
-
-    // Parse the JSON response from the model
-    // Try to find JSON in the response (model may wrap in markdown code blocks)
-    let json_str = extract_json_from_response(text);
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(&json_str).map_err(|e| format!("Failed to parse LLM JSON: {e} — raw: {text}"))?;
-
-    let cypher = parsed["cypher"]
-        .as_str()
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let explanation = parsed["explanation"]
-        .as_str()
-        .unwrap_or("Generated query")
-        .to_string();
-    let answer_template = parsed["answer_template"]
-        .as_str()
-        .unwrap_or("Query returned {row_count} row(s).")
-        .to_string();
-
-    if cypher.is_empty() {
-        return Err(format!("LLM returned empty cypher — raw response: {text}"));
-    }
-
-    Ok((cypher, explanation, answer_template, total))
-}
-
-/// Extract JSON from LLM response, handling markdown code fences.
-fn extract_json_from_response(text: &str) -> String {
-    // Try bare JSON first
-    let trimmed = text.trim();
-    if trimmed.starts_with('{') {
-        return trimmed.to_string();
-    }
-    // Try ```json ... ``` blocks
-    if let Some(start) = trimmed.find("```json") {
-        let after = &trimmed[start + 7..];
-        if let Some(end) = after.find("```") {
-            return after[..end].trim().to_string();
-        }
-    }
-    // Try ``` ... ``` blocks
-    if let Some(start) = trimmed.find("```") {
-        let after = &trimmed[start + 3..];
-        if let Some(end) = after.find("```") {
-            return after[..end].trim().to_string();
-        }
-    }
-    // Last resort: find first { and last }
-    if let (Some(s), Some(e)) = (trimmed.find('{'), trimmed.rfind('}')) {
-        if e > s {
-            return trimmed[s..=e].to_string();
-        }
-    }
-    trimmed.to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn extract_json_bare() {
-        let input = r#"{"cypher": "MATCH (d:Device) RETURN d", "explanation": "all devices"}"#;
-        let result = extract_json_from_response(input);
-        assert!(result.starts_with('{'));
-        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(v["cypher"], "MATCH (d:Device) RETURN d");
-    }
-
-    #[test]
-    fn extract_json_fenced() {
-        let input = "Here is the query:\n```json\n{\"cypher\": \"MATCH (d:Device) RETURN d\", \"explanation\": \"all\"}\n```";
-        let result = extract_json_from_response(input);
-        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(v["cypher"], "MATCH (d:Device) RETURN d");
-    }
-
-    #[test]
-    fn extract_json_wrapped_text() {
-        let input = "Sure! Here's what I generated: {\"cypher\": \"MATCH (d) RETURN d\", \"explanation\": \"ok\"} hope that helps";
-        let result = extract_json_from_response(input);
-        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(v["cypher"], "MATCH (d) RETURN d");
-    }
 
     #[test]
     fn budget_day_roll() {
