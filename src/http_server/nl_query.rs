@@ -86,7 +86,7 @@ pub const GRAPH_SCHEMA: &str = "\
 - EnrichmentProperty(id PK, device_address, key, value, source_name, updated_at)
 - PropertyProvenance(id PK, owner_kind, owner_id, source, parser, confidence, captured_at, details_json)
 - Application(id PK, name, criticality, owner_group, environment, updated_at)
-- Incident(id PK, device_address, number, short_description, priority, state, updated_at)
+- Incident(id PK, snow_sys_id, state, assignment_group, opened_at_ns, detection_id, updated_at)
 - Location(id PK, name, kind, site_id, source, full_address, source_name, updated_at)
 - Prefix(id PK, prefix, vlan_id, site, source, updated_at)
 - Vlan(id PK, vid, name, site_name, source, updated_at)
@@ -121,7 +121,6 @@ pub const GRAPH_SCHEMA: &str = "\
 - ENRICHMENT_PROPERTY_PROVENANCE(EnrichmentProperty → PropertyProvenance)
 - RUNS_SERVICE(Device → Application)
 - CARRIES_APPLICATION(Device → Application)
-- HAS_INCIDENT(Device → Incident)
 - IN_LOCATION(Device → Location)
 - IN_SITE(Location → Site)
 - LOC_PARENT_OF(Location → Location)
@@ -153,7 +152,8 @@ pub const GRAPH_SCHEMA: &str = "\
 - trust_key is \"rule_id:environment_archetype:site_id:playbook_id\" — it maps to a TrustState (suggest_only → approve_each → auto_with_notification → auto_silent).
 - Remediation is created AFTER a proposal is approved and execution succeeds/fails.
 - Investigation nodes record LLM-driven analysis of detections (agent tool calls, summary, cost).
-- Incident nodes link to ServiceNow incidents (snow_sys_id) and to DetectionEvents.
+- Incident nodes link to DetectionEvents via HAS_INCIDENT.
+- To relate incidents back to devices, traverse Device -[:TRIGGERED]-> DetectionEvent -[:HAS_INCIDENT]-> Incident.
 
 ### Environmental Telemetry
 - SensorReading captures chassis/component temperature, fan RPM, power draw, and humidity from gNMI paths.
@@ -181,7 +181,7 @@ User: Which devices are connected to spine1?
 Cypher: MATCH (d:Device {hostname: 'spine1'})-[:HAS_INTERFACE]->(si:Interface)-[:CONNECTED_TO]-(ri:Interface)<-[:HAS_INTERFACE]-(nb:Device) RETURN DISTINCT nb.hostname, nb.address, si.name AS local_if, ri.name AS remote_if
 
 User: Show me all critical incidents
-Cypher: MATCH (d:Device)-[:HAS_INCIDENT]->(i:Incident) WHERE i.priority <= '2' RETURN d.hostname, i.number, i.short_description, i.priority, i.state ORDER BY i.priority
+Cypher: MATCH (d:Device)-[:TRIGGERED]->(de:DetectionEvent)-[:HAS_INCIDENT]->(i:Incident) RETURN d.hostname, de.rule_id, de.severity, i.id, i.snow_sys_id, i.state, i.assignment_group, i.updated_at ORDER BY i.updated_at DESC LIMIT 30
 
 User: What business services run on 10.0.0.1?
 Cypher: MATCH (d:Device {address: '10.0.0.1'})-[:RUNS_SERVICE|CARRIES_APPLICATION]->(a:Application) RETURN a.name, a.criticality, a.owner_group
@@ -232,7 +232,7 @@ User: Show detections that fired during a planned change
 Cypher: MATCH (de:DetectionEvent)-[:CHANGE_CAUSED_DETECTION]->(c:ChangeRequest) RETURN de.device_address, de.rule_id, de.severity, de.fired_at, c.number, c.short_description ORDER BY de.fired_at DESC LIMIT 30
 
 User: Are there any incidents linked to change tickets?
-Cypher: MATCH (i:Incident)-[:RELATED_TO_CHANGE]->(c:ChangeRequest) RETURN i.number, i.short_description, i.state, c.number AS change_number, c.short_description AS change_desc ORDER BY i.updated_at DESC LIMIT 30
+Cypher: MATCH (i:Incident)-[:RELATED_TO_CHANGE]->(c:ChangeRequest) RETURN i.id, i.snow_sys_id, i.state, c.number AS change_number, c.short_description AS change_desc ORDER BY i.updated_at DESC LIMIT 30
 
 User: Which devices have overheating components?
 Cypher: MATCH (s:SensorReading)-[:SENSOR_REPORTED_BY]->(d:Device) WHERE s.temperature_c > 75 RETURN d.hostname, d.address, s.component_name, s.sensor_type, s.temperature_c ORDER BY s.temperature_c DESC LIMIT 50
@@ -333,7 +333,7 @@ pub(super) async fn explorer_ask_handler(
     let cypher_clone = cypher.clone();
     let exec_result = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
-        crate::graph::explorer::execute_query(&conn, &cypher_clone).map_err(|e| e.to_string())
+        crate::graph::explorer::execute_query(&conn, &cypher_clone).map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;

@@ -1310,6 +1310,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
 
         let mut startup_adapter_registry: Option<bonsai::output::traits::SharedAdapterRegistry> =
             None;
+        let investigation_api_key_env = cfg.ai.api_key_env.clone();
+        let investigation_http_addr = cfg.http_addr.clone();
         if run_core {
             let http_store = if let Store::Core(s) = store {
                 std::sync::Arc::clone(s)
@@ -1498,9 +1500,9 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                     // to bonsai.toml [tls] config (or plain HTTP) so startup never fails
                     // due to a stale cert_config DB entry.
                     let vault_result = async {
-                        let cert_pem = crate::tls_util::read_cert_pem(&cert_ref, &credentials).await
+                        let cert_pem = bonsai::tls_util::read_cert_pem(&cert_ref, &credentials).await
                             .with_context(|| format!("cert_config:http_tls:cert '{cert_ref}' unreadable"))?;
-                        let key_pem = crate::tls_util::read_cert_pem(&key_ref, &credentials).await
+                        let key_pem = bonsai::tls_util::read_cert_pem(&key_ref, &credentials).await
                             .with_context(|| format!("cert_config:http_tls:key '{key_ref}' unreadable"))?;
                         build_http_tls_acceptor_from_pem(&cert_pem, &key_pem)
                             .context("failed to configure HTTP TLS from vault cert")
@@ -1759,8 +1761,10 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             // Enable trigger if any AI provider env-var is set (vault-backed providers are
             // checked at trigger time via resolve_active_ai_provider; here we just gate on
             // whether the feature should be active at all).
-            let has_api_key = !cfg.ai.api_key_env.is_empty()
-                && std::env::var(&cfg.ai.api_key_env).map(|k| !k.is_empty()).unwrap_or(false);
+            let has_api_key = !investigation_api_key_env.is_empty()
+                && std::env::var(&investigation_api_key_env)
+                    .map(|k| !k.is_empty())
+                    .unwrap_or(false);
             let trigger_store = if let Store::Core(s) = store {
                 std::sync::Arc::clone(s)
             } else {
@@ -1768,7 +1772,10 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             };
             let trigger_config = bonsai::investigation_trigger::InvestigationTriggerConfig {
                 enabled: has_api_key,
-                base_url: format!("http://127.0.0.1:{}", cfg.http_addr.split(':').last().unwrap_or("3000")),
+                base_url: format!(
+                    "http://127.0.0.1:{}",
+                    investigation_http_addr.split(':').last().unwrap_or("3000")
+                ),
             };
             let trigger_shutdown = shutdown_rx.clone();
             tokio::spawn(bonsai::investigation_trigger::run_investigation_trigger(

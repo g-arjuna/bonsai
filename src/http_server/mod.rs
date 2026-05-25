@@ -810,14 +810,19 @@ pub fn router(
                     "auto".to_string(),
                 ).await {
                     Ok(inv) => {
-                        crate::investigation_runtime::spawn_investigation(
-                            inv.id,
-                            req.device_address,
-                            Some(req.detection_id),
-                            store,
-                            inv_state.clone(),
-                            inv_state.ai_config.clone(),
-                        );
+                        if let Some((ai_cfg, api_key)) =
+                            crate::http_server::settings::resolve_active_ai_provider(&inv_state).await
+                        {
+                            crate::investigation_runtime::spawn_investigation(
+                                inv.id,
+                                req.device_address,
+                                Some(req.detection_id),
+                                store,
+                                inv_state.clone(),
+                                ai_cfg,
+                                api_key,
+                            );
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(

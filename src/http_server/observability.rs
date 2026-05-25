@@ -1349,7 +1349,7 @@ pub(super) async fn explorer_query_handler(
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
-        crate::graph::explorer::execute_query(&conn, &cypher).map_err(|e| e.to_string())
+        crate::graph::explorer::execute_query(&conn, &cypher).map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?

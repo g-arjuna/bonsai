@@ -771,7 +771,7 @@ pub(super) async fn target_conn_info_for_http(
 
     let ca_cert_pem = match &target.ca_cert {
         Some(path) if !path.is_empty() => Some(
-            bonsai::tls_util::read_cert_pem(path, &state.credentials)
+            crate::tls_util::read_cert_pem(path, &state.credentials)
                 .await
                 .map_err(|e| format!("{e:#}"))?,
         ),

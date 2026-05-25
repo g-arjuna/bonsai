@@ -19,14 +19,14 @@ const VAULT_FILE: &str = "vault.age";
 const METADATA_FILE: &str = "metadata.json";
 const LAST_USED_WRITE_WINDOW_NS: i64 = 5 * 60 * 1_000_000_000;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CredentialVault {
     root: PathBuf,
     passphrase: Option<Arc<SecretString>>,
     state: Arc<Mutex<VaultState>>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct VaultState {
     entries: BTreeMap<String, StoredCredential>,
     metadata: BTreeMap<String, CredentialMetadata>,
