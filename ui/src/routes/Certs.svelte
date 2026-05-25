@@ -7,7 +7,7 @@
 
   // Add form state
   let showForm = $state(false);
-  let form = $state({ name: '', label: '', pem: '' });
+  let form = $state({ name: '', label: '', pem: '', role: '' });
   let saving = $state(false);
   let saveError = $state(null);
   let saveOk = $state(false);
@@ -60,11 +60,11 @@
       const r = await fetch('/api/certs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name: form.name, label: form.label, pem: form.pem }),
+        body: JSON.stringify({ name: form.name, label: form.label, pem: form.pem, role: form.role }),
       });
       if (!r.ok) throw new Error(await r.text());
       saveOk = true;
-      form = { name: '', label: '', pem: '' };
+      form = { name: '', label: '', pem: '', role: '' };
       showForm = false;
       await load();
     } catch (e) {
@@ -116,9 +116,54 @@
     reader.readAsText(file);
   }
 
+  // Apply-to-service state
+  let appliedConfig = $state({});
+  let applyForm = $state({ target: 'http_tls', ca_cert: '', cert: '', key: '', restart: false });
+  let applyLoading = $state(false);
+  let applyResult = $state(null);
+  let showApply = $state(false);
+
+  async function loadApplied() {
+    try {
+      const r = await fetch('/api/certs/applied');
+      if (r.ok) appliedConfig = await r.json();
+    } catch (_) {}
+  }
+
+  async function applyToService() {
+    applyLoading = true;
+    applyResult = null;
+    try {
+      const body = { target: applyForm.target, restart: applyForm.restart };
+      if (applyForm.ca_cert) body.ca_cert = applyForm.ca_cert;
+      if (applyForm.cert) body.cert = applyForm.cert;
+      if (applyForm.key) body.key = applyForm.key;
+      const r = await fetch('/api/certs/apply', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? JSON.stringify(d));
+      applyResult = { ok: true, ...d };
+      await loadApplied();
+    } catch (e) {
+      applyResult = { ok: false, error: e.message };
+    } finally {
+      applyLoading = false;
+    }
+  }
+
   function fmtTime(ns) {
     if (!ns) return '—';
     return new Date(ns / 1_000_000).toLocaleString();
+  }
+
+  function fmtExpiry(secs) {
+    if (!secs) return null;
+    const d = new Date(secs * 1000);
+    const daysLeft = Math.floor((d - Date.now()) / 86400000);
+    return { date: d.toLocaleDateString(), daysLeft };
   }
 
   function shortFp(fp) {
@@ -126,7 +171,21 @@
     return fp.slice(0, 8) + '…' + fp.slice(-8);
   }
 
-  onMount(load);
+  const ROLE_LABELS = {
+    ca: '🔐 CA',
+    server_cert: '🖥️ Server cert',
+    server_key: '🔑 Server key',
+    client_cert: '📋 Client cert',
+    client_key: '🗝️ Client key',
+  };
+
+  const TARGET_FIELDS = {
+    http_tls:     { cert: true, key: true, ca_cert: false },
+    runtime_mtls: { cert: true, key: true, ca_cert: true },
+    gnmi_ca:      { cert: false, key: false, ca_cert: true },
+  };
+
+  onMount(() => { load(); loadApplied(); });
 </script>
 
 <div class="page">
@@ -155,6 +214,17 @@
         <label>
           Label
           <input type="text" bind:value={form.label} placeholder="SRL Lab CA Certificate" />
+        </label>
+        <label>
+          Role <span class="hint-inline">(optional, for enterprise CA workflows)</span>
+          <select bind:value={form.role}>
+            <option value="">— unset —</option>
+            <option value="ca">CA certificate</option>
+            <option value="server_cert">Server certificate (chain)</option>
+            <option value="server_key">Server private key</option>
+            <option value="client_cert">Client certificate</option>
+            <option value="client_key">Client private key</option>
+          </select>
         </label>
       </div>
       <label class="pem-label">
@@ -199,22 +269,41 @@
       <thead>
         <tr>
           <th>Name</th>
-          <th>Label</th>
+          <th>Label / Role</th>
           <th>Fingerprint (SHA-256)</th>
-          <th>Size</th>
+          <th>Expiry</th>
           <th>Added</th>
           <th></th>
         </tr>
       </thead>
       <tbody>
         {#each certs as c (c.name)}
-          <tr>
+          {@const exp = fmtExpiry(c.expires_at)}
+          <tr class={exp && exp.daysLeft < 30 ? 'expiry-warn' : exp && exp.daysLeft < 0 ? 'expiry-expired' : ''}>
             <td><code class="cert-name">{c.name}</code></td>
-            <td>{c.label || '—'}</td>
+            <td>
+              <span>{c.label || c.name}</span>
+              {#if c.role}<span class="role-badge">{ROLE_LABELS[c.role] ?? c.role}</span>{/if}
+            </td>
             <td>
               <span class="fp" title={c.fingerprint_sha256}>{shortFp(c.fingerprint_sha256)}</span>
             </td>
-            <td class="dim">{c.pem_size ? (c.pem_size / 1024).toFixed(1) + ' KB' : '—'}</td>
+            <td class="expiry-cell">
+              {#if exp}
+                <span class={exp.daysLeft < 0 ? 'expiry-red' : exp.daysLeft < 30 ? 'expiry-amber' : 'expiry-green'}>
+                  {exp.date}
+                  {#if exp.daysLeft < 0}
+                    <span class="expiry-tag">EXPIRED</span>
+                  {:else if exp.daysLeft < 30}
+                    <span class="expiry-tag">{exp.daysLeft}d</span>
+                  {:else}
+                    <span class="expiry-dim">{exp.daysLeft}d</span>
+                  {/if}
+                </span>
+              {:else}
+                <span class="dim">—</span>
+              {/if}
+            </td>
             <td class="dim">{fmtTime(c.added_at_ns)}</td>
             <td class="actions-cell">
               <button class="btn-ghost" onclick={() => downloadPem(c.name)} disabled={downloading[c.name]} title="Download PEM">
@@ -228,6 +317,94 @@
     </table>
     <div class="row-count">{certs.length} certificate{certs.length !== 1 ? 's' : ''}</div>
   {/if}
+
+  <div class="apply-panel">
+    <div class="apply-header" onclick={() => showApply = !showApply} role="button" tabindex="0">
+      <h4>Apply to Service {showApply ? '▲' : '▼'}</h4>
+      <span class="muted apply-subtitle">Activate a cert bundle for HTTPS, mTLS, or gNMI — saves to DB, optionally restarts</span>
+    </div>
+
+    {#if Object.keys(appliedConfig).length > 0}
+      <div class="applied-summary">
+        {#each Object.entries(appliedConfig) as [target, fields]}
+          <div class="applied-row">
+            <span class="applied-target">{target}</span>
+            {#each Object.entries(fields) as [field, val]}
+              <span class="applied-item"><span class="applied-field">{field}</span> <code>{val}</code></span>
+            {/each}
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    {#if showApply}
+      <div class="apply-form">
+        <div class="apply-target-row">
+          <label>Target service
+            <select bind:value={applyForm.target}>
+              <option value="http_tls">HTTPS API server (HTTP → HTTPS)</option>
+              <option value="runtime_mtls">gRPC mTLS — core ↔ collectors</option>
+              <option value="gnmi_ca">gNMI default CA (new device subscriptions)</option>
+            </select>
+          </label>
+        </div>
+        {#if TARGET_FIELDS[applyForm.target]?.ca_cert}
+          <label class="apply-field-label">CA cert (vault name)
+            <select bind:value={applyForm.ca_cert}>
+              <option value="">— none —</option>
+              {#each certs.filter(c => !c.role || c.role === 'ca') as c}
+                <option value={c.name}>{c.name}{c.label ? ' — ' + c.label : ''}</option>
+              {/each}
+            </select>
+          </label>
+        {/if}
+        {#if TARGET_FIELDS[applyForm.target]?.cert}
+          <label class="apply-field-label">Server/client cert (vault name)
+            <select bind:value={applyForm.cert}>
+              <option value="">— none —</option>
+              {#each certs.filter(c => !c.role || c.role === 'server_cert' || c.role === 'client_cert') as c}
+                <option value={c.name}>{c.name}{c.label ? ' — ' + c.label : ''}</option>
+              {/each}
+            </select>
+          </label>
+        {/if}
+        {#if TARGET_FIELDS[applyForm.target]?.key}
+          <label class="apply-field-label">Private key (vault name)
+            <select bind:value={applyForm.key}>
+              <option value="">— none —</option>
+              {#each certs.filter(c => !c.role || c.role === 'server_key' || c.role === 'client_key') as c}
+                <option value={c.name}>{c.name}{c.label ? ' — ' + c.label : ''}</option>
+              {/each}
+            </select>
+          </label>
+        {/if}
+        <label class="restart-label">
+          <input type="checkbox" bind:checked={applyForm.restart} />
+          Restart bonsai after apply (systemd/docker will auto-restart)
+        </label>
+        {#if applyResult}
+          <div class="apply-result {applyResult.ok ? 'ok' : 'fail'}">
+            {#if applyResult.ok}
+              ✓ {applyResult.message}
+              {#if applyResult.applied?.length}
+                <ul class="applied-list">{#each applyResult.applied as a}<li><code>{a}</code></li>{/each}</ul>
+              {/if}
+            {:else}
+              ✗ {applyResult.error}
+            {/if}
+          </div>
+        {/if}
+        <div class="apply-actions">
+          <button class="btn-primary" onclick={applyToService} disabled={applyLoading}>
+            {applyLoading ? 'Applying…' : 'Apply & Save'}
+          </button>
+          {#if applyForm.restart}
+            <span class="restart-warn">⚠ Service will restart — UI will be briefly unavailable</span>
+          {/if}
+        </div>
+      </div>
+    {/if}
+  </div>
 
   <div class="verify-tool">
     <h4>Verify cert path</h4>
@@ -330,6 +507,40 @@
   .fp { font-family: monospace; font-size: 0.78rem; color: var(--color-muted, #6b7280); }
   .dim { color: var(--color-muted, #6b7280); font-size: 0.8rem; }
   .actions-cell { display: flex; gap: 6px; align-items: center; }
+
+  .role-badge { margin-left: 6px; font-size: 0.72rem; padding: 2px 6px; border-radius: 10px; background: #1e3a5f; color: #93c5fd; border: 1px solid #1d4ed866; }
+  .hint-inline { font-size: 0.72rem; color: var(--color-muted, #6b7280); text-transform: none; letter-spacing: 0; }
+  .form-grid select { font-size: 0.88rem; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--color-border, #2d2d44); background: var(--color-bg, #111827); color: inherit; }
+
+  .expiry-cell { font-size: 0.78rem; }
+  .expiry-green { color: #10b981; }
+  .expiry-amber { color: #f59e0b; }
+  .expiry-red { color: #f87171; font-weight: 600; }
+  .expiry-tag { font-size: 0.7rem; font-weight: 700; padding: 1px 5px; border-radius: 4px; margin-left: 4px; background: #f59e0b22; border: 1px solid #f59e0b44; }
+  .expiry-red .expiry-tag { background: #f8717122; border-color: #f8717144; }
+  .expiry-dim { color: var(--color-muted, #6b7280); font-size: 0.72rem; margin-left: 4px; }
+  tr.expiry-warn td { background: #f59e0b08; }
+
+  .apply-panel { margin-top: 24px; border: 1px solid var(--color-border, #2d2d44); border-radius: 8px; background: var(--color-surface, #1a1a2e); overflow: hidden; }
+  .apply-header { display: flex; align-items: baseline; gap: 12px; padding: 12px 16px; cursor: pointer; user-select: none; }
+  .apply-header:hover { background: #ffffff06; }
+  .apply-header h4 { margin: 0; font-size: 0.9rem; }
+  .apply-subtitle { font-size: 0.78rem; }
+  .applied-summary { padding: 6px 16px 10px; display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--color-border, #2d2d44); }
+  .applied-row { display: flex; align-items: center; gap: 10px; font-size: 0.78rem; flex-wrap: wrap; }
+  .applied-target { font-weight: 600; font-size: 0.75rem; padding: 2px 7px; border-radius: 4px; background: #1e40af22; color: #93c5fd; border: 1px solid #1e40af44; }
+  .applied-item { display: flex; align-items: center; gap: 4px; }
+  .applied-field { color: var(--color-muted, #6b7280); font-size: 0.72rem; }
+  .apply-form { padding: 14px 16px; border-top: 1px solid var(--color-border, #2d2d44); display: flex; flex-direction: column; gap: 10px; }
+  .apply-target-row label, .apply-field-label { display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; color: var(--color-muted, #6b7280); text-transform: uppercase; letter-spacing: 0.04em; }
+  .apply-target-row select, .apply-field-label select { font-size: 0.84rem; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--color-border, #2d2d44); background: var(--color-bg, #111827); color: inherit; text-transform: none; letter-spacing: 0; }
+  .restart-label { display: flex; align-items: center; gap: 8px; font-size: 0.82rem; color: inherit; cursor: pointer; }
+  .restart-warn { font-size: 0.78rem; color: #f59e0b; }
+  .apply-actions { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+  .apply-result { font-size: 0.82rem; padding: 8px 12px; border-radius: 6px; }
+  .apply-result.ok { background: #10b98118; color: #10b981; border: 1px solid #10b98144; }
+  .apply-result.fail { background: #7f1d1d22; color: #f87171; border: 1px solid #f8717144; }
+  .applied-list { margin: 6px 0 0 16px; padding: 0; font-size: 0.78rem; }
 
   .loading, .empty, .error { padding: 40px; text-align: center; color: var(--color-muted, #6b7280); font-size: 0.88rem; }
   .error { color: #f87171; }

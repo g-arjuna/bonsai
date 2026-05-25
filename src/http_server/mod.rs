@@ -71,7 +71,7 @@ use managed_devices::{managed_devices_handler, discover_handler, credentials_han
 use governance::{assignment_override_handler, assignment_rules_handler, assignment_status_handler, collectors_handler, create_environment_handler, environments_handler, governance_state_handler, governance_history_handler, governance_profile_handler, health_handler, healthz_handler, readyz_handler, remove_environment_handler, assign_site_environment_handler, update_environment_handler, set_assignment_rules_handler, setup_status_handler, sidecars_handler, sidecar_status_handler, sidecar_rules_handler, sidecar_rule_toggle_handler};
 use outputs::{adapter_audit_handler, adapter_list_handler, adapter_remove_handler, adapter_test_handler, adapter_upsert_handler};
 use test_endpoints::{inject_detection_handler, parse_syslog_fixture_handler};
-use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler, get_ai_config_handler, post_ai_test_handler, list_ai_providers_handler, upsert_ai_provider_handler, remove_ai_provider_handler, test_ai_provider_handler, activate_ai_provider_handler, get_active_ai_provider_handler, reload_patterns_handler, mib_upload_handler, tsdb_config_handler, tsdb_query_handler, list_settings_handler, get_settings_section_handler, patch_settings_section_handler, export_settings_handler, list_certs_handler, upsert_cert_handler, get_cert_pem_handler, delete_cert_handler, verify_cert_path_handler};
+use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler, get_ai_config_handler, post_ai_test_handler, list_ai_providers_handler, upsert_ai_provider_handler, remove_ai_provider_handler, test_ai_provider_handler, activate_ai_provider_handler, get_active_ai_provider_handler, reload_patterns_handler, mib_upload_handler, tsdb_config_handler, tsdb_query_handler, list_settings_handler, get_settings_section_handler, patch_settings_section_handler, export_settings_handler, list_certs_handler, upsert_cert_handler, get_cert_pem_handler, delete_cert_handler, verify_cert_path_handler, apply_cert_handler, list_applied_certs_handler};
 use ha::{ha_status_handler, ha_settings_handler, ha_patch_settings_handler, restart_handler};
 use nl_query::{explorer_ask_handler, nl_budget_handler};
 use shun::{create_shun_rule_handler, delete_shun_rule_handler, disable_shun_rule_handler, list_shun_rules_handler, shun_stats_handler};
@@ -1061,6 +1061,8 @@ fn settings_routes() -> Router<AppState> {
         .route("/api/settings/{section}", get(get_settings_section_handler).patch(patch_settings_section_handler))
         // TLS Certificate management
         .route("/api/certs", get(list_certs_handler).post(upsert_cert_handler))
+        .route("/api/certs/applied", get(list_applied_certs_handler))
+        .route("/api/certs/apply", post(apply_cert_handler))
         .route("/api/certs/verify", post(verify_cert_path_handler))
         .route("/api/certs/{name}", get(get_cert_pem_handler).delete(delete_cert_handler))
 }

@@ -1295,6 +1295,94 @@ fn pem_fingerprint(pem: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Parse the Not-After Unix timestamp from the first certificate block in a PEM.
+/// Returns None if the PEM contains no certificates or the date cannot be parsed.
+fn pem_expires_at(pem: &str) -> Option<i64> {
+    use rustls_pemfile::certs;
+    use rustls::pki_types::CertificateDer;
+
+    let der_blocks: Vec<CertificateDer<'static>> = certs(&mut pem.as_bytes())
+        .flatten()
+        .collect();
+    let der = der_blocks.into_iter().next()?;
+
+    // Walk the ASN.1 DER manually — TBSCertificate.validity.notAfter
+    // Structure: SEQUENCE { SEQUENCE { ... INTEGER INTEGER SEQUENCE SEQUENCE Validity ... } }
+    // We search for UTCTime (0x17) or GeneralizedTime (0x18) tags in the validity block.
+    let bytes = der.as_ref();
+    parse_not_after_from_der(bytes)
+}
+
+fn parse_not_after_from_der(der: &[u8]) -> Option<i64> {
+    // Walk ASN.1 tags looking for the Validity SEQUENCE which contains two time values.
+    // UTCTime = 0x17 (YYMMDDHHMMSSZ), GeneralizedTime = 0x18 (YYYYMMDDHHMMSSZ)
+    let mut i = 0usize;
+    while i + 2 < der.len() {
+        let tag = der[i];
+        if tag != 0x17 && tag != 0x18 {
+            i += 1;
+            continue;
+        }
+        let len_byte = der[i + 1] as usize;
+        if len_byte == 0 || i + 2 + len_byte > der.len() {
+            i += 1;
+            continue;
+        }
+        let time_bytes = &der[i + 2..i + 2 + len_byte];
+        if let Ok(s) = std::str::from_utf8(time_bytes) {
+            // Skip notBefore; the second time tag is notAfter — track occurrence count
+            // We need to find the *second* time value (notAfter).
+            // Re-scan from start counting occurrences to find the second one.
+            let _ = s; // suppress warning — parsed below by second-occurrence logic
+        }
+        i += 1;
+    }
+    // Second pass: collect all time values and return the second (notAfter)
+    let times = collect_asn1_times(der);
+    if times.len() >= 2 {
+        parse_asn1_time(&times[1])
+    } else {
+        None
+    }
+}
+
+fn collect_asn1_times(der: &[u8]) -> Vec<String> {
+    let mut results = Vec::new();
+    let mut i = 0usize;
+    while i + 2 < der.len() {
+        let tag = der[i];
+        if tag == 0x17 || tag == 0x18 {
+            let len = der[i + 1] as usize;
+            if i + 2 + len <= der.len() {
+                if let Ok(s) = std::str::from_utf8(&der[i + 2..i + 2 + len]) {
+                    results.push(s.trim_end_matches('Z').to_string());
+                }
+                i += 2 + len;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    results
+}
+
+fn parse_asn1_time(s: &str) -> Option<i64> {
+    use chrono::{NaiveDateTime, TimeZone, Utc};
+    // UTCTime: YYMMDDHHMMSS  (2-digit year: >= 50 → 19xx, < 50 → 20xx)
+    // GeneralizedTime: YYYYMMDDHHMMSS
+    let dt = if s.len() == 12 {
+        let year_2: i32 = s[0..2].parse().ok()?;
+        let year = if year_2 >= 50 { 1900 + year_2 } else { 2000 + year_2 };
+        let rest = format!("{:04}{}", year, &s[2..]);
+        NaiveDateTime::parse_from_str(&rest, "%Y%m%d%H%M%S").ok()?
+    } else if s.len() >= 14 {
+        NaiveDateTime::parse_from_str(&s[..14], "%Y%m%d%H%M%S").ok()?
+    } else {
+        return None;
+    };
+    Some(Utc.from_utc_datetime(&dt).timestamp())
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CertMeta {
     pub name: String,
@@ -1302,6 +1390,12 @@ pub struct CertMeta {
     pub fingerprint_sha256: String,
     pub added_at_ns: i64,
     pub pem_size: usize,
+    /// Operator-assigned role hint: "ca", "server_cert", "server_key", "client_cert", "client_key"
+    #[serde(default)]
+    pub role: String,
+    /// Unix seconds of certificate Not-After expiry, if parseable from the PEM.
+    #[serde(default)]
+    pub expires_at: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -1310,6 +1404,9 @@ pub struct UpsertCertRequest {
     #[serde(default)]
     pub label: String,
     pub pem: String,
+    /// Optional role hint for enterprise CA workflows.
+    #[serde(default)]
+    pub role: String,
 }
 
 /// GET /api/certs — list all vault-stored certificates (without PEM content).
@@ -1350,12 +1447,15 @@ pub async fn upsert_cert_handler(
         .map(|d| d.as_nanos() as i64)
         .unwrap_or(0);
 
+    let expires_at = pem_expires_at(&body.pem);
     let meta = CertMeta {
         name: body.name.clone(),
         label: if body.label.is_empty() { body.name.clone() } else { body.label.clone() },
         fingerprint_sha256: pem_fingerprint(&body.pem),
         added_at_ns: now_ns,
         pem_size: body.pem.len(),
+        role: body.role.clone(),
+        expires_at,
     };
     let username_json = serde_json::to_string(&meta)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -1398,6 +1498,145 @@ pub async fn delete_cert_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     tracing::info!(name = %name, "cert removed from vault");
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Request body for POST /api/certs/apply.
+///
+/// Specifies which cert names from the vault should be applied to which service component.
+/// All names are looked up as `vault:{name}` at runtime — no file paths needed.
+///
+/// `target` values:
+///   - "http_tls"      — HTTPS API server (cert + key for the UI/API endpoint)
+///   - "runtime_mtls"  — gRPC mTLS between core and collectors (ca + cert + key)
+///   - "gnmi_ca"       — Default CA cert for new gNMI device subscriptions
+///
+/// Set `restart: true` to trigger a graceful process restart after applying.
+#[derive(Deserialize)]
+pub struct ApplyCertRequest {
+    pub target: String,
+    /// Vault cert name to use as the CA certificate.
+    pub ca_cert: Option<String>,
+    /// Vault cert name to use as the server/client certificate chain.
+    pub cert: Option<String>,
+    /// Vault cert name to use as the private key.
+    pub key: Option<String>,
+    /// If true, trigger a graceful restart after writing config (default: false).
+    #[serde(default)]
+    pub restart: bool,
+}
+
+#[derive(Serialize)]
+pub struct ApplyCertResponse {
+    pub target: String,
+    pub applied: Vec<String>,
+    pub restart_scheduled: bool,
+    pub message: String,
+}
+
+/// POST /api/certs/apply — apply vault cert names to a service component's config.
+///
+/// Writes `cert_config:{target}` DB items so the service knows which vault cert
+/// aliases to load on next startup (or after reload).
+pub async fn apply_cert_handler(
+    State(state): State<AppState>,
+    Json(body): Json<ApplyCertRequest>,
+) -> Result<Json<ApplyCertResponse>, (StatusCode, String)> {
+    let valid_targets = ["http_tls", "runtime_mtls", "gnmi_ca"];
+    if !valid_targets.contains(&body.target.as_str()) {
+        return Err((StatusCode::BAD_REQUEST, format!(
+            "unknown target '{}'; valid: {}", body.target, valid_targets.join(", ")
+        )));
+    }
+
+    let mut applied: Vec<String> = Vec::new();
+
+    // Collect (key, cert_name) pairs to write, validated against target.
+    let mut writes: Vec<(String, String)> = Vec::new();
+    match body.target.as_str() {
+        "http_tls" => {
+            if let Some(ref cert) = body.cert { writes.push(("cert_config:http_tls:cert".into(), cert.clone())); }
+            if let Some(ref key) = body.key { writes.push(("cert_config:http_tls:key".into(), key.clone())); }
+        }
+        "runtime_mtls" => {
+            if let Some(ref ca) = body.ca_cert { writes.push(("cert_config:runtime_mtls:ca_cert".into(), ca.clone())); }
+            if let Some(ref cert) = body.cert { writes.push(("cert_config:runtime_mtls:cert".into(), cert.clone())); }
+            if let Some(ref key) = body.key { writes.push(("cert_config:runtime_mtls:key".into(), key.clone())); }
+        }
+        "gnmi_ca" => {
+            if let Some(ref ca) = body.ca_cert { writes.push(("cert_config:gnmi_ca:ca_cert".into(), ca.clone())); }
+        }
+        _ => {}
+    }
+    if writes.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "no cert fields provided".into()));
+    }
+    for (key, cert_name) in &writes {
+        let alias = cert_alias(cert_name);
+        let exists = state.credentials.list().unwrap_or_default().iter().any(|s| s.alias == alias);
+        if !exists {
+            return Err((StatusCode::UNPROCESSABLE_ENTITY, format!(
+                "cert '{}' not found in vault (alias: {})", cert_name, alias
+            )));
+        }
+        let vault_ref = format!("vault:{}", cert_name);
+        let item = crate::graph::ConfigItemRecord {
+            id: key.clone(),
+            config_class: "cert_config".to_string(),
+            vendor: String::new(),
+            name: key.clone(),
+            version: "1".to_string(),
+            content_json: vault_ref.clone(),
+            enabled: true,
+            created_by: "certs_api".to_string(),
+        };
+        state.store.upsert_config_item(item).await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        applied.push(format!("{} = {}", key, vault_ref));
+    }
+
+    tracing::info!(target = %body.target, ?applied, restart = body.restart, "cert bundle applied to config");
+
+    let restart_scheduled = body.restart;
+    if body.restart {
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+            std::process::exit(0);
+        });
+    }
+
+    Ok(Json(ApplyCertResponse {
+        target: body.target,
+        applied,
+        restart_scheduled,
+        message: if restart_scheduled {
+            "cert config saved — restart scheduled in ~1s (systemd/docker will auto-restart)".into()
+        } else {
+            "cert config saved — restart required to take effect".into()
+        },
+    }))
+}
+
+/// GET /api/certs/applied — show currently applied cert config from DB.
+pub async fn list_applied_certs_handler(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let items = state.store.list_config_items(Some("cert_config".to_string())).await.unwrap_or_default();
+    let mut result = serde_json::Map::new();
+    for item in &items {
+        if !item.enabled { continue; }
+        // Key format: cert_config:{target}:{field}  e.g. cert_config:http_tls:cert
+        let parts: Vec<&str> = item.name.splitn(3, ':').collect();
+        if parts.len() == 3 {
+            let target_section = parts[1].to_string();
+            let field = parts[2].to_string();
+            let section = result.entry(target_section)
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(map) = section {
+                map.insert(field, serde_json::Value::String(item.content_json.clone()));
+            }
+        }
+    }
+    Json(serde_json::Value::Object(result))
 }
 
 /// POST /api/certs/verify — check if a cert path (file or vault:name) is reachable.

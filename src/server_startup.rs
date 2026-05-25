@@ -1481,21 +1481,36 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 .await
                 .with_context(|| format!("failed to bind HTTP port at {http_addr}"))?;
 
-            // D4-3 T7: HTTPS — when tls.enabled, build a rustls acceptor from the
-            // configured cert/key and wrap each accepted TCP stream before handing
-            // it to Axum. Plain HTTP is still the default for local/lab deployments.
-            let http_tls_acceptor: Option<tokio_rustls::TlsAcceptor> = if cfg.tls.enabled {
-                let acceptor = build_http_tls_acceptor(&cfg.tls)
-                    .context("failed to configure HTTP TLS")?;
-                info!(
-                    addr = %http_addr,
-                    cert = %cfg.tls.cert_path,
-                    "HTTPS listener bound (TLS enabled)"
-                );
-                Some(acceptor)
-            } else {
-                info!(addr = %http_addr, "HTTP listener bound");
-                None
+            // D4-3 T7 / cert-mgmt: HTTPS — check for vault-managed cert_config overrides
+            // first (set via POST /api/certs/apply), then fall back to bonsai.toml paths.
+            let http_tls_acceptor: Option<tokio_rustls::TlsAcceptor> = {
+                // Check DB for vault cert refs applied via UI.
+                let db_cert = if let Store::Core(s) = &store {
+                    let items = s.list_config_items(Some("cert_config".to_string())).await.unwrap_or_default();
+                    let cert_ref = items.iter().find(|i| i.name == "cert_config:http_tls:cert" && i.enabled).map(|i| i.content_json.clone());
+                    let key_ref  = items.iter().find(|i| i.name == "cert_config:http_tls:key"  && i.enabled).map(|i| i.content_json.clone());
+                    cert_ref.zip(key_ref)
+                } else { None };
+
+                if let Some((cert_ref, key_ref)) = db_cert {
+                    // Vault-managed cert path: resolve PEM from vault or filesystem.
+                    let cert_pem = crate::tls_util::read_cert_pem(&cert_ref, &credentials).await
+                        .with_context(|| format!("cert_config:http_tls:cert '{cert_ref}' unreadable"))?;
+                    let key_pem = crate::tls_util::read_cert_pem(&key_ref, &credentials).await
+                        .with_context(|| format!("cert_config:http_tls:key '{key_ref}' unreadable"))?;
+                    let acceptor = build_http_tls_acceptor_from_pem(&cert_pem, &key_pem)
+                        .context("failed to configure HTTP TLS from vault cert")?;
+                    info!(addr = %http_addr, cert = %cert_ref, "HTTPS listener bound (TLS via vault)");
+                    Some(acceptor)
+                } else if cfg.tls.enabled {
+                    let acceptor = build_http_tls_acceptor(&cfg.tls)
+                        .context("failed to configure HTTP TLS")?;
+                    info!(addr = %http_addr, cert = %cfg.tls.cert_path, "HTTPS listener bound (TLS enabled)");
+                    Some(acceptor)
+                } else {
+                    info!(addr = %http_addr, "HTTP listener bound");
+                    None
+                }
             };
 
             let bus_for_http = std::sync::Arc::clone(&bus);
@@ -1856,6 +1871,33 @@ fn required_tls_path<'a>(value: Option<&'a str>, field: &str) -> Result<&'a str>
     value
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| anyhow::anyhow!("{field} is required when runtime.tls.enabled = true"))
+}
+
+/// Build a `tokio_rustls::TlsAcceptor` from raw PEM byte slices.
+/// Used when cert/key come from the vault (resolved by tls_util::read_cert_pem).
+fn build_http_tls_acceptor_from_pem(
+    cert_pem: &[u8],
+    key_pem: &[u8],
+) -> Result<tokio_rustls::TlsAcceptor> {
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_pem.as_ref())
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("failed to parse TLS certificate PEM from vault")?;
+    if certs.is_empty() {
+        anyhow::bail!("no certificates found in vault cert PEM");
+    }
+
+    let key = rustls_pemfile::private_key(&mut key_pem.as_ref())
+        .context("failed to parse TLS private key PEM from vault")?
+        .ok_or_else(|| anyhow::anyhow!("no private key found in vault key PEM"))?;
+
+    let server_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, PrivateKeyDer::try_from(key).context("invalid private key")?)
+        .context("failed to build rustls ServerConfig for HTTP TLS (vault)")?;
+
+    Ok(tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(server_config)))
 }
 
 /// Build a `tokio_rustls::TlsAcceptor` from `[tls]` cert/key in bonsai.toml.
