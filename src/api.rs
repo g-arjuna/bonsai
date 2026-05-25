@@ -1162,6 +1162,7 @@ pub fn target_from_managed_device(
             .into_iter()
             .map(selected_path_from_proto)
             .collect(),
+        extra_ips: Vec::new(),
         created_at_ns: 0,
         updated_at_ns: 0,
         created_by: String::new(),

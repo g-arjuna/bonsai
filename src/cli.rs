@@ -630,6 +630,7 @@ async fn run_device_cli_local(command: DeviceCliCommand, cfg: config::Config) ->
                     site: add.site,
                     collector_id: None,
                     selected_paths: Vec::new(),
+                    extra_ips: Vec::new(),
                     paths: vec![],
                     optional: false,
                     created_at_ns: 0,

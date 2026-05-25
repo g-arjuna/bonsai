@@ -7985,7 +7985,7 @@ fn write_env_sensor(
         ("id",  Value::String(sensor_id.clone())),
         ("dev", Value::String(sensor_bare.to_string())),
     ])
-    .context("execute REPORTED_BY edge")?
+    .context("execute REPORTED_BY edge")?;
 
     // D4-20 T4: Thermal detection rules
     if sensor_type == "temperature" && reading_value > 0.0 {
@@ -10191,7 +10191,7 @@ fn write_interface_description(
         ("description", Value::String(description.to_string())),
         ("timestamp_ns", Value::Int64(update.timestamp_ns)),
     ])
-    .context("update interface description")?
+    .context("update interface description")?;
     
     // Trigger service discovery if description contains service indicators
     if description.to_lowercase().contains("api") 

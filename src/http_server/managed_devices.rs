@@ -761,6 +761,7 @@ pub(super) fn target_from_request(req: ManagedDeviceRequest) -> Result<TargetCon
             .into_iter()
             .filter(|path| !path.path.trim().is_empty())
             .collect(),
+        extra_ips: Vec::new(),
         created_at_ns: 0,
         updated_at_ns: 0,
         created_by: String::new(),
