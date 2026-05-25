@@ -1494,14 +1494,36 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
 
                 if let Some((cert_ref, key_ref)) = db_cert {
                     // Vault-managed cert path: resolve PEM from vault or filesystem.
-                    let cert_pem = crate::tls_util::read_cert_pem(&cert_ref, &credentials).await
-                        .with_context(|| format!("cert_config:http_tls:cert '{cert_ref}' unreadable"))?;
-                    let key_pem = crate::tls_util::read_cert_pem(&key_ref, &credentials).await
-                        .with_context(|| format!("cert_config:http_tls:key '{key_ref}' unreadable"))?;
-                    let acceptor = build_http_tls_acceptor_from_pem(&cert_pem, &key_pem)
-                        .context("failed to configure HTTP TLS from vault cert")?;
-                    info!(addr = %http_addr, cert = %cert_ref, "HTTPS listener bound (TLS via vault)");
-                    Some(acceptor)
+                    // Non-fatal: if the vault ref is broken, log a warning and fall back
+                    // to bonsai.toml [tls] config (or plain HTTP) so startup never fails
+                    // due to a stale cert_config DB entry.
+                    let vault_result = async {
+                        let cert_pem = crate::tls_util::read_cert_pem(&cert_ref, &credentials).await
+                            .with_context(|| format!("cert_config:http_tls:cert '{cert_ref}' unreadable"))?;
+                        let key_pem = crate::tls_util::read_cert_pem(&key_ref, &credentials).await
+                            .with_context(|| format!("cert_config:http_tls:key '{key_ref}' unreadable"))?;
+                        build_http_tls_acceptor_from_pem(&cert_pem, &key_pem)
+                            .context("failed to configure HTTP TLS from vault cert")
+                    }.await;
+                    match vault_result {
+                        Ok(acceptor) => {
+                            info!(addr = %http_addr, cert = %cert_ref, "HTTPS listener bound (TLS via vault)");
+                            Some(acceptor)
+                        }
+                        Err(e) => {
+                            warn!(addr = %http_addr, cert = %cert_ref, error = %e,
+                                "vault cert_config found but cert unreadable — falling back to bonsai.toml tls or plain HTTP");
+                            if cfg.tls.enabled {
+                                let acceptor = build_http_tls_acceptor(&cfg.tls)
+                                    .context("failed to configure HTTP TLS (toml fallback after vault failure)")?;
+                                info!(addr = %http_addr, cert = %cfg.tls.cert_path, "HTTPS listener bound (TLS via toml fallback)");
+                                Some(acceptor)
+                            } else {
+                                info!(addr = %http_addr, "HTTP listener bound (vault cert failed, TLS disabled)");
+                                None
+                            }
+                        }
+                    }
                 } else if cfg.tls.enabled {
                     let acceptor = build_http_tls_acceptor(&cfg.tls)
                         .context("failed to configure HTTP TLS")?;

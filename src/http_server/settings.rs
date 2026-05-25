@@ -1511,6 +1511,7 @@ pub async fn delete_cert_handler(
 ///   - "gnmi_ca"       — Default CA cert for new gNMI device subscriptions
 ///
 /// Set `restart: true` to trigger a graceful process restart after applying.
+/// Set `clear: true` to *disable* all cert_config items for the target (reverts to bonsai.toml / plain HTTP).
 #[derive(Deserialize)]
 pub struct ApplyCertRequest {
     pub target: String,
@@ -1523,6 +1524,10 @@ pub struct ApplyCertRequest {
     /// If true, trigger a graceful restart after writing config (default: false).
     #[serde(default)]
     pub restart: bool,
+    /// If true, *disable* (not delete) all cert_config DB items for this target,
+    /// reverting to bonsai.toml config on next restart. Safe for test environments.
+    #[serde(default)]
+    pub clear: bool,
 }
 
 #[derive(Serialize)]
@@ -1550,7 +1555,44 @@ pub async fn apply_cert_handler(
 
     let mut applied: Vec<String> = Vec::new();
 
-    // Collect (key, cert_name) pairs to write, validated against target.
+    // --- clear mode: disable all cert_config items for this target in DB ---
+    // This is the safe toggle-off path: items are disabled (not deleted) so they
+    // can be re-enabled later and the change is auditable.
+    if body.clear {
+        let prefix = format!("cert_config:{}:", body.target);
+        let items = state.store.list_config_items(Some("cert_config".to_string())).await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let mut cleared = Vec::new();
+        for item in items.into_iter().filter(|i| i.name.starts_with(&prefix)) {
+            let disabled = crate::graph::ConfigItemRecord {
+                enabled: false,
+                ..item.clone()
+            };
+            state.store.upsert_config_item(disabled).await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            cleared.push(item.name.clone());
+        }
+        tracing::info!(target = %body.target, ?cleared, "cert_config items disabled (clear)");
+        let restart_scheduled = body.restart;
+        if body.restart {
+            tokio::spawn(async move {
+                tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+                std::process::exit(0);
+            });
+        }
+        return Ok(Json(ApplyCertResponse {
+            target: body.target,
+            applied: cleared.into_iter().map(|k| format!("{k} disabled")).collect(),
+            restart_scheduled,
+            message: if restart_scheduled {
+                "cert config cleared — restart scheduled (reverts to bonsai.toml on next boot)".into()
+            } else {
+                "cert config cleared — restart required to take effect".into()
+            },
+        }));
+    }
+
+    // --- apply mode: write enabled cert_config items for this target ---
     let mut writes: Vec<(String, String)> = Vec::new();
     match body.target.as_str() {
         "http_tls" => {
@@ -1568,7 +1610,7 @@ pub async fn apply_cert_handler(
         _ => {}
     }
     if writes.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "no cert fields provided".into()));
+        return Err((StatusCode::BAD_REQUEST, "no cert fields provided (use clear=true to disable)".into()));
     }
     for (key, cert_name) in &writes {
         let alias = cert_alias(cert_name);

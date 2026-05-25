@@ -154,6 +154,26 @@
     }
   }
 
+  async function clearTarget(target) {
+    applyLoading = true;
+    applyResult = null;
+    try {
+      const r = await fetch('/api/certs/apply', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ target, clear: true, restart: false }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? JSON.stringify(d));
+      applyResult = { ok: true, ...d };
+      await loadApplied();
+    } catch (e) {
+      applyResult = { ok: false, error: e.message };
+    } finally {
+      applyLoading = false;
+    }
+  }
+
   function fmtTime(ns) {
     if (!ns) return '—';
     return new Date(ns / 1_000_000).toLocaleString();
@@ -332,9 +352,14 @@
             {#each Object.entries(fields) as [field, val]}
               <span class="applied-item"><span class="applied-field">{field}</span> <code>{val}</code></span>
             {/each}
+            <button class="btn-clear-sm" onclick={() => clearTarget(target)} disabled={applyLoading} title="Disable vault cert config for {target} (reverts to bonsai.toml)">
+              ✕ clear
+            </button>
           </div>
         {/each}
       </div>
+    {:else}
+      <div class="applied-empty">No vault cert config active — using bonsai.toml defaults</div>
     {/if}
 
     {#if showApply}
@@ -397,6 +422,9 @@
         <div class="apply-actions">
           <button class="btn-primary" onclick={applyToService} disabled={applyLoading}>
             {applyLoading ? 'Applying…' : 'Apply & Save'}
+          </button>
+          <button class="btn-secondary" onclick={() => clearTarget(applyForm.target)} disabled={applyLoading} title="Disable vault cert config for this target">
+            Clear / Revert
           </button>
           {#if applyForm.restart}
             <span class="restart-warn">⚠ Service will restart — UI will be briefly unavailable</span>
@@ -541,6 +569,10 @@
   .apply-result.ok { background: #10b98118; color: #10b981; border: 1px solid #10b98144; }
   .apply-result.fail { background: #7f1d1d22; color: #f87171; border: 1px solid #f8717144; }
   .applied-list { margin: 6px 0 0 16px; padding: 0; font-size: 0.78rem; }
+  .applied-empty { padding: 6px 16px 10px; font-size: 0.78rem; color: var(--color-muted, #6b7280); border-top: 1px solid var(--color-border, #2d2d44); }
+  .btn-clear-sm { margin-left: auto; background: none; border: 1px solid #f8717144; color: #f87171; border-radius: 5px; padding: 2px 8px; font-size: 0.72rem; cursor: pointer; white-space: nowrap; }
+  .btn-clear-sm:hover:not(:disabled) { background: #7f1d1d22; }
+  .btn-clear-sm:disabled { opacity: 0.4; cursor: default; }
 
   .loading, .empty, .error { padding: 40px; text-align: center; color: var(--color-muted, #6b7280); font-size: 0.88rem; }
   .error { color: #f87171; }
