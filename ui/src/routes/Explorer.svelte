@@ -16,8 +16,10 @@
 
   let insights = $state(null);
   let insightsLoading = $state(false);
+  let insightsError = $state(null);
   let quality = $state(null);
   let qualityLoading = $state(false);
+  let qualityError = $state(null);
   let activeTab = $state('ask'); // 'ask' | 'explorer' | 'insights' | 'health'
 
   // ── NL query state ──────────────────────────────────────────────────────────
@@ -30,73 +32,82 @@
 
   // Curated query library shown in the sidebar
   const QUERY_LIBRARY = [
+    { section: 'Core' },
     {
       label: 'All devices',
-      cypher: 'MATCH (d:Device) RETURN d.address, d.hostname, d.vendor ORDER BY d.hostname',
+      cypher: 'MATCH (d:Device) RETURN d.address, d.hostname, d.vendor, d.role, d.site ORDER BY d.hostname',
     },
     {
-      label: 'Devices in DC environment',
-      cypher: "MATCH (env:Environment {archetype: 'data_center'})<-[:BELONGS_TO_ENVIRONMENT]-(s:Site)<-[:LOCATED_AT]-(d:Device) RETURN d.address, d.hostname, d.vendor, s.name ORDER BY d.hostname",
+      label: 'Devices by vendor',
+      cypher: 'MATCH (d:Device) RETURN d.vendor, count(d) AS device_count ORDER BY device_count DESC',
     },
     {
-      label: 'Active detections (last 24 h)',
-      cypher: "MATCH (d:Device)-[:TRIGGERED]->(de:DetectionEvent) RETURN d.address, de.rule_id, de.severity, de.fired_at ORDER BY de.fired_at DESC LIMIT 50",
+      label: 'Interfaces with errors',
+      cypher: 'MATCH (d:Device)-[:HAS_INTERFACE]->(i:Interface) WHERE i.in_errors > 0 OR i.out_errors > 0 RETURN d.hostname, i.name, i.in_errors, i.out_errors, i.oper_status ORDER BY (i.in_errors + i.out_errors) DESC LIMIT 25',
     },
     {
-      label: 'Devices missing enrichment',
-      cypher: 'MATCH (d:Device) OPTIONAL MATCH (d)-[:HAS_ENRICHMENT_PROPERTY]->(ep:EnrichmentProperty) WITH d, count(ep) AS ep_count WHERE ep_count = 0 RETURN d.address, d.hostname ORDER BY d.address',
+      label: 'Topology links (LLDP)',
+      cypher: 'MATCH (d:Device)-[:HAS_INTERFACE]->(si:Interface)-[:CONNECTED_TO]-(ri:Interface)<-[:HAS_INTERFACE]-(nb:Device) RETURN DISTINCT d.hostname, si.name AS local_if, ri.name AS remote_if, nb.hostname AS neighbor ORDER BY d.hostname',
+    },
+    { section: 'Routing & Sessions' },
+    {
+      label: 'BGP sessions',
+      cypher: 'MATCH (d:Device)-[:PEERS_WITH]->(n:BgpNeighbor) RETURN d.hostname, n.peer_address, n.session_state, n.peer_as ORDER BY d.hostname',
+    },
+    {
+      label: 'BGP sessions down',
+      cypher: "MATCH (d:Device)-[:PEERS_WITH]->(n:BgpNeighbor) WHERE n.session_state <> 'established' RETURN d.hostname, n.peer_address, n.session_state, n.peer_as ORDER BY d.hostname",
+    },
+    {
+      label: 'BMP sessions',
+      cypher: 'MATCH (d:Device)-[:HAS_BMP_SESSION]->(b:BmpSession) RETURN d.hostname, b.peer_address, b.session_state, b.adj_rib_in_routes, b.loc_rib_routes ORDER BY d.hostname',
+    },
+    {
+      label: 'ISIS adjacencies',
+      cypher: 'MATCH (d:Device)-[:HAS_ISIS_ADJACENCY]->(ia:IsisAdjacency) RETURN d.hostname, ia.system_id, ia.adjacency_state ORDER BY d.hostname',
+    },
+    {
+      label: 'OSPF neighbors',
+      cypher: 'MATCH (d:Device)-[:HAS_OSPF_NEIGHBOR]->(on:OspfNeighbor) RETURN d.hostname, on.neighbor_id, on.area, on.state ORDER BY d.hostname',
+    },
+    { section: 'Detections & Events' },
+    {
+      label: 'Recent detections',
+      cypher: 'MATCH (d:Device)-[:TRIGGERED]->(de:DetectionEvent) RETURN d.hostname, de.rule_id, de.severity, de.fired_at ORDER BY de.fired_at DESC LIMIT 50',
     },
     {
       label: 'Unresolved detections',
-      cypher: 'MATCH (de:DetectionEvent) OPTIONAL MATCH (r:Remediation)-[:RESOLVES]->(de) WITH de, r WHERE r IS NULL RETURN de.id, de.device_address, de.rule_id, de.severity ORDER BY de.fired_at DESC LIMIT 50',
+      cypher: 'MATCH (d:Device)-[:TRIGGERED]->(de:DetectionEvent) OPTIONAL MATCH (r:Remediation)-[:RESOLVES]->(de) WITH d, de, r WHERE r IS NULL RETURN d.hostname, de.rule_id, de.severity, de.fired_at ORDER BY de.fired_at DESC LIMIT 50',
     },
     {
-      label: 'Applications per site',
-      cypher: 'MATCH (s:Site)<-[:LOCATED_AT]-(d:Device)-[:RUNS_SERVICE|CARRIES_APPLICATION]->(a:Application) RETURN DISTINCT a.name, d.hostname, s.name ORDER BY s.name, a.name',
-    },
-    {
-      label: 'Topology neighbors of device',
-      cypher: "MATCH (d:Device {address: '10.0.0.1'})-[:HAS_INTERFACE]->(si:Interface)-[:CONNECTED_TO]-(di:Interface)<-[:HAS_INTERFACE]-(nb:Device) RETURN DISTINCT nb.address, nb.hostname, si.name AS local_if, di.name AS remote_if",
-    },
-    {
-      label: 'Subscription health per device',
-      cypher: "MATCH (d:Device)-[:HAS_SUBSCRIPTION_STATUS]->(ss:SubscriptionStatus) RETURN d.hostname, ss.path, ss.status ORDER BY d.hostname, ss.path",
-    },
-    {
-      label: 'Co-firing detections (all time)',
-      cypher: "MATCH (d:Device)-[:TRIGGERED]->(e1:DetectionEvent) MATCH (d)-[:TRIGGERED]->(e2:DetectionEvent) WHERE e1.rule_id < e2.rule_id RETURN e1.rule_id, e2.rule_id, count(DISTINCT d.address) AS co_count ORDER BY co_count DESC LIMIT 20",
-    },
-    {
-      label: 'Enrichment properties (NetBox)',
-      cypher: "MATCH (d:Device)-[:HAS_ENRICHMENT_PROPERTY]->(ep:EnrichmentProperty) WHERE ep.source_name = 'netbox' RETURN d.hostname, ep.key, ep.value ORDER BY d.hostname",
-    },
-    {
-      label: 'Enrichment properties (ServiceNow)',
-      cypher: "MATCH (d:Device)-[:HAS_ENRICHMENT_PROPERTY]->(ep:EnrichmentProperty) WHERE ep.source_name CONTAINS 'snow' RETURN d.hostname, ep.key, ep.value, ep.source_name ORDER BY d.hostname, ep.key",
-    },
-    {
-      label: 'CMDB CI hierarchy',
-      cypher: "MATCH (p:Device)-[r:CMDB_PARENT_OF]->(c:Device) RETURN p.hostname AS parent, c.hostname AS child, r.rel_type, r.source_name ORDER BY parent, child",
-    },
-    {
-      label: 'Business service bindings',
-      cypher: "MATCH (d:Device)-[r:RUNS_SERVICE|CARRIES_APPLICATION]->(a:Application) RETURN d.hostname, a.name, a.criticality, type(r) AS rel ORDER BY d.hostname",
-    },
-    {
-      label: 'CMDB locations',
-      cypher: "MATCH (l:Location) OPTIONAL MATCH (p:Location)-[:LOC_PARENT_OF]->(l) RETURN l.name, l.full_address, p.name AS parent, l.source ORDER BY l.name",
-    },
-    {
-      label: 'Enrichment conflicts (provenance)',
-      cypher: "MATCH (ep:EnrichmentProperty)-[:ENRICHMENT_PROPERTY_PROVENANCE]->(pv:PropertyProvenance) WHERE pv.details_json CONTAINS 'conflict' RETURN ep.device_address, ep.key, ep.value, ep.source_name, pv.confidence, pv.details_json ORDER BY ep.device_address, ep.key",
-    },
-    {
-      label: 'Sites per environment',
-      cypher: "MATCH (e:Environment)<-[:BELONGS_TO_ENVIRONMENT]-(s:Site) RETURN e.name, e.archetype, s.name ORDER BY e.name, s.name",
+      label: 'Recent syslog events',
+      cypher: "MATCH (d:Device)-[:REPORTED_BY]->(e:StateChangeEvent) WHERE e.source_type = 'syslog' RETURN d.hostname, e.event_type, e.detail, e.occurred_at ORDER BY e.occurred_at DESC LIMIT 30",
     },
     {
       label: 'Remediation history',
       cypher: 'MATCH (r:Remediation)-[:RESOLVES]->(de:DetectionEvent) RETURN r.id, de.rule_id, r.action, r.status, r.attempted_at ORDER BY r.attempted_at DESC LIMIT 30',
+    },
+    { section: 'Monitoring' },
+    {
+      label: 'Subscription health',
+      cypher: 'MATCH (d:Device)-[:HAS_SUBSCRIPTION_STATUS]->(ss:SubscriptionStatus) RETURN d.hostname, ss.path, ss.status ORDER BY d.hostname, ss.path',
+    },
+    {
+      label: 'Sites & locations',
+      cypher: 'MATCH (s:Site) OPTIONAL MATCH (d:Device)-[:LOCATED_AT]->(s) RETURN s.name, s.location, count(d) AS device_count ORDER BY s.name',
+    },
+    {
+      label: 'Redundancy groups',
+      cypher: 'MATCH (d:Device)-[m:MEMBER_OF]->(rg:RedundancyGroup) RETURN rg.name, rg.group_type, rg.state, d.hostname, m.role ORDER BY rg.group_type, rg.name',
+    },
+    { section: 'Enrichment' },
+    {
+      label: 'Enrichment properties',
+      cypher: 'MATCH (d:Device)-[:HAS_ENRICHMENT_PROPERTY]->(ep:EnrichmentProperty) RETURN d.hostname, ep.key, ep.value, ep.source_name ORDER BY d.hostname, ep.key LIMIT 100',
+    },
+    {
+      label: 'Investigations',
+      cypher: "MATCH (i:Investigation) RETURN i.device_address, i.detection_id, i.status, i.summary, i.tokens_used, i.started_at ORDER BY i.started_at DESC LIMIT 20",
     },
   ];
 
@@ -183,19 +194,33 @@
   async function loadInsights() {
     if (insights) return; // cached for the session
     insightsLoading = true;
+    insightsError = null;
     try {
       const r = await fetch('/api/graph/insights');
-      if (r.ok) insights = await r.json();
-    } catch {}
+      if (r.ok) {
+        insights = await r.json();
+      } else {
+        insightsError = `Server returned ${r.status}: ${await r.text()}`;
+      }
+    } catch (e) {
+      insightsError = `Failed to load insights: ${e.message}`;
+    }
     insightsLoading = false;
   }
 
   async function loadQuality() {
     qualityLoading = true;
+    qualityError = null;
     try {
       const r = await fetch('/api/graph/quality');
-      if (r.ok) quality = await r.json();
-    } catch {}
+      if (r.ok) {
+        quality = await r.json();
+      } else {
+        qualityError = `Server returned ${r.status}: ${await r.text()}`;
+      }
+    } catch (e) {
+      qualityError = `Failed to load graph quality: ${e.message}`;
+    }
     qualityLoading = false;
   }
 
@@ -305,17 +330,13 @@
         <div class="ask-result-card">
           <div class="ask-question-echo">{nlResult.question}</div>
 
+          {#if nlResult.answer_template && !nlResult.error}
+            <div class="ask-answer-summary">{nlResult.answer_template}</div>
+          {/if}
+
           {#if nlResult.explanation}
             <div class="ask-explanation">{nlResult.explanation}</div>
           {/if}
-
-          <details class="ask-cypher-details" open>
-            <summary class="ask-cypher-summary">Generated Cypher <span class="ask-tokens">{nlResult.tokens_used} tokens</span></summary>
-            <pre class="ask-cypher-pre">{nlResult.cypher}</pre>
-            <button class="btn-secondary ask-use-btn" onclick={() => { cypher = nlResult.cypher; activeTab = 'explorer'; result = null; error = null; }}>
-              Open in Cypher editor
-            </button>
-          </details>
 
           {#if nlResult.error}
             <div class="error-banner" style="margin-top:0.75rem;">{nlResult.error}</div>
@@ -342,8 +363,34 @@
               </table>
             </div>
           {:else}
-            <div class="empty-result" style="margin-top:0.5rem;">Query returned 0 rows.</div>
+            <div class="empty-result" style="margin-top:0.5rem;">Query returned 0 rows — the graph may not have data matching this query yet.</div>
           {/if}
+
+          <details class="ask-cypher-details">
+            <summary class="ask-cypher-summary">View generated Cypher <span class="ask-tokens">{nlResult.tokens_used} tokens</span></summary>
+            <pre class="ask-cypher-pre">{nlResult.cypher}</pre>
+            <button class="btn-secondary ask-use-btn" onclick={() => { cypher = nlResult.cypher; activeTab = 'explorer'; result = null; error = null; }}>
+              Open in Cypher editor
+            </button>
+          </details>
+        </div>
+      {:else if !nlRunning && !nlError}
+        <div class="ask-examples">
+          <div class="ask-examples-title">Try asking about your network</div>
+          <div class="ask-examples-grid">
+            {#each [
+              'How many devices per vendor?',
+              'Which devices are connected to spine1?',
+              'Show me BGP sessions that are down',
+              'Are there any unresolved detections?',
+              'What interfaces have errors?',
+              'Show me recent syslog events',
+            ] as example}
+              <button class="ask-example-btn" onclick={() => { nlQuestion = example; askQuestion(); }}>
+                {example}
+              </button>
+            {/each}
+          </div>
         </div>
       {/if}
 
@@ -366,9 +413,12 @@
       <!-- sidebar -->
       <aside class="query-sidebar">
         <div class="sidebar-section">
-          <div class="sidebar-section-title">Query library</div>
           {#each QUERY_LIBRARY as q}
-            <button class="lib-btn" onclick={() => pickLibraryQuery(q)}>{q.label}</button>
+            {#if q.section}
+              <div class="sidebar-section-title">{q.section}</div>
+            {:else}
+              <button class="lib-btn" onclick={() => pickLibraryQuery(q)}>{q.label}</button>
+            {/if}
           {/each}
         </div>
 
@@ -479,8 +529,18 @@
     <!-- ── graph health pane ─────────────────────────────────────────────── -->
     {#if qualityLoading}
       <div class="loading">Computing graph quality…</div>
+    {:else if qualityError}
+      <div class="empty">
+        <div class="empty-title">Could not load graph quality data</div>
+        <div class="empty-detail">{qualityError}</div>
+        <button class="btn-secondary" style="margin-top:0.75rem;" onclick={() => { quality = null; loadQuality(); }}>Retry</button>
+      </div>
     {:else if !quality}
-      <div class="empty">Could not load graph quality data.</div>
+      <div class="empty">
+        <div class="empty-title">No graph quality data available</div>
+        <div class="empty-detail">The graph database may be empty or not yet populated with device data.</div>
+        <button class="btn-secondary" style="margin-top:0.75rem;" onclick={() => loadQuality()}>Retry</button>
+      </div>
     {:else}
       <div class="quality-layout">
 
@@ -563,8 +623,18 @@
     <!-- ── insights pane ─────────────────────────────────────────────────── -->
     {#if insightsLoading}
       <div class="loading">Computing graph insights…</div>
+    {:else if insightsError}
+      <div class="empty">
+        <div class="empty-title">Could not load graph insights</div>
+        <div class="empty-detail">{insightsError}</div>
+        <button class="btn-secondary" style="margin-top:0.75rem;" onclick={() => { insights = null; insightsError = null; loadInsights(); }}>Retry</button>
+      </div>
     {:else if !insights}
-      <div class="empty">Could not load insights.</div>
+      <div class="empty">
+        <div class="empty-title">No graph insights available</div>
+        <div class="empty-detail">The graph database may be empty or not yet populated with device data.</div>
+        <button class="btn-secondary" style="margin-top:0.75rem;" onclick={() => loadInsights()}>Retry</button>
+      </div>
     {:else}
       <div class="insights-grid">
 
@@ -886,6 +956,8 @@
 
   .loading { padding: 2rem; text-align: center; color: var(--text-muted, #888); }
   .empty { padding: 2rem; text-align: center; color: var(--text-muted, #888); }
+  .empty-title { font-size: 0.95rem; font-weight: 600; color: var(--text, #ccc); margin-bottom: 0.5rem; }
+  .empty-detail { font-size: 0.8rem; color: var(--text-muted, #888); max-width: 480px; margin: 0 auto; line-height: 1.5; }
 
   /* ── ask pane ────────────────────────────────────────────────────────────── */
   .ask-layout { display: flex; flex-direction: column; gap: 1rem; }
@@ -990,6 +1062,49 @@
     font-size: 0.72rem;
     padding: 0.2rem 0.5rem;
     margin-top: 0.25rem;
+  }
+
+  .ask-answer-summary {
+    font-size: 1rem;
+    font-weight: 500;
+    color: var(--accent, #58a6ff);
+    margin-bottom: 0.75rem;
+    padding: 0.6rem 0.85rem;
+    background: color-mix(in srgb, var(--accent, #3b82f6) 8%, transparent);
+    border-left: 3px solid var(--accent, #3b82f6);
+    border-radius: 0 4px 4px 0;
+    line-height: 1.5;
+  }
+
+  .ask-examples {
+    padding: 1.5rem 0;
+  }
+  .ask-examples-title {
+    font-size: 0.9rem;
+    color: var(--text-muted, #888);
+    margin-bottom: 1rem;
+    text-align: center;
+  }
+  .ask-examples-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 0.5rem;
+  }
+  .ask-example-btn {
+    text-align: left;
+    padding: 0.6rem 0.85rem;
+    background: var(--surface, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    color: var(--text, #ccc);
+    cursor: pointer;
+    font-size: 0.82rem;
+    line-height: 1.4;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .ask-example-btn:hover {
+    border-color: var(--accent, #3b82f6);
+    background: color-mix(in srgb, var(--accent, #3b82f6) 5%, var(--surface, #1a1a1a));
   }
 
   .ask-history {

@@ -349,7 +349,7 @@ pub fn graph_quality(conn: &Connection<'_>) -> Result<GraphQuality> {
     let syslog_cutoff = ts(now_ns - 86_400_000_000_000_i64);
     let mut syslog_stmt = conn
         .prepare(
-            "MATCH (d:Device)-[:TRIGGERED_BY]->(e:StateChangeEvent) \
+            "MATCH (d:Device)-[:REPORTED_BY]->(e:StateChangeEvent) \
              WHERE e.source_type = 'syslog' AND e.occurred_at > $cutoff \
              RETURN count(DISTINCT d.address)",
         )
@@ -399,7 +399,6 @@ pub fn graph_quality(conn: &Connection<'_>) -> Result<GraphQuality> {
     let lldp_links: i64 = conn
         .query(
             "MATCH (:Interface)-[c:CONNECTED_TO]->(:Interface) \
-             WHERE c.source = 'lldp' \
              RETURN count(c)",
         )
         .context("quality: lldp_links")?
@@ -420,7 +419,7 @@ pub fn graph_quality(conn: &Connection<'_>) -> Result<GraphQuality> {
     // ── BGP mapped (at least one BgpSession node per device) ──────────────
     let bgp_mapped: i64 = conn
         .query(
-            "MATCH (d:Device)-[:HAS_BGP_SESSION]->(:BgpSession) \
+            "MATCH (d:Device)-[:PEERS_WITH]->(:BgpNeighbor) \
              RETURN count(DISTINCT d.address)",
         )
         .context("quality: bgp_mapped")?
@@ -452,7 +451,7 @@ pub fn graph_quality(conn: &Connection<'_>) -> Result<GraphQuality> {
 
     let mut syslog_stmt2 = conn
         .prepare(
-            "MATCH (d:Device)-[:TRIGGERED_BY]->(e:StateChangeEvent) \
+            "MATCH (d:Device)-[:REPORTED_BY]->(e:StateChangeEvent) \
              WHERE e.source_type = 'syslog' AND e.occurred_at > $cutoff \
              RETURN DISTINCT d.address",
         )
@@ -465,7 +464,7 @@ pub fn graph_quality(conn: &Connection<'_>) -> Result<GraphQuality> {
 
     let bgp_set: std::collections::HashSet<String> = conn
         .query(
-            "MATCH (d:Device)-[:HAS_BGP_SESSION]->(:BgpSession) RETURN DISTINCT d.address",
+            "MATCH (d:Device)-[:PEERS_WITH]->(:BgpNeighbor) RETURN DISTINCT d.address",
         )
         .context("quality: bgp_set")?
         .map(|r| read_str(&r[0]))

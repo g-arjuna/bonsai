@@ -68,14 +68,16 @@ pub const GRAPH_SCHEMA: &str = "\
 ## Graph Schema (LadybugDB / openCypher subset)
 
 ### Node Tables
-- Device(address STRING PK, vendor, hostname, role, site, updated_at)
+- Device(address STRING PK, vendor, hostname, role, site, model, serial_number, uptime_seconds, updated_at)
 - Site(id PK, name, parent_id, location, latitude, longitude, updated_at)
 - Interface(id PK, device_address, name, oper_status, in_octets, out_octets, in_errors, out_errors, speed, mtu, updated_at)
 - BgpNeighbor(id PK, device_address, peer_address, session_state, peer_as, updated_at)
 - BfdSession(id PK, device_address, if_name, remote_address, session_state, updated_at)
+- IsisAdjacency(id PK, device_address, system_id, adjacency_state, source_type, updated_at)
 - LldpNeighbor(id PK, device_address, local_if, chassis_id, port_id, system_name, updated_at)
-- StateChangeEvent(id PK, device_address, event_type, details_json, occurred_at)
-- DetectionEvent(id PK, device_address, rule_id, severity, features_json, remediation_status, fired_at)
+- BmpSession(id PK, device_address, router_address, peer_address, peer_as, session_state, adj_rib_in_routes, loc_rib_routes, updated_at)
+- StateChangeEvent(id PK, device_address, event_type, detail, source_type, occurred_at)
+- DetectionEvent(id PK, device_address, rule_id, severity, features_json, source_types, latency_ns, fired_at)
 - Remediation(id PK, detection_id, action, status, detail_json, attempted_at, completed_at)
 - RemediationProposal(id PK, detection_id, playbook_id, trust_key, status, operator_note, steps_json, rollback_steps_json, proposed_at, decided_at)
 - RemediationTrustMark(remediation_id PK, trustworthy, reason, created_at)
@@ -89,7 +91,7 @@ pub const GRAPH_SCHEMA: &str = "\
 - Incident(id PK, snow_sys_id, state, assignment_group, opened_at_ns, detection_id, updated_at)
 - Location(id PK, name, kind, site_id, source, full_address, source_name, updated_at)
 - Prefix(id PK, prefix, vlan_id, site, source, updated_at)
-- Vlan(id PK, vid, name, site_name, source, updated_at)
+- VLAN(id PK, vid, name, site_name, source, updated_at)
 - HostEndpoint(id PK, hostname, ip_address, mac_address, endpoint_type, source, updated_at)
 - AppFlow(id PK, exporter_address, src_address, dst_address, protocol, src_port, dst_port, bytes, packets, updated_at)
 - BgpRibEntry(id PK, rib_type, peer_address, prefix, next_hop, as_path, communities, updated_at)
@@ -98,6 +100,9 @@ pub const GRAPH_SCHEMA: &str = "\
 - ChangeRequest(id PK, number, source, snow_sys_id, short_description, state, change_type, risk, assigned_to, assignment_group, affected_cis_json, planned_start_ns INT64, planned_end_ns INT64, correlation_id, external_ref, updated_at)
 - SensorReading(id PK, device_address, component_name, sensor_type, temperature_c DOUBLE, power_w DOUBLE, fan_rpm INT64, humidity_pct DOUBLE, updated_at)
 - OpticsTelemetry(id PK, device_address, if_name, rx_power_dbm DOUBLE, tx_power_dbm DOUBLE, laser_bias_ma DOUBLE, temperature_c DOUBLE, voltage_v DOUBLE, updated_at)
+- RedundancyGroup(id PK, name, group_type, protected_node, state, source, updated_at)
+- OspfNeighbor(id PK, device_address, neighbor_id, area, state, updated_at)
+- Vrf(id PK, device_address, name, rd, updated_at)
 
 ### Relationship Tables
 - HAS_INTERFACE(Device → Interface)
@@ -105,14 +110,17 @@ pub const GRAPH_SCHEMA: &str = "\
 - PARENT_OF(Site → Site)
 - PEERS_WITH(Device → BgpNeighbor)
 - HAS_BFD_SESSION(Device → BfdSession)
+- HAS_ISIS_ADJACENCY(Device → IsisAdjacency)
 - HAS_LLDP_NEIGHBOR(Device → LldpNeighbor)
+- HAS_BMP_SESSION(Device → BmpSession)
 - REPORTED_BY(Device → StateChangeEvent)
+- REPORTED_BY(SensorReading → Device) — note: same name, different FROM/TO
 - CONNECTED_TO(Interface → Interface)
 - TRIGGERED(Device → DetectionEvent)
 - RESOLVES(Remediation → DetectionEvent)
 - HAS_PROPOSAL(DetectionEvent → RemediationProposal)
 - TRUST_MARKS(RemediationTrustMark → Remediation)
-- HAS_INCIDENT(DetectionEvent → Incident)
+- HAS_INCIDENT(Device → Incident)
 - HAS_TOOL_CALL(Investigation → AgentToolCall)
 - TRIGGERED_BY(DetectionEvent → StateChangeEvent)
 - HAS_SUBSCRIPTION_STATUS(Device → SubscriptionStatus)
@@ -130,37 +138,44 @@ pub const GRAPH_SCHEMA: &str = "\
 - SRC_HOST(AppFlow → HostEndpoint)
 - DST_HOST(AppFlow → HostEndpoint)
 - HOST_RUNS_SERVICE(HostEndpoint → Application)
-- ON_VLAN(Interface → Vlan)
+- ACCESS_VLAN(Interface → VLAN)
+- TRUNK_VLAN(Interface → VLAN)
 - HAS_RIB_ENTRY(Device → BgpRibEntry)
 - AFFECTED_BY_CHANGE(Device → ChangeRequest) [role, updated_at]
 - CHANGE_CAUSED_CONFIG(ConfigChange → ChangeRequest)
 - CHANGE_CAUSED_DETECTION(DetectionEvent → ChangeRequest)
 - RELATED_TO_CHANGE(Incident → ChangeRequest)
-- SENSOR_REPORTED_BY(SensorReading → Device)
 - OPTICS_ON(OpticsTelemetry → Interface)
+- MEMBER_OF(Device → RedundancyGroup) [role, priority, state, updated_at]
+- HAS_OSPF_NEIGHBOR(Device → OspfNeighbor)
+- HAS_VRF(Device → Vrf)
 
 ### Notes
 - Device.address is the primary key and main join field (IP or IP:port).
 - Device.hostname is the human-friendly name (e.g. 'spine1').
+- StateChangeEvent.detail is a STRING (not details_json). source_type is 'gnmi', 'syslog', 'snmp', 'bmp', etc.
+- DetectionEvent does NOT have a remediation_status column. To find unremediated detections, check for the absence of a RESOLVES edge.
 - source_name on EnrichmentProperty is 'netbox', 'servicenow_cmdb', 'cli', etc.
+- The VLAN node table is named VLAN (uppercase), not Vlan.
 - All timestamps are TIMESTAMP_NS (nanosecond precision).
 - Use MATCH ... RETURN only. Never use CREATE/SET/DELETE/MERGE (read-only).
 
 ### Detection → Remediation Pipeline
-- DetectionEvent is fired by streaming rules. remediation_status tracks lifecycle ('', 'proposed', 'approved', 'failed').
+- DetectionEvent is fired by streaming rules. source_types is a JSON array of signal sources.
 - RemediationProposal is a human-in-the-loop approval gate: status is 'pending', 'approved', 'rejected', 'rolled_back', or 'failed'.
 - trust_key is \"rule_id:environment_archetype:site_id:playbook_id\" — it maps to a TrustState (suggest_only → approve_each → auto_with_notification → auto_silent).
 - Remediation is created AFTER a proposal is approved and execution succeeds/fails.
 - Investigation nodes record LLM-driven analysis of detections (agent tool calls, summary, cost).
 - Incident nodes link to DetectionEvents via HAS_INCIDENT.
 - To relate incidents back to devices, traverse Device -[:TRIGGERED]-> DetectionEvent -[:HAS_INCIDENT]-> Incident.
+- To find unresolved detections: MATCH (de:DetectionEvent) WHERE NOT EXISTS { MATCH (r:Remediation)-[:RESOLVES]->(de) }
 
 ### Environmental Telemetry
 - SensorReading captures chassis/component temperature, fan RPM, power draw, and humidity from gNMI paths.
 - OpticsTelemetry captures optical interface metrics (RX/TX power dBm, laser bias, temperature) from transceivers.
 - sensor_type: 'temperature', 'fan', 'power', 'humidity'.
-- Use SensorReading to find overheating components (temperature_c > 75) or thermal_sensor_critical events.
-- Use OpticsTelemetry to diagnose optical degradation (rx_power_dbm < -20 is typical alarm threshold).
+- To find overheating: MATCH (s:SensorReading)-[:REPORTED_BY]->(d:Device) WHERE s.temperature_c > 75
+- To find optical degradation: MATCH (o:OpticsTelemetry)-[:OPTICS_ON]->(i:Interface)<-[:HAS_INTERFACE]-(d:Device) WHERE o.rx_power_dbm < -20
 
 ### Change Management
 - ChangeRequest represents a planned or in-progress change (ServiceNow CHG, AAP/Ansible job, manual maintenance).
@@ -183,44 +198,26 @@ Cypher: MATCH (d:Device {hostname: 'spine1'})-[:HAS_INTERFACE]->(si:Interface)-[
 User: Show me all critical incidents
 Cypher: MATCH (d:Device)-[:TRIGGERED]->(de:DetectionEvent)-[:HAS_INCIDENT]->(i:Incident) RETURN d.hostname, de.rule_id, de.severity, i.id, i.snow_sys_id, i.state, i.assignment_group, i.updated_at ORDER BY i.updated_at DESC LIMIT 30
 
-User: What business services run on 10.0.0.1?
-Cypher: MATCH (d:Device {address: '10.0.0.1'})-[:RUNS_SERVICE|CARRIES_APPLICATION]->(a:Application) RETURN a.name, a.criticality, a.owner_group
-
 User: How many devices per vendor?
 Cypher: MATCH (d:Device) RETURN d.vendor, count(d) AS device_count ORDER BY device_count DESC
-
-User: Show enrichment conflicts
-Cypher: MATCH (ep:EnrichmentProperty)-[:ENRICHMENT_PROPERTY_PROVENANCE]->(pv:PropertyProvenance) WHERE pv.details_json CONTAINS 'conflict' RETURN ep.device_address, ep.key, ep.value, ep.source_name, pv.confidence ORDER BY ep.device_address, ep.key
-
-User: Which devices are in the NYC location?
-Cypher: MATCH (d:Device)-[:IN_LOCATION]->(l:Location) WHERE l.name CONTAINS 'NYC' RETURN d.hostname, d.address, l.name, l.full_address
 
 User: Show me BGP sessions that are down
 Cypher: MATCH (d:Device)-[:PEERS_WITH]->(n:BgpNeighbor) WHERE n.session_state <> 'established' RETURN d.hostname, n.peer_address, n.session_state, n.peer_as ORDER BY d.hostname
 
-User: What is the CMDB parent of leaf1?
-Cypher: MATCH (p:Device)-[r:CMDB_PARENT_OF]->(c:Device) WHERE c.hostname CONTAINS 'leaf1' RETURN p.hostname AS parent, c.hostname AS child, r.rel_type
-
 User: Show devices with interface errors
 Cypher: MATCH (d:Device)-[:HAS_INTERFACE]->(i:Interface) WHERE i.in_errors > 0 OR i.out_errors > 0 RETURN d.hostname, i.name, i.in_errors, i.out_errors ORDER BY (i.in_errors + i.out_errors) DESC LIMIT 25
 
-User: List all detections in the last 24 hours
+User: List all detections
 Cypher: MATCH (d:Device)-[:TRIGGERED]->(de:DetectionEvent) RETURN d.hostname, de.rule_id, de.severity, de.fired_at ORDER BY de.fired_at DESC LIMIT 50
+
+User: Which devices have unresolved detections with no remediation?
+Cypher: MATCH (d:Device)-[:TRIGGERED]->(de:DetectionEvent) OPTIONAL MATCH (r:Remediation)-[:RESOLVES]->(de) WITH d, de, r WHERE r IS NULL RETURN d.hostname, d.address, de.rule_id, de.severity, de.fired_at ORDER BY de.severity, de.fired_at DESC LIMIT 50
 
 User: Show pending remediation proposals
 Cypher: MATCH (de:DetectionEvent)-[:HAS_PROPOSAL]->(p:RemediationProposal) WHERE p.status = 'pending' RETURN p.id, de.rule_id, de.device_address, p.playbook_id, p.trust_key, p.proposed_at ORDER BY p.proposed_at DESC LIMIT 30
 
-User: What remediations have been executed and what was the result?
-Cypher: MATCH (r:Remediation)-[:RESOLVES]->(de:DetectionEvent) RETURN r.id, de.rule_id, de.device_address, r.action, r.status, r.attempted_at ORDER BY r.attempted_at DESC LIMIT 30
-
-User: Show me investigation summaries for recent incidents
+User: Show me investigation summaries
 Cypher: MATCH (i:Investigation) WHERE i.status = 'complete' RETURN i.device_address, i.detection_id, i.summary, i.tokens_used, i.cost_usd, i.started_at ORDER BY i.started_at DESC LIMIT 20
-
-User: Which devices have unresolved detections with no remediation?
-Cypher: MATCH (d:Device)-[:TRIGGERED]->(de:DetectionEvent) WHERE de.remediation_status = '' OR de.remediation_status = 'none' RETURN d.hostname, d.address, de.rule_id, de.severity, de.fired_at ORDER BY de.severity, de.fired_at DESC LIMIT 50
-
-User: What playbooks have been proposed for BGP detections?
-Cypher: MATCH (de:DetectionEvent)-[:HAS_PROPOSAL]->(p:RemediationProposal) WHERE de.rule_id CONTAINS 'bgp' RETURN de.rule_id, de.device_address, p.playbook_id, p.status, p.trust_key ORDER BY p.proposed_at DESC LIMIT 30
 
 User: Show all active change requests
 Cypher: MATCH (c:ChangeRequest) WHERE c.state IN ['new', 'scheduled', 'implement'] RETURN c.number, c.short_description, c.source, c.state, c.change_type, c.risk, c.planned_start_ns, c.planned_end_ns ORDER BY c.planned_start_ns DESC LIMIT 50
@@ -235,29 +232,43 @@ User: Are there any incidents linked to change tickets?
 Cypher: MATCH (i:Incident)-[:RELATED_TO_CHANGE]->(c:ChangeRequest) RETURN i.id, i.snow_sys_id, i.state, c.number AS change_number, c.short_description AS change_desc ORDER BY i.updated_at DESC LIMIT 30
 
 User: Which devices have overheating components?
-Cypher: MATCH (s:SensorReading)-[:SENSOR_REPORTED_BY]->(d:Device) WHERE s.temperature_c > 75 RETURN d.hostname, d.address, s.component_name, s.sensor_type, s.temperature_c ORDER BY s.temperature_c DESC LIMIT 50
+Cypher: MATCH (s:SensorReading)-[:REPORTED_BY]->(d:Device) WHERE s.temperature_c > 75 RETURN d.hostname, d.address, s.component_name, s.sensor_type, s.temperature_c ORDER BY s.temperature_c DESC LIMIT 50
 
 User: Show me optical interface health for spine1
 Cypher: MATCH (d:Device)-[:HAS_INTERFACE]->(i:Interface)<-[:OPTICS_ON]-(o:OpticsTelemetry) WHERE d.hostname = 'spine1' RETURN i.name, o.rx_power_dbm, o.tx_power_dbm, o.laser_bias_ma, o.temperature_c, o.updated_at ORDER BY i.name
 
-User: Which interfaces have low RX optical power?
-Cypher: MATCH (o:OpticsTelemetry)-[:OPTICS_ON]->(i:Interface)<-[:HAS_INTERFACE]-(d:Device) WHERE o.rx_power_dbm < -20 RETURN d.hostname, i.name, o.rx_power_dbm, o.tx_power_dbm, o.updated_at ORDER BY o.rx_power_dbm ASC LIMIT 30
+User: Show all BMP sessions and their state
+Cypher: MATCH (d:Device)-[:HAS_BMP_SESSION]->(b:BmpSession) RETURN d.hostname, b.peer_address, b.session_state, b.adj_rib_in_routes, b.loc_rib_routes ORDER BY d.hostname
+
+User: Which devices are in a redundancy group?
+Cypher: MATCH (d:Device)-[m:MEMBER_OF]->(rg:RedundancyGroup) RETURN d.hostname, rg.name, rg.group_type, rg.state, m.role ORDER BY rg.group_type, rg.name
+
+User: Show recent state change events from syslog
+Cypher: MATCH (d:Device)-[:REPORTED_BY]->(e:StateChangeEvent) WHERE e.source_type = 'syslog' RETURN d.hostname, e.event_type, e.detail, e.occurred_at ORDER BY e.occurred_at DESC LIMIT 30
+
+User: Show all active change requests
+Cypher: MATCH (c:ChangeRequest) WHERE c.state IN ['new', 'scheduled', 'implement'] RETURN c.number, c.short_description, c.source, c.state, c.change_type, c.risk ORDER BY c.planned_start_ns DESC LIMIT 50
+
+User: Show detections that fired during a planned change
+Cypher: MATCH (de:DetectionEvent)-[:CHANGE_CAUSED_DETECTION]->(c:ChangeRequest) RETURN de.device_address, de.rule_id, de.severity, de.fired_at, c.number, c.short_description ORDER BY de.fired_at DESC LIMIT 30
 ";
 
 const SYSTEM_PROMPT: &str = "\
-You are a Cypher query generator for the Bonsai network state engine graph database.
+You are a network intelligence assistant for the Bonsai network state engine graph database.
 
-Given a user's natural-language question about the network, generate a single read-only Cypher query that answers it.
+Given a user's natural-language question about the network, generate a single read-only Cypher query that answers it, along with an explanation of the answer.
 
 Rules:
-1. Output ONLY a JSON object: {\"cypher\": \"...\", \"explanation\": \"...\"}
+1. Output ONLY a JSON object: {\"cypher\": \"...\", \"explanation\": \"...\", \"answer_template\": \"...\"}
 2. The cypher field must be valid openCypher (LadybugDB/Kuzu dialect).
 3. NEVER use mutation keywords: CREATE, SET, DELETE, MERGE, REMOVE, DETACH, DROP, ALTER.
 4. Always include ORDER BY and LIMIT where sensible (default LIMIT 50).
 5. Use the schema below. Do NOT invent node labels or relationship types.
 6. The explanation field should be 1-2 sentences describing what the query does.
-7. If the question is ambiguous, make a reasonable assumption and note it in the explanation.
-8. Use case-insensitive matching (CONTAINS or toLower) for hostname/name searches when the user gives a partial name.
+7. The answer_template field should be a natural-language template that can summarize the results for the user. Use placeholders like {row_count} for the number of rows returned. Example: 'Found {row_count} devices connected to spine1.' or 'There are {row_count} active detections in the network.'
+8. If the question is ambiguous, make a reasonable assumption and note it in the explanation.
+9. Use case-insensitive matching (CONTAINS or toLower) for hostname/name searches when the user gives a partial name.
+10. CRITICAL: Only use node labels and relationship types that exist in the schema. Do NOT invent columns or relationships.
 ";
 
 // ── Request / Response types ─────────────────────────────────────────────────
@@ -272,6 +283,7 @@ pub(super) struct AskResponse {
     question: String,
     cypher: String,
     explanation: String,
+    answer_template: String,
     columns: Vec<String>,
     rows: Vec<Vec<serde_json::Value>>,
     row_count: usize,
@@ -305,7 +317,7 @@ pub(super) async fn explorer_ask_handler(
         )
     })?;
 
-    let (cypher, explanation, tokens) = generate_cypher(provider.as_ref(), &question)
+    let (cypher, explanation, answer_template, tokens) = generate_cypher(provider.as_ref(), &question)
         .await
         .map_err(|e| {
             (
@@ -320,6 +332,7 @@ pub(super) async fn explorer_ask_handler(
             question,
             cypher,
             explanation: "Generated query contained mutation keywords and was rejected.".to_string(),
+            answer_template: String::new(),
             columns: vec![],
             rows: vec![],
             row_count: 0,
@@ -339,20 +352,25 @@ pub(super) async fn explorer_ask_handler(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     match exec_result {
-        Ok(result) => Ok(Json(AskResponse {
-            question,
-            cypher,
-            explanation,
-            columns: result.columns,
-            rows: result.rows,
-            row_count: result.row_count,
-            tokens_used: tokens,
-            error: None,
-        })),
+        Ok(result) => {
+            let summary = answer_template.replace("{row_count}", &result.row_count.to_string());
+            Ok(Json(AskResponse {
+                question,
+                cypher,
+                explanation,
+                answer_template: summary,
+                columns: result.columns,
+                rows: result.rows,
+                row_count: result.row_count,
+                tokens_used: tokens,
+                error: None,
+            }))
+        }
         Err(e) => Ok(Json(AskResponse {
             question,
             cypher,
             explanation,
+            answer_template: String::new(),
             columns: vec![],
             rows: vec![],
             row_count: 0,
@@ -386,7 +404,7 @@ pub(super) async fn nl_budget_handler() -> Json<NlBudgetResponse> {
 async fn generate_cypher(
     provider: &dyn crate::ai_provider::AiProvider,
     question: &str,
-) -> Result<(String, String, u64), String> {
+) -> Result<(String, String, String, u64), String> {
     let system = format!("{SYSTEM_PROMPT}\n\n{GRAPH_SCHEMA}\n\n{FEW_SHOT_EXAMPLES}");
     let messages = vec![
         AiMessage::system(system),
@@ -422,12 +440,16 @@ async fn generate_cypher(
         .as_str()
         .unwrap_or("Generated query")
         .to_string();
+    let answer_template = parsed["answer_template"]
+        .as_str()
+        .unwrap_or("Query returned {row_count} row(s).")
+        .to_string();
 
     if cypher.is_empty() {
         return Err(format!("LLM returned empty cypher — raw response: {text}"));
     }
 
-    Ok((cypher, explanation, total))
+    Ok((cypher, explanation, answer_template, total))
 }
 
 /// Extract JSON from LLM response, handling markdown code fences.
