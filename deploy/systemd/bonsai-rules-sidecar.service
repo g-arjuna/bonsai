@@ -1,10 +1,9 @@
 [Unit]
-Description=Bonsai rules sidecar (Python — evaluates detection rules, registers with bonsai)
-Documentation=file:///opt/bonsai/docs/architecture/sidecars.md
-# Atomic lifecycle: this unit starts after bonsai is up, stops when bonsai stops,
-# restarts when bonsai restarts (BindsTo).
-After=bonsai.service
-BindsTo=bonsai.service
+Description=Bonsai Rules + ML Sidecar (rule engine, job engine, STGNN inference)
+Documentation=file:///opt/bonsai/docs/BONPY_PRODUCTION_DEPLOY.md
+# Starts after Bonsai core; stops when core stops (prevents orphan sidecar after core upgrade).
+After=bonsai.service network.target
+PartOf=bonsai.service
 
 [Service]
 Type=simple
@@ -12,23 +11,37 @@ User=bonsai
 Group=bonsai
 WorkingDirectory=/opt/bonsai
 EnvironmentFile=-/etc/bonsai/sidecar.env
-# Defaults match the laptop wrapper. Override via /etc/bonsai/sidecar.env.
+# Defaults — override via /etc/bonsai/sidecar.env
 Environment=BONSAI_LOCAL_ADDR=localhost:50051
 Environment=BONSAI_CORE_ADDR=localhost:50051
-Environment=BONSAI_COLLECTOR_ID=rules-cloud
+Environment=BONSAI_COLLECTOR_ID=rules-local
+Environment=BONSAI_API_URL=http://localhost:3000
+Environment=BONSAI_SIDECAR_HEALTH_PORT=9200
+Environment=BONSAI_SIDECAR_MAX_MEM_MB=1800
+Environment=BONSAI_GNN_INTERVAL_SECS=300
+Environment=BONSAI_GNN_THRESHOLD=0.5
 ExecStart=/opt/bonsai/.venv/bin/python /opt/bonsai/python/collector_engine.py
-Restart=on-failure
-RestartSec=5s
+# Graceful stop: send SIGTERM, wait up to 30s for queue drain + snapshot flush
 KillSignal=SIGTERM
-TimeoutStopSec=15
+KillMode=control-group
+TimeoutStopSec=30
+# Restart policy: up to 5 rapid restarts, then back off for 2 minutes
+Restart=on-failure
+RestartSec=10
+StartLimitBurst=5
+StartLimitIntervalSec=120
+# Resource limits: OOM kills sidecar, systemd restarts it (prevents runaway growth)
+MemoryMax=2G
+MemorySwapMax=0
+CPUQuota=150%
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=bonsai-rules-sidecar
+SyslogIdentifier=bonsai-sidecar
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
 NoNewPrivileges=true
-ReadWritePaths=/opt/bonsai/runtime /opt/bonsai/logs
+ReadWritePaths=/opt/bonsai/runtime /opt/bonsai/logs /opt/bonsai/models
 
 [Install]
 WantedBy=multi-user.target
