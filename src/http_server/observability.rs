@@ -7,7 +7,7 @@ use axum::{
 };
 use serde::Deserialize;
 use futures::stream::{Stream, StreamExt};
-use lbug::Connection;
+use lbug::{Connection, Value};
 use serde_json;
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 
@@ -2237,6 +2237,168 @@ pub(super) async fn endpoints_handler(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .map(Json)
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
+// ── EV1-4 T5: GET /api/graph/snapshot ────────────────────────────────────────
+
+/// Return a live graph snapshot for STGNN inference: devices, links, recent
+/// detections, and BFD/BGP session states.  The Python sidecar calls this
+/// every 5 minutes before running GNN inference.
+pub(super) async fn graph_snapshot_handler(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let db = state.store.db();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+
+        // Devices
+        let devices: Vec<serde_json::Value> = conn
+            .query(
+                "MATCH (d:Device) \
+                 RETURN d.address, d.hostname, d.vendor, d.role, \
+                        d.cpu_util_pct, d.memory_used_mb, d.memory_total_mb, \
+                        d.uptime_seconds, d.model, \
+                        d.needs_config_embedding \
+                 ORDER BY d.address LIMIT 2000",
+            )
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
+            .map(|r| {
+                let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
+                let f = |v: &Value| match v {
+                    Value::Double(f) => *f,
+                    Value::Float(f) => *f as f64,
+                    Value::Int64(n) => *n as f64,
+                    _ => 0.0,
+                };
+                serde_json::json!({
+                    "address": s(&r[0]),
+                    "hostname": s(&r[1]),
+                    "vendor": s(&r[2]),
+                    "role": s(&r[3]),
+                    "cpu_util_pct": f(&r[4]),
+                    "memory_used_mb": f(&r[5]),
+                    "memory_total_mb": f(&r[6]),
+                    "uptime_seconds": f(&r[7]),
+                    "model": s(&r[8]),
+                })
+            })
+            .collect();
+
+        // Physical links (LLDP-derived topology)
+        let links: Vec<serde_json::Value> = conn
+            .query(
+                "MATCH (d1:Device)-[:HAS_INTERFACE]->(i1:Interface)-[:CONNECTED_TO]->(i2:Interface)<-[:HAS_INTERFACE]-(d2:Device) \
+                 RETURN d1.address, d2.address, i1.name, i2.name \
+                 LIMIT 5000",
+            )
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
+            .map(|r| {
+                let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
+                serde_json::json!({
+                    "src_device": s(&r[0]),
+                    "dst_device": s(&r[1]),
+                    "src_if": s(&r[2]),
+                    "dst_if": s(&r[3]),
+                    "type": "lldp",
+                })
+            })
+            .collect();
+
+        // Active BGP sessions (BgpNeighbor stores device_address as a property, no rel needed)
+        let bgp_sessions: Vec<serde_json::Value> = conn
+            .query(
+                "MATCH (n:BgpNeighbor) \
+                 RETURN n.device_address, n.peer_address, n.session_state, n.peer_as \
+                 LIMIT 2000",
+            )
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
+            .map(|r| {
+                let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
+                serde_json::json!({
+                    "device_address": s(&r[0]),
+                    "peer_address": s(&r[1]),
+                    "state": s(&r[2]),
+                })
+            })
+            .collect();
+
+        // BFD sessions
+        let bfd_sessions: Vec<serde_json::Value> = conn
+            .query(
+                "MATCH (b:BfdSession) \
+                 RETURN b.device_address, b.peer_address, b.session_state, b.if_name \
+                 LIMIT 2000",
+            )
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
+            .map(|r| {
+                let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
+                serde_json::json!({
+                    "device_address": s(&r[0]),
+                    "peer_address": s(&r[1]),
+                    "state": s(&r[2]),
+                    "if_name": s(&r[3]),
+                })
+            })
+            .collect();
+
+        // Recent detections (last 30 min) for label context
+        let cutoff_ns = now_ns() - 30 * 60 * 1_000_000_000i64;
+        let recent_detections: Vec<serde_json::Value> = conn
+            .query(&format!(
+                "MATCH (e:DetectionEvent) WHERE e.fired_at > timestamp_ns({cutoff_ns}) \
+                 RETURN e.id, e.device_address, e.rule_id, e.severity, e.fired_at \
+                 ORDER BY e.fired_at DESC LIMIT 500"
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
+            .map(|r| {
+                let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
+                serde_json::json!({
+                    "id": s(&r[0]),
+                    "device_address": s(&r[1]),
+                    "rule_id": s(&r[2]),
+                    "severity": s(&r[3]),
+                })
+            })
+            .collect();
+
+        // Active change requests (ChangeRequest table may not exist in older DBs — tolerate error)
+        let active_changes: Vec<serde_json::Value> = conn
+            .query(
+                "MATCH (cr:ChangeRequest) WHERE cr.state IN ['implement', 'scheduled', 'assess'] \
+                 RETURN cr.id, cr.number, cr.state, cr.planned_start_ns, cr.planned_end_ns \
+                 LIMIT 100",
+            )
+            .map(|rows| {
+                rows.map(|r| {
+                    let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
+                    let n = |v: &Value| match v { Value::Int64(n) => *n, _ => 0i64 };
+                    serde_json::json!({
+                        "id": s(&r[0]),
+                        "number": s(&r[1]),
+                        "state": s(&r[2]),
+                        "planned_start_ns": n(&r[3]),
+                        "planned_end_ns": n(&r[4]),
+                    })
+                })
+                .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let snapshot_ns = now_ns();
+        Ok::<_, (StatusCode, String)>(serde_json::json!({
+            "snapshot_ns": snapshot_ns,
+            "devices": devices,
+            "links": links,
+            "bgp_sessions": bgp_sessions,
+            "bfd_sessions": bfd_sessions,
+            "recent_detections": recent_detections,
+            "active_changes": active_changes,
+        }))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
 }
 
 fn get_table_columns(conn: &Connection<'_>, table_name: &str) -> Vec<serde_json::Value> {

@@ -1540,6 +1540,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             };
 
             let bus_for_http = std::sync::Arc::clone(&bus);
+            let ml_event_bus = std::sync::Arc::new(bonsai::ml_event_bus::MlEventBus::new());
             
             // Initialize security module with selective feature enablement
             if let Err(e) = bonsai::security::initialize_security(cfg.security.clone()).await {
@@ -1590,6 +1591,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         snmp_oid_dir.clone(),
                         cfg.auth.ldap.clone(),
                         cfg.integrations.tsdb.clone(),
+                        std::sync::Arc::clone(&ml_event_bus),
                 );
                 let serve_result = if let Some(tls) = http_tls_acceptor {
                     // HTTPS: accept each TCP connection, upgrade to TLS, then serve.

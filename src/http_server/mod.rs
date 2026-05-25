@@ -63,6 +63,8 @@ mod signal_policy;
 mod ha;
 mod shun;
 mod auth;
+pub mod ml_jobs;
+pub mod playbooks;
 
 use mcp_routes::{openapi_json_handler, resolve_handler, schema_handler, swagger_ui_handler};
 use remediation::{approvals_approve_handler, approvals_create_handler, approvals_list_handler, approvals_reject_handler, approvals_rollback_handler, trust_list_handler, trust_graduate_handler, snow_integration_test_handler, servicenow_aiops_sync_handler, list_overrides, add_override, remove_override, list_investigations_handler, create_investigation_handler, get_investigation_handler, list_tool_calls_handler, complete_investigation_handler, grounded_incident_handler, webhook_change_event_handler, change_context_handler, servicenow_change_sync_handler, list_changes_handler, playbooks_catalog_handler, audit_log_handler, investigation_feedback_handler, investigation_accuracy_handler, vault_rekey_handler, remediation_verify_handler, list_config_items_handler, upsert_config_item_handler};
@@ -80,6 +82,25 @@ use shun::{create_shun_rule_handler, delete_shun_rule_handler, disable_shun_rule
 use ddos::{ddos_scope_list_handler, ddos_scope_add_handler, ddos_scope_remove_handler, ddos_scope_patch_handler, ddos_config_handler, ddos_events_handler, ddos_baselines_handler};
 use signal_policy::{list_signal_policies_handler, upsert_signal_policy_handler, delete_signal_policy_handler, signal_types_handler, signal_policy_summary_handler};
 use auth::{list_api_keys_handler, create_api_key_handler, delete_api_key_handler, rotate_api_key_handler, login_handler, logout_handler, list_users_handler, create_user_handler, delete_user_handler, ldap_config_handler, ldap_test_handler};
+use ml_jobs::{
+    ml_events_stream_handler, ml_events_publish_handler,
+    list_ml_exports_handler, create_ml_export_handler, patch_ml_export_handler,
+    ml_export_quality_handler,
+    list_ml_models_handler, create_ml_model_handler, activate_ml_model_handler,
+    active_ml_model_handler,
+    list_ml_jobs_handler, create_ml_job_handler, patch_ml_job_handler, cancel_ml_job_handler,
+    list_ml_schedules_handler, upsert_ml_schedule_handler, delete_ml_schedule_handler,
+    gnn_inference_results_handler, gnn_attention_handler, gnn_results_query_handler,
+    events_unembedded_handler, events_embeddings_handler,
+    devices_unembedded_config_handler, device_config_embedding_handler,
+    ml_embedding_stats_handler, ml_lineage_handler,
+};
+use playbooks::{
+    list_playbooks_handler, get_playbook_handler, create_playbook_handler,
+    update_playbook_handler, delete_playbook_handler, test_playbook_handler,
+    record_execution_handler, list_executions_handler, playbook_stats_handler,
+};
+use observability::graph_snapshot_handler;
 
 // ── JSON response types ───────────────────────────────────────────────────────
 
@@ -712,6 +733,8 @@ pub struct AppState {
     pub ldap_config: crate::config::LdapConfig,
     /// D4-5 T4: TSDB integration config.
     pub tsdb_config: crate::config::TsdbConfig,
+    /// EV1-4 T1: ML event bus for SSE streaming to Python sidecar and BonPy UI.
+    pub ml_event_bus: std::sync::Arc<crate::ml_event_bus::MlEventBus>,
 }
 
 impl axum::extract::FromRef<AppState> for Option<Arc<crate::ha_coordinator::HACoordinator>> {
@@ -766,6 +789,7 @@ pub fn router(
     snmp_oid_pattern_dir: String,
     ldap_config: crate::config::LdapConfig,
     tsdb_config: crate::config::TsdbConfig,
+    ml_event_bus: std::sync::Arc<crate::ml_event_bus::MlEventBus>,
 ) -> Router {
     let state = AppState {
         store,
@@ -809,6 +833,7 @@ pub fn router(
         snmp_oid_pattern_dir,
         ldap_config,
         tsdb_config,
+        ml_event_bus,
     };
 
     // D3-6 T6: consume auto-investigate requests from the write coordinator.
@@ -876,6 +901,8 @@ pub fn router(
         .merge(shun_routes())
         .merge(ddos_routes())
         .merge(signal_policy_routes())
+        .merge(ml_routes())
+        .merge(ev1_playbook_routes())
         .route("/mcp", post(crate::mcp_server::mcp_handler))
         .nest_service("/bonpy", bonpy_spa)
         .fallback_service(spa)
@@ -904,6 +931,7 @@ fn observability_routes() -> Router<AppState> {
         .route("/api/events/inject", post(events_inject_handler))
         .route("/api/graph/insights", get(graph_insights_handler))
         .route("/api/graph/quality", get(graph_quality_handler))
+        .route("/api/graph/snapshot", get(graph_snapshot_handler))
         .route("/api/flows/live", get(flows_live_handler))
         .route("/api/devices/{address}/flows", get(device_flows_handler))
         .route("/api/endpoints", get(endpoints_handler))
@@ -920,6 +948,41 @@ fn observability_routes() -> Router<AppState> {
         .route("/api/db/export", get(db_export_handler))
         .route("/api/db/backup", post(db_backup_handler))
         .route("/api/db/backups", get(db_list_backups_handler))
+}
+
+fn ml_routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/ml/events/stream", get(ml_events_stream_handler))
+        .route("/api/ml/events/publish", post(ml_events_publish_handler))
+        .route("/api/ml/exports", get(list_ml_exports_handler).post(create_ml_export_handler))
+        .route("/api/ml/exports/quality", get(ml_export_quality_handler))
+        .route("/api/ml/exports/{id}", patch(patch_ml_export_handler))
+        .route("/api/ml/models", get(list_ml_models_handler).post(create_ml_model_handler))
+        .route("/api/ml/models/active", get(active_ml_model_handler))
+        .route("/api/ml/models/{id}/activate", post(activate_ml_model_handler))
+        .route("/api/ml/lineage/{model_id}", get(ml_lineage_handler))
+        .route("/api/ml/jobs", get(list_ml_jobs_handler).post(create_ml_job_handler))
+        .route("/api/ml/jobs/{id}", patch(patch_ml_job_handler))
+        .route("/api/ml/jobs/{id}/cancel", post(cancel_ml_job_handler))
+        .route("/api/ml/schedules", get(list_ml_schedules_handler).post(upsert_ml_schedule_handler))
+        .route("/api/ml/schedules/{id}", axum::routing::delete(delete_ml_schedule_handler))
+        .route("/api/ml/embeddings/stats", get(ml_embedding_stats_handler))
+        .route("/api/gnn/inference-results", post(gnn_inference_results_handler))
+        .route("/api/gnn/attention", post(gnn_attention_handler))
+        .route("/api/gnn/results", get(gnn_results_query_handler))
+        .route("/api/events/unembedded", get(events_unembedded_handler))
+        .route("/api/events/embeddings", post(events_embeddings_handler))
+        .route("/api/devices/unembedded-config", get(devices_unembedded_config_handler))
+        .route("/api/devices/{address}/config-embedding", post(device_config_embedding_handler))
+}
+
+fn ev1_playbook_routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/playbooks-v2", get(list_playbooks_handler).post(create_playbook_handler))
+        .route("/api/playbooks-v2/stats", get(playbook_stats_handler))
+        .route("/api/playbooks-v2/{id}", get(get_playbook_handler).put(update_playbook_handler).delete(delete_playbook_handler))
+        .route("/api/playbooks-v2/{id}/test", post(test_playbook_handler))
+        .route("/api/playbooks-v2/{id}/executions", get(list_executions_handler).post(record_execution_handler))
 }
 
 fn device_routes() -> Router<AppState> {

@@ -19,6 +19,7 @@ pub mod discovery;
 pub mod disk_guard;
 pub mod enrichment;
 pub mod event_bus;
+pub mod ml_event_bus;
 pub mod gnmi_set;
 pub mod graph;
 pub mod service_discovery;

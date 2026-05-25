@@ -81,3 +81,36 @@ SPECTRAL_V1_SCHEMA = FeatureSchema(
     },
     feature_names=["graph_position_dim_%d" % i for i in range(16)],
 )
+
+
+# ── EV1-1 T6: 36-dim device feature schema for STGNN ─────────────────────────
+
+DEVICE_V2_FEATURE_NAMES = [
+    "degree",
+    "vendor_nokia", "vendor_cisco", "vendor_juniper",
+    "vendor_arista", "vendor_frr", "vendor_other",
+    "role_super_spine", "role_spine", "role_leaf",
+    "role_pe", "role_p", "role_rr", "role_ce",
+    "role_access", "role_distribution", "role_core", "role_edge", "role_other",
+    "embedding_0", "embedding_1", "embedding_2", "embedding_3",
+    "cpu_util_pct", "memory_used_pct", "uptime_log_secs", "has_thermal_warning",
+    "bgp_session_count", "ospf_neighbor_count", "interface_count",
+    "bmp_session_count", "gnn_quality_score",
+    "model_enterprise", "model_cloud", "model_sp",
+    "is_in_redundancy_group",
+]
+
+DEVICE_V2_SCHEMA = FeatureSchema(
+    version="device_v2",
+    algorithm="handcrafted+spectral",
+    dimension=36,
+    hyperparams={
+        "spectral_dims": 4,
+        "operational_dims": 13,
+        "vendor_ohe_dims": 6,
+        "role_ohe_dims": 12,
+        "gnn_model": "stgnn_gatv2_gru",
+        "temporal_window": 8,
+    },
+    feature_names=DEVICE_V2_FEATURE_NAMES,
+)

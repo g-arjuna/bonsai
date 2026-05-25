@@ -2175,6 +2175,231 @@ impl GraphStore {
         let _ = conn.query("ALTER TABLE AppFlow ADD icmp_type INT64 DEFAULT 0");
         let _ = conn.query("ALTER TABLE AppFlow ADD icmp_code INT64 DEFAULT 0");
 
+        // ── EV1-2: Parquet pipeline catalog ──────────────────────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS ParquetExport(\
+                id                      STRING,\
+                export_type             STRING,\
+                output_path             STRING,\
+                started_at_ns           INT64,\
+                completed_at_ns         INT64,\
+                row_count               INT64,\
+                anomaly_rows            INT64,\
+                normal_rows             INT64,\
+                since_ns                INT64,\
+                until_ns                INT64,\
+                schema_hash             STRING,\
+                status                  STRING,\
+                error_message           STRING,\
+                model_version_trigger   STRING,\
+                quality_json            STRING,\
+                PRIMARY KEY (id))",
+        )
+        .context("create ParquetExport table")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS MlJobRun(\
+                id                  STRING,\
+                job_type            STRING,\
+                started_at_ns       INT64,\
+                completed_at_ns     INT64,\
+                status              STRING,\
+                trigger             STRING,\
+                input_parquet_id    STRING,\
+                output_model_path   STRING,\
+                val_auc             DOUBLE,\
+                val_f1              DOUBLE,\
+                error_message       STRING,\
+                config_json         STRING,\
+                cancel_requested    INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create MlJobRun table")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS ModelArtifact(\
+                id                  STRING,\
+                model_type          STRING,\
+                version             STRING,\
+                path                STRING,\
+                feature_schema_hash STRING,\
+                trained_at_ns       INT64,\
+                val_auc             DOUBLE,\
+                val_f1              DOUBLE,\
+                val_precision       DOUBLE,\
+                val_recall          DOUBLE,\
+                threshold           DOUBLE,\
+                is_active           INT64,\
+                retired_at_ns       INT64,\
+                model_card_path     STRING,\
+                PRIMARY KEY (id))",
+        )
+        .context("create ModelArtifact table")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS MlJobSchedule(\
+                id                  STRING,\
+                job_id              STRING,\
+                cron_expr           STRING,\
+                enabled             INT64,\
+                last_modified_by    STRING,\
+                last_modified_at_ns INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create MlJobSchedule table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS TRAINED_ON(\
+                FROM ModelArtifact TO ParquetExport,\
+                created_at_ns INT64)",
+        )
+        .context("create TRAINED_ON rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS SUCCEEDED_BY(\
+                FROM ModelArtifact TO ModelArtifact,\
+                at_ns INT64)",
+        )
+        .context("create SUCCEEDED_BY rel")?;
+
+        // ── EV1-4: GNN inference persistence ─────────────────────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS GnnInferenceResult(\
+                id                          STRING,\
+                snapshot_ns                 INT64,\
+                model_id                    STRING,\
+                device_address              STRING,\
+                anomaly_score               DOUBLE,\
+                uncertainty_margin          DOUBLE,\
+                threshold                   DOUBLE,\
+                is_anomalous                INT64,\
+                top_contributing_device_1   STRING,\
+                top_contributing_device_2   STRING,\
+                attention_weight_1          DOUBLE,\
+                attention_weight_2          DOUBLE,\
+                inferred_at_ns              INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create GnnInferenceResult table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS GNN_SCORED(\
+                FROM Device TO GnnInferenceResult,\
+                inferred_at_ns INT64)",
+        )
+        .context("create GNN_SCORED rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS GnnAttentionSnapshot(\
+                id                      STRING,\
+                inference_result_id     STRING,\
+                source_device_address   STRING,\
+                neighbour_device_address STRING,\
+                edge_type               STRING,\
+                attention_weight        DOUBLE,\
+                snapshot_ns             INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create GnnAttentionSnapshot table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_ATTENTION(\
+                FROM GnnInferenceResult TO GnnAttentionSnapshot)",
+        )
+        .context("create HAS_ATTENTION rel")?;
+
+        // ── EV1-3: Text embedding schema ──────────────────────────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS EventEmbedding(\
+                id              STRING,\
+                event_id        STRING,\
+                event_type      STRING,\
+                model_name      STRING,\
+                dim             INT64,\
+                vector_json     STRING,\
+                computed_at_ns  INT64,\
+                schema_hash     STRING,\
+                PRIMARY KEY (id))",
+        )
+        .context("create EventEmbedding table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS EMBEDDED_AS(\
+                FROM StateChangeEvent TO EventEmbedding,\
+                computed_at_ns INT64)",
+        )
+        .context("create EMBEDDED_AS rel")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS DeviceConfigEmbedding(\
+                id              STRING,\
+                device_address  STRING,\
+                model_name      STRING,\
+                dim             INT64,\
+                vector_json     STRING,\
+                computed_at_ns  INT64,\
+                schema_hash     STRING,\
+                PRIMARY KEY (id))",
+        )
+        .context("create DeviceConfigEmbedding table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS CONFIG_EMBEDDED_AS(\
+                FROM Device TO DeviceConfigEmbedding,\
+                computed_at_ns INT64)",
+        )
+        .context("create CONFIG_EMBEDDED_AS rel")?;
+
+        // StateChangeEvent: needs_embedding flag for syslog embedding worker
+        let _ = conn.query("ALTER TABLE StateChangeEvent ADD needs_embedding INT64 DEFAULT 1");
+        let _ = conn.query("ALTER TABLE StateChangeEvent ADD incident_cluster_id STRING DEFAULT ''");
+        // Device: needs_config_embedding flag
+        let _ = conn.query("ALTER TABLE Device ADD needs_config_embedding INT64 DEFAULT 0");
+
+        // ── EV1-7: Playbook DB schema ─────────────────────────────────────────
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS Playbook(\
+                id                  STRING,\
+                name                STRING,\
+                description         STRING,\
+                rule_ids_json       STRING,\
+                vendor              STRING,\
+                steps_json          STRING,\
+                verify_graph        STRING,\
+                enabled             INT64,\
+                version             INT64,\
+                created_at_ns       INT64,\
+                updated_at_ns       INT64,\
+                updated_by          STRING,\
+                execution_count     INT64,\
+                success_count       INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create Playbook table")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS PlaybookExecution(\
+                id              STRING,\
+                playbook_id     STRING,\
+                detection_id    STRING,\
+                device_address  STRING,\
+                outcome         STRING,\
+                started_at_ns   INT64,\
+                completed_at_ns INT64,\
+                operator_id     STRING,\
+                failure_step    STRING,\
+                failure_reason  STRING,\
+                PRIMARY KEY (id))",
+        )
+        .context("create PlaybookExecution table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_PLAYBOOK_EXECUTION(\
+                FROM Playbook TO PlaybookExecution,\
+                executed_at_ns INT64)",
+        )
+        .context("create HAS_PLAYBOOK_EXECUTION rel")?;
+
         info!("graph schema initialised");
         Ok(())
     }

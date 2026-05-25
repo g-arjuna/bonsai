@@ -15,13 +15,16 @@ import numpy as np
 
 
 DEFAULT_FEATURE_NAMES = [
+    # dim 0: topology
     "degree",
+    # dims 1-6: vendor OHE
     "vendor_nokia",
     "vendor_cisco",
     "vendor_juniper",
     "vendor_arista",
     "vendor_frr",
     "vendor_other",
+    # dims 7-18: role OHE
     "role_super_spine",
     "role_spine",
     "role_leaf",
@@ -34,10 +37,25 @@ DEFAULT_FEATURE_NAMES = [
     "role_core",
     "role_edge",
     "role_other",
+    # dims 19-22: spectral embedding (topology position)
     "embedding_0",
     "embedding_1",
     "embedding_2",
     "embedding_3",
+    # dims 23-35: EV1-1 T6 expanded operational features
+    "cpu_util_pct",
+    "memory_used_pct",
+    "uptime_log_secs",
+    "has_thermal_warning",
+    "bgp_session_count",
+    "ospf_neighbor_count",
+    "interface_count",
+    "bmp_session_count",
+    "gnn_quality_score",
+    "model_enterprise",
+    "model_cloud",
+    "model_sp",
+    "is_in_redundancy_group",
 ]
 
 VENDOR_FEATURES = {
@@ -138,6 +156,50 @@ class BonsaiGnnDataLoader:
         self.feature_names = feature_names or DEFAULT_FEATURE_NAMES[:]
         self._feature_index = {name: i for i, name in enumerate(self.feature_names)}
 
+    @classmethod
+    def from_api_snapshot(cls, snapshot_response: dict[str, Any], *, as_pyg: bool = False) -> Any:
+        """Build graph tensors from a live /api/graph/snapshot API response.
+
+        The snapshot endpoint returns a dict with keys: devices, links,
+        snapshot_ns, and optionally interfaces, bgp_neighbors, bfd_sessions.
+        This method normalises the response for use in STGNN inference.
+
+        Args:
+            snapshot_response: JSON dict from GET /api/graph/snapshot.
+            as_pyg: If True, return a PyG HeteroData object instead of
+                BonsaiGraphData (requires torch + torch-geometric).
+
+        Returns:
+            BonsaiGraphData or PyG HeteroData (same schema as from_snapshot).
+        """
+        loader = cls()
+        devices_raw = snapshot_response.get("devices", [])
+        links_raw = snapshot_response.get("links", [])
+        snapshot_ns = int(snapshot_response.get("snapshot_ns", 0))
+
+        for dev in devices_raw:
+            if "cpu_util_pct" not in dev:
+                dev["cpu_util_pct"] = None
+            if "memory_used_pct" not in dev:
+                mu = dev.get("memory_used_mb")
+                mt = dev.get("memory_total_mb")
+                dev["memory_used_pct"] = (
+                    (float(mu) / float(mt) * 100.0)
+                    if mu and mt and float(mt) > 0
+                    else None
+                )
+            if "uptime_seconds" not in dev:
+                dev["uptime_seconds"] = None
+
+        snapshot = {
+            "source": "api",
+            "snapshot_ns": snapshot_ns,
+            "devices": devices_raw,
+            "links": links_raw,
+            "chaos_log": [],
+        }
+        return loader.from_snapshot(snapshot, as_pyg=as_pyg)
+
     def from_snapshot(self, snapshot: dict[str, Any], *, as_pyg: bool = False) -> Any:
         """Convert a synthetic Bonsai snapshot into graph tensors.
 
@@ -169,6 +231,51 @@ class BonsaiGnnDataLoader:
 
             for emb_idx, value in enumerate(device.get("embedding", [])[:4]):
                 self._set_feature(x, row, f"embedding_{emb_idx}", float(value))
+
+            cpu = device.get("cpu_util_pct")
+            if cpu is not None:
+                self._set_feature(x, row, "cpu_util_pct", float(cpu) / 100.0)
+
+            mem_pct = device.get("memory_used_pct")
+            if mem_pct is not None:
+                self._set_feature(x, row, "memory_used_pct", float(mem_pct) / 100.0)
+            else:
+                mu = device.get("memory_used_mb")
+                mt = device.get("memory_total_mb")
+                if mu and mt and float(mt) > 0:
+                    self._set_feature(x, row, "memory_used_pct", float(mu) / float(mt))
+
+            uptime = device.get("uptime_seconds")
+            if uptime and float(uptime) > 0:
+                import math
+                self._set_feature(x, row, "uptime_log_secs", math.log1p(float(uptime)))
+
+            thermal = device.get("has_thermal_warning", False)
+            self._set_feature(x, row, "has_thermal_warning", 1.0 if thermal else 0.0)
+
+            for count_feat in (
+                "bgp_session_count", "ospf_neighbor_count",
+                "interface_count", "bmp_session_count",
+            ):
+                val = device.get(count_feat)
+                if val is not None:
+                    import math
+                    self._set_feature(x, row, count_feat, math.log1p(float(val)))
+
+            quality = device.get("gnn_quality_score")
+            if quality is not None:
+                self._set_feature(x, row, "gnn_quality_score", float(quality))
+
+            hw_model = str(device.get("model") or "").lower()
+            if any(t in hw_model for t in ("xe", "xr", "mx", "ex", "qfx", "catalyst")):
+                self._set_feature(x, row, "model_enterprise", 1.0)
+            elif any(t in hw_model for t in ("srl", "ceos", "cloud")):
+                self._set_feature(x, row, "model_cloud", 1.0)
+            elif any(t in hw_model for t in ("asr", "ncs", "mx", "ptx", "7750")):
+                self._set_feature(x, row, "model_sp", 1.0)
+
+            rg = device.get("is_in_redundancy_group", False)
+            self._set_feature(x, row, "is_in_redundancy_group", 1.0 if rg else 0.0)
 
             y[row] = labels.get(node_id, 0)
 

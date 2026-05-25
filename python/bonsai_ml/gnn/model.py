@@ -1,13 +1,14 @@
 """Heterogeneous GNN model scaffold for Bonsai anomaly detection.
 
-D5-T2 (DV1): Implements the heterogeneous GNN with GAT attention architecture
-adopted in CV6 T4 (Xi et al. 2026). This is pre-work scaffolding — no training
-runs yet. The model is ready for the first archive-depth-triggered training run
-(expected DV2 or DV3, gate: ≥30 days archive, ≥500 injections, ≥50 examples
-per active rule).
+EV1-1 T4: Upgraded from GATConv (GAT v1) to GATv2Conv (Brody et al. 2021) to
+eliminate rank collapse. Node types expanded from 4 to 8. Feature dimensions
+updated per ADR adr_gnn_architecture_ev1.md. Added temporal_window and
+gru_num_layers to BonsaiGnnConfig for STGNN (stgnn.py).
 
-Node types: Device, Interface, BgpNeighbor, BfdSession
-Edge types: has_interface, has_bgp_neighbor, has_bfd_session, connected_to
+Node types: device, interface, bgp_neighbor, bfd_session,
+            ospf_neighbor, redundancy_group, sensor_reading, app_flow
+Edge types: has_interface, has_bgp_neighbor, has_bfd_session, connected_to,
+            has_ospf_neighbor, member_of, carries_flow, has_sensor
 
 Dependency note: torch and torch-geometric are OPTIONAL. All imports are
 deferred to method bodies so the module loads cleanly in environments where
@@ -19,33 +20,53 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-NODE_TYPES = ("device", "interface", "bgp_neighbor", "bfd_session")
+NODE_TYPES = (
+    "device", "interface", "bgp_neighbor", "bfd_session",
+    "ospf_neighbor", "redundancy_group", "sensor_reading", "app_flow",
+)
 EDGE_TYPES = (
     ("device", "has_interface", "interface"),
     ("device", "has_bgp_neighbor", "bgp_neighbor"),
     ("device", "has_bfd_session", "bfd_session"),
     ("device", "connected_to", "device"),
+    ("device", "has_ospf_neighbor", "ospf_neighbor"),
+    ("device", "member_of", "redundancy_group"),
+    ("interface", "member_of", "redundancy_group"),
+    ("device", "carries_flow", "app_flow"),
+    ("device", "has_sensor", "sensor_reading"),
 )
 
 DEFAULT_HIDDEN_CHANNELS = 64
-DEFAULT_NUM_HEADS = 4
+DEFAULT_NUM_HEADS = 8
 DEFAULT_NUM_LAYERS = 2
 DEFAULT_DROPOUT = 0.1
+DEFAULT_TEMPORAL_WINDOW = 8
+DEFAULT_GRU_NUM_LAYERS = 1
 
 
 @dataclass
 class BonsaiGnnConfig:
-    """Hyper-parameters for the heterogeneous GAT model."""
+    """Hyper-parameters for the heterogeneous GATv2 / STGNN model.
+
+    node_feature_dims reflects EV1-1 T6 expanded feature set.
+    temporal_window and gru_num_layers are used by STGNNModel in stgnn.py.
+    """
 
     hidden_channels: int = DEFAULT_HIDDEN_CHANNELS
     num_heads: int = DEFAULT_NUM_HEADS
     num_layers: int = DEFAULT_NUM_LAYERS
     dropout: float = DEFAULT_DROPOUT
+    temporal_window: int = DEFAULT_TEMPORAL_WINDOW
+    gru_num_layers: int = DEFAULT_GRU_NUM_LAYERS
     node_feature_dims: dict[str, int] = field(default_factory=lambda: {
-        "device": 23,
-        "interface": 8,
-        "bgp_neighbor": 6,
-        "bfd_session": 4,
+        "device": 36,
+        "interface": 14,
+        "bgp_neighbor": 12,
+        "bfd_session": 10,
+        "ospf_neighbor": 8,
+        "redundancy_group": 6,
+        "sensor_reading": 4,
+        "app_flow": 6,
     })
     output_classes: int = 2
 
@@ -68,7 +89,7 @@ def build_model(config: BonsaiGnnConfig | None = None) -> Any:
     try:
         import torch
         import torch.nn as nn
-        from torch_geometric.nn import GATConv, HeteroConv, Linear
+        from torch_geometric.nn import GATv2Conv, HeteroConv, Linear
     except ImportError as exc:
         raise RuntimeError(
             "BonsaiGNN requires optional dependencies: torch and torch-geometric. "
@@ -76,6 +97,12 @@ def build_model(config: BonsaiGnnConfig | None = None) -> Any:
         ) from exc
 
     class HeteroGNN(nn.Module):
+        """Static spatial-only GATv2 model (baseline / ablation).
+
+        For the full STGNN (temporal GRU over T snapshots), see stgnn.py.
+        Uses GATv2Conv (Brody et al. 2021) to fix rank collapse vs GATv1.
+        """
+
         def __init__(self, cfg: BonsaiGnnConfig) -> None:
             super().__init__()
             self.cfg = cfg
@@ -89,12 +116,13 @@ def build_model(config: BonsaiGnnConfig | None = None) -> Any:
             for _ in range(cfg.num_layers):
                 conv = HeteroConv(
                     {
-                        (src, rel, dst): GATConv(
+                        (src, rel, dst): GATv2Conv(
                             cfg.hidden_channels,
                             cfg.hidden_channels // cfg.num_heads,
                             heads=cfg.num_heads,
                             dropout=cfg.dropout,
                             add_self_loops=False,
+                            share_weights=False,
                         )
                         for src, rel, dst in EDGE_TYPES
                     },
