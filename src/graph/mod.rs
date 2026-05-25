@@ -20,7 +20,8 @@ use uuid::Uuid;
 use self::common::{
     link_device_address, link_host_endpoint_to_interface, now_ns, read_str, read_ts_ns,
     resolve_peer_to_device, ts,
-    upsert_app_flow, upsert_device, upsert_device_address, upsert_device_with_endpoint,
+    upsert_app_flow, upsert_app_flow_ext, AppFlowDdosFields,
+    upsert_device, upsert_device_address, upsert_device_with_endpoint,
     upsert_host_endpoint,
 };
 use crate::config::TargetConfig;
@@ -1943,6 +1944,184 @@ impl GraphStore {
         let _ = conn.query("ALTER TABLE BfdSession ADD source STRING DEFAULT ''");
         let _ = conn.query("ALTER TABLE BfdSession ADD updated_at_ns INT64 DEFAULT 0");
         let _ = conn.query("ALTER TABLE BfdSession ADD peer_address STRING DEFAULT ''");
+
+        // ── DS-2 T1-T2: DDoS awareness graph schema ──────────────────────────
+        // All tables created here are dormant unless [ddos] enabled = true.
+        // Schema is created unconditionally so migrations are idempotent on upgrade.
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS DdosEvent(\
+                id                    STRING,\
+                state                 STRING,\
+                primary_vector        STRING,\
+                confidence            DOUBLE,\
+                max_observed_gbps     DOUBLE,\
+                max_observed_pps      DOUBLE,\
+                source_diversity      INT64,\
+                corroboration_sources STRING,\
+                ttd_ms                INT64,\
+                ttc_ms                INT64,\
+                ttm_ms                INT64,\
+                ttv_ms                INT64,\
+                injection_id          STRING,\
+                operator_verdict      STRING,\
+                started_at_ns         INT64,\
+                confirmed_at_ns       INT64,\
+                mitigated_at_ns       INT64,\
+                restored_at_ns        INT64,\
+                updated_at_ns         INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create DdosEvent table")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS AttackVector(\
+                id                    STRING,\
+                ddos_event_id         STRING,\
+                vector_type           STRING,\
+                protocol              STRING,\
+                dst_port              INT64,\
+                observed_pps          DOUBLE,\
+                observed_gbps         DOUBLE,\
+                tcp_flags_pattern     STRING,\
+                amplification_vector  STRING,\
+                top_src_asns_json     STRING,\
+                source_diversity      INT64,\
+                first_seen_ns         INT64,\
+                updated_at_ns         INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create AttackVector table")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS AffectedPrefix(\
+                id                    STRING,\
+                ddos_event_id         STRING,\
+                prefix                STRING,\
+                origin_asn            INT64,\
+                rtbh_applied          BOOLEAN,\
+                flowspec_applied      BOOLEAN,\
+                scrubbing_applied     BOOLEAN,\
+                mitigation_at_ns      INT64,\
+                restore_at_ns         INT64,\
+                updated_at_ns         INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create AffectedPrefix table")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS DdosRouteEvent(\
+                id                    STRING,\
+                ddos_event_id         STRING,\
+                prefix                STRING,\
+                event_type            STRING,\
+                bgp_community         STRING,\
+                peer_address          STRING,\
+                origin_asn            INT64,\
+                expected_origin_asn   INT64,\
+                bmp_session_id        STRING,\
+                occurred_at_ns        INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create DdosRouteEvent table")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS TrafficBaseline(\
+                id                    STRING,\
+                device_address        STRING,\
+                if_name               STRING,\
+                protocol              STRING,\
+                p50_pps               DOUBLE,\
+                p95_pps               DOUBLE,\
+                p99_pps               DOUBLE,\
+                p95_bps               DOUBLE,\
+                deviation_score       DOUBLE,\
+                last_value_pps        DOUBLE,\
+                sample_count          INT64,\
+                window_minutes        INT64,\
+                last_updated_ns       INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create TrafficBaseline table")?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS MitigationAction(\
+                id                    STRING,\
+                ddos_event_id         STRING,\
+                action_type           STRING,\
+                provider              STRING,\
+                target_prefix         STRING,\
+                api_http_status       INT64,\
+                api_response_json     STRING,\
+                dry_run               BOOLEAN,\
+                status                STRING,\
+                confirmation_source   STRING,\
+                requested_at_ns       INT64,\
+                confirmed_at_ns       INT64,\
+                revert_confirmed_at_ns INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create MitigationAction table")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS DDOS_INVOLVES_DEVICE(\
+                FROM DdosEvent TO Device,\
+                role       STRING,\
+                updated_at TIMESTAMP_NS)",
+        )
+        .context("create DDOS_INVOLVES_DEVICE rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS DDOS_HAS_VECTOR(\
+                FROM DdosEvent TO AttackVector)",
+        )
+        .context("create DDOS_HAS_VECTOR rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS DDOS_TARGETS_PREFIX(\
+                FROM DdosEvent TO AffectedPrefix)",
+        )
+        .context("create DDOS_TARGETS_PREFIX rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS DDOS_CORROBORATED_BY(\
+                FROM DdosEvent TO DetectionEvent)",
+        )
+        .context("create DDOS_CORROBORATED_BY rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS DDOS_HAS_MITIGATION(\
+                FROM DdosEvent TO MitigationAction)",
+        )
+        .context("create DDOS_HAS_MITIGATION rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS HAS_DDOS_ROUTE_EVENT(\
+                FROM DdosEvent TO DdosRouteEvent)",
+        )
+        .context("create HAS_DDOS_ROUTE_EVENT rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS BASELINE_FOR(\
+                FROM TrafficBaseline TO Interface)",
+        )
+        .context("create BASELINE_FOR rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS MITIGATION_VERIFIED_BY(\
+                FROM MitigationAction TO DdosRouteEvent)",
+        )
+        .context("create MITIGATION_VERIFIED_BY rel")?;
+
+        // DS-1 T5: AppFlow migration — add DDoS-relevant flow fields
+        let _ = conn.query("ALTER TABLE AppFlow ADD tcp_flags INT64 DEFAULT 0");
+        let _ = conn.query("ALTER TABLE AppFlow ADD tcp_flags_pattern STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE AppFlow ADD src_as INT64 DEFAULT 0");
+        let _ = conn.query("ALTER TABLE AppFlow ADD dst_as INT64 DEFAULT 0");
+        let _ = conn.query("ALTER TABLE AppFlow ADD input_snmp INT64 DEFAULT 0");
+        let _ = conn.query("ALTER TABLE AppFlow ADD flow_direction INT64 DEFAULT 0");
+        let _ = conn.query("ALTER TABLE AppFlow ADD amplification_vector STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE AppFlow ADD icmp_type INT64 DEFAULT 0");
+        let _ = conn.query("ALTER TABLE AppFlow ADD icmp_code INT64 DEFAULT 0");
 
         info!("graph schema initialised");
         Ok(())
@@ -4985,7 +5164,19 @@ fn write_netflow_record(
     corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
     let id = format!("{src_address}:{dst_address}:{dst_port}:{protocol}");
-    upsert_app_flow(
+    let v = &update.value;
+    let ddos = AppFlowDdosFields {
+        tcp_flags: json_f64(v, "tcp_flags") as u8,
+        tcp_flags_pattern: v.get("tcp_flags_pattern").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        src_as: json_f64(v, "src_as") as u32,
+        dst_as: json_f64(v, "dst_as") as u32,
+        input_snmp: json_f64(v, "input_snmp") as u32,
+        flow_direction: json_f64(v, "flow_direction") as u8,
+        amplification_vector: v.get("amplification_vector").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        icmp_type: 0,
+        icmp_code: 0,
+    };
+    upsert_app_flow_ext(
         conn,
         &id,
         exporter_address,
@@ -4996,6 +5187,7 @@ fn write_netflow_record(
         bytes_per_sec,
         packets_per_sec,
         update.timestamp_ns,
+        &ddos,
     )?;
 
     // Register exporter IP as DeviceAddress so it resolves to any Device node
@@ -5054,6 +5246,10 @@ fn write_netflow_record(
     .context("execute DST_HOST merge")?;
 
     emit_flow_utilization_event(conn, update, exporter_address, &id, bytes_per_sec, event_tx, corr_buf);
+    emit_ddos_pps_spike_event(
+        conn, update, exporter_address, protocol, packets_per_sec,
+        &ddos.amplification_vector, &ddos.tcp_flags_pattern, event_tx, corr_buf,
+    );
 
     let evt = BonsaiEvent {
         device_address: exporter_address.to_string(),
@@ -5095,7 +5291,19 @@ fn write_sflow_record(
     corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
     let id = format!("{src_address}:{dst_address}:{dst_port}:{protocol}");
-    upsert_app_flow(
+    let v = &update.value;
+    let ddos = AppFlowDdosFields {
+        tcp_flags: json_f64(v, "tcp_flags") as u8,
+        tcp_flags_pattern: v.get("tcp_flags_pattern").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        src_as: 0,
+        dst_as: 0,
+        input_snmp: 0,
+        flow_direction: 0,
+        amplification_vector: v.get("amplification_vector").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        icmp_type: json_f64(v, "icmp_type") as u8,
+        icmp_code: json_f64(v, "icmp_code") as u8,
+    };
+    upsert_app_flow_ext(
         conn,
         &id,
         exporter_address,
@@ -5106,6 +5314,7 @@ fn write_sflow_record(
         bytes_per_sec,
         packets_per_sec,
         update.timestamp_ns,
+        &ddos,
     )?;
 
     // Register exporter IP as DeviceAddress for sFlow.
@@ -5158,6 +5367,10 @@ fn write_sflow_record(
     .context("execute DST_HOST merge (sflow)")?;
 
     emit_flow_utilization_event(conn, update, exporter_address, &id, bytes_per_sec, event_tx, corr_buf);
+    emit_ddos_pps_spike_event(
+        conn, update, exporter_address, protocol, packets_per_sec,
+        &ddos.amplification_vector, &ddos.tcp_flags_pattern, event_tx, corr_buf,
+    );
 
     let evt = BonsaiEvent {
         device_address: exporter_address.to_string(),
@@ -5288,6 +5501,90 @@ fn emit_flow_utilization_event(
         conn,
         exporter_address,
         "app_flow_high_utilization",
+        &detail,
+        "flow",
+        ts(update.timestamp_ns),
+        update.timestamp_ns,
+        event_tx,
+        corr_buf,
+    );
+}
+
+/// DS-3 T1: Compare observed flow PPS against the stored TrafficBaseline and
+/// fire a `ddos_interface_pps_spike` StateChangeEvent when the deviation score
+/// exceeds `spike_deviation_threshold` (default 10×).
+///
+/// This is a data-plane only rule — it operates purely on flow counters.
+/// Silent no-op when no TrafficBaseline exists for the device (cold start).
+/// The DDoS gate (`ddos.enabled`) is NOT checked here: the event is always
+/// written so that the Python corroboration rule can work even before the
+/// DDoS plane is fully enabled — the Python side owns the confirmed-state FSM.
+#[allow(clippy::too_many_arguments)]
+fn emit_ddos_pps_spike_event(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    exporter_address: &str,
+    protocol: &str,
+    packets_per_sec: f64,
+    amplification_vector: &str,
+    tcp_flags_pattern: &str,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
+) {
+    const SPIKE_THRESHOLD: f64 = 10.0;
+
+    let bare = crate::registry::strip_port(exporter_address);
+    let baseline_id = format!("{}::{}:{}", bare, "", protocol);
+
+    let mut stmt = match conn.prepare(
+        "MATCH (b:TrafficBaseline {id: $bid}) \
+         RETURN b.p95_pps, b.p99_pps, b.deviation_score",
+    ) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let mut rows = match conn.execute(
+        &mut stmt,
+        vec![("bid", Value::String(baseline_id.clone()))],
+    ) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+
+    let (p95_pps, _p99_pps) = match rows.next() {
+        Some(row) => {
+            let p95 = match &row[0] { Value::Double(v) => *v, Value::Int64(v) => *v as f64, _ => 0.0 };
+            let p99 = match &row[1] { Value::Double(v) => *v, Value::Int64(v) => *v as f64, _ => 0.0 };
+            (p95, p99)
+        }
+        None => return,
+    };
+
+    if p95_pps <= 0.0 {
+        return;
+    }
+
+    let deviation = packets_per_sec / p95_pps;
+    if deviation < SPIKE_THRESHOLD {
+        return;
+    }
+
+    let detail = serde_json::json!({
+        "exporter_address": exporter_address,
+        "protocol": protocol,
+        "observed_pps": packets_per_sec,
+        "p95_pps": p95_pps,
+        "deviation_score": deviation,
+        "amplification_vector": amplification_vector,
+        "tcp_flags_pattern": tcp_flags_pattern,
+        "threshold": SPIKE_THRESHOLD,
+    })
+    .to_string();
+
+    let _ = write_state_change_event(
+        conn,
+        exporter_address,
+        "ddos_interface_pps_spike",
         &detail,
         "flow",
         ts(update.timestamp_ns),

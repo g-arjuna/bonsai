@@ -9,6 +9,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::SflowConfig;
 use crate::event_bus::InProcessBus;
+use crate::streaming::netflow::classify_amplification_vector;
 use crate::telemetry::TelemetryUpdate;
 
 const MAX_UDP_PAYLOAD: usize = 65535;
@@ -216,6 +217,11 @@ struct SampledFlow {
     dst_port: u16,
     protocol: u8,
     frame_length: u32,
+    /// DS-1 T6: TCP flags byte extracted from sampled packet header
+    tcp_flags: u8,
+    /// DS-1 T6: ICMP type and code (protocol=1 only)
+    icmp_type: u8,
+    icmp_code: u8,
 }
 
 struct InterfaceCounters {
@@ -275,6 +281,8 @@ fn parse_ipv4_sampled_header(data: &[u8]) -> Option<SampledFlow> {
     let dst_addr = Ipv4Addr::from(read_u32_bytes(data, 12).ok()?).to_string();
     let src_port = read_u32(data, 16).ok()? as u16;
     let dst_port = read_u32(data, 20).ok()? as u16;
+    let tcp_flags_word = read_u32(data, 24).ok()? as u8;
+    let (tcp_flags, icmp_type, icmp_code) = extract_transport_flags(protocol, tcp_flags_word, src_port);
 
     Some(SampledFlow {
         src_address: src_addr,
@@ -283,6 +291,9 @@ fn parse_ipv4_sampled_header(data: &[u8]) -> Option<SampledFlow> {
         dst_port,
         protocol,
         frame_length,
+        tcp_flags,
+        icmp_type,
+        icmp_code,
     })
 }
 
@@ -296,15 +307,22 @@ fn parse_ipv4_header(ip: &[u8], frame_length: u32) -> Option<SampledFlow> {
     let src_addr = Ipv4Addr::from([ip[12], ip[13], ip[14], ip[15]]).to_string();
     let dst_addr = Ipv4Addr::from([ip[16], ip[17], ip[18], ip[19]]).to_string();
 
-    let (src_port, dst_port) = if ip.len() >= ihl + 4 && (protocol == 6 || protocol == 17) {
-        let t = &ip[ihl..];
-        (
-            u16::from_be_bytes([t[0], t[1]]),
-            u16::from_be_bytes([t[2], t[3]]),
-        )
-    } else {
-        (0, 0)
-    };
+    let (src_port, dst_port, tcp_flags, icmp_type, icmp_code) =
+        if ip.len() >= ihl + 4 {
+            let t = &ip[ihl..];
+            let sp = u16::from_be_bytes([t[0], t[1]]);
+            let dp = u16::from_be_bytes([t[2], t[3]]);
+            let (tf, it, ic) = if protocol == 6 && t.len() >= 14 {
+                (t[13], 0u8, 0u8)
+            } else if protocol == 1 && t.len() >= 2 {
+                (0u8, t[0], t[1])
+            } else {
+                (0u8, 0u8, 0u8)
+            };
+            (sp, dp, tf, it, ic)
+        } else {
+            (0, 0, 0, 0, 0)
+        };
 
     Some(SampledFlow {
         src_address: src_addr,
@@ -313,7 +331,21 @@ fn parse_ipv4_header(ip: &[u8], frame_length: u32) -> Option<SampledFlow> {
         dst_port,
         protocol,
         frame_length,
+        tcp_flags,
+        icmp_type,
+        icmp_code,
     })
+}
+
+/// DS-1 T6: Extract transport-layer flags from the sampled IPv4 header record (format 3).
+/// In format-3 records the tcp_flags field occupies bytes 24-27 as a 32-bit word;
+/// only the low byte is meaningful for TCP. For ICMP the src_port carries type/code.
+fn extract_transport_flags(protocol: u8, flags_word: u8, src_port: u16) -> (u8, u8, u8) {
+    match protocol {
+        6 => (flags_word, 0, 0),
+        1 => (0, (src_port >> 8) as u8, (src_port & 0xFF) as u8),
+        _ => (0, 0, 0),
+    }
 }
 
 /// Parse generic interface counter record (RFC 3176 §3.4.6.1, 88 bytes):
@@ -352,6 +384,8 @@ fn publish_flow(flow: SampledFlow, agent_addr: &str, sampling_rate: u32, bus: &A
     // bytes_per_sec approximation: scaled frame length by sampling rate.
     // This is a rough estimate — proper rate calculation requires windowing (see D4-5 T5).
     let bytes_per_sec = flow.frame_length as f64 * sampling_rate as f64;
+    let amplification_vector = classify_amplification_vector(flow.protocol, flow.dst_port);
+    let tcp_flags_pattern = classify_tcp_flags_sflow(flow.tcp_flags, flow.protocol);
 
     let value = serde_json::json!({
         "exporter_address": agent_addr,
@@ -364,6 +398,11 @@ fn publish_flow(flow: SampledFlow, agent_addr: &str, sampling_rate: u32, bus: &A
         "sampling_rate": sampling_rate,
         "bytes_per_sec": bytes_per_sec,
         "packets_per_sec": sampling_rate as f64,
+        "tcp_flags": flow.tcp_flags,
+        "tcp_flags_pattern": tcp_flags_pattern,
+        "icmp_type": flow.icmp_type,
+        "icmp_code": flow.icmp_code,
+        "amplification_vector": amplification_vector,
     });
 
     debug!(
@@ -413,6 +452,22 @@ fn publish_counters(c: InterfaceCounters, agent_addr: &str, bus: &Arc<InProcessB
         path: "streaming/sflow/counters".to_string(),
         value,
     });
+}
+
+/// DS-1 T6: Classify TCP flags from sFlow sampled header for DDoS pattern detection.
+fn classify_tcp_flags_sflow(flags: u8, protocol: u8) -> &'static str {
+    if protocol != 6 {
+        return "";
+    }
+    match flags & 0x3F {
+        f if f == 0x02 => "SYN_ONLY",
+        f if f == 0x12 => "SYN_ACK",
+        f if f & 0x04 != 0 && f & 0x02 == 0 => "RST_FLOOD",
+        f if f == 0x10 => "ACK_FLOOD",
+        f if f == 0x01 => "FIN_FLOOD",
+        f if f & 0x02 != 0 => "SYN_MIX",
+        _ => "ESTABLISHED",
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

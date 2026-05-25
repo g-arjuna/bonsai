@@ -17,12 +17,18 @@ use crate::telemetry::TelemetryUpdate;
 const FIELD_IN_BYTES: u16 = 1;
 const FIELD_IN_PKTS: u16 = 2;
 const FIELD_PROTOCOL: u16 = 4;
+const FIELD_TCP_FLAGS: u16 = 6;
 const FIELD_SRC_PORT: u16 = 7;
 const FIELD_SRC_ADDR: u16 = 8;
 const FIELD_DST_PORT: u16 = 11;
 const FIELD_DST_ADDR: u16 = 12;
+const FIELD_INPUT_SNMP: u16 = 10;
+const FIELD_OUTPUT_SNMP: u16 = 14;
 const FIELD_FIRST_SWITCHED: u16 = 22;
 const FIELD_LAST_SWITCHED: u16 = 21;
+const FIELD_BGP_SRC_AS: u16 = 16;
+const FIELD_BGP_DST_AS: u16 = 17;
+const FIELD_DIRECTION: u16 = 61;
 
 // IPFIX (v10) uses the same field IDs for the basic IPv4 5-tuple.
 
@@ -263,6 +269,15 @@ struct FlowRecord {
     packets: u64,
     flow_start_ns: i64,
     flow_end_ns: i64,
+    /// DS-1 T5: TCP flags byte (SYN=0x02, ACK=0x10, RST=0x04, FIN=0x01, URG=0x20, PSH=0x08)
+    tcp_flags: u8,
+    /// DS-1 T5: BGP source and destination AS numbers
+    src_as: u32,
+    dst_as: u32,
+    /// DS-1 T5: ingress/egress SNMP ifIndex (links to Interface.if_index)
+    input_snmp: u32,
+    /// DS-1 T5: flow direction 0=ingress, 1=egress
+    flow_direction: u8,
 }
 
 fn decode_record(
@@ -280,6 +295,11 @@ fn decode_record(
     let mut packets = 0u64;
     let mut first_ms = 0u64;
     let mut last_ms = 0u64;
+    let mut tcp_flags = 0u8;
+    let mut src_as = 0u32;
+    let mut dst_as = 0u32;
+    let mut input_snmp = 0u32;
+    let mut flow_direction = 0u8;
 
     let mut offset = 0usize;
     for &(ftype, flen) in fields {
@@ -300,6 +320,12 @@ fn decode_record(
             FIELD_PROTOCOL if flen == 1 => protocol = field_data[0],
             FIELD_IN_BYTES => bytes = read_variable_u64(field_data),
             FIELD_IN_PKTS => packets = read_variable_u64(field_data),
+            FIELD_TCP_FLAGS if flen >= 1 => tcp_flags = field_data[flen - 1],
+            FIELD_BGP_SRC_AS => src_as = read_variable_u64(field_data) as u32,
+            FIELD_BGP_DST_AS => dst_as = read_variable_u64(field_data) as u32,
+            FIELD_INPUT_SNMP => input_snmp = read_variable_u64(field_data) as u32,
+            FIELD_OUTPUT_SNMP => {}
+            FIELD_DIRECTION if flen >= 1 => flow_direction = field_data[flen - 1],
             FIELD_FIRST_SWITCHED if flen == 4 => {
                 first_ms = u32::from_be_bytes([field_data[0], field_data[1], field_data[2], field_data[3]]) as u64;
             }
@@ -340,6 +366,11 @@ fn decode_record(
         packets,
         flow_start_ns,
         flow_end_ns,
+        tcp_flags,
+        src_as,
+        dst_as,
+        input_snmp,
+        flow_direction,
     })
 }
 
@@ -351,6 +382,9 @@ fn publish_flow(flow: FlowRecord, bus: &Arc<InProcessBus>, exporter_ip: &str) {
     let bytes_per_sec = flow.bytes as f64 / duration_secs;
     let packets_per_sec = flow.packets as f64 / duration_secs;
     let proto_str = protocol_name(flow.protocol);
+
+    let tcp_flags_pattern = classify_tcp_flags(flow.tcp_flags, flow.protocol);
+    let amplification_vector = classify_amplification_vector(flow.protocol, flow.dst_port);
 
     let value = serde_json::json!({
         "exporter_address": exporter_ip,
@@ -365,6 +399,13 @@ fn publish_flow(flow: FlowRecord, bus: &Arc<InProcessBus>, exporter_ip: &str) {
         "packets_per_sec": packets_per_sec,
         "flow_start_ns": flow.flow_start_ns,
         "flow_end_ns": flow.flow_end_ns,
+        "tcp_flags": flow.tcp_flags,
+        "tcp_flags_pattern": tcp_flags_pattern,
+        "src_as": flow.src_as,
+        "dst_as": flow.dst_as,
+        "input_snmp": flow.input_snmp,
+        "flow_direction": flow.flow_direction,
+        "amplification_vector": amplification_vector,
     });
 
     let now_ns = SystemTime::now()
@@ -382,6 +423,43 @@ fn publish_flow(flow: FlowRecord, bus: &Arc<InProcessBus>, exporter_ip: &str) {
         path: "streaming/netflow/flow".to_string(),
         value,
     });
+}
+
+/// DS-1 T5: Classify TCP flags byte into a named pattern for DDoS detection.
+/// Returns empty string for non-TCP protocols.
+fn classify_tcp_flags(flags: u8, protocol: u8) -> &'static str {
+    if protocol != 6 {
+        return "";
+    }
+    match flags & 0x3F {
+        f if f == 0x02 => "SYN_ONLY",
+        f if f == 0x12 => "SYN_ACK",
+        f if f & 0x04 != 0 && f & 0x02 == 0 => "RST_FLOOD",
+        f if f == 0x10 => "ACK_FLOOD",
+        f if f == 0x01 => "FIN_FLOOD",
+        f if f & 0x02 != 0 => "SYN_MIX",
+        _ => "ESTABLISHED",
+    }
+}
+
+/// DS-1 T5/T6: Classify a UDP destination port as a known amplification vector.
+/// Returns empty string when not a known amplification port.
+pub fn classify_amplification_vector(protocol: u8, dst_port: u16) -> &'static str {
+    if protocol != 17 {
+        return "";
+    }
+    match dst_port {
+        53 => "dns",
+        123 => "ntp",
+        1900 => "ssdp",
+        11211 => "memcached",
+        389 => "ldap",
+        5353 => "mdns",
+        19 => "chargen",
+        17 => "qotd",
+        520 | 521 => "rip",
+        _ => "",
+    }
 }
 
 fn read_variable_u64(data: &[u8]) -> u64 {

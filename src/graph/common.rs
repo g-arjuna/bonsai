@@ -483,6 +483,20 @@ pub fn upsert_optical_channel(
     Ok(())
 }
 
+/// DS-1 T5/T6: Extended flow fields for DDoS signal extraction.
+#[derive(Default)]
+pub struct AppFlowDdosFields {
+    pub tcp_flags: u8,
+    pub tcp_flags_pattern: String,
+    pub src_as: u32,
+    pub dst_as: u32,
+    pub input_snmp: u32,
+    pub flow_direction: u8,
+    pub amplification_vector: String,
+    pub icmp_type: u8,
+    pub icmp_code: u8,
+}
+
 pub fn upsert_app_flow(
     conn: &Connection<'_>,
     id: &str,
@@ -495,29 +509,72 @@ pub fn upsert_app_flow(
     packets_per_sec: f64,
     now_ns: i64,
 ) -> Result<()> {
+    upsert_app_flow_ext(
+        conn,
+        id,
+        exporter_address,
+        src_address,
+        dst_address,
+        dst_port,
+        protocol,
+        bytes_per_sec,
+        packets_per_sec,
+        now_ns,
+        &AppFlowDdosFields::default(),
+    )
+}
+
+pub fn upsert_app_flow_ext(
+    conn: &Connection<'_>,
+    id: &str,
+    exporter_address: &str,
+    src_address: &str,
+    dst_address: &str,
+    dst_port: i64,
+    protocol: &str,
+    bytes_per_sec: f64,
+    packets_per_sec: f64,
+    now_ns: i64,
+    ddos: &AppFlowDdosFields,
+) -> Result<()> {
     let now = ts(now_ns);
     let mut stmt = conn
         .prepare(
             "MERGE (f:AppFlow {id: $id}) \
              ON CREATE SET f.exporter_address = $exp, f.src_address = $src, f.dst_address = $dst, \
                f.dst_port = $port, f.protocol = $proto, f.bytes_per_sec = $bps, \
-               f.packets_per_sec = $pps, f.updated_at = $ts \
+               f.packets_per_sec = $pps, f.updated_at = $ts, \
+               f.tcp_flags = $tcpf, f.tcp_flags_pattern = $tcpfp, \
+               f.src_as = $srcas, f.dst_as = $dstas, \
+               f.input_snmp = $isnmp, f.flow_direction = $fdir, \
+               f.amplification_vector = $ampv, f.icmp_type = $icmpt, f.icmp_code = $icmpc \
              ON MATCH SET f.exporter_address = $exp, f.bytes_per_sec = $bps, \
-               f.packets_per_sec = $pps, f.updated_at = $ts",
+               f.packets_per_sec = $pps, f.updated_at = $ts, \
+               f.tcp_flags = $tcpf, f.tcp_flags_pattern = $tcpfp, \
+               f.amplification_vector = $ampv, f.icmp_type = $icmpt, f.icmp_code = $icmpc",
         )
         .context("prepare AppFlow upsert")?;
     conn.execute(
         &mut stmt,
         vec![
-            ("id",  Value::String(id.to_string())),
-            ("exp", Value::String(exporter_address.to_string())),
-            ("src", Value::String(src_address.to_string())),
-            ("dst", Value::String(dst_address.to_string())),
-            ("port", Value::Int64(dst_port)),
+            ("id",    Value::String(id.to_string())),
+            ("exp",   Value::String(exporter_address.to_string())),
+            ("src",   Value::String(src_address.to_string())),
+            ("dst",   Value::String(dst_address.to_string())),
+            ("port",  Value::Int64(dst_port)),
             ("proto", Value::String(protocol.to_string())),
-            ("bps", Value::Double(bytes_per_sec)),
-            ("pps", Value::Double(packets_per_sec)),
-            ("ts",  now),
+            ("bps",   Value::Double(bytes_per_sec)),
+            ("pps",   Value::Double(packets_per_sec)),
+            ("ts",    now),
+            ("tcpf",  Value::Int64(ddos.tcp_flags as i64)),
+            ("tcpfp", Value::String(ddos.tcp_flags_pattern.clone())),
+            ("srcas", Value::Int64(ddos.src_as as i64)),
+            ("dstas", Value::Int64(ddos.dst_as as i64)),
+            ("isnmp", Value::Int64(ddos.input_snmp as i64)),
+            ("fdir",  Value::Int64(ddos.flow_direction as i64)),
+            ("ampv",  Value::String(ddos.amplification_vector.clone())),
+            ("icmpt", Value::Int64(ddos.icmp_type as i64)),
+            ("icmpc", Value::Int64(ddos.icmp_code as i64)),
         ],
     )
     .context("execute AppFlow upsert")?;

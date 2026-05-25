@@ -1,0 +1,76 @@
+# DS-1 T1 — DDoS Detection gNMI Path Profile
+# Data-plane focused: interface-level PPS, input discards/errors, fragment counters.
+# Deliberately excludes CoPP/LPTS/TCAM (control-plane) per DS data-plane focus.
+# Enable by adding this profile to a target's selected_paths in bonsai.toml or UI.
+# All paths use a 10-second sample interval to meet the sub-15s TTD target.
+
+name: ddos_detection
+description: "Data-plane DDoS signal extraction — interface PPS, queue drops, fragment counters"
+sample_interval_seconds: 10
+
+paths:
+  # ── OpenConfig — universal across all vendors ────────────────────────────
+  - path: /interfaces/interface/state/counters
+    description: "Per-interface byte/packet/error/discard counters (input queue drops)"
+    vendor: openconfig
+    mode: sample
+    interval_seconds: 10
+
+  - path: /interfaces/interface/state/counters/in-discards
+    description: "Input discards — proxy for queue pressure under flood conditions"
+    vendor: openconfig
+    mode: sample
+    interval_seconds: 10
+
+  - path: /interfaces/interface/state/counters/in-errors
+    description: "Input errors — malformed packet indicator"
+    vendor: openconfig
+    mode: sample
+    interval_seconds: 10
+
+  # ── Nokia SRL — fragment and PPS paths ───────────────────────────────────
+  - path: /system/datapath/forwarding/statistics
+    description: "SRL: forwarding engine fragment and drop counters"
+    vendor: nokia_srl
+    mode: sample
+    interval_seconds: 10
+
+  - path: /interfaces/interface/traffic-rate
+    description: "SRL: real-time interface PPS and BPS rates"
+    vendor: nokia_srl
+    mode: sample
+    interval_seconds: 10
+
+  # ── Cisco IOS-XR — interface-level PPS and drops ─────────────────────────
+  - path: /interfaces/interface/state/packets-per-second
+    description: "XR: interface PPS for volumetric flood detection"
+    vendor: cisco_xrd
+    mode: sample
+    interval_seconds: 10
+
+  - path: /qos/interfaces/interface/input/queues/queue/state/dropped-pkts
+    description: "XR: per-queue dropped packets — input queue pressure"
+    vendor: cisco_xrd
+    mode: sample
+    interval_seconds: 10
+
+  # ── Arista EOS — interface-level PPS ─────────────────────────────────────
+  - path: /interfaces/interface/ethernet/state/counters
+    description: "EOS: Ethernet counters including fragment and FCS error counts"
+    vendor: arista_ceos
+    mode: sample
+    interval_seconds: 10
+
+  # ── Juniper crpd / vJunos ─────────────────────────────────────────────────
+  - path: /interfaces/interface/state/counters
+    description: "Juniper: standard OC interface counters with discard tracking"
+    vendor: juniper_crpd
+    mode: sample
+    interval_seconds: 10
+
+  # ── FRR / generic Linux ───────────────────────────────────────────────────
+  - path: /interfaces/interface/state/counters
+    description: "FRR: kernel netdev counters via gNMI agent"
+    vendor: frr
+    mode: sample
+    interval_seconds: 10

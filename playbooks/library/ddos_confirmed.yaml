@@ -1,0 +1,97 @@
+# DS-3 T3 — DDoS Confirmed Playbook
+# Triggered when DdosCorroborationRule fires "ddos_confirmed".
+# HITL gate on all mitigation steps; verify_graph step uses BMP assurance.
+# Dry-run by default — all RTBH steps are no-ops unless operator approves.
+
+name: ddos_confirmed
+description: "DDoS confirmed — HITL-gated RTBH + BMP convergence assurance"
+trigger:
+  semantic_type: ddos_confirmed
+  min_severity: high
+  require_ddos_enabled: true
+
+steps:
+  - id: enrich_victim_prefix
+    action: query_graph
+    description: "Identify affected prefixes from DdosEvent.targets"
+    query: >
+      MATCH (e:DdosEvent)-[:DDOS_TARGETS_PREFIX]->(p:AffectedPrefix)
+      WHERE e.state IN ['suspected', 'confirmed']
+      RETURN p.prefix, p.origin_asn, p.rtbh_applied
+    hitl: false
+
+  - id: notify_operator
+    action: alert
+    description: "Notify NOC of confirmed DDoS event"
+    channel: pagerduty
+    severity: high
+    message: >
+      DDoS confirmed on {device_address}. Vector: {primary_vector}.
+      Max PPS: {max_observed_pps}. Confidence: {confidence:.0%}.
+      Approve RTBH via /api/ddos/events/{event_id}/approve or reject to defer.
+    hitl: false
+
+  - id: approve_rtbh
+    action: hitl_approval
+    description: "Operator must approve RTBH signalling before any BGP announcement"
+    prompt: >
+      DDoS confirmed. Apply RTBH (blackhole community 65535:666) to victim prefix?
+      This will drop ALL traffic to the prefix until restore is approved.
+      Dry-run: {ddos.dry_run}
+    timeout_secs: 300
+    on_timeout: skip
+    hitl: true
+
+  - id: signal_rtbh
+    action: bgp_rtbh_signal
+    description: "Signal RTBH via gNMI SET on edge routers (dry-run unless ddos.dry_run=false)"
+    target_prefix: "{victim_prefix}"
+    community: "65535:666"
+    dry_run: "{ddos.dry_run}"
+    depends_on: approve_rtbh
+    hitl: false
+
+  - id: verify_graph_convergence
+    action: verify_graph
+    description: "Wait for BMP route event confirming RTBH community receipt on all sessions"
+    expected_graph_state: >
+      MATCH (e:DdosRouteEvent)
+      WHERE e.ddos_event_id = $event_id
+        AND e.event_type = 'rtbh_received'
+        AND e.occurred_at_ns > $signal_at_ns
+      RETURN count(e) AS confirmed_sessions
+    min_value: 1
+    timeout_secs: 120
+    hitl: false
+    depends_on: signal_rtbh
+
+  - id: restore_approval
+    action: hitl_approval
+    description: "Operator approves prefix restoration after attack subsides"
+    prompt: >
+      Attack metrics have fallen below threshold. Remove RTBH for {victim_prefix}?
+      Current PPS: {current_pps}. Baseline p95: {baseline_p95_pps}.
+    timeout_secs: 3600
+    on_timeout: skip
+    hitl: true
+
+  - id: withdraw_rtbh
+    action: bgp_rtbh_withdraw
+    description: "Withdraw RTBH community to restore normal forwarding"
+    target_prefix: "{victim_prefix}"
+    dry_run: "{ddos.dry_run}"
+    depends_on: restore_approval
+    hitl: false
+
+  - id: verify_restoration
+    action: verify_graph
+    description: "Confirm prefix is reachable again via BMP RIB update"
+    expected_graph_state: >
+      MATCH (e:DdosRouteEvent)
+      WHERE e.ddos_event_id = $event_id
+        AND e.event_type = 'prefix_restored'
+      RETURN count(e) AS restored
+    min_value: 1
+    timeout_secs: 180
+    hitl: false
+    depends_on: withdraw_rtbh

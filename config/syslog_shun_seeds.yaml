@@ -35,7 +35,7 @@ seeds:
     name: "Nokia SRL: CPU threshold transient"
     scope_type: global
     match_type: regex
-    match_value: 'CPU threshold (exceeded|cleared)'
+    match_value: "CPU threshold (exceeded|cleared)"
     action: rate_limit
     rate_limit_per_min: 5
     description: "SRL CPU threshold messages are noisy in lab environments under load. Rate-limit to 5/min."
@@ -56,7 +56,7 @@ seeds:
     name: "Cisco: Config save notification"
     scope_type: global
     match_type: regex
-    match_value: '%SYS-5-CONFIG_I'
+    match_value: "%SYS-5-CONFIG_I"
     action: drop
     rate_limit_per_min: 0
     description: "Informational config-save acknowledgement. Creates noise when SNMP tooling polls config-last-changed."
@@ -76,7 +76,7 @@ seeds:
     name: "Cisco: NTP stratum sync noise"
     scope_type: global
     match_type: regex
-    match_value: '%NTP-6-RESTART'
+    match_value: "%NTP-6-RESTART"
     action: drop
     rate_limit_per_min: 0
     description: "NTP restart/stratum informational — not a fault."
@@ -86,7 +86,7 @@ seeds:
     name: "Cisco: CDP/LLDP neighbor churn"
     scope_type: global
     match_type: regex
-    match_value: '%CDP-4-NATIVE_VLAN_MISMATCH'
+    match_value: "%CDP-4-NATIVE_VLAN_MISMATCH"
     action: rate_limit
     rate_limit_per_min: 3
     description: "CDP native VLAN mismatches in access layer environments generate high volume."
@@ -97,7 +97,7 @@ seeds:
     name: "FRR BGP: max-prefix warning"
     scope_type: global
     match_type: regex
-    match_value: '%BGP-3-MAXPFXEXCEED'
+    match_value: "%BGP-3-MAXPFXEXCEED"
     action: rate_limit
     rate_limit_per_min: 5
     description: "BGP max-prefix warning from FRR — in lab environments with full internet tables this fires constantly."
@@ -117,7 +117,7 @@ seeds:
     name: "FRR: Zebra kernel route reconciliation"
     scope_type: global
     match_type: regex
-    match_value: 'zebra.*(?:kernel route|rib.*update)'
+    match_value: "zebra.*(?:kernel route|rib.*update)"
     action: rate_limit
     rate_limit_per_min: 10
     description: "Zebra kernel route table updates are very frequent on route-reflectors."
@@ -128,7 +128,7 @@ seeds:
     name: "Arista: BGP established (informational)"
     scope_type: global
     match_type: regex
-    match_value: '%BGP-5-ESTABLISHED'
+    match_value: "%BGP-5-ESTABLISHED"
     action: drop
     rate_limit_per_min: 0
     description: "BGP session established (not a fault — detection rules handle this via gNMI telemetry)."
@@ -138,7 +138,7 @@ seeds:
     name: "Arista: Agent health check noise"
     scope_type: global
     match_type: regex
-    match_value: 'Eos.*(?:AgentManager|ProcMgr).*(?:health|heartbeat)'
+    match_value: "Eos.*(?:AgentManager|ProcMgr).*(?:health|heartbeat)"
     action: drop
     rate_limit_per_min: 0
     description: "EOS internal agent health-check messages — operational noise."
@@ -159,8 +159,62 @@ seeds:
     name: "Juniper: SNMP trap informational"
     scope_type: global
     match_type: regex
-    match_value: 'SNMPD_TRAP_.*_INFO'
+    match_value: "SNMPD_TRAP_.*_INFO"
     action: drop
     rate_limit_per_min: 0
     description: "JunOS SNMP informational traps — filtered before they re-enter the signal bus."
+    enabled: false
+
+  # ── DS-1 T2: DDoS data-plane flood shun seeds ───────────────────────────
+  # These are auto-activated by Bonsai when a DdosEvent transitions to confirmed
+  # and [ddos] auto_shun_on_confirmed = true. Otherwise they sit dormant.
+
+  - vendor: cisco_xrd
+    name: "Cisco XR: ACL flood drop log burst"
+    scope_type: global
+    match_type: regex
+    match_value: 'IPV4_ACL.*DENY.*\d{3,} packets'
+    action: rate_limit
+    rate_limit_per_min: 5
+    description: "DS-1 T2: High-rate ACL deny logs during flood events. Rate-limited, not dropped, to preserve attack evidence."
+    enabled: false
+
+  - vendor: cisco_xrd
+    name: "Cisco XR: uRPF drop flood"
+    scope_type: global
+    match_type: regex
+    match_value: "URPF.*drop"
+    action: rate_limit
+    rate_limit_per_min: 10
+    description: "DS-1 T2: uRPF source-spoofed packet drops — high-volume during amplification attacks."
+    enabled: false
+
+  - vendor: nokia_srl
+    name: "Nokia SRL: ACL drop flood"
+    scope_type: global
+    match_type: regex
+    match_value: "acl.*drop.*flood"
+    action: rate_limit
+    rate_limit_per_min: 5
+    description: "DS-1 T2: Nokia SRL ACL drop flood messages during DDoS events."
+    enabled: false
+
+  - vendor: arista_ceos
+    name: "Arista EOS: ACL deny storm"
+    scope_type: global
+    match_type: regex
+    match_value: "%ACL.*deny"
+    action: rate_limit
+    rate_limit_per_min: 5
+    description: "DS-1 T2: EOS ACL deny log burst during flood attacks."
+    enabled: false
+
+  - vendor: juniper_junos
+    name: "Juniper: firewall filter reject burst"
+    scope_type: global
+    match_type: regex
+    match_value: "RT_FLOW.*reject.*flood|FWFILTER.*discard"
+    action: rate_limit
+    rate_limit_per_min: 5
+    description: "DS-1 T2: Junos firewall filter reject flood during DDoS."
     enabled: false

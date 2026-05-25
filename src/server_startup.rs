@@ -516,6 +516,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         "thermal_sensor_warning" => "warning",
                         "redundancy_lost" => "critical",
                         "redundancy_degraded" => "high",
+                        "ddos_interface_pps_spike" => "high",
                         _ => "warning",
                     };
                     let source_types_json =

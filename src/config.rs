@@ -65,6 +65,8 @@ pub struct Config {
     pub auth: AuthConfig,
     #[serde(default)]
     pub security: SecurityConfig,
+    #[serde(default)]
+    pub ddos: DdosConfig,
 }
 
 // ── Auth / LDAP (D4-3 T2/T3) ────────────────────────────────────────────────
@@ -254,6 +256,78 @@ pub struct LabConfig {
     #[serde(default)]
     pub mgmt_ipv6_subnet: String,
 }
+
+// ── DDoS awareness (DS-0 master gate) ────────────────────────────────────────
+
+/// Master configuration for the DDoS awareness subsystem (DS-* epics).
+/// All DDoS features are dormant when `enabled = false` (default).
+/// No background tasks, no API endpoints, no schema writes are activated until
+/// an operator explicitly sets `[ddos] enabled = true` in bonsai.toml.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct DdosConfig {
+    /// Master switch. When false (default), the entire DDoS subsystem is dormant.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Dry-run mode: all mitigation API calls and gNMI SETs are simulated (logged, not executed).
+    /// Defaults to true — explicit opt-in required for live mitigation.
+    #[serde(default = "default_ddos_dry_run")]
+    pub dry_run: bool,
+    /// Baseline computation window in minutes. Default: 60.
+    #[serde(default = "default_ddos_baseline_window_minutes")]
+    pub baseline_window_minutes: u64,
+    /// Deviation score threshold to fire ddos_suspect (current_pps / p95_pps). Default: 5.0.
+    #[serde(default = "default_ddos_suspect_threshold")]
+    pub suspect_deviation_threshold: f64,
+    /// Deviation score threshold for elevated ddos_interface_pps_spike. Default: 10.0.
+    #[serde(default = "default_ddos_spike_threshold")]
+    pub spike_deviation_threshold: f64,
+    /// Minimum confidence (0.0–1.0) required to fire ddos_confirmed. Default: 0.50.
+    #[serde(default = "default_ddos_confidence_floor")]
+    pub confidence_floor: f64,
+    /// Minimum confidence for auto-trigger (without HITL). Default: 0.75.
+    #[serde(default = "default_ddos_auto_trigger_confidence")]
+    pub auto_trigger_confidence: f64,
+    /// Corroboration window in seconds — how long to collect multi-source evidence. Default: 60.
+    #[serde(default = "default_ddos_corroboration_window_secs")]
+    pub corroboration_window_secs: u64,
+    /// Maximum concurrent active mitigations. Default: 3.
+    #[serde(default = "default_ddos_max_concurrent_mitigations")]
+    pub max_concurrent_mitigations: u32,
+    /// Cool-down in seconds after a prefix is restored before re-triggering. Default: 300.
+    #[serde(default = "default_ddos_cooldown_secs")]
+    pub mitigation_cooldown_secs: u64,
+    /// Auto-enable syslog shunning for high-volume ACL/CoPP flood messages during confirmed events.
+    #[serde(default)]
+    pub auto_shun_on_confirmed: bool,
+}
+
+impl Default for DdosConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dry_run: true,
+            baseline_window_minutes: 60,
+            suspect_deviation_threshold: 5.0,
+            spike_deviation_threshold: 10.0,
+            confidence_floor: 0.50,
+            auto_trigger_confidence: 0.75,
+            corroboration_window_secs: 60,
+            max_concurrent_mitigations: 3,
+            mitigation_cooldown_secs: 300,
+            auto_shun_on_confirmed: false,
+        }
+    }
+}
+
+fn default_ddos_dry_run() -> bool { true }
+fn default_ddos_baseline_window_minutes() -> u64 { 60 }
+fn default_ddos_suspect_threshold() -> f64 { 5.0 }
+fn default_ddos_spike_threshold() -> f64 { 10.0 }
+fn default_ddos_confidence_floor() -> f64 { 0.50 }
+fn default_ddos_auto_trigger_confidence() -> f64 { 0.75 }
+fn default_ddos_corroboration_window_secs() -> u64 { 60 }
+fn default_ddos_max_concurrent_mitigations() -> u32 { 3 }
+fn default_ddos_cooldown_secs() -> u64 { 300 }
 
 // ── Signals ──────────────────────────────────────────────────────────────────
 
