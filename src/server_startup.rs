@@ -1541,7 +1541,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
 
             let bus_for_http = std::sync::Arc::clone(&bus);
             let ml_event_bus = std::sync::Arc::new(bonsai::ml_event_bus::MlEventBus::new());
-            
+            let ml_event_bus_for_scheduler = std::sync::Arc::clone(&ml_event_bus);
+
             // Initialize security module with selective feature enablement
             if let Err(e) = bonsai::security::initialize_security(cfg.security.clone()).await {
                 error!(error = %e, "failed to initialize security module");
@@ -1780,12 +1781,35 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                     "http://127.0.0.1:{}",
                     investigation_http_addr.split(':').last().unwrap_or("3000")
                 ),
+                gnn_uncertainty_threshold: std::env::var("BONSAI_GNN_UNCERTAINTY_GATE")
+                    .ok()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0),
             };
             let trigger_shutdown = shutdown_rx.clone();
             tokio::spawn(bonsai::investigation_trigger::run_investigation_trigger(
                 trigger_store,
                 trigger_config,
                 trigger_shutdown,
+            ));
+        }
+
+        // ── ML export schedule seeding + tick loop ───────────────────────────
+        if run_core {
+            let sched_store = if let Store::Core(s) = store {
+                std::sync::Arc::clone(s)
+            } else {
+                unreachable!()
+            };
+            let sched_db = sched_store.db();
+            let sched_wl = sched_store.write_lock();
+            bonsai::http_server::ml_jobs::seed_default_ml_schedules(sched_db.clone(), sched_wl.clone());
+            let sched_shutdown = shutdown_rx.clone();
+            tokio::spawn(bonsai::http_server::ml_jobs::run_ml_schedule_tick(
+                sched_db,
+                sched_wl,
+                ml_event_bus_for_scheduler,
+                sched_shutdown,
             ));
         }
 

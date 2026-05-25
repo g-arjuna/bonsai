@@ -89,7 +89,7 @@ For Bonsai's scale (50–500 devices, 5–50 snapshots/day, high class imbalance
 
 ### Tasks
 
-**T1 — Architecture decision record: STGNN vs alternatives**
+**T1 — Architecture decision record: STGNN vs alternatives** ✅ batch2
 - Create `docs/architecture/adr_gnn_architecture_ev1.md` documenting:
   - **STGNN (GRU-over-GAT)**: Chosen baseline. Why: matches temporal anomaly nature, GRU stable at N<500 nodes, can be pre-trained self-supervised. Cons: requires snapshot buffer (8 snapshots × graph size ~= 4MB RAM).
   - **Pure attention (Graph Transformer)**: Evaluated. Rejected at this scale — O(N²) attention is wasteful for sparse topology graphs, requires large data volume for stable training. Revisit at EV3 when archive exceeds 180 days.
@@ -98,7 +98,7 @@ For Bonsai's scale (50–500 devices, 5–50 snapshots/day, high class imbalance
   - **Control-Weighted GNN**: Adopted as training loss modifier. See EV1-8.
   - **Static HeteroGAT (current)**: Documented as baseline for ablation comparison.
 
-**T2 — Extend node types and feature dimensions**
+**T2 — Extend node types and feature dimensions** ✅ batch6
 - Update `python/bonsai_ml/gnn/model.py`:
   - Add node types: `ospf_neighbor`, `bfd_session` (expand dim 4→10), `redundancy_group`, `app_flow`, `sensor_reading`.
   - Updated `node_feature_dims`:
@@ -112,7 +112,7 @@ For Bonsai's scale (50–500 devices, 5–50 snapshots/day, high class imbalance
   - Add edge types: `has_ospf_neighbor`, `has_bfd_session` (was stub), `member_of` (Device/Interface→RedundancyGroup), `carries_flow` (Device→AppFlow), `has_sensor` (Device→SensorReading).
   - Update `build_hetero_data()` to populate all new node/edge types from graph snapshot API.
 
-**T3 — Implement STGNN temporal layer**
+**T3 — Implement STGNN temporal layer** ✅ batch2
 - Create `python/bonsai_ml/gnn/stgnn.py`:
   - `SnapshotBuffer`: Ring buffer of the last `T=8` `HeteroData` objects per graph. Thread-safe. Serialisable to disk (`runtime/gnn_snapshot_buffer.pkl`) for restart recovery.
   - `TemporalGNNLayer`: Wraps `HeteroGNN` spatial encoder. For each node type, applies a per-type `nn.GRU(input_size=hidden_channels, hidden_size=hidden_channels, num_layers=1, batch_first=True)` over the T-snapshot sequence.
@@ -121,26 +121,26 @@ For Bonsai's scale (50–500 devices, 5–50 snapshots/day, high class imbalance
   - Fallback: If buffer has < T snapshots (cold start), pad with zero vectors. Model trained with masking to handle this gracefully.
   - `BonsaiGnnConfig` updated: add `temporal_window: int = 8`, `gru_num_layers: int = 1`.
 
-**T4 — GATv2 upgrade (fix rank collapse)**
+**T4 — GATv2 upgrade (fix rank collapse)** ✅ batch2
 - Replace `GATConv` → `GATv2Conv` from `torch_geometric.nn` in `model.py`.
 - `GATv2Conv` uses dynamic attention (Brody et al. 2021): computes attention as `LeakyReLU(W·[h_i || h_j])` instead of `LeakyReLU(a·[Wh_i || Wh_j])`. This eliminates rank collapse where all nodes attend equally.
 - Migration is a 1-line change per edge type. No change to model output shape.
 - Update `BonsaiGnnConfig.num_heads` default: 4 → 8 (GATv2 more efficient per head at same depth).
 
-**T5 — Attention weight capture and graph persistence**
+**T5 — Attention weight capture and graph persistence** ✅ batch2
 - In `stgnn.py`, add `return_attention_weights=True` to `GATv2Conv` forward calls.
 - Create `AttentionSnapshot` dataclass: `{snapshot_ns, node_id, node_type, top_k_neighbours: list[{neighbour_id, neighbour_type, edge_type, weight}]}`.
 - After inference, POST top-5 attention weights per anomalous node to new Rust endpoint `POST /api/gnn/attention` (see EV1-4 T4).
 - These are stored as `GnnAttentionSnapshot` nodes in the graph (see EV1-4 T3).
 - `investigation_runtime.rs` queries attention weights for the device under investigation and injects as context: "GNN attention: device X contributed 0.42, device Y contributed 0.31 — both have degraded BGP."
 
-**T6 — Update data_loader for new feature dimensions**
+**T6 — Update data_loader for new feature dimensions** ✅ batch2
 - `data_loader.py`: Update `DEFAULT_FEATURE_NAMES` list (23 → 36 dims for device).
 - Update `build_hetero_data()` and `BonsaiGnnDataLoader.from_snapshot()` to populate new columns.
 - Add `from_api_snapshot(client)` method that calls `/api/graph/snapshot` (new endpoint in EV1-4) to get a live snapshot dict for inference.
 - Update `SPECTRAL_V1_SCHEMA` → `DEVICE_V2_SCHEMA` in `feature_schema.py` with new feature names and hash. Version bump prevents accidental cross-version inference.
 
-**T7 — NCT pre-training scaffold**
+**T7 — NCT pre-training scaffold** ✅ batch2
 - Create `python/bonsai_ml/gnn/nct.py`:
   - `NodePairSampler`: Samples positive pairs (topologically adjacent nodes) and negative pairs (randomly sampled non-adjacent nodes) from `HeteroData`.
   - `NCTLoss`: Noise-contrastive loss = `-log(exp(sim(z_i, z_j+)) / sum(exp(sim(z_i, z_k-))))` where sim = cosine similarity on node embeddings.
@@ -148,7 +148,7 @@ For Bonsai's scale (50–500 devices, 5–50 snapshots/day, high class imbalance
   - Gate: pre-training only runs when `training_readiness.snapshot_count >= 30` (configurable). Below this threshold, model uses random init + supervised fine-tuning only.
   - Pre-trained weights saved to `models/nct_pretrain.pt`. Supervised fine-tuning loads and continues from these weights.
 
-**T8 — Training pipeline integration**
+**T8 — Training pipeline integration** ✅ batch4
 - Update `python/train_anomaly.py`:
   - Accept `--model-type` flag: `hetero_gat` (legacy), `stgnn` (new default).
   - Load `SnapshotBuffer` from archive, build temporal sequences.
@@ -157,7 +157,7 @@ For Bonsai's scale (50–500 devices, 5–50 snapshots/day, high class imbalance
   - Save `models/stgnn_v1.pt` + updated `FeatureSchema`.
   - Emit `MlJobEvent` (new type, see EV1-5) on completion with metrics: val_auc, val_f1, num_training_snapshots.
 
-**T9 — Model card update**
+**T9 — Model card update** ✅ batch4
 - Update `python/bonsai_ml/model_cards/` with new card for `stgnn_v1`:
   - Architecture: STGNN (GATv2-GRU), 8-snapshot window, T nodes.
   - Training data: chaos archive snapshots + operator-labelled fault events.
@@ -197,7 +197,7 @@ Every step in this chain must be:
 
 ### Tasks
 
-**T1 — Parquet Catalog DB schema (Rust side)**
+**T1 — Parquet Catalog DB schema (Rust side)** ✅ batch2
 - Add to `src/graph/mod.rs` — new node tables (always created, idempotent):
   - `ParquetExport(id, export_type, output_path, started_at_ns, completed_at_ns, row_count, anomaly_rows, normal_rows, since_ns, until_ns, schema_hash, status, error_message, model_version_trigger)` — one row per export run.
   - `MlJobRun(id, job_type, started_at_ns, completed_at_ns, status, trigger, input_parquet_id, output_model_path, val_auc, val_f1, error_message, config_json)` — one row per ML job run (training, evaluation, embedding compute, NCT pre-train).
@@ -211,7 +211,7 @@ Every step in this chain must be:
 - `GET /api/ml/models/active` — return currently active model per type.
 - `POST /api/ml/models/{id}/activate` — set `is_active=true` for this model, `false` for previous.
 
-**T2 — Export job runner with catalog integration**
+**T2 — Export job runner with catalog integration** ✅ batch2
 - Create `python/bonsai_ml/export_job.py`:
   - `ParquetExportJob` class:
     - `run(client, export_type, since_ns, until_ns, output_dir)` → `ExportResult`.
@@ -225,7 +225,7 @@ Every step in this chain must be:
   - `ExportQualityReport`: class_balance_ratio, label_drift_score (KL divergence from previous export), missing_column_list, row_count, schema_version.
 - CLI entrypoint: `python -m bonsai_ml.export_job --type anomaly --incremental` (replaces `export_training.py`).
 
-**T3 — Parquet file validator**
+**T3 — Parquet file validator** ✅ batch2
 - Create `python/bonsai_ml/parquet_validator.py`:
   - `validate_parquet(path: str, schema_version: str) -> ValidationResult`.
   - Checks: file exists, readable by pyarrow, column set matches `FeatureSchema.feature_names`, numeric columns have correct dtype (float32/int64), no all-null columns, row count > 0, label balance (anomaly %: min 5%, max 50%).
@@ -233,7 +233,7 @@ Every step in this chain must be:
   - `compute_feature_drift(current_path, previous_path) -> dict[str, float]`: Per-column population stability index (PSI). Alert threshold: PSI > 0.2 for any feature.
   - Results stored in `ParquetExport` record as `quality_json`.
 
-**T4 — Scheduled export via ML Job Engine**
+**T4 — Scheduled export via ML Job Engine** ✅ batch3
 - See EV1-5 for the job scheduler. The export schedule is defined as a `MlJobSchedule` record:
   - Anomaly export: daily at 02:00 UTC, incremental.
   - Remediation export: weekly on Sunday 02:00 UTC, full.
@@ -241,7 +241,7 @@ Every step in this chain must be:
 - Schedule is configurable via `POST /api/ml/schedules` (see EV1-5).
 - Export job fires → creates catalog record → runs export → updates catalog record → triggers readiness check → if passes, enqueues training job.
 
-**T5 — Parquet archive management**
+**T5 — Parquet archive management** ✅ batch2
 - `python/bonsai_ml/parquet_store.py`:
   - `ParquetStore(root_dir)`: Manages `root_dir/parquet/` directory.
   - Directory layout:
@@ -262,7 +262,7 @@ Every step in this chain must be:
   - `list_exports(export_type)` → list of `{path, rows, ts, size_bytes}`.
   - Integrates with catalog: every file written updates the catalog record with `output_path`.
 
-**T6 — GNN snapshot buffer serialisation**
+**T6 — GNN snapshot buffer serialisation** ✅ batch3
 - Create `python/bonsai_ml/gnn/snapshot_store.py`:
   - `SnapshotStore(root_dir)`: Writes/reads serialised `HeteroData` snapshot sequences.
   - Format: Apache Arrow IPC (`.arrow` files) — not pickle. Reason: pickle is version-sensitive, Arrow is schema-stable and readable without PyTorch.
@@ -271,13 +271,13 @@ Every step in this chain must be:
   - `get_buffer_health() -> dict`: Returns `{buffer_size, oldest_ns, newest_ns, gap_seconds_max, is_stale}`. Stale = newest snapshot older than 1 hour.
 - Called from STGNN inference loop (EV1-9 T3) and from training pipeline.
 
-**T7 — Export quality dashboard data endpoint**
+**T7 — Export quality dashboard data endpoint** ✅ batch3
 - `GET /api/ml/exports/quality` — Returns quality summary across all recent exports:
   - `{export_type, last_export_at, row_count, class_balance_pct, label_drift_score, feature_drift_worst_column, feature_drift_worst_psi, quality_passed, model_trained_on_this}`.
 - Used by BonPy UI (EV1-6) to show Parquet health card on the MLOps dashboard.
 - Also feeds a Prometheus metric: `bonsai_ml_parquet_quality_passed{export_type}` (0/1 gauge).
 
-**T8 — Cross-export lineage tracking**
+**T8 — Cross-export lineage tracking** ✅ batch3
 - `GET /api/ml/lineage/{model_id}` — Returns full lineage chain:
   - Which `ParquetExport` records this model was trained on.
   - What time window they cover.
@@ -322,7 +322,7 @@ Embedding computation using a sentence-transformer or LLM encoder is CPU/GPU int
 
 ### Tasks
 
-**T1 — Syslog message embedding pipeline**
+**T1 — Syslog message embedding pipeline** ✅ batch3
 - Create `python/bonsai_ml/text_embeddings.py`:
   - `TextEmbedder`: wraps `sentence_transformers.SentenceTransformer('all-MiniLM-L6-v2')` (or Ollama/OpenAI via config).
   - `embed_batch(texts: list[str]) -> np.ndarray`: Returns float32 array (N × dim).
@@ -336,7 +336,7 @@ Embedding computation using a sentence-transformer or LLM encoder is CPU/GPU int
   - Metrics: `events_embedded_total`, `embedding_latency_ms_p50`, `embedding_batch_size`.
   - Emits `MlJobEvent(type=embedding_batch, count=N)` (see EV1-5).
 
-**T2 — Device config/CLI text embedding**
+**T2 — Device config/CLI text embedding** ✅ batch3
 - Extend `bootstrap_agent.py` `_seed_device()`: after seeding, POST device config summary text to new endpoint `POST /api/devices/{address}/config-text` (raw text of key config sections: BGP config, ISIS config, interface config). Mark device as `needs_config_embedding=true`.
 - `python/bonsai_ml/config_embedding_worker.py`:
   - Polls `GET /api/devices/unembedded-config?limit=50`.
@@ -345,7 +345,7 @@ Embedding computation using a sentence-transformer or LLM encoder is CPU/GPU int
   - POST to `POST /api/devices/{address}/config-embedding` with `{vector, model_name, computed_at_ns, schema_hash}`.
   - Stores as `DeviceConfigEmbedding` node (separate from topology `DeviceEmbedding`).
 
-**T3 — Graph schema extensions for embeddings**
+**T3 — Graph schema extensions for embeddings** ✅ batch7
 - Add to `src/graph/mod.rs`:
   - `EventEmbedding(id, event_id, event_type, model_name, dim, vector_json, computed_at_ns, schema_hash)` — text embedding for syslog/state-change events.
   - `DeviceConfigEmbedding(id, device_address, model_name, dim, vector_json, computed_at_ns, schema_hash)` — device config embedding (separate from topology spectral embedding `DeviceEmbedding`).
@@ -354,7 +354,7 @@ Embedding computation using a sentence-transformer or LLM encoder is CPU/GPU int
   - `StateChangeEvent` migration: add `needs_embedding: bool` column (default true for new events).
   - `Device` migration: add `needs_config_embedding: bool` column.
 
-**T4 — Rust endpoints for embedding lifecycle**
+**T4 — Rust endpoints for embedding lifecycle** ✅ batch7
 - Add to `src/http_server/` (new file `src/http_server/ml_embeddings.rs`):
   - `GET /api/events/unembedded?type=syslog&limit=N` — returns StateChangeEvents where `needs_embedding=true`, ordered by `occurred_at` desc.
   - `POST /api/events/embeddings` — batch upsert `EventEmbedding` records. Marks source events `needs_embedding=false`.
@@ -363,7 +363,7 @@ Embedding computation using a sentence-transformer or LLM encoder is CPU/GPU int
   - `GET /api/ml/embeddings/stats` — returns `{syslog_embedded, syslog_pending, config_embedded, config_pending, last_embed_at, model_name}`.
 - Wired in `src/http_server/mod.rs`.
 
-**T5 — Embedding-augmented GNN feature vector**
+**T5 — Embedding-augmented GNN feature vector** ✅ batch6
 - Update `data_loader.py` `build_hetero_data()`:
   - Device feature vector: replace 4 spectral dims with `spectral_dims_4 + config_embedding_compressed_8` (PCA-compressed 384-dim config embedding → 8 dims using pre-computed PCA from training data). Total device dims: 36 → 40.
   - Rationale: 8 dims for config semantics captures vendor-specific config clusters (Nokia EVPN config vs Cisco MPLS config vs FRR BGP-only config) that predict failure modes.
@@ -373,7 +373,7 @@ Embedding computation using a sentence-transformer or LLM encoder is CPU/GPU int
   - `transform(embedding_vector)` → 8-dim reduced vector.
   - Retrained automatically when config embedding count increases by >10% (triggers from EV1-5 scheduler).
 
-**T6 — Syslog cluster analysis via embeddings**
+**T6 — Syslog cluster analysis via embeddings** ✅ batch3
 - Create `python/bonsai_ml/syslog_cluster.py`:
   - `SyslogClusterer`: fetches recent `EventEmbedding` vectors from graph API. Runs `sklearn.cluster.MiniBatchKMeans(n_clusters=20)` on the embedding matrix.
   - Assigns `syslog_cluster_id` (0-19) to each embedded event.
@@ -382,12 +382,12 @@ Embedding computation using a sentence-transformer or LLM encoder is CPU/GPU int
   - Surface in investigation: "This syslog message is in cluster 7 (BGP notification storms). 15 similar messages seen on 3 devices in last 24h."
   - Refreshed weekly by ML job scheduler.
 
-**T7 — Semantic similarity search for investigations**
+**T7 — Semantic similarity search for investigations** ✅ batch7
 - `GET /api/ml/similar-events?event_id={id}&limit=10` — for a given event, returns the 10 most semantically similar events by cosine similarity on `EventEmbedding` vectors.
 - Implementation: load all `EventEmbedding` vectors for the same `event_type`, compute cosine similarity, return top-k.
 - Used by investigation runtime: when an investigation is triggered, inject "5 most similar historical events" with their resolution status. "Similar to: BGP notification storm on spine-2 on 2026-03-12 — resolved by soft-clear."
 
-**T8 — Detection reason clustering**
+**T8 — Detection reason clustering** ✅ batch6
 - `python/bonsai_ml/detection_clustering.py`:
   - Embeds `DetectionEvent.reason` strings using `TextEmbedder`.
   - Clusters using HDBSCAN (variable number of clusters, handles noise well — better than KMeans for sparse detection streams).
@@ -425,7 +425,7 @@ Today's BonPy UI polls `/api/sidecars` every 5 seconds. For a production MLOps c
 
 ### Tasks
 
-**T1 — ML event SSE channel**
+**T1 — ML event SSE channel** ✅ batch3
 - Extend `src/resource_governor.rs` → NEW `src/ml_event_bus.rs`:
   - `MlEventBus`: `tokio::sync::broadcast::channel(capacity=2048)`.
   - `MlEvent` enum variants:
@@ -443,7 +443,7 @@ Today's BonPy UI polls `/api/sidecars` every 5 seconds. For a production MLOps c
   - Python `MlEventEmitter` class (in `python/bonsai_ml/event_emitter.py`): HTTP POST to new `POST /api/ml/events/publish` which fanouts to SSE subscribers.
   - `src/lib.rs`: `pub mod ml_event_bus`, registered in `server_startup.rs`.
 
-**T2 — GNN inference result write-back to graph**
+**T2 — GNN inference result write-back to graph** ✅ batch3
 - Add to `src/graph/mod.rs`:
   - `GnnInferenceResult(id, snapshot_ns, model_id, device_address, anomaly_score, threshold, is_anomalous, top_contributing_device_1, top_contributing_device_2, attention_weight_1, attention_weight_2, inferred_at_ns)` — node table.
   - `GNN_SCORED(Device → GnnInferenceResult)` rel table.
@@ -451,7 +451,7 @@ Today's BonPy UI polls `/api/sidecars` every 5 seconds. For a production MLOps c
 - `GET /api/gnn/inference-results?device_address={addr}&since_ns={ns}` — query inference history for a device.
 - `src/investigation_trigger.rs` extended: in addition to watching `detection_fired` events, also watch `GnnInferenceResult` writes where `is_anomalous=true` AND `anomaly_score > gnn_trigger_threshold` (configurable, default 0.75). Auto-trigger investigation for high-scoring devices not already under investigation.
 
-**T3 — Attention weight persistence**
+**T3 — Attention weight persistence** ✅ batch3
 - Add to `src/graph/mod.rs`:
   - `GnnAttentionSnapshot(id, inference_result_id, source_device_address, neighbour_device_address, edge_type, attention_weight, snapshot_ns)` — top-k attention weights per device.
   - `HAS_ATTENTION(GnnInferenceResult → GnnAttentionSnapshot)` rel.
@@ -465,7 +465,7 @@ Today's BonPy UI polls `/api/sidecars` every 5 seconds. For a production MLOps c
   ```
   Inject as: "GNN attention context (most influential neighbours): device X (bgp_neighbor, weight=0.42), device Y (connected_to, weight=0.31), ..."
 
-**T4 — Python GNN inference client**
+**T4 — Python GNN inference client** ✅ batch3
 - Create `python/bonsai_ml/gnn/inference_client.py`:
   - `GnnInferenceClient(bonsai_client)`:
     - `run_inference(snapshot_buffer: list[HeteroData]) -> InferenceResult`.
@@ -477,7 +477,7 @@ Today's BonPy UI polls `/api/sidecars` every 5 seconds. For a production MLOps c
     - Returns `InferenceResult(anomalous_devices, scores, attention_by_device)`.
   - `run_inference_loop(client, interval_secs=300)`: Runs inference every 5 minutes in a background thread. Feeds `SnapshotBuffer` from live graph snapshots (see T6).
 
-**T5 — Live graph snapshot API**
+**T5 — Live graph snapshot API** ✅ batch3
 - Add to `src/http_server/observability.rs`:
   - `GET /api/graph/snapshot` — Returns current graph state as a JSON dict suitable for `build_hetero_data()`:
     ```json
@@ -497,14 +497,14 @@ Today's BonPy UI polls `/api/sidecars` every 5 seconds. For a production MLOps c
   - Cached for 30s (served from in-memory snapshot, refreshed on a background timer).
   - Python STGNN inference loop calls this endpoint every `inference_interval` seconds to get fresh snapshots for the buffer.
 
-**T6 — Shared topology snapshot for STGNN buffer**
+**T6 — Shared topology snapshot for STGNN buffer** ✅ batch3
 - `python/bonsai_ml/gnn/snapshot_client.py`:
   - `GraphSnapshotClient(bonsai_http_url)`:
     - `fetch_snapshot() -> dict`: GET `/api/graph/snapshot`, returns raw dict.
     - `to_hetero_data(snapshot_dict) -> HeteroData`: Calls `build_hetero_data()`.
     - `run_snapshot_loop(buffer: SnapshotBuffer, interval_secs: int)`: Background thread fetching snapshots, appending to `SnapshotBuffer`, saving to `SnapshotStore`.
 
-**T7 — BonPy UI port unification**
+**T7 — BonPy UI port unification** ✅ batch6
 - The `ui-bonpy/` Vite app is built as a **standalone SPA** accessible at `/bonpy/` on the main Bonsai HTTP server (via static file serving in `src/http_server/mod.rs`).
 - Remove the separate `ui-bonpy` port. Instead:
   - `BONSAI_HTTP_ADDR` serves both `/` (main UI) and `/bonpy/` (BonPy MLOps console).
@@ -514,7 +514,7 @@ Today's BonPy UI polls `/api/sidecars` every 5 seconds. For a production MLOps c
   - Shared Bonsai API base URL — BonPy UI makes all API calls to the same origin, no CORS issues.
 - `ui-bonpy/vite.config.js`: Update `base: '/bonpy/'`, add `build.outDir: '../dist-bonpy'` (output into `dist-bonpy/` at repo root, Rust serves from there).
 
-**T8 — Unified authentication**
+**T8 — Unified authentication** ✅ batch3
 - BonPy UI reuses Bonsai session tokens (from `D4-3 T2`). When served from the same origin, the session cookie (`bst_*`) applies to all `/api/` calls including ML endpoints.
 - Python sidecar authenticates to Bonsai API with a scoped API key (`bsk_*`) with role `ApiReadonly` for query endpoints and a separate key with role `Operator` for write endpoints (inference results, training job records).
 - Keys provisioned via `POST /api/auth/apikeys` with `scope=ml_sidecar`.
@@ -572,7 +572,7 @@ is **Celery + Redis** (mature, 12+ years, massive ecosystem) OR **Celery + Rabbi
 
 ### Tasks
 
-**T1 — ML Job Engine core**
+**T1 — ML Job Engine core** ✅ batch3
 - Create `python/bonsai_ml/job_engine.py`:
   - `BonsaiJobEngine`:
     - Uses `apscheduler.AsyncScheduler` with `SQLiteJobStore(path="runtime/ml_jobs.db")`.
@@ -587,7 +587,7 @@ is **Celery + Redis** (mature, 12+ years, massive ecosystem) OR **Celery + Rabbi
   - On job complete: PATCH `MlJobRun` record. Emit `JobCompleted` or `JobFailed` ML event.
   - Engine runs in a dedicated asyncio event loop in a background thread, started from `collector_engine.py` main.
 
-**T2 — Rust ML job run API**
+**T2 — Rust ML job run API** ✅ batch3
 - Add to `src/http_server/` (new `src/http_server/ml_jobs.rs`):
   - `MlJobRunRecord` struct (mirrors `MlJobRun` graph node from EV1-2 T1).
   - `POST /api/ml/jobs` — create new job run record.
@@ -598,7 +598,7 @@ is **Celery + Redis** (mature, 12+ years, massive ecosystem) OR **Celery + Rabbi
   - `POST /api/ml/jobs/{id}/cancel` — cancel request (sets a `cancel_requested` flag; Python engine polls this).
 - Wired in `src/http_server/mod.rs`.
 
-**T3 — Schedule management API**
+**T3 — Schedule management API** ✅ batch3
 - Add `MlJobSchedule(id, job_id, cron_expr, enabled, last_modified_by, last_modified_at)` to graph schema.
 - `GET /api/ml/schedules` — list all schedules.
 - `POST /api/ml/schedules` — create or update schedule `{job_id, cron_expr, enabled}`.
@@ -615,7 +615,7 @@ is **Celery + Redis** (mature, 12+ years, massive ecosystem) OR **Celery + Rabbi
   config_embedding:        interval(hours=6)
   ```
 
-**T4 — Job progress streaming**
+**T4 — Job progress streaming** ✅ batch3
 - `python/bonsai_ml/job_progress.py`:
   - `JobProgressReporter(job_id, emitter: MlEventEmitter)`:
     - `report(step, total_steps, metric_name=None, metric_value=None)`: Emits `JobProgress` ML event.
@@ -625,7 +625,7 @@ is **Celery + Redis** (mature, 12+ years, massive ecosystem) OR **Celery + Rabbi
   - Export job reports: step=rows_written, total_steps=estimated_rows.
   - Embedding job reports: step=events_embedded, total_steps=pending_events.
 
-**T5 — Job dependency chain wiring**
+**T5 — Job dependency chain wiring** ✅ batch3
 - In `job_engine.py`, implement `on_job_success_trigger(parent_job_id, child_job_id, condition_fn)`:
   - After `parent_job_id` completes with state=`succeeded`, evaluate `condition_fn(job_result)`.
   - If True: trigger `child_job_id` immediately (one-off).
@@ -633,20 +633,20 @@ is **Celery + Redis** (mature, 12+ years, massive ecosystem) OR **Celery + Rabbi
 - Implement the full dependency chain documented in the Analysis section.
 - Dependency chain is stored as `MlJobDependency(parent_job_id, child_job_id, condition_json)` nodes in Bonsai graph.
 
-**T6 — Job retry and dead-letter handling**
+**T6 — Job retry and dead-letter handling** ✅ batch3
 - APScheduler 4.x supports `max_instances` and `misfire_grace_time`. Extend with:
   - `max_retries=3` per job. On failure: exponential back-off (5min, 15min, 45min).
   - On `max_retries` exhausted: job state = `failed`, ML event emitted, BonPy UI shows alert.
   - `DeadLetterJob` queue: list of jobs that exhausted retries, with error details. Viewable in BonPy UI.
   - `POST /api/ml/jobs/{id}/retry` — operator can manually retry a dead-letter job.
 
-**T7 — Resource governor integration**
+**T7 — Resource governor integration** ✅ batch6
 - Extend `src/resource_governor.rs` (already exists from D4-21):
   - New pressure source: `MlJobPressure`. When `should_shed()` is true (memory pressure), the ML job engine pauses non-critical jobs (training, clustering). Only inference and embedding workers continue (they are smaller).
   - Python job engine polls `GET /api/governance/pressure` every 30s. Pauses heavy jobs when `write_pressure=true`.
   - Resumes when pressure clears. In-progress jobs are not killed, only new job starts are blocked.
 
-**T8 — Unified observability: Prometheus metrics**
+**T8 — Unified observability: Prometheus metrics** ✅ batch3
 - Python `job_engine.py` exposes Prometheus metrics on `:9201/metrics`:
   - `bonsai_ml_job_runs_total{job_id, outcome}` — counter.
   - `bonsai_ml_job_duration_seconds{job_id}` — histogram.
@@ -701,7 +701,7 @@ The current `ui-bonpy` is a single `App.svelte` file with 4 components: `StatusB
 
 ### Tasks
 
-**T1 — Migrate to SvelteKit**
+**T1 — Migrate to SvelteKit** ✅ batch3
 - Convert `ui-bonpy/` from plain Svelte SPA → SvelteKit project:
   - `svelte.config.js`: adapter-static (for serving from Rust static file server).
   - `src/routes/` directory structure: `+layout.svelte`, `+page.svelte` per route.
@@ -711,7 +711,7 @@ The current `ui-bonpy` is a single `App.svelte` file with 4 components: `StatusB
   - Port forward: `vite.config.js` proxy `/api/` → `http://localhost:3000/api/` in dev.
   - Dependencies: `@sveltejs/kit`, `@sveltejs/adapter-static`, `@tanstack/svelte-query`, `svelte-chartjs`, `chart.js`. Pin versions in `package.json`.
 
-**T2 — Dashboard page (/bonpy/)**
+**T2 — Dashboard page (/bonpy/)** ✅ batch3
 - `src/routes/+page.svelte` — Summary dashboard:
   - **System health strip**: 5 status indicators (sidecars, active model, last GNN inference, last export, job engine). Each: green/amber/red + last-seen timestamp.
   - **Active detections card**: count by severity (critical/high/warn/info) with sparkline (last 24h).
@@ -720,7 +720,7 @@ The current `ui-bonpy` is a single `App.svelte` file with 4 components: `StatusB
   - **Next scheduled jobs**: list of next 5 jobs to run with countdown timer.
   - All cards use SSE for live update (no polling on dashboard).
 
-**T3 — Jobs page (/bonpy/jobs)**
+**T3 — Jobs page (/bonpy/jobs)** ✅ batch3
 - `src/routes/jobs/+page.svelte`:
   - **Schedule table**: job_id, cron_expr, enabled toggle, last_run, next_run, last_outcome badge, "Run Now" button.
   - **Job run history table**: job_id, started_at, duration, outcome (success/failed/cancelled), metrics (val_auc, row_count), expand for full details.
@@ -728,14 +728,14 @@ The current `ui-bonpy` is a single `App.svelte` file with 4 components: `StatusB
   - **Dead letter queue**: failed jobs with retry button.
   - Schedule edit modal: cron expression editor with human-readable preview (e.g., "At 02:00 AM, daily").
 
-**T4 — Models page (/bonpy/models)**
+**T4 — Models page (/bonpy/models)** ✅ batch3
 - `src/routes/models/+page.svelte`:
   - **Model registry table**: model_type, version, val_AUC, val_F1, threshold, trained_at, is_active badge, "Activate" button (with confirmation modal), "View Card" button.
   - **Active model detail panel**: feature schema hash, training data lineage (which Parquet exports), training duration, calibration period (was there one?), detections fired since activation.
   - **Model comparison**: select 2 models → side-by-side val metrics table.
   - **Version history chart**: line chart of val_AUC over training runs (using Chart.js). Shows if model quality is improving over time.
 
-**T5 — Exports page (/bonpy/exports)**
+**T5 — Exports page (/bonpy/exports)** ✅ batch3
 - `src/routes/exports/+page.svelte`:
   - **Export catalog table**: export_type, started_at, row_count, anomaly%, normal%, quality badge, schema_hash, linked model (if this export was used for training).
   - **Quality detail modal**: per-export quality report — class balance bar, label drift from previous export (KL divergence), missing columns list, feature PSI table.
@@ -743,7 +743,7 @@ The current `ui-bonpy` is a single `App.svelte` file with 4 components: `StatusB
   - **Manual export trigger**: "Export Now" button for each export type. Shows progress via SSE.
   - **Parquet file browser**: list files in `runtime/parquet/`, show size, age, quick stats.
 
-**T6 — GNN page (/bonpy/gnn)**
+**T6 — GNN page (/bonpy/gnn)** ✅ batch3
 - `src/routes/gnn/+page.svelte`:
   - **Inference timeline**: stacked bar chart (Chart.js) — per inference run: count of anomalous devices vs total. Last 24 runs.
   - **Latest inference results table**: device_address, anomaly_score (colour-coded), threshold, is_anomalous, top contributing neighbour + weight, inference time.
@@ -752,7 +752,7 @@ The current `ui-bonpy` is a single `App.svelte` file with 4 components: `StatusB
   - **GNN anomaly → Investigation linkage**: if a GNN detection triggered an investigation, show "View Investigation" link.
   - **Inference settings**: model_id selector, threshold slider, inference interval setting, "Run Now" button.
 
-**T7 — Embeddings page (/bonpy/embeddings)**
+**T7 — Embeddings page (/bonpy/embeddings)** ✅ batch3
 - `src/routes/embeddings/+page.svelte`:
   - **Embedding health cards**: for each type (syslog, config, remediation):
     - Embedded count, pending count, last batch time, model name.
@@ -761,7 +761,7 @@ The current `ui-bonpy` is a single `App.svelte` file with 4 components: `StatusB
   - **Config embedding space**: 2D UMAP projection of device config embeddings (pre-computed, not live). Hover to see device_address + vendor.
   - **Embedding drift monitor**: line chart of per-cluster size over time (cluster stability). If a cluster grows rapidly, it may indicate a new failure mode.
 
-**T8 — Detection stream page (/bonpy/detections)**
+**T8 — Detection stream page (/bonpy/detections)** ✅ batch3
 - `src/routes/detections/+page.svelte`:
   - SSE-driven live detection stream (subscribes to Bonsai SSE `/api/events/stream` filtered to `detection_fired`).
   - Per-detection row: device, rule_id, severity badge, reason (truncated), occurred_at, change-correlated flag, GNN score (if available for that device at that time), incident_cluster_id.
@@ -769,7 +769,7 @@ The current `ui-bonpy` is a single `App.svelte` file with 4 components: `StatusB
   - Expand row: full features JSON, investigation link, remediation proposals.
   - "Bulk acknowledge" checkbox for NOC workflow.
 
-**T9 — Shared SSE connection manager**
+**T9 — Shared SSE connection manager** ✅ batch3
 - `src/lib/SseManager.js`:
   - Single `EventSource` connection per page to `/api/ml/events/stream`.
   - Dispatches events to Svelte stores keyed by `event_type`.
@@ -777,7 +777,7 @@ The current `ui-bonpy` is a single `App.svelte` file with 4 components: `StatusB
   - Heartbeat detection: if no event for 60s, assume dead and reconnect.
   - Connection status exposed via `sse_connected` Svelte store — shown in header.
 
-**T10 — Shared layout + nav**
+**T10 — Shared layout + nav** ✅ batch3
 - `src/routes/+layout.svelte`:
   - Left sidebar nav: Dashboard, Jobs, Models, Exports, GNN, Embeddings, Rules, Detections.
   - Header: "bonpy MLOps" brand, connection status dot (green/amber/red for SSE + API health), "← Network View" link to main Bonsai UI at `/`.
@@ -973,7 +973,7 @@ All three are additive. NCT and CW-GNN improve model quality. Conformal predicti
 
 ### Tasks
 
-**T1 — NCT noise curriculum**
+**T1 — NCT noise curriculum** ✅ batch2
 - Extend `python/bonsai_ml/gnn/nct.py` (scaffolded in EV1-1 T7):
   - `NoiseSchedule`: defines how noise intensity increases over training epochs (warm-up curriculum).
   - Epoch 1-10: light noise (randomly remove 5% of edges).
@@ -983,12 +983,12 @@ All three are additive. NCT and CW-GNN improve model quality. Conformal predicti
   - `NodeFeatureInvariance`: a subset of features (vendor OHE, role OHE) should be invariant to perturbation — these are structural, not operational. Only operational features (cpu_util_pct, interface error rates) are perturbed.
   - Configurable: `nct_noise_levels` list in `BonsaiGnnConfig`.
 
-**T2 — NCT edge-case: disconnected subgraphs**
+**T2 — NCT edge-case: disconnected subgraphs** ✅ batch6
 - Some Bonsai topologies may have isolated devices (device onboarded but no LLDP/BGP links yet). During NCT, these should not be used as positive pair samples (no positive pair can be constructed from an isolated node).
 - `NodePairSampler` update: filter out isolated nodes (degree=0) from positive pair sampling. They can still be used as negative samples (anything is a valid negative for an isolated node).
 - Isolated nodes during NCT: apply mean-field approximation — embed using only node features, no message passing.
 
-**T3 — Control-Weighted GNN loss function**
+**T3 — Control-Weighted GNN loss function** ✅ batch7
 - Create `python/bonsai_ml/gnn/loss.py` (file already exists in `bonsai_ml/gnn/loss.py` — extend it):
   - Current: standard cross-entropy loss.
   - Add `ControlWeightedLoss(nn.Module)`:
@@ -999,7 +999,7 @@ All three are additive. NCT and CW-GNN improve model quality. Conformal predicti
     - `forward(logits, labels, change_weights) = CrossEntropy(logits, labels) * change_weights`.
   - `FocalControlWeightedLoss`: adds focal loss gamma parameter for class imbalance on top of control weighting. Focal loss down-weights easy negatives (correctly-predicted clean states), focusing gradient on hard positives (actual faults). `FL(pt) = -(1-pt)^gamma * log(pt)`. Recommended gamma=2.0 for Bonsai class imbalance.
 
-**T4 — Change weight computation during training**
+**T4 — Change weight computation during training** ✅ batch7
 - In `archive_to_training.py`, extend labelled dataset construction:
   - For each snapshot in the training set: query `ChangeRequest` nodes active during `snapshot_ns ± 30min` for any device in the snapshot.
   - If active change found on the SAME device as the fault label: assign `change_weight = 0.0`.
@@ -1008,7 +1008,7 @@ All three are additive. NCT and CW-GNN improve model quality. Conformal predicti
   - `BonsaiGraphData` dataclass: add `change_weight: float = 1.0` field.
   - `BonsaiGnnDataLoader.from_snapshot()` populates this from the chaos archive.
 
-**T5 — Conformal prediction calibration layer**
+**T5 — Conformal prediction calibration layer** ✅ batch7
 - Create `python/bonsai_ml/gnn/conformal.py`:
   - `ConformalCalibrator`:
     - `calibrate(model, calibration_loader, alpha=0.1)`: Runs model on calibration set, collects nonconformity scores `s_i = 1 - softmax(logit_fault)[i]` for all positive (fault) samples.
@@ -1022,7 +1022,7 @@ All three are additive. NCT and CW-GNN improve model quality. Conformal predicti
     - `efficiency(prediction_sets)` — fraction of samples with singleton prediction set (certain). Higher = better.
   - Calibration run triggered automatically after every training run (see EV1-5 T5).
 
-**T6 — Uncertainty-gated investigation triggering**
+**T6 — Uncertainty-gated investigation triggering** ✅ batch7
 - Extend `src/investigation_trigger.rs`:
   - After GNN inference result write-back (EV1-4 T2), read `uncertainty_margin` from `GnnInferenceResult`.
   - Trigger investigation ONLY if: `anomaly_score > threshold AND uncertainty_margin < uncertainty_gate` (default `uncertainty_gate = 0.3`).
@@ -1031,7 +1031,7 @@ All three are additive. NCT and CW-GNN improve model quality. Conformal predicti
   - Both values exposed as fields on `GnnInferenceResult` node.
   - Configurable: `gnn_uncertainty_gate` in `GnnConfig` (already exists in `src/config.rs`).
 
-**T7 — MC Dropout uncertainty estimate (alternative to conformal)**
+**T7 — MC Dropout uncertainty estimate (alternative to conformal)** ✅ batch7
 - For deployments where a held-out calibration set is unavailable (small lab environments with <100 fault examples), implement **MC Dropout** uncertainty estimate as a fallback:
   - `MCDropoutEstimator`:
     - Run `model.forward(snapshot)` N=20 times with `model.train()` mode (dropout active).
@@ -1042,7 +1042,7 @@ All three are additive. NCT and CW-GNN improve model quality. Conformal predicti
   - Gate: `mc_dropout_samples = 0` disables this and falls back to single-pass inference.
   - Add `mc_dropout_samples: int = 0` to `BonsaiGnnConfig`.
 
-**T8 — Architecture decision record**
+**T8 — Architecture decision record** ✅ batch7
 - Create `docs/architecture/adr_gnn_uncertainty_ev1.md`:
   - **NCT**: Chosen pre-training. Addresses label sparsity. Noise curriculum described.
   - **CW-GNN**: Chosen loss modifier. Addresses maintenance-window false positives.
@@ -1092,7 +1092,7 @@ If it crashes, it stays down until someone notices and restarts it. There is no 
 
 ### Tasks
 
-**T1 — Non-blocking startup with reconnect loop**
+**T1 — Non-blocking startup with reconnect loop** ✅ batch4
 - Rewrite `collector_engine.py` `main()`:
   - Remove the `while True: try: with BonsaiClient(local_addr) as local_client:` blocking pattern.
   - Replace with: start all background threads immediately (health HTTP, core forwarder, heartbeat, job engine), then connect to local collector with retry in a dedicated thread.
@@ -1101,7 +1101,7 @@ If it crashes, it stays down until someone notices and restarts it. There is no 
   - On disconnection: gracefully stops `RuleEngine`, keeps all other threads running, begins reconnect cycle.
   - Result: health HTTP is always reachable even when disconnected from local collector. Job engine keeps running (scheduled jobs continue, just can't forward detections).
 
-**T2 — Graceful shutdown handler**
+**T2 — Graceful shutdown handler** ✅ batch4
 - Add `signal.signal(signal.SIGTERM, _handle_sigterm)` in `main()`:
   - `_handle_sigterm`:
     1. Log "received SIGTERM, shutting down gracefully".
@@ -1115,7 +1115,7 @@ If it crashes, it stays down until someone notices and restarts it. There is no 
   - Also handle `SIGINT` (Ctrl+C) the same way in dev.
   - Shutdown timeout: if any step takes >10s, force exit anyway (no hung shutdown).
 
-**T3 — STGNN continuous inference loop**
+**T3 — STGNN continuous inference loop** ✅ batch4
 - Create `python/bonsai_ml/inference_loop.py`:
   - `StgnnInferenceLoop(engine: BonsaiJobEngine)`:
     - Registers `gnn_inference` job with interval trigger (default 5 min, configurable).
@@ -1134,7 +1134,7 @@ If it crashes, it stays down until someone notices and restarts it. There is no 
     - Model cold-start: if no active model found, logs warning and skips inference (no crash).
   - `start(job_engine: BonsaiJobEngine)`: registers the inference job.
 
-**T4 — systemd service hardening**
+**T4 — systemd service hardening** ✅ batch4
 - Update `deploy/systemd/bonsai-rules-sidecar.service`:
   ```ini
   [Unit]
@@ -1168,7 +1168,7 @@ If it crashes, it stays down until someone notices and restarts it. There is no 
 - `MemoryMax=2G`: prevents runaway growth from embedding cache or model load. OOM kills sidecar, systemd restarts it.
 - `RestartBursts=5` + `StartLimitInterval=120`: allows 5 rapid restarts but backs off if crash loop detected.
 
-**T5 — ML memory bounds**
+**T5 — ML memory bounds** ✅ batch4
 - `python/bonsai_ml/memory_manager.py`:
   - `MlMemoryManager`:
     - Tracks per-component memory usage estimates:
@@ -1180,7 +1180,7 @@ If it crashes, it stays down until someone notices and restarts it. There is no 
   - Integration with health endpoint: `GET /health` response includes `memory_usage_mb` and `memory_components` dict.
   - Prometheus gauge: `bonsai_sidecar_memory_mb` — scraped by Prometheus (see EV1-5 T8).
 
-**T6 — Forward queue backpressure + overflow handling**
+**T6 — Forward queue backpressure + overflow handling** ✅ batch4
 - Extend `collector_engine.py` forward queue handling:
   - Current: `forward_queue = queue.Queue(maxsize=1000)`. If full: silently drops detection with warning log.
   - Extend: when queue > 80% full, log warning + emit `MlEvent(type=queue_pressure)`.
@@ -1189,7 +1189,7 @@ If it crashes, it stays down until someone notices and restarts it. There is no 
   - Queue depth gauge: `forward_queue_depth` — Prometheus gauge.
   - When core forwarder reconnects after disconnect: flush queue first, then emit a "catch-up batch" summary event.
 
-**T7 — Sidecar health enrichment**
+**T7 — Sidecar health enrichment** ✅ batch4
 - Extend `/health` response (currently in `_HealthHandler`):
   ```json
   {
@@ -1218,7 +1218,7 @@ If it crashes, it stays down until someone notices and restarts it. There is no 
   ```
 - All fields consumed by BonPy UI dashboard page (EV1-6 T2).
 
-**T8 — Deployment documentation**
+**T8 — Deployment documentation** ✅ batch4
 - Create `docs/BONPY_PRODUCTION_DEPLOY.md`:
   - Prerequisites: Python 3.12+, virtualenv, sentence-transformers, torch, torch-geometric.
   - Installation steps: venv setup, pip install, service install.

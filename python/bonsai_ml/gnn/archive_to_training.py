@@ -208,6 +208,11 @@ def convert_archive_to_graphs(
 
     graphs.sort(key=lambda g: g.snapshot_ns)
 
+    # Align snapshots with sorted graphs via snapshot_ns lookup
+    ns_to_snap = {snap.get("captured_at_ns", 0): snap for snap in snapshots}
+    sorted_snaps = [ns_to_snap.get(g.snapshot_ns, {}) for g in graphs]
+    assign_change_weights(graphs, sorted_snaps)
+
     min_ns = graphs[0].snapshot_ns if graphs else 0
     max_ns = graphs[-1].snapshot_ns if graphs else 0
     time_span_h = (max_ns - min_ns) / 1e9 / 3600 if min_ns and max_ns else 0.0
@@ -305,6 +310,155 @@ def make_synthetic_snapshot(
         "topology": {"devices": devices, "links": links},
         "detections": [],
     }
+
+
+# ── EV1-8 T4: Change weight computation ──────────────────────────────────────
+
+
+def compute_sample_weights(
+    graphs: list[BonsaiGraphData],
+    snapshots: list[dict],
+    control_weight: float = 0.1,
+    rare_fault_boost: float = 3.0,
+    rare_threshold: int = 5,
+) -> list[float]:
+    """Compute per-sample training weights for ControlWeightedLoss / WeightedRandomSampler.
+
+    Logic:
+    - Adversarial / control snapshots (``adversarial=True`` or all-zero labels)
+      get weight ``control_weight`` (default 0.1) to suppress gradient.
+    - Fault types with fewer than ``rare_threshold`` examples in the batch are
+      boosted by ``rare_fault_boost`` to counter class imbalance.
+    - Clean (non-adversarial, non-fault) snapshots keep weight 1.0.
+    - Fault snapshots keep weight 1.0 (or ``rare_fault_boost`` if rare).
+
+    Args:
+        graphs:    BonsaiGraphData instances (same order as ``snapshots``).
+        snapshots: Raw snapshot dicts aligned 1:1 with ``graphs``.
+        control_weight: Weight for adversarial / expected-change samples.
+        rare_fault_boost: Multiplier for rare fault types.
+        rare_threshold: Fault type count below which boost is applied.
+
+    Returns:
+        List of float weights, one per graph.
+    """
+    if len(graphs) != len(snapshots):
+        raise ValueError(
+            f"graphs ({len(graphs)}) and snapshots ({len(snapshots)}) must have the same length"
+        )
+
+    # Count fault type occurrences across all fault snapshots
+    from collections import Counter
+    fault_type_counts: Counter = Counter()
+    for snap in snapshots:
+        if snap.get("fault_type") and not snap.get("adversarial"):
+            fault_type_counts[snap["fault_type"]] += 1
+
+    weights: list[float] = []
+    for snap in snapshots:
+        is_adversarial = bool(snap.get("adversarial"))
+        fault_type = snap.get("fault_type", "")
+        is_fault = bool(fault_type) and not is_adversarial
+
+        if is_adversarial:
+            w = control_weight
+        elif is_fault:
+            if fault_type_counts.get(fault_type, 0) < rare_threshold:
+                w = rare_fault_boost
+            else:
+                w = 1.0
+        else:
+            w = 1.0
+
+        weights.append(w)
+
+    return weights
+
+
+def compute_control_mask(snapshots: list[dict]) -> list[int]:
+    """Return a 0/1 integer mask: 1 = control/adversarial sample, 0 = real fault or clean.
+
+    Used directly as the ``control_mask`` argument to :class:`ControlWeightedLoss`
+    and :class:`FocalControlWeightedLoss`.
+
+    Args:
+        snapshots: Raw snapshot dicts aligned 1:1 with the graph batch.
+
+    Returns:
+        List of ints (0 or 1), one per snapshot.
+    """
+    return [1 if snap.get("adversarial") else 0 for snap in snapshots]
+
+
+def assign_change_weights(
+    graphs: list[BonsaiGraphData],
+    snapshots: list[dict],
+    same_device_weight: float = 0.0,
+    different_device_weight: float = 0.5,
+    no_change_weight: float = 1.0,
+) -> None:
+    """Assign change_weight to each BonsaiGraphData in-place (EV1-8 T4).
+
+    Rules (matching EV1-8 T4 spec):
+    - Adversarial snapshot (active change on SAME device as fault): weight = 0.0.
+    - Adversarial snapshot with change on a DIFFERENT device: weight = 0.5.
+    - No change request active: weight = 1.0.
+
+    The ``adversarial`` flag in snapshot dicts is used as the change-request proxy
+    for synthetic / chaos archive data (adversarial=True means a planned fault).
+    For real data, populate ``change_affects_same_device`` in the snapshot dict.
+
+    Modifies ``graphs`` in-place; returns None.
+    """
+    for graph, snap in zip(graphs, snapshots):
+        if snap.get("change_affects_same_device"):
+            graph.change_weight = same_device_weight
+        elif snap.get("adversarial") or snap.get("change_affects_other_device"):
+            graph.change_weight = different_device_weight
+        else:
+            graph.change_weight = no_change_weight
+
+
+def compute_change_weights_from_api(
+    graphs: list[BonsaiGraphData],
+    snapshots: list[dict],
+    api_url: str,
+    window_secs: int = 1800,
+    same_device_weight: float = 0.0,
+    different_device_weight: float = 0.5,
+) -> None:
+    """Query Bonsai API for active ChangeRequest nodes and set change_weight in-place.
+
+    For each snapshot, queries GET /api/change-requests?active_at_ns={ns} and checks
+    whether the affected device matches the fault label device. This enriches
+    change_weight with real change-window data from production.
+
+    Falls back to ``assign_change_weights`` on any API error (non-fatal).
+    """
+    import urllib.request
+    import json as _json
+
+    for graph, snap in zip(graphs, snapshots):
+        snap_ns = snap.get("captured_at_ns", 0)
+        fault_hostname = snap.get("hostname", "")
+        if not snap_ns:
+            graph.change_weight = 1.0
+            continue
+        try:
+            url = f"{api_url}/api/change-requests?active_at_ns={snap_ns}&window_secs={window_secs}"
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                data = _json.loads(resp.read())
+            change_requests = data.get("change_requests", [])
+            if not change_requests:
+                graph.change_weight = 1.0
+                continue
+            affected = {cr.get("device_address", "") for cr in change_requests}
+            if fault_hostname in affected:
+                graph.change_weight = same_device_weight
+            else:
+                graph.change_weight = different_device_weight
+        except Exception:
+            graph.change_weight = 1.0
 
 
 def graphs_from_synthetic(snapshots: list[dict]) -> tuple[list[BonsaiGraphData], ArchiveStats]:

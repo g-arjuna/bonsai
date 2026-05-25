@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
+use tracing::{info, warn};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
@@ -688,6 +689,84 @@ pub async fn cancel_ml_job_handler(
     }
 }
 
+/// POST /api/ml/jobs/:id/retry — EV1-5 T6 dead-letter retry
+pub async fn retry_ml_job_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let db = state.store.db();
+    let write_lock = state.store.write_lock();
+    let ml_bus = state.ml_event_bus.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let _g = write_lock.lock().expect("write lock poisoned");
+        let conn = Connection::new(&db)?;
+        let now = now_ns();
+        let mut check = conn.prepare("MATCH (j:MlJobRun {id: $id}) RETURN j.job_type")?;
+        let row = conn.execute(&mut check, vec![("id", Value::String(id.clone()))])?
+            .next();
+        let job_type = match row {
+            Some(r) => match &r[0] { Value::String(s) => s.clone(), _ => String::new() },
+            None => return Err(anyhow::anyhow!("job run {id} not found")),
+        };
+        let mut stmt = conn.prepare(
+            "MATCH (j:MlJobRun {id: $id}) SET j.status = 'pending', j.completed_at_ns = 0, \
+             j.error_message = '', j.started_at_ns = $now",
+        )?;
+        conn.execute(&mut stmt, vec![
+            ("id", Value::String(id.clone())),
+            ("now", Value::Int64(now)),
+        ])?;
+        Ok::<_, anyhow::Error>((id, job_type))
+    })
+    .await;
+
+    match result {
+        Ok(Ok((id, job_type))) => {
+            let _ = ml_bus.publish(MlEvent::JobRetryRequested {
+                run_id: id.clone(),
+                job_type,
+            });
+            (StatusCode::OK, Json(serde_json::json!({"ok": true, "id": id}))).into_response()
+        }
+        Ok(Err(e)) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// GET /api/ml/jobs/dead-letter — list MlJobRun records in dead_letter status (EV1-5 T6)
+pub async fn list_dead_letter_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let db = state.store.db();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db)?;
+        let rows = conn.query(
+            "MATCH (j:MlJobRun) WHERE j.status = 'dead_letter' \
+             RETURN j.id, j.job_type, j.started_at_ns, j.error_message, j.config_json \
+             ORDER BY j.started_at_ns DESC LIMIT 100",
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .map(|r| {
+            let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
+            let n = |v: &Value| match v { Value::Int64(n) => *n, _ => 0 };
+            serde_json::json!({
+                "id": s(&r[0]),
+                "job_type": s(&r[1]),
+                "failed_at_ns": n(&r[2]),
+                "error_message": s(&r[3]),
+                "config_json": s(&r[4]),
+            })
+        })
+        .collect::<Vec<_>>();
+        Ok::<_, anyhow::Error>(rows)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(rows)) => (StatusCode::OK, Json(serde_json::json!({"dead_letter": rows}))).into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 // ── ML job schedules ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -813,6 +892,175 @@ pub async fn delete_ml_schedule_handler(
         Ok(Ok(())) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// ── EV1-2 T4: Default schedule seeding + scheduler tick loop ──────────────────
+
+/// Default `MlJobSchedule` records seeded at startup if not already present.
+/// Each entry: (id, job_id, cron_expr, enabled).
+/// cron_expr is a simplified "H H * * *" / "H H * * 0" string — the tick
+/// loop interprets only the hour field for daily/weekly/N-hourly schedules.
+const DEFAULT_SCHEDULES: &[(&str, &str, &str)] = &[
+    ("sched-anomaly_export",     "anomaly_export",     "0 2 * * *"),   // daily 02:00 UTC
+    ("sched-remediation_export", "remediation_export", "0 2 * * 0"),   // weekly Sun 02:00 UTC
+    ("sched-gnn_snapshot",       "gnn_snapshot",       "0 */4 * * *"), // every 4h
+];
+
+/// Seed the three default export schedules (idempotent — skips existing rows).
+pub fn seed_default_ml_schedules(db: Arc<lbug::Database>, write_lock: Arc<std::sync::Mutex<()>>) {
+    let db = db.clone();
+    let wl = write_lock.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let _g = wl.lock().expect("write lock poisoned");
+        let conn = match Connection::new(&db) {
+            Ok(c) => c,
+            Err(e) => { warn!("seed_default_ml_schedules: cannot open connection: {e}"); return; }
+        };
+        let now = now_ns();
+        for (id, job_id, cron_expr) in DEFAULT_SCHEDULES {
+            let mut check = match conn.prepare("MATCH (s:MlJobSchedule {id: $id}) RETURN s.id") {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let exists = conn.execute(&mut check, vec![("id", Value::String(id.to_string()))])
+                .map(|mut r| r.next().is_some())
+                .unwrap_or(false);
+            if exists {
+                continue;
+            }
+            let mut stmt = match conn.prepare(
+                "CREATE (:MlJobSchedule {id: $id, job_id: $jid, cron_expr: $ce, enabled: 1, \
+                 last_modified_by: 'system', last_modified_at_ns: $now})",
+            ) {
+                Ok(s) => s,
+                Err(e) => { warn!("seed_default_ml_schedules: prepare failed: {e}"); continue; }
+            };
+            if let Err(e) = conn.execute(&mut stmt, vec![
+                ("id", Value::String(id.to_string())),
+                ("jid", Value::String(job_id.to_string())),
+                ("ce", Value::String(cron_expr.to_string())),
+                ("now", Value::Int64(now)),
+            ]) {
+                warn!("seed_default_ml_schedules: insert {id} failed: {e}");
+            } else {
+                info!("seeded default ML schedule: id={id} cron={cron_expr}");
+            }
+        }
+    });
+}
+
+/// Minimal cron-window check for the hourly tick.
+/// Returns true if the schedule's next fire time has been reached since `last_run_ns`.
+/// Supports: "H H * * *" (daily at H UTC), "H H * * W" (weekly), "H */N * * *" (every N hours).
+fn cron_should_fire(cron_expr: &str, last_run_ns: i64, now_ns: i64) -> bool {
+    let now_secs = now_ns / 1_000_000_000;
+    let last_secs = last_run_ns / 1_000_000_000;
+    let fields: Vec<&str> = cron_expr.split_whitespace().collect();
+    if fields.len() < 5 {
+        return false;
+    }
+    let hour_field = fields[1];
+    // Every N hours: "*/N"
+    if let Some(n_str) = hour_field.strip_prefix("*/") {
+        if let Ok(n) = n_str.parse::<i64>() {
+            let interval_secs = n * 3600;
+            return now_secs - last_secs >= interval_secs;
+        }
+    }
+    // Daily or weekly: specific hour
+    if let Ok(target_hour) = hour_field.parse::<i64>() {
+        let interval_secs = if fields[4] == "*" { 86400 } else { 86400 * 7 };
+        let now_hour = (now_secs % 86400) / 3600;
+        let elapsed = now_secs - last_secs;
+        return elapsed >= interval_secs && now_hour == target_hour;
+    }
+    false
+}
+
+/// Background scheduler tick loop. Runs hourly; fires enabled ML schedules
+/// whose cron window has elapsed by creating a `MlJobRun` record (status=pending)
+/// and publishing an `MlScheduledJobFired` event on the ML event bus.
+/// The Python export_job.py worker picks up `pending` jobs and executes them.
+pub async fn run_ml_schedule_tick(
+    db: std::sync::Arc<lbug::Database>,
+    write_lock: std::sync::Arc<std::sync::Mutex<()>>,
+    ml_bus: std::sync::Arc<crate::ml_event_bus::MlEventBus>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+    interval.tick().await; // consume immediate tick
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => {
+                info!("ml_schedule_tick: shutdown received");
+                return;
+            }
+            _ = interval.tick() => {}
+        }
+        let db2 = db.clone();
+        let wl = write_lock.clone();
+        let bus = ml_bus.clone();
+        let now = now_ns();
+        let _ = tokio::task::spawn_blocking(move || {
+            let conn = match Connection::new(&db2) {
+                Ok(c) => c,
+                Err(e) => { warn!("ml_schedule_tick: open conn: {e}"); return; }
+            };
+            let rows: Vec<MlJobScheduleRecord> = conn.query(
+                "MATCH (s:MlJobSchedule) WHERE s.enabled = 1 \
+                 RETURN s.id, s.job_id, s.cron_expr, s.enabled, s.last_modified_by, s.last_modified_at_ns",
+            )
+            .map(|r| r.map(|row| schedule_from_row(&row)).collect())
+            .unwrap_or_default();
+
+            for sched in rows {
+                // Get last run time for this schedule from MlJobRun records
+                let last_run_ns: i64 = conn.query(&format!(
+                    "MATCH (j:MlJobRun {{job_type: '{}'}}) \
+                     RETURN j.started_at_ns ORDER BY j.started_at_ns DESC LIMIT 1",
+                    sched.job_id
+                ))
+                .ok()
+                .and_then(|mut r| r.next())
+                .and_then(|row| if let Value::Int64(n) = &row[0] { Some(*n) } else { None })
+                .unwrap_or(0);
+
+                if !cron_should_fire(&sched.cron_expr, last_run_ns, now) {
+                    continue;
+                }
+
+                // Create a pending MlJobRun
+                let run_id = Uuid::new_v4().to_string();
+                let _g = wl.lock().expect("write lock poisoned");
+                let mut stmt = match conn.prepare(
+                    "CREATE (:MlJobRun {id: $id, job_type: $jt, started_at_ns: $now, \
+                     completed_at_ns: 0, status: 'pending', trigger: 'scheduler', \
+                     input_parquet_id: '', output_model_path: '', \
+                     val_auc: 0.0, val_f1: 0.0, error_message: '', config_json: '{}'})",
+                ) {
+                    Ok(s) => s,
+                    Err(e) => { warn!("ml_schedule_tick: prepare MlJobRun: {e}"); continue; }
+                };
+                if let Err(e) = conn.execute(&mut stmt, vec![
+                    ("id", Value::String(run_id.clone())),
+                    ("jt", Value::String(sched.job_id.clone())),
+                    ("now", Value::Int64(now)),
+                ]) {
+                    warn!("ml_schedule_tick: create MlJobRun for {}: {e}", sched.job_id);
+                    continue;
+                }
+
+                info!("ml_schedule_tick: fired job_type={} run_id={run_id}", sched.job_id);
+                let _ = bus.publish(crate::ml_event_bus::MlEvent::MlScheduledJobFired {
+                    run_id: run_id.clone(),
+                    job_type: sched.job_id.clone(),
+                    schedule_id: sched.id.clone(),
+                    fired_at_ns: now,
+                });
+            }
+        }).await;
     }
 }
 
@@ -1343,6 +1591,133 @@ pub async fn ml_lineage_handler(
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+// ── Semantic similarity search ────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct SimilarEventsQuery {
+    pub event_id: String,
+    pub limit: Option<usize>,
+    pub min_similarity: Option<f64>,
+}
+
+/// GET /api/ml/similar-events?event_id=X&limit=N&min_similarity=0.7
+///
+/// Returns the top-K most similar events to the given event_id using cosine
+/// similarity over EventEmbedding vector_json fields.  Runs in-process (no
+/// external vector DB required).
+pub async fn ml_similar_events_handler(
+    State(state): State<AppState>,
+    Query(q): Query<SimilarEventsQuery>,
+) -> impl IntoResponse {
+    let db = state.store.db();
+    let event_id = q.event_id.clone();
+    let limit = q.limit.unwrap_or(10).min(50);
+    let min_sim = q.min_similarity.unwrap_or(0.0);
+
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db)?;
+
+        // 1. Fetch the query embedding
+        let mut qstmt = conn.prepare(
+            "MATCH (emb:EventEmbedding {event_id: $eid}) \
+             RETURN emb.vector_json, emb.dim, emb.model_name \
+             LIMIT 1",
+        )?;
+        let query_row = conn.execute(&mut qstmt, vec![("eid", Value::String(event_id.clone()))])?
+            .next();
+
+        let query_row = match query_row {
+            Some(r) => r,
+            None => return Ok::<_, anyhow::Error>(serde_json::json!({
+                "error": "event not found or not embedded",
+                "similar": []
+            })),
+        };
+
+        let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
+        let query_vec_json = s(&query_row[0]);
+        let model_name = s(&query_row[2]);
+
+        let query_vec: Vec<f64> = serde_json::from_str(&query_vec_json)
+            .map_err(|e| anyhow::anyhow!("invalid query vector json: {e}"))?;
+        let q_norm = cosine_norm(&query_vec);
+
+        if q_norm == 0.0 {
+            return Ok(serde_json::json!({"similar": []}));
+        }
+
+        // 2. Fetch all embeddings from the same model (excluding self)
+        let all_rows = conn.query(&format!(
+            "MATCH (emb:EventEmbedding) \
+             WHERE emb.event_id <> '{}' AND emb.model_name = '{}' \
+             RETURN emb.event_id, emb.vector_json, emb.event_type, emb.computed_at_ns \
+             LIMIT 5000",
+            event_id.replace('\'', ""),
+            model_name.replace('\'', ""),
+        ))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        let s2 = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
+        let n2 = |v: &Value| match v { Value::Int64(n) => *n, _ => 0 };
+
+        let mut scored: Vec<(f64, String, String, i64)> = Vec::new();
+        for row in all_rows {
+            let cand_event_id = s2(&row[0]);
+            let cand_vec_json = s2(&row[1]);
+            let event_type = s2(&row[2]);
+            let computed_at = n2(&row[3]);
+            if let Ok(cand_vec) = serde_json::from_str::<Vec<f64>>(&cand_vec_json) {
+                let sim = cosine_similarity(&query_vec, q_norm, &cand_vec);
+                if sim >= min_sim {
+                    scored.push((sim, cand_event_id, event_type, computed_at));
+                }
+            }
+        }
+
+        // 3. Sort descending, take top-K
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+
+        let similar: Vec<_> = scored.into_iter().map(|(sim, eid, etype, cat)| {
+            serde_json::json!({
+                "event_id": eid,
+                "event_type": etype,
+                "similarity": (sim * 10000.0).round() / 10000.0,
+                "computed_at_ns": cat,
+            })
+        }).collect();
+
+        Ok(serde_json::json!({
+            "query_event_id": event_id,
+            "model_name": model_name,
+            "similar": similar,
+        }))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(body)) => (StatusCode::OK, Json(body)).into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+fn cosine_norm(v: &[f64]) -> f64 {
+    v.iter().map(|x| x * x).sum::<f64>().sqrt()
+}
+
+fn cosine_similarity(a: &[f64], a_norm: f64, b: &[f64]) -> f64 {
+    if a.len() != b.len() || a_norm == 0.0 {
+        return 0.0;
+    }
+    let b_norm = cosine_norm(b);
+    if b_norm == 0.0 {
+        return 0.0;
+    }
+    let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    dot / (a_norm * b_norm)
 }
 
 /// GET /api/gnn/inference-results?device_address=X&since_ns=N

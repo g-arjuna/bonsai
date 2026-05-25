@@ -545,6 +545,39 @@ pub(super) async fn governance_state_handler(State(state): State<AppState>) -> i
             .into_response(),
     }
 }
+
+/// EV1-5 T7: GET /api/governance/pressure
+///
+/// Returns a lightweight pressure summary for the Python ML job engine.
+/// The sidecar polls this every 30s and pauses heavy ML jobs (training,
+/// clustering) when `should_shed` is true. Inference and embedding workers
+/// continue running (smaller footprint).
+pub(super) async fn governance_pressure_handler(State(state): State<AppState>) -> impl IntoResponse {
+    match &state.governor {
+        Some(g) => {
+            let write_pressure = g.write_pressure_active();
+            let memory_pressure = g.memory_pressure_active();
+            let rate_shedding = g.is_shedding();
+            let should_shed = g.should_shed();
+            (StatusCode::OK, Json(serde_json::json!({
+                "write_pressure": write_pressure,
+                "memory_pressure": memory_pressure,
+                "rate_shedding": rate_shedding,
+                "should_shed": should_shed,
+            }))).into_response()
+        }
+        None => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "write_pressure": false,
+                "memory_pressure": false,
+                "rate_shedding": false,
+                "should_shed": false,
+            })),
+        )
+            .into_response(),
+    }
+}
 pub(super) async fn sidecars_handler(State(state): State<AppState>) -> Json<SidecarsResponse> {
     let sidecars = state.sidecar_registry.snapshot().await;
     let required_kinds = state.sidecar_registry.required_kinds().await;

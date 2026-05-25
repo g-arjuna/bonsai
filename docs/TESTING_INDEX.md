@@ -4,6 +4,46 @@ This document provides an overview of all Bonsai testing guides and helps you se
 
 ## Testing Guides by Scope
 
+### 0. EV1 ML Pipeline Testing (EV1_UBUNTU_TESTING_GUIDE.md)
+**Location**: `docs/EV1_UBUNTU_TESTING_GUIDE.md`
+
+**Purpose**: End-to-end validation of EV1 ML Intelligence features — STGNN, Parquet pipeline, semantic embeddings, BonPy MLOps UI, and rule management.
+
+**Scope**:
+- Device onboarding: PyATS/Genie automated + manual API methods
+- gNMI, syslog, SNMP multi-source correlation baseline
+- Python sidecar startup, graceful shutdown, health/Prometheus endpoints
+- ML job engine (APScheduler): schedule management, manual triggers, cancel, SSE progress
+- Parquet export pipeline: incremental export, quality gate, validator, catalog
+- STGNN training: NCT pretrain → supervised finetune → conformal calibration → model registry
+- STGNN live inference: snapshot buffer, GNN inference write-back, attention weights to graph
+- Semantic embeddings: syslog + config embedding workers, similarity search, clustering
+- BonPy MLOps console: all 8 routes — Dashboard, Jobs, Models, Exports, GNN, Embeddings, Rules, Detections
+- DB-backed rule management: enable/disable, parameter overrides, shadow mode, syslog rule from UI
+- Playbook DB migration, creation, and execution tracking
+- Change management integration: change-correlated detections, CW-GNN validation
+- End-to-end ML fault cycle: fault → detection → GNN anomaly → investigation → remediation
+- Final validation scorecard (automated pass/fail script)
+
+**Prerequisites**:
+- Ubuntu host with Docker 24+, ContainerLab ≥0.54, Python 3.12+
+- Python ML deps: `sentence-transformers torch torch-geometric apscheduler pyarrow scikit-learn hdbscan`
+- cargo build --release + ui builds (including ui-bonpy)
+
+**Source parts** (auto-merged):
+- `ev1/ev1-testing-part1.md` — Infra, onboarding, core signals (Phases 0–8)
+- `ev1/ev1-testing-part2.md` — ML pipeline, GNN, embeddings (Phases 9–16)
+- `ev1/ev1-testing-part3.md` — BonPy UI, rules, E2E (Phases 17–22)
+
+**Regenerate**: `python3 ev1/merge_ev1_testing.py`
+
+**Run when**:
+- After any EV1 ML code changes
+- Before Ubuntu ops handoff
+- For full regression testing including ML pipeline
+
+---
+
 ### 1. Signal Receiver Testing (UBUNTU_TESTING_GUIDE.md)
 **Location**: `lab/signal-test-lab/UBUNTU_TESTING_GUIDE.md`
 
@@ -176,6 +216,6 @@ When reporting test results, include:
 ## Related Documentation
 
 - `docs/testing_discipline.md` - General testing philosophy and practices
-- `docs/SPRINT_4_TESTING_RESULTS.md` - Historical test results from Sprint 4
+- `docs/EV1_UBUNTU_TESTING_GUIDE.md` - EV1 ML pipeline testing (current)
 - `docs/HA_READINESS.md` - HA architecture design (if exists)
 - `DECISIONS.md` - Architectural decision records

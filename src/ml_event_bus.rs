@@ -79,6 +79,22 @@ pub enum MlEvent {
         queue_capacity: i64,
         drops_total: i64,
     },
+    JobDeadLetter {
+        job_id: String,
+        job_type: String,
+        retries: i64,
+        error: String,
+    },
+    JobRetryRequested {
+        run_id: String,
+        job_type: String,
+    },
+    MlScheduledJobFired {
+        run_id: String,
+        job_type: String,
+        schedule_id: String,
+        fired_at_ns: i64,
+    },
 }
 
 /// Shared broadcast channel for ML events.

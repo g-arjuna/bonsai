@@ -114,6 +114,7 @@ class BonsaiGraphData:
     edge_types: list[str]
     snapshot_ns: int
     metadata: dict[str, Any] = field(default_factory=dict)
+    change_weight: float = 1.0
 
     def validate(self) -> None:
         if self.x.ndim != 2:

@@ -35,6 +35,12 @@ pub struct InvestigationTriggerConfig {
     pub enabled: bool,
     /// Base URL of the bonsai HTTP server (e.g. "http://127.0.0.1:8080").
     pub base_url: String,
+    /// Minimum (anomaly_score − uncertainty_margin) for GNN detections.
+    /// When > 0.0, a detection is only escalated if the GNN score is
+    /// confidently above this threshold after subtracting the uncertainty
+    /// margin produced by MC-Dropout or conformal calibration.
+    /// 0.0 = no gating (all GNN detections above severity threshold fire).
+    pub gnn_uncertainty_threshold: f64,
 }
 
 /// Run the investigation trigger loop. Call this once at startup; it runs
@@ -110,6 +116,30 @@ pub async fn run_investigation_trigger(
                 if !AUTO_INVESTIGATE_SEVERITIES.iter().any(|s| s.eq_ignore_ascii_case(severity)) {
                     debug!(detection_id, severity, "skipping auto-investigation (severity below threshold)");
                     continue;
+                }
+
+                // EV1-8 T6: Uncertainty-gated triggering.
+                // For gnn_anomaly detections, check that anomaly_score − uncertainty_margin
+                // exceeds the configured threshold. This avoids false investigations when
+                // the model is uncertain (e.g. graph topology is partially observed).
+                if config.gnn_uncertainty_threshold > 0.0 {
+                    let rule_id = detail["rule_id"].as_str().unwrap_or_default();
+                    if rule_id == "gnn_anomaly" {
+                        let anomaly_score = detail["anomaly_score"].as_f64().unwrap_or(1.0);
+                        let uncertainty_margin = detail["uncertainty_margin"].as_f64().unwrap_or(0.0);
+                        let net_score = anomaly_score - uncertainty_margin;
+                        if net_score < config.gnn_uncertainty_threshold {
+                            debug!(
+                                detection_id,
+                                anomaly_score,
+                                uncertainty_margin,
+                                net_score,
+                                threshold = config.gnn_uncertainty_threshold,
+                                "skipping gnn_anomaly investigation (score within uncertainty margin)"
+                            );
+                            continue;
+                        }
+                    }
                 }
 
                 // Dedup: skip if already in flight.

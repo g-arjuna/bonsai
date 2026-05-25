@@ -64,6 +64,26 @@ class JobState(str, Enum):
     succeeded = "succeeded"
     failed = "failed"
     cancelled = "cancelled"
+    dead_letter = "dead_letter"
+
+
+@dataclass
+class DeadLetterJob:
+    """A job that has exhausted all retries."""
+    job_id: str
+    run_record_id: str
+    error_message: str
+    failed_at: float
+    retry_count: int
+
+    def to_dict(self) -> dict:
+        return {
+            "job_id": self.job_id,
+            "run_record_id": self.run_record_id,
+            "error_message": self.error_message,
+            "failed_at": self.failed_at,
+            "retry_count": self.retry_count,
+        }
 
 
 @dataclass
@@ -116,6 +136,7 @@ class BonsaiJobEngine:
         self._job_statuses: dict[str, JobStatus] = {}
         self._dependency_chains: list[dict] = []
         self._retry_counts: dict[str, int] = {}
+        self._dead_letter: list[DeadLetterJob] = []
         self._shedding_heavy: bool = False
         self._metrics: Optional[Any] = None
         self._running = False
@@ -163,6 +184,18 @@ class BonsaiJobEngine:
 
     def list_jobs(self) -> list[JobStatus]:
         return list(self._job_statuses.values())
+
+    def list_dead_letter(self) -> list[DeadLetterJob]:
+        """Return all jobs currently in the dead-letter queue."""
+        return list(self._dead_letter)
+
+    def retry_dead_letter(self, job_id: str) -> bool:
+        """Operator-initiated retry of a dead-letter job. Clears it from the queue."""
+        self._dead_letter = [d for d in self._dead_letter if d.job_id != job_id]
+        self._retry_counts[job_id] = 0
+        if job_id in self._job_statuses:
+            self._job_statuses[job_id].state = JobState.idle
+        return self.trigger_job(job_id)
 
     def on_job_success_trigger(
         self,
@@ -374,7 +407,20 @@ class BonsaiJobEngine:
             log.error(
                 "JobEngine: %s exhausted %d retries — moving to dead-letter", job_id, MAX_RETRIES
             )
-            self._emit_ml_event("job_dead_letter", {"job_id": job_id, "retries": retries})
+            status = self._job_statuses.get(job_id)
+            dlj = DeadLetterJob(
+                job_id=job_id,
+                run_record_id=status.run_record_id if status else "",
+                error_message=status.error_message if status else "",
+                failed_at=time.time(),
+                retry_count=retries,
+            )
+            self._dead_letter = [d for d in self._dead_letter if d.job_id != job_id]
+            self._dead_letter.append(dlj)
+            if status:
+                status.state = JobState.dead_letter
+            self._emit_ml_event("job_dead_letter", {"job_id": job_id, "retries": retries,
+                                                      "error": dlj.error_message})
             return
 
         delay = RETRY_DELAYS[min(retries, len(RETRY_DELAYS) - 1)]
@@ -426,6 +472,27 @@ class BonsaiJobEngine:
         while self._running:
             await asyncio.sleep(SCHEDULE_POLL_INTERVAL)
             await self._load_schedules_from_api()
+            await self._poll_pending_retries()
+
+    async def _poll_pending_retries(self) -> None:
+        """Check /api/ml/jobs/dead-letter and retrigger any jobs that have been reset to pending."""
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.api_url}/api/ml/jobs/dead-letter",
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    if not resp.ok:
+                        return
+                    data = await resp.json()
+                    for entry in data.get("dead_letter", []):
+                        job_type = entry.get("job_type", "")
+                        if job_type in self._job_registry:
+                            log.info("JobEngine: retriggering dead-letter job %s", job_type)
+                            self.retry_dead_letter(job_type)
+        except Exception as exc:
+            log.debug("_poll_pending_retries: %s", exc)
 
     async def _create_job_run_record(self, job_id: str) -> str:
         try:

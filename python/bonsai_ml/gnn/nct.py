@@ -35,6 +35,111 @@ NCT_DEFAULT_NEGATIVE_SAMPLES = 16
 NCT_GRAD_CLIP_NORM = 1.0
 NCT_LR_WARMUP_STEPS = 100
 
+# Device feature indices that are structural (vendor/role OHE) and must NOT be perturbed.
+# Indices 1-6: vendor OHE (6 vendors), 7-18: role OHE (12 roles).
+# These are read-only identity features — perturbing them changes node identity.
+STRUCTURAL_FEATURE_INDICES: tuple[int, ...] = tuple(range(1, 19))
+
+
+@dataclass
+class NoiseLevel:
+    """Parameters for one noise curriculum phase."""
+    edge_drop_prob: float = 0.0
+    feature_perturb_prob: float = 0.0
+    feature_perturb_scale: float = 0.2
+    spurious_edge_prob: float = 0.0
+
+
+@dataclass
+class NoiseSchedule:
+    """Three-phase noise curriculum for NCT pre-training.
+
+    Phase 1 (epochs 1-10):  light  — drop 5% of edges.
+    Phase 2 (epochs 11-30): medium — drop 15% edges + perturb 10% features ±0.2.
+    Phase 3 (epoch 31+):    heavy  — drop 30% edges + perturb 20% features
+                                     + add 5% spurious edges.
+
+    Curriculum rationale: starting heavy makes the model resist structure
+    entirely; the warm-up forces it to first learn coarse topology, then
+    fine-grained operational features.
+    """
+    light:  NoiseLevel = None  # type: ignore[assignment]
+    medium: NoiseLevel = None  # type: ignore[assignment]
+    heavy:  NoiseLevel = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.light is None:
+            self.light  = NoiseLevel(edge_drop_prob=0.05)
+        if self.medium is None:
+            self.medium = NoiseLevel(edge_drop_prob=0.15, feature_perturb_prob=0.10)
+        if self.heavy is None:
+            self.heavy  = NoiseLevel(edge_drop_prob=0.30, feature_perturb_prob=0.20,
+                                     spurious_edge_prob=0.05)
+
+    def for_epoch(self, epoch: int) -> NoiseLevel:
+        """Return the NoiseLevel applicable for the given 0-indexed epoch."""
+        if epoch < 10:
+            return self.light
+        if epoch < 30:
+            return self.medium
+        return self.heavy
+
+
+class NodeFeatureInvariance:
+    """Applies feature perturbation while preserving structural (invariant) features.
+
+    Structural features (vendor OHE, role OHE at indices 1-18) identify WHAT
+    a device is — they must not be perturbed because perturbing them changes
+    node identity, not operational state.
+
+    Only operational features (cpu_util, memory, uptime, error rates, etc.)
+    at indices outside the protected set are perturbed.
+
+    Args:
+        protected_indices: Feature column indices that must remain unmodified.
+            Defaults to STRUCTURAL_FEATURE_INDICES (vendor+role OHE).
+        perturb_scale: Gaussian noise std-dev applied to non-protected features.
+    """
+
+    def __init__(
+        self,
+        protected_indices: tuple[int, ...] = STRUCTURAL_FEATURE_INDICES,
+        perturb_scale: float = 0.2,
+    ) -> None:
+        self.protected = set(protected_indices)
+        self.perturb_scale = perturb_scale
+
+    def perturb(self, x: Any, prob: float) -> Any:
+        """Return a perturbed copy of node feature matrix x.
+
+        Each non-protected feature column is independently perturbed with
+        probability `prob`, adding Gaussian noise N(0, perturb_scale).
+        Protected columns are copied unchanged.
+
+        Args:
+            x: (N, F) float tensor of node features.
+            prob: Per-column perturbation probability in [0, 1].
+
+        Returns:
+            Perturbed copy of x (same shape, same dtype, same device).
+        """
+        if prob <= 0.0:
+            return x
+        try:
+            import torch
+        except ImportError:
+            return x
+
+        x_out = x.clone()
+        num_features = x.shape[1]
+        for col in range(num_features):
+            if col in self.protected:
+                continue
+            if random.random() < prob:
+                noise = torch.randn(x.shape[0], device=x.device) * self.perturb_scale
+                x_out[:, col] = x_out[:, col] + noise
+        return x_out
+
 
 @dataclass
 class NctConfig:
@@ -47,6 +152,11 @@ class NctConfig:
     lr_warmup_steps: int = NCT_LR_WARMUP_STEPS
     min_snapshots: int = MIN_SNAPSHOTS_FOR_NCT
     checkpoint_path: str = "models/nct_pretrain.pt"
+    noise_schedule: NoiseSchedule = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.noise_schedule is None:
+            self.noise_schedule = NoiseSchedule()
 
 
 @dataclass
@@ -71,10 +181,40 @@ class NodePairSampler:
     adjacent. These should have dissimilar embeddings.
 
     The sampler operates on device nodes only (most anomaly-relevant type).
+
+    EV1-8 T2 — Disconnected subgraph handling:
+    Isolated nodes (degree = 0 across ALL device-device edge types) are
+    EXCLUDED from positive pair sampling — no positive pair can be
+    constructed from an isolated node. They remain valid negative samples
+    (any non-neighbour is a valid negative for any anchor).
     """
 
     def __init__(self, negative_ratio: int = NCT_DEFAULT_NEGATIVE_SAMPLES) -> None:
         self.negative_ratio = negative_ratio
+
+    def _compute_degrees(self, hetero_data: Any, num_devices: int) -> list[int]:
+        """Return per-device degree (count of device-device edges, both directions)."""
+        degrees = [0] * num_devices
+        for edge_type in hetero_data.edge_types:
+            src_type, rel, dst_type = edge_type
+            if src_type != "device" or dst_type != "device":
+                continue
+            try:
+                ei = hetero_data[src_type, rel, dst_type].edge_index
+            except (KeyError, AttributeError):
+                continue
+            if ei is None or ei.shape[1] == 0:
+                continue
+            ei_cpu = ei.cpu()
+            for i in range(ei_cpu.shape[1]):
+                src_idx = int(ei_cpu[0, i])
+                dst_idx = int(ei_cpu[1, i])
+                if src_idx != dst_idx:
+                    if src_idx < num_devices:
+                        degrees[src_idx] += 1
+                    if dst_idx < num_devices:
+                        degrees[dst_idx] += 1
+        return degrees
 
     def sample(self, hetero_data: Any) -> tuple[Any, Any, Any]:
         """Return (anchors, positives, negatives) index tensors for device nodes.
@@ -82,6 +222,9 @@ class NodePairSampler:
         Returns three 1D long tensors of equal length, where:
         - anchors[i] and positives[i] are adjacent device pairs (positive)
         - anchors[i] and negatives[i] are non-adjacent device pairs (negative)
+
+        Isolated nodes (degree=0) are excluded from positive pair sampling
+        per EV1-8 T2. All nodes (including isolated) may appear as negatives.
 
         If torch is unavailable, raises RuntimeError immediately.
         """
@@ -94,6 +237,9 @@ class NodePairSampler:
         if num_devices < 2:
             empty = torch.zeros(0, dtype=torch.long)
             return empty, empty, empty
+
+        degrees = self._compute_degrees(hetero_data, num_devices)
+        connected_indices = [i for i, d in enumerate(degrees) if d > 0]
 
         pos_edges: list[tuple[int, int]] = []
 
@@ -124,16 +270,17 @@ class NodePairSampler:
         positives: list[int] = []
         negatives: list[int] = []
 
-        device_indices = list(range(num_devices))
+        # All device indices are valid negatives (including isolated nodes).
+        all_indices = list(range(num_devices))
 
         for anchor, positive in pos_edges:
             anchors.append(anchor)
             positives.append(positive)
             for _ in range(self.negative_ratio):
-                candidate = random.choice(device_indices)
+                candidate = random.choice(all_indices)
                 attempts = 0
                 while (candidate == anchor or (anchor, candidate) in pos_set) and attempts < 20:
-                    candidate = random.choice(device_indices)
+                    candidate = random.choice(all_indices)
                     attempts += 1
                 negatives.append(candidate)
                 anchors.append(anchor)
@@ -145,6 +292,21 @@ class NodePairSampler:
         negatives_t = torch.tensor(negatives[:n], dtype=torch.long)
 
         return anchors_t, positives_t, negatives_t
+
+    def isolated_nodes(self, hetero_data: Any) -> list[int]:
+        """Return indices of isolated device nodes (degree=0).
+
+        These nodes apply mean-field approximation during NCT — they are
+        embedded using only node features, skipping message passing.
+        Exposed for external use by training pipelines that need to mask
+        isolated nodes from the GRU temporal encoder.
+        """
+        try:
+            num_devices = hetero_data["device"].x.shape[0]
+        except (AttributeError, KeyError):
+            return []
+        degrees = self._compute_degrees(hetero_data, num_devices)
+        return [i for i, d in enumerate(degrees) if d == 0]
 
 
 class NCTLoss:
@@ -269,6 +431,8 @@ def pretrain_nct(
 
     sampler = NodePairSampler(negative_ratio=config.negative_samples)
     nct_loss_fn = NCTLoss(temperature=config.temperature)
+    noise_schedule = config.noise_schedule
+    feature_invariance = NodeFeatureInvariance()
 
     best_loss = float("inf")
     step = 0
@@ -276,6 +440,7 @@ def pretrain_nct(
     for epoch in range(config.epochs):
         model.train()
         epoch_losses: list[float] = []
+        noise_level = noise_schedule.for_epoch(epoch)
 
         snapshot_order = list(range(len(snapshots)))
         random.shuffle(snapshot_order)
@@ -288,6 +453,7 @@ def pretrain_nct(
             except (AttributeError, TypeError):
                 pass
 
+            snapshot = _apply_noise(snapshot, noise_level, feature_invariance)
             anchors, positives, negatives = sampler.sample(snapshot)
 
             if anchors.shape[0] == 0:
@@ -370,3 +536,64 @@ def pretrain_nct(
         epochs_completed=config.epochs,
         checkpoint_path=str(checkpoint_path),
     )
+
+
+def _apply_noise(
+    snapshot: Any,
+    noise: NoiseLevel,
+    feature_invariance: NodeFeatureInvariance,
+) -> Any:
+    """Return a noise-corrupted copy of a HeteroData snapshot.
+
+    Applies three independent corruptions controlled by `noise`:
+    1. Edge dropping  — randomly remove edges from all edge stores.
+    2. Feature perturbation — add Gaussian noise to operational node features
+       via NodeFeatureInvariance (structural features protected).
+    3. Spurious edge insertion — add random edges to device-device relation.
+
+    The original snapshot object is not modified.
+    """
+    try:
+        import torch
+        from torch_geometric.data import HeteroData
+    except ImportError:
+        return snapshot
+
+    noisy = HeteroData()
+
+    for node_type in snapshot.node_types:
+        store = snapshot[node_type]
+        if hasattr(store, "x") and store.x is not None:
+            x = feature_invariance.perturb(store.x, noise.feature_perturb_prob)
+            noisy[node_type].x = x
+        if hasattr(store, "y") and store.y is not None:
+            noisy[node_type].y = store.y
+        if hasattr(store, "node_ids"):
+            noisy[node_type].node_ids = store.node_ids
+
+    for edge_type in snapshot.edge_types:
+        src_type, rel, dst_type = edge_type
+        try:
+            ei = snapshot[src_type, rel, dst_type].edge_index
+        except (KeyError, AttributeError):
+            continue
+        if ei is None or ei.shape[1] == 0:
+            noisy[src_type, rel, dst_type].edge_index = ei
+            continue
+
+        if noise.edge_drop_prob > 0.0:
+            mask = torch.rand(ei.shape[1]) > noise.edge_drop_prob
+            ei = ei[:, mask]
+
+        if noise.spurious_edge_prob > 0.0 and src_type == "device" and dst_type == "device":
+            num_dev = snapshot["device"].x.shape[0] if hasattr(snapshot["device"], "x") else 0
+            if num_dev >= 2:
+                n_spurious = max(1, int(ei.shape[1] * noise.spurious_edge_prob))
+                src_rand = torch.randint(0, num_dev, (n_spurious,))
+                dst_rand = torch.randint(0, num_dev, (n_spurious,))
+                spurious = torch.stack([src_rand, dst_rand], dim=0)
+                ei = torch.cat([ei, spurious], dim=1)
+
+        noisy[src_type, rel, dst_type].edge_index = ei
+
+    return noisy

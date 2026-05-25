@@ -72,7 +72,7 @@ use observability::{topology_handler, path_handler, blast_radius_handler, detect
 use device::{device_detail_handler, device_enrichment_handler, device_enrichment_conflicts_handler, device_cmdb_handler, device_sensors_handler, device_optics_handler, device_config_history_handler, device_gnmi_readiness_handler, device_streaming_readiness_handler, device_recommendations_handler, yang_modules_handler, yang_search_handler, apply_device_selected_paths_handler, device_reparse_handler, profiles_handler, save_custom_profile_handler, enrichment_list_handler, enrichment_upsert_handler, enrichment_remove_handler, enrichment_test_handler, enrichment_run_handler, enrichment_audit_handler, netbox_import_handler};
 use device::InterfaceDetailJson;
 use managed_devices::{managed_devices_handler, discover_handler, credentials_handler, add_credential_handler, update_credential_handler, remove_credential_handler, test_credential_handler, add_managed_device_handler, add_managed_device_with_paths_handler, sites_handler, upsert_site_handler, site_summary_handler, remove_site_handler, remove_managed_device_handler, bulk_managed_device_action_handler, remove_impact_handler, bulk_import_handler, bootstrap_device_handler, device_seed_handler, bulk_bootstrap_handler};
-use governance::{assignment_override_handler, assignment_rules_handler, assignment_status_handler, collectors_handler, create_environment_handler, environments_handler, governance_state_handler, governance_history_handler, governance_profile_handler, health_handler, healthz_handler, readyz_handler, remove_environment_handler, assign_site_environment_handler, update_environment_handler, set_assignment_rules_handler, setup_status_handler, sidecars_handler, sidecar_status_handler, sidecar_rules_handler, sidecar_rule_toggle_handler, sidecar_rule_parameters_handler, patch_sidecar_rule_parameters_handler, sidecar_rule_shadow_mode_handler, sidecar_rule_analytics_handler, sidecar_rule_shadow_firings_handler, create_syslog_rule_handler, list_syslog_rules_handler};
+use governance::{assignment_override_handler, assignment_rules_handler, assignment_status_handler, collectors_handler, create_environment_handler, environments_handler, governance_state_handler, governance_history_handler, governance_pressure_handler, governance_profile_handler, health_handler, healthz_handler, readyz_handler, remove_environment_handler, assign_site_environment_handler, update_environment_handler, set_assignment_rules_handler, setup_status_handler, sidecars_handler, sidecar_status_handler, sidecar_rules_handler, sidecar_rule_toggle_handler, sidecar_rule_parameters_handler, patch_sidecar_rule_parameters_handler, sidecar_rule_shadow_mode_handler, sidecar_rule_analytics_handler, sidecar_rule_shadow_firings_handler, create_syslog_rule_handler, list_syslog_rules_handler};
 use outputs::{adapter_audit_handler, adapter_list_handler, adapter_remove_handler, adapter_test_handler, adapter_upsert_handler};
 use test_endpoints::{inject_detection_handler, parse_syslog_fixture_handler};
 use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler, get_ai_config_handler, post_ai_test_handler, list_ai_providers_handler, upsert_ai_provider_handler, remove_ai_provider_handler, test_ai_provider_handler, activate_ai_provider_handler, get_active_ai_provider_handler, reload_patterns_handler, mib_upload_handler, tsdb_config_handler, tsdb_query_handler, list_settings_handler, get_settings_section_handler, patch_settings_section_handler, export_settings_handler, list_certs_handler, upsert_cert_handler, get_cert_pem_handler, delete_cert_handler, verify_cert_path_handler, apply_cert_handler, list_applied_certs_handler};
@@ -93,7 +93,8 @@ use ml_jobs::{
     gnn_inference_results_handler, gnn_attention_handler, gnn_results_query_handler,
     events_unembedded_handler, events_embeddings_handler,
     devices_unembedded_config_handler, device_config_embedding_handler,
-    ml_embedding_stats_handler, ml_lineage_handler,
+    ml_embedding_stats_handler, ml_lineage_handler, ml_similar_events_handler,
+    retry_ml_job_handler, list_dead_letter_handler,
 };
 use playbooks::{
     list_playbooks_handler, get_playbook_handler, create_playbook_handler,
@@ -885,9 +886,9 @@ pub fn router(
     // see docs/architecture/sidecars.md. If `ui-bonpy/dist/` is missing (e.g.
     // a build that skipped the bonpy step), ServeDir returns 404 — bonsai UI
     // still works. Index fallback enables client-side routing within bonpy.
-    let bonpy_spa = ServeDir::new("ui-bonpy/dist")
+    let bonpy_spa = ServeDir::new("dist-bonpy")
         .not_found_service(tower_http::services::ServeFile::new(
-            "ui-bonpy/dist/index.html",
+            "dist-bonpy/index.html",
         ));
 
     Router::new()
@@ -964,6 +965,8 @@ fn ml_routes() -> Router<AppState> {
         .route("/api/ml/jobs", get(list_ml_jobs_handler).post(create_ml_job_handler))
         .route("/api/ml/jobs/{id}", patch(patch_ml_job_handler))
         .route("/api/ml/jobs/{id}/cancel", post(cancel_ml_job_handler))
+        .route("/api/ml/jobs/{id}/retry", post(retry_ml_job_handler))
+        .route("/api/ml/jobs/dead-letter", get(list_dead_letter_handler))
         .route("/api/ml/schedules", get(list_ml_schedules_handler).post(upsert_ml_schedule_handler))
         .route("/api/ml/schedules/{id}", axum::routing::delete(delete_ml_schedule_handler))
         .route("/api/ml/embeddings/stats", get(ml_embedding_stats_handler))
@@ -974,6 +977,7 @@ fn ml_routes() -> Router<AppState> {
         .route("/api/events/embeddings", post(events_embeddings_handler))
         .route("/api/devices/unembedded-config", get(devices_unembedded_config_handler))
         .route("/api/devices/{address}/config-embedding", post(device_config_embedding_handler))
+        .route("/api/ml/similar-events", get(ml_similar_events_handler))
 }
 
 fn ev1_playbook_routes() -> Router<AppState> {
@@ -1051,6 +1055,7 @@ fn governance_routes() -> Router<AppState> {
         .route("/api/governance/state", get(governance_state_handler))
         .route("/api/governance/history", get(governance_history_handler))
         .route("/api/governance/profile", post(governance_profile_handler))
+        .route("/api/governance/pressure", get(governance_pressure_handler))
 }
 
 fn remediation_routes() -> Router<AppState> {

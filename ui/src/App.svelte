@@ -158,6 +158,9 @@
               onclick={() => document.dispatchEvent(new KeyboardEvent('keydown', { ctrlKey: true, key: 'k', bubbles: true }))}>
         <span>⌨</span> Search <kbd>Ctrl+K</kbd>
       </button>
+      <a href="/bonpy/" class="ml-console-link" title="BonPy MLOps Console">
+        <span class="nav-icon" aria-hidden="true">🤖</span> ML Console
+      </a>
       <div class="density-row">
         <DensityToggle />
       </div>
@@ -251,6 +254,22 @@
 </div>
 
 <style>
+  .ml-console-link {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    padding: 5px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--text-secondary, #9ca3af);
+    text-decoration: none;
+    transition: background 0.15s, color 0.15s;
+  }
+  .ml-console-link:hover {
+    background: var(--bg-hover, rgba(255,255,255,0.07));
+    color: var(--text-primary, #e5e7eb);
+  }
   .density-row {
     margin-top: 8px;
     display: flex;

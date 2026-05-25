@@ -54,7 +54,10 @@ gNMI   syslog   SNMP   BGP-LS   BMP   OTLP   NetFlow   sFlow   PCEP
 - **Output adapters**: Prometheus Remote Write, Splunk HEC, Elasticsearch Bulk, ServiceNow Event Mgmt — each with customisable scheme/host/port/path
 - **Remediation**: playbook-based, trust-graduated, rollback window, auto-proposal, graph-verified outcome
 - **AI investigations**: MCP tool server + LLM agent loop (Gemini, Moonshot, OpenAI, Anthropic, Ollama) with structured RCA, operator feedback loop, per-investigation + daily budget caps
-- **GNN**: graph neural network anomaly detection — accumulate → train → calibrate → promote
+- **ML pipeline (EV1)**: STGNN (Spatio-Temporal GNN with GATv2 + GRU temporal encoder, 8-snapshot window), conformal prediction uncertainty bounds, NCT self-supervised pre-training, control-weighted loss for change-window awareness
+- **Semantic embeddings**: syslog message embeddings (`all-MiniLM-L6-v2` / Ollama / OpenAI), device config embeddings, syslog cluster analysis (MiniBatchKMeans), detection reason clustering (HDBSCAN), PCA-compressed embedding injection into GNN feature vector
+- **ML job engine**: APScheduler 4.x with SQLite job store — scheduled export, training, inference, embedding, clustering jobs with dependency chains, retry/dead-letter, progress SSE streaming
+- **GNN**: graph neural network anomaly detection — accumulate → NCT pretrain → train → calibrate → promote. GNN inference results and attention weights written back to graph. Uncertainty-gated auto-investigation triggering.
 - **Auth**: JWT session tokens, RBAC (admin/operator/viewer/api_readonly), LDAP/AD integration, scoped API keys
 - **Syslog shunning**: per-device/per-category noise suppression with rate-limiting and regex-based rules
 - **HA**: etcd-based leader election, config replication across core nodes
@@ -443,6 +446,54 @@ POST /api/explorer/ask                        natural-language graph question (A
 POST /mcp                                     MCP tool server endpoint
 ```
 
+### ML & GNN (EV1)
+
+```
+GET  /api/graph/snapshot                      live graph snapshot for STGNN inference
+GET  /api/ml/exports                          Parquet export catalog
+POST /api/ml/exports                          create export job record
+PATCH /api/ml/exports/{id}                    update export status/metrics
+GET  /api/ml/exports/quality                  quality summary across recent exports
+GET  /api/ml/models                           model artifact registry
+GET  /api/ml/models/active                    active model per type
+POST /api/ml/models/{id}/activate             activate a model version
+GET  /api/ml/lineage/{model_id}               full training lineage chain
+GET  /api/ml/jobs                             job run history
+POST /api/ml/jobs                             create job run record
+PATCH /api/ml/jobs/{id}                       update job status/metrics
+POST /api/ml/jobs/{id}/cancel                 request job cancellation
+POST /api/ml/jobs/{id}/retry                  retry a dead-letter job
+GET  /api/ml/schedules                        list scheduled jobs
+POST /api/ml/schedules                        create or update a schedule
+DELETE /api/ml/schedules/{id}                 remove a schedule
+GET  /api/ml/events/stream                    SSE stream of ML events (job progress, GNN alerts)
+POST /api/ml/events/publish                   publish ML event from Python sidecar
+POST /api/gnn/inference-results               batch upsert GNN inference results from Python
+GET  /api/gnn/inference-results               query inference history for a device
+POST /api/gnn/attention                       batch upsert GNN attention snapshots
+GET  /api/events/unembedded                   syslog events pending embedding
+POST /api/events/embeddings                   batch upsert event embedding vectors
+GET  /api/devices/unembedded-config           devices pending config embedding
+POST /api/devices/{addr}/config-embedding     upsert device config embedding
+GET  /api/ml/embeddings/stats                 embedding health summary
+GET  /api/ml/similar-events                   semantic similarity search for events
+GET  /api/sidecar/rules                       list Python rule IDs + enabled state
+POST /api/sidecar/rules/{id}/toggle           enable/disable a rule
+GET  /api/sidecar/rules/{id}/parameters       rule parameter overrides
+PATCH /api/sidecar/rules/{id}/parameters      update rule parameters
+POST /api/sidecar/rules/{id}/shadow-mode      toggle shadow mode
+GET  /api/sidecar/rules/{id}/shadow-firings   shadow firing history
+GET  /api/sidecar/rules/analytics             rule firing stats across time window
+GET  /api/playbooks-v2                        DB-backed playbook list
+POST /api/playbooks-v2                        create playbook
+PUT  /api/playbooks-v2/{id}                   update playbook (version bump)
+DELETE /api/playbooks-v2/{id}                 soft-delete playbook
+GET  /api/playbooks-v2/{id}/executions        playbook execution history
+GET  /api/syslog-rules                        syslog pattern rules from DB
+POST /api/syslog-rules                        create syslog rule from UI
+POST /api/syslog-rules/{id}/test              test regex against example message
+```
+
 ---
 
 ## Enrichment
@@ -510,14 +561,87 @@ Playbooks live in `playbooks/library/`. Each has a `rule_id`, `steps` (gNMI SET 
 
 ---
 
-## GNN anomaly detection
+## ML pipeline (EV1)
 
-Graph Neural Network pipeline for unsupervised anomaly detection:
+Bonsai's ML pipeline is a full production MLOps stack — from raw graph snapshots to live anomaly detection with explainability and uncertainty bounds.
 
-1. **Accumulate**: enable archive via `PATCH /api/settings/archive` (or `[archive] enabled = true` in TOML) for 7–30 days
-2. **Train**: `python python/bonsai_ml/gnn/train_anomaly.py`
-3. **Calibrate**: set `inference_mode = "calibration"` via `PATCH /api/settings/gnn` — review score distribution via **Operations → GNN Calibration**
-4. **Promote**: set `inference_mode = "production"` when P95 score is below your threshold
+### Architecture
+
+```
+Graph snapshots (every 5 min via /api/graph/snapshot)
+    └─► SnapshotBuffer (8-snapshot ring buffer, Arrow IPC on disk)
+            └─► STGNN inference (GATv2 spatial → GRU temporal → anomaly score)
+                    ├─► Conformal prediction (90% coverage uncertainty bound)
+                    ├─► Attention weights → /api/gnn/attention (persisted to graph)
+                    └─► /api/gnn/inference-results → investigation_trigger.rs
+                                                        (uncertainty-gated auto-investigation)
+
+Parquet export (incremental daily) → ReadinessCheck → NCT pretrain → supervised fine-tune
+    └─► ModelArtifact registry → activate → inference loop picks up via /api/ml/models/active
+
+Syslog events tagged needs_embedding=true → syslog_embedding_worker (60s batch)
+    └─► EventEmbedding nodes → cosine similarity search for investigation context
+    └─► SyslogClusterer (weekly, MiniBatchKMeans, 20 clusters)
+
+Device configs (via bootstrap) → config_embedding_worker (6h) → DeviceConfigEmbedding
+    └─► PCA 384→8 dims → injected into STGNN device feature vector (40 dims total)
+```
+
+### Pipeline stages
+
+1. **Accumulate**: enable archive via `PATCH /api/settings/archive` (or `[archive] enabled = true`) for ≥7 days
+2. **NCT pretrain**: `python -m bonsai_ml.gnn.nct` — self-supervised noise-contrastive training on topology structure. Noise curriculum: light (5% edge removal) → medium (15% + feature perturb) → heavy (30% + spurious edges). Requires ≥30 snapshots.
+3. **Train**: `python python/train_stgnn.py --model-type stgnn` — supervised fine-tune on fault labels from chaos archive. Phase 1: NCT pretrain (loads `models/nct_pretrain.pt`). Phase 2: CrossEntropyLoss + CosineAnnealingLR + grad clip 1.0. Quality gate: AUC≥0.65 + F1≥0.40.
+4. **Conformal calibration**: run automatically after training. Computes `q_hat` threshold from held-out calibration set. Saved to `models/conformal_qhat_alpha0.1.json`.
+5. **Promote**: `POST /api/ml/models/{id}/activate` — or let the ML job engine auto-activate on quality gate pass.
+6. **Infer**: STGNN inference loop runs every 5 min via `BonsaiJobEngine`. Results written to graph. Investigation auto-triggered on high-score + low-uncertainty (uncertainty_gate < 0.3).
+
+### Automated job schedule (default)
+
+| Job | Schedule | Description |
+|-----|----------|-------------|
+| `anomaly_export_daily` | `cron(hour=2)` | Incremental Parquet export, quality gated |
+| `remediation_export_weekly` | `cron(day=0, hour=2)` | Full remediation training export |
+| `gnn_inference` | `interval(5 min)` | Live STGNN inference → write-back |
+| `syslog_embedding` | `interval(60 s)` | Batch embed pending syslog events |
+| `graph_snapshot` | `interval(4 h)` | Capture snapshot for STGNN buffer |
+| `detection_clustering` | `cron(day=0, hour=3)` | HDBSCAN cluster detection reasons |
+| `config_embedding` | `interval(6 h)` | Embed device config text |
+
+Schedules are managed via `POST /api/ml/schedules` or the BonPy UI at `/bonpy/jobs`.
+
+### GNN architecture (EV1)
+
+- **Spatial**: `HeteroGATv2Conv` (GAT v2, Brody et al. 2021) — eliminates rank collapse. 8 heads per layer.
+- **Temporal**: per-node `GRU(hidden_channels, hidden_channels)` over 8-snapshot sequence.
+- **Node types**: device (40 dims), interface (14 dims), bgp_neighbor (12 dims), bfd_session (10 dims), ospf_neighbor (8 dims), redundancy_group (6 dims), sensor_reading (4 dims).
+- **Loss**: `FocalControlWeightedLoss` — focal loss (gamma=2.0) for class imbalance + change-weight=0.0 for fault samples during active ChangeRequest windows.
+- **Uncertainty**: conformal prediction (primary, requires calibration set) or MC Dropout (fallback, `mc_dropout_samples=20`).
+
+### Monitoring
+
+- Health: `GET http://localhost:9200/health` — sidecar status, model loaded, inference times, queue depth, memory usage
+- Metrics: `GET http://localhost:9201/metrics` — Prometheus metrics (job runs, parquet rows, AUC, pending embeddings, memory)
+- BonPy UI: `http://localhost:3000/bonpy/` — full MLOps console (jobs, models, exports, GNN, embeddings, rules)
+
+### Manual operations
+
+```bash
+# Export training data (incremental)
+python -m bonsai_ml.export_job --type anomaly --incremental
+
+# Train STGNN
+python python/train_stgnn.py --model-type stgnn --register
+
+# Start sidecar manually (systemd manages this in production)
+python python/collector_engine.py
+
+# Check sidecar health
+curl http://localhost:9200/health | python3 -m json.tool
+
+# View active model
+curl http://localhost:3000/api/ml/models/active?type=stgnn
+```
 
 ---
 
@@ -540,7 +664,7 @@ docker compose -f compose-signal-test.yml up -d
 # ServiceNow: uses a real PDI (developer.servicenow.com), not a mock
 ```
 
-Lab credentials are documented in `lab/signal-test-lab/UBUNTU_TESTING_GUIDE.md` (Phase 17).
+Lab credentials are documented in `lab/signal-test-lab/UBUNTU_TESTING_GUIDE.md` (DV4 Phase 17). For EV1 ML pipeline testing see `docs/EV1_UBUNTU_TESTING_GUIDE.md`.
 
 See `lab/` for topology YAML files and `scripts/` for seed scripts.
 
@@ -565,12 +689,54 @@ client.create_detection(d)
 ```
 
 **Python components:**
-- `python/bonsai_sdk/` — SDK: client, detection, streaming rules, windowing, rule loader
-- `python/bonsai_agent/` — AI investigation agent with budget control
-- `python/bonsai_ml/` — GNN pipeline (embeddings, feature schema, training)
+- `python/bonsai_sdk/` — SDK: client, detection, streaming rules, windowing, rule loader, DB-backed rule overrides with hot-reload
+- `python/bonsai_agent/` — AI investigation agent with budget control, `check_change_context` + `ask_graph` tools
+- `python/bonsai_ml/` — Full EV1 ML pipeline:
+  - `gnn/stgnn.py` — STGNN model (GATv2 spatial + GRU temporal, T=8 snapshots)
+  - `gnn/nct.py` — NCT self-supervised pre-training with noise curriculum
+  - `gnn/conformal.py` — conformal calibration + uncertainty-gated prediction
+  - `gnn/loss.py` — FocalControlWeightedLoss (change-window aware)
+  - `gnn/snapshot_store.py` — Arrow IPC snapshot buffer (disk-persistent)
+  - `inference_client.py` — STGNN inference + write-back to Bonsai graph
+  - `inference_loop.py` — `StgnnInferenceLoop` — 5-min APScheduler job
+  - `job_engine.py` — `BonsaiJobEngine` (APScheduler 4.x + SQLite job store, full dependency chain)
+  - `export_job.py` — `ParquetExportJob` with catalog integration + quality gate
+  - `parquet_validator.py` — schema validation, class balance, PSI drift detection
+  - `parquet_store.py` — versioned archive management with `latest` symlink
+  - `text_embeddings.py` — `TextEmbedder` wrapping sentence-transformers / Ollama / OpenAI
+  - `syslog_embedding_worker.py` — 60s batch embedder for syslog events
+  - `config_embedding_worker.py` — 6h batch embedder for device configs
+  - `syslog_cluster.py` — `SyslogClusterer` (MiniBatchKMeans, 20 clusters, weekly)
+  - `detection_clustering.py` — HDBSCAN cluster detection reasons
+  - `memory_manager.py` — `MlMemoryManager` with LRU model cache + RSS bounds
+  - `snapshot_client.py` — `GraphSnapshotClient` (fetch + convert `/api/graph/snapshot`)
 - `python/bootstrap_agent.py` — PyATS/Genie device bootstrap (17 learn features: interfaces, BGP, BFD, OSPF, STP, VLAN, VRF, NTP, ACL, MPLS, platform, routing, ARP, HSRP, config, LLDP, MAC table)
-- `python/collector_engine.py` — Python rule engine sidecar
-- `docker/sidecars/pyats/app.py` — PyATS sidecar with topology-aware feature profiles
+- `python/collector_engine.py` — Python rule engine sidecar: non-blocking startup, graceful SIGTERM, forward queue backpressure, health on `:9200`, Prometheus on `:9201`
+- `python/train_stgnn.py` — standalone STGNN training script (NCT pretrain → supervised finetune → quality gate → register)
+- `docker/sidecars/pyats/app.py` — PyATS sidecar with Genie (primary) + TextFSM fallback, 17 features, topology-aware profiles
+
+### BonPy MLOps Console
+
+The BonPy UI is a SvelteKit app served at `/bonpy/` on the same port as the main Bonsai UI. No separate port.
+
+| Route | Description |
+|-------|-------------|
+| `/bonpy/` | Dashboard — sidecar health, GNN status, parquet freshness, next jobs |
+| `/bonpy/jobs` | Job scheduler — cron table, live progress (SSE), dead-letter, manual trigger |
+| `/bonpy/models` | Model registry — activate, compare, lineage, model card |
+| `/bonpy/exports` | Parquet catalog — quality report, class balance, drift, manual trigger |
+| `/bonpy/gnn` | GNN live feed — inference timeline, anomaly scores, attention mini-viz |
+| `/bonpy/embeddings` | Embedding health — pending counts, cluster explorer, UMAP projection |
+| `/bonpy/rules` | Rule management — enable/disable, parameters, shadow mode, playbooks |
+| `/bonpy/detections` | Detection stream — SSE-driven, ML annotations, GNN score overlay |
+
+```bash
+# Build BonPy UI
+cd ui-bonpy && npm ci && npm run build
+
+# Dev mode (proxies /api/ to localhost:3000)
+cd ui-bonpy && npm run dev
+```
 
 ---
 

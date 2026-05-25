@@ -109,21 +109,66 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         except Exception:
             pass
 
+        model_loaded = False
+        model_id = None
+        last_inference_at_ns = 0
+        try:
+            from bonsai_ml.gnn.snapshot_store import SnapshotStore as _SS
+            import os as _os
+            model_path = _os.environ.get("BONSAI_GNN_MODEL_PATH", "models/stgnn_v1.pt")
+            model_loaded = _os.path.exists(model_path)
+            if model_loaded:
+                model_id = _os.path.basename(model_path)
+            il = _inference_loop_ref
+            if il is not None:
+                last_inference_at_ns = getattr(il, "last_inference_at_ns", 0)
+        except Exception:
+            pass
+
+        rules_enabled = _rules_loaded
+        rules_shadow = 0
+        try:
+            re_ref = _engine_ref
+            if re_ref is not None:
+                rules_enabled = sum(1 for r in re_ref._rules if not getattr(r, "shadow_mode", False))
+                rules_shadow = sum(1 for r in re_ref._rules if getattr(r, "shadow_mode", False))
+        except Exception:
+            pass
+
+        embedding_pending_syslog = 0
+        embedding_pending_config = 0
+        api_url = os.environ.get("BONSAI_API_URL", "http://localhost:3000")
+        try:
+            import urllib.request as _ur, json as _json
+            with _ur.urlopen(f"{api_url}/api/ml/embedding-stats", timeout=1) as _resp:
+                _es = _json.loads(_resp.read())
+                embedding_pending_syslog = _es.get("pending_syslog", 0)
+                embedding_pending_config = _es.get("pending_config", 0)
+        except Exception:
+            pass
+
         body = json.dumps({
             "status": "ok",
             "uptime_secs": round(time.monotonic() - _start_time, 1),
             "rules_loaded": _rules_loaded,
+            "rules_enabled": rules_enabled,
+            "rules_shadow": rules_shadow,
             "last_detection_at_ns": _last_detection_at_ns,
             "detections_today": _detections_today,
             "queue_depth": qdepth,
             "queue_drops_today": _forward_queue_drops_total,
             "priority_only_mode": _priority_only_mode,
+            "model_loaded": model_loaded,
+            "model_id": model_id,
+            "last_inference_at_ns": last_inference_at_ns,
+            "snapshot_buffer_size": snap_size,
+            "snapshot_buffer_stale": snap_stale,
+            "embedding_pending_syslog": embedding_pending_syslog,
+            "embedding_pending_config": embedding_pending_config,
             "connected_to_core": _connected_to_core,
             "connected_to_local": _connected_to_local,
             "job_engine_running": job_engine_running,
             "next_job": next_job,
-            "snapshot_buffer_size": snap_size,
-            "snapshot_buffer_stale": snap_stale,
         }).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
