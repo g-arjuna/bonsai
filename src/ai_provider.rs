@@ -12,14 +12,17 @@ pub struct AiMessage {
     pub tool_calls: Vec<AiToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Raw Gemini "parts" array — preserved to replay thought signatures in multi-turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_parts: Option<Vec<serde_json::Value>>,
 }
 
 impl AiMessage {
     pub fn user(text: impl Into<String>) -> Self {
-        Self { role: "user".into(), content: Some(text.into()), tool_calls: vec![], tool_call_id: None }
+        Self { role: "user".into(), content: Some(text.into()), tool_calls: vec![], tool_call_id: None, raw_parts: None }
     }
     pub fn system(text: impl Into<String>) -> Self {
-        Self { role: "system".into(), content: Some(text.into()), tool_calls: vec![], tool_call_id: None }
+        Self { role: "system".into(), content: Some(text.into()), tool_calls: vec![], tool_call_id: None, raw_parts: None }
     }
     pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
@@ -27,6 +30,7 @@ impl AiMessage {
             content: Some(content.into()),
             tool_calls: vec![],
             tool_call_id: Some(tool_call_id.into()),
+            raw_parts: None,
         }
     }
 }
@@ -52,6 +56,8 @@ pub struct AiResponse {
     pub stop_reason: String,
     pub tokens_used: u64,
     pub cost_usd: f64,
+    /// Raw Gemini "parts" array — includes thought signatures needed for multi-turn.
+    pub raw_parts: Option<Vec<serde_json::Value>>,
 }
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
@@ -140,7 +146,10 @@ impl AiProvider for GeminiProvider {
                 continue;
             }
             let role = if msg.role == "assistant" { "model" } else { "user" };
-            let parts = if !msg.tool_calls.is_empty() {
+            let parts = if let Some(ref rp) = msg.raw_parts {
+                // Replay raw parts verbatim — preserves Gemini thought signatures
+                rp.clone()
+            } else if !msg.tool_calls.is_empty() {
                 msg.tool_calls.iter().map(|tc| serde_json::json!({
                     "functionCall": { "name": tc.name, "args": tc.arguments }
                 })).collect::<Vec<_>>()
@@ -199,9 +208,10 @@ impl AiProvider for GeminiProvider {
                 text_parts.push(text.to_string());
             }
             if let Some(fc) = part.get("functionCall") {
+                let fn_name = fc["name"].as_str().unwrap_or("").to_string();
                 tool_calls.push(AiToolCall {
-                    id: format!("gemini_fc_{i}"),
-                    name: fc["name"].as_str().unwrap_or("").to_string(),
+                    id: fn_name.clone(),
+                    name: fn_name,
                     arguments: fc["args"].clone(),
                 });
             }
@@ -223,6 +233,7 @@ impl AiProvider for GeminiProvider {
             stop_reason,
             tokens_used,
             cost_usd,
+            raw_parts: Some(candidate),
         })
     }
 }
@@ -341,7 +352,7 @@ impl AiProvider for MoonshotProvider {
             "end_turn".to_string()
         };
 
-        Ok(AiResponse { content, tool_calls, stop_reason, tokens_used, cost_usd })
+        Ok(AiResponse { content, tool_calls, stop_reason, tokens_used, cost_usd, raw_parts: None })
     }
 }
 
@@ -442,7 +453,7 @@ impl AiProvider for OpenAiProvider {
             "end_turn".to_string()
         };
 
-        Ok(AiResponse { content, tool_calls, stop_reason, tokens_used, cost_usd })
+        Ok(AiResponse { content, tool_calls, stop_reason, tokens_used, cost_usd, raw_parts: None })
     }
 }
 
@@ -593,6 +604,7 @@ impl AiProvider for AnthropicProvider {
             stop_reason,
             tokens_used,
             cost_usd,
+            raw_parts: None,
         })
     }
 }
@@ -701,6 +713,6 @@ impl AiProvider for OllamaProvider {
 
         let stop_reason = if finish_reason == "tool_calls" { "tool_use" } else { "end_turn" }.to_string();
 
-        Ok(AiResponse { content, tool_calls, stop_reason, tokens_used, cost_usd: 0.0 })
+        Ok(AiResponse { content, tool_calls, stop_reason, tokens_used, cost_usd: 0.0, raw_parts: None })
     }
 }

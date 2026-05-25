@@ -562,6 +562,7 @@ pub(super) async fn explorer_ask_handler(
             content: resp.content.clone(),
             tool_calls: resp.tool_calls.clone(),
             tool_call_id: None,
+            raw_parts: resp.raw_parts.clone(),
         });
 
         for tc in &resp.tool_calls {

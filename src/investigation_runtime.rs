@@ -184,6 +184,7 @@ async fn run_investigation(
             content: resp.content.clone(),
             tool_calls: resp.tool_calls.clone(),
             tool_call_id: None,
+            raw_parts: resp.raw_parts.clone(),
         });
 
         if resp.tool_calls.is_empty() || resp.stop_reason == "end_turn" {
