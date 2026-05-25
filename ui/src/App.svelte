@@ -30,6 +30,7 @@
   import SynthesizerRules from './routes/SynthesizerRules.svelte';
   import Endpoints from './routes/Endpoints.svelte';
   import Certs from './routes/Certs.svelte';
+  import StreamControl from './routes/StreamControl.svelte';
 
   // Cmd-1..9 workspace shortcuts mirror CommandPalette WORKSPACE_SHORTCUTS
   const NAV = [
@@ -58,6 +59,7 @@
     { href: '/settings',      label: 'Settings',      icon: '⚙' },
     { href: '/endpoints',      label: 'Endpoints',     icon: '⬡' },
     { href: '/certs',          label: 'Certificates',  icon: '🔒' },
+    { href: '/stream-control', label: 'Stream Control', icon: '⏻' },
   ];
 
   let isFirstRunChecked = $state(false);
@@ -227,6 +229,8 @@
       <Endpoints />
     {:else if path() === '/certs'}
       <Certs />
+    {:else if path() === '/stream-control'}
+      <StreamControl />
     {:else if path() === '/settings'}
       <Settings />
     {:else}

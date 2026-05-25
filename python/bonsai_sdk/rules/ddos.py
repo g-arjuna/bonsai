@@ -70,17 +70,24 @@ class DdosCorroborationRule(Detector):
     Output reason strings:
       - "ddos_suspect"    when single-source evidence arrives
       - "ddos_confirmed"  when corroboration_threshold sources agree
+
+    Thresholds are configurable at construction time so the operator can tune
+    them without forking the rule (maps to DdosConfig fields).
     """
 
     rule_id = "ddos_corroboration"
     severity = "high"
     scope = "local"
 
-    CONFIDENCE_FLOOR: float = 0.50
-    CORROBORATION_WINDOW: float = 60.0
-    COOLDOWN: float = 300.0
-
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        confidence_floor: float = 0.50,
+        corroboration_window: float = 60.0,
+        cooldown: float = 300.0,
+    ) -> None:
+        self._confidence_floor = confidence_floor
+        self._corroboration_window = corroboration_window
+        self._cooldown = cooldown
         self._evidence: dict[str, _EvidenceSlot] = {}
         self._last_confirmed: dict[str, float] = {}
 
@@ -102,7 +109,7 @@ class DdosCorroborationRule(Detector):
         key = f"{features.device_address}:{vector}"
 
         slot = self._evidence.get(key)
-        if slot is None or (now - slot.first_seen > self.CORROBORATION_WINDOW):
+        if slot is None or (now - slot.first_seen > self._corroboration_window):
             slot = _EvidenceSlot()
             self._evidence[key] = slot
 
@@ -115,9 +122,9 @@ class DdosCorroborationRule(Detector):
 
         confidence = slot.confidence()
 
-        if confidence >= self.CONFIDENCE_FLOOR:
+        if confidence >= self._confidence_floor:
             last_conf = self._last_confirmed.get(key, 0.0)
-            if now - last_conf < self.COOLDOWN:
+            if now - last_conf < self._cooldown:
                 return None
             self._last_confirmed[key] = now
             return (
@@ -135,7 +142,7 @@ class DdosCorroborationRule(Detector):
 
     def evict_stale(self) -> None:
         now = time.time()
-        stale = [k for k, v in self._evidence.items() if now - v.last_seen > self.CORROBORATION_WINDOW * 2]
+        stale = [k for k, v in self._evidence.items() if now - v.last_seen > self._corroboration_window * 2]
         for k in stale:
             del self._evidence[k]
 

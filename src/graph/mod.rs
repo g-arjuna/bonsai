@@ -24,8 +24,9 @@ use self::common::{
     upsert_device, upsert_device_address, upsert_device_with_endpoint,
     upsert_host_endpoint,
 };
-use crate::config::TargetConfig;
+use crate::config::{DdosConfig, TargetConfig};
 use crate::correlation_buffer::{CorrelationBuffer, CorrelationKey, semantic_key_for_event};
+use crate::signal_filter::{SignalFilter, signal_type_for_path};
 use crate::signals::syslog::SyslogFact;
 use crate::signals::snmp::SnmpFact;
 use crate::store::BonsaiStore;
@@ -262,9 +263,22 @@ pub struct GraphStore {
     /// absorbed into a single slot and flushed as a fused detection after the
     /// window expires.
     pub correlation_buffer: Arc<CorrelationBuffer>,
+    /// DDoS subsystem config — shared into spawn_blocking write tasks so
+    /// emit_ddos_pps_spike_event can honour spike_deviation_threshold and
+    /// the enabled gate without an extra DB round-trip per flow.
+    pub ddos_config: Arc<DdosConfig>,
+    /// DS-5: Per-device / per-site / per-role signal feature gates.
+    /// Refreshed from the SignalPolicy table every 30 s inside write().
+    pub signal_filter: SignalFilter,
 }
 
 impl GraphStore {
+    pub fn open_with_ddos(path: &str, buffer_pool_bytes: u64, ddos_config: DdosConfig) -> Result<Self> {
+        let mut store = Self::open(path, buffer_pool_bytes)?;
+        store.ddos_config = Arc::new(ddos_config);
+        Ok(store)
+    }
+
     pub fn open(path: &str, buffer_pool_bytes: u64) -> Result<Self> {
         let sysconfig = SystemConfig::default()
             .buffer_pool_size(buffer_pool_bytes)
@@ -283,6 +297,8 @@ impl GraphStore {
             write_lock: Arc::new(Mutex::new(())),
             buffer_pool_bytes,
             correlation_buffer: Arc::new(CorrelationBuffer::new(45)),
+            ddos_config: Arc::new(DdosConfig::default()),
+            signal_filter: SignalFilter::new(),
         };
 
         let t = Instant::now();
@@ -2062,6 +2078,42 @@ impl GraphStore {
         )
         .context("create MitigationAction table")?;
 
+        // DS-scope: per-device opt-in table — controls which devices feed the
+        // DDoS detection pipeline.  Devices NOT in this table (or with enabled=false)
+        // are fully excluded from PPS spike detection to avoid false positives.
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS DdosScope(\
+                device_address  STRING,\
+                enabled         BOOLEAN,\
+                reason          STRING,\
+                added_by        STRING,\
+                added_at_ns     INT64,\
+                updated_at_ns   INT64,\
+                PRIMARY KEY (device_address))",
+        )
+        .context("create DdosScope table")?;
+
+        // Signal-level feature gates per device / site / role (DS-5).
+        // scope_type: "device" | "site" | "role"
+        // scope_value: address | site-label | role-label
+        // signal_type: "gnmi" | "syslog" | "snmp" | "bmp" | "netflow" | "sflow" | "bgp_ls" | "otlp"
+        // enabled: false = suppress all telemetry of that signal type from matching scope
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS SignalPolicy(\
+                id           STRING,\
+                scope_type   STRING,\
+                scope_value  STRING,\
+                signal_type  STRING,\
+                enabled      BOOLEAN,\
+                reason       STRING,\
+                updated_by   STRING,\
+                updated_at_ns INT64,\
+                PRIMARY KEY (id))",
+        )
+        .context("create SignalPolicy table")?;
+        let _ = conn.query("ALTER TABLE SignalPolicy ADD reason STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE SignalPolicy ADD updated_by STRING DEFAULT 'api'");
+
         conn.query(
             "CREATE REL TABLE IF NOT EXISTS DDOS_INVOLVES_DEVICE(\
                 FROM DdosEvent TO Device,\
@@ -2129,6 +2181,10 @@ impl GraphStore {
 
     pub fn db(&self) -> Arc<Database> {
         Arc::clone(&self.db)
+    }
+
+    pub fn write_lock(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.write_lock)
     }
 
     pub async fn list_sites(&self) -> Result<Vec<SiteRecord>> {
@@ -3297,6 +3353,8 @@ impl GraphStore {
         let event_tx = self.event_tx.clone();
         let write_lock = Arc::clone(&self.write_lock);
         let corr_buf = Arc::clone(&self.correlation_buffer);
+        let ddos_cfg = Arc::clone(&self.ddos_config);
+        let sig_filter = self.signal_filter.clone();
         let target = update.target.clone();
         tokio::task::spawn_blocking(move || {
             metrics::counter!("bonsai_telemetry_updates_total", "target" => target.clone())
@@ -3304,7 +3362,10 @@ impl GraphStore {
             let t0 = Instant::now();
             let _guard = write_lock.lock().expect("write lock poisoned");
             let conn = Connection::new(&db).context("single write connection")?;
-            let result = write_blocking(&conn, &update, &event_tx, &corr_buf);
+            if sig_filter.needs_refresh() {
+                sig_filter.refresh(&conn);
+            }
+            let result = write_blocking(&conn, &update, &event_tx, &corr_buf, &ddos_cfg, &sig_filter);
             metrics::histogram!("bonsai_graph_write_latency_seconds", "target" => target)
                 .record(t0.elapsed().as_secs_f64());
             result
@@ -3319,17 +3380,22 @@ impl GraphStore {
         let event_tx = self.event_tx.clone();
         let write_lock = Arc::clone(&self.write_lock);
         let corr_buf = Arc::clone(&self.correlation_buffer);
+        let ddos_cfg = Arc::clone(&self.ddos_config);
+        let sig_filter = self.signal_filter.clone();
         tokio::task::spawn_blocking(move || {
             let t0 = Instant::now();
             let _guard = write_lock.lock().expect("write lock poisoned");
             let batch_len = updates.len();
             let conn = Connection::new(&db).context("batch write connection")?;
+            if sig_filter.needs_refresh() {
+                sig_filter.refresh(&conn);
+            }
             conn.query("BEGIN TRANSACTION").context("begin batch transaction")?;
             let mut errors = 0u32;
             for update in &updates {
                 metrics::counter!("bonsai_telemetry_updates_total", "target" => update.target.clone())
                     .increment(1);
-                if let Err(error) = write_blocking(&conn, &update, &event_tx, &corr_buf) {
+                if let Err(error) = write_blocking(&conn, &update, &event_tx, &corr_buf, &ddos_cfg, &sig_filter) {
                     // Log individual failures but keep processing — a single bad update
                     // from buggy device firmware must not poison the entire batch (C-1).
                     tracing::warn!(
@@ -3358,7 +3424,7 @@ impl GraphStore {
                     let path = update.path.clone();
                     let single_conn = Connection::new(&db).context("single-write fallback connection")?;
                     if let Err(single_error) =
-                        write_blocking(&single_conn, &update, &event_tx, &corr_buf)
+                        write_blocking(&single_conn, &update, &event_tx, &corr_buf, &ddos_cfg, &sig_filter)
                     {
                         tracing::warn!(
                             target = %target,
@@ -4500,7 +4566,13 @@ fn write_blocking(
     update: &TelemetryUpdate,
     event_tx: &broadcast::Sender<BonsaiEvent>,
     corr_buf: &CorrelationBuffer,
+    ddos_cfg: &DdosConfig,
+    sig_filter: &SignalFilter,
 ) -> Result<()> {
+    let signal_type = signal_type_for_path(&update.path);
+    if !sig_filter.is_allowed(&update.target, &update.site, &update.role, signal_type) {
+        return Ok(());
+    }
     match update.classify() {
         TelemetryEvent::InterfaceStats { if_name } => {
             // Skip interfaces with no data (SR Linux sends empty {} for unconfigured ports)
@@ -4619,6 +4691,7 @@ fn write_blocking(
             packets_per_sec,
             event_tx,
             corr_buf,
+            ddos_cfg,
         ),
         TelemetryEvent::SflowRecord {
             exporter_address,
@@ -4642,6 +4715,7 @@ fn write_blocking(
             sampling_rate,
             event_tx,
             corr_buf,
+            ddos_cfg,
         ),
         TelemetryEvent::SflowCounters {
             exporter_address,
@@ -5162,6 +5236,7 @@ fn write_netflow_record(
     packets_per_sec: f64,
     event_tx: &broadcast::Sender<BonsaiEvent>,
     corr_buf: &CorrelationBuffer,
+    ddos_cfg: &DdosConfig,
 ) -> Result<()> {
     let id = format!("{src_address}:{dst_address}:{dst_port}:{protocol}");
     let v = &update.value;
@@ -5248,7 +5323,7 @@ fn write_netflow_record(
     emit_flow_utilization_event(conn, update, exporter_address, &id, bytes_per_sec, event_tx, corr_buf);
     emit_ddos_pps_spike_event(
         conn, update, exporter_address, protocol, packets_per_sec,
-        &ddos.amplification_vector, &ddos.tcp_flags_pattern, event_tx, corr_buf,
+        &ddos.amplification_vector, &ddos.tcp_flags_pattern, event_tx, corr_buf, ddos_cfg,
     );
 
     let evt = BonsaiEvent {
@@ -5263,6 +5338,8 @@ fn write_netflow_record(
             "protocol": protocol,
             "bytes_per_sec": bytes_per_sec,
             "packets_per_sec": packets_per_sec,
+            "tcp_flags_pattern": &ddos.tcp_flags_pattern,
+            "amplification_vector": &ddos.amplification_vector,
         })
         .to_string(),
         occurred_at_ns: update.timestamp_ns,
@@ -5289,6 +5366,7 @@ fn write_sflow_record(
     sampling_rate: u32,
     event_tx: &broadcast::Sender<BonsaiEvent>,
     corr_buf: &CorrelationBuffer,
+    ddos_cfg: &DdosConfig,
 ) -> Result<()> {
     let id = format!("{src_address}:{dst_address}:{dst_port}:{protocol}");
     let v = &update.value;
@@ -5369,7 +5447,7 @@ fn write_sflow_record(
     emit_flow_utilization_event(conn, update, exporter_address, &id, bytes_per_sec, event_tx, corr_buf);
     emit_ddos_pps_spike_event(
         conn, update, exporter_address, protocol, packets_per_sec,
-        &ddos.amplification_vector, &ddos.tcp_flags_pattern, event_tx, corr_buf,
+        &ddos.amplification_vector, &ddos.tcp_flags_pattern, event_tx, corr_buf, ddos_cfg,
     );
 
     let evt = BonsaiEvent {
@@ -5385,6 +5463,8 @@ fn write_sflow_record(
             "bytes_per_sec": bytes_per_sec,
             "packets_per_sec": packets_per_sec,
             "sampling_rate": sampling_rate,
+            "tcp_flags_pattern": &ddos.tcp_flags_pattern,
+            "amplification_vector": &ddos.amplification_vector,
         })
         .to_string(),
         occurred_at_ns: update.timestamp_ns,
@@ -5512,13 +5592,14 @@ fn emit_flow_utilization_event(
 
 /// DS-3 T1: Compare observed flow PPS against the stored TrafficBaseline and
 /// fire a `ddos_interface_pps_spike` StateChangeEvent when the deviation score
-/// exceeds `spike_deviation_threshold` (default 10×).
+/// exceeds `ddos_cfg.spike_deviation_threshold`.
 ///
-/// This is a data-plane only rule — it operates purely on flow counters.
-/// Silent no-op when no TrafficBaseline exists for the device (cold start).
-/// The DDoS gate (`ddos.enabled`) is NOT checked here: the event is always
-/// written so that the Python corroboration rule can work even before the
-/// DDoS plane is fully enabled — the Python side owns the confirmed-state FSM.
+/// Guards:
+///   1. `ddos_cfg.enabled` must be true — silent no-op otherwise.
+///   2. The exporter device must have a `DdosScope` node with `enabled=true`
+///      (per-device opt-in) — avoids false positives on excluded devices.
+///   3. A `TrafficBaseline` row must already exist for the device+protocol
+///      (cold-start grace period).
 #[allow(clippy::too_many_arguments)]
 fn emit_ddos_pps_spike_event(
     conn: &Connection<'_>,
@@ -5530,33 +5611,51 @@ fn emit_ddos_pps_spike_event(
     tcp_flags_pattern: &str,
     event_tx: &broadcast::Sender<BonsaiEvent>,
     corr_buf: &CorrelationBuffer,
+    ddos_cfg: &DdosConfig,
 ) {
-    const SPIKE_THRESHOLD: f64 = 10.0;
+    if !ddos_cfg.enabled {
+        return;
+    }
 
     let bare = crate::registry::strip_port(exporter_address);
-    let baseline_id = format!("{}::{}:{}", bare, "", protocol);
+
+    // ── Per-device scope check ───────────────────────────────────────────────
+    // A device must be explicitly added to DdosScope with enabled=true before
+    // any spike events fire for it.  This prevents false positives on devices
+    // that have not been reviewed by the operator.
+    let scope_in = {
+        let mut ok = false;
+        if let Ok(mut s) = conn.prepare(
+            "MATCH (ds:DdosScope {device_address: $addr}) \
+             WHERE ds.enabled = true RETURN ds.device_address LIMIT 1",
+        ) {
+            if let Ok(mut r) = conn.execute(&mut s, vec![("addr", Value::String(bare.to_string()))]) {
+                ok = r.next().is_some();
+            }
+        }
+        ok
+    };
+    if !scope_in {
+        return;
+    }
+
+    // ── Baseline lookup ──────────────────────────────────────────────────────
+    // Key format: "{device_address}::{protocol}" (if_name is blank for global baseline)
+    let baseline_id = format!("{}::{}", bare, protocol);
 
     let mut stmt = match conn.prepare(
-        "MATCH (b:TrafficBaseline {id: $bid}) \
-         RETURN b.p95_pps, b.p99_pps, b.deviation_score",
+        "MATCH (b:TrafficBaseline {id: $bid}) RETURN b.p95_pps",
     ) {
         Ok(s) => s,
         Err(_) => return,
     };
-    let mut rows = match conn.execute(
-        &mut stmt,
-        vec![("bid", Value::String(baseline_id.clone()))],
-    ) {
+    let mut rows = match conn.execute(&mut stmt, vec![("bid", Value::String(baseline_id))]) {
         Ok(r) => r,
         Err(_) => return,
     };
 
-    let (p95_pps, _p99_pps) = match rows.next() {
-        Some(row) => {
-            let p95 = match &row[0] { Value::Double(v) => *v, Value::Int64(v) => *v as f64, _ => 0.0 };
-            let p99 = match &row[1] { Value::Double(v) => *v, Value::Int64(v) => *v as f64, _ => 0.0 };
-            (p95, p99)
-        }
+    let p95_pps = match rows.next() {
+        Some(row) => match &row[0] { Value::Double(v) => *v, Value::Int64(v) => *v as f64, _ => 0.0 },
         None => return,
     };
 
@@ -5565,7 +5664,7 @@ fn emit_ddos_pps_spike_event(
     }
 
     let deviation = packets_per_sec / p95_pps;
-    if deviation < SPIKE_THRESHOLD {
+    if deviation < ddos_cfg.spike_deviation_threshold {
         return;
     }
 
@@ -5577,7 +5676,8 @@ fn emit_ddos_pps_spike_event(
         "deviation_score": deviation,
         "amplification_vector": amplification_vector,
         "tcp_flags_pattern": tcp_flags_pattern,
-        "threshold": SPIKE_THRESHOLD,
+        "threshold": ddos_cfg.spike_deviation_threshold,
+        "source_type": "netflow",
     })
     .to_string();
 

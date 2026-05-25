@@ -8,6 +8,7 @@ pub mod audit;
 pub mod catalogue;
 pub mod change_detection;
 pub mod correlation_buffer;
+pub mod signal_filter;
 pub mod collector;
 pub mod config;
 pub mod config_store;

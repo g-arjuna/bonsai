@@ -18,7 +18,7 @@ use tokio::sync::RwLock;
 use axum::{
     Router,
     http::StatusCode,
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
 };
 
 use lbug::{Connection, Value};
@@ -58,6 +58,8 @@ mod schema;
 mod schema_components;
 pub mod settings;
 pub(crate) mod nl_query;
+mod ddos;
+mod signal_policy;
 mod ha;
 mod shun;
 mod auth;
@@ -75,6 +77,8 @@ use settings::{get_streaming_settings_handler, patch_streaming_settings_handler,
 use ha::{ha_status_handler, ha_settings_handler, ha_patch_settings_handler, restart_handler};
 use nl_query::{explorer_ask_handler, nl_budget_handler};
 use shun::{create_shun_rule_handler, delete_shun_rule_handler, disable_shun_rule_handler, list_shun_rules_handler, shun_stats_handler};
+use ddos::{ddos_scope_list_handler, ddos_scope_add_handler, ddos_scope_remove_handler, ddos_scope_patch_handler, ddos_config_handler, ddos_events_handler, ddos_baselines_handler};
+use signal_policy::{list_signal_policies_handler, upsert_signal_policy_handler, delete_signal_policy_handler, signal_types_handler, signal_policy_summary_handler};
 use auth::{list_api_keys_handler, create_api_key_handler, delete_api_key_handler, rotate_api_key_handler, login_handler, logout_handler, list_users_handler, create_user_handler, delete_user_handler, ldap_config_handler, ldap_test_handler};
 
 // ── JSON response types ───────────────────────────────────────────────────────
@@ -870,6 +874,8 @@ pub fn router(
         .merge(adapter_and_schema_routes())
         .merge(settings_routes())
         .merge(shun_routes())
+        .merge(ddos_routes())
+        .merge(signal_policy_routes())
         .route("/mcp", post(crate::mcp_server::mcp_handler))
         .nest_service("/bonpy", bonpy_spa)
         .fallback_service(spa)
@@ -1088,6 +1094,23 @@ fn shun_routes() -> Router<AppState> {
         .route("/api/shun/rules/{id}/disable", post(disable_shun_rule_handler))
         .route("/api/shun/rules/{id}/delete", post(delete_shun_rule_handler))
         .route("/api/shun/stats", get(shun_stats_handler))
+}
+
+fn ddos_routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/ddos/scope", get(ddos_scope_list_handler).post(ddos_scope_add_handler))
+        .route("/api/ddos/scope/{address}", delete(ddos_scope_remove_handler).patch(ddos_scope_patch_handler))
+        .route("/api/ddos/config", get(ddos_config_handler))
+        .route("/api/ddos/events", get(ddos_events_handler))
+        .route("/api/ddos/baselines", get(ddos_baselines_handler))
+}
+
+fn signal_policy_routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/signal-policy", get(list_signal_policies_handler).post(upsert_signal_policy_handler))
+        .route("/api/signal-policy/signals", get(signal_types_handler))
+        .route("/api/signal-policy/summary", get(signal_policy_summary_handler))
+        .route("/api/signal-policy/{id}", delete(delete_signal_policy_handler))
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────

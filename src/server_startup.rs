@@ -330,7 +330,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         let t = Instant::now();
         let s = tokio::task::spawn_blocking({
             let p = graph_path.to_string();
-            move || graph::GraphStore::open(&p, pool_bytes)
+            let ddos_cfg = cfg.ddos.clone();
+            move || graph::GraphStore::open_with_ddos(&p, pool_bytes, ddos_cfg)
         })
         .await
         .context("graph open panicked")?
