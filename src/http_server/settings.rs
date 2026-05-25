@@ -1271,3 +1271,131 @@ pub async fn export_settings_handler(
     }
     Json(serde_json::Value::Object(map))
 }
+
+// ── TLS Certificate management ────────────────────────────────────────────────
+//
+// Certs are stored in the vault under alias `cert-{name}`.
+// username = JSON metadata blob  { name, label, fingerprint_sha256, added_at_ns, pem_size }
+// password = PEM bytes (the actual certificate text)
+//
+// Endpoints:
+//   GET    /api/certs          — list all stored certs (no PEM in response)
+//   POST   /api/certs          — store/replace a cert PEM (body: { name, label, pem })
+//   GET    /api/certs/{name}   — fetch full PEM for a named cert
+//   DELETE /api/certs/{name}   — remove a cert
+
+fn cert_alias(name: &str) -> String {
+    format!("cert-{}", name.trim().to_lowercase().replace(' ', "-"))
+}
+
+fn pem_fingerprint(pem: &str) -> String {
+    use sha2::{Sha256, Digest};
+    let mut hasher = Sha256::new();
+    hasher.update(pem.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CertMeta {
+    pub name: String,
+    pub label: String,
+    pub fingerprint_sha256: String,
+    pub added_at_ns: i64,
+    pub pem_size: usize,
+}
+
+#[derive(Deserialize)]
+pub struct UpsertCertRequest {
+    pub name: String,
+    #[serde(default)]
+    pub label: String,
+    pub pem: String,
+}
+
+/// GET /api/certs — list all vault-stored certificates (without PEM content).
+pub async fn list_certs_handler(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let summaries = state.credentials.list().unwrap_or_default();
+    let mut certs: Vec<CertMeta> = Vec::new();
+    for s in &summaries {
+        if !s.alias.starts_with("cert-") { continue; }
+        let username = state.credentials.username_for_alias(&s.alias).unwrap_or_default();
+        if let Ok(meta) = serde_json::from_str::<CertMeta>(&username) {
+            certs.push(meta);
+        }
+    }
+    certs.sort_by(|a, b| a.name.cmp(&b.name));
+    Json(serde_json::json!({ "certs": certs }))
+}
+
+/// POST /api/certs — store or replace a TLS certificate PEM in the vault.
+pub async fn upsert_cert_handler(
+    State(state): State<AppState>,
+    Json(body): Json<UpsertCertRequest>,
+) -> Result<Json<CertMeta>, (StatusCode, String)> {
+    if body.name.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "name is required".into()));
+    }
+    if body.pem.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "pem is required".into()));
+    }
+    if !body.pem.contains("-----BEGIN") {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, "pem does not look like a valid PEM block".into()));
+    }
+
+    let alias = cert_alias(&body.name);
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0);
+
+    let meta = CertMeta {
+        name: body.name.clone(),
+        label: if body.label.is_empty() { body.name.clone() } else { body.label.clone() },
+        fingerprint_sha256: pem_fingerprint(&body.pem),
+        added_at_ns: now_ns,
+        pem_size: body.pem.len(),
+    };
+    let username_json = serde_json::to_string(&meta)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let exists = state.credentials.list().unwrap_or_default().iter().any(|s| s.alias == alias);
+    let result = if exists {
+        state.credentials.update(&alias, &username_json, &body.pem)
+    } else {
+        state.credentials.add(&alias, &username_json, &body.pem)
+    };
+    result.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    tracing::info!(name = %body.name, alias = %alias, "cert stored in vault");
+    Ok(Json(meta))
+}
+
+/// GET /api/certs/{name} — fetch the PEM for a named cert.
+pub async fn get_cert_pem_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    let alias = cert_alias(&name);
+    let cred = state.credentials
+        .resolve(&alias, crate::credentials::ResolvePurpose::Internal)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(axum::response::Response::builder()
+        .status(200)
+        .header("content-type", "application/x-pem-file")
+        .body(axum::body::Body::from(cred.password_string()))
+        .unwrap())
+}
+
+/// DELETE /api/certs/{name} — remove a named cert from the vault.
+pub async fn delete_cert_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let alias = cert_alias(&name);
+    state.credentials.remove(&alias)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    tracing::info!(name = %name, "cert removed from vault");
+    Ok(StatusCode::NO_CONTENT)
+}

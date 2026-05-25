@@ -29,6 +29,7 @@
   import Users from './routes/Users.svelte';
   import SynthesizerRules from './routes/SynthesizerRules.svelte';
   import Endpoints from './routes/Endpoints.svelte';
+  import Certs from './routes/Certs.svelte';
 
   // Cmd-1..9 workspace shortcuts mirror CommandPalette WORKSPACE_SHORTCUTS
   const NAV = [
@@ -56,6 +57,7 @@
     { href: '/config-library', label: 'Config Library',   icon: '📦' },
     { href: '/settings',      label: 'Settings',      icon: '⚙' },
     { href: '/endpoints',      label: 'Endpoints',     icon: '⬡' },
+    { href: '/certs',          label: 'Certificates',  icon: '🔒' },
   ];
 
   let isFirstRunChecked = $state(false);
@@ -223,6 +225,8 @@
       <SynthesizerRules />
     {:else if path() === '/endpoints'}
       <Endpoints />
+    {:else if path() === '/certs'}
+      <Certs />
     {:else if path() === '/settings'}
       <Settings />
     {:else}
