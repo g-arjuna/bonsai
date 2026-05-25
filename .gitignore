@@ -7,6 +7,11 @@
 # Bonpy SPA build artefacts (built by CI; checked out by Ubuntu)
 ui-bonpy/node_modules/
 ui-bonpy/dist/
+ui-bonpy/dist-bonpy/
+# SvelteKit route files must never be gitignored (+ prefix is a SvelteKit convention)
+!ui-bonpy/src/routes/**/+*.svelte
+!ui-bonpy/src/routes/**/+*.js
+!ui-bonpy/src/routes/**/+*.ts
 
 # Runtime config — contains credentials, never commit
 bonsai.toml

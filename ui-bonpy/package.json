@@ -1,16 +1,23 @@
 {
   "name": "ui-bonpy",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview"
   },
+  "dependencies": {
+    "@tanstack/svelte-query": "^5.45.1",
+    "chart.js": "^4.4.3",
+    "svelte-chartjs": "^3.1.5"
+  },
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "^7.0.0",
-    "svelte": "^5.55.1",
-    "vite": "^8.0.4"
+    "@sveltejs/adapter-static": "^3.0.6",
+    "@sveltejs/kit": "^2.5.28",
+    "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "svelte": "^5.55.9",
+    "vite": "^6.3.5"
   }
 }
