@@ -333,7 +333,7 @@ pub fn graph_quality(conn: &Connection<'_>) -> Result<GraphQuality> {
     let gnmi_active: i64 = conn
         .query(
             "MATCH (d:Device)-[:HAS_SUBSCRIPTION_STATUS]->(ss:SubscriptionStatus) \
-             WHERE ss.status = 'active' \
+             WHERE ss.status = 'observed' \
              RETURN count(DISTINCT d.address)",
         )
         .context("quality: gnmi_active")?
@@ -439,7 +439,7 @@ pub fn graph_quality(conn: &Connection<'_>) -> Result<GraphQuality> {
     let gnmi_set: std::collections::HashSet<String> = conn
         .query(
             "MATCH (d:Device)-[:HAS_SUBSCRIPTION_STATUS]->(ss:SubscriptionStatus) \
-             WHERE ss.status = 'active' RETURN DISTINCT d.address",
+             WHERE ss.status = 'observed' RETURN DISTINCT d.address",
         )
         .context("quality: gnmi_set")?
         .map(|r| read_str(&r[0]))

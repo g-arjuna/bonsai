@@ -372,7 +372,7 @@ fn val_str(v: &lbug::Value) -> String {
         lbug::Value::Int32(n) => n.to_string(),
         lbug::Value::Double(f) => format!("{f:.2}"),
         lbug::Value::Bool(b) => b.to_string(),
-        lbug::Value::Null => "—".to_string(),
+        lbug::Value::Null(_) => "—".to_string(),
         other => format!("{other:?}"),
     }
 }

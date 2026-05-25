@@ -203,7 +203,7 @@ impl AiProvider for GeminiProvider {
 
         let mut text_parts: Vec<String> = Vec::new();
         let mut tool_calls: Vec<AiToolCall> = Vec::new();
-        for (i, part) in candidate.iter().enumerate() {
+        for part in candidate.iter() {
             if let Some(text) = part["text"].as_str() {
                 text_parts.push(text.to_string());
             }
