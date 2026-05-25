@@ -274,6 +274,7 @@ pub(super) async fn device_detail_handler(
                 peer: read_str(&row[0]),
                 state: read_str(&row[1]),
                 peer_as: read_i64(&row[2]),
+                peer_device: String::new(),
             })
             .collect();
 

@@ -11,7 +11,7 @@
 # ~/.cargo/bin when those launchers are present but unusable in the current
 # environment. Cargo already knows the absolute paths to rustc/cargo, so build
 # scripts only need standard system tool directories here.
-PATH = { value = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", force = true }
+PATH = { value = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", force = true }
 
 [build]
 # Keep the repo default toolchain path reliable across fresh sessions and

@@ -84,6 +84,12 @@ pub(super) struct TopologyResponse {
     #[serde(rename = "_schema_version")]
     schema_version: String,
     devices: Vec<DeviceJson>,
+    /// BFD peer-to-peer links (resolved Device→Device). Used by L3 layer view.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    bfd_links: Vec<LinkJson>,
+    /// ISIS neighbor-to-neighbor links (resolved Device→Device). Used by L3 layer view.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    isis_links: Vec<LinkJson>,
     links: Vec<LinkJson>,
     host_endpoints: Vec<HostEndpointJson>,
 }
@@ -129,6 +135,10 @@ pub(super) struct BgpJson {
     peer: String,
     state: String,
     peer_as: i64,
+    /// Resolved Device.address of the BGP peer — populated when peer_address maps to a
+    /// known device via BGP_SESSION_WITH or DeviceAddress lookup. Empty string when unresolved.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    peer_device: String,
 }
 
 #[derive(Serialize)]

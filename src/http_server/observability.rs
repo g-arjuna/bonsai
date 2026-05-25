@@ -39,7 +39,7 @@ pub(super) async fn topology_handler(
 ) -> Result<Json<TopologyResponse>, (StatusCode, String)> {
     let db = state.store.db();
 
-    let (devices_raw, interfaces_raw, links_raw, bgp_raw, host_endpoints_raw, isis_raw) = tokio::task::spawn_blocking(move || {
+    let (devices_raw, interfaces_raw, links_raw, bgp_raw, bgp_d2d_raw, bfd_d2d_raw, isis_d2d_raw, host_endpoints_raw, isis_raw) = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
 
         // Devices
@@ -117,7 +117,7 @@ pub(super) async fn topology_handler(
         let links_raw: Vec<(String, String, String, String, i64, bool)> =
             links_raw.into_iter().chain(mgmt_raw).collect();
 
-        // BGP neighbors
+        // BGP neighbors (protocol-level BgpNeighbor nodes)
         let bgp_rows = conn
             .query(
                 "MATCH (n:BgpNeighbor) \
@@ -134,6 +134,33 @@ pub(super) async fn topology_handler(
                 )
             })
             .collect();
+
+        // BGP Device-to-Device resolved sessions (peer_device lookup for L3 topology)
+        let bgp_d2d_raw: Vec<(String, String, String)> = match conn.query(
+            "MATCH (a:Device)-[r:BGP_SESSION_WITH]->(b:Device) \
+             RETURN a.address, b.address, r.session_state",
+        ) {
+            Ok(rows) => rows.map(|row| (read_str(&row[0]), read_str(&row[1]), read_str(&row[2]))).collect(),
+            Err(_) => Vec::new(),
+        };
+
+        // BFD Device-to-Device resolved sessions
+        let bfd_d2d_raw: Vec<(String, String, String)> = match conn.query(
+            "MATCH (a:Device)-[r:BFD_PEER_WITH]->(b:Device) \
+             RETURN a.address, b.address, r.session_state",
+        ) {
+            Ok(rows) => rows.map(|row| (read_str(&row[0]), read_str(&row[1]), read_str(&row[2]))).collect(),
+            Err(_) => Vec::new(),
+        };
+
+        // ISIS Device-to-Device resolved adjacencies
+        let isis_d2d_raw: Vec<(String, String, String)> = match conn.query(
+            "MATCH (a:Device)-[r:ISIS_NEIGHBOR_WITH]->(b:Device) \
+             RETURN a.address, b.address, r.adjacency_state",
+        ) {
+            Ok(rows) => rows.map(|row| (read_str(&row[0]), read_str(&row[1]), read_str(&row[2]))).collect(),
+            Err(_) => Vec::new(),
+        };
 
         // HostEndpoints and their CONNECTED_TO interface links
         let he_rows = conn
@@ -177,7 +204,7 @@ pub(super) async fn topology_handler(
             Err(_) => Vec::new(),
         };
 
-        Ok::<_, String>((devices_raw, interfaces_raw, links_raw, bgp_raw, host_endpoints_raw, isis_raw))
+        Ok::<_, String>((devices_raw, interfaces_raw, links_raw, bgp_raw, bgp_d2d_raw, bfd_d2d_raw, isis_d2d_raw, host_endpoints_raw, isis_raw))
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -220,16 +247,24 @@ pub(super) async fn topology_handler(
         ifaces.sort_by(|a, b| a.name.cmp(&b.name));
     }
 
-    // Group BGP by device
+    // Group BGP by device, enriching with peer_device when resolved via BGP_SESSION_WITH
     let mut bgp_by_device: HashMap<String, Vec<BgpJson>> = HashMap::new();
     for (dev, peer, st, peer_as) in bgp_raw {
         if !allowed_devices.contains(&dev) {
             continue;
         }
+        // peer_device: look for any D2D edge from this device where the resolved peer
+        // matches a known device address (peer may equal resolved address, or peer IP
+        // is a loopback that resolves to the device).
+        let peer_device = bgp_d2d_raw.iter()
+            .find(|(src, dst, _)| src == &dev && (dst == &peer || allowed_devices.contains(dst)))
+            .map(|(_, dst, _)| dst.clone())
+            .unwrap_or_default();
         bgp_by_device.entry(dev).or_default().push(BgpJson {
             peer,
             state: st,
             peer_as,
+            peer_device,
         });
     }
 
@@ -305,9 +340,39 @@ pub(super) async fn topology_handler(
         })
         .collect();
 
+    // BFD Device-to-Device links (L3 layer)
+    let bfd_links: Vec<LinkJson> = bfd_d2d_raw
+        .into_iter()
+        .filter(|(src, dst, _)| allowed_devices.contains(src) && allowed_devices.contains(dst))
+        .map(|(src_device, dst_device, state)| LinkJson {
+            src_device,
+            src_iface: format!("BFD[{state}]"),
+            dst_device,
+            dst_iface: String::new(),
+            bytes_total: 0,
+            is_mgmt: false,
+        })
+        .collect();
+
+    // ISIS Device-to-Device links (L3 layer)
+    let isis_links: Vec<LinkJson> = isis_d2d_raw
+        .into_iter()
+        .filter(|(src, dst, _)| allowed_devices.contains(src) && allowed_devices.contains(dst))
+        .map(|(src_device, dst_device, state)| LinkJson {
+            src_device,
+            src_iface: format!("ISIS[{state}]"),
+            dst_device,
+            dst_iface: String::new(),
+            bytes_total: 0,
+            is_mgmt: false,
+        })
+        .collect();
+
     Ok(Json(TopologyResponse {
         schema_version: API_SCHEMA_VERSION.to_string(),
         devices,
+        bfd_links,
+        isis_links,
         links,
         host_endpoints,
     }))

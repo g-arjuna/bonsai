@@ -610,6 +610,69 @@ pub fn link_host_endpoint_to_interface(
     Ok(())
 }
 
+/// Attempt to resolve a peer IP address (loopback, interface IP, mgmt IP, etc.) to a
+/// known Device's primary address (bare IP PK).
+///
+/// Resolution order (first hit wins):
+///   1. Exact `Device.address` match  — mgmt/gNMI IP onboarded directly
+///   2. `DeviceAddress.ip` lookup      — any registered secondary IP (loopback, extra_ip, etc.)
+///   3. `EntityIdentity.mgmt_ip` match — learned from LLDP or onboarding enrichment
+///
+/// Returns `Some(device_address)` on success, `None` when peer is unknown.
+/// All failures are silent (best-effort) so callers should treat None as "not yet known".
+pub fn resolve_peer_to_device(conn: &Connection<'_>, peer_ip: &str) -> Option<String> {
+    if peer_ip.is_empty() {
+        return None;
+    }
+    let bare = crate::registry::strip_port(peer_ip);
+
+    // Tier 1: exact Device.address match
+    if let Ok(mut stmt) = conn.prepare("MATCH (d:Device {address: $ip}) RETURN d.address LIMIT 1") {
+        if let Ok(mut rows) = conn.execute(&mut stmt, vec![("ip", Value::String(bare.to_string()))]) {
+            if let Some(row) = rows.next() {
+                if let Value::String(addr) = &row[0] {
+                    if !addr.is_empty() {
+                        return Some(addr.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Tier 2: DeviceAddress lookup (loopback, extra_ip, BMP peer, NetFlow exporter, etc.)
+    if let Ok(mut stmt) = conn.prepare(
+        "MATCH (a:DeviceAddress {ip: $ip})-[:KNOWN_ADDRESS_OF]->(d:Device) RETURN d.address LIMIT 1",
+    ) {
+        if let Ok(mut rows) = conn.execute(&mut stmt, vec![("ip", Value::String(bare.to_string()))]) {
+            if let Some(row) = rows.next() {
+                if let Value::String(addr) = &row[0] {
+                    if !addr.is_empty() {
+                        return Some(addr.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Tier 3: EntityIdentity.mgmt_ip (covers Cisco chassis-id-as-mgmt-IP quirk and
+    // any IP learned from LLDP management-address TLV but not yet a DeviceAddress node).
+    if let Ok(mut stmt) = conn.prepare(
+        "MATCH (e:EntityIdentity {mgmt_ip: $ip})<-[:HAS_IDENTITY]-(d:Device) RETURN d.address LIMIT 1",
+    ) {
+        if let Ok(mut rows) = conn.execute(&mut stmt, vec![("ip", Value::String(bare.to_string()))]) {
+            if let Some(row) = rows.next() {
+                if let Value::String(addr) = &row[0] {
+                    if !addr.is_empty() {
+                        return Some(addr.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 pub fn read_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),

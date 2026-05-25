@@ -18,7 +18,8 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use self::common::{
-    link_device_address, link_host_endpoint_to_interface, now_ns, read_str, read_ts_ns, ts,
+    link_device_address, link_host_endpoint_to_interface, now_ns, read_str, read_ts_ns,
+    resolve_peer_to_device, ts,
     upsert_app_flow, upsert_device, upsert_device_address, upsert_device_with_endpoint,
     upsert_host_endpoint,
 };
@@ -516,6 +517,51 @@ impl GraphStore {
 
         conn.query("CREATE REL TABLE IF NOT EXISTS HAS_BFD_SESSION(FROM Device TO BfdSession)")
             .context("create HAS_BFD_SESSION rel")?;
+
+        // Device-to-Device topology relationships — resolved from protocol peer IPs via
+        // the DeviceAddress / EntityIdentity lookup chain. These power the topology UI
+        // L3/L2 layer views and path-finding across all routing/switching protocols.
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS BGP_SESSION_WITH(\
+                FROM Device TO Device, \
+                session_state STRING, \
+                peer_as INT64, \
+                source STRING)",
+        )
+        .context("create BGP_SESSION_WITH rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS BFD_PEER_WITH(\
+                FROM Device TO Device, \
+                session_state STRING, \
+                source STRING)",
+        )
+        .context("create BFD_PEER_WITH rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS LLDP_NEIGHBOR(\
+                FROM Device TO Device, \
+                local_if STRING, \
+                remote_if STRING, \
+                source STRING)",
+        )
+        .context("create LLDP_NEIGHBOR rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS ISIS_NEIGHBOR_WITH(\
+                FROM Device TO Device, \
+                adjacency_state STRING, \
+                if_name STRING, \
+                source STRING)",
+        )
+        .context("create ISIS_NEIGHBOR_WITH rel")?;
+
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS MONITORS_BGP_ROUTER(\
+                FROM Device TO Device, \
+                source STRING)",
+        )
+        .context("create MONITORS_BGP_ROUTER rel")?;
 
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS IsisAdjacency(\
@@ -5745,6 +5791,34 @@ fn write_bgp_neighbor(
     )
     .context("execute PEERS_WITH merge")?;
 
+    // Register peer_address as a DeviceAddress candidate. When the peer device is onboarded
+    // (or its loopback is added via extra_ips), KNOWN_ADDRESS_OF will link it back to a Device.
+    // This lets resolve_peer_to_device() succeed on a subsequent write even if the peer
+    // was not yet known at the time of this write.
+    let _ = crate::graph::common::upsert_device_address(conn, peer_addr, "bgp_peer", now.clone());
+
+    // Attempt to resolve peer_address → Device and create a BGP_SESSION_WITH edge.
+    // Best-effort: silently skipped when the peer is not yet in the graph.
+    if let Some(peer_device) = resolve_peer_to_device(conn, peer_addr) {
+        let mut bgp_d2d = conn
+            .prepare(
+                "MATCH (a:Device {address: $src}), (b:Device {address: $dst}) \
+                 MERGE (a)-[r:BGP_SESSION_WITH {source: 'gnmi'}]->(b) \
+                 SET r.session_state = $state, r.peer_as = $peer_as",
+            )
+            .context("prepare BGP_SESSION_WITH merge")?;
+        let _ = conn.execute(
+            &mut bgp_d2d,
+            vec![
+                ("src", Value::String(bare.to_string())),
+                ("dst", Value::String(peer_device.clone())),
+                ("state", Value::String(new_state.clone())),
+                ("peer_as", Value::Int64(peer_as)),
+            ],
+        );
+        debug!(src = %bare, dst = %peer_device, state = %new_state, "BGP_SESSION_WITH resolved");
+    }
+
     info!(
         target = %u.target,
         peer = %peer_addr,
@@ -5847,6 +5921,34 @@ fn write_bfd_session(
     )
     .context("execute HAS_BFD_SESSION merge")?;
 
+    // Register remote_address as a DeviceAddress candidate so it can be resolved later.
+    if !remote_address.is_empty() {
+        let _ = crate::graph::common::upsert_device_address(conn, &remote_address, "bfd_peer", now.clone());
+    }
+
+    // Attempt to resolve remote_address → Device and create BFD_PEER_WITH(Device→Device).
+    // BFD transport IPs are often loopbacks or interface addresses different from the mgmt IP.
+    if !remote_address.is_empty() {
+        if let Some(peer_device) = resolve_peer_to_device(conn, &remote_address) {
+            let mut bfd_d2d = conn
+                .prepare(
+                    "MATCH (a:Device {address: $src}), (b:Device {address: $dst}) \
+                     MERGE (a)-[r:BFD_PEER_WITH {source: 'gnmi'}]->(b) \
+                     SET r.session_state = $state",
+                )
+                .context("prepare BFD_PEER_WITH merge")?;
+            let _ = conn.execute(
+                &mut bfd_d2d,
+                vec![
+                    ("src", Value::String(bare.to_string())),
+                    ("dst", Value::String(peer_device.clone())),
+                    ("state", Value::String(new_state.clone())),
+                ],
+            );
+            debug!(src = %bare, dst = %peer_device, state = %new_state, "BFD_PEER_WITH resolved");
+        }
+    }
+
     info!(
         target = %u.target,
         if_name = %if_name,
@@ -5946,6 +6048,53 @@ fn write_isis_adjacency(
         ],
     )
     .context("execute HAS_ISIS_ADJACENCY merge")?;
+
+    // ISIS system_id is a dotted NET (e.g. "0100.0000.0002.00"). Vendors ALSO advertise
+    // the same system ID via LLDP chassis-id TLV, which lands in EntityIdentity.chassis_id.
+    // We try that path first, then fall back to resolving via DeviceAddress (rare, but
+    // some implementations use a loopback IP derived from the system ID).
+    let isis_peer_device: Option<String> = {
+        let mut found = None;
+        // Path 1: EntityIdentity.chassis_id (Cisco/Juniper/Nokia/Arista via LLDP)
+        if let Ok(mut stmt) = conn.prepare(
+            "MATCH (e:EntityIdentity {chassis_id: $cid})<-[:HAS_IDENTITY]-(d:Device) \
+             RETURN d.address LIMIT 1",
+        ) {
+            if let Ok(mut rows) = conn.execute(&mut stmt, vec![("cid", Value::String(system_id.to_string()))]) {
+                if let Some(row) = rows.next() {
+                    if let Value::String(addr) = &row[0] {
+                        if !addr.is_empty() { found = Some(addr.clone()); }
+                    }
+                }
+            }
+        }
+        // Path 2: resolve_peer_to_device (loopback IP derived from system-id, if registered)
+        if found.is_none() {
+            found = resolve_peer_to_device(conn, system_id);
+        }
+        found
+    };
+
+    if let Some(peer_device) = isis_peer_device {
+        let mut isis_d2d = conn
+            .prepare(
+                "MATCH (a:Device {address: $src}), (b:Device {address: $dst}) \
+                 MERGE (a)-[r:ISIS_NEIGHBOR_WITH {source: $src_type, if_name: $ifn}]->(b) \
+                 SET r.adjacency_state = $state",
+            )
+            .context("prepare ISIS_NEIGHBOR_WITH merge")?;
+        let _ = conn.execute(
+            &mut isis_d2d,
+            vec![
+                ("src", Value::String(bare.to_string())),
+                ("dst", Value::String(peer_device.clone())),
+                ("state", Value::String(new_state.clone())),
+                ("ifn", Value::String(if_name.to_string())),
+                ("src_type", Value::String(source_type.to_string())),
+            ],
+        );
+        debug!(src = %bare, dst = %peer_device, state = %new_state, "ISIS_NEIGHBOR_WITH resolved");
+    }
 
     info!(
         target = %u.target,
@@ -7591,6 +7740,63 @@ fn upsert_bmp_session(
             ("id", Value::String(id)),
         ],
     )?;
+
+    // Register both addresses as DeviceAddress candidates so resolve_peer_to_device()
+    // can find them even if the remote device is only known via BMP (no gNMI).
+    if !event.peer_address.is_empty() {
+        let _ = crate::graph::common::upsert_device_address(
+            conn, &event.peer_address, "bmp_peer", ts(update.timestamp_ns),
+        );
+    }
+    if !event.router_address.is_empty() {
+        let _ = crate::graph::common::upsert_device_address(
+            conn, &event.router_address, "bmp_router", ts(update.timestamp_ns),
+        );
+    }
+
+    // MONITORS_BGP_ROUTER: collector Device → monitored router Device (via router_address).
+    // router_address is the BGP router-id of the monitored device, which typically equals
+    // its loopback0 IP. Resolves when the router is also a gNMI-onboarded device or its
+    // loopback is registered via extra_ips.
+    if !event.router_address.is_empty() {
+        if let Some(router_device) = resolve_peer_to_device(conn, &event.router_address) {
+            let mut mon = conn.prepare(
+                "MATCH (a:Device {address: $src}), (b:Device {address: $dst}) \
+                 MERGE (a)-[r:MONITORS_BGP_ROUTER {source: 'bmp'}]->(b)",
+            )?;
+            let _ = conn.execute(
+                &mut mon,
+                vec![
+                    ("src", Value::String(bare.to_string())),
+                    ("dst", Value::String(router_device.clone())),
+                ],
+            );
+            debug!(collector = %bare, router = %router_device, "MONITORS_BGP_ROUTER resolved");
+        }
+    }
+
+    // BGP_SESSION_WITH from BMP perspective: the BMP-reported device (update.target) has
+    // a BGP session with the peer (event.peer_address). Both may be known devices.
+    if !event.peer_address.is_empty() {
+        if let Some(peer_device) = resolve_peer_to_device(conn, &event.peer_address) {
+            let mut bgp_d2d = conn.prepare(
+                "MATCH (a:Device {address: $src}), (b:Device {address: $dst}) \
+                 MERGE (a)-[r:BGP_SESSION_WITH {source: 'bmp'}]->(b) \
+                 SET r.session_state = $state, r.peer_as = $peer_as",
+            )?;
+            let _ = conn.execute(
+                &mut bgp_d2d,
+                vec![
+                    ("src", Value::String(bare.to_string())),
+                    ("dst", Value::String(peer_device.clone())),
+                    ("state", Value::String(event.session_state.clone())),
+                    ("peer_as", Value::Int64(event.peer_as as i64)),
+                ],
+            );
+            debug!(src = %bare, dst = %peer_device, "BGP_SESSION_WITH (bmp) resolved");
+        }
+    }
+
     Ok(())
 }
 
@@ -7718,28 +7924,60 @@ fn write_lldp_neighbor(
     // A HostEndpoint with kind="unknown" is a placeholder that NetBox enrichment or
     // operator data can promote to a richer record later.
     if !chassis_id.is_empty() {
-        let peer_is_known_device = {
-            // Check by hostname match
-            let mut chk = conn
-                .prepare("MATCH (d:Device {hostname: $hn}) RETURN d.address LIMIT 1")
-                .ok();
-            let found_by_hostname = chk.as_mut().map_or(false, |s| {
-                conn.execute(s, vec![("hn", Value::String(system_name.clone()))])
-                    .ok()
-                    .map_or(false, |mut rows| rows.next().is_some())
+        // Register chassis_id as a DeviceAddress candidate (Cisco/Junos put mgmt IP here;
+        // even when it's a MAC it's harmless — resolve_peer_to_device will reject non-IPs).
+        let _ = crate::graph::common::upsert_device_address(conn, &chassis_id, "lldp", now.clone());
+
+        // Resolve the peer to a known Device using the 3-tier lookup:
+        //   1. Device.address exact match (chassis_id == mgmt IP — Cisco IOS-XR, Arista)
+        //   2. DeviceAddress.ip (loopback registered as extra_ip)
+        //   3. EntityIdentity.mgmt_ip
+        // Also try by hostname in case chassis_id is a MAC but system_name matches Device.hostname.
+        let peer_device_addr: Option<String> = resolve_peer_to_device(conn, &chassis_id)
+            .or_else(|| {
+                // Hostname fallback — Nokia SRL, Arista, FRR all set system-name = hostname
+                if system_name.is_empty() {
+                    return None;
+                }
+                let mut chk = conn
+                    .prepare("MATCH (d:Device {hostname: $hn}) RETURN d.address LIMIT 1")
+                    .ok()?;
+                let mut rows = conn
+                    .execute(&mut chk, vec![("hn", Value::String(system_name.clone()))])
+                    .ok()?;
+                if let Some(row) = rows.next() {
+                    if let Value::String(addr) = &row[0] {
+                        if !addr.is_empty() {
+                            return Some(addr.clone());
+                        }
+                    }
+                }
+                None
             });
-            // Also check chassis_id as an IP address (some vendors put mgmt IP in chassis-id)
-            let mut chk2 = conn
-                .prepare("MATCH (d:Device) WHERE d.address STARTS WITH $pfx RETURN d.address LIMIT 1")
-                .ok();
-            let found_by_chassis = !chassis_id.is_empty()
-                && chk2.as_mut().map_or(false, |s| {
-                    conn.execute(s, vec![("pfx", Value::String(chassis_id.clone()))])
-                        .ok()
-                        .map_or(false, |mut rows| rows.next().is_some())
-                });
-            found_by_hostname || found_by_chassis
-        };
+
+        let peer_is_known_device = peer_device_addr.is_some();
+
+        // When peer is a known Device, create a direct LLDP_NEIGHBOR(Device→Device) edge
+        // so the topology view can render L2 adjacencies without relying on Interface nodes.
+        if let Some(ref peer_addr) = peer_device_addr {
+            let mut lldp_d2d = conn
+                .prepare(
+                    "MATCH (a:Device {address: $src}), (b:Device {address: $dst}) \
+                     MERGE (a)-[r:LLDP_NEIGHBOR {local_if: $lif, source: 'lldp'}]->(b) \
+                     SET r.remote_if = $rif",
+                )
+                .context("prepare LLDP_NEIGHBOR merge")?;
+            let _ = conn.execute(
+                &mut lldp_d2d,
+                vec![
+                    ("src", Value::String(bare.to_string())),
+                    ("dst", Value::String(peer_addr.clone())),
+                    ("lif", Value::String(local_if.to_string())),
+                    ("rif", Value::String(port_id.clone())),
+                ],
+            );
+            debug!(src = %bare, dst = %peer_addr, local_if, "LLDP_NEIGHBOR D2D resolved");
+        }
 
         if !peer_is_known_device {
             let now_ns = u.timestamp_ns;
@@ -7758,7 +7996,7 @@ fn write_lldp_neighbor(
                 debug!(error = %e, chassis_id, "HostEndpoint upsert from LLDP skipped");
             } else {
                 // Wire CONNECTED_TO: HostEndpoint → local Interface of the observing device
-                let local_iface_id = format!("{}:{local_if}", u.target);
+                let local_iface_id = format!("{}:{local_if}", bare);
                 let _ = link_host_endpoint_to_interface(conn, &chassis_id, &local_iface_id);
                 debug!(chassis_id, system_name, "HostEndpoint created from LLDP");
             }

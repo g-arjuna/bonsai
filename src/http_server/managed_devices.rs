@@ -425,6 +425,7 @@ pub(super) async fn site_summary_handler(
             peer: String::new(),
             state: session_state,
             peer_as: 0,
+            peer_device: String::new(),
         });
     }
 

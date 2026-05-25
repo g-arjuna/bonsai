@@ -10,7 +10,7 @@
 
   let loading = $state(true);
   let error   = $state(null);
-  let topology = $state({ devices: [], links: [], host_endpoints: [] });
+  let topology = $state({ devices: [], links: [], bfd_links: [], isis_links: [], host_endpoints: [] });
   let svgEl    = $state(null);
   let showHosts = $state(false);
   let showMgmt  = $state(false);
@@ -76,17 +76,33 @@
       : []
   );
 
+  // BGP links: use resolved peer_device field (populated when peer IP maps to a known Device
+  // via BGP_SESSION_WITH edge). Falls back to direct peer match (when mgmt IP == peer IP).
   const bgpLinks = $derived(
     filteredDevices.flatMap(dev =>
       (dev.bgp ?? [])
-        .map(b => ({ bgp: b, peerDevice: b.peer_device ?? b.peer_device_address ?? b.peer }))
-        .filter(({ peerDevice }) => filteredAddresses.has(peerDevice))
+        .map(b => ({ bgp: b, peerDevice: b.peer_device || (filteredAddresses.has(b.peer) ? b.peer : null) }))
+        .filter(({ peerDevice }) => peerDevice && filteredAddresses.has(peerDevice))
         .map(({ bgp: b, peerDevice }) => ({
           src_device: dev.address, src_iface: 'BGP',
           dst_device: peerDevice, dst_iface: 'BGP',
-          state: b.state, bytes_total: 0, isBgp: true,
+          state: b.state, bytes_total: 0, isBgp: true, proto: 'bgp',
         }))
     )
+  );
+
+  // BFD links: Device-to-Device resolved from BFD_PEER_WITH edges
+  const bfdLinks = $derived(
+    (topology.bfd_links ?? []).filter(l =>
+      filteredAddresses.has(l.src_device) && filteredAddresses.has(l.dst_device)
+    ).map(l => ({ ...l, isBfd: true, proto: 'bfd' }))
+  );
+
+  // ISIS links: Device-to-Device resolved from ISIS_NEIGHBOR_WITH edges
+  const isisLinks = $derived(
+    (topology.isis_links ?? []).filter(l =>
+      filteredAddresses.has(l.src_device) && filteredAddresses.has(l.dst_device)
+    ).map(l => ({ ...l, isIsis: true, proto: 'isis' }))
   );
 
   // True only when at least one device in the filtered set has BGP data
@@ -94,20 +110,21 @@
 
   const unresolvedBgpSessions = $derived(
     filteredDevices.reduce((n, dev) =>
-      n + (dev.bgp ?? []).filter(b => !filteredAddresses.has(b.peer_device ?? b.peer_device_address ?? b.peer)).length
+      n + (dev.bgp ?? []).filter(b => !b.peer_device && !filteredAddresses.has(b.peer)).length
     , 0)
   );
 
+  // Only show notice when there are NO resolved L3 links at all (BGP+BFD+ISIS)
   const layerNotice = $derived(
-    layerFilter === 'l3' && !bgpLinks.length && unresolvedBgpSessions
-      ? 'BGP sessions exist but peers are loopback addresses — L3 edges cannot be rendered yet.'
+    layerFilter === 'l3' && !bgpLinks.length && !bfdLinks.length && !isisLinks.length && unresolvedBgpSessions
+      ? 'BGP sessions exist but peer IPs are unresolved loopbacks. Add extra_ips in device config to fix.'
       : null
   );
 
   const visibleLinks = $derived(
-    layerFilter === 'l3' ? [...bgpLinks, ...mgmtLinks] :
+    layerFilter === 'l3' ? [...bgpLinks, ...bfdLinks, ...isisLinks, ...mgmtLinks] :
     layerFilter === 'l2' ? [...lldpLinks, ...mgmtLinks] :
-    [...lldpLinks, ...bgpLinks, ...mgmtLinks]
+    [...lldpLinks, ...bgpLinks, ...bfdLinks, ...isisLinks, ...mgmtLinks]
   );
 
   const maxBytes = $derived(Math.max(1, ...topology.links.map(l => l.bytes_total ?? 0)));
@@ -327,18 +344,22 @@
         if (tracePath && pathLinkSet.has(key)) return C.accentPrimary;
         if (l.is_mgmt) return C.textTertiary;
         if (l.isBgp)   return l.state === 'established' ? C.stateHealthy : C.stateFailed;
+        if (l.isBfd)   return '#fb923c'; // orange for BFD
+        if (l.isIsis)  return '#a78bfa'; // purple for ISIS
         return linkColor(l);
       })
       .attr('stroke-width', l => {
         const key = [l.source.id ?? l.source, l.target.id ?? l.target].sort().join('|');
         return tracePath && pathLinkSet.has(key) ? 2.5 : 1.5;
       })
-      .attr('stroke-dasharray', l => l.is_mgmt ? '4,4' : l.isBgp ? '5,3' : null)
+      .attr('stroke-dasharray', l => l.is_mgmt ? '4,4' : l.isBgp ? '5,3' : l.isBfd ? '6,2' : l.isIsis ? '3,3' : null)
       .attr('opacity', l => l.is_mgmt ? 0.35 : 0.72);
 
     link.append('title').text(l =>
-      l.is_mgmt ? `MGMT  ${l.src_iface} ↔ ${l.dst_iface}  (out-of-band)`
-      : l.isBgp ? `BGP  ${l.src_device} ↔ ${l.dst_device}  [${l.state}]`
+      l.is_mgmt  ? `MGMT  ${l.src_iface} ↔ ${l.dst_iface}  (out-of-band)`
+      : l.isBgp  ? `BGP  ${l.src_device} ↔ ${l.dst_device}  [${l.state}]`
+      : l.isBfd  ? `BFD  ${l.src_device} ↔ ${l.dst_device}  [${l.src_iface}]`
+      : l.isIsis ? `ISIS  ${l.src_device} ↔ ${l.dst_device}  [${l.src_iface}]`
       : `${l.src_iface} ↔ ${l.dst_iface}  (${(l.bytes_total / 1e9).toFixed(2)} GB)`
     );
 
@@ -527,7 +548,13 @@
       <span class="legend-item"><span class="shape hex"></span>Distribution</span>
       <span class="legend-item"><span class="shape circ"></span>Access/Leaf</span>
       {#if hasBgpData}
-        <span class="legend-item"><span class="link-dash"></span>BGP</span>
+        <span class="legend-item"><span class="link-dash bgp"></span>BGP</span>
+      {/if}
+      {#if (topology.bfd_links ?? []).length}
+        <span class="legend-item"><span class="link-dash bfd"></span>BFD</span>
+      {/if}
+      {#if (topology.isis_links ?? []).length}
+        <span class="legend-item"><span class="link-dash isis"></span>ISIS</span>
       {/if}
       <span class="legend-item"><span class="heatmap-bar"></span>Link util</span>
       {#if showHosts}
@@ -711,6 +738,15 @@
   .link-dash {
     width: 18px; height: 2px;
     background: repeating-linear-gradient(90deg, #34d399 0, #34d399 4px, transparent 4px, transparent 7px);
+  }
+  .link-dash.bgp {
+    background: repeating-linear-gradient(90deg, #34d399 0, #34d399 4px, transparent 4px, transparent 7px);
+  }
+  .link-dash.bfd {
+    background: repeating-linear-gradient(90deg, #fb923c 0, #fb923c 5px, transparent 5px, transparent 7px);
+  }
+  .link-dash.isis {
+    background: repeating-linear-gradient(90deg, #a78bfa 0, #a78bfa 3px, transparent 3px, transparent 6px);
   }
   .heatmap-bar {
     width: 30px; height: 6px; border-radius: 2px;
