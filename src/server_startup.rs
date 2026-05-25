@@ -1924,7 +1924,10 @@ pub(super) async fn spawn_subscriber(
         return Ok(());
     }
 
-    let ca_cert_pem = load_ca_cert_pem(&target).await?;
+    let ca_cert_pem = match &target.ca_cert {
+        Some(path) => Some(bonsai::tls_util::read_cert_pem(path, credentials).await?),
+        None => None,
+    };
     let resolved_credentials = resolve_target_credentials(&target, credentials)?;
     let (username, password) = match resolved_credentials {
         Some(credentials) => {
@@ -1976,17 +1979,6 @@ pub(super) async fn restart_subscriber(
     .await
 }
 
-pub(super) async fn load_ca_cert_pem(target: &TargetConfig) -> Result<Option<Vec<u8>>> {
-    match &target.ca_cert {
-        Some(path) => {
-            let bytes = tokio::fs::read(path)
-                .await
-                .with_context(|| format!("could not read CA cert from '{path}'"))?;
-            Ok(Some(bytes))
-        }
-        None => Ok(None),
-    }
-}
 
 pub(super) async fn seed_subscription_plan(
     target: TargetConfig,

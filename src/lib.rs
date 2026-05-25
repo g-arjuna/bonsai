@@ -48,6 +48,7 @@ pub mod signals;
 pub mod store;
 pub mod streaming;
 pub mod subscriber;
+pub mod tls_util;
 pub mod subscription_status;
 pub mod synthesizer;
 pub mod telemetry;

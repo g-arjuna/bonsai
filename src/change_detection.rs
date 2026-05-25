@@ -80,7 +80,7 @@ impl ChangeDetectionRuntime {
             tx,
             history_limit: layered.history_limit,
         });
-        let capture_registry = Arc::new(MultiSourceEnricherRegistry::from_layered_config(&layered));
+        let capture_registry = Arc::new(MultiSourceEnricherRegistry::from_layered_config_with_vault(&layered, Arc::clone(&credentials)));
 
         tokio::spawn(run_worker(
             rx,

@@ -565,6 +565,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             tls_domain: option_string(request.tls_domain),
             role_hint: option_string(request.role_hint),
             environment_archetype: None,
+            vault: None,
         };
 
         let report = discovery::discover_device(input)
@@ -1255,9 +1256,11 @@ async fn target_conn_info_from_config(
 ) -> Result<TargetConnInfo, Status> {
     let ca_cert_pem =
         match &target.ca_cert {
-            Some(path) => Some(tokio::fs::read(path).await.map_err(|e| {
-                Status::internal(format!("could not read CA cert from '{path}': {e}"))
-            })?),
+            Some(path) => Some(
+                crate::tls_util::read_cert_pem(path, credentials)
+                    .await
+                    .map_err(|e| Status::internal(format!("{e:#}")))?
+            ),
             None => None,
         };
 

@@ -7,7 +7,7 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig};
 
 use crate::config::TargetConfig;
-use crate::credentials::ResolvedCredential;
+use crate::credentials::{CredentialVault, ResolvedCredential};
 use crate::proto::gnmi::g_nmi_client::GNmiClient;
 use crate::proto::gnmi::{Encoding, GetRequest, Path, PathElem, TypedValue};
 
@@ -39,6 +39,7 @@ pub trait MultiSourceEnricher: Send + Sync {
 #[derive(Clone, Debug)]
 pub struct GnmiGetConfigEnricher {
     pub paths: Vec<String>,
+    pub vault: Option<std::sync::Arc<CredentialVault>>,
 }
 
 #[async_trait::async_trait]
@@ -56,7 +57,7 @@ impl MultiSourceEnricher for GnmiGetConfigEnricher {
         target: &TargetConfig,
         credentials: Option<&ResolvedCredential>,
     ) -> Result<MultiSourceCapture> {
-        let channel = connect(target).await?;
+        let channel = connect(target, self.vault.as_deref()).await?;
         let username = credentials.map(|creds| creds.username.clone());
         let password = credentials.map(|creds| creds.password.clone());
 
@@ -114,7 +115,7 @@ impl MultiSourceEnricher for GnmiGetConfigEnricher {
     }
 }
 
-async fn connect(target: &TargetConfig) -> Result<Channel> {
+async fn connect(target: &TargetConfig, vault: Option<&CredentialVault>) -> Result<Channel> {
     let use_tls = target.ca_cert.is_some();
     let uri = if use_tls {
         format!("https://{}", target.address)
@@ -133,9 +134,13 @@ async fn connect(target: &TargetConfig) -> Result<Channel> {
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| anyhow::anyhow!("TLS target is missing tls_domain"))?;
-        let pem = tokio::fs::read(ca_path)
-            .await
-            .with_context(|| format!("could not read CA cert from '{ca_path}'"))?;
+        let pem = if let Some(v) = vault {
+            crate::tls_util::read_cert_pem(ca_path, v).await?
+        } else {
+            tokio::fs::read(ca_path)
+                .await
+                .with_context(|| format!("could not read CA cert from '{ca_path}'"))?
+        };
         let tls = ClientTlsConfig::new()
             .ca_certificate(Certificate::from_pem(pem))
             .domain_name(domain.to_string());

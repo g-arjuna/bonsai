@@ -26,6 +26,8 @@ pub struct DiscoveryInput {
     pub ca_cert_path: Option<String>,
     pub tls_domain: Option<String>,
     pub role_hint: Option<String>,
+    /// Optional vault for resolving `vault:name` cert references.
+    pub vault: Option<std::sync::Arc<crate::credentials::CredentialVault>>,
     /// Caller-supplied environment archetype (e.g. "data_center", "service_provider").
     /// When provided, overrides the role-inferred fallback so profile selection uses
     /// the device's actual environment rather than a guess from its role.
@@ -89,6 +91,7 @@ pub async fn discover_device(input: DiscoveryInput) -> Result<DiscoveryReport> {
         &address,
         input.ca_cert_path.as_deref(),
         input.tls_domain.as_deref(),
+        input.vault.as_deref(),
     )
     .await?;
 
@@ -161,6 +164,7 @@ pub async fn gnmi_readiness_report(
         &address,
         input.ca_cert_path.as_deref(),
         input.tls_domain.as_deref(),
+        input.vault.as_deref(),
     )
     .await
     {
@@ -663,6 +667,7 @@ async fn connect(
     address: &str,
     ca_cert_path: Option<&str>,
     tls_domain: Option<&str>,
+    vault: Option<&crate::credentials::CredentialVault>,
 ) -> Result<Channel> {
     let use_tls = ca_cert_path.is_some();
     let scheme = if use_tls { "https" } else { "http" };
@@ -673,9 +678,13 @@ async fn connect(
         .timeout(DISCOVERY_TIMEOUT);
 
     if let Some(path) = ca_cert_path {
-        let cert_pem = tokio::fs::read(path)
-            .await
-            .with_context(|| format!("could not read CA cert from '{path}'"))?;
+        let cert_pem = if let Some(v) = vault {
+            crate::tls_util::read_cert_pem(path, v).await?
+        } else {
+            tokio::fs::read(path)
+                .await
+                .with_context(|| format!("could not read CA cert from '{path}'"))?
+        };
         let domain = tls_domain.unwrap_or_default().trim();
         if domain.is_empty() {
             bail!("tls_domain is required when ca_cert_path is provided");

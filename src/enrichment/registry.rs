@@ -23,6 +23,22 @@ impl MultiSourceEnricherRegistry {
             enrichers: vec![
                 Arc::new(GnmiGetConfigEnricher {
                     paths: config.default_gnmi_get_paths.clone(),
+                    vault: None,
+                }),
+                Arc::new(ParserChainCliEnricher::new(config.parser_chain.clone())),
+            ],
+        }
+    }
+
+    pub fn from_layered_config_with_vault(
+        config: &LayeredIngestionConfig,
+        vault: Arc<crate::credentials::CredentialVault>,
+    ) -> Self {
+        Self {
+            enrichers: vec![
+                Arc::new(GnmiGetConfigEnricher {
+                    paths: config.default_gnmi_get_paths.clone(),
+                    vault: Some(vault),
                 }),
                 Arc::new(ParserChainCliEnricher::new(config.parser_chain.clone())),
             ],
@@ -153,7 +169,7 @@ mod tests {
     fn registry() -> MultiSourceEnricherRegistry {
         MultiSourceEnricherRegistry {
             enrichers: vec![
-                Arc::new(GnmiGetConfigEnricher { paths: vec![] }),
+                Arc::new(GnmiGetConfigEnricher { paths: vec![], vault: None }),
                 Arc::new(ParserChainCliEnricher::new(Default::default())),
             ],
         }

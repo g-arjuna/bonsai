@@ -15,6 +15,28 @@
   // Copy / download state keyed by cert name
   let downloading = $state({});
 
+  // Verify tool
+  let verifyPath = $state('');
+  let verifyLoading = $state(false);
+  let verifyResult = $state(null);
+
+  async function verifyPathCheck() {
+    verifyLoading = true;
+    verifyResult = null;
+    try {
+      const r = await fetch('/api/certs/verify', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: verifyPath }),
+      });
+      verifyResult = await r.json();
+    } catch (e) {
+      verifyResult = { ok: false, error: e.message };
+    } finally {
+      verifyLoading = false;
+    }
+  }
+
   async function load() {
     loading = true;
     error = null;
@@ -207,10 +229,64 @@
     <div class="row-count">{certs.length} certificate{certs.length !== 1 ? 's' : ''}</div>
   {/if}
 
+  <div class="verify-tool">
+    <h4>Verify cert path</h4>
+    <p class="muted">Check that a cert path (file or <code>vault:name</code>) is reachable from the server. Useful for troubleshooting gNMI TLS errors.</p>
+    <div class="verify-row">
+      <input
+        class="verify-input"
+        type="text"
+        placeholder="vault:srl-lab-ca  or  lab/fast-iteration/ca.pem"
+        bind:value={verifyPath}
+      />
+      <button class="btn-secondary" onclick={verifyPathCheck} disabled={verifyLoading || !verifyPath}>
+        {verifyLoading ? 'Checking…' : 'Check'}
+      </button>
+    </div>
+    {#if verifyResult}
+      <div class="verify-result {verifyResult.ok ? 'ok' : 'fail'}">
+        {#if verifyResult.ok}
+          ✓ Reachable via <strong>{verifyResult.source}</strong>
+        {:else}
+          ✗ {verifyResult.error}
+        {/if}
+      </div>
+    {/if}
+  </div>
+
   <div class="usage-hint">
-    <h4>Usage in device configuration</h4>
-    <p>When adding a device via the onboarding wizard, enter the cert name in the <strong>CA cert path</strong> field prefixed with <code>vault:</code>, e.g. <code>vault:srl-lab-ca</code>. The collector resolves it at connection time.</p>
-    <p class="muted">This integration is planned — currently the vault cert alias is for reference. Direct file paths still work.</p>
+    <h4>Integration with gNMI &amp; mTLS</h4>
+    <div class="usage-grid">
+      <div class="usage-item">
+        <div class="usage-icon">📡</div>
+        <div>
+          <strong>gNMI device subscriptions</strong>
+          <p>Set <code>ca_cert = "vault:srl-lab-ca"</code> in the device config (or onboarding wizard CA cert path field). The subscriber resolves it from vault at connect time.</p>
+        </div>
+      </div>
+      <div class="usage-item">
+        <div class="usage-icon">🔍</div>
+        <div>
+          <strong>gNMI discovery &amp; readiness</strong>
+          <p>Discovery and gNMI readiness checks also resolve <code>vault:</code> references automatically — no file copy needed on the ops box.</p>
+        </div>
+      </div>
+      <div class="usage-item">
+        <div class="usage-icon">🔧</div>
+        <div>
+          <strong>gNMI Set / remediation</strong>
+          <p>Playbook-driven gNMI Set operations use the same vault-aware resolver, so remediation targets can use vault cert refs.</p>
+        </div>
+      </div>
+      <div class="usage-item">
+        <div class="usage-icon">🔒</div>
+        <div>
+          <strong>mTLS collector ↔ core</strong>
+          <p>Runtime mTLS (<code>runtime.tls.*</code> in bonsai.toml) still uses file paths — these are loaded once at startup. Store them via the file system and point bonsai.toml at the path.</p>
+        </div>
+      </div>
+    </div>
+    <p class="muted hint-note">Vault cert PEM is encrypted at rest with your vault passphrase. Cert references like <code>vault:name</code> work anywhere a <code>ca_cert</code> path is accepted.</p>
   </div>
 </div>
 
@@ -269,8 +345,22 @@
   .btn-danger-sm { background: #7f1d1d; color: #fca5a5; border: 1px solid #f8717144; border-radius: 5px; padding: 3px 8px; font-size: 0.78rem; cursor: pointer; }
   .btn-danger-sm:hover { background: #991b1b; }
 
-  .usage-hint { margin-top: 32px; padding: 16px 18px; background: var(--color-surface, #1a1a2e); border: 1px solid var(--color-border, #2d2d44); border-radius: 8px; }
-  .usage-hint h4 { margin: 0 0 8px; font-size: 0.9rem; }
+  .verify-tool { margin-top: 28px; padding: 16px 18px; background: var(--color-surface, #1a1a2e); border: 1px solid var(--color-border, #2d2d44); border-radius: 8px; }
+  .verify-tool h4 { margin: 0 0 6px; font-size: 0.9rem; }
+  .verify-row { display: flex; gap: 8px; margin-top: 10px; }
+  .verify-input { flex: 1; font-family: monospace; font-size: 0.84rem; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--color-border, #2d2d44); background: var(--color-bg, #111827); color: inherit; }
+  .verify-result { margin-top: 8px; font-size: 0.82rem; padding: 6px 10px; border-radius: 5px; }
+  .verify-result.ok { background: #10b98118; color: #10b981; border: 1px solid #10b98144; }
+  .verify-result.fail { background: #7f1d1d22; color: #f87171; border: 1px solid #f8717144; }
+
+  .usage-hint { margin-top: 20px; padding: 16px 18px; background: var(--color-surface, #1a1a2e); border: 1px solid var(--color-border, #2d2d44); border-radius: 8px; }
+  .usage-hint h4 { margin: 0 0 12px; font-size: 0.9rem; }
   .usage-hint p { margin: 0 0 6px; font-size: 0.82rem; }
+  .usage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 12px; }
+  .usage-item { display: flex; gap: 10px; align-items: flex-start; }
+  .usage-icon { font-size: 1.3rem; flex-shrink: 0; margin-top: 2px; }
+  .usage-item strong { font-size: 0.84rem; display: block; margin-bottom: 3px; }
+  .usage-item p { margin: 0; font-size: 0.78rem; color: var(--color-muted, #6b7280); }
+  .hint-note { font-size: 0.78rem; }
   .muted { color: var(--color-muted, #6b7280); }
 </style>

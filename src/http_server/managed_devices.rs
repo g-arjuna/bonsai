@@ -77,6 +77,7 @@ pub(super) async fn discover_handler(
         tls_domain: option_string(req.tls_domain),
         role_hint: option_string(req.role_hint),
         environment_archetype: option_string(req.environment_archetype),
+        vault: Some(std::sync::Arc::clone(&state.credentials)),
     })
     .await
     .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
@@ -223,6 +224,7 @@ pub(super) async fn test_credential_handler(
         tls_domain: option_string(req.tls_domain),
         role_hint: option_string(req.role_hint),
         environment_archetype: None,
+        vault: Some(std::sync::Arc::clone(&state.credentials)),
     })
     .await
     .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;

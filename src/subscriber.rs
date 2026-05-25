@@ -395,10 +395,24 @@ pub async fn stop_all_subscribers(subscribers: &mut SubscriberHandleMap) {
     }
 }
 
-pub async fn load_ca_cert_pem(target: &TargetConfig) -> Result<Option<Vec<u8>>> {
+/// Vault-aware cert loader — resolves `vault:name` references via the vault, falls back to filesystem.
+pub async fn load_ca_cert_pem(target: &TargetConfig, vault: &crate::credentials::CredentialVault) -> Result<Option<Vec<u8>>> {
     match &target.ca_cert {
         Some(path) => {
-            let bytes = tokio::fs::read(path).await?;
+            let bytes = crate::tls_util::read_cert_pem(path, vault).await?;
+            Ok(Some(bytes))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Filesystem-only cert loader — used by collector mode where no vault is present.
+pub async fn load_ca_cert_pem_fs(target: &TargetConfig) -> Result<Option<Vec<u8>>> {
+    match &target.ca_cert {
+        Some(path) => {
+            let bytes = tokio::fs::read(path)
+                .await
+                .with_context(|| format!("could not read CA cert from '{path}'"))?;
             Ok(Some(bytes))
         }
         None => Ok(None),
@@ -422,7 +436,7 @@ pub async fn spawn_subscriber_with_creds(
         return Ok(());
     }
 
-    let ca_cert_pem = load_ca_cert_pem(&target).await?;
+    let ca_cert_pem = load_ca_cert_pem_fs(&target).await?;
 
     let subscriber = GnmiSubscriber::new(
         target.address.clone(),

@@ -1399,3 +1399,19 @@ pub async fn delete_cert_handler(
     tracing::info!(name = %name, "cert removed from vault");
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// POST /api/certs/verify — check if a cert path (file or vault:name) is reachable.
+/// Body: { "path": "vault:srl-lab-ca" } or { "path": "lab/ca.pem" }
+pub async fn verify_cert_path_handler(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if path.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "path is required" }));
+    }
+    match crate::tls_util::verify_cert_path(&path, &state.credentials).await {
+        Ok(source) => Json(serde_json::json!({ "ok": true, "source": source, "path": path })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string(), "path": path })),
+    }
+}

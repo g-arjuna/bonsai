@@ -701,6 +701,7 @@ pub(super) async fn device_gnmi_readiness_handler(
             tls_domain: target.tls_domain.clone(),
             role_hint: target.role.clone(),
             environment_archetype: None,
+            vault: Some(std::sync::Arc::clone(&state.credentials)),
         },
         &state.layered_ingestion.gnmi_known_issues_path,
     )
@@ -740,6 +741,7 @@ pub(super) async fn device_streaming_readiness_handler(
                     tls_domain: target.tls_domain.clone(),
                     role_hint: target.role.clone(),
                     environment_archetype: None,
+                    vault: Some(std::sync::Arc::clone(&state.credentials)),
                 },
                 &state.layered_ingestion.gnmi_known_issues_path,
             )
@@ -792,6 +794,7 @@ pub(super) async fn device_recommendations_handler(
         tls_domain: target.tls_domain.clone(),
         role_hint: target.role.clone(),
         environment_archetype: None,
+        vault: Some(std::sync::Arc::clone(&state.credentials)),
     };
 
     let discovery_report = match discovery::discover_device(discovery_input.clone()).await {
