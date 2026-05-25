@@ -15,9 +15,31 @@ pub fn now_ns() -> i64 {
         .unwrap_or_default()
 }
 
+/// Upsert a Device node keyed on the **bare IP** (no port). The gNMI endpoint
+/// (which may include a port, e.g. "10.0.0.1:57400") is stored as `gnmi_endpoint`
+/// for reference but is not the identity key.
+///
+/// `address` MUST already be the stripped bare IP — call
+/// `crate::registry::strip_port(raw_address)` before passing here.
 pub fn upsert_device(
     conn: &Connection<'_>,
     address: &str,
+    vendor: &str,
+    hostname: &str,
+    role: &str,
+    site: &str,
+    now: Value,
+) -> Result<()> {
+    let bare = crate::registry::strip_port(address);
+    let endpoint = if bare != address { address } else { "" };
+    upsert_device_with_endpoint(conn, bare, endpoint, vendor, hostname, role, site, now)
+}
+
+/// Like `upsert_device` but also records the gNMI endpoint (host:port).
+pub fn upsert_device_with_endpoint(
+    conn: &Connection<'_>,
+    address: &str,
+    gnmi_endpoint: &str,
     vendor: &str,
     hostname: &str,
     role: &str,
@@ -41,7 +63,7 @@ pub fn upsert_device(
             ("addr", Value::String(address.to_string())),
             ("vendor", Value::String(vendor.to_string())),
             ("hn", Value::String(hostname.to_string())),
-            ("ts", now),
+            ("ts", now.clone()),
         ],
     )
     .context("execute Device upsert")?;
@@ -75,6 +97,31 @@ pub fn upsert_device(
         )
         .context("execute Device site SET")?;
     }
+    // Store gnmi_endpoint (host:port) when provided — it differs from address when port is set.
+    if !gnmi_endpoint.is_empty() && gnmi_endpoint != address {
+        let mut s = conn
+            .prepare("MATCH (d:Device {address: $addr}) SET d.gnmi_endpoint = $ep")
+            .context("prepare Device gnmi_endpoint SET")?;
+        let _ = conn.execute(
+            &mut s,
+            vec![
+                ("addr", Value::String(address.to_string())),
+                ("ep", Value::String(gnmi_endpoint.to_string())),
+            ],
+        );
+    }
+
+    // Register the primary IP as a DeviceAddress so signal sources that only see
+    // the bare IP (NetFlow, sFlow, SNMP, BMP) can resolve back to this Device.
+    let _ = upsert_device_address(conn, address, "gnmi", now.clone());
+    // If a separate gnmi_endpoint was provided, also register it so an exact
+    // host:port lookup (legacy code paths) still finds the node.
+    if !gnmi_endpoint.is_empty() && gnmi_endpoint != address {
+        let ep_ip = crate::registry::strip_port(gnmi_endpoint);
+        if ep_ip != address {
+            let _ = upsert_device_address(conn, ep_ip, "gnmi", now.clone());
+        }
+    }
 
     // EntityIdentity: keep the normalised identity record in sync with every device upsert.
     // chassis_id is unknown at this point (learned later from LLDP).
@@ -82,6 +129,77 @@ pub fn upsert_device(
         let _ = upsert_entity_identity(conn, address, hostname, "", address, "gnmi", now_ns());
     }
 
+    Ok(())
+}
+
+/// Register an IP address as a `DeviceAddress` node and link it to `Device {address: device_ip}`
+/// via a `KNOWN_ADDRESS_OF` edge. Idempotent — safe to call on every telemetry write.
+///
+/// Use this wherever a signal source reveals an additional IP for a device:
+/// - extra_ips from TargetConfig (onboarding discovery)
+/// - BMP TCP connection source IP
+/// - NetFlow/sFlow exporter IP
+/// - SNMP trap source IP
+/// - LLDP management-address TLV
+///
+/// `device_ip` must be the canonical bare IP (Device.address primary key).
+/// `signal_ip` is the IP being registered (may equal `device_ip` for the primary).
+/// `source` is a short tag: "gnmi", "extra_ip", "bmp_peer", "netflow", "sflow",
+///                         "snmp", "syslog_peer", "lldp".
+pub fn upsert_device_address(
+    conn: &Connection<'_>,
+    signal_ip: &str,
+    source: &str,
+    now: Value,
+) -> Result<()> {
+    if signal_ip.is_empty() {
+        return Ok(());
+    }
+    let mut stmt = conn
+        .prepare(
+            "MERGE (a:DeviceAddress {ip: $ip}) \
+             ON CREATE SET a.source = $src, a.updated_at = $ts \
+             ON MATCH SET a.updated_at = $ts",
+        )
+        .context("prepare DeviceAddress upsert")?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("ip", Value::String(signal_ip.to_string())),
+            ("src", Value::String(source.to_string())),
+            ("ts", now),
+        ],
+    )
+    .context("execute DeviceAddress upsert")?;
+    Ok(())
+}
+
+/// Link a DeviceAddress node to its owning Device via KNOWN_ADDRESS_OF.
+/// Called once the Device node is guaranteed to exist.
+/// Silent no-op if either node is missing.
+pub fn link_device_address(
+    conn: &Connection<'_>,
+    signal_ip: &str,
+    device_ip: &str,
+) -> Result<()> {
+    if signal_ip.is_empty() || device_ip.is_empty() {
+        return Ok(());
+    }
+    let mut stmt = conn
+        .prepare(
+            "MATCH (a:DeviceAddress {ip: $sip}), (d:Device {address: $dip}) \
+             MERGE (a)-[:KNOWN_ADDRESS_OF]->(d)",
+        )
+        .context("prepare KNOWN_ADDRESS_OF merge")?;
+    if let Err(e) = conn.execute(
+        &mut stmt,
+        vec![
+            ("sip", Value::String(signal_ip.to_string())),
+            ("dip", Value::String(device_ip.to_string())),
+        ],
+    ) {
+        tracing::debug!(error = %e, signal_ip, device_ip, "KNOWN_ADDRESS_OF edge skipped");
+    }
     Ok(())
 }
 

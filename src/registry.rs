@@ -535,6 +535,25 @@ impl DeviceRegistry for ApiRegistry {
     }
 }
 
+/// Return the host portion of `address`, stripping any trailing `:port`.
+/// `"10.0.0.1:57400"` → `"10.0.0.1"`, `"10.0.0.1"` → `"10.0.0.1"`,
+/// `"[::1]:57400"` → `"::1"`, `"router.lab"` → `"router.lab"`.
+/// This is the canonical Device identity key used throughout the graph.
+pub fn strip_port(address: &str) -> &str {
+    let s = address.trim();
+    if let Some(inner) = s.strip_prefix('[') {
+        if let Some(end) = inner.find(']') {
+            return &inner[..end];
+        }
+    }
+    if let Some((host, _port)) = s.rsplit_once(':') {
+        if !host.contains(':') {
+            return host;
+        }
+    }
+    s
+}
+
 fn normalize_address(address: &str) -> Result<String> {
     let normalized = address.trim();
     if is_valid_host_port(normalized) || is_valid_host(normalized) {

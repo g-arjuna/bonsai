@@ -18,8 +18,9 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use self::common::{
-    link_host_endpoint_to_interface, now_ns, read_str, read_ts_ns, ts, upsert_app_flow,
-    upsert_device, upsert_host_endpoint,
+    link_device_address, link_host_endpoint_to_interface, now_ns, read_str, read_ts_ns, ts,
+    upsert_app_flow, upsert_device, upsert_device_address, upsert_device_with_endpoint,
+    upsert_host_endpoint,
 };
 use crate::config::TargetConfig;
 use crate::correlation_buffer::{CorrelationBuffer, CorrelationKey, semantic_key_for_event};
@@ -438,6 +439,9 @@ impl GraphStore {
         let _ = conn.query("ALTER TABLE Device ADD bmp_sys_name STRING DEFAULT ''");
         let _ = conn.query("ALTER TABLE Device ADD bmp_sys_descr STRING DEFAULT ''");
         let _ = conn.query("ALTER TABLE Device ADD bmp_admin_string STRING DEFAULT ''");
+        // Device identity refactor: address is now the bare IP (no port).
+        // gnmi_endpoint stores the original host:port used for gNMI collection.
+        let _ = conn.query("ALTER TABLE Device ADD gnmi_endpoint STRING DEFAULT ''");
 
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS Site(\
@@ -565,6 +569,25 @@ impl GraphStore {
         .context("create EntityIdentity table")?;
         conn.query("CREATE REL TABLE IF NOT EXISTS HAS_IDENTITY(FROM Device TO EntityIdentity)")
             .context("create HAS_IDENTITY rel")?;
+
+        // DeviceAddress: one node per IP/hostname known for a physical device.
+        // A device may have a loopback (used for gNMI), a management IP (syslog/SNMP
+        // source), and secondary data-plane IPs. All resolve back to the same Device.
+        // Source: "gnmi" (primary), "extra_ip" (from TargetConfig.extra_ips or CLI),
+        //         "bmp_peer" (BMP TCP source IP), "lldp" (LLDP mgmt-addr TLV),
+        //         "netflow" (exporter IP), "sflow", "snmp", "syslog_peer".
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS DeviceAddress(\
+                ip         STRING,\
+                source     STRING,\
+                updated_at TIMESTAMP_NS,\
+                PRIMARY KEY (ip))",
+        )
+        .context("create DeviceAddress table")?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS KNOWN_ADDRESS_OF(FROM DeviceAddress TO Device)",
+        )
+        .context("create KNOWN_ADDRESS_OF rel")?;
 
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS StateChangeEvent(\
@@ -2103,6 +2126,7 @@ impl GraphStore {
             let conn = Connection::new(&db).context("site sync connection")?;
             let now = ts(now_ns());
             for target in targets {
+                let primary = target.primary_ip().to_string();
                 let role = target.role.as_deref().unwrap_or_default();
                 let site_str = target.site.as_deref().unwrap_or_default();
                 upsert_device(
@@ -2114,6 +2138,14 @@ impl GraphStore {
                     site_str,
                     now.clone(),
                 )?;
+                // Register extra_ips from onboarding discovery as DeviceAddress nodes.
+                for ip in &target.extra_ips {
+                    let ip = ip.trim();
+                    if !ip.is_empty() {
+                        let _ = upsert_device_address(&conn, ip, "extra_ip", now.clone());
+                        let _ = link_device_address(&conn, ip, &primary);
+                    }
+                }
                 let Some(site_name) = target
                     .site
                     .as_deref()
@@ -2133,7 +2165,7 @@ impl GraphStore {
                     environment_id: String::new(),
                 };
                 upsert_site_record(&conn, &site, now.clone())?;
-                link_device_to_site(&conn, &target.address, &site.id)?;
+                link_device_to_site(&conn, &primary, &site.id)?;
             }
             Ok::<_, anyhow::Error>(())
         })
@@ -4424,7 +4456,8 @@ fn write_optical_channel(
     u: &TelemetryUpdate,
     channel_name: &str,
 ) -> Result<()> {
-    let id = format!("{}:{}", u.target, channel_name);
+    let bare = crate::registry::strip_port(&u.target);
+    let id = format!("{}:{}", bare, channel_name);
     let now = ts(u.timestamp_ns);
     upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
 
@@ -4458,7 +4491,7 @@ fn write_optical_channel(
         &mut stmt,
         vec![
             ("id", Value::String(id.clone())),
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("name", Value::String(channel_name.to_string())),
             ("mode", Value::String(op_mode)),
             ("freq", Value::Double(freq)),
@@ -4482,7 +4515,7 @@ fn write_optical_channel(
     conn.execute(
         &mut edge,
         vec![
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("id", Value::String(id)),
         ],
     )
@@ -4496,7 +4529,8 @@ fn write_power_unit(
     unit_name: &str,
     kind: &str,
 ) -> Result<()> {
-    let id = format!("pdu:{}:{}", u.target, unit_name);
+    let bare = crate::registry::strip_port(&u.target);
+    let id = format!("pdu:{}:{}", bare, unit_name);
     let now = ts(u.timestamp_ns);
     upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
 
@@ -4522,7 +4556,7 @@ fn write_power_unit(
         &mut stmt,
         vec![
             ("id", Value::String(id.clone())),
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("name", Value::String(unit_name.to_string())),
             ("kind", Value::String(kind.to_string())),
             ("oc", Value::Int64(outlet_count)),
@@ -4544,7 +4578,7 @@ fn write_power_unit(
     conn.execute(
         &mut edge,
         vec![
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("id", Value::String(id)),
         ],
     )
@@ -4559,12 +4593,13 @@ fn write_config_change_event(
     new_value: &serde_json::Value,
     event_tx: &broadcast::Sender<BonsaiEvent>,
 ) -> Result<()> {
+    let bare = crate::registry::strip_port(&update.target);
     let now = ts(update.timestamp_ns);
     upsert_device(conn, &update.target, &update.vendor, &update.hostname, "", "", now.clone())?;
 
     let id = format!(
         "{}::{}::{}",
-        update.target,
+        bare,
         yang_path,
         update.timestamp_ns
     );
@@ -4584,7 +4619,7 @@ fn write_config_change_event(
         &mut stmt,
         vec![
             ("id", Value::String(id.clone())),
-            ("addr", Value::String(update.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("yang_path", Value::String(yang_path.to_string())),
             ("new_val", Value::String(new_val_str.clone())),
             ("ts", now),
@@ -4601,14 +4636,14 @@ fn write_config_change_event(
     conn.execute(
         &mut edge,
         vec![
-            ("addr", Value::String(update.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("id", Value::String(id)),
         ],
     )
     .context("execute HAS_CONFIG_CHANGE merge")?;
 
     let evt = BonsaiEvent {
-        device_address: update.target.clone(),
+        device_address: bare.to_string(),
         event_type: "config_change_event".to_string(),
         detail_json: serde_json::json!({
             "yang_path": yang_path,
@@ -4640,7 +4675,7 @@ fn write_otlp_span(
     );
     if service_name.is_empty() {
         let _ = event_tx.send(BonsaiEvent {
-            device_address: update.target.clone(),
+            device_address: crate::registry::strip_port(&update.target).to_string(),
             event_type: "otlp_span_event".to_string(),
             detail_json: serde_json::json!({
                 "service_name": service_name,
@@ -4764,7 +4799,7 @@ fn write_otlp_span(
     }
 
     let _ = event_tx.send(BonsaiEvent {
-        device_address: update.target.clone(),
+        device_address: crate::registry::strip_port(&update.target).to_string(),
         event_type: "otlp_span_event".to_string(),
         detail_json: serde_json::json!({
             "service_name": service_name,
@@ -4917,20 +4952,24 @@ fn write_netflow_record(
         update.timestamp_ns,
     )?;
 
+    // Register exporter IP as DeviceAddress so it resolves to any Device node
+    // whose primary bare IP matches — covers gNMI-registered devices.
+    let exporter_bare = crate::registry::strip_port(exporter_address);
+    let _ = upsert_device_address(conn, exporter_bare, "netflow", ts(update.timestamp_ns));
+
     // Track A2: CARRIES_FLOW — link the exporting Device to this AppFlow.
+    // Now uses exact bare-IP match since Device.address is always the bare IP.
     // Silent no-op if the Device node doesn't exist yet (collector-only mode).
     let mut carries = conn
         .prepare(
-            "MATCH (d:Device), (f:AppFlow {id: $fid}) \
-             WHERE d.address = $addr OR d.address STARTS WITH $addr_pfx \
+            "MATCH (d:Device {address: $addr}), (f:AppFlow {id: $fid}) \
              MERGE (d)-[:CARRIES_FLOW]->(f)",
         )
         .context("prepare CARRIES_FLOW merge")?;
     conn.execute(
         &mut carries,
         vec![
-            ("addr", Value::String(exporter_address.to_string())),
-            ("addr_pfx", Value::String(format!("{exporter_address}:"))),
+            ("addr", Value::String(exporter_bare.to_string())),
             ("fid", Value::String(id.clone())),
         ],
     )
@@ -5023,18 +5062,20 @@ fn write_sflow_record(
         update.timestamp_ns,
     )?;
 
+    // Register exporter IP as DeviceAddress for sFlow.
+    let exporter_bare = crate::registry::strip_port(exporter_address);
+    let _ = upsert_device_address(conn, exporter_bare, "sflow", ts(update.timestamp_ns));
+
     let mut carries = conn
         .prepare(
-            "MATCH (d:Device), (f:AppFlow {id: $fid}) \
-             WHERE d.address = $addr OR d.address STARTS WITH $addr_pfx \
+            "MATCH (d:Device {address: $addr}), (f:AppFlow {id: $fid}) \
              MERGE (d)-[:CARRIES_FLOW]->(f)",
         )
         .context("prepare CARRIES_FLOW merge (sflow)")?;
     conn.execute(
         &mut carries,
         vec![
-            ("addr", Value::String(exporter_address.to_string())),
-            ("addr_pfx", Value::String(format!("{exporter_address}:"))),
+            ("addr", Value::String(exporter_bare.to_string())),
             ("fid", Value::String(id.clone())),
         ],
     )
@@ -5215,7 +5256,8 @@ fn write_interface_summary(
     u: &TelemetryUpdate,
     if_name: &str,
 ) -> Result<()> {
-    let id = format!("{}:{}", u.target, if_name);
+    let bare = crate::registry::strip_port(&u.target);
+    let id = format!("{}:{}", bare, if_name);
     let now = ts(u.timestamp_ns);
 
     upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
@@ -5278,7 +5320,7 @@ fn write_interface_summary(
         &mut stmt,
         vec![
             ("id", Value::String(id.clone())),
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("name", Value::String(if_name.to_string())),
             ("in_p", Value::Int64(in_pkts)),
             ("out_p", Value::Int64(out_pkts)),
@@ -5303,7 +5345,7 @@ fn write_interface_summary(
     conn.execute(
         &mut edge_stmt,
         vec![
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("id", Value::String(id.clone())),
         ],
     )
@@ -5472,7 +5514,8 @@ fn write_remediation_trust_mark(
 }
 
 fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) -> Result<()> {
-    let id = format!("{}:{}", u.target, if_name);
+    let bare = crate::registry::strip_port(&u.target);
+    let id = format!("{}:{}", bare, if_name);
     let now = ts(u.timestamp_ns);
 
     upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
@@ -5498,7 +5541,7 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
         &mut stmt,
         vec![
             ("id", Value::String(id.clone())),
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("name", Value::String(if_name.to_string())),
             // Field name priority: SRL native → XR native → Junos native → OC
             (
@@ -5591,7 +5634,7 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
     conn.execute(
         &mut edge_stmt,
         vec![
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("id", Value::String(id.clone())),
         ],
     )
@@ -5613,7 +5656,8 @@ fn write_bgp_neighbor(
     event_tx: &broadcast::Sender<BonsaiEvent>,
     corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
-    let id = format!("{}:{}", u.target, peer_addr);
+    let bare = crate::registry::strip_port(&u.target);
+    let id = format!("{}:{}", bare, peer_addr);
     let now = ts(u.timestamp_ns);
     let new_state = json_str(val, "session-state").to_lowercase();
 
@@ -5650,7 +5694,7 @@ fn write_bgp_neighbor(
         &mut stmt,
         vec![
             ("id", Value::String(id.clone())),
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("peer", Value::String(peer_addr.to_string())),
             ("peer_as", Value::Int64(peer_as)),
             ("state", Value::String(new_state.clone())),
@@ -5695,7 +5739,7 @@ fn write_bgp_neighbor(
     conn.execute(
         &mut edge_stmt,
         vec![
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("id", Value::String(id)),
         ],
     )
@@ -5719,7 +5763,8 @@ fn write_bfd_session(
     event_tx: &broadcast::Sender<BonsaiEvent>,
     corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
-    let id = format!("{}:{}:{}", u.target, if_name, local_discriminator);
+    let bare = crate::registry::strip_port(&u.target);
+    let id = format!("{}:{}:{}", bare, if_name, local_discriminator);
     let now = ts(u.timestamp_ns);
     let new_state = json_str(val, "session-state").to_lowercase();
     let remote_address = json_str(val, "remote-address").to_string();
@@ -5752,7 +5797,7 @@ fn write_bfd_session(
         &mut stmt,
         vec![
             ("id", Value::String(id.clone())),
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("if_name", Value::String(if_name.to_string())),
             ("disc", Value::String(local_discriminator.to_string())),
             ("local_addr", Value::String(local_address.clone())),
@@ -5796,7 +5841,7 @@ fn write_bfd_session(
     conn.execute(
         &mut edge_stmt,
         vec![
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("id", Value::String(id)),
         ],
     )
@@ -5823,7 +5868,8 @@ fn write_isis_adjacency(
     event_tx: &broadcast::Sender<BonsaiEvent>,
     corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
-    let id = format!("{}:{}:{}", u.target, system_id, if_name);
+    let bare = crate::registry::strip_port(&u.target);
+    let id = format!("{}:{}:{}", bare, system_id, if_name);
     let now = ts(u.timestamp_ns);
     // SRL's ON_CHANGE sync sends adjacency list entries WITHOUT adjacency-state in the
     // initial response — the entry's existence implies the adjacency is established (up).
@@ -5853,7 +5899,7 @@ fn write_isis_adjacency(
         &mut stmt,
         vec![
             ("id", Value::String(id.clone())),
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("sid", Value::String(system_id.to_string())),
             ("if_name", Value::String(if_name.to_string())),
             ("state", Value::String(new_state.clone())),
@@ -5895,7 +5941,7 @@ fn write_isis_adjacency(
     conn.execute(
         &mut edge_stmt,
         vec![
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("id", Value::String(id)),
         ],
     )
@@ -5973,6 +6019,10 @@ fn write_state_change_event(
     event_tx: &broadcast::Sender<BonsaiEvent>,
     corr_buf: &CorrelationBuffer,
 ) -> Result<String> {
+    // Normalise to bare IP at entry — callers may pass ip:port (gNMI target).
+    // This ensures StateChangeEvent.device_address matches Device.address (bare IP PK).
+    let device_address = crate::registry::strip_port(device_address);
+
     // G6: Emit metric for state change event write
     metrics::counter!("bonsai_graph_state_change_write_total", "event_type" => event_type.to_string(), "source" => source_type.to_string()).increment(1);
 
@@ -6030,7 +6080,10 @@ fn write_state_change_event(
     }
 
     if let Some((semantic_type, sub_key)) = semantic_key_for_event(event_type, detail) {
-        let key = CorrelationKey::new(device_address, semantic_type, sub_key);
+        // Always use bare IP as the correlation key so events from gNMI (ip:port),
+        // syslog, SNMP, BMP, and NetFlow all land in the same slot for the same device.
+        let bare_addr = crate::registry::strip_port(device_address);
+        let key = CorrelationKey::new(bare_addr, semantic_type, sub_key);
         corr_buf.record(key, id.clone(), source_type.to_string(), timestamp_ns, detail.to_string());
     }
 
@@ -6097,6 +6150,7 @@ fn write_syslog_fact_event(
         "status" => join_status.to_string(),
     )
     .increment(1);
+    let bare_target = crate::registry::strip_port(&update.target).to_string();
     let detail = SyslogFactEventDetail {
         fact_type: fact_type.to_string(),
         category: fact.category,
@@ -6108,7 +6162,7 @@ fn write_syslog_fact_event(
         field_schema: fact.field_schema,
         fields: fact.fields,
         device_context: json!({
-            "device_address": update.target,
+            "device_address": bare_target,
             "vendor": update.vendor,
             "hostname": update.hostname,
             "role": update.role,
@@ -6119,7 +6173,7 @@ fn write_syslog_fact_event(
     let detail_json = serde_json::to_string(&detail).context("serialize syslog fact detail")?;
     let _ = write_state_change_event(
         conn,
-        &update.target,
+        &bare_target,
         event_type,
         &detail_json,
         "syslog",
@@ -6258,6 +6312,7 @@ fn write_snmp_fact_event(
         "status" => join_status.to_string(),
     )
     .increment(1);
+    let bare_target = crate::registry::strip_port(&update.target).to_string();
     let detail_json = serde_json::to_string(&serde_json::json!({
         "fact_type": fact_type,
         "trap_oid": fact.trap_oid,
@@ -6266,7 +6321,7 @@ fn write_snmp_fact_event(
         "field_schema": fact.field_schema,
         "fields": fact.fields,
         "device_context": {
-            "device_address": update.target,
+            "device_address": bare_target,
             "vendor": update.vendor,
             "hostname": update.hostname,
             "role": update.role,
@@ -6277,7 +6332,7 @@ fn write_snmp_fact_event(
     .context("serialize snmp fact detail")?;
     let _ = write_state_change_event(
         conn,
-        &update.target,
+        &bare_target,
         event_type,
         &detail_json,
         "snmp",
@@ -6334,7 +6389,7 @@ fn join_snmp_fact(
                 .execute(
                     &mut stmt,
                     vec![
-                        ("dev", Value::String(update.target.clone())),
+                        ("dev", Value::String(crate::registry::strip_port(&update.target).to_string())),
                         ("peer", Value::String(peer_addr.clone())),
                     ],
                 )
@@ -6667,6 +6722,7 @@ fn write_signal_state_change_event(
     event_tx: &broadcast::Sender<BonsaiEvent>,
     corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
+    let bare = crate::registry::strip_port(&update.target).to_string();
     let now = ts(update.timestamp_ns);
     upsert_device(
         conn,
@@ -6680,7 +6736,7 @@ fn write_signal_state_change_event(
     let detail = serde_json::to_string(&update.value).context("serialize syslog event detail")?;
     let _ = write_state_change_event(
         conn,
-        &update.target,
+        &bare,
         event_type,
         &detail,
         source_type,
@@ -6714,7 +6770,8 @@ fn write_bmp_peer_state(
     // Mirror peer state into BgpNeighbor so the topology API shows BMP-only
     // devices (e.g. frr-rr which has no gNMI) alongside gNMI-sourced peers.
     if !event.peer_address.is_empty() {
-        let bgp_id = format!("{}:{}", update.target, event.peer_address);
+        let bmp_bare = crate::registry::strip_port(&update.target);
+        let bgp_id = format!("{}:{}", bmp_bare, event.peer_address);
         let mut stmt = conn
             .prepare(
                 "MERGE (n:BgpNeighbor {id: $id}) \
@@ -6730,7 +6787,7 @@ fn write_bmp_peer_state(
             &mut stmt,
             vec![
                 ("id", Value::String(bgp_id.clone())),
-                ("addr", Value::String(update.target.clone())),
+                ("addr", Value::String(bmp_bare.to_string())),
                 ("peer", Value::String(event.peer_address.clone())),
                 ("peer_as", Value::Int64(event.peer_as as i64)),
                 ("state", Value::String(event.session_state.clone())),
@@ -6748,14 +6805,15 @@ fn write_bmp_peer_state(
         conn.execute(
             &mut edge,
             vec![
-                ("addr", Value::String(update.target.clone())),
+                ("addr", Value::String(bmp_bare.to_string())),
                 ("id", Value::String(bgp_id)),
             ],
         )
         .context("execute PEERS_WITH merge (bmp)")?;
     }
 
-    let id = format!("{}:{}", update.target, event.peer_address);
+    let bare = crate::registry::strip_port(&update.target);
+    let id = format!("{}:{}", bare, event.peer_address);
     let old_state = get_bmp_session_state(conn, &id)?;
     if old_state.as_deref() != Some(event.session_state.as_str()) {
         let detail = serde_json::to_string(&event).context("serialize BMP peer-state detail")?;
@@ -6794,10 +6852,11 @@ fn write_bmp_route_monitoring(
     upsert_bmp_session(conn, update, &event)?;
     let now = ts(update.timestamp_ns);
     let rib_type = event.rib_type.as_deref().unwrap_or("adj-rib-in-pre-policy");
+    let rib_bare = crate::registry::strip_port(&update.target);
     for route in &event.route_entries {
         let id = format!(
             "{}:{}:{}:{}:{}/{}",
-            update.target, event.peer_address, rib_type, route.afi_safi, route.prefix, route.prefix_len
+            rib_bare, event.peer_address, rib_type, route.afi_safi, route.prefix, route.prefix_len
         );
         let mut stmt = conn.prepare(
             "MERGE (r:BgpRibEntry {id: $id}) \
@@ -6816,7 +6875,7 @@ fn write_bmp_route_monitoring(
             &mut stmt,
             vec![
                 ("id", Value::String(id.clone())),
-                ("addr", Value::String(update.target.clone())),
+                ("addr", Value::String(rib_bare.to_string())),
                 ("peer", Value::String(event.peer_address.clone())),
                 ("afi_safi", Value::String(route.afi_safi.clone())),
                 ("prefix", Value::String(route.prefix.clone())),
@@ -6847,7 +6906,7 @@ fn write_bmp_route_monitoring(
         conn.execute(
             &mut edge_stmt,
             vec![
-                ("addr", Value::String(update.target.clone())),
+                ("addr", Value::String(rib_bare.to_string())),
                 ("id", Value::String(id)),
             ],
         )?;
@@ -6895,6 +6954,7 @@ fn write_bmp_initiation(
     let sys_descr = event.sys_descr.unwrap_or_default();
     let admin_string = event.init_admin_string.unwrap_or_default();
     if !sys_name.is_empty() || !sys_descr.is_empty() {
+        let init_bare = crate::registry::strip_port(&update.target);
         let mut stmt = conn.prepare(
             "MATCH (d:Device {address: $addr}) \
              SET d.bmp_sys_name = $sys_name, \
@@ -6905,7 +6965,7 @@ fn write_bmp_initiation(
         conn.execute(
             &mut stmt,
             vec![
-                ("addr", Value::String(update.target.clone())),
+                ("addr", Value::String(init_bare.to_string())),
                 ("sys_name", Value::String(sys_name)),
                 ("sys_descr", Value::String(sys_descr)),
                 ("admin", Value::String(admin_string)),
@@ -7019,7 +7079,7 @@ fn write_bmp_statistics_report(
                     )
                     .unwrap_or_else(|_| conn.prepare("RETURN ''").unwrap());
                 conn.execute(&mut cq, vec![
-                    ("addr", Value::String(update.target.clone())),
+                    ("addr", Value::String(crate::registry::strip_port(&update.target).to_string())),
                     ("lo", Value::Int64(ts_val - window_ns)),
                     ("hi", Value::Int64(ts_val + window_ns)),
                 ])
@@ -7132,9 +7192,10 @@ fn write_env_sensor(
          ON MATCH SET s.value = $val, s.updated_at = $ts",
     )
     .context("prepare SensorReading upsert")?;
+    let sensor_bare = crate::registry::strip_port(&update.target);
     conn.execute(&mut stmt, vec![
         ("id",   Value::String(sensor_id.clone())),
-        ("dev",  Value::String(update.target.clone())),
+        ("dev",  Value::String(sensor_bare.to_string())),
         ("comp", Value::String(component_name.to_string())),
         ("stype",Value::String(sensor_type.to_string())),
         ("unit", Value::String(unit.to_string())),
@@ -7151,9 +7212,9 @@ fn write_env_sensor(
     .context("prepare REPORTED_BY edge")?;
     conn.execute(&mut edge_stmt, vec![
         ("id",  Value::String(sensor_id.clone())),
-        ("dev", Value::String(update.target.clone())),
+        ("dev", Value::String(sensor_bare.to_string())),
     ])
-    .context("execute REPORTED_BY edge")?;
+    .context("execute REPORTED_BY edge")?
 
     // D4-20 T4: Thermal detection rules
     if sensor_type == "temperature" && reading_value > 0.0 {
@@ -7229,9 +7290,10 @@ fn write_optics_diagnostics(
            o.bias_current_ma = $bias, o.wavelength_nm = $wave, o.updated_at = $ts",
     )
     .context("prepare OpticsTelemetry upsert")?;
+    let optics_bare = crate::registry::strip_port(&update.target);
     conn.execute(&mut stmt, vec![
         ("id",   Value::String(optics_id.clone())),
-        ("dev",  Value::String(update.target.clone())),
+        ("dev",  Value::String(optics_bare.to_string())),
         ("iface",Value::String(if_name.to_string())),
         ("rx",   Value::Double(rx_power)),
         ("tx",   Value::Double(tx_power)),
@@ -7243,7 +7305,7 @@ fn write_optics_diagnostics(
     .context("execute OpticsTelemetry upsert")?;
 
     // OPTICS_ON edge: OpticsTelemetry → Interface
-    let iface_id = format!("{}:{}", update.target, if_name);
+    let iface_id = format!("{}:{}", optics_bare, if_name);
     let mut edge_stmt = conn.prepare(
         "MATCH (o:OpticsTelemetry {id: $oid}), (i:Interface {id: $iid}) \
          MERGE (o)-[:OPTICS_ON]->(i)",
@@ -7284,7 +7346,8 @@ fn write_bgp_ls_state(
             sr_node_sid,
             ..
         } => {
-            let id = format!("{}:{router_id}", update.target);
+            let bare = crate::registry::strip_port(&update.target);
+            let id = format!("{}:{router_id}", bare);
             let mut stmt = conn.prepare(
                 "MERGE (n:BgpLsNode {id: $id}) \
                  ON CREATE SET \
@@ -7298,7 +7361,7 @@ fn write_bgp_ls_state(
                 &mut stmt,
                 vec![
                     ("id", Value::String(id.clone())),
-                    ("addr", Value::String(update.target.clone())),
+                    ("addr", Value::String(bare.to_string())),
                     ("router_id", Value::String(router_id.clone())),
                     ("protocol", Value::String(protocol.clone())),
                     ("asn", Value::Int64(asn.unwrap_or_default() as i64)),
@@ -7317,7 +7380,7 @@ fn write_bgp_ls_state(
             conn.execute(
                 &mut edge_stmt,
                 vec![
-                    ("addr", Value::String(update.target.clone())),
+                    ("addr", Value::String(bare.to_string())),
                     ("id", Value::String(id)),
                 ],
             )?;
@@ -7335,7 +7398,8 @@ fn write_bgp_ls_state(
             srlgs,
             ..
         } => {
-            let id = format!("{}:{local_router_id}->{remote_router_id}", update.target);
+            let bare = crate::registry::strip_port(&update.target);
+            let id = format!("{}:{local_router_id}->{remote_router_id}", bare);
             let mut stmt = conn.prepare(
                 "MERGE (l:BgpLsLink {id: $id}) \
                  ON CREATE SET \
@@ -7357,7 +7421,7 @@ fn write_bgp_ls_state(
                 &mut stmt,
                 vec![
                     ("id", Value::String(id.clone())),
-                    ("addr", Value::String(update.target.clone())),
+                    ("addr", Value::String(bare.to_string())),
                     ("local_router_id", Value::String(local_router_id.clone())),
                     ("remote_router_id", Value::String(remote_router_id.clone())),
                     ("protocol", Value::String(protocol.clone())),
@@ -7401,7 +7465,7 @@ fn write_bgp_ls_state(
             conn.execute(
                 &mut edge_stmt,
                 vec![
-                    ("addr", Value::String(update.target.clone())),
+                    ("addr", Value::String(bare.to_string())),
                     ("id", Value::String(id)),
                 ],
             )?;
@@ -7415,7 +7479,8 @@ fn write_bgp_ls_state(
             status,
             ..
         } => {
-            let id = format!("{}:{}:{}", update.target, color, endpoint);
+            let bare = crate::registry::strip_port(&update.target);
+            let id = format!("{}:{}:{}", bare, color, endpoint);
             let old_status = get_sr_policy_status(conn, &id)?;
             let new_status = status.clone().unwrap_or_else(|| "unknown".to_string());
             let mut stmt = conn.prepare(
@@ -7432,7 +7497,7 @@ fn write_bgp_ls_state(
                 &mut stmt,
                 vec![
                     ("id", Value::String(id.clone())),
-                    ("addr", Value::String(update.target.clone())),
+                    ("addr", Value::String(bare.to_string())),
                     ("name", Value::String(name.clone())),
                     ("endpoint", Value::String(endpoint.clone())),
                     ("color", Value::Int64(*color as i64)),
@@ -7455,7 +7520,7 @@ fn write_bgp_ls_state(
             conn.execute(
                 &mut edge_stmt,
                 vec![
-                    ("addr", Value::String(update.target.clone())),
+                    ("addr", Value::String(bare.to_string())),
                     ("id", Value::String(id.clone())),
                 ],
             )?;
@@ -7483,7 +7548,8 @@ fn upsert_bmp_session(
     update: &TelemetryUpdate,
     event: &BmpEvent,
 ) -> Result<()> {
-    let id = format!("{}:{}", update.target, event.peer_address);
+    let bare = crate::registry::strip_port(&update.target);
+    let id = format!("{}:{}", bare, event.peer_address);
     let mut stmt = conn.prepare(
         "MERGE (s:BmpSession {id: $id}) \
          ON CREATE SET \
@@ -7498,7 +7564,7 @@ fn upsert_bmp_session(
         &mut stmt,
         vec![
             ("id", Value::String(id.clone())),
-            ("addr", Value::String(update.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             (
                 "router_address",
                 Value::String(event.router_address.clone()),
@@ -7521,7 +7587,7 @@ fn upsert_bmp_session(
     conn.execute(
         &mut edge_stmt,
         vec![
-            ("addr", Value::String(update.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("id", Value::String(id)),
         ],
     )?;
@@ -7567,7 +7633,8 @@ fn write_lldp_neighbor(
     neighbor_id: &str,
     val: &serde_json::Value,
 ) -> Result<()> {
-    let id = format!("{}:{}:{}", u.target, local_if, neighbor_id);
+    let bare = crate::registry::strip_port(&u.target);
+    let id = format!("{}:{}:{}", bare, local_if, neighbor_id);
     let now = ts(u.timestamp_ns);
 
     upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
@@ -7593,7 +7660,7 @@ fn write_lldp_neighbor(
         &mut stmt,
         vec![
             ("id", Value::String(id.clone())),
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("local_if", Value::String(local_if.to_string())),
             ("nid", Value::String(neighbor_id.to_string())),
             (
@@ -7620,7 +7687,7 @@ fn write_lldp_neighbor(
     conn.execute(
         &mut edge_stmt,
         vec![
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("id", Value::String(id)),
         ],
     )
@@ -8175,7 +8242,8 @@ fn emit_oper_status_event(
     event_tx: &broadcast::Sender<BonsaiEvent>,
     corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
-    let id = format!("{}:{}", u.target, if_name);
+    let bare = crate::registry::strip_port(&u.target);
+    let id = format!("{}:{}", bare, if_name);
     let normalized_oper_status = oper_status.to_ascii_lowercase();
     let previous_oper_status = read_interface_oper_status(conn, &id)?;
 
@@ -8203,7 +8271,7 @@ fn emit_oper_status_event(
         &mut stmt,
         vec![
             ("id", Value::String(id.clone())),
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("name", Value::String(if_name.to_string())),
             ("oper_status", Value::String(normalized_oper_status.clone())),
             ("ts", ts(u.timestamp_ns)),
@@ -8220,7 +8288,7 @@ fn emit_oper_status_event(
     conn.execute(
         &mut edge_stmt,
         vec![
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("id", Value::String(id)),
         ],
     )
@@ -9249,6 +9317,7 @@ fn write_interface_description(
     if_name: &str,
     description: &str,
 ) -> Result<()> {
+    let bare = crate::registry::strip_port(&update.target);
     let now = ts(update.timestamp_ns);
     
     // Update Interface node with description
@@ -9257,12 +9326,12 @@ fn write_interface_description(
          SET i.description = $description, i.updated_at_ns = $timestamp_ns"
     ).context("prepare update interface description")?;
     conn.execute(&mut stmt, vec![
-        ("device_address", Value::String(update.target.clone())),
+        ("device_address", Value::String(bare.to_string())),
         ("if_name", Value::String(if_name.to_string())),
         ("description", Value::String(description.to_string())),
         ("timestamp_ns", Value::Int64(update.timestamp_ns)),
     ])
-    .context("update interface description")?;
+    .context("update interface description")?
     
     // Trigger service discovery if description contains service indicators
     if description.to_lowercase().contains("api") 
@@ -9302,7 +9371,8 @@ fn write_service_endpoint(
     service_name: &str,
     confidence: f64,
 ) -> Result<()> {
-    let endpoint_id = format!("service-{}-{}-{}", update.target, if_name, service_type);
+    let bare = crate::registry::strip_port(&update.target);
+    let endpoint_id = format!("service-{}-{}-{}", bare, if_name, service_type);
     
     // Create or update ServiceEndpoint node
     let mut stmt = conn.prepare(
@@ -9318,7 +9388,7 @@ fn write_service_endpoint(
     ).context("prepare create service endpoint")?;
     conn.execute(&mut stmt, vec![
         ("endpoint_id", Value::String(endpoint_id.clone())),
-        ("device_address", Value::String(update.target.clone())),
+        ("device_address", Value::String(bare.to_string())),
         ("interface_name", Value::String(if_name.to_string())),
         ("service_type", Value::String(service_type.to_string())),
         ("service_name", Value::String(service_name.to_string())),
@@ -9335,7 +9405,7 @@ fn write_service_endpoint(
          MERGE (d)-[:HOSTS_SERVICE {role: $endpoint_type, updated_at: $updated_at}]->(se)"
     ).context("prepare service endpoint relationship")?;
     conn.execute(&mut stmt, vec![
-        ("device_address", Value::String(update.target.clone())),
+        ("device_address", Value::String(bare.to_string())),
         ("endpoint_id", Value::String(endpoint_id)),
         ("endpoint_type", Value::String("internal".to_string())),
         ("updated_at", Value::Int64(update.timestamp_ns)),
@@ -9353,7 +9423,8 @@ fn write_qos_policy_change(
     _action: &str,
     interface_name: Option<&str>,
 ) -> Result<()> {
-    let policy_id = format!("qos-{}-{}", update.target, policy_name);
+    let bare = crate::registry::strip_port(&update.target);
+    let policy_id = format!("qos-{}-{}", bare, policy_name);
     
     // Create or update QoSPolicy node
     let mut stmt = conn.prepare(
@@ -9365,7 +9436,7 @@ fn write_qos_policy_change(
     ).context("prepare create qos policy")?;
     conn.execute(&mut stmt, vec![
         ("policy_id", Value::String(policy_id.clone())),
-        ("device_address", Value::String(update.target.clone())),
+        ("device_address", Value::String(bare.to_string())),
         ("policy_name", Value::String(policy_name.to_string())),
         ("policy_type", Value::String("dynamic".to_string())),
         ("updated_at_ns", Value::Int64(update.timestamp_ns)),
@@ -9382,7 +9453,7 @@ fn write_qos_policy_change(
         conn.execute(&mut stmt, vec![
             ("if_name", Value::String(if_name.to_string())),
             ("policy_id", Value::String(policy_id)),
-            ("device_address", Value::String(update.target.clone())),
+            ("device_address", Value::String(bare.to_string())),
             ("direction", Value::String("ingress".to_string())),
             ("updated_at", Value::Int64(update.timestamp_ns)),
         ])
@@ -9421,7 +9492,8 @@ fn join_service_process_fact(
     };
     
     // Create ServiceEndpoint node
-    let endpoint_id = format!("service-{}-{}-{}", update.target, service_name, service_type);
+    let svc_bare = crate::registry::strip_port(&update.target);
+    let endpoint_id = format!("service-{}-{}-{}", svc_bare, service_name, service_type);
     
     let mut stmt = conn.prepare(
         "MERGE (se:ServiceEndpoint {id: $endpoint_id}) \
@@ -9435,7 +9507,7 @@ fn join_service_process_fact(
     ).context("prepare create service endpoint from syslog")?;
     conn.execute(&mut stmt, vec![
         ("endpoint_id", Value::String(endpoint_id.clone())),
-        ("device_address", Value::String(update.target.clone())),
+        ("device_address", Value::String(svc_bare.to_string())),
         ("service_name", Value::String(service_name.to_string())),
         ("service_type", Value::String(service_type.to_string())),
         ("endpoint_type", Value::String("internal".to_string())),
@@ -9451,7 +9523,7 @@ fn join_service_process_fact(
          MERGE (d)-[:HOSTS_SERVICE {role: $endpoint_type, updated_at: $updated_at}]->(se)"
     ).context("prepare service endpoint relationship")?;
     conn.execute(&mut stmt, vec![
-        ("device_address", Value::String(update.target.clone())),
+        ("device_address", Value::String(svc_bare.to_string())),
         ("endpoint_id", Value::String(endpoint_id)),
         ("endpoint_type", Value::String("internal".to_string())),
         ("updated_at", Value::Int64(update.timestamp_ns)),
@@ -9478,7 +9550,8 @@ fn join_qos_policy_fact(
     let interface_name = fact.fields.get("interface_name").cloned();
     
     // Create QoSPolicy node
-    let policy_id = format!("qos-{}-{}", update.target, policy_name);
+    let qos_bare = crate::registry::strip_port(&update.target);
+    let policy_id = format!("qos-{}-{}", qos_bare, policy_name);
     
     let mut stmt = conn.prepare(
         "MERGE (qp:QoSPolicy {id: $policy_id}) \
@@ -9489,7 +9562,7 @@ fn join_qos_policy_fact(
     ).context("prepare create qos policy from syslog")?;
     conn.execute(&mut stmt, vec![
         ("policy_id", Value::String(policy_id.clone())),
-        ("device_address", Value::String(update.target.clone())),
+        ("device_address", Value::String(qos_bare.to_string())),
         ("policy_name", Value::String(policy_name.to_string())),
         ("policy_type", Value::String("syslog_triggered".to_string())),
         ("updated_at_ns", Value::Int64(update.timestamp_ns)),
@@ -9506,7 +9579,7 @@ fn join_qos_policy_fact(
         conn.execute(&mut stmt, vec![
             ("if_name", Value::String(if_name.clone())),
             ("policy_id", Value::String(policy_id)),
-            ("device_address", Value::String(update.target.clone())),
+            ("device_address", Value::String(qos_bare.to_string())),
             ("direction", Value::String("ingress".to_string())),
             ("updated_at", Value::Int64(update.timestamp_ns)),
         ])
@@ -9540,7 +9613,7 @@ fn join_connection_anomaly_fact(
     let rows: Vec<Vec<Value>> = conn.execute(
         &mut stmt,
         vec![
-            ("device_address", Value::String(update.target.clone())),
+            ("device_address", Value::String(crate::registry::strip_port(&update.target).to_string())),
             ("service_type", Value::String(service_type.to_string())),
         ],
     )

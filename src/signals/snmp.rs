@@ -528,14 +528,15 @@ impl SnmpTargetMap {
     }
 
     fn resolve(&self, peer_ip: &str, _event: &SnmpTrapEvent) -> ResolvedTarget {
-        let peer_base = peer_ip.split(':').next().unwrap_or(peer_ip);
+        let peer_base = crate::registry::strip_port(peer_ip);
         if let Some(entry) = self.entries.iter().find(|entry| {
-            entry.address.split(':').next().unwrap_or(&entry.address) == peer_base
+            crate::registry::strip_port(&entry.address) == peer_base
         }) {
             return ResolvedTarget {
-                address: entry.address.clone(),
+                // Return bare IP as canonical Device identity — strips gNMI port.
+                address: crate::registry::strip_port(&entry.address).to_string(),
                 hostname: if entry.hostname.is_empty() {
-                    peer_ip.to_string()
+                    peer_base.to_string()
                 } else {
                     entry.hostname.clone()
                 },
@@ -545,8 +546,8 @@ impl SnmpTargetMap {
             };
         }
         ResolvedTarget {
-            address: peer_ip.to_string(),
-            hostname: peer_ip.to_string(),
+            address: peer_base.to_string(),
+            hostname: peer_base.to_string(),
             vendor: String::new(),
             role: String::new(),
             site: String::new(),

@@ -230,7 +230,8 @@ pub(super) async fn device_detail_handler(
         })?;
 
     let db = state.store.db();
-    let addr_clone = address.clone();
+    // Graph Device nodes are keyed by bare IP — strip any gNMI port from the path param.
+    let addr_clone = crate::registry::strip_port(&address).to_string();
 
     let (ifaces, bgp, lldp, state_changes, detections) = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
@@ -388,7 +389,7 @@ pub(super) async fn device_enrichment_handler(
     Path(address): Path<String>,
 ) -> Result<Json<DeviceEnrichmentResponse>, (StatusCode, String)> {
     let db = state.store.db();
-    let addr_clone = address.clone();
+    let addr_clone = crate::registry::strip_port(&address).to_string();
 
     let props = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
@@ -453,7 +454,7 @@ pub(super) async fn device_enrichment_conflicts_handler(
     Path(address): Path<String>,
 ) -> Result<Json<DeviceConflictsResponse>, (StatusCode, String)> {
     let db = state.store.db();
-    let addr_clone = address.clone();
+    let addr_clone = crate::registry::strip_port(&address).to_string();
 
     let conflicts = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
@@ -554,7 +555,7 @@ pub(super) async fn device_cmdb_handler(
     Path(address): Path<String>,
 ) -> Result<Json<DeviceCmdbResponse>, (StatusCode, String)> {
     let db = state.store.db();
-    let addr_clone = address.clone();
+    let addr_clone = crate::registry::strip_port(&address).to_string();
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
@@ -913,7 +914,7 @@ pub(super) async fn persist_gnmi_readiness(
 ) -> anyhow::Result<()> {
     let db = store.db();
     let write_lock = store.write_lock();
-    let address = address.to_string();
+    let address = crate::registry::strip_port(address).to_string();
     let report = report.clone();
     tokio::task::spawn_blocking(move || {
         let _guard = write_lock
@@ -985,7 +986,7 @@ pub(super) async fn persist_streaming_readiness(
 ) -> anyhow::Result<()> {
     let db = store.db();
     let write_lock = store.write_lock();
-    let address = address.to_string();
+    let address = crate::registry::strip_port(address).to_string();
     let report = report.clone();
     tokio::task::spawn_blocking(move || {
         let _guard = write_lock

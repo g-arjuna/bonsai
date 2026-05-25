@@ -1636,6 +1636,11 @@ pub struct TargetConfig {
     /// Whether this device is optional (absence of subscription not fatal).
     #[serde(default)]
     pub optional: bool,
+    /// Additional IPs known for this device (loopback, mgmt, secondary data-plane, etc.).
+    /// Populated during CLI/PyATS discovery. All IPs in this list are registered as
+    /// DeviceAddress nodes in the graph and resolve back to this device.
+    #[serde(default)]
+    pub extra_ips: Vec<String>,
     /// Audit metadata for runtime-managed devices. Seed/config-driven targets may leave these unset.
     #[serde(default)]
     pub created_at_ns: i64,
@@ -1664,6 +1669,12 @@ pub struct SelectedSubscriptionPath {
 }
 
 impl TargetConfig {
+    /// The canonical bare-IP (or hostname) used as the Device.address primary key
+    /// in the graph. Strips any trailing gNMI port from `self.address`.
+    pub fn primary_ip(&self) -> &str {
+        crate::registry::strip_port(&self.address)
+    }
+
     pub fn resolved_username(&self) -> Option<String> {
         if let Some(ref key) = self.username_env {
             return std::env::var(key).ok();

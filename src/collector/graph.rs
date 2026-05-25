@@ -370,7 +370,8 @@ fn write_blocking(conn: &Connection<'_>, update: &TelemetryUpdate) -> Result<()>
 }
 
 fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) -> Result<()> {
-    let id = format!("{}:{}", u.target, if_name);
+    let bare = crate::registry::strip_port(&u.target);
+    let id = format!("{}:{}", bare, if_name);
     let now = ts(u.timestamp_ns);
 
     upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
@@ -394,7 +395,7 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
         &mut stmt,
         vec![
             ("id", Value::String(id.clone())),
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("name", Value::String(if_name.to_string())),
             (
                 "in_pkts",
@@ -460,7 +461,7 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
     conn.execute(
         &mut edge_stmt,
         vec![
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("id", Value::String(id)),
         ],
     )?;
@@ -473,7 +474,8 @@ fn write_bgp_neighbor(
     peer_addr: &str,
     val: &serde_json::Value,
 ) -> Result<()> {
-    let id = format!("{}:{}", u.target, peer_addr);
+    let bare = crate::registry::strip_port(&u.target);
+    let id = format!("{}:{}", bare, peer_addr);
     let now = ts(u.timestamp_ns);
     upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
 
@@ -492,7 +494,7 @@ fn write_bgp_neighbor(
         &mut stmt,
         vec![
             ("id", Value::String(id.clone())),
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("peer", Value::String(peer_addr.to_string())),
             ("peer_as", Value::Int64(json_i64(val, "peer-as"))),
             (
@@ -513,7 +515,7 @@ fn write_bgp_neighbor(
     conn.execute(
         &mut edge_stmt,
         vec![
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("id", Value::String(id)),
         ],
     )?;
@@ -527,7 +529,8 @@ fn write_bfd_session(
     local_discriminator: &str,
     val: &serde_json::Value,
 ) -> Result<()> {
-    let id = format!("{}:{}:{}", u.target, if_name, local_discriminator);
+    let bare = crate::registry::strip_port(&u.target);
+    let id = format!("{}:{}:{}", bare, if_name, local_discriminator);
     let now = ts(u.timestamp_ns);
     upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
 
@@ -548,7 +551,7 @@ fn write_bfd_session(
         &mut stmt,
         vec![
             ("id", Value::String(id.clone())),
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("if_name", Value::String(if_name.to_string())),
             ("disc", Value::String(local_discriminator.to_string())),
             (
@@ -571,7 +574,7 @@ fn write_bfd_session(
     conn.execute(
         &mut edge_stmt,
         vec![
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("id", Value::String(id)),
         ],
     )?;
@@ -585,7 +588,8 @@ fn write_lldp_neighbor(
     neighbor_id: &str,
     val: &serde_json::Value,
 ) -> Result<()> {
-    let id = format!("{}:{}:{}", u.target, local_if, neighbor_id);
+    let bare = crate::registry::strip_port(&u.target);
+    let id = format!("{}:{}:{}", bare, local_if, neighbor_id);
     let now = ts(u.timestamp_ns);
     upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
 
@@ -606,7 +610,7 @@ fn write_lldp_neighbor(
         &mut stmt,
         vec![
             ("id", Value::String(id.clone())),
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("local_if", Value::String(local_if.to_string())),
             ("nid", Value::String(neighbor_id.to_string())),
             (
@@ -626,7 +630,7 @@ fn write_lldp_neighbor(
     conn.execute(
         &mut edge_stmt,
         vec![
-            ("addr", Value::String(u.target.clone())),
+            ("addr", Value::String(bare.to_string())),
             ("id", Value::String(id)),
         ],
     )?;

@@ -636,19 +636,24 @@ impl SyslogTargetMap {
         let hostname = event.hostname.trim().to_ascii_lowercase();
         if let Some(entry) = self.entries.iter().find(|entry| entry.hostname == hostname) {
             return ResolvedTarget {
-                address: entry.address.clone(),
+                // Use bare IP as canonical identity — strip any gNMI port from the
+                // registered address so syslog events land on the same Device node as gNMI.
+                address: crate::registry::strip_port(&entry.address).to_string(),
                 hostname: entry.hostname.clone(),
                 vendor: entry.vendor.clone(),
                 role: entry.role.clone(),
                 site: entry.site.clone(),
             };
         }
+        // Fallback: strip ephemeral source port from peer_addr (e.g. "10.0.0.1:38421" → "10.0.0.1").
+        let fallback_ip = crate::registry::strip_port(if hostname.is_empty() {
+            &event.peer_addr
+        } else {
+            &event.hostname
+        })
+        .to_string();
         ResolvedTarget {
-            address: if hostname.is_empty() {
-                event.peer_addr.clone()
-            } else {
-                event.hostname.clone()
-            },
+            address: fallback_ip,
             hostname: event.hostname.clone(),
             vendor: String::new(),
             role: String::new(),

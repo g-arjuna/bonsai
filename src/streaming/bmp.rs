@@ -1058,12 +1058,7 @@ impl BmpTargetMap {
         let entries = targets
             .iter()
             .map(|target| TargetEntry {
-                address: target
-                    .address
-                    .split(':')
-                    .next()
-                    .unwrap_or(&target.address)
-                    .to_string(),
+                address: crate::registry::strip_port(&target.address).to_string(),
                 hostname: target.hostname.clone().unwrap_or_default(),
                 vendor: target.vendor.clone().unwrap_or_default(),
                 role: target.role.clone().unwrap_or_default(),
@@ -1080,7 +1075,7 @@ impl BmpTargetMap {
             &event.peer_address,
         ];
         for key in lookup {
-            let ip = key.split(':').next().unwrap_or(key);
+            let ip = crate::registry::strip_port(key);
             if let Some(entry) = self.entries.iter().find(|entry| entry.address == ip) {
                 return ResolvedTarget {
                     address: entry.address.clone(),
@@ -1095,19 +1090,13 @@ impl BmpTargetMap {
                 };
             }
         }
+        // Unrecognised BMP speaker — use the bare TCP source IP as a fallback identity.
+        // The graph write path will register this as a DeviceAddress node so if the
+        // device is later onboarded via gNMI the graph can merge them.
+        let fallback = crate::registry::strip_port(&event.collector_peer).to_string();
         ResolvedTarget {
-            address: event
-                .collector_peer
-                .split(':')
-                .next()
-                .unwrap_or(&event.collector_peer)
-                .to_string(),
-            hostname: event
-                .collector_peer
-                .split(':')
-                .next()
-                .unwrap_or(&event.collector_peer)
-                .to_string(),
+            address: fallback.clone(),
+            hostname: fallback,
             vendor: String::new(),
             role: String::new(),
             site: String::new(),

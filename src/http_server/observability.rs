@@ -1628,6 +1628,7 @@ pub(super) async fn db_stats_handler(
             "InvestigationFeedback", "ConfigChange", "PlaybookCatalog",
             "Location", "Prefix", "HostEndpoint", "DeviceEmbedding",
             "GnnScore", "ShunRule", "ChangeRequest", "SubscriptionStatus",
+            "DeviceAddress", "EntityIdentity",
         ];
         let rel_tables = vec![
             "CONNECTED_TO", "HAS_SESSION", "HAS_INTERFACE", "HAS_ISIS_ADJ",
@@ -1638,6 +1639,7 @@ pub(super) async fn db_stats_handler(
             "AFFECTED_BY_CHANGE", "CHANGE_CAUSED_CONFIG",
             "CHANGE_CAUSED_DETECTION", "RELATED_TO_CHANGE",
             "CMDB_PARENT_OF", "LOC_PARENT_OF",
+            "KNOWN_ADDRESS_OF", "HAS_IDENTITY",
         ];
 
         let mut node_counts = serde_json::Map::new();
@@ -2021,7 +2023,8 @@ pub(super) async fn device_flows_handler(
         let window_secs: u64 = 60;
         let cutoff_ns = now_ns() - (window_secs as i64 * 1_000_000_000);
         let cutoff_val = crate::graph::common::ts(cutoff_ns);
-        let addr_val = lbug::Value::String(address.clone());
+        let bare_addr = crate::registry::strip_port(&address).to_string();
+        let addr_val = lbug::Value::String(bare_addr);
 
         let mut stmt = conn
             .prepare(
