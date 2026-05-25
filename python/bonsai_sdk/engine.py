@@ -31,8 +31,10 @@ class RuleEngine:
     Runs two loops in background threads:
       1. Event loop: subscribes to StreamEvents, evaluates event-driven rules.
       2. Poll loop: queries graph every 30s for pattern/counter rules and topology diff.
+      3. Override poller: every 60s re-fetches DB rule overrides (enable/disable + params).
 
     On detection, calls the registered on_detection callback.
+    Shadow-mode rules fire but route to shadow_firings instead of on_detection.
 
     ML models are loaded from `model_dir` (default "models/") at startup.
     If a model file is absent the engine starts in rules-only mode — no error.
@@ -50,14 +52,23 @@ class RuleEngine:
         self._on_detection = on_detection
         self._dry_run      = dry_run or os.environ.get("BONSAI_DRY_RUN", "0") == "1"
         self._run_scope    = run_scope
-        self._rules: list[Detector] = [
+        self._all_rules: list[Detector] = [
             r for r in (BFD_RULES + BGP_RULES + CONFIG_RULES + INTERFACE_RULES + OPTICAL_RULES + RACK_RULES + SYSLOG_RULES + SNMP_RULES + STREAMING_RULES)
             if r.scope == "hybrid" or r.scope == run_scope
         ]
+        self._rules: list[Detector] = list(self._all_rules)
+        self._rules_lock = threading.Lock()
         self._stop = threading.Event()
         # CV7 T4-3: monotonic counters surfaced via SidecarHeartbeat.
         self.events_received_total = 0
+        # EV1-7 T3: shadow-mode firing log {rule_id: [ShadowFiring, ...]}
+        self.shadow_firings: dict[str, list[dict]] = {}
         self._load_ml_detectors(model_dir)
+        # Initial override load (non-fatal)
+        try:
+            self._apply_rule_overrides()
+        except Exception as exc:
+            print(f"[engine] rule override load skipped: {exc}")
 
     def _load_ml_detectors(self, model_dir: str) -> None:
         loaded = 0
@@ -76,8 +87,9 @@ class RuleEngine:
             print(f"[engine] no ML models found for scope '{self._run_scope}' in '{model_dir}' — running rules-only mode")
 
     def start(self) -> None:
-        threading.Thread(target=self._event_loop, daemon=True, name="bonsai-event-loop").start()
-        threading.Thread(target=self._poll_loop,  daemon=True, name="bonsai-poll-loop").start()
+        threading.Thread(target=self._event_loop,    daemon=True, name="bonsai-event-loop").start()
+        threading.Thread(target=self._poll_loop,     daemon=True, name="bonsai-poll-loop").start()
+        threading.Thread(target=self._override_loop, daemon=True, name="bonsai-override-loop").start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -102,7 +114,9 @@ class RuleEngine:
                     time.sleep(5)
 
     def _dispatch(self, event) -> None:
-        for rule in self._rules:
+        with self._rules_lock:
+            active_rules = list(self._rules)
+        for rule in active_rules:
             try:
                 features = rule.extract_features(event, self._client)
                 if features is None:
@@ -118,9 +132,27 @@ class RuleEngine:
                         remediation_action=getattr(rule, "remediation_action", ""),
                     )
                     self._annotate_change_context(det)
-                    self._on_detection(det)
+                    if getattr(rule, "shadow_mode", False):
+                        self._record_shadow_firing(rule.rule_id, det)
+                    else:
+                        self._on_detection(det)
             except Exception as exc:
                 print(f"[engine] rule {rule.rule_id} error: {exc}")
+
+    def _record_shadow_firing(self, rule_id: str, det: Detection) -> None:
+        import time as _time
+        entry = {
+            "fired_at_ns": _time.time_ns(),
+            "device_address": det.features.device_address,
+            "reason": det.reason,
+            "severity": det.severity,
+        }
+        if rule_id not in self.shadow_firings:
+            self.shadow_firings[rule_id] = []
+        self.shadow_firings[rule_id].append(entry)
+        # Keep at most 500 recent shadow firings per rule
+        if len(self.shadow_firings[rule_id]) > 500:
+            self.shadow_firings[rule_id] = self.shadow_firings[rule_id][-500:]
 
     # ── poll-based loop ───────────────────────────────────────────────────────
 
@@ -200,6 +232,63 @@ class RuleEngine:
         )
         self._annotate_change_context(det)
         self._on_detection(det)
+
+    # ── DB rule override poller ─────────────────────────────────────────────
+
+    def _override_loop(self) -> None:
+        while not self._stop.is_set():
+            self._stop.wait(60)
+            if self._stop.is_set():
+                break
+            try:
+                self._apply_rule_overrides()
+            except Exception as exc:
+                print(f"[engine] override poll error: {exc}")
+
+    def _apply_rule_overrides(self) -> None:
+        """Fetch rule overrides from DB and apply enable/disable + parameter changes."""
+        try:
+            resp = self._client._http_json("GET", "/api/sidecar/rules")
+        except Exception as exc:
+            print(f"[engine] could not fetch rule overrides: {exc}")
+            return
+
+        rules_data = {r["rule_id"]: r for r in resp.get("rules", [])}
+
+        # Fetch parameters for each rule
+        params_data: dict[str, dict] = {}
+        for rule_id in rules_data:
+            try:
+                p = self._client._http_json("GET", f"/api/sidecar/rules/{rule_id}/parameters")
+                if p:
+                    params_data[rule_id] = p.get("parameters", {})
+            except Exception:
+                pass
+
+        with self._rules_lock:
+            # Build lookup by rule_id for the full set
+            all_by_id = {r.rule_id: r for r in self._all_rules}
+            new_active: list[Detector] = []
+            for rule in self._all_rules:
+                override = rules_data.get(rule.rule_id)
+                if override is not None and not override.get("enabled", True):
+                    continue
+                # Apply parameter overrides
+                if rule.rule_id in params_data:
+                    try:
+                        rule.apply_parameters(params_data[rule.rule_id])
+                    except Exception as exc:
+                        print(f"[engine] param apply failed for {rule.rule_id}: {exc}")
+                # Apply shadow mode
+                if override is not None:
+                    rule.shadow_mode = override.get("shadow_mode", False)
+                new_active.append(rule)
+            changed = len(new_active) != len(self._rules) or {
+                r.rule_id for r in new_active
+            } != {r.rule_id for r in self._rules}
+            self._rules = new_active
+            if changed:
+                print(f"[engine] rule overrides applied: {len(new_active)}/{len(self._all_rules)} active")
 
     # ── change context overlay ────────────────────────────────────────────────
 

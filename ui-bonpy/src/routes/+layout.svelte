@@ -15,6 +15,7 @@
     { href: '/gnn',       label: 'GNN',          icon: '◉' },
     { href: '/embeddings',label: 'Embeddings',   icon: '◎' },
     { href: '/detections',label: 'Detections',   icon: '⚑' },
+    { href: '/rules',     label: 'Rules',         icon: '⚖' },
   ];
 
   onMount(connect);

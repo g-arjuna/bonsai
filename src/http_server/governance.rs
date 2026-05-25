@@ -933,6 +933,226 @@ pub(super) async fn sidecar_rule_toggle_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
 }
 
+// ── EV1-7 T2/T3/T6/T7: Rule parameters, shadow mode, analytics, syslog rules ─────────────
+
+/// GET /api/sidecar/rules/{rule_id}/parameters — current parameters + defaults.
+pub(super) async fn sidecar_rule_parameters_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(rule_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let item_id = format!("sidecar-rule-params:{}", rule_id);
+    let items = state
+        .store
+        .list_config_items(Some("sidecar_rule_params".to_string()))
+        .await
+        .unwrap_or_default();
+    let current = items.iter().find(|ci| ci.id == item_id);
+    let params: serde_json::Value = current
+        .and_then(|ci| serde_json::from_str(&ci.content_json).ok())
+        .unwrap_or(serde_json::json!({}));
+    Ok(axum::Json(serde_json::json!({
+        "rule_id": rule_id,
+        "parameters": params,
+    })))
+}
+
+#[derive(serde::Deserialize)]
+pub(super) struct PatchRuleParamsBody {
+    pub parameters: serde_json::Value,
+}
+
+/// PATCH /api/sidecar/rules/{rule_id}/parameters — save parameter overrides to ConfigItem DB.
+pub(super) async fn patch_sidecar_rule_parameters_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(rule_id): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<PatchRuleParamsBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let item_id = format!("sidecar-rule-params:{}", rule_id);
+    let content_json = serde_json::to_string(&body.parameters)
+        .unwrap_or_else(|_| "{}".to_string());
+    let item = crate::graph::ConfigItemRecord {
+        id: item_id,
+        config_class: "sidecar_rule_params".to_string(),
+        vendor: String::new(),
+        name: rule_id,
+        version: String::new(),
+        content_json,
+        enabled: true,
+        created_by: "ui".to_string(),
+    };
+    state
+        .store
+        .upsert_config_item(item)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+}
+
+#[derive(serde::Deserialize)]
+pub(super) struct ShadowModeBody {
+    pub enabled: bool,
+}
+
+/// POST /api/sidecar/rules/{rule_id}/shadow-mode — toggle shadow mode.
+/// Picked up by rule override poller on next cycle.
+pub(super) async fn sidecar_rule_shadow_mode_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(rule_id): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<ShadowModeBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let item_id = format!("sidecar-rule-shadow:{}", rule_id);
+    let item = crate::graph::ConfigItemRecord {
+        id: item_id,
+        config_class: "sidecar_rule_shadow".to_string(),
+        vendor: String::new(),
+        name: rule_id,
+        version: String::new(),
+        content_json: serde_json::json!({"shadow_mode": body.enabled}).to_string(),
+        enabled: body.enabled,
+        created_by: "ui".to_string(),
+    };
+    state
+        .store
+        .upsert_config_item(item)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+}
+
+/// GET /api/sidecar/rules/analytics — per-rule firing analytics from DetectionEvent counts.
+pub(super) async fn sidecar_rule_analytics_handler(
+    State(state): State<AppState>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    use lbug::{Connection, Value};
+    let db = state.store.db();
+    let rows = tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, String> {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        let result = conn.query(
+            "MATCH (d:DetectionEvent) \
+             RETURN d.rule_id, d.severity, count(*) AS cnt, max(d.occurred_at_ns) AS last_fired_ns \
+             ORDER BY cnt DESC LIMIT 100",
+        )
+        .map_err(|e| e.to_string())?;
+        let rows: Vec<serde_json::Value> = result.map(|r| {
+            let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
+            let n = |v: &Value| match v { Value::Int64(n) => *n, _ => 0 };
+            serde_json::json!({
+                "rule_id": s(&r[0]),
+                "severity": s(&r[1]),
+                "firing_count": n(&r[2]),
+                "last_fired_ns": n(&r[3]),
+            })
+        }).collect();
+        Ok(rows)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(axum::Json(serde_json::json!({ "analytics": rows })))
+}
+
+/// GET /api/sidecar/rules/{rule_id}/shadow-firings?since=ns — shadow firings for a rule.
+/// The Python sidecar stores these in memory; this endpoint proxies via sidecar health API.
+pub(super) async fn sidecar_rule_shadow_firings_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(rule_id): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let since_ns = params.get("since").and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+    let snapshots = state.sidecar_registry.snapshot().await;
+    let first = snapshots.first();
+    if first.is_none() {
+        return Ok(axum::Json(serde_json::json!({ "shadow_firings": [] })));
+    }
+    let snap = first.unwrap();
+    let host = snap.entry.address.split(':').next().unwrap_or("127.0.0.1");
+    let health_port = std::env::var("BONSAI_SIDECAR_HEALTH_PORT").unwrap_or_else(|_| "9200".to_string());
+    let url = format!("http://{}:{}/shadow-firings/{}?since={}", host, health_port, rule_id, since_ns);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .unwrap_or_default();
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::json!({"shadow_firings": []}));
+            Ok(axum::Json(body))
+        }
+        _ => Ok(axum::Json(serde_json::json!({ "shadow_firings": [] }))),
+    }
+}
+
+// ── EV1-7 T6: Syslog pattern rule creation via UI ──────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub(super) struct CreateSyslogRuleRequest {
+    pub rule_id: String,
+    pub description: String,
+    pub pattern: String,
+    pub event_type: String,
+    pub severity: String,
+    pub vendor: Option<String>,
+    pub shadow_mode: Option<bool>,
+}
+
+/// POST /api/syslog-rules — create a new syslog pattern rule stored as ConfigItem.
+/// The Python rule engine's syslog module loads these from the DB on next poller cycle.
+pub(super) async fn create_syslog_rule_handler(
+    State(state): State<AppState>,
+    axum::Json(req): axum::Json<CreateSyslogRuleRequest>,
+) -> Result<(StatusCode, axum::Json<serde_json::Value>), (StatusCode, String)> {
+    if req.rule_id.is_empty() || req.pattern.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "rule_id and pattern are required".into()));
+    }
+    let content = serde_json::json!({
+        "rule_id": req.rule_id,
+        "description": req.description,
+        "pattern": req.pattern,
+        "event_type": req.event_type,
+        "severity": req.severity,
+        "shadow_mode": req.shadow_mode.unwrap_or(false),
+    });
+    let item = crate::graph::ConfigItemRecord {
+        id: format!("syslog-rule:{}", req.rule_id),
+        config_class: "syslog_pattern".to_string(),
+        vendor: req.vendor.unwrap_or_default(),
+        name: req.rule_id.clone(),
+        version: "1".to_string(),
+        content_json: content.to_string(),
+        enabled: true,
+        created_by: "ui".to_string(),
+    };
+    state
+        .store
+        .upsert_config_item(item)
+        .await
+        .map(|_| (StatusCode::CREATED, axum::Json(serde_json::json!({"rule_id": req.rule_id, "ok": true}))))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+}
+
+/// GET /api/syslog-rules — list custom syslog pattern rules from ConfigItem DB.
+pub(super) async fn list_syslog_rules_handler(
+    State(state): State<AppState>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let items = state
+        .store
+        .list_config_items(Some("syslog_pattern".to_string()))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    let rules: Vec<serde_json::Value> = items
+        .iter()
+        .filter(|ci| ci.id.starts_with("syslog-rule:"))
+        .map(|ci| {
+            let mut v: serde_json::Value = serde_json::from_str(&ci.content_json)
+                .unwrap_or(serde_json::json!({}));
+            if let serde_json::Value::Object(ref mut m) = v {
+                m.insert("enabled".to_string(), serde_json::json!(ci.enabled));
+            }
+            v
+        })
+        .collect();
+    Ok(axum::Json(serde_json::json!({ "syslog_rules": rules })))
+}
+
 pub(super) async fn sidecar_status_handler(
     State(state): State<AppState>,
 ) -> Json<SidecarStatusResponse> {

@@ -106,6 +106,9 @@ class Detector(ABC):
     # Observable patterns that signal "this is happening again". Used by the
     # agent-friendly grounded response (T5-2) and MCP tool catalogue (T5-1).
     recurrence_indicators: list[str] = []
+    # EV1-7 T3: when True, rule fires but detection is NOT forwarded — logged in
+    # shadow_firings list for FPR measurement before promoting to production.
+    shadow_mode: bool = False
 
     @abstractmethod
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
@@ -114,3 +117,10 @@ class Detector(ABC):
     @abstractmethod
     def detect(self, features: Features) -> Optional[str]:
         """Return a reason string if the rule fires, else None. No side effects."""
+
+    def apply_parameters(self, params: dict) -> None:
+        """Apply per-rule parameter overrides from DB. Default: no-op.
+
+        Rules exposing tunable thresholds override this method and update
+        their instance variables accordingly.
+        """

@@ -49,7 +49,7 @@ class InterfaceDown(Detector):
         )
 
 
-class InterfaceErrorSpike(Detector):
+class InterfaceErrorSpike(Detector):  # EV1-7 T2: supports apply_parameters()
     """Error counter rate exceeds threshold."""
     rule_id = "interface_error_spike"
     severity = "warn"
@@ -58,6 +58,14 @@ class InterfaceErrorSpike(Detector):
         "Check for repeated interface_error_spike on same interface in last 1h (chronic physical-layer issue)",
         "Cross-reference link utilization — high errors under low load indicate physical-layer fault, not congestion",
     ]
+    error_rate_threshold_pct: float = float(ERROR_RATE_THRESHOLD)
+    window_seconds: int = 60
+
+    def apply_parameters(self, params: dict) -> None:
+        if "error_rate_threshold_pct" in params:
+            self.error_rate_threshold_pct = float(params["error_rate_threshold_pct"])
+        if "window_seconds" in params:
+            self.window_seconds = int(params["window_seconds"])
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "bgp_session_change":
@@ -87,7 +95,7 @@ class InterfaceErrorSpike(Detector):
         return None
 
 
-class InterfaceHighUtilization(Detector):
+class InterfaceHighUtilization(Detector):  # EV1-7 T2: supports apply_parameters()
     """Octets rate exceeds 80% of known link capacity — placeholder threshold check."""
     rule_id = "interface_high_utilization"
     severity = "warn"
@@ -98,6 +106,11 @@ class InterfaceHighUtilization(Detector):
     ]
     # Phase 4 uses a fixed 1 Gbps assumption for lab links.
     LINK_CAPACITY_BPS = 1_000_000_000
+    utilization_threshold_pct: float = float(UTIL_THRESHOLD_PCT)
+
+    def apply_parameters(self, params: dict) -> None:
+        if "utilization_threshold_pct" in params:
+            self.utilization_threshold_pct = float(params["utilization_threshold_pct"])
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         return None  # poll-based, not event-driven

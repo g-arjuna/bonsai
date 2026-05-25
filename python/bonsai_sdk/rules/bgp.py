@@ -55,7 +55,7 @@ class BgpSessionDown(Detector):
         return None
 
 
-class BgpSessionFlap(Detector):
+class BgpSessionFlap(Detector):  # EV1-7 T2: supports apply_parameters()
     """Session has flapped ≥3 times in 5 minutes — unstable neighbour."""
     rule_id = "bgp_session_flap"
     severity = "critical"
@@ -64,6 +64,15 @@ class BgpSessionFlap(Detector):
         "Check for bfd_session_down co-firing within ±5s (indicates routing-layer cause, not BGP policy)",
         "Compare peer_count_established across last 3 bgp_session_flap detections for this device",
     ]
+    # EV1-7 T2: instance-level thresholds (overridable via apply_parameters)
+    flap_count_threshold: int = _FLAP_THRESHOLD
+    flap_window_seconds: int = 300
+
+    def apply_parameters(self, params: dict) -> None:
+        if "flap_count_threshold" in params:
+            self.flap_count_threshold = int(params["flap_count_threshold"])
+        if "flap_window_seconds" in params:
+            self.flap_window_seconds = int(params["flap_window_seconds"])
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
         if event.event_type != "bgp_session_change":

@@ -62,6 +62,7 @@ _connected_to_core: bool = False
 _connected_to_local: bool = False
 _job_engine_ref: Optional[object] = None  # set after job engine starts
 _inference_loop_ref: Optional[object] = None
+_engine_ref: Optional[object] = None  # EV1-7 T3: RuleEngine ref for shadow-firings HTTP endpoint
 
 HEALTH_PORT = int(os.environ.get("BONSAI_SIDECAR_HEALTH_PORT", "9200"))
 
@@ -70,6 +71,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
     """Lightweight handler for GET /health — no dependencies outside stdlib."""
 
     def do_GET(self):
+        if self.path.startswith("/shadow-firings/"):
+            self._serve_shadow_firings()
+            return
         if self.path.rstrip("/") != "/health":
             self.send_error(404)
             return
@@ -121,6 +125,27 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             "snapshot_buffer_size": snap_size,
             "snapshot_buffer_stale": snap_stale,
         }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_shadow_firings(self):
+        """Serve shadow firings for a rule. Path: /shadow-firings/{rule_id}?since=ns"""
+        import urllib.parse
+        parts = self.path.split("?", 1)
+        rule_id = parts[0].removeprefix("/shadow-firings/").strip("/")
+        since_ns = 0
+        if len(parts) > 1:
+            qs = urllib.parse.parse_qs(parts[1])
+            since_ns = int(qs.get("since", ["0"])[0])
+        engine_ref = _engine_ref
+        firings = []
+        if engine_ref is not None:
+            all_firings = engine_ref.shadow_firings.get(rule_id, [])
+            firings = [f for f in all_firings if f.get("fired_at_ns", 0) >= since_ns]
+        body = json.dumps({"shadow_firings": firings, "rule_id": rule_id}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -354,6 +379,8 @@ def _local_connect_loop(local_addr: str, sidecar_name: str) -> None:
                     run_scope="local",
                 )
                 engine_holder["engine"] = engine
+                global _engine_ref
+                _engine_ref = engine
                 _rules_loaded = len(_gather_capabilities())
                 engine.start()
 
