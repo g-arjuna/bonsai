@@ -1719,9 +1719,11 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
 
         // ── Investigation auto-trigger ───────────────────────────────────────
         if run_core {
-            let has_api_key = std::env::var("ANTHROPIC_API_KEY")
-                .map(|k| !k.is_empty())
-                .unwrap_or(false);
+            // Enable trigger if any AI provider env-var is set (vault-backed providers are
+            // checked at trigger time via resolve_active_ai_provider; here we just gate on
+            // whether the feature should be active at all).
+            let has_api_key = !cfg.ai.api_key_env.is_empty()
+                && std::env::var(&cfg.ai.api_key_env).map(|k| !k.is_empty()).unwrap_or(false);
             let trigger_store = if let Store::Core(s) = store {
                 std::sync::Arc::clone(s)
             } else {

@@ -1997,6 +1997,180 @@ pub(super) async fn list_redundancy_groups_handler(
     Ok(Json(serde_json::json!({"groups": groups})))
 }
 
+// ── GET /api/devices/{address}/flows ─────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct DeviceFlowSummary {
+    pub device_address: String,
+    pub window_secs: u64,
+    pub total_flows: usize,
+    pub total_bytes_per_sec: f64,
+    pub total_packets_per_sec: f64,
+    pub top_flows: Vec<LiveFlowEntry>,
+}
+
+/// Returns AppFlow nodes exported by the given device in the last 60 seconds.
+/// Uses the `CARRIES_FLOW(Device→AppFlow)` edge to scope the result to a single device.
+pub(super) async fn device_flows_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<Json<DeviceFlowSummary>, (StatusCode, String)> {
+    let db = state.store.db();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+        let window_secs: u64 = 60;
+        let cutoff_ns = now_ns() - (window_secs as i64 * 1_000_000_000);
+        let cutoff_val = crate::graph::common::ts(cutoff_ns);
+        let addr_val = lbug::Value::String(address.clone());
+
+        let mut stmt = conn
+            .prepare(
+                "MATCH (d:Device {address: $addr})-[:CARRIES_FLOW]->(f:AppFlow) \
+                 WHERE f.updated_at >= $cutoff \
+                 RETURN f.exporter_address, f.src_address, f.dst_address, \
+                        f.dst_port, f.protocol, f.bytes_per_sec, f.packets_per_sec \
+                 ORDER BY f.bytes_per_sec DESC \
+                 LIMIT 100",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let rows = conn
+            .execute(&mut stmt, vec![
+                ("addr", addr_val),
+                ("cutoff", cutoff_val),
+            ])
+            .map_err(|e| e.to_string())?;
+
+        let mut flows: Vec<LiveFlowEntry> = Vec::new();
+        let mut total_bps = 0.0f64;
+        let mut total_pps = 0.0f64;
+
+        for row in rows {
+            let exp   = read_str(&row[0]);
+            let src   = read_str(&row[1]);
+            let dst   = read_str(&row[2]);
+            let port  = read_i64(&row[3]);
+            let proto = read_str(&row[4]);
+            let bps   = match &row[5] { lbug::Value::Double(v) => *v, _ => 0.0 };
+            let pps   = match &row[6] { lbug::Value::Double(v) => *v, _ => 0.0 };
+            total_bps += bps;
+            total_pps += pps;
+            flows.push(LiveFlowEntry {
+                exporter_address: exp,
+                src_address: src,
+                dst_address: dst,
+                dst_port: port,
+                protocol: proto,
+                bytes_per_sec: bps,
+                packets_per_sec: pps,
+            });
+        }
+
+        let total = flows.len();
+        Ok::<_, String>(DeviceFlowSummary {
+            device_address: address,
+            window_secs,
+            total_flows: total,
+            total_bytes_per_sec: total_bps,
+            total_packets_per_sec: total_pps,
+            top_flows: flows,
+        })
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
+// ── GET /api/endpoints ────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct EndpointEntry {
+    pub id: String,
+    pub ip: String,
+    pub kind: String,
+    pub hostname: String,
+    pub mac: String,
+    pub vendor: String,
+    pub source: String,
+    pub site_id: String,
+    pub rack_id: String,
+    pub connected_to_device: String,
+    pub connected_to_iface: String,
+    pub recent_flow_count: i64,
+}
+
+#[derive(serde::Serialize)]
+pub struct EndpointsResponse {
+    pub endpoints: Vec<EndpointEntry>,
+}
+
+/// GET /api/endpoints — list all HostEndpoint nodes with connectivity and recent flow activity.
+pub(super) async fn endpoints_handler(
+    State(state): State<AppState>,
+) -> Result<Json<EndpointsResponse>, (StatusCode, String)> {
+    let db = state.store.db();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+
+        // Fetch host endpoints with optional connected device/iface from CONNECTED_TO edge
+        let mut stmt = conn.prepare(
+            "MATCH (h:HostEndpoint) \
+             OPTIONAL MATCH (h)-[:CONNECTED_TO]->(i:Interface)<-[:HAS_INTERFACE]-(d:Device) \
+             RETURN h.id, h.ip, h.kind, h.hostname, h.mac, h.vendor, h.source, \
+                    h.site_id, h.rack_id, \
+                    coalesce(d.address, ''), coalesce(i.name, '') \
+             ORDER BY h.ip",
+        ).map_err(|e| e.to_string())?;
+
+        let rows = conn.execute(&mut stmt, vec![]).map_err(|e| e.to_string())?;
+
+        // Count recent flows per endpoint (src or dst in last 60s)
+        let cutoff_ns = now_ns() - 60_000_000_000i64;
+        let cutoff_val = crate::graph::common::ts(cutoff_ns);
+        let mut flow_counts: HashMap<String, i64> = HashMap::new();
+        if let Ok(mut fc_stmt) = conn.prepare(
+            "MATCH (h:HostEndpoint)-[:SRC_HOST|DST_HOST]-(f:AppFlow) \
+             WHERE f.updated_at >= $cutoff \
+             RETURN h.id, count(f)",
+        ) {
+            if let Ok(fc_rows) = conn.execute(&mut fc_stmt, vec![("cutoff", cutoff_val)]) {
+                for row in fc_rows {
+                    let id = read_str(&row[0]);
+                    let cnt = read_i64(&row[1]);
+                    flow_counts.insert(id, cnt);
+                }
+            }
+        }
+
+        let mut endpoints: Vec<EndpointEntry> = Vec::new();
+        for row in rows {
+            let id = read_str(&row[0]);
+            let recent_flow_count = *flow_counts.get(&id).unwrap_or(&0);
+            endpoints.push(EndpointEntry {
+                id: id.clone(),
+                ip: read_str(&row[1]),
+                kind: read_str(&row[2]),
+                hostname: read_str(&row[3]),
+                mac: read_str(&row[4]),
+                vendor: read_str(&row[5]),
+                source: read_str(&row[6]),
+                site_id: read_str(&row[7]),
+                rack_id: read_str(&row[8]),
+                connected_to_device: read_str(&row[9]),
+                connected_to_iface: read_str(&row[10]),
+                recent_flow_count,
+            });
+        }
+
+        Ok::<_, String>(EndpointsResponse { endpoints })
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
 fn get_table_columns(conn: &Connection<'_>, table_name: &str) -> Vec<serde_json::Value> {
     let mut columns = Vec::new();
     if let Ok(mut result) = conn.query(&format!(

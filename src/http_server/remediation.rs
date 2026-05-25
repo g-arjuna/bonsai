@@ -964,9 +964,10 @@ pub(super) async fn create_investigation_handler(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // Spawn AI investigation if provider is configured and API key is available.
-    let ai_cfg = state.ai_config.clone();
-    if std::env::var(&ai_cfg.api_key_env).is_ok() {
+    // Spawn AI investigation if provider is configured (vault-first, env-var fallback).
+    if let Some((ai_cfg, api_key)) =
+        crate::http_server::settings::resolve_active_ai_provider(&state).await
+    {
         let store_arc = std::sync::Arc::clone(&state.store);
         crate::investigation_runtime::spawn_investigation(
             inv.id.clone(),
@@ -975,6 +976,7 @@ pub(super) async fn create_investigation_handler(
             store_arc,
             state,
             ai_cfg,
+            api_key,
         );
     }
 

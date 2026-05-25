@@ -759,6 +759,127 @@ pub async fn test_ai_provider_handler(
     Json(result)
 }
 
+// ── Active AI provider resolution (vault-first) ───────────────────────────────
+
+/// ConfigItem key used to store the name of the currently active LLM provider.
+pub const ACTIVE_AI_PROVIDER_KEY: &str = "ai:active_provider";
+
+/// Resolve the active AI provider from vault (vault-first, env-var fallback).
+///
+/// Priority:
+///   1. Vault alias `llm-{active_name}` from ConfigItem `ai:active_provider`
+///   2. Env-var from `state.ai_config.api_key_env` (legacy / TOML-configured)
+///
+/// Returns `(AiConfig, api_key)` so callers can use `build_provider_with_key`.
+pub async fn resolve_active_ai_provider(
+    state: &super::AppState,
+) -> Option<(crate::config::AiConfig, String)> {
+    // Try vault-backed active provider first
+    let config_items = state.store
+        .list_config_items(Some("app_config".to_string())).await
+        .unwrap_or_default();
+    let active_name = config_items.iter()
+        .find(|i| i.id == ACTIVE_AI_PROVIDER_KEY && i.enabled)
+        .and_then(|i| serde_json::from_str::<String>(&i.content_json).ok());
+
+    if let Some(active_name) = active_name {
+        let alias = llm_alias(&active_name);
+        if let Ok(username) = state.credentials.username_for_alias(&alias) {
+            if let Ok(meta) = serde_json::from_str::<LlmProviderEntry>(&username) {
+                let api_key = state.credentials
+                    .resolve(&alias, crate::credentials::ResolvePurpose::Test)
+                    .map(|r| r.password.to_string())
+                    .unwrap_or_default();
+                // Ollama needs no key
+                if meta.provider != "ollama" && api_key.is_empty() {
+                    tracing::warn!(provider = %meta.provider, alias = %alias, "active AI provider has no API key in vault");
+                } else {
+                    let cfg = crate::config::AiConfig {
+                        provider: meta.provider,
+                        model: meta.model,
+                        base_url: meta.base_url,
+                        api_key_env: String::new(),
+                        ..Default::default()
+                    };
+                    return Some((cfg, api_key));
+                }
+            }
+        }
+    }
+
+    // Env-var fallback (legacy path)
+    let cfg = state.ai_config.clone();
+    if cfg.provider == "ollama" {
+        let key = std::env::var(&cfg.api_key_env).unwrap_or_default();
+        return Some((cfg, key));
+    }
+    let key = std::env::var(&cfg.api_key_env).ok()?;
+    Some((cfg, key))
+}
+
+/// Returns true if any AI provider is available (vault or env-var).
+pub async fn has_active_ai_provider(state: &super::AppState) -> bool {
+    resolve_active_ai_provider(state).await.is_some()
+}
+
+#[derive(serde::Deserialize)]
+pub struct ActivateAiProviderRequest {
+    pub name: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct ActivateAiProviderResponse {
+    pub ok: bool,
+    pub active_provider: String,
+}
+
+/// POST /api/ai/providers/activate — set a named vault provider as the active one.
+pub async fn activate_ai_provider_handler(
+    State(state): State<AppState>,
+    Json(body): Json<ActivateAiProviderRequest>,
+) -> Result<Json<ActivateAiProviderResponse>, (StatusCode, String)> {
+    let alias = llm_alias(&body.name);
+    // Verify the provider exists in vault
+    let exists = state.credentials.list().unwrap_or_default().iter().any(|s| s.alias == alias);
+    if !exists {
+        return Err((StatusCode::NOT_FOUND, format!("provider '{}' not found in vault", body.name)));
+    }
+    let content_json = serde_json::to_string(&body.name)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let item = crate::graph::ConfigItemRecord {
+        id: ACTIVE_AI_PROVIDER_KEY.to_string(),
+        config_class: "app_config".to_string(),
+        vendor: String::new(),
+        name: "active_provider".to_string(),
+        version: "1".to_string(),
+        content_json,
+        enabled: true,
+        created_by: "ui".to_string(),
+    };
+    state.store
+        .upsert_config_item(item)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    tracing::info!(provider = %body.name, "active AI provider updated");
+    Ok(Json(ActivateAiProviderResponse {
+        ok: true,
+        active_provider: body.name,
+    }))
+}
+
+/// GET /api/ai/providers/active — return the current active provider name (if set).
+pub async fn get_active_ai_provider_handler(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let active_name = state.store
+        .list_config_items(Some("app_config".to_string())).await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|i| i.id == ACTIVE_AI_PROVIDER_KEY && i.enabled)
+        .and_then(|i| serde_json::from_str::<String>(&i.content_json).ok());
+    Json(serde_json::json!({ "active_provider": active_name }))
+}
+
 #[derive(Serialize)]
 pub struct PatternReloadResponse {
     pub syslog_reloaded: bool,

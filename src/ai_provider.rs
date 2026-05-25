@@ -64,14 +64,9 @@ pub trait AiProvider: Send + Sync {
 
 // ── Factory ───────────────────────────────────────────────────────────────────
 
-pub fn build_provider(cfg: &crate::config::AiConfig) -> Result<Box<dyn AiProvider>> {
-    // Ollama uses no API key — skip the env-var requirement for it
-    let api_key = if cfg.provider == "ollama" {
-        std::env::var(&cfg.api_key_env).unwrap_or_default()
-    } else {
-        std::env::var(&cfg.api_key_env)
-            .with_context(|| format!("AI API key not set — expected env var '{}'", cfg.api_key_env))?
-    };
+/// Build a provider using the API key supplied directly (vault-backed path).
+/// No environment variable lookup is performed.
+pub fn build_provider_with_key(cfg: &crate::config::AiConfig, api_key: String) -> Result<Box<dyn AiProvider>> {
     match cfg.provider.as_str() {
         "gemini" => Ok(Box::new(GeminiProvider::new(cfg.model.clone(), api_key))),
         "moonshot" => Ok(Box::new(MoonshotProvider::new(cfg.model.clone(), api_key))),
@@ -94,6 +89,19 @@ pub fn build_provider(cfg: &crate::config::AiConfig) -> Result<Box<dyn AiProvide
         }
         other => bail!("unsupported AI provider '{}'. Supported: gemini, moonshot, openai, anthropic, ollama", other),
     }
+}
+
+/// Build a provider using the env-var path (backward-compat fallback).
+/// Prefer build_provider_with_key() when vault credentials are available.
+pub fn build_provider(cfg: &crate::config::AiConfig) -> Result<Box<dyn AiProvider>> {
+    // Ollama uses no API key — skip the env-var requirement for it
+    let api_key = if cfg.provider == "ollama" {
+        std::env::var(&cfg.api_key_env).unwrap_or_default()
+    } else {
+        std::env::var(&cfg.api_key_env)
+            .with_context(|| format!("AI API key not set — expected env var '{}'", cfg.api_key_env))?
+    };
+    build_provider_with_key(cfg, api_key)
 }
 
 // ── Gemini ────────────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use tracing::{info, warn};
 
-use crate::ai_provider::{AiMessage, AiProvider, build_provider};
+use crate::ai_provider::{AiMessage, AiProvider, build_provider_with_key};
 use crate::config::AiConfig;
 use crate::graph::GraphStore;
 use crate::graph::algorithms::{GraphQuality, graph_quality};
@@ -55,9 +55,10 @@ pub fn spawn_investigation(
     store: Arc<GraphStore>,
     state: AppState,
     ai_cfg: AiConfig,
+    api_key: String,
 ) {
     tokio::spawn(async move {
-        run_investigation(investigation_id, device_address, detection_id, store, state, ai_cfg).await;
+        run_investigation(investigation_id, device_address, detection_id, store, state, ai_cfg, api_key).await;
     });
 }
 
@@ -68,6 +69,7 @@ async fn run_investigation(
     store: Arc<GraphStore>,
     state: AppState,
     ai_cfg: AiConfig,
+    api_key: String,
 ) {
     // Daily budget gate — abort before building the provider if today's spend is over limit.
     let daily_budget = ai_cfg.daily_budget_usd;
@@ -97,7 +99,7 @@ async fn run_investigation(
         }
     }
 
-    let provider: Box<dyn AiProvider> = match build_provider(&ai_cfg) {
+    let provider: Box<dyn AiProvider> = match build_provider_with_key(&ai_cfg, api_key) {
         Ok(p) => p,
         Err(e) => {
             warn!(id = %investigation_id, error = %e, "AI provider unavailable");

@@ -19,6 +19,8 @@
   let providerForm = $state({ name: '', provider: 'anthropic', model: '', base_url: '', api_key: '', active: true });
   let providerSaving = $state(false);
   let providerTesting = $state({});   // name → {loading, result}
+  let activeProviderName = $state(null);  // vault-backed active provider name
+  let activating = $state({});           // name → bool
 
   const PROVIDER_OPTIONS = [
     { value: 'anthropic', label: 'Anthropic', defaultModel: 'claude-opus-4-5' },
@@ -83,6 +85,7 @@
     statusPollTimer = setInterval(pollStatus, 5000);
     fetch('/api/ai/config').then(r => r.ok ? r.json() : null).then(d => { if (d) aiCfg = d; }).catch(() => {});
     loadProviders();
+    loadActiveProvider();
     try {
       const r = await fetch('/api/settings/streaming');
       if (!r.ok) throw new Error(await r.text());
@@ -154,6 +157,34 @@
       const r = await fetch('/api/ai/providers');
       if (r.ok) llmProviders = await r.json();
     } catch (_) {}
+  }
+
+  async function loadActiveProvider() {
+    try {
+      const r = await fetch('/api/ai/providers/active');
+      if (r.ok) {
+        const d = await r.json();
+        activeProviderName = d.active_provider ?? null;
+      }
+    } catch (_) {}
+  }
+
+  async function setActiveProvider(name) {
+    activating = { ...activating, [name]: true };
+    try {
+      const r = await fetch('/api/ai/providers/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      activeProviderName = name;
+      toast(`'${name}' is now the active AI provider`, 'success');
+    } catch (e) {
+      toast(`Failed to activate: ${e.message}`, 'error');
+    } finally {
+      activating = { ...activating, [name]: false };
+    }
   }
 
   async function saveProvider() {
@@ -448,16 +479,26 @@
       </div>
     {/if}
 
+    {#if activeProviderName}
+      <div class="active-provider-banner">
+        Active provider: <strong>{activeProviderName}</strong>
+      </div>
+    {/if}
     {#if llmProviders.length > 0}
       <div class="provider-grid">
         {#each llmProviders as p (p.name)}
-          <div class="provider-card" class:inactive={!p.active}>
+          <div class="provider-card" class:inactive={!p.active} class:is-active-provider={p.name === activeProviderName}>
             <div class="prov-header">
               <div>
                 <span class="prov-name">{p.name}</span>
                 <span class="prov-type">{p.provider}</span>
               </div>
-              <span class="badge {p.active ? 'healthy' : 'critical'}">{p.active ? 'active' : 'inactive'}</span>
+              <div style="display:flex;gap:6px;align-items:center">
+                {#if p.name === activeProviderName}
+                  <span class="badge healthy">● active</span>
+                {/if}
+                <span class="badge {p.active ? 'healthy' : 'critical'}">{p.active ? 'enabled' : 'disabled'}</span>
+              </div>
             </div>
             <div class="prov-detail">
               <span class="ai-label">Model</span><span class="ai-value">{p.model}</span>
@@ -476,6 +517,11 @@
               <button class="btn-secondary btn-sm" onclick={() => testProvider(p.name)} disabled={providerTesting[p.name]?.loading || !p.has_api_key}>
                 {providerTesting[p.name]?.loading ? 'Testing…' : 'Test'}
               </button>
+              {#if p.name !== activeProviderName}
+                <button class="btn-primary btn-sm" onclick={() => setActiveProvider(p.name)} disabled={activating[p.name]}>
+                  {activating[p.name] ? 'Activating…' : 'Set Active'}
+                </button>
+              {/if}
               <button class="btn-danger btn-sm" onclick={() => removeProvider(p.name)}>Remove</button>
               {#if providerTesting[p.name]?.result}
                 <span class="ai-test-result ai-test-{providerTesting[p.name].result.ok ? 'ok' : 'err'}">
@@ -784,6 +830,8 @@
   .provider-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
   .provider-card { background: var(--color-surface, #1a1a2e); border: 1px solid var(--color-border, #2d2d44); border-radius: 8px; padding: 14px 16px; }
   .provider-card.inactive { opacity: 0.6; }
+  .provider-card.is-active-provider { border-color: #10b981; box-shadow: 0 0 0 1px #10b98133; }
+  .active-provider-banner { background: #10b98118; border: 1px solid #10b98155; border-radius: 6px; padding: 8px 14px; font-size: 0.85rem; color: #10b981; margin-bottom: 12px; }
   .prov-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
   .prov-name { font-weight: 700; font-size: 0.95rem; }
   .prov-type { font-size: 0.72rem; font-weight: 600; padding: 1px 6px; border-radius: 4px; background: #1e3a5f; color: #60a5fa; margin-left: 8px; }

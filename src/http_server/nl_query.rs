@@ -6,7 +6,7 @@
 //! Cypher and the result rows.
 
 use axum::{Json, extract::State, http::StatusCode};
-use crate::ai_provider::{AiMessage, build_provider};
+use crate::ai_provider::{AiMessage, build_provider_with_key};
 use lbug::Connection;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -290,9 +290,15 @@ pub(super) async fn explorer_ask_handler(
         return Err((StatusCode::BAD_REQUEST, "question is required".to_string()));
     }
 
-    // 1. Call the configured AI provider to generate Cypher
-    let provider_name = state.ai_config.provider.clone();
-    let provider = build_provider(&state.ai_config).map_err(|e| {
+    // 1. Resolve the active AI provider (vault-first, env-var fallback)
+    let (ai_cfg, api_key) = crate::http_server::settings::resolve_active_ai_provider(&state)
+        .await
+        .ok_or_else(|| (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Explorer Ask unavailable: no AI provider configured. Add a provider in Settings → LLM Providers and activate it.".to_string(),
+        ))?;
+    let provider_name = ai_cfg.provider.clone();
+    let provider = build_provider_with_key(&ai_cfg, api_key).map_err(|e| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             format!("Explorer Ask unavailable: {e}"),

@@ -34,7 +34,10 @@
   let telemetryData = $state(null);
   let telemetryLoading = $state(false);
 
-  const TABS = ['interfaces', 'peers', 'paths', 'recommendations', 'events', 'detections', 'readiness', 'config', 'enrichment', 'cmdb', 'telemetry', 'audit'];
+  let flowsData = $state(null);
+  let flowsLoading = $state(false);
+
+  const TABS = ['interfaces', 'peers', 'paths', 'recommendations', 'events', 'detections', 'readiness', 'config', 'enrichment', 'cmdb', 'telemetry', 'flows', 'audit'];
 
   $effect(() => {
     if (address) {
@@ -44,6 +47,7 @@
       enrichmentProps = [];
       enrichmentConflicts = [];
       cmdbData = null;
+      flowsData = null;
       configHistory = { snapshots: [], changes: [] };
       readiness = null;
       recommendations = null;
@@ -158,6 +162,16 @@
         .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(t); }))
         .then(d => { cmdbData = d; cmdbLoading = false; })
         .catch(() => { cmdbLoading = false; });
+    }
+  });
+
+  $effect(() => {
+    if (activeTab === 'flows' && address && !flowsLoading && !flowsData) {
+      flowsLoading = true;
+      fetch('/api/devices/' + encodeURIComponent(address) + '/flows')
+        .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(t); }))
+        .then(d => { flowsData = d; flowsLoading = false; })
+        .catch(() => { flowsLoading = false; });
     }
   });
 
@@ -929,6 +943,39 @@
           </section>
         {/if}
 
+      {:else if activeTab === 'flows'}
+        {#if flowsLoading}
+          <div class="loading">Loading flows…</div>
+        {:else if !flowsData}
+          <div class="empty">No flow data yet. Click the tab again to retry.</div>
+        {:else if flowsData.total_flows === 0}
+          <div class="empty">No active flows in the last {flowsData.window_secs}s. This device may not be exporting NetFlow/sFlow.</div>
+        {:else}
+          <div class="flow-summary">
+            <span>Flows: <strong>{flowsData.total_flows}</strong></span>
+            <span>Total bps: <strong>{flowsData.total_bytes_per_sec?.toFixed(0)}</strong></span>
+            <span>Total pps: <strong>{flowsData.total_packets_per_sec?.toFixed(0)}</strong></span>
+            <span class="muted">(last {flowsData.window_secs}s)</span>
+          </div>
+          <table>
+            <thead>
+              <tr><th>Src</th><th>Dst</th><th>Port</th><th>Proto</th><th>bps</th><th>pps</th></tr>
+            </thead>
+            <tbody>
+              {#each flowsData.top_flows as f}
+                <tr>
+                  <td><code>{f.src_address}</code></td>
+                  <td><code>{f.dst_address}</code></td>
+                  <td>{f.dst_port}</td>
+                  <td>{f.protocol}</td>
+                  <td>{f.bytes_per_sec?.toFixed(0)}</td>
+                  <td>{f.packets_per_sec?.toFixed(0)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
+
       {:else if activeTab === 'audit'}
         <div class="audit-grid">
           <span class="muted">Created</span>
@@ -1001,6 +1048,7 @@
     animation: pulse 1.5s infinite;
   }
 
+  .flow-summary { display: flex; gap: 18px; font-size: 0.82rem; margin-bottom: 10px; flex-wrap: wrap; }
   .audit-grid {
     display: grid;
     grid-template-columns: 110px 1fr;
