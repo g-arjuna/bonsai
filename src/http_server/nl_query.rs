@@ -1,13 +1,12 @@
 //! Natural-language → Cypher query endpoint (NL-to-Graph).
 //!
-//! Accepts a plain English question, sends it to Anthropic Claude with the
-//! graph schema as context, receives back a read-only Cypher query, validates
-//! it, executes against LadybugDB, and returns both the generated Cypher and
-//! the result rows.
-//!
-//! Requires `ANTHROPIC_API_KEY` environment variable.
+//! Accepts a plain English question, sends it to the configured AI provider
+//! with the graph schema as context, receives back a read-only Cypher query,
+//! validates it, executes against LadybugDB, and returns both the generated
+//! Cypher and the result rows.
 
 use axum::{Json, extract::State, http::StatusCode};
+use crate::ai_provider::{AiMessage, build_provider};
 use lbug::Connection;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -291,17 +290,23 @@ pub(super) async fn explorer_ask_handler(
         return Err((StatusCode::BAD_REQUEST, "question is required".to_string()));
     }
 
-    // 1. Call Anthropic to generate Cypher
-    let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
+    // 1. Call the configured AI provider to generate Cypher
+    let provider_name = state.ai_config.provider.clone();
+    let provider = build_provider(&state.ai_config).map_err(|e| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            "ANTHROPIC_API_KEY not set — natural language queries require an API key".to_string(),
+            format!("Explorer Ask unavailable: {e}"),
         )
     })?;
 
-    let (cypher, explanation, tokens) = generate_cypher(&api_key, &question).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("LLM error: {e}"))
-    })?;
+    let (cypher, explanation, tokens) = generate_cypher(provider.as_ref(), &question)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("AI provider '{provider_name}' error: {e}"),
+            )
+        })?;
 
     // 2. Validate read-only
     if !crate::mcp_server::is_readonly_cypher(&cypher) {
@@ -370,58 +375,30 @@ pub(super) async fn nl_budget_handler() -> Json<NlBudgetResponse> {
     })
 }
 
-// ── Anthropic API call ───────────────────────────────────────────────────────
+// ── AI provider call ─────────────────────────────────────────────────────────
 
-async fn generate_cypher(api_key: &str, question: &str) -> Result<(String, String, u64), String> {
-    let client = reqwest::Client::new();
-
+async fn generate_cypher(
+    provider: &dyn crate::ai_provider::AiProvider,
+    question: &str,
+) -> Result<(String, String, u64), String> {
     let system = format!("{SYSTEM_PROMPT}\n\n{GRAPH_SCHEMA}\n\n{FEW_SHOT_EXAMPLES}");
-
-    let body = serde_json::json!({
-        "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 1024,
-        "system": system,
-        "messages": [
-            {
-                "role": "user",
-                "content": question
-            }
-        ]
-    });
-
-    let resp = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", api_key)
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
+    let messages = vec![
+        AiMessage::system(system),
+        AiMessage::user(question.to_string()),
+    ];
+    let resp = provider
+        .complete(messages, vec![])
         .await
-        .map_err(|e| format!("HTTP error: {e}"))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Anthropic API {status}: {text}"));
-    }
-
-    let json: serde_json::Value = resp.json().await.map_err(|e| format!("parse error: {e}"))?;
-
-    // Extract token usage
-    let input_tokens = json["usage"]["input_tokens"].as_u64().unwrap_or(0);
-    let output_tokens = json["usage"]["output_tokens"].as_u64().unwrap_or(0);
+        .map_err(|e| e.to_string())?;
 
     // Charge budget
-    charge_tokens(input_tokens, output_tokens)?;
+    charge_tokens(0, resp.tokens_used)?;
+    let total = resp.tokens_used;
 
-    let total = input_tokens + output_tokens;
-
-    // Extract text content from the response
-    let text = json["content"]
-        .as_array()
-        .and_then(|arr| arr.iter().find(|b| b["type"] == "text"))
-        .and_then(|b| b["text"].as_str())
-        .ok_or("No text content in LLM response")?;
+    let text = resp
+        .content
+        .as_deref()
+        .ok_or("No text content in AI provider response")?;
 
     // Parse the JSON response from the model
     // Try to find JSON in the response (model may wrap in markdown code blocks)

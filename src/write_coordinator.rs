@@ -337,6 +337,13 @@ async fn run_coordinator(
 
 async fn flush_telemetry_batch(store: &Arc<GraphStore>, batch: &mut Vec<TelemetryUpdate>) {
     let updates = std::mem::replace(batch, Vec::with_capacity(batch.capacity()));
+    let otlp_count = updates
+        .iter()
+        .filter(|u| u.path == "streaming/otlp/span" || u.path == "streaming/otlp/metrics")
+        .count();
+    if otlp_count > 0 {
+        tracing::debug!(batch_len = updates.len(), otlp_count, "flush_telemetry_batch contains OTLP updates");
+    }
     if let Err(e) = store.write_batch(updates).await {
         warn!(error = %e, "telemetry batch write failed");
     }

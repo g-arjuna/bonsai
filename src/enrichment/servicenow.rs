@@ -591,7 +591,7 @@ impl GraphEnricher for ServiceNowEnricher {
             .context("build reqwest client")?;
         let resp = client
             .get(&url)
-            .basic_auth(&cred.username, Some(&cred.password))
+            .basic_auth(&cred.username, Some(&*cred.password))
             .send()
             .await
             .with_context(|| format!("GET {url}"))?;

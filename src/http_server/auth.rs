@@ -73,7 +73,6 @@ pub(super) async fn get_or_init_jwt_secret(store: &crate::graph::GraphStore) -> 
     // Generate a new 64-byte hex secret and persist it
     let secret = hex::encode({
         use sha2::Sha256;
-        let mut rng_bytes = [0u8; 32];
         // Combine UUID entropy + current time for seeding
         let seed = format!("{}{}", uuid::Uuid::new_v4(), super::now_ns());
         Sha256::digest(seed.as_bytes()).to_vec()
@@ -529,6 +528,7 @@ pub(super) enum Role {
 }
 
 impl Role {
+    #[allow(dead_code)]
     fn from_str(s: &str) -> Self {
         match s.trim().to_lowercase().as_str() {
             "admin" => Role::Admin,
@@ -538,6 +538,7 @@ impl Role {
         }
     }
 
+    #[allow(dead_code)]
     fn as_str(&self) -> &'static str {
         match self {
             Role::Admin => "admin",
@@ -813,6 +814,7 @@ pub(super) async fn delete_user_handler(
 }
 
 /// Minimum role required for a given HTTP method + path combination.
+#[allow(dead_code)]
 fn required_role(method: &str, path: &str) -> Role {
     // Health: no auth needed (handled before this)
     // Admin-only: vault, user management, DB purge, restart
@@ -848,6 +850,7 @@ fn required_role(method: &str, path: &str) -> Role {
 ///   - `bsk_` API keys — for programmatic consumers (hash compared constant-time)
 /// Enforces RBAC role checks based on method + path.
 /// /health, /healthz, /readyz, /api/auth/login are always unauthenticated.
+#[allow(dead_code)]
 pub(super) async fn auth_middleware(
     State(state): State<AppState>,
     request: Request<axum::body::Body>,
@@ -1176,6 +1179,7 @@ async fn ldap_bind_tls(addr: &str, hostname: &str, dn: &str, password: &str, ski
 
 /// Stub certificate verifier for `tls_skip_verify = true`.
 /// This is intentionally insecure and must only be used in lab environments.
+#[derive(Debug)]
 struct NoVerifier;
 impl rustls::client::danger::ServerCertVerifier for NoVerifier {
     fn verify_server_cert(

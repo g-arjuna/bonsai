@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -34,6 +33,7 @@ impl ShunScope {
         }
     }
 
+    #[allow(dead_code)]
     fn from_str(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "device" => Self::Device,
@@ -60,6 +60,7 @@ impl ShunMatchType {
         }
     }
 
+    #[allow(dead_code)]
     fn from_str(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "regex" => Self::Regex,
@@ -85,6 +86,7 @@ impl ShunAction {
         }
     }
 
+    #[allow(dead_code)]
     fn from_str(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "rate_limit" => Self::RateLimit,

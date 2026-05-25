@@ -1,7 +1,7 @@
 //! Security Event Anomaly Detection Module
 //! Detects anomalous patterns in security events using statistical analysis and ML
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -50,20 +50,21 @@ pub enum SecurityEventType {
 }
 
 /// Security event data
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SecurityEvent {
     pub id: String,
     pub event_type: SecurityEventType,
     pub user_id: Option<String>,
     pub source_ip: Option<String>,
     pub target_device: Option<String>,
+    #[serde(skip_serializing, skip_deserializing)]
     pub timestamp: Instant,
     pub severity: f64,
     pub metadata: HashMap<String, String>,
 }
 
 /// Anomaly detection result
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AnomalyResult {
     pub id: String,
     pub event_type: SecurityEventType,
@@ -71,6 +72,7 @@ pub struct AnomalyResult {
     pub threshold: f64,
     pub is_anomaly: bool,
     pub description: String,
+    #[serde(skip_serializing, skip_deserializing)]
     pub detected_at: Instant,
     pub contributing_factors: Vec<String>,
     pub affected_entities: Vec<String>,
@@ -79,6 +81,7 @@ pub struct AnomalyResult {
 /// Statistical baseline for event patterns
 #[derive(Debug, Clone)]
 struct EventBaseline {
+    #[allow(dead_code)]
     pub event_type: SecurityEventType,
     pub mean_rate: f64,
     pub std_dev: f64,
@@ -99,9 +102,11 @@ pub struct AnomalyDetectionManager {
 /// Simple statistical detection model
 #[derive(Debug, Clone)]
 struct SimpleDetectionModel {
+    #[allow(dead_code)]
     pub event_type: SecurityEventType,
     pub threshold_multiplier: f64,
     pub min_samples: usize,
+    #[allow(dead_code)]
     pub window_size: usize,
 }
 
@@ -243,7 +248,7 @@ impl AnomalyDetectionManager {
             }
             
             // Normalize to percentages
-            let total hourly_counts.iter().sum::<f64>();
+            let total = hourly_counts.iter().sum::<f64>();
             if total > 0.0 {
                 for count in &mut hourly_counts {
                     *count /= total / 100.0;
@@ -301,7 +306,7 @@ impl AnomalyDetectionManager {
                     let threshold = model.threshold_multiplier;
                     if z_score.abs() > threshold {
                         return Some(AnomalyResult {
-                            id: format!("anomaly-{}-{}", uuid::Uuid::new_v4(), event.event_type as u8),
+                            id: format!("anomaly-{}-{:?}", uuid::Uuid::new_v4(), event.event_type),
                             event_type: event.event_type.clone(),
                             anomaly_score: z_score.abs(),
                             threshold,
@@ -340,7 +345,7 @@ impl AnomalyDetectionManager {
             // In production, you'd use more sophisticated pattern analysis
             if expected_percentage < 5.0 && matches!(event.event_type, SecurityEventType::AuthenticationFailure) {
                 return Some(AnomalyResult {
-                    id: format!("pattern-anomaly-{}-{}", uuid::Uuid::new_v4(), event.event_type as u8),
+                    id: format!("pattern-anomaly-{}-{:?}", uuid::Uuid::new_v4(), event.event_type),
                     event_type: event.event_type.clone(),
                     anomaly_score: 2.5,
                     threshold: 2.0,

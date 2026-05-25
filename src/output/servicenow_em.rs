@@ -299,7 +299,7 @@ impl OutputAdapter for ServiceNowEmAdapter {
             .context("build reqwest client")?;
         let resp = http
             .get(&url)
-            .basic_auth(&cred.username, Some(&cred.password))
+            .basic_auth(&cred.username, Some(&*cred.password))
             .send()
             .await
             .with_context(|| format!("GET {url}"))?;

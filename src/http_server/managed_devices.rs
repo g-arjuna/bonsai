@@ -60,7 +60,10 @@ pub(super) async fn discover_handler(
     )
     .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
     let (username, password) = match credentials {
-        Some(credentials) => (Some(credentials.username), Some(credentials.password)),
+        Some(credentials) => {
+            let password = credentials.password_string();
+            (Some(credentials.username), Some(password))
+        }
         None => (None, None),
     };
 
@@ -208,11 +211,12 @@ pub(super) async fn test_credential_handler(
         .credentials
         .resolve(&req.alias, ResolvePurpose::Test)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    let password = credentials.password_string();
 
     let report = discovery::discover_device(DiscoveryInput {
         address: req.address,
         username: Some(credentials.username),
-        password: Some(credentials.password),
+        password: Some(password),
         username_env: None,
         password_env: None,
         ca_cert_path: option_string(req.ca_cert_path),
@@ -846,7 +850,7 @@ pub(super) struct BootstrapRequest {
 }
 
 pub(super) async fn bootstrap_device_handler(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(req): Json<BootstrapRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     if req.address.trim().is_empty() {
@@ -1113,6 +1117,7 @@ struct SeedVlan {
     #[serde(default)]
     name: String,
     #[serde(default)]
+    #[allow(dead_code)]
     state: String,
     #[serde(default)]
     interfaces: Vec<String>,
@@ -1587,7 +1592,7 @@ pub(super) struct BulkBootstrapRequest {
 fn default_parallel() -> usize { 4 }
 
 pub(super) async fn bulk_bootstrap_handler(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(req): Json<BulkBootstrapRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     if req.devices.is_empty() {

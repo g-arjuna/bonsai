@@ -105,7 +105,7 @@ pub async fn get_security_health() -> serde_json::Value {
     });
 
     // Database security health
-    if let Some(db_manager) = database::get_database_security_manager() {
+    if let Some(_db_manager) = database::get_database_security_manager() {
         health["components"]["database"] = serde_json::json!({
             "status": "healthy",
             "encryption_enabled": true,
@@ -116,7 +116,7 @@ pub async fn get_security_health() -> serde_json::Value {
         health["components"]["database"] = serde_json::json!({
             "status": "uninitialized"
         });
-        health["status"] = "degraded";
+        health["status"] = "degraded".into();
     }
 
     // MFA health
@@ -129,7 +129,7 @@ pub async fn get_security_health() -> serde_json::Value {
         health["components"]["mfa"] = serde_json::json!({
             "status": "uninitialized"
         });
-        health["status"] = "degraded";
+        health["status"] = "degraded".into();
     }
 
     // Session management health
@@ -142,7 +142,7 @@ pub async fn get_security_health() -> serde_json::Value {
         health["components"]["session"] = serde_json::json!({
             "status": "uninitialized"
         });
-        health["status"] = "degraded";
+        health["status"] = "degraded".into();
     }
 
     // Threat intelligence health
@@ -155,7 +155,7 @@ pub async fn get_security_health() -> serde_json::Value {
         health["components"]["threat_intel"] = serde_json::json!({
             "status": "uninitialized"
         });
-        health["status"] = "degraded";
+        health["status"] = "degraded".into();
     }
 
     // Incident response health
@@ -168,7 +168,7 @@ pub async fn get_security_health() -> serde_json::Value {
         health["components"]["incident_response"] = serde_json::json!({
             "status": "uninitialized"
         });
-        health["status"] = "degraded";
+        health["status"] = "degraded".into();
     }
 
     health

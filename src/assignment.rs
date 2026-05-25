@@ -521,8 +521,9 @@ fn create_assignment(
 
     if let Some(alias) = &target.credential_alias {
         if let Ok(creds) = vault.resolve(alias, ResolvePurpose::Subscribe) {
+            let resolved_password = creds.password_string();
             username = creds.username;
-            password = creds.password;
+            password = resolved_password;
         }
     } else if let Some(u) = target.resolved_username() {
         username = u;

@@ -74,7 +74,7 @@ pub enum ThreatSeverity {
 }
 
 /// Threat indicator
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ThreatIndicator {
     pub id: String,
     pub indicator_type: IndicatorType,
@@ -84,8 +84,11 @@ pub struct ThreatIndicator {
     pub source: String,
     pub description: Option<String>,
     pub tags: Vec<String>,
+    #[serde(skip_serializing, skip_deserializing)]
     pub first_seen: Instant,
+    #[serde(skip_serializing, skip_deserializing)]
     pub last_seen: Instant,
+    #[serde(skip_serializing, skip_deserializing)]
     pub expires_at: Option<Instant>,
     pub is_active: bool,
 }
@@ -94,7 +97,9 @@ pub struct ThreatIndicator {
 #[derive(Debug, Deserialize)]
 struct ThreatFeedResponse {
     pub indicators: Vec<ThreatIndicatorData>,
+    #[allow(dead_code)]
     pub timestamp: i64,
+    #[allow(dead_code)]
     pub source: String,
 }
 
@@ -261,7 +266,7 @@ impl ThreatIntelManager {
 
     /// Parse CSV threat data
     fn parse_csv_threat_data(&self, content: &str, source: &str) -> Result<Vec<ThreatIndicator>> {
-        let mut indicators = Vec::new();
+            let mut indicators = Vec::new();
         let now = Instant::now();
 
         for line in content.lines().skip(1) { // Skip header
@@ -308,10 +313,9 @@ impl ThreatIntelManager {
     }
 
     /// Parse STIX threat data
-    fn parse_stix_threat_data(&self, content: &str, source: &str) -> Result<Vec<ThreatIndicator>> {
+    fn parse_stix_threat_data(&self, _content: &str, _source: &str) -> Result<Vec<ThreatIndicator>> {
         // Simplified STIX parsing - in production, use proper STIX library
-        let mut indicators = Vec::new();
-        let now = Instant::now();
+        let indicators = Vec::new();
 
         // This is a placeholder for STIX parsing
         // In production, you'd use a proper STIX parser
@@ -340,11 +344,11 @@ impl ThreatIntelManager {
         };
 
         let first_seen = data.first_seen
-            .map(|ts| Instant::now() - Duration::from_secs((now.elapsed().as_secs() - ts as u64)))
+            .map(|ts| Instant::now() - Duration::from_secs(now.elapsed().as_secs() - ts as u64))
             .unwrap_or(now);
 
         let last_seen = data.last_seen
-            .map(|ts| Instant::now() - Duration::from_secs((now.elapsed().as_secs() - ts as u64)))
+            .map(|ts| Instant::now() - Duration::from_secs(now.elapsed().as_secs() - ts as u64))
             .unwrap_or(now);
 
         let expires_at = data.expires_at

@@ -250,6 +250,10 @@ http_addr = "0.0.0.0:4318"
 enabled = true
 udp_addr = "0.0.0.0:2055"
 
+[streaming.sflow]
+enabled = true
+udp_addr = "0.0.0.0:6343"
+
 [signals.syslog]
 enabled = true
 udp_addr = "0.0.0.0:5514"

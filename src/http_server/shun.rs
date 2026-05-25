@@ -6,8 +6,6 @@
 ///   POST /api/shun/rules/{id}/disable   — disable without deleting
 ///   POST /api/shun/rules/{id}/delete    — permanently remove
 ///   GET  /api/shun/stats                — per-rule suppression counts
-use std::sync::Arc;
-
 use axum::{
     Json,
     extract::{Path, State},

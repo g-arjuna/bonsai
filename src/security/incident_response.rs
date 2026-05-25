@@ -1,12 +1,12 @@
 //! Automated Incident Response Module
 //! Provides workflow-based incident response with automated actions
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tokio::time::{Duration, Instant};
-use tracing::{info, warn, error};
+use tokio::time::Instant;
+use tracing::{info, error};
 
 use crate::audit::append_security_event;
 
@@ -111,7 +111,7 @@ pub enum WorkflowAction {
 }
 
 /// Incident workflow
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IncidentWorkflow {
     pub id: String,
     pub incident_id: String,
@@ -121,24 +121,30 @@ pub struct IncidentWorkflow {
     pub status: IncidentStatus,
     pub actions: Vec<WorkflowAction>,
     pub current_action_index: usize,
+    #[serde(skip_serializing, skip_deserializing)]
     pub created_at: Instant,
+    #[serde(skip_serializing, skip_deserializing)]
     pub updated_at: Instant,
+    #[serde(skip_serializing, skip_deserializing)]
     pub started_at: Option<Instant>,
+    #[serde(skip_serializing, skip_deserializing)]
     pub completed_at: Option<Instant>,
     pub assigned_to: Option<String>,
     pub approval_required: bool,
     pub approved_by: Option<String>,
+    #[serde(skip_serializing, skip_deserializing)]
     pub approved_at: Option<Instant>,
     pub error_message: Option<String>,
 }
 
 /// Workflow execution result
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct WorkflowResult {
     pub workflow_id: String,
     pub action_index: usize,
     pub success: bool,
     pub message: String,
+    #[serde(skip_serializing, skip_deserializing)]
     pub executed_at: Instant,
     pub duration_ms: u64,
 }
@@ -411,10 +417,11 @@ impl IncidentResponseManager {
             };
 
             // Store result
+            let success = result.success;
             let mut history = self.workflow_history.lock().unwrap();
             history.push(result);
 
-            if !result.success {
+            if !success {
                 break;
             }
         }
@@ -447,7 +454,7 @@ impl IncidentResponseManager {
                 self.quarantine_file(file_hash, reason).await
             },
             WorkflowAction::NotifyTeam { message, severity } => {
-                self.notify_team(message, severity).await
+                self.notify_team(message, severity.clone()).await
             },
             WorkflowAction::CreateTicket { title, description, priority } => {
                 self.create_ticket(title, description, priority).await
@@ -557,7 +564,7 @@ impl IncidentResponseManager {
     }
 
     /// Create ticket
-    async fn create_ticket(&self, title: &str, description: &str, priority: &str) -> Result<String> {
+    async fn create_ticket(&self, title: &str, _description: &str, priority: &str) -> Result<String> {
         info!("Creating ticket: {} - {}", title, priority);
         
         // In production, integrate with ticketing systems (ServiceNow, Jira, etc.)

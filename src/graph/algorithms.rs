@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use lbug::{Connection, Value};
 use serde::Serialize;
 
-use super::common::{read_str, ts};
+use super::common::{now_ns, read_str, ts};
 
 fn read_i64(v: &Value) -> i64 {
     match v {
@@ -355,7 +355,7 @@ pub fn graph_quality(conn: &Connection<'_>) -> Result<GraphQuality> {
         )
         .context("quality: syslog prepare")?;
     let syslog_active: i64 = conn
-        .execute(&mut syslog_stmt, vec![("cutoff", syslog_cutoff)])
+        .execute(&mut syslog_stmt, vec![("cutoff", syslog_cutoff.clone())])
         .context("quality: syslog execute")?
         .next()
         .map(|r| read_i64(&r[0]))
@@ -458,7 +458,7 @@ pub fn graph_quality(conn: &Connection<'_>) -> Result<GraphQuality> {
         )
         .context("quality: syslog_set prepare")?;
     let syslog_set: std::collections::HashSet<String> = conn
-        .execute(&mut syslog_stmt2, vec![("cutoff", syslog_cutoff)])
+        .execute(&mut syslog_stmt2, vec![("cutoff", syslog_cutoff.clone())])
         .context("quality: syslog_set execute")?
         .map(|r| read_str(&r[0]))
         .collect();
@@ -663,7 +663,7 @@ pub fn compute_interface_utilization_baseline(
     device_address: &str,
     lookback_hours: i32,
 ) -> Result<Vec<PerformanceBaselineRow>> {
-    let cutoff_ns = now_ns() - (lookback_hours as i64 * 3600 * 1_000_000_000);
+    let _cutoff_ns = now_ns() - (lookback_hours as i64 * 3600 * 1_000_000_000);
     
     let rows = conn
         .query(
@@ -730,46 +730,50 @@ pub fn store_performance_baseline(
     conn: &Connection<'_>,
     baseline: &PerformanceBaselineRow,
 ) -> Result<()> {
-    conn.query(
-        "MERGE (pb:PerformanceBaseline {id: $id}) \
-         SET pb.device_address = $device_address, \
-             pb.metric_type = $metric_type, \
-             pb.metric_key = $metric_key, \
-             pb.baseline_mean = $baseline_mean, \
-             pb.baseline_stddev = $baseline_stddev, \
-             pb.baseline_min = $baseline_min, \
-             pb.baseline_max = $baseline_max, \
-             pb.sample_count = $sample_count, \
-             pb.computed_at_ns = $computed_at_ns, \
-             pb.lookback_hours = $lookback_hours, \
-             pb.confidence_level = $confidence_level",
-        vec![
-            ("id", Value::String(baseline.id.clone())),
-            ("device_address", Value::String(baseline.device_address.clone())),
-            ("metric_type", Value::String(baseline.metric_type.clone())),
-            ("metric_key", Value::String(baseline.metric_key.clone())),
-            ("baseline_mean", Value::Double(baseline.baseline_mean)),
-            ("baseline_stddev", Value::Double(baseline.baseline_stddev)),
-            ("baseline_min", Value::Double(baseline.baseline_min)),
-            ("baseline_max", Value::Double(baseline.baseline_max)),
-            ("sample_count", Value::Int64(baseline.sample_count)),
-            ("computed_at_ns", Value::Int64(baseline.computed_at_ns)),
-            ("lookback_hours", Value::Int32(baseline.lookback_hours)),
-            ("confidence_level", Value::Double(baseline.confidence_level)),
-        ],
-    )
+    let mut stmt = conn
+        .prepare(
+            "MERGE (pb:PerformanceBaseline {id: $id}) \
+             SET pb.device_address = $device_address, \
+                 pb.metric_type = $metric_type, \
+                 pb.metric_key = $metric_key, \
+                 pb.baseline_mean = $baseline_mean, \
+                 pb.baseline_stddev = $baseline_stddev, \
+                 pb.baseline_min = $baseline_min, \
+                 pb.baseline_max = $baseline_max, \
+                 pb.sample_count = $sample_count, \
+                 pb.computed_at_ns = $computed_at_ns, \
+                 pb.lookback_hours = $lookback_hours, \
+                 pb.confidence_level = $confidence_level",
+        )
+        .context("prepare store performance baseline")?;
+    conn.execute(&mut stmt, vec![
+        ("id", Value::String(baseline.id.clone())),
+        ("device_address", Value::String(baseline.device_address.clone())),
+        ("metric_type", Value::String(baseline.metric_type.clone())),
+        ("metric_key", Value::String(baseline.metric_key.clone())),
+        ("baseline_mean", Value::Double(baseline.baseline_mean)),
+        ("baseline_stddev", Value::Double(baseline.baseline_stddev)),
+        ("baseline_min", Value::Double(baseline.baseline_min)),
+        ("baseline_max", Value::Double(baseline.baseline_max)),
+        ("sample_count", Value::Int64(baseline.sample_count)),
+        ("computed_at_ns", Value::Int64(baseline.computed_at_ns)),
+        ("lookback_hours", Value::Int32(baseline.lookback_hours)),
+        ("confidence_level", Value::Double(baseline.confidence_level)),
+    ])
     .context("store performance baseline")?;
     
     // Create relationship to device
-    conn.query(
-        "MATCH (d:Device {address: $device_address}), (pb:PerformanceBaseline {id: $id}) \
-         MERGE (d)-[:HAS_BASELINE {updated_at: $updated_at}]->(pb)",
-        vec![
-            ("device_address", Value::String(baseline.device_address.clone())),
-            ("id", Value::String(baseline.id.clone())),
-            ("updated_at", Value::Int64(now_ns())),
-        ],
-    )
+    let mut stmt = conn
+        .prepare(
+            "MATCH (d:Device {address: $device_address}), (pb:PerformanceBaseline {id: $id}) \
+             MERGE (d)-[:HAS_BASELINE {updated_at: $updated_at}]->(pb)",
+        )
+        .context("prepare baseline relationship")?;
+    conn.execute(&mut stmt, vec![
+        ("device_address", Value::String(baseline.device_address.clone())),
+        ("id", Value::String(baseline.id.clone())),
+        ("updated_at", Value::Int64(now_ns())),
+    ])
     .context("create baseline relationship")?;
     
     Ok(())
@@ -783,11 +787,16 @@ pub fn check_baseline_drift(
     metric_key: &str,
     current_value: f64,
 ) -> Result<bool> {
-    let rows = conn
-        .query(
+    let mut stmt = conn
+        .prepare(
             "MATCH (d:Device {address: $device_address})-[:HAS_BASELINE]->(pb:PerformanceBaseline) \
              WHERE pb.metric_type = $metric_type AND pb.metric_key = $metric_key \
              RETURN pb.baseline_mean, pb.baseline_stddev",
+        )
+        .context("prepare baseline drift check query")?;
+    let mut rows = conn
+        .execute(
+            &mut stmt,
             vec![
                 ("device_address", Value::String(device_address.to_string())),
                 ("metric_type", Value::String(metric_type.to_string())),

@@ -914,7 +914,7 @@ pub(super) fn openapi_schema() -> serde_json::Value {
                 "post": {
                     "tags": ["Graph Explorer"],
                     "summary": "Natural language graph query",
-                    "description": "Accepts a plain English question about the network, generates a read-only Cypher query using an LLM (Anthropic Claude), executes it against LadybugDB, and returns the generated Cypher, explanation, and result rows. Requires ANTHROPIC_API_KEY environment variable.",
+                    "description": "Accepts a plain English question about the network, generates a read-only Cypher query using the configured AI provider, executes it against LadybugDB, and returns the generated Cypher, explanation, and result rows. Requires the configured AI provider API key environment variable.",
                     "requestBody": {
                         "required": true,
                         "content": { "application/json": { "schema": { "type": "object", "properties": { "question": { "type": "string", "description": "Natural language question, e.g. 'Which servers are connected to spine1?'" }}, "required": ["question"] }}}
@@ -922,7 +922,7 @@ pub(super) fn openapi_schema() -> serde_json::Value {
                     "responses": {
                         "200": { "description": "Generated Cypher, explanation, and result rows" },
                         "400": { "description": "Empty question" },
-                        "503": { "description": "ANTHROPIC_API_KEY not set" }
+                        "503": { "description": "Configured AI provider unavailable or API key missing" }
                     }
                 }
             },

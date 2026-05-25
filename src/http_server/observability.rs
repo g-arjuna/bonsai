@@ -1646,7 +1646,7 @@ pub(super) async fn db_stats_handler(
                 .query(&format!("MATCH (n:{table}) RETURN count(n)"))
                 .and_then(|mut r| {
                     if let Some(row) = r.next() {
-                        Ok(row.get_val::<i64>(0).unwrap_or(0))
+                        Ok(read_i64(&row[0]))
                     } else {
                         Ok(0)
                     }
@@ -1663,7 +1663,7 @@ pub(super) async fn db_stats_handler(
                 .query(&format!("MATCH ()-[r:{table}]->() RETURN count(r)"))
                 .and_then(|mut r| {
                     if let Some(row) = r.next() {
-                        Ok(row.get_val::<i64>(0).unwrap_or(0))
+                        Ok(read_i64(&row[0]))
                     } else {
                         Ok(0)
                     }
@@ -1726,8 +1726,8 @@ pub(super) async fn db_schema_handler(
             "CALL show_tables() RETURN * ORDER BY name"
         ) {
             while let Some(row) = result.next() {
-                let name = row.get_val::<String>(0).unwrap_or_default();
-                let ttype = row.get_val::<String>(1).unwrap_or_default();
+                let name = read_str(&row[0]);
+                let ttype = read_str(&row[1]);
                 if ttype == "NODE" {
                     // Get columns for this node table
                     let columns = get_table_columns(&conn, &name);
@@ -1808,7 +1808,7 @@ pub(super) async fn db_purge_handler(
             .query(&count_q)
             .and_then(|mut r| {
                 if let Some(row) = r.next() {
-                    Ok(row.get_val::<i64>(0).unwrap_or(0))
+                    Ok(read_i64(&row[0]))
                 } else {
                     Ok(0)
                 }
@@ -1902,7 +1902,7 @@ pub(super) async fn db_export_handler(
 
         let mut lines = Vec::new();
         while let Some(row) = result.next() {
-            let val = row.get_val::<String>(0).unwrap_or_default();
+            let val = read_str(&row[0]);
             lines.push(val);
         }
         Ok::<_, (StatusCode, String)>(lines)
@@ -1911,17 +1911,19 @@ pub(super) async fn db_export_handler(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
 
     let body = lines.join("\n");
-    Ok((
-        StatusCode::OK,
-        [
-            (axum::http::header::CONTENT_TYPE, "application/x-ndjson"),
-            (
-                axum::http::header::CONTENT_DISPOSITION,
-                &format!("attachment; filename=\"{}.jsonl\"", params.node_type),
-            ),
-        ],
-        body,
-    ))
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/x-ndjson"),
+    );
+    headers.insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        axum::http::HeaderValue::from_str(
+            &format!("attachment; filename=\"{}.jsonl\"", params.node_type),
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+    );
+    Ok((StatusCode::OK, headers, body))
 }
 
 // ── D4-13 T4: Backup + restore ──────────────────────────────────────────────
@@ -2001,8 +2003,8 @@ fn get_table_columns(conn: &Connection<'_>, table_name: &str) -> Vec<serde_json:
         "CALL table_info('{}') RETURN *", table_name
     )) {
         while let Some(row) = result.next() {
-            let col_name = row.get_val::<String>(1).unwrap_or_default();
-            let col_type = row.get_val::<String>(2).unwrap_or_default();
+            let col_name = read_str(&row[1]);
+            let col_type = read_str(&row[2]);
             columns.push(serde_json::json!({
                 "name": col_name,
                 "type": col_type,

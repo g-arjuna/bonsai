@@ -549,7 +549,10 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         )
         .map_err(|e| Status::failed_precondition(format!("{e:#}")))?;
         let (username, password) = match credentials {
-            Some(credentials) => (Some(credentials.username), Some(credentials.password)),
+            Some(credentials) => {
+                let password = credentials.password_string();
+                (Some(credentials.username), Some(password))
+            }
             None => (None, None),
         };
         let input = discovery::DiscoveryInput {
@@ -1261,7 +1264,10 @@ async fn target_conn_info_from_config(
     let resolved_credentials = resolve_target_credentials(target, credentials)
         .map_err(|e| Status::failed_precondition(format!("{e:#}")))?;
     let (username, password) = match resolved_credentials {
-        Some(credentials) => (Some(credentials.username), Some(credentials.password)),
+        Some(credentials) => {
+            let password = credentials.password_string();
+            (Some(credentials.username), Some(password))
+        }
         None => (None, None),
     };
 

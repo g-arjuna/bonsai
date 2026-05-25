@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -82,6 +81,7 @@ fn handle_datagram(pkt: &[u8], peer: SocketAddr, bus: &Arc<InProcessBus>) -> Res
 
     // sub_agent_id(4) @ 12, sequence_number(4) @ 16, uptime(4) @ 20
     let num_samples = read_u32(pkt, 24)? as usize;
+    debug!(%peer, agent = %agent_addr, num_samples, len = pkt.len(), "sflow datagram accepted");
 
     let mut offset = 28usize;
     for _ in 0..num_samples {
@@ -365,6 +365,16 @@ fn publish_flow(flow: SampledFlow, agent_addr: &str, sampling_rate: u32, bus: &A
         "bytes_per_sec": bytes_per_sec,
         "packets_per_sec": sampling_rate as f64,
     });
+
+    debug!(
+        agent = %agent_addr,
+        src = %flow.src_address,
+        dst = %flow.dst_address,
+        protocol = %proto_str,
+        frame_length = flow.frame_length,
+        sampling_rate,
+        "publishing sflow flow sample"
+    );
 
     bus.publish(TelemetryUpdate {
         target: agent_addr.to_string(),

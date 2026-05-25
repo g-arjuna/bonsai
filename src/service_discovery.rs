@@ -41,53 +41,53 @@ pub struct TrafficThresholds {
 lazy_static::lazy_static! {
     static ref SERVICE_PATTERNS: Vec<(Regex, f64, String)> = vec![
         // API Gateway patterns
-        (Regex::new(r"(?i)api[_-]?gateway").unwrap(), 0.9, "api_gateway"),
-        (Regex::new(r"(?i)gateway[_-]?api").unwrap(), 0.9, "api_gateway"),
-        (Regex::new(r"(?i)api[_-]?endpoint").unwrap(), 0.8, "api_gateway"),
+        (Regex::new(r"(?i)api[_-]?gateway").unwrap(), 0.9, "api_gateway".to_string()),
+        (Regex::new(r"(?i)gateway[_-]?api").unwrap(), 0.9, "api_gateway".to_string()),
+        (Regex::new(r"(?i)api[_-]?endpoint").unwrap(), 0.8, "api_gateway".to_string()),
         
         // Database patterns
-        (Regex::new(r"(?i)database[_-]?server").unwrap(), 0.9, "database"),
-        (Regex::new(r"(?i)db[_-]?server").unwrap(), 0.8, "database"),
-        (Regex::new(r"(?i)mysql[_-]?server").unwrap(), 0.9, "database"),
-        (Regex::new(r"(?i)postgres[_-]?server").unwrap(), 0.9, "database"),
-        (Regex::new(r"(?i)mongodb[_-]?server").unwrap(), 0.9, "database"),
+        (Regex::new(r"(?i)database[_-]?server").unwrap(), 0.9, "database".to_string()),
+        (Regex::new(r"(?i)db[_-]?server").unwrap(), 0.8, "database".to_string()),
+        (Regex::new(r"(?i)mysql[_-]?server").unwrap(), 0.9, "database".to_string()),
+        (Regex::new(r"(?i)postgres[_-]?server").unwrap(), 0.9, "database".to_string()),
+        (Regex::new(r"(?i)mongodb[_-]?server").unwrap(), 0.9, "database".to_string()),
         
         // Cache patterns
-        (Regex::new(r"(?i)cache[_-]?server").unwrap(), 0.9, "cache"),
-        (Regex::new(r"(?i)redis[_-]?server").unwrap(), 0.9, "cache"),
-        (Regex::new(r"(?i)memcached[_-]?server").unwrap(), 0.9, "cache"),
+        (Regex::new(r"(?i)cache[_-]?server").unwrap(), 0.9, "cache".to_string()),
+        (Regex::new(r"(?i)redis[_-]?server").unwrap(), 0.9, "cache".to_string()),
+        (Regex::new(r"(?i)memcached[_-]?server").unwrap(), 0.9, "cache".to_string()),
         
         // Load Balancer patterns
-        (Regex::new(r"(?i)load[_-]?balancer").unwrap(), 0.9, "load_balancer"),
-        (Regex::new(r"(?i)lb[_-]?frontend").unwrap(), 0.8, "load_balancer"),
-        (Regex::new(r"(?i)haproxy[_-]?frontend").unwrap(), 0.9, "load_balancer"),
+        (Regex::new(r"(?i)load[_-]?balancer").unwrap(), 0.9, "load_balancer".to_string()),
+        (Regex::new(r"(?i)lb[_-]?frontend").unwrap(), 0.8, "load_balancer".to_string()),
+        (Regex::new(r"(?i)haproxy[_-]?frontend").unwrap(), 0.9, "load_balancer".to_string()),
         
         // Web Server patterns
-        (Regex::new(r"(?i)web[_-]?server").unwrap(), 0.7, "web_server"),
-        (Regex::new(r"(?i)nginx[_-]?frontend").unwrap(), 0.8, "web_server"),
-        (Regex::new(r"(?i)apache[_-]?frontend").unwrap(), 0.8, "web_server"),
+        (Regex::new(r"(?i)web[_-]?server").unwrap(), 0.7, "web_server".to_string()),
+        (Regex::new(r"(?i)nginx[_-]?frontend").unwrap(), 0.8, "web_server".to_string()),
+        (Regex::new(r"(?i)apache[_-]?frontend").unwrap(), 0.8, "web_server".to_string()),
         
         // Application Server patterns
-        (Regex::new(r"(?i)application[_-]?server").unwrap(), 0.7, "application_server"),
-        (Regex::new(r"(?i)app[_-]?server").unwrap(), 0.7, "application_server"),
+        (Regex::new(r"(?i)application[_-]?server").unwrap(), 0.7, "application_server".to_string()),
+        (Regex::new(r"(?i)app[_-]?server").unwrap(), 0.7, "application_server".to_string()),
         
         // Message Queue patterns
-        (Regex::new(r"(?i)message[_-]?queue").unwrap(), 0.9, "message_queue"),
-        (Regex::new(r"(?i)kafka[_-]?broker").unwrap(), 0.9, "message_queue"),
-        (Regex::new(r"(?i)rabbitmq[_-]?server").unwrap(), 0.9, "message_queue"),
+        (Regex::new(r"(?i)message[_-]?queue").unwrap(), 0.9, "message_queue".to_string()),
+        (Regex::new(r"(?i)kafka[_-]?broker").unwrap(), 0.9, "message_queue".to_string()),
+        (Regex::new(r"(?i)rabbitmq[_-]?server").unwrap(), 0.9, "message_queue".to_string()),
         
         // Service Mesh patterns
-        (Regex::new(r"(?i)envoy[_-]?proxy").unwrap(), 0.9, "service_mesh"),
-        (Regex::new(r"(?i)istio[_-]?proxy").unwrap(), 0.9, "service_mesh"),
-        (Regex::new(r"(?i)consul[_-]?agent").unwrap(), 0.8, "service_mesh"),
+        (Regex::new(r"(?i)envoy[_-]?proxy").unwrap(), 0.9, "service_mesh".to_string()),
+        (Regex::new(r"(?i)istio[_-]?proxy").unwrap(), 0.9, "service_mesh".to_string()),
+        (Regex::new(r"(?i)consul[_-]?agent").unwrap(), 0.8, "service_mesh".to_string()),
         
         // Search Engine patterns
-        (Regex::new(r"(?i)elasticsearch[_-]?node").unwrap(), 0.9, "search_engine"),
-        (Regex::new(r"(?i)solr[_-]?server").unwrap(), 0.8, "search_engine"),
+        (Regex::new(r"(?i)elasticsearch[_-]?node").unwrap(), 0.9, "search_engine".to_string()),
+        (Regex::new(r"(?i)solr[_-]?server").unwrap(), 0.8, "search_engine".to_string()),
         
         // Monitoring patterns
-        (Regex::new(r"(?i)prometheus[_-]?exporter").unwrap(), 0.8, "monitoring"),
-        (Regex::new(r"(?i)grafana[_-]?server").unwrap(), 0.8, "monitoring"),
+        (Regex::new(r"(?i)prometheus[_-]?exporter").unwrap(), 0.8, "monitoring".to_string()),
+        (Regex::new(r"(?i)grafana[_-]?server").unwrap(), 0.8, "monitoring".to_string()),
     ];
 }
 
@@ -133,13 +133,15 @@ impl ServiceDiscovery {
     ) -> Result<Vec<ServiceEndpoint>> {
         let mut endpoints = Vec::new();
         
-        let rows = conn
-            .query(
+        let mut stmt = conn
+            .prepare(
                 "MATCH (d:Device {address: $device_address})-[:HAS_INTERFACE]->(i:Interface) \
                  WHERE i.description IS NOT NULL AND i.description <> '' \
                  RETURN i.name, i.description, i.speed",
-                vec![("device_address", Value::String(device_address.to_string()))],
             )
+            .context("prepare interface descriptions")?;
+        let rows = conn
+            .execute(&mut stmt, vec![("device_address", Value::String(device_address.to_string()))])
             .context("query interface descriptions")?;
         
         for row in rows {
@@ -169,14 +171,16 @@ impl ServiceDiscovery {
         let mut endpoints = Vec::new();
         
         // Look for interfaces with high connection counts or periodic traffic
-        let rows = conn
-            .query(
+        let mut stmt = conn
+            .prepare(
                 "MATCH (d:Device {address: $device_address})-[:HAS_INTERFACE]->(i:Interface) \
                  WHERE i.in_octets > 0 OR i.out_octets > 0 \
                  RETURN i.name, i.in_octets, i.out_octets, i.speed, i.updated_at_ns \
                  ORDER BY i.updated_at_ns DESC LIMIT 1000",
-                vec![("device_address", Value::String(device_address.to_string()))],
             )
+            .context("prepare interface traffic patterns")?;
+        let rows = conn
+            .execute(&mut stmt, vec![("device_address", Value::String(device_address.to_string()))])
             .context("query interface traffic patterns")?;
         
         let mut interface_traffic: HashMap<String, Vec<(f64, i64)>> = HashMap::new();
@@ -213,7 +217,7 @@ impl ServiceDiscovery {
         description: &str,
         speed: i64,
     ) -> Option<ServiceEndpoint> {
-        for (pattern, confidence, service_type) in &SERVICE_PATTERNS {
+        for (pattern, confidence, service_type) in SERVICE_PATTERNS.iter() {
             if pattern.is_match(description) {
                 let service_name = self.extract_service_name(description, service_type);
                 let endpoint_type = self.determine_endpoint_type(if_name, speed);
@@ -249,7 +253,7 @@ impl ServiceDiscovery {
         
         // Calculate traffic statistics
         let avg_throughput: f64 = samples.iter().map(|(v, _)| *v).sum::<f64>() / samples.len() as f64;
-        let max_throughput = samples.iter().map(|(v, _)| *v).fold(0.0, |a, b| a.max(b));
+        let max_throughput = samples.iter().map(|(v, _)| *v).fold(0.0_f64, |a, b| a.max(b));
         
         // Check for periodic traffic patterns
         let periodic_score = self.calculate_periodic_score(samples);
@@ -382,45 +386,49 @@ impl ServiceDiscovery {
         conn: &Connection<'_>,
         endpoint: &ServiceEndpoint,
     ) -> Result<()> {
-        conn.query(
-            "MERGE (se:ServiceEndpoint {id: $id}) \
-             SET se.device_address = $device_address, \
-                 se.interface_name = $interface_name, \
-                 se.service_type = $service_type, \
-                 se.service_name = $service_name, \
-                 se.endpoint_type = $endpoint_type, \
-                 se.connection_count = $connection_count, \
-                 se.avg_throughput_mbps = $avg_throughput_mbps, \
-                 se.discovered_via = $discovered_via, \
-                 se.confidence_score = $confidence_score, \
-                 se.updated_at_ns = $updated_at_ns",
-            vec![
-                ("id", Value::String(endpoint.id.clone())),
-                ("device_address", Value::String(endpoint.device_address.clone())),
-                ("interface_name", Value::String(endpoint.interface_name.clone())),
-                ("service_type", Value::String(endpoint.service_type.clone())),
-                ("service_name", Value::String(endpoint.service_name.clone())),
-                ("endpoint_type", Value::String(endpoint.endpoint_type.clone())),
-                ("connection_count", Value::Int64(endpoint.connection_count)),
-                ("avg_throughput_mbps", Value::Double(endpoint.avg_throughput_mbps)),
-                ("discovered_via", Value::String(endpoint.discovered_via.clone())),
-                ("confidence_score", Value::Double(endpoint.confidence_score)),
-                ("updated_at_ns", Value::Int64(endpoint.updated_at_ns)),
-            ],
-        )
+        let mut stmt = conn
+            .prepare(
+                "MERGE (se:ServiceEndpoint {id: $id}) \
+                 SET se.device_address = $device_address, \
+                     se.interface_name = $interface_name, \
+                     se.service_type = $service_type, \
+                     se.service_name = $service_name, \
+                     se.endpoint_type = $endpoint_type, \
+                     se.connection_count = $connection_count, \
+                     se.avg_throughput_mbps = $avg_throughput_mbps, \
+                     se.discovered_via = $discovered_via, \
+                     se.confidence_score = $confidence_score, \
+                     se.updated_at_ns = $updated_at_ns",
+            )
+            .context("prepare store service endpoint")?;
+        conn.execute(&mut stmt, vec![
+            ("id", Value::String(endpoint.id.clone())),
+            ("device_address", Value::String(endpoint.device_address.clone())),
+            ("interface_name", Value::String(endpoint.interface_name.clone())),
+            ("service_type", Value::String(endpoint.service_type.clone())),
+            ("service_name", Value::String(endpoint.service_name.clone())),
+            ("endpoint_type", Value::String(endpoint.endpoint_type.clone())),
+            ("connection_count", Value::Int64(endpoint.connection_count)),
+            ("avg_throughput_mbps", Value::Double(endpoint.avg_throughput_mbps)),
+            ("discovered_via", Value::String(endpoint.discovered_via.clone())),
+            ("confidence_score", Value::Double(endpoint.confidence_score)),
+            ("updated_at_ns", Value::Int64(endpoint.updated_at_ns)),
+        ])
         .context("store service endpoint")?;
         
         // Create relationship to device
-        conn.query(
-            "MATCH (d:Device {address: $device_address}), (se:ServiceEndpoint {id: $id}) \
-             MERGE (d)-[:HOSTS_SERVICE {role: $endpoint_type, updated_at: $updated_at}]->(se)",
-            vec![
-                ("device_address", Value::String(endpoint.device_address.clone())),
-                ("id", Value::String(endpoint.id.clone())),
-                ("endpoint_type", Value::String(endpoint.endpoint_type.clone())),
-                ("updated_at", Value::Int64(now_ns())),
-            ],
-        )
+        let mut stmt = conn
+            .prepare(
+                "MATCH (d:Device {address: $device_address}), (se:ServiceEndpoint {id: $id}) \
+                 MERGE (d)-[:HOSTS_SERVICE {role: $endpoint_type, updated_at: $updated_at}]->(se)",
+            )
+            .context("prepare service endpoint relationship")?;
+        conn.execute(&mut stmt, vec![
+            ("device_address", Value::String(endpoint.device_address.clone())),
+            ("id", Value::String(endpoint.id.clone())),
+            ("endpoint_type", Value::String(endpoint.endpoint_type.clone())),
+            ("updated_at", Value::Int64(now_ns())),
+        ])
         .context("create service endpoint relationship")?;
         
         Ok(())

@@ -451,14 +451,14 @@ pub async fn patch_streaming_settings_handler(
             let pdir = pattern_dir.clone();
             let addr = format!("{}/{}", new_syslog_udp_addr, new_syslog_tcp_addr);
             sup.spawn("syslog", addr, move |sd| async move {
-                crate::signals::syslog::run_syslog_receiver(c, pdir, tgts, bus2, sd, gov2).await
+                crate::signals::syslog::run_syslog_receiver(c, pdir, tgts, bus2, sd, gov2, None, None).await
             });
         }
         if let Some(c) = snmp_to_restart {
             let bus2 = std::sync::Arc::clone(&bus);
             let tgts = targets.clone();
             sup.spawn("snmp", new_snmp_udp_addr.clone(), move |sd| async move {
-                crate::signals::snmp::run_snmp_receiver(c, tgts, bus2, sd).await
+                crate::signals::snmp::run_snmp_receiver(c, tgts, bus2, sd, None, None).await
             });
         }
     }
@@ -471,16 +471,19 @@ pub async fn patch_streaming_settings_handler(
 }
 
 /// Remove all `[streaming*]` TOML sections from the file content.
+#[allow(dead_code)]
 fn strip_streaming_section(content: &str) -> String {
     strip_toml_prefix(content, "[streaming")
 }
 
 /// Remove all `[signals*]` TOML sections from the file content.
+#[allow(dead_code)]
 fn strip_signals_section(content: &str) -> String {
     strip_toml_prefix(content, "[signals")
 }
 
 /// Generic: remove all TOML sections whose header starts with `prefix`.
+#[allow(dead_code)]
 fn strip_toml_prefix(content: &str, prefix: &str) -> String {
     let mut out = Vec::new();
     let mut in_section = false;
@@ -718,7 +721,9 @@ pub async fn test_ai_provider_handler(
         .unwrap_or_default();
 
     let tmp_env = format!("_BONSAI_AI_TEST_{}", std::process::id());
-    std::env::set_var(&tmp_env, &api_key);
+    unsafe {
+        std::env::set_var(&tmp_env, &api_key);
+    }
     let cfg = crate::config::AiConfig {
         provider: meta.provider.clone(),
         model: meta.model.clone(),
@@ -748,7 +753,9 @@ pub async fn test_ai_provider_handler(
             }
         }
     };
-    std::env::remove_var(&tmp_env);
+    unsafe {
+        std::env::remove_var(&tmp_env);
+    }
     Json(result)
 }
 
@@ -885,7 +892,7 @@ pub(super) async fn mib_upload_handler(
     // Store each OID pattern as a ConfigItem
     for entry in &oid_entries {
         let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let oid_prefix = entry.get("oid_prefix").and_then(|v| v.as_str()).unwrap_or("");
+        let _oid_prefix = entry.get("oid_prefix").and_then(|v| v.as_str()).unwrap_or("");
         let mib_module = entry.get("mib_module").and_then(|v| v.as_str()).unwrap_or("");
 
         let item = crate::graph::ConfigItemRecord {

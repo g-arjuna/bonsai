@@ -1,12 +1,12 @@
 //! Multi-Factor Authentication Module
 //! Supports TOTP, SMS, and email-based MFA
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, Instant};
-use tracing::{info, warn, error};
+use tracing::{info, warn};
 
 use crate::audit::append_security_event;
 
@@ -50,12 +50,13 @@ pub enum MfaMethod {
 }
 
 /// MFA challenge
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct MfaChallenge {
     pub user_id: String,
     pub challenge_id: String,
     pub method: MfaMethod,
     pub code: Option<String>,
+    #[serde(skip_serializing, skip_deserializing)]
     pub expires_at: Instant,
     pub attempts: u32,
     pub max_attempts: u32,
@@ -123,10 +124,8 @@ impl MfaManager {
 
     /// Generate QR code for TOTP setup
     pub fn generate_totp_qr_code(&self, user_id: &str, secret: &str) -> Result<String> {
-        use url::Url;
-        
         let settings = self.user_settings.lock().unwrap();
-        let user_settings = settings.get(user_id)
+        let _user_settings = settings.get(user_id)
             .ok_or_else(|| anyhow::anyhow!("User settings not found"))?;
         
         let totp_url = format!(
@@ -191,7 +190,7 @@ impl MfaManager {
         let challenge = MfaChallenge {
             user_id: user_id.to_string(),
             challenge_id: challenge_id.clone(),
-            method,
+            method: method.clone(),
             code,
             expires_at,
             attempts: 0,
@@ -236,13 +235,17 @@ impl MfaManager {
             MfaMethod::BackupCode => self.verify_backup_code(&challenge.user_id, provided_code)?,
         };
         
+        let verified_user = challenge.user_id.clone();
+        let verified_method = challenge.method.clone();
+        let attempts = challenge.attempts;
+
         if is_valid {
             challenges.remove(challenge_id);
-            self.update_last_used(&challenge.user_id, &challenge.method);
-            info!("MFA challenge verified for user: {}", challenge.user_id);
+            self.update_last_used(&verified_user, &verified_method);
+            info!("MFA challenge verified for user: {}", verified_user);
         } else {
             warn!("MFA challenge failed for user: {}, attempt: {}", 
-                  challenge.user_id, challenge.attempts);
+                  verified_user, attempts);
         }
         
         Ok(is_valid)
@@ -250,14 +253,19 @@ impl MfaManager {
 
     /// Verify TOTP code
     fn verify_totp(&self, user_id: &str, code: &str) -> Result<bool> {
-        use totp_lite::{totp_validate, Sha1};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use totp_lite::{totp, Sha1};
         
         let settings = self.user_settings.lock().unwrap();
         let user_settings = settings.get(user_id)
             .ok_or_else(|| anyhow::anyhow!("User settings not found"))?;
         
         if let Some(secret) = &user_settings.totp_secret {
-            Ok(totp_validate::<Sha1>(secret, self.config.totp_window, code))
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            Ok(totp::<Sha1>(secret.as_bytes(), now) == code)
         } else {
             Ok(false)
         }

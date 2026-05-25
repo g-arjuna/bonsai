@@ -240,7 +240,7 @@ pub async fn gnmi_readiness_report(
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct KnownGnmiIssue {
+pub(crate) struct KnownGnmiIssue {
     #[serde(default)]
     vendor: String,
     #[serde(default)]
@@ -259,7 +259,8 @@ fn load_known_issues(path: &str) -> Vec<KnownGnmiIssue> {
 
 /// Load gNMI known issues from in-memory YAML strings (from DB ConfigItem).
 /// Falls back to disk file if items is empty.
-pub fn load_known_issues_from_yaml_strings(items: &[(String, String)], fallback_path: &str) -> Vec<KnownGnmiIssue> {
+#[allow(dead_code)]
+pub(crate) fn load_known_issues_from_yaml_strings(items: &[(String, String)], fallback_path: &str) -> Vec<KnownGnmiIssue> {
     if items.is_empty() {
         return load_known_issues(fallback_path);
     }

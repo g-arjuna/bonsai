@@ -4,10 +4,10 @@
 use anyhow::{Context, Result};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, Instant};
-use tracing::{info, warn, error};
+use tracing::{info, error};
 
 use crate::audit::append_security_event;
 
@@ -65,13 +65,16 @@ pub struct SessionClaims {
 }
 
 /// Session information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SessionInfo {
     pub session_id: String,
     pub user_id: String,
     pub role: String,
+    #[serde(skip_serializing, skip_deserializing)]
     pub created_at: Instant,
+    #[serde(skip_serializing, skip_deserializing)]
     pub expires_at: Instant,
+    #[serde(skip_serializing, skip_deserializing)]
     pub last_activity: Instant,
     pub user_agent: Option<String>,
     pub client_ip: Option<String>,
@@ -79,11 +82,13 @@ pub struct SessionInfo {
 }
 
 /// Revoked token entry
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RevokedToken {
     pub jti: String,
     pub user_id: String,
+    #[serde(skip_serializing, skip_deserializing)]
     pub revoked_at: Instant,
+    #[serde(skip_serializing, skip_deserializing)]
     pub expires_at: Instant,
     pub reason: String,
 }
@@ -183,7 +188,8 @@ impl SessionManager {
         if user_sessions.len() >= self.config.max_sessions_per_user {
             // Remove oldest session
             if let Some(oldest_session) = user_sessions.iter().min_by_key(|s| s.created_at) {
-                sessions.remove(&oldest_session.session_id);
+                let oldest_session_id = oldest_session.session_id.clone();
+                sessions.remove(&oldest_session_id);
                 info!("Removed oldest session for user: {}", user_id);
             }
         }

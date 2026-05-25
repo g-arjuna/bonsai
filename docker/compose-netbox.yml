@@ -49,7 +49,7 @@ services:
       DB_PASSWORD: bonsai-netbox-dev
       REDIS_HOST: netbox-redis
       REDIS_PORT: "6379"
-      SECRET_KEY: bonsai-dev-secret-key-do-not-use-in-production
+      SECRET_KEY: bonsai-dev-secret-key-do-not-use-in-production-123456789
       SUPERUSER_NAME: admin
       SUPERUSER_EMAIL: admin@bonsai.local
       SUPERUSER_PASSWORD: bonsai-dev
@@ -62,7 +62,7 @@ services:
       - netbox_media:/opt/netbox/netbox/media
       - netbox_static:/opt/netbox/netbox/static
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/api/"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
       interval: 15s
       timeout: 5s
       start_period: 60s
@@ -80,7 +80,7 @@ services:
       DB_PASSWORD: bonsai-netbox-dev
       REDIS_HOST: netbox-redis
       REDIS_PORT: "6379"
-      SECRET_KEY: bonsai-dev-secret-key-do-not-use-in-production
+      SECRET_KEY: bonsai-dev-secret-key-do-not-use-in-production-123456789
     command: /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py rqworker
 
 volumes:

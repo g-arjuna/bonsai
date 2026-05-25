@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::catalogue::{
     CataloguePath, CatalogueProfile, canonical_role, is_sp_role, load_catalogue,
-    load_catalogue_from_yaml_strings,
 };
 use crate::config::{SelectedSubscriptionPath, TargetConfig};
 use crate::discovery::{DiscoveryReport, GnmiReadinessReport, PathProfileMatch, SubscriptionPath};

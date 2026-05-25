@@ -196,6 +196,50 @@ pub fn append_adapter_push(
     Ok(())
 }
 
+/// Append a generic security event to the audit log.
+pub fn append_security_event(
+    root: &Path,
+    timestamp_ns: i64,
+    event_name: &str,
+    category: &str,
+    outcome: &str,
+    details: Option<&str>,
+) -> Result<()> {
+    let dir = audit_dir(root);
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create audit directory '{}'", dir.display()))?;
+    let file_path = dir.join(format!(
+        "{FILE_PREFIX}{}{FILE_SUFFIX}",
+        epoch_day(timestamp_ns)
+    ));
+
+    let mut event = json!({
+        "timestamp_ns": timestamp_ns,
+        "event": "security_event",
+        "event_name": event_name,
+        "category": category,
+        "outcome": outcome,
+    });
+    if let Some(details) = details {
+        event["details"] = serde_json::Value::String(details.to_string());
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file_path)
+        .with_context(|| format!("failed to open audit log '{}'", file_path.display()))?;
+    writeln!(file, "{event}").with_context(|| {
+        format!(
+            "failed to append security audit event to '{}'",
+            file_path.display()
+        )
+    })?;
+
+    enforce_retention(root, RETENTION_DAYS_DEFAULT)?;
+    Ok(())
+}
+
 /// Read the most recent audit entries, newest-first, up to `limit`.
 /// Returns raw JSON values (each line as parsed from JSONL files).
 pub fn read_recent(root: &Path, limit: usize) -> Vec<serde_json::Value> {

@@ -408,9 +408,9 @@ fn apply_auth(
                 .unwrap_or("basic");
             if auth_type == "api_key" {
                 // API key: vault password holds the pre-encoded key (base64(id:key))
-                Ok(req.header("Authorization", format!("ApiKey {}", cred.password)))
+                Ok(req.header("Authorization", format!("ApiKey {}", &*cred.password)))
             } else {
-                Ok(req.basic_auth(&cred.username, Some(&cred.password)))
+                Ok(req.basic_auth(&cred.username, Some(&*cred.password)))
             }
         }
         Err(e) => {

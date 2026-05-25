@@ -1650,12 +1650,11 @@ pub(super) async fn device_sensors_handler(
                  ORDER BY s.component_name",
             )
             .map_err(|e| e.to_string())?;
-        let mut rows_iter = conn
+        let rows_iter = conn
             .execute(&mut stmt, vec![("addr", Value::String(address))])
             .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
-        for row in rows_iter {
-            let vals: Vec<Value> = row.map_err(|e| e.to_string())?;
+        for vals in rows_iter {
             out.push(SensorReadingJson {
                 id: vals.get(0).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).unwrap_or_default(),
                 component_name: vals.get(1).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).unwrap_or_default(),
@@ -1702,12 +1701,11 @@ pub(super) async fn device_optics_handler(
                  ORDER BY i.name",
             )
             .map_err(|e| e.to_string())?;
-        let mut rows_iter = conn
+        let rows_iter = conn
             .execute(&mut stmt, vec![("addr", Value::String(address))])
             .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
-        for row in rows_iter {
-            let vals: Vec<Value> = row.map_err(|e| e.to_string())?;
+        for vals in rows_iter {
             out.push(OpticsTelemetryJson {
                 id: vals.get(0).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).unwrap_or_default(),
                 if_name: vals.get(1).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).unwrap_or_default(),

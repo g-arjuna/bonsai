@@ -239,7 +239,9 @@ fn path_matches_update(
     let expected = expectation.path.to_lowercase();
     let actual = update.path.to_lowercase();
     match event {
-        TelemetryEvent::InterfaceStats { .. } | TelemetryEvent::InterfaceSummary { .. } => {
+        TelemetryEvent::InterfaceStats { .. }
+        | TelemetryEvent::InterfaceSummary { .. }
+        | TelemetryEvent::SflowCounters { .. } => {
             expected.contains("statistics")
                 || expected.contains("generic-counters")
                 || (expected.contains("interfaces")
@@ -248,6 +250,22 @@ fn path_matches_update(
                 || actual.contains("generic-counters")
                 || actual.contains("summary")
         }
+        TelemetryEvent::InterfaceDescription { .. } => expected.contains("description"),
+        TelemetryEvent::ServiceEndpoint { .. }
+        | TelemetryEvent::QoSPolicyChange { .. }
+        | TelemetryEvent::SyslogEvent { .. }
+        | TelemetryEvent::SyslogFact { .. }
+        | TelemetryEvent::SnmpTrap { .. }
+        | TelemetryEvent::SnmpFact { .. }
+        | TelemetryEvent::BmpInitiation
+        | TelemetryEvent::BmpStatisticsReport
+        | TelemetryEvent::OtlpMetrics { .. }
+        | TelemetryEvent::NetflowRecord { .. }
+        | TelemetryEvent::SflowRecord { .. }
+        | TelemetryEvent::EnvSensor { .. }
+        | TelemetryEvent::OpticsDiagnostics { .. }
+        | TelemetryEvent::OpticalChannel { .. }
+        | TelemetryEvent::PowerUnit { .. } => actual.contains(&expected) || expected.contains(&actual),
         TelemetryEvent::InterfaceOperStatus { .. } => {
             expected.contains("oper-state")
                 || (expected.contains("interfaces")
@@ -259,18 +277,11 @@ fn path_matches_update(
         TelemetryEvent::BfdSessionState { .. } => expected.contains("bfd"),
         TelemetryEvent::IsisAdjacencyState { .. } => expected.contains("isis"),
         TelemetryEvent::LldpNeighbor { .. } => expected.contains("lldp"),
-        TelemetryEvent::SyslogEvent { .. } => false,
-        TelemetryEvent::SyslogFact { .. } => false,
-        TelemetryEvent::SnmpFact { .. } => false,
-        TelemetryEvent::SnmpTrap { .. } => false,
         TelemetryEvent::ConfigChange { .. } => false,
         TelemetryEvent::BmpPeerState => false,
         TelemetryEvent::BmpRouteMonitoring => false,
         TelemetryEvent::BgpLsState => false,
         TelemetryEvent::OtlpSpan { .. } => false,
-        TelemetryEvent::NetflowRecord { .. } => false,
-        TelemetryEvent::OpticalChannel { .. } => false,
-        TelemetryEvent::PowerUnit { .. } => false,
         TelemetryEvent::Ignored => false,
     }
 }

@@ -2618,7 +2618,7 @@ impl GraphStore {
     }
 
     /// Compute and store performance baselines for all devices
-    pub async fn compute_performance_baselines(&self, lookback_hours: i32) -> Result<Vec<PerformanceBaselineRow>> {
+    pub async fn compute_performance_baselines(&self, lookback_hours: i32) -> Result<Vec<crate::graph::algorithms::PerformanceBaselineRow>> {
         let db = Arc::clone(&self.db);
         let lookback = lookback_hours;
         
@@ -2710,14 +2710,16 @@ impl GraphStore {
             // Get recent security-related events
             let cutoff_ns = crate::graph::common::now_ns() - (15 * 60 * 1_000_000_000); // 15 minutes
             
-            let device_rows = conn
-                .query(
+            let mut device_stmt = conn
+                .prepare(
                     "MATCH (d:Device) \
                      OPTIONAL MATCH (d)-[:HAS_EVENT]->(e:StateChangeEvent) \
                      WHERE e.fired_at_ns > $cutoff_ns AND (e.source_type = 'syslog' OR e.source_type = 'snmp') \
                      RETURN DISTINCT d.address",
-                    vec![("cutoff_ns", Value::Int64(cutoff_ns))],
                 )
+                .context("prepare devices for security posture")?;
+            let device_rows = conn
+                .execute(&mut device_stmt, vec![("cutoff_ns", Value::Int64(cutoff_ns))])
                 .context("get devices for security posture")?;
             
             let mut updated_devices = Vec::new();
@@ -2726,12 +2728,15 @@ impl GraphStore {
                 let device_address = read_str(&row[0]);
                 
                 // Count AAA failures
-                let aaa_failures = conn
-                    .query(
+                let aaa_failures = {
+                    let mut stmt = conn.prepare(
                         "MATCH (d:Device {address: $device_address})-[:HAS_EVENT]->(e:StateChangeEvent) \
                          WHERE e.fired_at_ns > $cutoff_ns AND e.source_type = 'syslog' \
                          AND e.event_type = 'aaa_failure' \
-                         RETURN count(e)",
+                         RETURN count(e)"
+                    ).context("prepare count aaa failures")?;
+                    conn.execute(
+                        &mut stmt,
                         vec![
                             ("device_address", Value::String(device_address.clone())),
                             ("cutoff_ns", Value::Int64(cutoff_ns)),
@@ -2740,15 +2745,19 @@ impl GraphStore {
                     .context("count aaa failures")?
                     .next()
                     .map(|r| read_i64(&r[0]))
-                    .unwrap_or(0);
+                    .unwrap_or(0)
+                };
                 
                 // Count config changes
-                let config_changes = conn
-                    .query(
+                let config_changes = {
+                    let mut stmt = conn.prepare(
                         "MATCH (d:Device {address: $device_address})-[:HAS_EVENT]->(e:StateChangeEvent) \
                          WHERE e.fired_at_ns > $cutoff_ns AND e.source_type = 'syslog' \
                          AND e.event_type = 'config_change_detail' \
-                         RETURN count(e)",
+                         RETURN count(e)"
+                    ).context("prepare count config changes")?;
+                    conn.execute(
+                        &mut stmt,
                         vec![
                             ("device_address", Value::String(device_address.clone())),
                             ("cutoff_ns", Value::Int64(cutoff_ns)),
@@ -2757,15 +2766,19 @@ impl GraphStore {
                     .context("count config changes")?
                     .next()
                     .map(|r| read_i64(&r[0]))
-                    .unwrap_or(0);
+                    .unwrap_or(0)
+                };
                 
                 // Count process crashes
-                let process_crashes = conn
-                    .query(
+                let process_crashes = {
+                    let mut stmt = conn.prepare(
                         "MATCH (d:Device {address: $device_address})-[:HAS_EVENT]->(e:StateChangeEvent) \
                          WHERE e.fired_at_ns > $cutoff_ns AND e.source_type = 'syslog' \
                          AND e.event_type = 'process_restart' \
-                         RETURN count(e)",
+                         RETURN count(e)"
+                    ).context("prepare count process crashes")?;
+                    conn.execute(
+                        &mut stmt,
                         vec![
                             ("device_address", Value::String(device_address.clone())),
                             ("cutoff_ns", Value::Int64(cutoff_ns)),
@@ -2774,7 +2787,8 @@ impl GraphStore {
                     .context("count process crashes")?
                     .next()
                     .map(|r| read_i64(&r[0]))
-                    .unwrap_or(0);
+                    .unwrap_or(0)
+                };
                 
                 // Calculate risk score
                 let risk_score = (aaa_failures as f64 * 0.4) 
@@ -2783,36 +2797,37 @@ impl GraphStore {
                 
                 // Update or create SecurityPosture node
                 let posture_id = format!("posture-{}", device_address);
-                conn.query(
+                let mut stmt = conn.prepare(
                     "MERGE (sp:SecurityPosture {id: $posture_id}) \
                      SET sp.device_address = $device_address, \
                          sp.aaa_failure_count = $aaa_failures, \
                          sp.config_change_count = $config_changes, \
                          sp.process_crash_count = $process_crashes, \
                          sp.risk_score = $risk_score, \
-                         sp.updated_at_ns = $updated_at_ns",
-                    vec![
-                        ("posture_id", Value::String(posture_id)),
-                        ("device_address", Value::String(device_address.clone())),
-                        ("aaa_failures", Value::Int64(aaa_failures)),
-                        ("config_changes", Value::Int64(config_changes)),
-                        ("process_crashes", Value::Int64(process_crashes)),
-                        ("risk_score", Value::Double(risk_score)),
-                        ("updated_at_ns", Value::Int64(crate::graph::common::now_ns())),
-                    ],
-                )
+                         sp.updated_at_ns = $updated_at_ns"
+                ).context("prepare update security posture")?;
+                conn.execute(&mut stmt, vec![
+                    ("posture_id", Value::String(posture_id.clone())),
+                    ("device_address", Value::String(device_address.clone())),
+                    ("aaa_failures", Value::Int64(aaa_failures)),
+                    ("config_changes", Value::Int64(config_changes)),
+                    ("process_crashes", Value::Int64(process_crashes)),
+                    ("risk_score", Value::Double(risk_score)),
+                    ("updated_at_ns", Value::Int64(crate::graph::common::now_ns())),
+                ])
                 .context("update security posture")?;
                 
                 // Create relationship to device
-                conn.query(
+                let posture_key = posture_id.clone();
+                let mut stmt = conn.prepare(
                     "MATCH (d:Device {address: $device_address}), (sp:SecurityPosture {id: $posture_id}) \
-                     MERGE (d)-[:HAS_POSTURE {updated_at: $updated_at}]->(sp)",
-                    vec![
-                        ("device_address", Value::String(device_address.clone())),
-                        ("posture_id", Value::String(posture_id)),
-                        ("updated_at", Value::Int64(crate::graph::common::now_ns())),
-                    ],
-                )
+                     MERGE (d)-[:HAS_POSTURE {updated_at: $updated_at}]->(sp)"
+                ).context("prepare security posture relationship")?;
+                conn.execute(&mut stmt, vec![
+                    ("device_address", Value::String(device_address.clone())),
+                    ("posture_id", Value::String(posture_key)),
+                    ("updated_at", Value::Int64(crate::graph::common::now_ns())),
+                ])
                 .context("create security posture relationship")?;
                 
                 updated_devices.push(device_address);
@@ -3050,10 +3065,11 @@ impl GraphStore {
         tokio::task::spawn_blocking(move || {
             let t0 = Instant::now();
             let _guard = write_lock.lock().expect("write lock poisoned");
+            let batch_len = updates.len();
             let conn = Connection::new(&db).context("batch write connection")?;
             conn.query("BEGIN TRANSACTION").context("begin batch transaction")?;
             let mut errors = 0u32;
-            for update in updates {
+            for update in &updates {
                 metrics::counter!("bonsai_telemetry_updates_total", "target" => update.target.clone())
                     .increment(1);
                 if let Err(error) = write_blocking(&conn, &update, &event_tx, &corr_buf) {
@@ -3070,9 +3086,34 @@ impl GraphStore {
                         .increment(1);
                 }
             }
-            // Always COMMIT: preserve the writes that succeeded.
-            conn.query("COMMIT").context("commit batch transaction")?;
-            if errors > 0 {
+            if let Err(error) = conn.query("COMMIT").context("commit batch transaction") {
+                let _ = conn.query("ROLLBACK");
+                tracing::warn!(
+                    %error,
+                    batch_len,
+                    errors,
+                    "batch transaction failed; retrying updates individually"
+                );
+                drop(conn);
+
+                for update in updates {
+                    let target = update.target.clone();
+                    let path = update.path.clone();
+                    let single_conn = Connection::new(&db).context("single-write fallback connection")?;
+                    if let Err(single_error) =
+                        write_blocking(&single_conn, &update, &event_tx, &corr_buf)
+                    {
+                        tracing::warn!(
+                            target = %target,
+                            path = %path,
+                            error = %single_error,
+                            "individual graph write failed after batch fallback"
+                        );
+                        metrics::counter!("bonsai_graph_write_errors_total", "target" => target)
+                            .increment(1);
+                    }
+                }
+            } else if errors > 0 {
                 tracing::debug!(errors, "batch committed with partial write failures");
             }
             metrics::histogram!("bonsai_graph_batch_write_latency_seconds")
@@ -3682,17 +3723,16 @@ impl GraphStore {
             ).context("list_redundancy_groups query")?;
             let mut out = Vec::new();
             for row in rows {
-                let row = row.context("row")?;
                 out.push(serde_json::json!({
-                    "id":           row.get::<String>(0).unwrap_or_default(),
-                    "name":         row.get::<String>(1).unwrap_or_default(),
-                    "kind":         row.get::<String>(2).unwrap_or_default(),
-                    "protocol":     row.get::<String>(3).unwrap_or_default(),
-                    "site_id":      row.get::<String>(4).unwrap_or_default(),
-                    "status":       row.get::<String>(5).unwrap_or_default(),
-                    "member_count": row.get::<i32>(6).unwrap_or(0),
-                    "active_count": row.get::<i32>(7).unwrap_or(0),
-                    "source":       row.get::<String>(8).unwrap_or_default(),
+                    "id":           read_str(&row[0]),
+                    "name":         read_str(&row[1]),
+                    "kind":         read_str(&row[2]),
+                    "protocol":     read_str(&row[3]),
+                    "site_id":      read_str(&row[4]),
+                    "status":       read_str(&row[5]),
+                    "member_count": read_i64(&row[6]),
+                    "active_count": read_i64(&row[7]),
+                    "source":       read_str(&row[8]),
                 }));
             }
             Ok::<_, anyhow::Error>(out)
@@ -4591,6 +4631,13 @@ fn write_otlp_span(
     peer_address: &str,
     event_tx: &broadcast::Sender<BonsaiEvent>,
 ) -> Result<()> {
+    tracing::debug!(
+        target = %update.target,
+        service_name,
+        peer_address,
+        timestamp_ns = update.timestamp_ns,
+        "write_otlp_span invoked"
+    );
     if service_name.is_empty() {
         let _ = event_tx.send(BonsaiEvent {
             device_address: update.target.clone(),
@@ -4629,6 +4676,7 @@ fn write_otlp_span(
         ],
     )
     .context("execute Application upsert")?;
+    tracing::debug!(app_id = %app_id, "write_otlp_span upserted application");
 
     // RUNS_SERVICE: Device → Application (if peer_address matches a Device).
     if !peer_address.is_empty() {
@@ -4639,13 +4687,15 @@ fn write_otlp_span(
                  MERGE (d)-[:RUNS_SERVICE]->(a)",
             )
             .context("prepare RUNS_SERVICE merge")?;
-        let _ = conn.execute(
+        conn.execute(
             &mut dev_edge,
             vec![
                 ("pfx", Value::String(peer_address.to_string())),
                 ("aid", Value::String(app_id.clone())),
             ],
-        );
+        )
+        .context("execute RUNS_SERVICE merge")?;
+        tracing::debug!(peer_address, app_id = %app_id, "write_otlp_span attempted RUNS_SERVICE merge");
 
         // HOST_RUNS_SERVICE: HostEndpoint → Application (if peer_address matches a HostEndpoint).
         let mut host_edge = conn
@@ -4655,13 +4705,15 @@ fn write_otlp_span(
                  MERGE (h)-[:HOST_RUNS_SERVICE]->(a)",
             )
             .context("prepare HOST_RUNS_SERVICE merge")?;
-        let _ = conn.execute(
+        conn.execute(
             &mut host_edge,
             vec![
                 ("ip",  Value::String(peer_address.to_string())),
                 ("aid", Value::String(app_id.clone())),
             ],
-        );
+        )
+        .context("execute HOST_RUNS_SERVICE merge")?;
+        tracing::debug!(peer_address, app_id = %app_id, "write_otlp_span attempted HOST_RUNS_SERVICE merge");
     }
 
     // D4-10 T3: OTLP trace + network event temporal correlation.
@@ -4671,18 +4723,44 @@ fn write_otlp_span(
         let window_ns = 30_000_000_000_i64;
         let ts_lo = update.timestamp_ns - window_ns;
         let ts_hi = update.timestamp_ns + window_ns;
-        let mut corr_stmt = conn.prepare(
-            "MATCH (d:Device)-[:RUNS_SERVICE]->(a:Application {id: $aid}), \
-                   (de:DetectionEvent)-[:DETECTED_ON]->(d) \
-             WHERE de.severity IN ['critical', 'high'] \
-               AND de.occurred_at > $lo AND de.occurred_at < $hi \
-             MERGE (a)-[:APP_IMPACTED_BY_NETWORK]->(de)"
-        ).unwrap_or_else(|_| conn.prepare("RETURN 0").unwrap());
-        let _ = conn.execute(&mut corr_stmt, vec![
-            ("aid", Value::String(app_id.clone())),
-            ("lo",  Value::Int64(ts_lo)),
-            ("hi",  Value::Int64(ts_hi)),
-        ]);
+        let mut corr_select = conn.prepare(
+            "MATCH (d:Device)-[:TRIGGERED]->(de:DetectionEvent) \
+             WHERE d.address STARTS WITH $pfx \
+               AND de.severity IN ['critical', 'high'] \
+               AND de.fired_at > $lo AND de.fired_at < $hi \
+             RETURN de.id"
+        ).context("prepare APP_IMPACTED_BY_NETWORK correlation select")?;
+        let mut rows = conn.execute(
+            &mut corr_select,
+            vec![
+                ("pfx", Value::String(peer_address.to_string())),
+                ("lo", ts(ts_lo)),
+                ("hi", ts(ts_hi)),
+            ],
+        )
+        .context("execute APP_IMPACTED_BY_NETWORK correlation select")?;
+        let mut detection_ids = Vec::new();
+        while let Some(row) = rows.next() {
+            if let Value::String(id) = &row[0] {
+                detection_ids.push(id.clone());
+            }
+        }
+        if !detection_ids.is_empty() {
+            let mut attach_stmt = conn.prepare(
+                "MATCH (a:Application {id: $aid}), (de:DetectionEvent {id: $did}) \
+                 MERGE (a)-[:APP_IMPACTED_BY_NETWORK]->(de)"
+            ).context("prepare APP_IMPACTED_BY_NETWORK attach")?;
+            for did in detection_ids {
+                conn.execute(
+                    &mut attach_stmt,
+                    vec![
+                        ("aid", Value::String(app_id.clone())),
+                        ("did", Value::String(did)),
+                    ],
+                )
+                .context("execute APP_IMPACTED_BY_NETWORK attach")?;
+            }
+        }
     }
 
     let _ = event_tx.send(BonsaiEvent {
@@ -4799,15 +4877,16 @@ fn write_otlp_metrics(
             let mut s = conn.prepare(
                 "MATCH (a:Application {id: $id}) SET a.metric_json = $v, a.updated_at = $ts",
             )?;
-            let _ = conn.execute(&mut s, vec![
+            conn.execute(&mut s, vec![
                 ("id", Value::String(app_id.clone())),
                 ("v",  Value::String(blob)),
                 ("ts", now),
-            ]);
+            ])
+            .context("execute Application metric_json update")?;
             None
         }
     };
-    drop(set_clause);
+    let _ = set_clause;
     Ok(())
 }
 
@@ -4842,17 +4921,20 @@ fn write_netflow_record(
     // Silent no-op if the Device node doesn't exist yet (collector-only mode).
     let mut carries = conn
         .prepare(
-            "MATCH (d:Device {address: $addr}), (f:AppFlow {id: $fid}) \
+            "MATCH (d:Device), (f:AppFlow {id: $fid}) \
+             WHERE d.address = $addr OR d.address STARTS WITH $addr_pfx \
              MERGE (d)-[:CARRIES_FLOW]->(f)",
         )
         .context("prepare CARRIES_FLOW merge")?;
-    let _ = conn.execute(
+    conn.execute(
         &mut carries,
         vec![
             ("addr", Value::String(exporter_address.to_string())),
+            ("addr_pfx", Value::String(format!("{exporter_address}:"))),
             ("fid", Value::String(id.clone())),
         ],
-    );
+    )
+    .context("execute CARRIES_FLOW merge")?;
 
     // Track C1: SRC_HOST / DST_HOST — link AppFlow to HostEndpoints if they exist.
     // Completely silent when no HostEndpoint nodes are present (SP deployments).
@@ -4862,13 +4944,14 @@ fn write_netflow_record(
              MERGE (f)-[:SRC_HOST]->(h)",
         )
         .context("prepare SRC_HOST merge")?;
-    let _ = conn.execute(
+    conn.execute(
         &mut src_host,
         vec![
             ("ip", Value::String(src_address.to_string())),
             ("fid", Value::String(id.clone())),
         ],
-    );
+    )
+    .context("execute SRC_HOST merge")?;
 
     let mut dst_host = conn
         .prepare(
@@ -4876,13 +4959,14 @@ fn write_netflow_record(
              MERGE (f)-[:DST_HOST]->(h)",
         )
         .context("prepare DST_HOST merge")?;
-    let _ = conn.execute(
+    conn.execute(
         &mut dst_host,
         vec![
             ("ip", Value::String(dst_address.to_string())),
             ("fid", Value::String(id.clone())),
         ],
-    );
+    )
+    .context("execute DST_HOST merge")?;
 
     emit_flow_utilization_event(conn, update, exporter_address, &id, bytes_per_sec, event_tx, corr_buf);
 
@@ -4941,17 +5025,20 @@ fn write_sflow_record(
 
     let mut carries = conn
         .prepare(
-            "MATCH (d:Device {address: $addr}), (f:AppFlow {id: $fid}) \
+            "MATCH (d:Device), (f:AppFlow {id: $fid}) \
+             WHERE d.address = $addr OR d.address STARTS WITH $addr_pfx \
              MERGE (d)-[:CARRIES_FLOW]->(f)",
         )
         .context("prepare CARRIES_FLOW merge (sflow)")?;
-    let _ = conn.execute(
+    conn.execute(
         &mut carries,
         vec![
             ("addr", Value::String(exporter_address.to_string())),
+            ("addr_pfx", Value::String(format!("{exporter_address}:"))),
             ("fid", Value::String(id.clone())),
         ],
-    );
+    )
+    .context("execute CARRIES_FLOW merge (sflow)")?;
 
     let mut src_host = conn
         .prepare(
@@ -4959,13 +5046,14 @@ fn write_sflow_record(
              MERGE (f)-[:SRC_HOST]->(h)",
         )
         .context("prepare SRC_HOST merge (sflow)")?;
-    let _ = conn.execute(
+    conn.execute(
         &mut src_host,
         vec![
             ("ip", Value::String(src_address.to_string())),
             ("fid", Value::String(id.clone())),
         ],
-    );
+    )
+    .context("execute SRC_HOST merge (sflow)")?;
 
     let mut dst_host = conn
         .prepare(
@@ -4973,13 +5061,14 @@ fn write_sflow_record(
              MERGE (f)-[:DST_HOST]->(h)",
         )
         .context("prepare DST_HOST merge (sflow)")?;
-    let _ = conn.execute(
+    conn.execute(
         &mut dst_host,
         vec![
             ("ip", Value::String(dst_address.to_string())),
             ("fid", Value::String(id.clone())),
         ],
-    );
+    )
+    .context("execute DST_HOST merge (sflow)")?;
 
     emit_flow_utilization_event(conn, update, exporter_address, &id, bytes_per_sec, event_tx, corr_buf);
 
@@ -5033,7 +5122,7 @@ fn write_sflow_counters(
                  i.updated_at = $ts",
         )
         .context("prepare sflow counter update")?;
-    let _ = conn.execute(
+    conn.execute(
         &mut stmt,
         vec![
             ("addr", Value::String(exporter_address.to_string())),
@@ -5046,7 +5135,8 @@ fn write_sflow_counters(
             ("out_dis", Value::Int64(out_discards as i64)),
             ("ts", now),
         ],
-    );
+    )
+    .context("execute sflow counter update")?;
     Ok(())
 }
 
@@ -5067,14 +5157,20 @@ fn emit_flow_utilization_event(
 ) {
     const UTIL_THRESHOLD: f64 = 0.90;
     let mut stmt = match conn.prepare(
-        "MATCH (d:Device {address: $addr})-[:HAS_INTERFACE]->(i:Interface) \
-         WHERE i.speed > 0 \
+        "MATCH (d:Device)-[:HAS_INTERFACE]->(i:Interface) \
+         WHERE (d.address = $addr OR d.address STARTS WITH $addr_pfx) AND i.speed > 0 \
          RETURN i.speed ORDER BY i.speed DESC LIMIT 1",
     ) {
         Ok(s) => s,
         Err(_) => return,
     };
-    let mut rows = match conn.execute(&mut stmt, vec![("addr", Value::String(exporter_address.to_string()))]) {
+    let mut rows = match conn.execute(
+        &mut stmt,
+        vec![
+            ("addr", Value::String(exporter_address.to_string())),
+            ("addr_pfx", Value::String(format!("{exporter_address}:"))),
+        ],
+    ) {
         Ok(r) => r,
         Err(_) => return,
     };
@@ -6860,38 +6956,40 @@ fn write_bmp_statistics_report(
     }
 
     let session_id = format!("{}:{}", update.target, event.peer_address);
-    let now = ts(update.timestamp_ns);
-
     // D4-16 T3: Read previous adj_rib_in BEFORE we overwrite it (for policy filter spike detection).
     let prev_adj: i64 = if adj_rib_in > 0 {
         let mut q = conn
             .prepare("MATCH (s:BmpSession {id: $id}) RETURN s.adj_rib_in_routes")
             .unwrap_or_else(|_| conn.prepare("RETURN 0").unwrap());
         conn.execute(&mut q, vec![("id", Value::String(session_id.clone()))])
-            .and_then(|qr| {
-                let val = qr.get_flat_tuples()
-                    .first()
-                    .and_then(|row| row.first())
-                    .and_then(|v| match v {
-                        Value::Int64(n) => Some(*n),
-                        _ => None,
-                    })
-                    .unwrap_or(0);
-                Ok(val)
-            })
+            .and_then(|mut qr| Ok(qr.next().map(|row| read_i64(&row[0])).unwrap_or(0)))
             .unwrap_or(0)
     } else {
         0
     };
 
-    let mut stmt = conn
-        .prepare(
-            "MATCH (s:BmpSession {id: $id}) \
-             SET s.adj_rib_in_routes = $adj, s.loc_rib_routes = $loc, \
-                 s.prefixes_rejected = $rej, s.updates_invalid = $inv, \
-                 s.stats_updated_at = $ts",
-        )
-        .context("prepare BmpSession stats update")?;
+    let stats_query =
+        "MATCH (s:BmpSession {id: $id}) \
+         SET s.adj_rib_in_routes = $adj, s.loc_rib_routes = $loc, \
+             s.prefixes_rejected = $rej, s.updates_invalid = $inv";
+    let mut stmt = match conn.prepare(stats_query) {
+        Ok(stmt) => stmt,
+        Err(initial_error) => {
+            // Older runtime DBs may be missing the D4-11 BMP stats columns.
+            // Attempt the additive migration inline and retry once so one BMP
+            // report cannot poison unrelated telemetry batch commits.
+            let _ = conn.query("ALTER TABLE BmpSession ADD adj_rib_in_routes INT64 DEFAULT 0");
+            let _ = conn.query("ALTER TABLE BmpSession ADD loc_rib_routes INT64 DEFAULT 0");
+            let _ = conn.query("ALTER TABLE BmpSession ADD prefixes_rejected INT64 DEFAULT 0");
+            let _ = conn.query("ALTER TABLE BmpSession ADD updates_invalid INT64 DEFAULT 0");
+            let _ = conn.query(
+                "ALTER TABLE BmpSession ADD stats_updated_at TIMESTAMP_NS DEFAULT timestamp_ns('1970-01-01')",
+            );
+            conn.prepare(stats_query).with_context(|| {
+                format!("prepare BmpSession stats update after migration retry: {initial_error}")
+            })?
+        }
+    };
     conn.execute(
         &mut stmt,
         vec![
@@ -6900,7 +6998,6 @@ fn write_bmp_statistics_report(
             ("loc", Value::Int64(loc_rib)),
             ("rej", Value::Int64(prefixes_rejected)),
             ("inv", Value::Int64(updates_invalid)),
-            ("ts",  now),
         ],
     )
     .context("execute BmpSession stats update")?;
@@ -6927,15 +7024,7 @@ fn write_bmp_statistics_report(
                     ("hi", Value::Int64(ts_val + window_ns)),
                 ])
                 .ok()
-                .and_then(|qr| {
-                    qr.get_flat_tuples()
-                        .first()
-                        .and_then(|row| row.first())
-                        .and_then(|v| match v {
-                            Value::String(s) => Some(s.clone()),
-                            _ => None,
-                        })
-                })
+                .and_then(|mut qr| qr.next().map(|row| read_str(&row[0])))
                 .unwrap_or_default()
             };
             let detail = serde_json::json!({
@@ -9163,16 +9252,16 @@ fn write_interface_description(
     let now = ts(update.timestamp_ns);
     
     // Update Interface node with description
-    conn.query(
+    let mut stmt = conn.prepare(
         "MATCH (d:Device {address: $device_address})-[:HAS_INTERFACE]->(i:Interface {name: $if_name}) \
-         SET i.description = $description, i.updated_at_ns = $timestamp_ns",
-        vec![
-            ("device_address", Value::String(update.target.clone())),
-            ("if_name", Value::String(if_name.to_string())),
-            ("description", Value::String(description.to_string())),
-            ("timestamp_ns", Value::Int64(update.timestamp_ns)),
-        ],
-    )
+         SET i.description = $description, i.updated_at_ns = $timestamp_ns"
+    ).context("prepare update interface description")?;
+    conn.execute(&mut stmt, vec![
+        ("device_address", Value::String(update.target.clone())),
+        ("if_name", Value::String(if_name.to_string())),
+        ("description", Value::String(description.to_string())),
+        ("timestamp_ns", Value::Int64(update.timestamp_ns)),
+    ])
     .context("update interface description")?;
     
     // Trigger service discovery if description contains service indicators
@@ -9192,7 +9281,7 @@ fn write_interface_description(
                 "interface": if_name,
                 "description": description,
                 "discovery_method": "interface_description"
-            }),
+            }).to_string(),
             "gNMI",
             now,
             update.timestamp_ns,
@@ -9214,10 +9303,9 @@ fn write_service_endpoint(
     confidence: f64,
 ) -> Result<()> {
     let endpoint_id = format!("service-{}-{}-{}", update.target, if_name, service_type);
-    let now = ts(update.timestamp_ns);
     
     // Create or update ServiceEndpoint node
-    conn.query(
+    let mut stmt = conn.prepare(
         "MERGE (se:ServiceEndpoint {id: $endpoint_id}) \
          SET se.device_address = $device_address, \
              se.interface_name = $interface_name, \
@@ -9226,32 +9314,32 @@ fn write_service_endpoint(
              se.endpoint_type = $endpoint_type, \
              se.discovered_via = $discovered_via, \
              se.confidence_score = $confidence_score, \
-             se.updated_at_ns = $updated_at_ns",
-        vec![
-            ("endpoint_id", Value::String(endpoint_id)),
-            ("device_address", Value::String(update.target.clone())),
-            ("interface_name", Value::String(if_name.to_string())),
-            ("service_type", Value::String(service_type.to_string())),
-            ("service_name", Value::String(service_name.to_string())),
-            ("endpoint_type", Value::String("internal".to_string())),
-            ("discovered_via", Value::String("telemetry".to_string())),
-            ("confidence_score", Value::Double(confidence)),
-            ("updated_at_ns", Value::Int64(update.timestamp_ns)),
-        ],
-    )
+             se.updated_at_ns = $updated_at_ns"
+    ).context("prepare create service endpoint")?;
+    conn.execute(&mut stmt, vec![
+        ("endpoint_id", Value::String(endpoint_id.clone())),
+        ("device_address", Value::String(update.target.clone())),
+        ("interface_name", Value::String(if_name.to_string())),
+        ("service_type", Value::String(service_type.to_string())),
+        ("service_name", Value::String(service_name.to_string())),
+        ("endpoint_type", Value::String("internal".to_string())),
+        ("discovered_via", Value::String("telemetry".to_string())),
+        ("confidence_score", Value::Double(confidence)),
+        ("updated_at_ns", Value::Int64(update.timestamp_ns)),
+    ])
     .context("create service endpoint")?;
     
     // Create relationship to device
-    conn.query(
+    let mut stmt = conn.prepare(
         "MATCH (d:Device {address: $device_address}), (se:ServiceEndpoint {id: $endpoint_id}) \
-         MERGE (d)-[:HOSTS_SERVICE {role: $endpoint_type, updated_at: $updated_at}]->(se)",
-        vec![
-            ("device_address", Value::String(update.target.clone())),
-            ("endpoint_id", Value::String(endpoint_id)),
-            ("endpoint_type", Value::String("internal".to_string())),
-            ("updated_at", Value::Int64(update.timestamp_ns)),
-        ],
-    )
+         MERGE (d)-[:HOSTS_SERVICE {role: $endpoint_type, updated_at: $updated_at}]->(se)"
+    ).context("prepare service endpoint relationship")?;
+    conn.execute(&mut stmt, vec![
+        ("device_address", Value::String(update.target.clone())),
+        ("endpoint_id", Value::String(endpoint_id)),
+        ("endpoint_type", Value::String("internal".to_string())),
+        ("updated_at", Value::Int64(update.timestamp_ns)),
+    ])
     .context("create service endpoint relationship")?;
     
     Ok(())
@@ -9262,43 +9350,42 @@ fn write_qos_policy_change(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     policy_name: &str,
-    action: &str,
+    _action: &str,
     interface_name: Option<&str>,
 ) -> Result<()> {
     let policy_id = format!("qos-{}-{}", update.target, policy_name);
-    let now = ts(update.timestamp_ns);
     
     // Create or update QoSPolicy node
-    conn.query(
+    let mut stmt = conn.prepare(
         "MERGE (qp:QoSPolicy {id: $policy_id}) \
          SET qp.device_address = $device_address, \
              qp.policy_name = $policy_name, \
              qp.policy_type = $policy_type, \
-             qp.updated_at_ns = $updated_at_ns",
-        vec![
-            ("policy_id", Value::String(policy_id)),
-            ("device_address", Value::String(update.target.clone())),
-            ("policy_name", Value::String(policy_name.to_string())),
-            ("policy_type", Value::String("dynamic".to_string())),
-            ("updated_at_ns", Value::Int64(update.timestamp_ns)),
-        ],
-    )
+             qp.updated_at_ns = $updated_at_ns"
+    ).context("prepare create qos policy")?;
+    conn.execute(&mut stmt, vec![
+        ("policy_id", Value::String(policy_id.clone())),
+        ("device_address", Value::String(update.target.clone())),
+        ("policy_name", Value::String(policy_name.to_string())),
+        ("policy_type", Value::String("dynamic".to_string())),
+        ("updated_at_ns", Value::Int64(update.timestamp_ns)),
+    ])
     .context("create qos policy")?;
     
     // If interface is specified, create relationship
     if let Some(if_name) = interface_name {
-        conn.query(
+        let mut stmt = conn.prepare(
             "MATCH (i:Interface {name: $if_name}), (qp:QoSPolicy {id: $policy_id}) \
              WHERE i.device_address = $device_address \
-             MERGE (i)-[:APPLIES_QOS {direction: $direction, updated_at: $updated_at}]->(qp)",
-            vec![
-                ("if_name", Value::String(if_name.to_string())),
-                ("policy_id", Value::String(policy_id)),
-                ("device_address", Value::String(update.target.clone())),
-                ("direction", Value::String("ingress".to_string())),
-                ("updated_at", Value::Int64(update.timestamp_ns)),
-            ],
-        )
+             MERGE (i)-[:APPLIES_QOS {direction: $direction, updated_at: $updated_at}]->(qp)"
+        ).context("prepare qos interface relationship")?;
+        conn.execute(&mut stmt, vec![
+            ("if_name", Value::String(if_name.to_string())),
+            ("policy_id", Value::String(policy_id)),
+            ("device_address", Value::String(update.target.clone())),
+            ("direction", Value::String("ingress".to_string())),
+            ("updated_at", Value::Int64(update.timestamp_ns)),
+        ])
         .context("create qos interface relationship")?;
     }
     
@@ -9313,8 +9400,8 @@ fn join_service_process_fact(
     update: &TelemetryUpdate,
     fact: &SyslogFact,
 ) -> Result<JsonValue> {
-    let service_name = fact.fields.get("service_name").unwrap_or(&"unknown".to_string());
-    let action = fact.fields.get("action").unwrap_or(&"unknown".to_string());
+    let service_name = fact.fields.get("service_name").map(String::as_str).unwrap_or("unknown");
+    let action = fact.fields.get("action").map(String::as_str).unwrap_or("unknown");
     
     // Determine service type from service name
     let service_type = if service_name.contains("nginx") || service_name.contains("haproxy") || service_name.contains("envoy") {
@@ -9336,7 +9423,7 @@ fn join_service_process_fact(
     // Create ServiceEndpoint node
     let endpoint_id = format!("service-{}-{}-{}", update.target, service_name, service_type);
     
-    conn.query(
+    let mut stmt = conn.prepare(
         "MERGE (se:ServiceEndpoint {id: $endpoint_id}) \
          SET se.device_address = $device_address, \
              se.service_name = $service_name, \
@@ -9344,31 +9431,31 @@ fn join_service_process_fact(
              se.endpoint_type = $endpoint_type, \
              se.discovered_via = $discovered_via, \
              se.confidence_score = $confidence_score, \
-             se.updated_at_ns = $updated_at_ns",
-        vec![
-            ("endpoint_id", Value::String(endpoint_id)),
-            ("device_address", Value::String(update.target.clone())),
-            ("service_name", Value::String(service_name.clone())),
-            ("service_type", Value::String(service_type.to_string())),
-            ("endpoint_type", Value::String("internal".to_string())),
-            ("discovered_via", Value::String("syslog".to_string())),
-            ("confidence_score", Value::Double(0.8)),
-            ("updated_at_ns", Value::Int64(update.timestamp_ns)),
-        ],
-    )
+             se.updated_at_ns = $updated_at_ns"
+    ).context("prepare create service endpoint from syslog")?;
+    conn.execute(&mut stmt, vec![
+        ("endpoint_id", Value::String(endpoint_id.clone())),
+        ("device_address", Value::String(update.target.clone())),
+        ("service_name", Value::String(service_name.to_string())),
+        ("service_type", Value::String(service_type.to_string())),
+        ("endpoint_type", Value::String("internal".to_string())),
+        ("discovered_via", Value::String("syslog".to_string())),
+        ("confidence_score", Value::Double(0.8)),
+        ("updated_at_ns", Value::Int64(update.timestamp_ns)),
+    ])
     .context("create service endpoint from syslog")?;
     
     // Create relationship to device
-    conn.query(
+    let mut stmt = conn.prepare(
         "MATCH (d:Device {address: $device_address}), (se:ServiceEndpoint {id: $endpoint_id}) \
-         MERGE (d)-[:HOSTS_SERVICE {role: $endpoint_type, updated_at: $updated_at}]->(se)",
-        vec![
-            ("device_address", Value::String(update.target.clone())),
-            ("endpoint_id", Value::String(endpoint_id)),
-            ("endpoint_type", Value::String("internal".to_string())),
-            ("updated_at", Value::Int64(update.timestamp_ns)),
-        ],
-    )
+         MERGE (d)-[:HOSTS_SERVICE {role: $endpoint_type, updated_at: $updated_at}]->(se)"
+    ).context("prepare service endpoint relationship")?;
+    conn.execute(&mut stmt, vec![
+        ("device_address", Value::String(update.target.clone())),
+        ("endpoint_id", Value::String(endpoint_id)),
+        ("endpoint_type", Value::String("internal".to_string())),
+        ("updated_at", Value::Int64(update.timestamp_ns)),
+    ])
     .context("create service endpoint relationship")?;
     
     Ok(json!({
@@ -9386,43 +9473,43 @@ fn join_qos_policy_fact(
     update: &TelemetryUpdate,
     fact: &SyslogFact,
 ) -> Result<JsonValue> {
-    let policy_name = fact.fields.get("policy_name").unwrap_or(&"unknown".to_string());
-    let action = fact.fields.get("action").unwrap_or(&"unknown".to_string());
+    let policy_name = fact.fields.get("policy_name").map(String::as_str).unwrap_or("unknown");
+    let action = fact.fields.get("action").map(String::as_str).unwrap_or("unknown");
     let interface_name = fact.fields.get("interface_name").cloned();
     
     // Create QoSPolicy node
     let policy_id = format!("qos-{}-{}", update.target, policy_name);
     
-    conn.query(
+    let mut stmt = conn.prepare(
         "MERGE (qp:QoSPolicy {id: $policy_id}) \
          SET qp.device_address = $device_address, \
              qp.policy_name = $policy_name, \
              qp.policy_type = $policy_type, \
-             qp.updated_at_ns = $updated_at_ns",
-        vec![
-            ("policy_id", Value::String(policy_id)),
-            ("device_address", Value::String(update.target.clone())),
-            ("policy_name", Value::String(policy_name.clone())),
-            ("policy_type", Value::String("syslog_triggered".to_string())),
-            ("updated_at_ns", Value::Int64(update.timestamp_ns)),
-        ],
-    )
+             qp.updated_at_ns = $updated_at_ns"
+    ).context("prepare create qos policy from syslog")?;
+    conn.execute(&mut stmt, vec![
+        ("policy_id", Value::String(policy_id.clone())),
+        ("device_address", Value::String(update.target.clone())),
+        ("policy_name", Value::String(policy_name.to_string())),
+        ("policy_type", Value::String("syslog_triggered".to_string())),
+        ("updated_at_ns", Value::Int64(update.timestamp_ns)),
+    ])
     .context("create qos policy from syslog")?;
     
     // If interface is specified, create relationship
     if let Some(if_name) = &interface_name {
-        conn.query(
+        let mut stmt = conn.prepare(
             "MATCH (i:Interface {name: $if_name}), (qp:QoSPolicy {id: $policy_id}) \
              WHERE i.device_address = $device_address \
-             MERGE (i)-[:APPLIES_QOS {direction: $direction, updated_at: $updated_at}]->(qp)",
-            vec![
-                ("if_name", Value::String(if_name.clone())),
-                ("policy_id", Value::String(policy_id)),
-                ("device_address", Value::String(update.target.clone())),
-                ("direction", Value::String("ingress".to_string())),
-                ("updated_at", Value::Int64(update.timestamp_ns)),
-            ],
-        )
+             MERGE (i)-[:APPLIES_QOS {direction: $direction, updated_at: $updated_at}]->(qp)"
+        ).context("prepare qos interface relationship")?;
+        conn.execute(&mut stmt, vec![
+            ("if_name", Value::String(if_name.clone())),
+            ("policy_id", Value::String(policy_id)),
+            ("device_address", Value::String(update.target.clone())),
+            ("direction", Value::String("ingress".to_string())),
+            ("updated_at", Value::Int64(update.timestamp_ns)),
+        ])
         .context("create qos interface relationship")?;
     }
     
@@ -9441,40 +9528,44 @@ fn join_connection_anomaly_fact(
     update: &TelemetryUpdate,
     fact: &SyslogFact,
 ) -> Result<JsonValue> {
-    let service_type = fact.fields.get("service_type").unwrap_or(&"unknown".to_string());
-    let anomaly_type = fact.fields.get("anomaly_type").unwrap_or(&"unknown".to_string());
+    let service_type = fact.fields.get("service_type").map(String::as_str).unwrap_or("unknown");
+    let anomaly_type = fact.fields.get("anomaly_type").map(String::as_str).unwrap_or("unknown");
     
     // Look for existing ServiceEndpoint nodes of this type on the device
-    let rows = conn.query(
+    let mut stmt = conn.prepare(
         "MATCH (d:Device {address: $device_address})-[:HOSTS_SERVICE]->(se:ServiceEndpoint) \
          WHERE se.service_type = $service_type \
-         RETURN se.id, se.service_name",
+         RETURN se.id, se.service_name"
+    ).context("prepare find service endpoints for anomaly")?;
+    let rows: Vec<Vec<Value>> = conn.execute(
+        &mut stmt,
         vec![
             ("device_address", Value::String(update.target.clone())),
-            ("service_type", Value::String(service_type.clone())),
+            ("service_type", Value::String(service_type.to_string())),
         ],
     )
-    .context("find service endpoints for anomaly")?;
+    .context("find service endpoints for anomaly")?
+    .collect();
+    let affected_count = rows.len();
     
     for row in rows {
         let endpoint_id = read_str(&row[0]);
-        let service_name = read_str(&row[1]);
         
         // Update ServiceEndpoint with anomaly information
-        conn.query(
+        let mut stmt = conn.prepare(
             "MATCH (se:ServiceEndpoint {id: $endpoint_id}) \
              SET se.last_anomaly_type = $anomaly_type, \
                  se.last_anomaly_at_ns = $timestamp_ns, \
                  se.health_status = $health_status, \
-                 se.updated_at_ns = $updated_at_ns",
-            vec![
-                ("endpoint_id", Value::String(endpoint_id)),
-                ("anomaly_type", Value::String(anomaly_type.clone())),
-                ("timestamp_ns", Value::Int64(update.timestamp_ns)),
-                ("health_status", Value::String("degraded".to_string())),
-                ("updated_at_ns", Value::Int64(update.timestamp_ns)),
-            ],
-        )
+                 se.updated_at_ns = $updated_at_ns"
+        ).context("prepare update service endpoint health")?;
+        conn.execute(&mut stmt, vec![
+            ("endpoint_id", Value::String(endpoint_id)),
+            ("anomaly_type", Value::String(anomaly_type.to_string())),
+            ("timestamp_ns", Value::Int64(update.timestamp_ns)),
+            ("health_status", Value::String("degraded".to_string())),
+            ("updated_at_ns", Value::Int64(update.timestamp_ns)),
+        ])
         .context("update service endpoint health")?;
     }
     
@@ -9483,6 +9574,6 @@ fn join_connection_anomaly_fact(
         "kind": "connection_anomaly",
         "service_type": service_type,
         "anomaly_type": anomaly_type,
-        "affected_endpoints": rows.len()
+        "affected_endpoints": affected_count
     }))
 }

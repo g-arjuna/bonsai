@@ -5,10 +5,15 @@
 
 set -e
 
-# Install lldpd if not present (netshoot has it; fallback for other images)
+# Install host tools if not present.
 if ! command -v lldpd >/dev/null 2>&1; then
     apt-get update -qq && apt-get install -y -q lldpd 2>/dev/null \
         || apk add --no-cache lldpd 2>/dev/null \
+        || true
+fi
+if ! command -v softflowd >/dev/null 2>&1; then
+    apt-get update -qq && apt-get install -y -q softflowd 2>/dev/null \
+        || apk add --no-cache softflowd 2>/dev/null \
         || true
 fi
 

@@ -47,6 +47,12 @@ pub struct ResolvedCredential {
     pub password: Zeroizing<String>,
 }
 
+impl ResolvedCredential {
+    pub fn password_string(&self) -> String {
+        self.password.to_string()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResolvePurpose {
     Subscribe,
@@ -54,6 +60,7 @@ pub enum ResolvePurpose {
     Discover,
     Enrich,
     Test,
+    Internal,
     /// Credentials for ServiceNow PDI / production instance admin operations.
     ServiceNowAdmin,
     /// Credentials used when pushing events to an AIOps platform (SNOW EM, Splunk, etc).
@@ -71,6 +78,7 @@ impl ResolvePurpose {
             Self::Discover => "discover".to_string(),
             Self::Enrich => "enrich".to_string(),
             Self::Test => "test".to_string(),
+            Self::Internal => "internal".to_string(),
             Self::ServiceNowAdmin => "servicenow_admin".to_string(),
             Self::AiopsEvent => "aiops_event".to_string(),
             Self::TrustOperation => "trust_op".to_string(),
@@ -350,8 +358,8 @@ impl CredentialVault {
                 }
             }
             Ok(ResolvedCredential {
-                username: entry.username,
-                password: Zeroizing::new(entry.password),
+                username: entry.username.clone(),
+                password: Zeroizing::new(entry.password.clone()),
             })
         })();
 

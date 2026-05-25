@@ -50,6 +50,7 @@ name: bonsai-signal-test
 #   spine1↔frr-rr: 10.9.11.6/31   (spine1=.6, frr-rr=.7)
 #   leaf1↔host1:   10.9.20.0/31   (leaf1=.0, host=.1)
 #   leaf2↔host1:   10.9.20.2/31   (leaf2=.2, host=.3)
+#   leaf1↔ubuntu:  10.9.30.0/31   (leaf1=.0, host=.1 transit; collector IP=10.9.30.254/32 on host loopback)
 #
 # Memory budget (Oracle Always Free 24 GB / typical 32 GB dev box):
 #   7 × SRL @ 2 GB = 14 GB
@@ -78,6 +79,13 @@ topology:
     image: ghcr.io/nokia/srlinux:latest
 
   nodes:
+    ubuntu-host:
+      kind: host
+      exec:
+        - ip link set dev bonsai_dp1 up
+        - ip addr replace 10.9.30.1/31 dev bonsai_dp1
+        - ip addr replace 10.9.30.254/32 dev lo
+
     # ── Super-spine (iBGP RR + IS-IS L2 ABR) ─────────────────────────────────
     srl-super1:
       mgmt-ipv4: 172.100.109.11
@@ -196,3 +204,6 @@ topology:
     # host1 ↔ leaf1 and leaf2 (dual-homed for NetFlow traffic)
     - endpoints: ["srl-leaf1:e1-2", "linux-host1:eth1"]
     - endpoints: ["srl-leaf2:e1-3", "linux-host1:eth2"]
+
+    # leaf1 ↔ Ubuntu host direct data-plane attachment for SRL sFlow collector reachability
+    - endpoints: ["srl-leaf1:e1-3", "host:bonsai_dp1"]

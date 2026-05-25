@@ -425,7 +425,7 @@ async fn do_http_push(
         match creds.resolve(&config.credential_alias, ResolvePurpose::AiopsEvent) {
             Ok(cred) => {
                 audit.log_credential_resolve(&config.credential_alias, "ok", None);
-                req = req.basic_auth(&cred.username, Some(&cred.password));
+                req = req.basic_auth(&cred.username, Some(&*cred.password));
             }
             Err(e) => {
                 let msg = e.to_string();

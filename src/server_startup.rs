@@ -113,7 +113,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
 
     let t = Instant::now();
     let config_path = config_path();
-    let cfg = config::load(&config_path).await?;
+    let mut cfg = config::load(&config_path).await?;
     info!(
         phase = "config_load",
         elapsed_ms = t.elapsed().as_millis() as u64,
@@ -580,8 +580,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
-                let result: Result<Vec<(String, String, i64)>, _> =
-                    tokio::task::spawn_blocking({
+                let result = tokio::task::spawn_blocking({
                         let db = db_for_silent.clone();
                         move || -> anyhow::Result<Vec<(String, String, i64)>> {
                             use bonsai::graph::common::{now_ns, ts};
@@ -960,7 +959,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     }
 
     // D4-21 T2: Wire governance state transitions into the SSE event stream.
-    if let (Some(Store::Core(core_store)), Some(ref gov)) = (&store, &shared_governor) {
+    if let (Some(Store::Core(core_store)), Some(gov)) = (&store, &shared_governor) {
         gov.set_event_sender(core_store.event_sender());
     }
 
@@ -1330,7 +1329,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 .expect("change detection runtime should exist in core mode");
             let collector_manager_for_http = collector_manager.clone();
             let catalogue_dir = "config/path_profiles".to_string();
-            let catalogue_state = if let Some(Store::Core(ref cs)) = store {
+            let catalogue_state = if let Store::Core(cs) = &store {
                 let items = cs.load_config_yaml_by_class("gnmi_path_profile").await.unwrap_or_default();
                 catalogue::load_catalogue_from_yaml_strings(&items, std::path::Path::new(&catalogue_dir))
             } else {
@@ -1553,8 +1552,6 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 );
                 let serve_result = if let Some(tls) = http_tls_acceptor {
                     // HTTPS: accept each TCP connection, upgrade to TLS, then serve.
-                    use tokio_rustls::TlsAcceptor;
-                    use tower::ServiceExt as _;
                     let mut join_set: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
                     loop {
                         let (tcp, _peer) = match http_listener.accept().await {
@@ -1928,7 +1925,10 @@ pub(super) async fn spawn_subscriber(
     let ca_cert_pem = load_ca_cert_pem(&target).await?;
     let resolved_credentials = resolve_target_credentials(&target, credentials)?;
     let (username, password) = match resolved_credentials {
-        Some(credentials) => (Some(credentials.username), Some(credentials.password)),
+        Some(credentials) => {
+            let password = credentials.password_string();
+            (Some(credentials.username), Some(password))
+        }
         None => (None, None),
     };
     let subscriber = subscriber::GnmiSubscriber::new(

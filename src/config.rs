@@ -1696,7 +1696,7 @@ pub fn resolve_secret(
     // Try vault first
     if !vault_alias.is_empty() {
         if let Ok(cred) = vault.resolve(vault_alias, crate::credentials::ResolvePurpose::Internal) {
-            return Some(cred.password);
+            return Some(cred.password_string());
         }
     }
     // Fall back to env var

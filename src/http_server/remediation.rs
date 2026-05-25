@@ -781,7 +781,10 @@ pub(super) async fn target_conn_info_for_http(
     let resolved_credentials = resolve_http_target_credentials(&target, &state.credentials)
         .map_err(|e| format!("{e:#}"))?;
     let (username, password) = match resolved_credentials {
-        Some(credentials) => (Some(credentials.username), Some(credentials.password)),
+        Some(credentials) => {
+            let password = credentials.password_string();
+            (Some(credentials.username), Some(password))
+        }
         None => (None, None),
     };
 
@@ -809,7 +812,7 @@ pub(super) fn resolve_http_target_credentials(
         (Some(username), Some(password)) if !username.is_empty() || !password.is_empty() => {
             Some(ResolvedCredential {
                 username: username.clone(),
-                password: password.clone(),
+                password: zeroize::Zeroizing::new(password.clone()),
             })
         }
         _ => None,
@@ -850,7 +853,7 @@ pub(super) async fn snow_integration_test_handler(
 
     match client
         .get(&url)
-        .basic_auth(&cred.username, Some(&cred.password))
+        .basic_auth(&cred.username, Some(&*cred.password))
         .send()
         .await
     {
@@ -1397,7 +1400,8 @@ pub(super) async fn remediation_verify_handler(
 ) -> Result<Json<VerifyResult>, (StatusCode, String)> {
     let proposal = find_proposal(&state, &id)
         .await
-        .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+        .map_err(|e| (StatusCode::NOT_FOUND, e))?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("proposal '{id}' not found")))?;
 
     // Extract verify_graph cypher from proposal steps
     let cypher = serde_json::from_str::<Vec<serde_json::Value>>(&proposal.steps_json)
