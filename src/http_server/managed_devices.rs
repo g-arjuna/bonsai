@@ -854,7 +854,7 @@ pub(super) struct BootstrapRequest {
 }
 
 pub(super) async fn bootstrap_device_handler(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(req): Json<BootstrapRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     if req.address.trim().is_empty() {
@@ -864,7 +864,12 @@ pub(super) async fn bootstrap_device_handler(
         return Err((StatusCode::BAD_REQUEST, "credential_alias is required".into()));
     }
 
-    // Resolve the API base URL for the bootstrap agent to call back into.
+    // Resolve credentials from vault here in Rust — never ship them over HTTP.
+    let cred = state.credentials
+        .resolve(&req.credential_alias, ResolvePurpose::Discover)
+        .map_err(|e| (StatusCode::FAILED_DEPENDENCY, format!("credential resolve failed: {e}")))?
+;
+
     let api_url = std::env::var("BONSAI_API_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
 
@@ -878,8 +883,10 @@ pub(super) async fn bootstrap_device_handler(
     cmd.arg("python/bootstrap_agent.py")
         .arg("device")
         .arg("--address").arg(&req.address)
-        .arg("--credential-alias").arg(&req.credential_alias)
-        .arg("--api-url").arg(&api_url);
+        .arg("--api-url").arg(&api_url)
+        // Inject credentials as env vars — never as CLI args (visible in ps) or over HTTP.
+        .env("BONSAI_BOOTSTRAP_USERNAME", &cred.username)
+        .env("BONSAI_BOOTSTRAP_PASSWORD", &*cred.password);
     if !req.vendor.is_empty() {
         cmd.arg("--vendor").arg(&req.vendor);
     }
@@ -1602,7 +1609,7 @@ pub(super) struct BulkBootstrapRequest {
 fn default_parallel() -> usize { 4 }
 
 pub(super) async fn bulk_bootstrap_handler(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(req): Json<BulkBootstrapRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     if req.devices.is_empty() {
@@ -1612,14 +1619,28 @@ pub(super) async fn bulk_bootstrap_handler(
     let api_url = std::env::var("BONSAI_API_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
 
-    // Write seed YAML to temp file
-    let seed_entries: Vec<serde_json::Value> = req.devices.iter().map(|d| {
-        serde_json::json!({
+    // Resolve all credentials from vault here in Rust before writing the seed file.
+    // Python reads username/password directly from the file — no HTTP resolve call needed.
+    let mut seed_entries: Vec<serde_json::Value> = Vec::with_capacity(req.devices.len());
+    for d in &req.devices {
+        let (username, password) = if !d.credential_alias.is_empty() {
+            match state.credentials.resolve(&d.credential_alias, ResolvePurpose::Discover) {
+                Ok(c) => (c.username.clone(), c.password.to_string()),
+                Err(e) => return Err((
+                    StatusCode::FAILED_DEPENDENCY,
+                    format!("credential resolve failed for '{}' (alias {}): {e}", d.address, d.credential_alias),
+                )),
+            }
+        } else {
+            (String::new(), String::new())
+        };
+        seed_entries.push(serde_json::json!({
             "address": d.address,
-            "credential_alias": d.credential_alias,
+            "username": username,
+            "password": password,
             "vendor": d.vendor,
-        })
-    }).collect();
+        }));
+    }
 
     let tmp_file = format!("/tmp/bonsai_bulk_bootstrap_{}.yaml", super::now_ns());
     let yaml_content = serde_yaml::to_string(&serde_json::json!({ "devices": seed_entries }))

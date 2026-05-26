@@ -1226,16 +1226,13 @@ def bootstrap_device(
     return result
 
 
-# ── Credential resolution via Bonsai vault API ────────────────────────────────
+# ── Credential resolution ────────────────────────────────────────────────────
+# Credentials are resolved from vault by the Bonsai server (Rust) and injected
+# into this process as environment variables. We never fetch secrets over HTTP.
 
-def _resolve_credential(api_url: str, alias: str) -> tuple[str, str]:
-    url = f"{api_url.rstrip('/')}/api/credentials/{requests.utils.quote(alias, safe='')}/resolve"
-    r = requests.get(url, timeout=10)
-    if r.ok:
-        d = r.json()
-        return d.get("username", ""), d.get("password", "")
-    logger.warning("credential resolve failed for alias %s: %s", alias, r.text[:200])
-    return "", ""
+def _creds_from_env() -> tuple[str, str]:
+    """Read SSH credentials injected by the Bonsai server via env vars."""
+    return os.environ.get("BONSAI_BOOTSTRAP_USERNAME", ""), os.environ.get("BONSAI_BOOTSTRAP_PASSWORD", "")
 
 
 # ── D4-17 T4: Nokia SRL — automated gNMI TLS setup ──────────────────────────
@@ -1447,15 +1444,12 @@ def bootstrap_from_seed(
             r.status = "failed"
             r.error = "missing address in seed entry"
             return r
-        alias = entry.get("credential_alias", "")
         username = entry.get("username", "")
         password = entry.get("password", "")
-        if alias and not (username and password):
-            username, password = _resolve_credential(api_url, alias)
         if not (username and password):
             r = BootstrapResult(address=address)
             r.status = "failed"
-            r.error = f"no credentials for {address} (alias={alias})"
+            r.error = f"no credentials for {address}"
             return r
         return bootstrap_device(
             address=address,
@@ -1482,12 +1476,11 @@ def main():
 
     single = sub.add_parser("device", help="Bootstrap a single device")
     single.add_argument("--address", required=True, help="Device IP address")
-    single.add_argument("--credential-alias", help="Bonsai vault credential alias")
-    single.add_argument("--username", help="SSH username (if not using vault)")
-    single.add_argument("--password", help="SSH password (if not using vault)")
     single.add_argument("--vendor", help="Vendor hint (nokia_srl, cisco_iosxe, arista_eos, frr, …)")
     single.add_argument("--api-url", default="http://localhost:3000")
     single.add_argument("--dry-run", action="store_true")
+    # Credentials are injected via BONSAI_BOOTSTRAP_USERNAME / BONSAI_BOOTSTRAP_PASSWORD env vars
+    # by the Bonsai server (resolved from vault). Never passed as CLI args.
 
     bulk = sub.add_parser("seed", help="Bootstrap from seed YAML file")
     bulk.add_argument("--seed-file", required=True)
@@ -1504,12 +1497,9 @@ def main():
     )
 
     if args.cmd == "device":
-        username = args.username or ""
-        password = args.password or ""
-        if args.credential_alias and not (username and password):
-            username, password = _resolve_credential(args.api_url, args.credential_alias)
+        username, password = _creds_from_env()
         if not (username and password):
-            logger.error("No credentials — provide --username/--password or a valid --credential-alias")
+            logger.error("No credentials — BONSAI_BOOTSTRAP_USERNAME/BONSAI_BOOTSTRAP_PASSWORD env vars not set")
             sys.exit(1)
         result = bootstrap_device(
             address=args.address,
