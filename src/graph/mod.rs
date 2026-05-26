@@ -20,8 +20,7 @@ use uuid::Uuid;
 use self::common::{
     link_device_address, link_host_endpoint_to_interface, now_ns, read_str, read_ts_ns,
     resolve_peer_to_device, ts,
-    upsert_app_flow, upsert_app_flow_ext, AppFlowDdosFields,
-    upsert_device, upsert_device_address, upsert_device_with_endpoint,
+    upsert_app_flow_ext, AppFlowDdosFields, upsert_device, upsert_device_address,
     upsert_host_endpoint,
 };
 use crate::config::{DdosConfig, TargetConfig};
@@ -3564,11 +3563,6 @@ impl GraphStore {
         })
         .await
         .context("spawn_blocking panicked")?
-    }
-
-    /// Return the shared write lock for external callers that need to serialize writes.
-    pub fn write_lock(&self) -> Arc<Mutex<()>> {
-        Arc::clone(&self.write_lock)
     }
 
     /// Write a single telemetry update to the graph.

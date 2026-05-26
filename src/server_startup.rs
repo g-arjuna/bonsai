@@ -1228,6 +1228,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     let mut http_task: Option<tokio::task::JoinHandle<()>> = None;
 
     if let Some(ref store) = store {
+        let ml_event_bus_for_scheduler =
+            std::sync::Arc::new(bonsai::ml_event_bus::MlEventBus::new());
         let change_detection_runtime = if run_core {
             Some(bonsai::change_detection::ChangeDetectionRuntime::start(
                 if let Store::Core(s) = store {
@@ -1341,6 +1343,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             };
             let catalogue = std::sync::Arc::new(tokio::sync::RwLock::new(catalogue_state));
             let runtime_dir = "runtime".to_string();
+            let ml_event_bus = std::sync::Arc::clone(&ml_event_bus_for_scheduler);
 
             // D4-3 T7: Enforce runtime/ directory permissions (mode 700)
             {
@@ -1540,9 +1543,6 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             };
 
             let bus_for_http = std::sync::Arc::clone(&bus);
-            let ml_event_bus = std::sync::Arc::new(bonsai::ml_event_bus::MlEventBus::new());
-            let ml_event_bus_for_scheduler = std::sync::Arc::clone(&ml_event_bus);
-
             // Initialize security module with selective feature enablement
             if let Err(e) = bonsai::security::initialize_security(cfg.security.clone()).await {
                 error!(error = %e, "failed to initialize security module");

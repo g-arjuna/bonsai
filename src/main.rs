@@ -36,6 +36,21 @@ async fn main() -> Result<()> {
 }
 
 fn config_path() -> String {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if let Some(value) = arg.strip_prefix("--config=") {
+            if !value.trim().is_empty() {
+                return value.to_string();
+            }
+        }
+        if arg == "--config"
+            && let Some(value) = args.next()
+            && !value.trim().is_empty()
+        {
+            return value;
+        }
+    }
+
     std::env::var("BONSAI_CONFIG")
         .ok()
         .filter(|value| !value.trim().is_empty())

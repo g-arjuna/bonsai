@@ -1,7 +1,5 @@
 //! EV1-7 T4/T5 — Playbook DB-backed CRUD + execution tracking.
 
-use std::sync::Arc;
-
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;

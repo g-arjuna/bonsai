@@ -22,7 +22,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
 use uuid::Uuid;
 
-use crate::ml_event_bus::{MlEvent, MlEventBus};
+use crate::ml_event_bus::MlEvent;
 
 use super::AppState;
 
@@ -447,6 +447,7 @@ pub async fn activate_ml_model_handler(
     let db = state.store.db();
     let write_lock = state.store.write_lock();
     let ml_bus = state.ml_event_bus.clone();
+    let event_model_id = id.clone();
     let result = tokio::task::spawn_blocking(move || {
         let _g = write_lock.lock().expect("write lock poisoned");
         let conn = Connection::new(&db)?;
@@ -479,7 +480,11 @@ pub async fn activate_ml_model_handler(
 
     match result {
         Ok(Ok((model_type, val_auc))) => {
-            ml_bus.publish(MlEvent::ModelActivated { model_id: id, model_type, val_auc });
+            ml_bus.publish(MlEvent::ModelActivated {
+                model_id: event_model_id,
+                model_type,
+                val_auc,
+            });
             (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
         }
         Ok(Err(e)) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
@@ -620,6 +625,7 @@ pub async fn patch_ml_job_handler(
     let db = state.store.db();
     let write_lock = state.store.write_lock();
     let ml_bus = state.ml_event_bus.clone();
+    let event_job_id = id.clone();
     let result = tokio::task::spawn_blocking(move || {
         let _g = write_lock.lock().expect("write lock poisoned");
         let conn = Connection::new(&db)?;
@@ -651,11 +657,11 @@ pub async fn patch_ml_job_handler(
         Ok(Ok((job_type, status))) => {
             match status.as_str() {
                 "succeeded" => ml_bus.publish(MlEvent::JobCompleted {
-                    job_id: id, job_type, outcome: "succeeded".to_string(),
+                    job_id: event_job_id.clone(), job_type, outcome: "succeeded".to_string(),
                     val_auc: 0.0, val_f1: 0.0, model_path: String::new(),
                 }),
                 "failed" => ml_bus.publish(MlEvent::JobFailed {
-                    job_id: id, job_type, error: "see error_message".to_string(),
+                    job_id: event_job_id, job_type, error: "see error_message".to_string(),
                 }),
                 _ => {}
             }
@@ -1096,6 +1102,7 @@ pub async fn gnn_inference_results_handler(
     let ml_bus = state.ml_event_bus.clone();
     let snapshot_ns = req.snapshot_ns;
     let model_id = req.model_id.clone();
+    let event_model_id = model_id.clone();
     let result = tokio::task::spawn_blocking(move || {
         let _g = write_lock.lock().expect("write lock poisoned");
         let conn = Connection::new(&db)?;
@@ -1152,7 +1159,7 @@ pub async fn gnn_inference_results_handler(
                 snapshot_ns,
                 anomalous_device_count: anomalous,
                 top_score,
-                model_id,
+                model_id: event_model_id,
             });
             (StatusCode::OK, Json(serde_json::json!({"written": count, "anomalous": anomalous}))).into_response()
         }
@@ -1781,4 +1788,3 @@ pub async fn gnn_results_query_handler(
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
-

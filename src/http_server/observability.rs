@@ -225,12 +225,13 @@ pub(super) async fn topology_handler(
     let mut role_site: HashMap<String, (String, String, String, String)> = HashMap::new();
     if let Ok(targets) = state.registry.list_all_targets() {
         for t in targets {
-            allowed_devices.insert(t.address.clone());
+            let address = t.primary_ip().to_string();
+            allowed_devices.insert(address.clone());
             let site = t.site.unwrap_or_default();
             let (site_id, site_path) =
                 resolve_site_metadata(&site, &site_id_by_name, &site_path_by_id);
             role_site.insert(
-                t.address.clone(),
+                address,
                 (t.role.unwrap_or_default(), site, site_id, site_path),
             );
         }
@@ -334,7 +335,7 @@ pub(super) async fn topology_handler(
                 mac,
                 hostname,
                 kind,
-                connected_to_device,
+                connected_to_device: crate::registry::strip_port(&connected_to_device).to_string(),
                 connected_to_iface,
             }
         })
