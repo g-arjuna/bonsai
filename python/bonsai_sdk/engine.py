@@ -6,6 +6,55 @@ import threading
 import time
 from typing import Callable, Optional
 
+
+class DeviceSettleTracker:
+    """
+    Tracks when Bonsai first receives telemetry from a device and suppresses
+    'down' detections during the initial settling window.
+
+    Problem: when a gNMI stream first connects (or reconnects after Bonsai
+    restarts), the router sends full current state as an initial sync burst.
+    Every interface that happens to be admin-down or oper-down at that moment
+    fires an event, as do any BGP peers in non-established state. These are
+    not real faults — the network was already in that state before monitoring
+    started. Firing detections on them pollutes the incident list.
+
+    The settling window gives the streams time to deliver the full steady-state
+    picture before detection rules are allowed to fire 'down' detections.
+    Up-transitions (interface coming up, BGP establishing) are NEVER suppressed
+    since they are always informational/positive.
+
+    Window: configurable via BONSAI_SETTLE_WINDOW_SECS env var (default 90s).
+    """
+
+    _SETTLE_WINDOW_SECS: int = int(os.environ.get("BONSAI_SETTLE_WINDOW_SECS", "90"))
+
+    def __init__(self) -> None:
+        self._first_seen: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def record(self, device_address: str) -> None:
+        """Record first telemetry arrival for a device (idempotent)."""
+        with self._lock:
+            if device_address not in self._first_seen:
+                self._first_seen[device_address] = time.monotonic()
+
+    def is_settling(self, device_address: str) -> bool:
+        """True if this device is still within its post-connect settling window."""
+        with self._lock:
+            first = self._first_seen.get(device_address)
+        if first is None:
+            return False
+        return (time.monotonic() - first) < self._SETTLE_WINDOW_SECS
+
+    def settled_at(self, device_address: str) -> Optional[float]:
+        """Return the monotonic time when settling will/did complete, or None."""
+        with self._lock:
+            first = self._first_seen.get(device_address)
+        if first is None:
+            return None
+        return first + self._SETTLE_WINDOW_SECS
+
 from .client import BonsaiClient
 from .detection import Detection, Detector, Features
 from .ml_detector import MLDetector
@@ -63,6 +112,8 @@ class RuleEngine:
         self.events_received_total = 0
         # EV1-7 T3: shadow-mode firing log {rule_id: [ShadowFiring, ...]}
         self.shadow_firings: dict[str, list[dict]] = {}
+        # Boot-storm suppression: track first-telemetry time per device.
+        self._settle_tracker = DeviceSettleTracker()
         self._load_ml_detectors(model_dir)
         # Initial override load (non-fatal)
         try:
@@ -114,6 +165,11 @@ class RuleEngine:
                     time.sleep(5)
 
     def _dispatch(self, event) -> None:
+        # Record first telemetry arrival to start the per-device settling window.
+        device_address = getattr(event, "device_address", "")
+        if device_address:
+            self._settle_tracker.record(device_address)
+
         with self._rules_lock:
             active_rules = list(self._rules)
         for rule in active_rules:
@@ -123,6 +179,15 @@ class RuleEngine:
                     continue
                 reason = rule.detect(features)
                 if reason:
+                    # Boot-storm suppression: skip 'down' detections during the
+                    # settling window. Up-transitions are never suppressed.
+                    if self._settle_tracker.is_settling(device_address) and \
+                            getattr(rule, "fires_on_down", False):
+                        print(
+                            f"[engine] settle-suppressed {rule.rule_id} for "
+                            f"{device_address} (window active)"
+                        )
+                        continue
                     det = Detection(
                         rule_id=rule.rule_id,
                         severity=rule.severity,

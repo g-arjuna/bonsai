@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Optional
 
 from ..detection import Detector, Features
 from ..ml_detector import extract_features_for_event
-from ..state_mapping import is_down
+from ..state_mapping import is_down, is_up
 
 if TYPE_CHECKING:
     from ..client import BonsaiClient
@@ -24,6 +24,7 @@ class InterfaceDown(Detector):
     """Interface oper-status transitions to down."""
     rule_id = "interface_down"
     severity = "critical"
+    fires_on_down = True
     recurrence_indicators = [
         "MATCH (i:Interface {device_address: $dev, name: $if}) RETURN i.oper_status — expect 'up' when healthy",
         "Check CONNECTED_TO edge still present: MATCH (i:Interface {name: $if})-[:CONNECTED_TO]->(j:Interface) RETURN j.device_address",
@@ -38,6 +39,10 @@ class InterfaceDown(Detector):
         status = f.oper_status.lower()
         if not is_down(vendor, "interface_oper_status", status):
             return None
+        # Only fire on a real up→down transition. If old_state is already down
+        # or unknown (empty/none), this is initial sync state — not a real fault.
+        if not is_up(vendor, "interface_oper_status", f.old_state):
+            return None
         f.vendor = vendor
         f.oper_status = status
         return f
@@ -45,7 +50,7 @@ class InterfaceDown(Detector):
     def detect(self, features: Features) -> Optional[str]:
         return (
             f"Interface {features.if_name} on {features.device_address} "
-            f"is operationally {features.oper_status}"
+            f"transitioned {features.old_state} -> {features.oper_status}"
         )
 
 

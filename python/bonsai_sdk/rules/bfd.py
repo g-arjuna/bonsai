@@ -18,6 +18,7 @@ class BfdSessionDown(Detector):
     """Session transitions from up to down."""
     rule_id = "bfd_session_down"
     severity = "critical"
+    fires_on_down = True
     recurrence_indicators = [
         "MATCH (b:BfdSession {device_address: $dev}) RETURN b.peer_address, b.state — expect 'up' when healthy",
         "Check interface oper-status on the BFD-protected link — interface_down co-fire indicates physical cause",

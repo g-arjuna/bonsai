@@ -25,6 +25,7 @@ class BgpSessionDown(Detector):
     """Session transitions to idle — peer was reset or administratively disabled."""
     rule_id = "bgp_session_down"
     severity = "critical"
+    fires_on_down = True
     auto_remediate = True
     remediation_action = "bgp_session_bounce"
     recurrence_indicators = [
@@ -105,6 +106,7 @@ class BgpAllPeersDown(Detector):
     """All BGP sessions on a device are gone simultaneously — likely upstream fault."""
     rule_id = "bgp_all_peers_down"
     severity = "critical"
+    fires_on_down = True
     recurrence_indicators = [
         "MATCH (n:BgpNeighbor {device_address: $dev}) RETURN n.peer_address, n.session_state — all should be 'established' when healthy",
         "Check for interface_down DetectionEvents on same device within ±30s (hardware-fault co-indicator)",
@@ -116,6 +118,13 @@ class BgpAllPeersDown(Detector):
             return None
         f = extract_features_for_event(event, client)
         if f.peer_count_total == 0 or f.peer_count_established > 0:
+            return None
+        # Only fire if at least one peer was previously established in this session.
+        # At boot/reconnect, peer_count_established == 0 simply because we haven't
+        # seen any established transitions yet — that is not a fault.
+        vendor = client.device_vendor(f.device_address)
+        if not (is_down(vendor, "bgp_session_state", f.new_state) and
+                is_up(vendor, "bgp_session_state", f.old_state)):
             return None
         return f
 
