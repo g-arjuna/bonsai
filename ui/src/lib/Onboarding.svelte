@@ -1330,8 +1330,8 @@
 
           <div class="form-grid">
             <div class="form-row span-2">
-              <label for="onboard-address">gNMI address</label>
-              <input id="onboard-address" bind:value={form.address} oninput={invalidateDiscovery} placeholder="172.100.102.12:57400" required />
+              <label for="onboard-address">Device address <span style="font-size:11px;font-weight:400;color:var(--text-muted,#888);margin-left:4px">(IP or hostname — no port)</span></label>
+              <input id="onboard-address" bind:value={form.address} oninput={invalidateDiscovery} placeholder="172.100.102.12" required />
             </div>
             <div class="form-row">
               <label for="onboard-hostname">Hostname</label>

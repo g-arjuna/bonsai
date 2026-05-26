@@ -32,7 +32,7 @@ class InterfaceDown(Detector):
     ]
 
     def extract_features(self, event, client: "BonsaiClient") -> Optional[Features]:
-        if event.event_type != "interface_oper_status_change":
+        if event.event_type not in ("interface_down", "interface_oper_status_change"):
             return None
         f = extract_features_for_event(event, client)
         vendor = client.device_vendor(f.device_address)

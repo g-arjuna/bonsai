@@ -141,9 +141,11 @@ def extract_features_for_event(event, client: "BonsaiClient") -> Features:
         except Exception:
             pass
 
-    if event.event_type in ("interface_oper_status_change", "interface_stats"):
+    if event.event_type in ("interface_oper_status_change", "interface_stats",
+                             "interface_down", "interface_up"):
         f.if_name     = detail.get("if_name", "")
         f.oper_status = detail.get("oper_status", detail.get("new_state", ""))
+        f.old_state   = detail.get("old_state", "")
 
     return f
 
