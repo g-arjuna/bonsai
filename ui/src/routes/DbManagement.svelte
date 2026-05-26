@@ -50,6 +50,15 @@
   let backupCreating = $state(false);
   let backupResult = $state(null);
 
+  const CONFIG_TABLE_DESC = {
+    devices: 'Managed devices — credentials, gNMI paths, site/role assignment',
+    enrichers: 'Enricher configs (NetBox, CMDB, custom) and their poll settings',
+    adapters: 'Output adapter configs (Kafka, Webhook, SNOW, Splunk…)',
+    settings: 'Key/value runtime settings',
+    audit_log: 'Full mutation history for all config changes',
+    collector_registrations: 'Collector connect/disconnect events with auth outcomes',
+  };
+
   const purgeable = ['DetectionEvent', 'AppFlow', 'AgentToolCall', 'InvestigationFeedback', 'GnnScore', 'StateChangeEvent'];
   const exportable = ['Device', 'Interface', 'BgpSession', 'IsIsAdj', 'BfdSession', 'DetectionEvent', 'Incident', 'AppFlow', 'Application', 'Investigation', 'AgentToolCall', 'ConfigChange', 'ChangeRequest', 'Location', 'Prefix', 'HostEndpoint', 'ShunRule'];
 
@@ -344,18 +353,10 @@
       <div class="manage-section" style="margin-bottom:16px">
         <h3>Table row counts</h3>
         <div class="cdb-counts">
-          {@const TABLE_DESC = {
-            devices: 'Managed devices — credentials, gNMI paths, site/role assignment',
-            enrichers: 'Enricher configs (NetBox, CMDB, custom) and their poll settings',
-            adapters: 'Output adapter configs (Kafka, Webhook, SNOW, Splunk…)',
-            settings: 'Key/value runtime settings',
-            audit_log: 'Full mutation history for all config changes',
-            collector_registrations: 'Collector connect/disconnect events with auth outcomes',
-          }}
           {#each Object.entries(configStats.table_counts) as [table, count]}
-            <div class="cdb-count-row" title={TABLE_DESC[table] ?? ''}>
+            <div class="cdb-count-row" title={CONFIG_TABLE_DESC[table] ?? ''}>
               <span class="cdb-table-name mono">{table}</span>
-              <span class="cdb-table-desc">{TABLE_DESC[table] ?? ''}</span>
+              <span class="cdb-table-desc">{CONFIG_TABLE_DESC[table] ?? ''}</span>
               <span class="cdb-count">{count}</span>
             </div>
           {/each}

@@ -111,6 +111,16 @@
     },
   ];
 
+  function normalizedQualityScore(input) {
+    return Math.min(Math.max(input ?? 0, 0), 100);
+  }
+
+  function qualityScoreColor(score) {
+    if (score >= 80) return 'var(--healthy,#22c55e)';
+    if (score >= 40) return 'var(--warning,#f59e0b)';
+    return 'var(--critical,#ef4444)';
+  }
+
   onMount(() => {
     loadSavedQueries();
     loadNlBudget();
@@ -560,12 +570,12 @@
         <button class="btn-secondary" style="margin-top:0.75rem;" onclick={() => loadQuality()}>Retry</button>
       </div>
     {:else}
+      {@const score = normalizedQualityScore(quality.overall_score)}
+      {@const scoreColor = qualityScoreColor(score)}
       <div class="quality-layout">
 
         <!-- Overall score gauge -->
         <div class="quality-score-card">
-          {@const score = Math.min(Math.max(quality.overall_score, 0), 100)}
-          {@const scoreColor = score >= 80 ? 'var(--healthy,#22c55e)' : score >= 40 ? 'var(--warning,#f59e0b)' : 'var(--critical,#ef4444)'}
           <div class="score-ring-wrap">
             <div
               class="score-ring"
