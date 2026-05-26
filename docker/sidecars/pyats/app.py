@@ -70,7 +70,8 @@ VENDOR_TO_GENIE_OS = {
     "cisco_nxos": "nxos",
     "arista_eos": "eos",
     "juniper_junos": "junos",
-    "nokia_srlinux": "sros",
+    # nokia_srlinux: No Genie/Unicon plugin exists for SR Linux.
+    # SRL bootstrap uses paramiko-native path in bootstrap_agent.py.
     "nokia_sros": "sros",
     "frr": "linux",
 }
@@ -245,6 +246,11 @@ def learn(request: LearnRequest) -> dict:
         return {"success": False, "error": "genie.testbed not available"}
 
     vendor = request.vendor.lower()
+    if vendor in ("nokia_srlinux", "nokia_srl"):
+        return {
+            "success": False,
+            "error": "SR Linux has no PyATS/Unicon plugin. Use bootstrap_agent.py paramiko-native path instead.",
+        }
     genie_os = VENDOR_TO_GENIE_OS.get(vendor, "iosxe")
 
     # Resolve topology profile → feature list (profile overrides explicit features)

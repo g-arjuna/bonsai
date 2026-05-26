@@ -868,7 +868,13 @@ pub(super) async fn bootstrap_device_handler(
     let api_url = std::env::var("BONSAI_API_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
 
-    let mut cmd = tokio::process::Command::new("python3");
+    // Prefer .venv/bin/python (where PyATS/Genie/paramiko are installed) over system python3
+    let python_bin = if std::path::Path::new(".venv/bin/python").exists() {
+        ".venv/bin/python"
+    } else {
+        "python3"
+    };
+    let mut cmd = tokio::process::Command::new(python_bin);
     cmd.arg("python/bootstrap_agent.py")
         .arg("device")
         .arg("--address").arg(&req.address)
@@ -1622,7 +1628,12 @@ pub(super) async fn bulk_bootstrap_handler(
         (StatusCode::INTERNAL_SERVER_ERROR, format!("write temp seed file: {e}"))
     })?;
 
-    let mut cmd = tokio::process::Command::new("python3");
+    let python_bin = if std::path::Path::new(".venv/bin/python").exists() {
+        ".venv/bin/python"
+    } else {
+        "python3"
+    };
+    let mut cmd = tokio::process::Command::new(python_bin);
     cmd.arg("python/bootstrap_agent.py")
         .arg("seed")
         .arg("--seed-file").arg(&tmp_file)

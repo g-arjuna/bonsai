@@ -29,6 +29,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -811,12 +812,18 @@ def _register_device(api_url: str, result: BootstrapResult, dry_run: bool) -> bo
         "enabled": True,
     }
     if dry_run:
-        logger.info("[DRY-RUN] POST /api/devices %s", json.dumps(payload))
+        logger.info("[DRY-RUN] POST /api/onboarding/devices %s", json.dumps(payload))
         return True
     try:
-        _api_post(api_url, "/api/devices", payload)
+        _api_post(api_url, "/api/onboarding/devices", payload)
         return True
     except Exception as e:
+        # Fallback to legacy endpoint if onboarding endpoint not available
+        try:
+            _api_post(api_url, "/api/devices", payload)
+            return True
+        except Exception:
+            pass
         logger.warning("device register failed for %s: %s", result.address, e)
         return False
 
@@ -870,6 +877,248 @@ def _seed_device(api_url: str, result: BootstrapResult, dry_run: bool) -> bool:
         return False
 
 
+# ── SRL-native bootstrap via paramiko ────────────────────────────────────────
+# PyATS/Unicon has NO SR Linux plugin — the Unicon state machine cannot
+# recognise the SRL CLI prompt and device.connect() always fails with
+# "Failed while bringing device to any state".  We use raw paramiko
+# with SRL CLI JSON-output commands instead (same pattern as inject_fault.py).
+
+_ANSI_RE = re.compile(r'\x1b\[[0-9;?]*[a-zA-Z]|\x1b\([a-zA-Z]|\x1b[=>]|\r')
+
+
+def _srl_exec(shell, cmd: str, wait: float = 1.5) -> str:
+    """Send a command on an SRL interactive shell and return cleaned output."""
+    shell.send(cmd + "\n")
+    time.sleep(wait)
+    chunks: list[str] = []
+    while shell.recv_ready():
+        chunks.append(shell.recv(65536).decode(errors="replace"))
+    return _ANSI_RE.sub("", "".join(chunks)).strip()
+
+
+def _srl_json_cmd(shell, cmd: str, wait: float = 2.0) -> Any:
+    """Run an SRL CLI command with '| as json' and parse the result."""
+    raw = _srl_exec(shell, f"{cmd} | as json", wait=wait)
+    # SRL JSON output is sandwiched between prompt lines — extract the JSON array/object
+    for line in raw.splitlines():
+        line = line.strip()
+        if line.startswith("{") or line.startswith("["):
+            # Accumulate all remaining lines until we can parse
+            json_candidate = "\n".join(
+                l for l in raw.splitlines()
+                if not l.strip().startswith("--{") and not l.strip().startswith("A:")
+            ).strip()
+            try:
+                return json.loads(json_candidate)
+            except json.JSONDecodeError:
+                pass
+            break
+    return {}
+
+
+def _srl_extract_json(raw: str) -> Any:
+    """Extract JSON object/array from SRL CLI output (sandwiched between prompt lines)."""
+    lines = raw.splitlines()
+    json_lines: list[str] = []
+    capturing = False
+    for line in lines:
+        stripped = line.strip()
+        if not capturing:
+            if stripped.startswith("{") or stripped.startswith("["):
+                capturing = True
+                json_lines.append(stripped)
+        else:
+            # Stop at SRL prompt lines
+            if stripped.startswith("--{") or stripped.startswith("A:"):
+                break
+            json_lines.append(stripped)
+    if json_lines:
+        try:
+            return json.loads("\n".join(json_lines))
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def _bootstrap_srl(
+    address: str,
+    username: str,
+    password: str,
+    api_url: str = "http://localhost:3000",
+    dry_run: bool = False,
+) -> BootstrapResult:
+    """Bootstrap an SR Linux node using paramiko + native CLI commands.
+
+    IMPORTANT: containerlab SRL SSH drops directly into the SRL CLI (not bash).
+    We must use invoke_shell() and send SRL CLI commands interactively.
+    exec_command("sr_cli ...") will NOT work because the default shell IS the
+    SRL CLI, not a POSIX shell.
+    """
+    try:
+        import paramiko
+    except ImportError:
+        r = BootstrapResult(address=address)
+        r.status = "failed"
+        r.error = "paramiko not installed — pip install paramiko"
+        return r
+
+    ssh_host = _strip_port(address)
+    t0 = time.time()
+    result = BootstrapResult(address=address)
+
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(
+            ssh_host, port=22, username=username, password=password,
+            timeout=15, look_for_keys=False, allow_agent=False,
+        )
+    except Exception as e:
+        result.status = "failed"
+        result.error = f"SSH connect failed: {e}"
+        result.elapsed_s = time.time() - t0
+        return result
+
+    try:
+        shell = client.invoke_shell(width=500, height=500)
+        time.sleep(2.0)  # wait for SRL banner + prompt
+        shell.recv(65536)  # drain banner
+
+        # Disable pagination so output is not paged
+        _srl_exec(shell, "environment cli-engine type basic", wait=0.5)
+
+        result.vendor = "nokia_srl"
+
+        # Hostname
+        try:
+            raw = _srl_exec(shell, "info from state /system/name/host-name", wait=2.0)
+            for line in raw.splitlines():
+                stripped = line.strip()
+                if "host-name" in stripped:
+                    result.hostname = stripped.split()[-1].strip('"').strip("'")
+                    break
+        except Exception:
+            result.hostname = ssh_host
+
+        # Interfaces (JSON)
+        try:
+            raw = _srl_exec(shell, "info from state /interface * name admin-state oper-state description | as json", wait=3.0)
+            iface_data = _srl_extract_json(raw)
+            if iface_data:
+                ifaces = iface_data if isinstance(iface_data, list) else iface_data.get("interface", [])
+                for iface in (ifaces if isinstance(ifaces, list) else []):
+                    if isinstance(iface, dict):
+                        name = iface.get("name", "")
+                        if name.startswith("system") or name.startswith("mgmt"):
+                            continue
+                        result.interfaces.append(InterfaceInfo(
+                            name=name,
+                            oper_status=str(iface.get("oper-state", iface.get("oper_state", "unknown"))).lower(),
+                            admin_status=str(iface.get("admin-state", iface.get("admin_state", "unknown"))).lower(),
+                            description=str(iface.get("description", "")),
+                        ))
+        except Exception as e:
+            logger.warning("SRL interface learn failed: %s", e)
+
+        # BGP neighbors (JSON)
+        try:
+            raw = _srl_exec(shell, "info from state /network-instance default protocols bgp neighbor * | as json", wait=3.0)
+            bgp_data = _srl_extract_json(raw)
+            if bgp_data:
+                neighbors = bgp_data if isinstance(bgp_data, list) else []
+                if isinstance(bgp_data, dict):
+                    neighbors = bgp_data.get("neighbor", [])
+                for nbr in (neighbors if isinstance(neighbors, list) else []):
+                    if isinstance(nbr, dict):
+                        peer_addr = nbr.get("peer-address", nbr.get("peer_address", ""))
+                        result.bgp_neighbors.append(BgpNeighborInfo(
+                            peer_address=str(peer_addr),
+                            peer_as=int(nbr.get("peer-as", nbr.get("peer_as", 0)) or 0),
+                            state=str(nbr.get("session-state", nbr.get("session_state", "unknown"))).lower(),
+                            vrf="default",
+                        ))
+        except Exception as e:
+            logger.warning("SRL BGP learn failed: %s", e)
+
+        # LLDP neighbors (JSON)
+        try:
+            raw = _srl_exec(shell, "info from state /system lldp interface * | as json", wait=3.0)
+            lldp_data = _srl_extract_json(raw)
+            if lldp_data:
+                ifaces = lldp_data if isinstance(lldp_data, list) else []
+                if isinstance(lldp_data, dict):
+                    ifaces = lldp_data.get("interface", [])
+                for iface in (ifaces if isinstance(ifaces, list) else []):
+                    if isinstance(iface, dict):
+                        local_if = iface.get("name", "")
+                        nbr_list = iface.get("neighbor", [])
+                        if not isinstance(nbr_list, list):
+                            nbr_list = []
+                        for nbr in nbr_list:
+                            if isinstance(nbr, dict):
+                                result.lldp_neighbors.append(LldpNeighborInfo(
+                                    local_interface=str(local_if),
+                                    remote_port=str(nbr.get("port-id", nbr.get("port_id", ""))),
+                                    remote_device=str(nbr.get("system-name", nbr.get("system_name", ""))),
+                                ))
+        except Exception as e:
+            logger.warning("SRL LLDP learn failed: %s", e)
+
+        # Platform / chassis
+        try:
+            raw = _srl_exec(shell, "info from state /platform chassis", wait=2.0)
+            model = ""
+            serial = ""
+            for line in raw.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("type"):
+                    model = stripped.split(None, 1)[-1].strip('"')
+                elif stripped.startswith("serial-number"):
+                    serial = stripped.split(None, 1)[-1].strip('"')
+            if model or serial:
+                result.platform_detail = PlatformDetail(model=model, serial=serial)
+        except Exception as e:
+            logger.debug("SRL platform learn failed: %s", e)
+
+        # OS version
+        try:
+            raw = _srl_exec(shell, "info from state /system information version", wait=2.0)
+            for line in raw.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("version"):
+                    result.os_version = stripped.split(None, 1)[-1].strip('"')
+                    break
+        except Exception as e:
+            logger.debug("SRL version learn failed: %s", e)
+
+        result.status = "ok"
+
+    except Exception as e:
+        result.status = "partial"
+        result.error = f"SRL learn error: {e}"
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+    result.registered = _register_device(api_url, result, dry_run)
+    if result.registered:
+        result.seeded = _seed_device(api_url, result, dry_run)
+        if result.seeded:
+            preseed_graph(api_url, result, dry_run)
+
+    result.elapsed_s = round(time.time() - t0, 2)
+    return result
+
+
+def _strip_port(address: str) -> str:
+    """Strip :port suffix from an address for SSH use (SSH is always port 22)."""
+    if ":" in address:
+        return address.split(":")[0]
+    return address
+
+
 # ── Core bootstrap logic ──────────────────────────────────────────────────────
 
 def bootstrap_device(
@@ -880,12 +1129,20 @@ def bootstrap_device(
     api_url: str = "http://localhost:3000",
     dry_run: bool = False,
 ) -> BootstrapResult:
+    # SR Linux: PyATS/Unicon has no SRL plugin — route to paramiko-based path
+    vendor_lower = (vendor or "").lower()
+    if vendor_lower in ("nokia_srl", "nokia_srlinux"):
+        logger.info("SRL detected — using paramiko-native bootstrap (PyATS/Unicon has no SRL plugin)")
+        return _bootstrap_srl(address, username, password, api_url=api_url, dry_run=dry_run)
+
     genie_load = _import_genie()
     t0 = time.time()
     result = BootstrapResult(address=address)
 
+    # Strip :port from address — SSH is always port 22
+    ssh_host = _strip_port(address)
+
     os_map = {
-        "nokia_srl": "iosxr",
         "nokia_sros": "iosxr",
         "cisco_ios": "ios",
         "cisco_iosxe": "iosxe",
@@ -895,7 +1152,7 @@ def bootstrap_device(
         "juniper_junos": "junos",
         "frr": "linux",
     }
-    genie_os = os_map.get((vendor or "").lower(), "iosxe")
+    genie_os = os_map.get(vendor_lower, "iosxe")
 
     testbed_dict = {
         "devices": {
@@ -911,7 +1168,7 @@ def bootstrap_device(
                 "connections": {
                     "cli": {
                         "protocol": "ssh",
-                        "ip": address,
+                        "ip": ssh_host,
                         "port": 22,
                     }
                 },

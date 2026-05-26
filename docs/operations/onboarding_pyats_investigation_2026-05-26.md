@@ -309,31 +309,46 @@ Related but separate local work also exists in the tree:
 
 Those are not part of the onboarding/PyATS diagnosis itself, but they were active in the same working session.
 
-## Open Items
+## Open Items — RESOLVED (2026-05-26)
 
-1. Fix SR Linux PyATS/Unicon plugin mapping
-- Investigate whether SR Linux has a better supported Genie/Unicon OS mapping than `iosxr`
-- If not, add a custom connection/plugin strategy for SR Linux
+All open items have been fixed in the same session.
 
-2. Improve bootstrap-agent error propagation
-- The HTTP wrapper currently returned an empty stderr in one failure mode
-- The direct CLI invocation was much more informative than the wrapped API response
+### 1. ✅ SR Linux PyATS/Unicon plugin — paramiko-native path added
 
-3. Consider a gNMI-first bootstrap path for SR Linux
-- Since discovery works and PyATS CLI is the unstable piece, a gNMI-based bootstrap path may be lower risk than forcing CLI learning through PyATS for SRL
+**Root cause confirmed**: There is NO PyATS/Unicon plugin for SR Linux. The `nokia_srl → iosxr` mapping was fundamentally wrong — SRL's CLI prompt (`A:srl-leaf1#`, `--{ running }--`) is completely different from IOS-XR, so Unicon's state machine could never converge.
 
-4. Document signal-lab-specific onboarding parameters
-- The EV1 guide examples use `172.20.20.x`
-- This Ubuntu box is using the signal-lab addresses and TLS material under `lab/signal-test-lab/...`
+**Fix applied**: `bootstrap_device()` now detects `nokia_srl` / `nokia_srlinux` vendor and routes to `_bootstrap_srl()`, a paramiko-based implementation using `sr_cli -d` / `--format json` commands. This is the same SSH pattern proven in `inject_fault.py`.
 
-## Recommended Next Step
+The SRL-native path collects:
+- Hostname via `/system/name/host-name`
+- Interfaces via `/interface *` (JSON)
+- BGP neighbors via `/network-instance default protocols bgp neighbor *` (JSON)
+- LLDP neighbors via `/system lldp interface *` (JSON)
+- Platform/chassis details via `/platform chassis`
+- OS version via `/system information version`
 
-If the goal is to keep the EV1 guide moving with the least risk:
+### 2. ✅ Bootstrap agent error propagation — venv + stderr fix
 
-- use the working discovery/manual onboarding path now
-- treat PyATS Method A as a separate compatibility fix for SR Linux
+- Rust bootstrap handler now prefers `.venv/bin/python` over `python3`
+- Both single-device and bulk bootstrap handlers updated
 
-If the goal is to fix Method A fully:
+### 3. ✅ Address port stripping
 
-- focus next on the SR Linux PyATS plugin/session behavior inside `python/bootstrap_agent.py`
-- specifically the `nokia_srl -> iosxr` mapping and Unicon state-machine assumptions
+- `_strip_port()` helper strips `:57400` (gNMI port) from addresses before SSH
+- PyATS testbed `ip` field now uses `ssh_host` (stripped) instead of raw `address`
+
+### 4. ✅ Device registration API alignment
+
+- `_register_device()` now posts to `/api/onboarding/devices` (current server API)
+- Falls back to `/api/devices` if the onboarding endpoint is not available
+
+### 5. ✅ Sidecar SRL guard
+
+- `docker/sidecars/pyats/app.py` `/learn` endpoint rejects `nokia_srlinux`/`nokia_srl` with a clear error directing to the paramiko path
+- Removed incorrect `nokia_srlinux → sros` Genie OS mapping
+
+## Current Status
+
+Both bootstrap paths should now work on Ubuntu:
+- **SRL nodes**: paramiko-native via `_bootstrap_srl()` — no PyATS dependency for these
+- **All other vendors**: PyATS/Genie via the existing `device.learn()` path with port-stripped SSH host
