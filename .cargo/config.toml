@@ -3,27 +3,35 @@
 # (liblbug.so.0); when unset, lbug links statically and the binary is
 # self-contained. Static is the default for release binaries and CI.
 #
-# Uncomment for faster incremental builds during development (avoids
-# re-linking the large static archive on every change):
+# Uncomment for faster incremental dev builds (avoids re-linking the large
+# static archive on every change):
 # LBUG_SHARED = "1"
-#
-# Keep native CMake builds from auto-detecting `sccache`/`ccache` out of
-# ~/.cargo/bin when those launchers are present but unusable in the current
-# environment. Cargo already knows the absolute paths to rustc/cargo, so build
-# scripts only need standard system tool directories here.
-PATH = { value = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", force = true }
 
 [build]
-# Keep the repo default toolchain path reliable across fresh sessions and
-# constrained environments. To opt into sccache in a shell where it works:
-#   export RUSTC_WRAPPER=sccache
+# sccache: caches compiled crate artifacts across clean builds.
+# Massive speedup after `cargo clean` or on CI — deps are never recompiled
+# as long as the cache is warm.
+# Install: apt-get install sccache   OR   cargo install sccache
+# Verify: sccache --show-stats
+rustc-wrapper = "sccache"
 
 [target.x86_64-unknown-linux-gnu]
-# lbug bundles its own libzstd.a (C++) which conflicts with zstd-sys (C).
-# --allow-multiple-definition picks the first definition and suppresses the dup error.
-rustflags = ["-C", "link-arg=-Wl,--allow-multiple-definition"]
+# mold: fastest linker on Linux x86_64 — typically 5-10x faster than ld,
+# 2-3x faster than lld for large Rust binaries.
+# Install: apt-get install mold
+# Verify: readelf -p .comment target/debug/bonsai | grep mold
+#
+# --allow-multiple-definition: lbug bundles its own libzstd.a (C++) which
+# conflicts with zstd-sys (Rust/C). First definition wins, error suppressed.
+rustflags = [
+    "-C", "link-arg=-fuse-ld=mold",
+    "-C", "link-arg=-Wl,--allow-multiple-definition",
+]
 
 [target.aarch64-unknown-linux-gnu]
-# Oracle Always Free ARM hosts hit the same static lbug/zstd-sys duplicate symbol
-# link conflict as Linux x86 host builds.
-rustflags = ["-C", "link-arg=-Wl,--allow-multiple-definition"]
+# Ubuntu ARM (e.g. Oracle Always Free ARM, AWS Graviton).
+# mold supports aarch64-linux natively.
+rustflags = [
+    "-C", "link-arg=-fuse-ld=mold",
+    "-C", "link-arg=-Wl,--allow-multiple-definition",
+]

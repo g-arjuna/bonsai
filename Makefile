@@ -12,9 +12,9 @@
 #   docker-down  Stop and remove standalone containers
 #   clean    Remove build artifacts
 
-.PHONY: help dev test lint ui ui-dev docker docker-down clean \
-       check-deps install-deps-ubuntu test-python test-ui test-all \
-       test-integration release backup
+.PHONY: help dev dev-fast ci-build build-time sccache-stats test lint ui ui-dev \
+        docker docker-down clean check-deps install-deps-ubuntu \
+        test-python test-ui test-all test-integration release backup
 
 CARGO := cargo
 UI_DIR := ui
@@ -27,8 +27,26 @@ help:
 
 # ── Build ──────────────────────────────────────────────────────────────────
 
-dev: ## Build Rust debug binary
+dev: ## Build Rust debug binary (uses sccache + mold if installed)
 	$(CARGO) build
+
+dev-fast: ## Build with sccache explicitly set (override if RUSTC_WRAPPER not in env)
+	RUSTC_WRAPPER=sccache $(CARGO) build
+
+ci-build: ## Build using CI profile (no incremental, no debug info)
+	$(CARGO) build --profile ci
+
+build-time: ## Benchmark a full clean build (destructive)
+	@echo "=== Clearing sccache stats ==="
+	sccache --zero-stats 2>/dev/null || true
+	$(CARGO) clean
+	@echo "=== Building ==="
+	time $(CARGO) build
+	@echo "=== sccache stats ==="
+	sccache --show-stats 2>/dev/null || true
+
+sccache-stats: ## Show sccache hit/miss statistics
+	sccache --show-stats
 
 release: ## Build Rust release binary + UI, package into dist/
 	$(CARGO) build --release
@@ -103,12 +121,21 @@ check-deps: ## Verify all required tools are installed
 	@command -v protoc >/dev/null 2>&1 && echo "  protoc  $$(protoc --version)" || echo "  protoc  MISSING (required for gRPC)"
 	@command -v python3 >/dev/null 2>&1 && echo "  python3 $$(python3 --version)" || echo "  python3 MISSING"
 
-install-deps-ubuntu: ## Install build dependencies on Ubuntu
+install-deps-ubuntu: ## Install build dependencies on Ubuntu (including mold + sccache)
 	sudo apt-get update && sudo apt-get install -y \
 		build-essential pkg-config libssl-dev clang cmake \
 		protobuf-compiler git curl wget jq \
 		python3 python3-pip python3-venv \
-		nodejs npm snmp
+		nodejs npm snmp \
+		mold \
+		sccache
+	@echo ""
+	@echo "Build speed tools installed:"
+	@mold --version 2>/dev/null && echo "  mold: OK" || echo "  mold: NOT FOUND"
+	@sccache --version 2>/dev/null && echo "  sccache: OK" || echo "  sccache: NOT FOUND (try: cargo install sccache)"
+	@echo ""
+	@echo "Note: sccache is active via .cargo/config.toml [build] rustc-wrapper."
+	@echo "      Run 'make sccache-stats' after a build to verify cache hits."
 
 # ── Operations ─────────────────────────────────────────────────────────────
 

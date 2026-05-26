@@ -143,6 +143,44 @@ protoc-bin-vendored = "3"
 tempfile = "3"
 wiremock = "0.6"
 
+[profile.dev]
+# Optimised for fast incremental builds on Ubuntu Linux.
+#
+# opt-level 1: basic inlining + dead-code elimination. Makes dev binaries
+# run at acceptable speed without the compile-time cost of opt-level 2/3.
+opt-level = 1
+#
+# codegen-units 16: splits each crate into 16 parallel compile jobs.
+# Saturates all cores during compilation. Diminishing returns above ~32.
+codegen-units = 16
+#
+# incremental: reuses object files from the previous build. Only changed
+# functions are recompiled. Single biggest win for day-to-day iteration.
+incremental = true
+#
+# debug 1: emit line-number info only (no variable names). Sufficient for
+# backtraces. Avoids the large .debug_info sections that slow down mold.
+debug = 1
+#
+# split-debuginfo packed: write debug info into a single .dwp file instead
+# of embedding it in the binary. Keeps the linked binary small so mold
+# finishes faster. "packed" is stable on Linux (unlike "unpacked").
+split-debuginfo = "packed"
+
+[profile.dev.package."*"]
+# Compile ALL dependency crates at full optimisation even in dev mode.
+# Dependencies are cached by cargo/sccache and only recompile when their
+# version changes — so this is a one-time cost, not a per-build cost.
+# Ensures lbug/arrow/parquet/tonic run at full speed in dev.
+opt-level = 3
+
+[profile.ci]
+# For `cargo test --profile ci` in GitHub Actions / local CI runs.
+# No incremental (clean cache per run), otherwise same as dev.
+inherits = "dev"
+incremental = false
+debug = 0              # no debug info in CI — smaller artifacts, faster link
+
 [profile.release]
 lto = "thin"           # thin LTO: ~80% of full-LTO benefit at ~30% of build time cost
 codegen-units = 1      # slower build, smaller + faster binary
