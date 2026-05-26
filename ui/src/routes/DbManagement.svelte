@@ -25,6 +25,25 @@
   let exportNodeType = $state('Device');
   let exportLimit = $state(10000);
 
+  // Config DB tab state
+  let configStats = $state(null);
+  let configStatsLoading = $state(false);
+  let configStatsError = $state('');
+
+  async function loadConfigStats() {
+    configStatsLoading = true;
+    configStatsError = '';
+    try {
+      const r = await fetch('/api/db/config-stats');
+      if (!r.ok) throw new Error(await r.text());
+      configStats = await r.json();
+    } catch (e) {
+      configStatsError = e.message;
+    } finally {
+      configStatsLoading = false;
+    }
+  }
+
   // Backups tab state
   let backups = $state([]);
   let backupsLoading = $state(false);
@@ -152,15 +171,23 @@
     tab = t;
     if (t === 'schema') loadSchema();
     if (t === 'backups') loadBackups();
+    if (t === 'configdb') loadConfigStats();
   }
 
-  function fmtBytes(b) {
+  function fmtNs(ns) {
+    if (!ns) return '—';
+    return new Date(Number(BigInt(ns) / 1_000_000n)).toLocaleString();
+  }
+
+  function fmtBytesInner(b) {
     if (!b) return '0 B';
     if (b < 1024) return b + ' B';
     if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
     if (b < 1024 * 1024 * 1024) return (b / (1024 * 1024)).toFixed(1) + ' MB';
     return (b / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
   }
+
+  function fmtBytes(b) { return fmtBytesInner(b); }
 
   function sortedEntries(obj) {
     return Object.entries(obj || {}).sort((a, b) => b[1] - a[1]);
@@ -182,6 +209,7 @@
     <button class:active={tab === 'schema'} onclick={() => switchTab('schema')}>Schema</button>
     <button class:active={tab === 'query'} onclick={() => switchTab('query')}>Query</button>
     <button class:active={tab === 'manage'} onclick={() => switchTab('manage')}>Manage</button>
+    <button class:active={tab === 'configdb'} onclick={() => switchTab('configdb')}>Config DB</button>
     <button class:active={tab === 'backups'} onclick={() => switchTab('backups')}>Backups</button>
   </div>
 
@@ -279,6 +307,113 @@
         <p class="muted" style="margin-top:8px">Query returned 0 rows.</p>
       {/if}
     </div>
+
+  {:else if tab === 'configdb'}
+    {#if configStatsLoading}
+      <p class="muted">Loading config DB stats…</p>
+    {:else if configStatsError}
+      <p class="error">{configStatsError}</p>
+    {:else if !configStats}
+      <button class="primary" onclick={loadConfigStats}>Load Config DB Stats</button>
+    {:else if !configStats.exists}
+      <p class="muted">Config database not found at <code class="mono">{configStats.db_path}</code>.</p>
+    {:else}
+      <!-- Identity + overview -->
+      <div class="cdb-header">
+        <div class="cdb-id">
+          <span class="cdb-engine">SQLite</span>
+          <span class="cdb-desc">config store · managed devices, enrichers, adapters, audit trail, collector registrations</span>
+        </div>
+        <button class="primary" onclick={loadConfigStats} style="flex-shrink:0">Refresh</button>
+      </div>
+
+      <div class="stats-grid" style="margin-bottom:20px">
+        <div class="stat-card">
+          <span class="stat-value">{fmtBytes(configStats.db_size_bytes)}</span>
+          <span class="stat-label">File size</span>
+          <span class="stat-hint"><code class="mono" style="font-size:10px">{configStats.db_path}</code></span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-value">{configStats.schema_version}</span>
+          <span class="stat-label">Schema version</span>
+          <span class="stat-hint">migration level</span>
+        </div>
+      </div>
+
+      <!-- Table row counts -->
+      <div class="manage-section" style="margin-bottom:16px">
+        <h3>Table row counts</h3>
+        <div class="cdb-counts">
+          {@const TABLE_DESC = {
+            devices: 'Managed devices — credentials, gNMI paths, site/role assignment',
+            enrichers: 'Enricher configs (NetBox, CMDB, custom) and their poll settings',
+            adapters: 'Output adapter configs (Kafka, Webhook, SNOW, Splunk…)',
+            settings: 'Key/value runtime settings',
+            audit_log: 'Full mutation history for all config changes',
+            collector_registrations: 'Collector connect/disconnect events with auth outcomes',
+          }}
+          {#each Object.entries(configStats.table_counts) as [table, count]}
+            <div class="cdb-count-row" title={TABLE_DESC[table] ?? ''}>
+              <span class="cdb-table-name mono">{table}</span>
+              <span class="cdb-table-desc">{TABLE_DESC[table] ?? ''}</span>
+              <span class="cdb-count">{count}</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+
+      <!-- Audit log -->
+      <div class="manage-section" style="margin-bottom:16px">
+        <h3>Recent audit log <span class="query-badge">last 50</span></h3>
+        {#if configStats.audit_log.length === 0}
+          <p class="muted">No audit entries yet.</p>
+        {:else}
+          <div class="query-result-wrap">
+            <table class="data-table">
+              <thead><tr><th>When</th><th>Table</th><th>Op</th><th>Key</th><th>Actor</th><th>Action</th></tr></thead>
+              <tbody>
+                {#each configStats.audit_log as entry}
+                  <tr>
+                    <td class="mono cdb-ts">{fmtNs(entry.timestamp_ns)}</td>
+                    <td class="mono">{entry.table}</td>
+                    <td><span class="op-badge op-{entry.operation.toLowerCase()}">{entry.operation}</span></td>
+                    <td class="mono">{entry.record_key}</td>
+                    <td class="mono">{entry.actor}</td>
+                    <td>{entry.action}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+      </div>
+
+      <!-- Collector registrations -->
+      <div class="manage-section">
+        <h3>Recent collector registrations <span class="query-badge">last 20</span></h3>
+        {#if configStats.collector_registrations.length === 0}
+          <p class="muted">No collector registrations recorded.</p>
+        {:else}
+          <div class="query-result-wrap">
+            <table class="data-table">
+              <thead><tr><th>When</th><th>Collector ID</th><th>Hostname</th><th>Peer IP</th><th>Result</th><th>Reason</th></tr></thead>
+              <tbody>
+                {#each configStats.collector_registrations as reg}
+                  <tr>
+                    <td class="mono cdb-ts">{fmtNs(reg.timestamp_ns)}</td>
+                    <td class="mono">{reg.collector_id}</td>
+                    <td class="mono">{reg.hostname}</td>
+                    <td class="mono">{reg.peer_ip ?? '—'}</td>
+                    <td><span class="op-badge op-{reg.success ? 'success' : 'delete'}">{reg.success ? 'OK' : 'REJECTED'}</span></td>
+                    <td class="muted">{reg.rejection_reason ?? ''}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+      </div>
+    {/if}
 
   {:else if tab === 'schema'}
     {#if loadingSchema}
@@ -457,4 +592,23 @@
   .danger { background: #dc2626; color: #fff; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer; font-size: 13px; }
   .danger:hover { background: #b91c1c; }
   .danger:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Config DB tab */
+  .cdb-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+  .cdb-id { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .cdb-engine { font-size: 13px; font-weight: 700; background: rgba(251,146,60,0.12); color: #fdba74; border: 1px solid rgba(251,146,60,0.3); border-radius: 4px; padding: 2px 8px; }
+  .cdb-desc { font-size: 12px; color: var(--text-muted); }
+  .cdb-counts { display: flex; flex-direction: column; gap: 2px; }
+  .cdb-count-row { display: grid; grid-template-columns: 180px 1fr 60px; align-items: center; gap: 12px; padding: 5px 6px; border-radius: 4px; cursor: default; }
+  .cdb-count-row:hover { background: var(--surface-hover); }
+  .cdb-table-name { font-size: 12px; }
+  .cdb-table-desc { font-size: 11px; color: var(--text-muted); }
+  .cdb-count { font-size: 13px; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; color: var(--accent, #60a5fa); }
+  .cdb-ts { font-size: 11px; white-space: nowrap; }
+  .op-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .op-upsert  { background: rgba(99,102,241,0.15); color: #a5b4fc; }
+  .op-insert  { background: rgba(34,197,94,0.12);  color: #86efac; }
+  .op-delete  { background: rgba(239,68,68,0.12);  color: #fca5a5; }
+  .op-success { background: rgba(34,197,94,0.12);  color: #86efac; }
+  .op-update  { background: rgba(251,146,60,0.12); color: #fdba74; }
 </style>

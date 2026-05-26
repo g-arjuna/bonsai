@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::time::{SystemTime, UNIX_EPOCH};
+use rusqlite;
 use axum::{
     Json, extract::{Path, Query, State}, http::StatusCode,
     response::{IntoResponse, sse::{Event, KeepAlive, Sse}},
@@ -2052,6 +2053,101 @@ pub(super) async fn db_list_backups_handler() -> Result<Json<serde_json::Value>,
     }
     backups.sort_by(|a, b| b["filename"].as_str().cmp(&a["filename"].as_str()));
     Ok(Json(serde_json::json!({"backups": backups})))
+}
+
+/// GET /api/db/config-stats — SQLite config store stats + recent audit log
+pub(super) async fn db_config_stats_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let runtime_dir = state.runtime_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        let db_path = std::path::Path::new(&runtime_dir).join("bonsai_config.db");
+        let db_size_bytes: u64 = db_path.metadata().map(|m| m.len()).unwrap_or(0);
+
+        if !db_path.exists() {
+            return Ok::<_, (StatusCode, String)>(serde_json::json!({
+                "exists": false,
+                "db_path": db_path.to_string_lossy(),
+                "db_size_bytes": 0,
+            }));
+        }
+
+        let conn = rusqlite::Connection::open(&db_path)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("sqlite open: {e}")))?;
+
+        // Schema version
+        let schema_version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap_or(0);
+
+        // Row counts per table
+        let tables = ["devices", "enrichers", "adapters", "settings",
+                      "audit_log", "collector_registrations"];
+        let mut table_counts = serde_json::Map::new();
+        for t in &tables {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0))
+                .unwrap_or(0);
+            table_counts.insert(t.to_string(), serde_json::json!(count));
+        }
+
+        // Recent audit log (last 50 entries)
+        let mut stmt = conn
+            .prepare(
+                "SELECT table_name, operation, record_key, actor, action, timestamp_ns \
+                 FROM audit_log ORDER BY timestamp_ns DESC LIMIT 50",
+            )
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("audit prepare: {e}")))?;
+        let audit_rows: Vec<serde_json::Value> = stmt
+            .query_map([], |row| {
+                Ok(serde_json::json!({
+                    "table":      row.get::<_, String>(0).unwrap_or_default(),
+                    "operation":  row.get::<_, String>(1).unwrap_or_default(),
+                    "record_key": row.get::<_, String>(2).unwrap_or_default(),
+                    "actor":      row.get::<_, String>(3).unwrap_or_default(),
+                    "action":     row.get::<_, String>(4).unwrap_or_default(),
+                    "timestamp_ns": row.get::<_, i64>(5).unwrap_or(0),
+                }))
+            })
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("audit query: {e}")))?
+            .flatten()
+            .collect();
+
+        // Recent collector registrations (last 20)
+        let mut reg_stmt = conn
+            .prepare(
+                "SELECT collector_id, hostname, peer_ip, success, rejection_reason, timestamp_ns \
+                 FROM collector_registrations ORDER BY timestamp_ns DESC LIMIT 20",
+            )
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("reg prepare: {e}")))?;
+        let reg_rows: Vec<serde_json::Value> = reg_stmt
+            .query_map([], |row| {
+                Ok(serde_json::json!({
+                    "collector_id":     row.get::<_, String>(0).unwrap_or_default(),
+                    "hostname":         row.get::<_, String>(1).unwrap_or_default(),
+                    "peer_ip":          row.get::<_, Option<String>>(2).unwrap_or(None),
+                    "success":          row.get::<_, bool>(3).unwrap_or(false),
+                    "rejection_reason": row.get::<_, Option<String>>(4).unwrap_or(None),
+                    "timestamp_ns":     row.get::<_, i64>(5).unwrap_or(0),
+                }))
+            })
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("reg query: {e}")))?
+            .flatten()
+            .collect();
+
+        Ok::<_, (StatusCode, String)>(serde_json::json!({
+            "exists": true,
+            "db_path": db_path.to_string_lossy(),
+            "db_size_bytes": db_size_bytes,
+            "schema_version": schema_version,
+            "table_counts": table_counts,
+            "audit_log": audit_rows,
+            "collector_registrations": reg_rows,
+        }))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
 }
 
 /// D4-12 T1: GET /api/redundancy/groups
