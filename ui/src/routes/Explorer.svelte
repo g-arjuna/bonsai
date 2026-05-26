@@ -564,9 +564,17 @@
 
         <!-- Overall score gauge -->
         <div class="quality-score-card">
-          <div class="score-ring" style="--score: {quality.overall_score}">
-            <span class="score-val">{quality.overall_score.toFixed(1)}</span>
-            <span class="score-label">/ 100</span>
+          {@const score = Math.min(Math.max(quality.overall_score, 0), 100)}
+          {@const scoreColor = score >= 80 ? 'var(--healthy,#22c55e)' : score >= 40 ? 'var(--warning,#f59e0b)' : 'var(--critical,#ef4444)'}
+          <div class="score-ring-wrap">
+            <div
+              class="score-ring"
+              style="background: conic-gradient({scoreColor} {score}%, var(--surface2,#252525) 0%)"
+            ></div>
+            <div class="score-ring-inner">
+              <span class="score-val">{score.toFixed(1)}</span>
+              <span class="score-label">/ 100</span>
+            </div>
           </div>
           <div class="score-desc">Overall data quality score</div>
         </div>
@@ -1232,22 +1240,31 @@
     gap: 0.5rem;
   }
 
+  .score-ring-wrap {
+    position: relative;
+    width: 96px;
+    height: 96px;
+    flex-shrink: 0;
+  }
   .score-ring {
     width: 96px;
     height: 96px;
     border-radius: 50%;
-    border: 5px solid var(--border, #333);
-    background: conic-gradient(
-      var(--accent, #3b82f6) calc(var(--score, 0) * 1%),
-      var(--surface2, #252525) 0%
-    );
+    /* conic-gradient fills the disc; mask punches a 60px hole to make a donut */
+    -webkit-mask: radial-gradient(circle, transparent 30px, black 31px);
+    mask: radial-gradient(circle, transparent 30px, black 31px);
+  }
+  .score-ring-inner {
+    position: absolute;
+    inset: 0;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
+    pointer-events: none;
   }
-  .score-val { font-size: 1.5rem; font-weight: 700; line-height: 1; }
-  .score-label { font-size: 0.7rem; color: var(--text-muted, #888); }
+  .score-val { font-size: 1.4rem; font-weight: 700; line-height: 1; }
+  .score-label { font-size: 0.68rem; color: var(--text-muted, #888); }
   .score-desc { font-size: 0.75rem; color: var(--text-muted, #888); text-align: center; }
 
   .quality-bars-card {
