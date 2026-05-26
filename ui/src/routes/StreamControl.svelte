@@ -269,19 +269,19 @@
 
   .sc-add-row {
     display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
-    background: var(--surface-2, #f9fafb); border: 1px solid var(--border, #e5e7eb);
+    background: var(--bg-elevated, var(--surface-hover, #1e1e1e)); border: 1px solid var(--border-subtle, var(--border, #333));
     border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;
   }
   .sc-input {
-    padding: 6px 10px; border: 1px solid var(--border, #d1d5db); border-radius: 6px;
-    font-size: 0.85rem; min-width: 180px; background: var(--surface, #fff); color: var(--text, #111);
+    padding: 6px 10px; border: 1px solid var(--border-subtle, var(--border, #444)); border-radius: 6px;
+    font-size: 0.85rem; min-width: 180px; background: var(--bg-surface, var(--surface, #111)); color: var(--text-primary, var(--text, #eee));
   }
   .sc-reason { min-width: 160px; }
   .sc-select {
-    padding: 6px 8px; border: 1px solid var(--border, #d1d5db); border-radius: 6px;
-    font-size: 0.85rem; background: var(--surface, #fff); color: var(--text, #111);
+    padding: 6px 8px; border: 1px solid var(--border-subtle, var(--border, #444)); border-radius: 6px;
+    font-size: 0.85rem; background: var(--bg-surface, var(--surface, #111)); color: var(--text-primary, var(--text, #eee));
   }
-  .sc-toggle-label { font-size: 0.85rem; display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .sc-toggle-label { font-size: 0.85rem; display: flex; align-items: center; gap: 5px; cursor: pointer; color: var(--text-primary, var(--text, #eee)); }
   .sc-btn {
     padding: 6px 14px; border-radius: 6px; font-size: 0.85rem; cursor: pointer;
     border: none; font-weight: 500; transition: opacity 0.15s;
@@ -300,11 +300,11 @@
   .sc-matrix th, .sc-matrix td {
     border: 1px solid var(--border, #e5e7eb); padding: 7px 10px; text-align: center;
   }
-  .sc-matrix th { background: var(--surface-2, #f3f4f6); font-weight: 600; font-size: 0.8rem; }
+  .sc-matrix th { background: var(--bg-elevated, var(--surface-hover, #1a1a1a)); font-weight: 600; font-size: 0.8rem; color: var(--text-secondary, var(--text-muted, #9ca3af)); }
   .sc-sig-col { min-width: 72px; }
   .sc-scope-cell { text-align: left; min-width: 160px; }
   .sc-scope-value { font-family: monospace; font-size: 0.82rem; }
-  tr.has-override { background: #fffbeb; }
+  tr.has-override { background: rgba(251,191,36,0.05); }
 
   .sc-cell { padding: 4px 8px; }
   .sc-pill {

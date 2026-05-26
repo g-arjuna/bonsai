@@ -9,6 +9,12 @@
   let statsError = $state('');
   let schemaError = $state('');
 
+  // Query tab
+  let queryText = $state('MATCH (d:Device) RETURN d.address, d.hostname, d.vendor ORDER BY d.hostname LIMIT 25');
+  let queryRunning = $state(false);
+  let queryResult = $state(null);
+  let queryError = $state('');
+
   // Manage tab state
   let purgeNodeType = $state('DetectionEvent');
   let purgeOlderDays = $state(90);
@@ -122,6 +128,26 @@
     }
   }
 
+  async function runQuery() {
+    if (!queryText.trim()) return;
+    queryRunning = true;
+    queryError = '';
+    queryResult = null;
+    try {
+      const r = await fetch('/api/explorer/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cypher: queryText }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      queryResult = await r.json();
+    } catch (e) {
+      queryError = e.message;
+    } finally {
+      queryRunning = false;
+    }
+  }
+
   function switchTab(t) {
     tab = t;
     if (t === 'schema') loadSchema();
@@ -146,6 +172,7 @@
     <div>
       <p class="eyebrow">Administration</p>
       <h2>Database</h2>
+      <p class="db-identity">KuzuDB graph database · stores all network topology, telemetry, detections, incidents and investigations</p>
     </div>
     <button class="primary" onclick={loadStats}>Refresh</button>
   </div>
@@ -153,6 +180,7 @@
   <div class="tab-bar">
     <button class:active={tab === 'stats'} onclick={() => switchTab('stats')}>Stats</button>
     <button class:active={tab === 'schema'} onclick={() => switchTab('schema')}>Schema</button>
+    <button class:active={tab === 'query'} onclick={() => switchTab('query')}>Query</button>
     <button class:active={tab === 'manage'} onclick={() => switchTab('manage')}>Manage</button>
     <button class:active={tab === 'backups'} onclick={() => switchTab('backups')}>Backups</button>
   </div>
@@ -166,15 +194,18 @@
       <div class="stats-grid">
         <div class="stat-card">
           <span class="stat-value">{fmtBytes(stats.db_size_bytes)}</span>
-          <span class="stat-label">DB Size</span>
+          <span class="stat-label">Total DB Size</span>
+          <span class="stat-hint">disk space used by KuzuDB</span>
         </div>
         <div class="stat-card">
           <span class="stat-value">{stats.total_node_tables}</span>
           <span class="stat-label">Node Tables</span>
+          <span class="stat-hint">entity types (Device, Interface…)</span>
         </div>
         <div class="stat-card">
           <span class="stat-value">{stats.total_rel_tables}</span>
-          <span class="stat-label">Rel Tables</span>
+          <span class="stat-label">Relationship Tables</span>
+          <span class="stat-hint">edge types (CONNECTED_TO, PEERS_WITH…)</span>
         </div>
       </div>
 
@@ -209,6 +240,45 @@
         </div>
       </div>
     {/if}
+
+  {:else if tab === 'query'}
+    <div class="manage-section">
+      <h3>Cypher Query Runner <span class="query-badge">read-only</span></h3>
+      <p class="muted" style="margin-bottom:10px">Run Cypher queries directly against the KuzuDB graph. Mutations (CREATE, SET, DELETE) are rejected. Use Ctrl+Enter or the Run button.</p>
+      <textarea
+        class="query-textarea"
+        bind:value={queryText}
+        rows="6"
+        spellcheck="false"
+        onkeydown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runQuery(); } }}
+        placeholder="MATCH (d:Device) RETURN d.address, d.hostname LIMIT 10"
+      ></textarea>
+      <div class="query-actions">
+        <button class="primary" onclick={runQuery} disabled={queryRunning}>
+          {queryRunning ? 'Running…' : 'Run'}
+        </button>
+        {#if queryResult}
+          <span class="query-meta">{queryResult.row_count} row{queryResult.row_count !== 1 ? 's' : ''}{queryResult.truncated ? ' (truncated at 500)' : ''}</span>
+        {/if}
+      </div>
+      {#if queryError}
+        <p class="error" style="margin-top:8px">{queryError}</p>
+      {/if}
+      {#if queryResult && queryResult.rows.length > 0}
+        <div class="query-result-wrap">
+          <table class="data-table">
+            <thead><tr>{#each queryResult.columns as col}<th>{col}</th>{/each}</tr></thead>
+            <tbody>
+              {#each queryResult.rows as row}
+                <tr>{#each row as cell}<td class="mono">{cell === null || cell === undefined ? 'null' : typeof cell === 'object' ? JSON.stringify(cell) : String(cell)}</td>{/each}</tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {:else if queryResult && queryResult.rows.length === 0}
+        <p class="muted" style="margin-top:8px">Query returned 0 rows.</p>
+      {/if}
+    </div>
 
   {:else if tab === 'schema'}
     {#if loadingSchema}
@@ -353,6 +423,13 @@
   .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px 24px; min-width: 140px; text-align: center; }
   .stat-value { display: block; font-size: 22px; font-weight: 700; color: var(--accent, #60a5fa); }
   .stat-label { display: block; font-size: 11px; color: var(--text-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-hint { display: block; font-size: 10px; color: var(--text-muted); margin-top: 2px; opacity: 0.7; }
+  .db-identity { font-size: 12px; color: var(--text-muted); margin: 2px 0 0; }
+  .query-badge { font-size: 10px; font-weight: 500; background: rgba(99,102,241,0.15); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.25); border-radius: 3px; padding: 1px 6px; margin-left: 6px; vertical-align: middle; text-transform: uppercase; letter-spacing: 0.04em; }
+  .query-textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-hover); color: var(--text); font-family: 'SF Mono', monospace; font-size: 13px; resize: vertical; }
+  .query-actions { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+  .query-meta { font-size: 12px; color: var(--text-muted); }
+  .query-result-wrap { margin-top: 12px; overflow-x: auto; max-height: 400px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
 
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
   @media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }

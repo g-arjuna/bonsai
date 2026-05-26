@@ -130,9 +130,15 @@
             <div class="row-secondary">
               {#if inc.incident_type}
                 {@const TYPE_LABEL = { single_device: 'Single Device', cascading_failure: 'Cascading', multi_device_correlated: 'Multi-Device', config_caused: 'Config-Caused' }}
-                {@const TYPE_TIP = { single_device: 'Fault isolated to one device.', cascading_failure: `Cascading failure — root fault on ${inc.root?.device_address ?? '?'} propagated to ${(inc.device_count ?? 1) - 1} neighboring device(s).`, multi_device_correlated: 'Multiple devices affected simultaneously — grouped by temporal proximity or multi-source correlation.', config_caused: 'A config change correlated with or caused this fault.' }}
+                {@const TYPE_TIP = {
+                  single_device: 'Fault isolated to one device. No propagation to neighbors detected.',
+                  cascading_failure: `Cascading failure — root fault on ${inc.root?.device_address ?? '?'} propagated downstream to ${Math.max((inc.device_count ?? 1) - 1, 0)} neighboring device(s). These secondary detections were grouped because they occurred within a short time window of the root event.`,
+                  multi_device_correlated: 'Multiple devices were affected simultaneously. Grouped by temporal proximity — all detections fired within a narrow time window, suggesting a common upstream cause (e.g. upstream link loss, power event).',
+                  config_caused: 'A configuration change was detected shortly before this fault. Bonsai correlates config pushes with subsequent anomalies to flag operator-caused faults.'
+                }}
                 <span class="type-chip type-{inc.incident_type}" title={TYPE_TIP[inc.incident_type] ?? ''}>
                   {TYPE_LABEL[inc.incident_type] ?? inc.incident_type}
+                  <span class="type-help" aria-label="What does this mean?">?</span>
                 </span>
               {/if}
               <span
@@ -185,12 +191,18 @@
                 <!-- Blast radius summary -->
                 {#if inc.blast_radius_summary}
                   <div class="blast-summary">
-                    <span class="blast-chip">
-                      ⚡ {inc.blast_radius_summary.device_count} reachable device{inc.blast_radius_summary.device_count === 1 ? '' : 's'}
+                    <span
+                      class="blast-chip"
+                      title="Blast radius: number of devices reachable via topology from the faulting device. A higher count means more of your network could be impacted if this fault propagates."
+                    >
+                      ⚡ Blast radius: {inc.blast_radius_summary.device_count} reachable device{inc.blast_radius_summary.device_count === 1 ? '' : 's'}
                     </span>
                     {#if inc.blast_radius_summary.app_count > 0}
-                      <span class="blast-chip">
-                        📦 {inc.blast_radius_summary.app_count} app{inc.blast_radius_summary.app_count === 1 ? '' : 's'} at risk
+                      <span
+                        class="blast-chip"
+                        title="Applications whose hosting devices are within the blast radius of this fault — they may be experiencing degraded connectivity."
+                      >
+                        📦 {inc.blast_radius_summary.app_count} app{inc.blast_radius_summary.app_count === 1 ? '' : 's'} potentially impacted
                       </span>
                     {/if}
                   </div>
@@ -430,7 +442,7 @@
 
   .det-row {
     display: grid;
-    grid-template-columns: 72px minmax(0,1fr) minmax(0,1fr) auto auto auto;
+    grid-template-columns: 88px minmax(0,1.2fr) minmax(0,1fr) auto auto auto;
     gap: 8px;
     align-items: center;
     min-height: var(--row-height);
@@ -497,7 +509,25 @@
     border-radius: 3px;
     white-space: nowrap;
     flex-shrink: 0;
-    cursor: default;
+    cursor: help;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .type-help {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.15);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-transform: none;
+    flex-shrink: 0;
+    line-height: 1;
   }
   .type-single_device         { background: rgba(99,102,241,0.12); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.25); }
   .type-cascading_failure     { background: rgba(239,68,68,0.12);  color: #fca5a5; border: 1px solid rgba(239,68,68,0.3); }

@@ -573,18 +573,49 @@
 
         <!-- Coverage bars (radar-style list) -->
         <div class="quality-bars-card">
-          <div class="card-title">Signal coverage</div>
+          <div class="card-title">
+            Signal coverage
+            <span class="card-subtitle">— devices with each signal active / total managed devices</span>
+          </div>
           {#each [
-            { label: 'gNMI subscriptions', cov: quality.gnmi_coverage, weight: '30%' },
-            { label: 'Syslog (24 h)', cov: quality.syslog_coverage, weight: '20%' },
-            { label: 'Interface counters', cov: quality.interface_counter_coverage, weight: '20%' },
-            { label: 'Topology (LLDP)', cov: quality.topology_link_coverage, weight: '15%' },
-            { label: 'BGP sessions', cov: quality.bgp_mapped_coverage, weight: '15%' },
-            { label: 'BMP sessions', cov: quality.bmp_coverage, weight: '—' },
-            { label: 'NetBox enrichment', cov: quality.netbox_enrichment_coverage, weight: '—' },
+            {
+              label: 'gNMI telemetry',
+              tip: 'Devices that have received gNMI interface telemetry in the last 5 minutes, or have an active SubscriptionStatus node. Low coverage means devices are not streaming data.',
+              cov: quality.gnmi_coverage, weight: '30%'
+            },
+            {
+              label: 'Syslog (24 h)',
+              tip: 'Devices that sent at least one syslog message in the last 24 hours. Low coverage may indicate syslog forwarding is not configured.',
+              cov: quality.syslog_coverage, weight: '20%'
+            },
+            {
+              label: 'Interface counters',
+              tip: 'Interfaces with non-zero in_octets updated in the last 5 minutes. Measures whether gNMI counter paths are actually delivering data.',
+              cov: quality.interface_counter_coverage, weight: '20%'
+            },
+            {
+              label: 'Topology (LLDP links)',
+              tip: 'LLDP-confirmed physical links (CONNECTED_TO edges) vs. expected links based on interface connectivity. Low coverage means topology is incomplete.',
+              cov: quality.topology_link_coverage, weight: '15%'
+            },
+            {
+              label: 'BGP sessions mapped',
+              tip: 'Devices with at least one BgpNeighbor node in the graph. Low coverage means BGP peering data is missing — check gNMI BGP paths or BMP.',
+              cov: quality.bgp_mapped_coverage, weight: '15%'
+            },
+            {
+              label: 'BMP sessions',
+              tip: 'Devices with an active BMP (BGP Monitoring Protocol) session. BMP provides route-level visibility beyond basic session state.',
+              cov: quality.bmp_coverage, weight: '—'
+            },
+            {
+              label: 'NetBox enrichment',
+              tip: 'Devices enriched with metadata from NetBox (site, role, rack, etc.). Used to improve blast-radius and change correlation accuracy.',
+              cov: quality.netbox_enrichment_coverage, weight: '—'
+            },
           ] as dim}
-            <div class="cov-row">
-              <span class="cov-label">{dim.label}</span>
+            <div class="cov-row" title={dim.tip}>
+              <span class="cov-label">{dim.label} <span class="cov-help">?</span></span>
               <div class="cov-bar-wrap">
                 <div
                   class="cov-bar"
@@ -598,7 +629,7 @@
                 {dim.cov.pct.toFixed(1)}%
               </span>
               <span class="cov-detail">{dim.cov.covered}/{dim.cov.total}</span>
-              <span class="cov-weight">{dim.weight}</span>
+              <span class="cov-weight" title="Weight in overall score">{dim.weight}</span>
             </div>
           {/each}
         </div>
@@ -1237,12 +1268,28 @@
 
   .cov-row {
     display: grid;
-    grid-template-columns: 160px 1fr 54px 60px 40px;
+    grid-template-columns: 190px 1fr 54px 60px 40px;
     align-items: center;
     gap: 0.6rem;
     padding: 0.3rem 0;
+    cursor: help;
   }
   .cov-label { font-size: 0.82rem; color: var(--text, #ccc); }
+  .cov-help {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--surface2, #2a2a2a);
+    border: 1px solid var(--border, #444);
+    font-size: 8px;
+    color: var(--text-muted, #888);
+    font-style: normal;
+    vertical-align: middle;
+    margin-left: 2px;
+  }
   .cov-bar-wrap {
     height: 8px;
     background: var(--surface2, #252525);

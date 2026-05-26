@@ -330,16 +330,36 @@ pub fn graph_quality(conn: &Connection<'_>) -> Result<GraphQuality> {
         .unwrap_or(0);
 
     // ── gNMI active subscriptions ──────────────────────────────────────────
-    let gnmi_active: i64 = conn
+    // Primary: devices with an explicit SubscriptionStatus 'observed' node.
+    let gnmi_via_subscription: i64 = conn
         .query(
             "MATCH (d:Device)-[:HAS_SUBSCRIPTION_STATUS]->(ss:SubscriptionStatus) \
              WHERE ss.status = 'observed' \
              RETURN count(DISTINCT d.address)",
         )
-        .context("quality: gnmi_active")?
+        .context("quality: gnmi_via_subscription")?
         .next()
         .map(|r| read_i64(&r[0]))
         .unwrap_or(0);
+    // Fallback: devices that have received any gNMI telemetry in the last 5 min
+    // (Interface updated_at is the most reliable proxy since every gNMI path
+    // that writes interface counters touches Interface nodes).
+    let gnmi_cutoff = ts(now_ns - 300_000_000_000_i64);
+    let mut gnmi_fallback_stmt = conn
+        .prepare(
+            "MATCH (d:Device)-[:HAS_INTERFACE]->(i:Interface) \
+             WHERE i.updated_at > $cutoff \
+             RETURN count(DISTINCT d.address)",
+        )
+        .context("quality: gnmi_fallback prepare")?;
+    let gnmi_via_telemetry: i64 = conn
+        .execute(&mut gnmi_fallback_stmt, vec![("cutoff", gnmi_cutoff)])
+        .context("quality: gnmi_fallback execute")?
+        .next()
+        .map(|r| read_i64(&r[0]))
+        .unwrap_or(0);
+    // Use whichever count is higher — both are valid indicators of active gNMI.
+    let gnmi_active = gnmi_via_subscription.max(gnmi_via_telemetry);
 
     // ── Syslog recently received (StateChangeEvent from syslog within 24 h) ─
     let syslog_cutoff = ts(now_ns - 86_400_000_000_000_i64);
