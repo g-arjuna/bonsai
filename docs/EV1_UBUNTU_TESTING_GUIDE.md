@@ -966,31 +966,83 @@ curl -s "http://localhost:3000/api/events/history?type=snmp&limit=5" | python3 -
 
 ## Phase 6 — Multi-Source Correlation
 
-Inject a BGP session down event via both syslog and SNMP within the 45-second correlation window:
+> **Root cause of previous test failure (fixed)**: The 2026-05-27 retest injected an SNMP trap
+> with OID `1.3.6.1.2.1.15.7` but **no varbinds**. The OID matched the `bgp_peer_state` OID
+> pattern, but the varbind for `peer_address` (`1.3.6.1.2.1.15.3.1.7`) was absent, so
+> `fields.peer_address` was empty — correlation sub_key `""`.  The matching syslog fact had
+> sub_key `"192.168.0.2"`. Different sub_keys → different CorrelationBuffer slots → no fusion.
+>
+> **Fix shipped** (`src/correlation_buffer.rs`): `record()` now implements sub_key wildcard
+> matching — if an incoming signal has an empty sub_key it absorbs into any open slot for the
+> same device + semantic_type. If an incoming signal has a rich sub_key and there is an open
+> empty-sub_key slot for the same device + semantic, it absorbs and upgrades the slot's sub_key.
+> This means both test paths below will now produce a fused detection.
+
+### 6.1 — Preferred test: SNMP trap with varbinds (proves full OID extraction path)
+
+Use `snmptrap` to send a BGP trap that carries the peer-address varbind so the SNMP fact
+extractor can populate `fields.peer_address`:
 
 ```bash
-# Syslog: BGP down
+# Step 1 — syslog BGP-down first (opens correlation slot with sub_key=192.168.0.2)
 echo '<11>May 25 10:05:00 172.100.100.11 bgpd: %BGP-3-NOTIFICATION: neighbor 192.168.0.2 Down' | \
   nc -u -w1 localhost 5514
 
-sleep 5
+sleep 3
 
-# Trigger a gNMI state change by admin-disabling interface on SRL
-# (or send via SNMP trap)
+# Step 2 — SNMP BGP trap WITH varbinds (same peer 192.168.0.2, same device localhost/172.100.100.11)
+# OID 1.3.6.1.2.1.15.7 = bgpBackwardTransition
+# Varbind 1.3.6.1.2.1.15.3.1.7.192.168.0.2 = peer_address (OID-index encoded)
+# Varbind 1.3.6.1.2.1.15.3.1.2.192.168.0.2 = peer_state integer 1 (idle)
+snmptrap -v 2c -c public 127.0.0.1:9162 '' \
+  1.3.6.1.2.1.15.7 \
+  1.3.6.1.2.1.15.3.1.7.192.168.0.2 a 192.168.0.2 \
+  1.3.6.1.2.1.15.3.1.2.192.168.0.2 i 1
 ```
 
-**Verify single correlated detection:**
+### 6.2 — Synthetic fallback test (uses sub_key wildcard, no varbinds needed)
+
+This path exercises the wildcard matching fix. Both signals land on the same localhost
+orphan device so they share the same `device_address`.
+
 ```bash
-curl -s "http://localhost:3000/api/detections?limit=10" | python3 -m json.tool
+# Step 1 — syslog BGP-down (opens slot, sub_key=192.168.0.2)
+echo '<11>May 25 10:05:00 127.0.0.1 bgpd: %BGP-3-NOTIFICATION: neighbor 192.168.0.2 Down' | \
+  nc -u -w1 localhost 5514
+
+sleep 3
+
+# Step 2 — SNMP trap (no varbinds → sub_key="" → wildcard absorbs into syslog slot)
+snmptrap -v 2c -c public 127.0.0.1:9162 '' 1.3.6.1.2.1.15.7
 ```
-- [ ] Detection appears with `source_event_ids` containing IDs from multiple sources
-- [ ] `correlation_fused: true` on the detection (or single detection from multiple sources, not duplicates)
+
+**Verify fused detection (both paths):**
+```bash
+curl -s "http://localhost:3000/api/detections?limit=10" | \
+  python3 -c "
+import sys, json
+dets = json.load(sys.stdin).get('detections', [])
+for d in dets[:5]:
+    print(d.get('device_address'), d.get('rule_id'), d.get('source_types'))
+"
+```
+- [ ] A detection appears where `source_types` contains **both** `"syslog"` and `"snmp"`
+- [ ] Only one detection for the event (not two separate ones)
 
 **Verify correlation buffer metric:**
 ```bash
-curl -s http://localhost:3000/health | python3 -m json.tool | grep correlation
+curl -s http://localhost:9201/metrics 2>/dev/null | grep correlation_multi_source || \
+  curl -s http://localhost:3000/health | python3 -m json.tool
 ```
-- [ ] `bonsai_correlation_multi_source_total` counter incrementing
+- [ ] `bonsai_correlation_multi_source_total` counter ≥ 1
+
+> **If still showing only `["snmp"]`**: the syslog message did not match any `bgp_neighbor`
+> fact pattern. Confirm with:
+> ```bash
+> grep syslog_fact_joined runtime/bonsai.log | tail -5
+> ```
+> If missing, the syslog pattern YAML for your vendor may not cover the injected message format.
+> Use the Nokia SRL pattern above which matches `%BGP-3-NOTIFICATION: neighbor <ip> Down`.
 
 ---
 

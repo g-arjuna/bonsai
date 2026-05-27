@@ -125,6 +125,15 @@ impl CorrelationBuffer {
 
     /// Record an incoming signal. Returns whether it was absorbed into an
     /// existing slot or opened a new one.
+    ///
+    /// Sub-key wildcard matching: when a signal arrives with an empty sub_key
+    /// (e.g. an SNMP trap that had no varbinds to extract a peer address from),
+    /// we look for any open slot with the same device+semantic_type regardless
+    /// of sub_key. Similarly, if the incoming signal has a rich sub_key and
+    /// there is an open slot with an empty sub_key for the same device+semantic,
+    /// we absorb and upgrade the slot's key so later arrivals can also match.
+    /// This enables syslog+SNMP fusion even when the SNMP probe carries no peer
+    /// context.
     pub fn record(
         &self,
         key: CorrelationKey,
@@ -134,6 +143,8 @@ impl CorrelationBuffer {
         detail_json: String,
     ) -> RecordOutcome {
         let mut inner = self.inner.lock().expect("correlation buffer lock poisoned");
+
+        // Exact match first.
         if let Some(slot) = inner.slots.get_mut(&key) {
             if slot.opened_at.elapsed() < self.window {
                 slot.absorb(state_change_event_id, source_type);
@@ -141,13 +152,56 @@ impl CorrelationBuffer {
                     device = %slot.key.device_address,
                     semantic = %slot.key.semantic_type,
                     sources = ?slot.source_types,
-                    "correlation buffer: late arrival absorbed"
+                    "correlation buffer: late arrival absorbed (exact)"
                 );
                 return RecordOutcome::Absorbed;
             }
-            // Window expired — fall through to replace the slot.
             inner.slots.remove(&key);
         }
+
+        // Sub-key wildcard: find any open slot for same device+semantic when
+        // either the incoming key or the stored slot has an empty sub_key.
+        let wildcard_match_key: Option<CorrelationKey> = if key.sub_key.is_empty() {
+            // Incoming has no sub_key — find any open slot for this device+semantic.
+            inner.slots.iter()
+                .find(|(k, slot)| k.device_address == key.device_address
+                    && k.semantic_type == key.semantic_type
+                    && slot.opened_at.elapsed() < self.window)
+                .map(|(k, _)| k.clone())
+        } else {
+            // Incoming has a sub_key — find an open empty-sub_key slot to absorb into.
+            let empty_key = CorrelationKey::new(
+                key.device_address.clone(),
+                key.semantic_type.clone(),
+                "",
+            );
+            inner.slots.get(&empty_key)
+                .filter(|s| s.opened_at.elapsed() < self.window)
+                .map(|_| empty_key)
+        };
+
+        if let Some(existing_key) = wildcard_match_key {
+            if let Some(slot) = inner.slots.get_mut(&existing_key) {
+                slot.absorb(state_change_event_id.clone(), source_type.clone());
+                debug!(
+                    device = %slot.key.device_address,
+                    semantic = %slot.key.semantic_type,
+                    incoming_sub_key = %key.sub_key,
+                    slot_sub_key = %existing_key.sub_key,
+                    sources = ?slot.source_types,
+                    "correlation buffer: late arrival absorbed (sub_key wildcard)"
+                );
+                // If incoming has a richer sub_key, upgrade the slot so future
+                // exact-match arrivals can also land in the right slot.
+                if !key.sub_key.is_empty() && existing_key.sub_key.is_empty() {
+                    let mut upgraded = inner.slots.remove(&existing_key).unwrap();
+                    upgraded.key.sub_key = key.sub_key.clone();
+                    inner.slots.insert(upgraded.key.clone(), upgraded);
+                }
+                return RecordOutcome::Absorbed;
+            }
+        }
+
         let slot = PendingCorrelation::new(key.clone(), state_change_event_id, source_type, signal_ns, detail_json);
         inner.slots.insert(key, slot);
         RecordOutcome::NewSlot
