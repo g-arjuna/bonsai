@@ -18,6 +18,8 @@
   // ── D3-2 T5: per-device readiness badges ───────────────────────────────────
   let readinessMap = $state({});
 
+  function displayAddr(a) { return a ? a.replace(/:\d+$/, '') : a; }
+
   function readinessBadgeClass(r) {
     if (!r || r.loading) return 'info';
     if (r.error) return 'critical';
@@ -215,8 +217,8 @@
                 <input type="checkbox" checked={selectedAddresses.has(device.address)} onchange={() => {}} />
               </td>
               <td>
-                <strong>{device.hostname || device.address}</strong><br />
-                <span class="muted device-address">{device.address}</span>
+                <strong>{device.hostname || displayAddr(device.address)}</strong><br />
+                <span class="muted device-address">{displayAddr(device.address)}</span>
               </td>
               <td>{device.vendor || '—'}</td>
               <td>{device.role || '—'}</td>

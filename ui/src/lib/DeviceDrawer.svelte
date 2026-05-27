@@ -3,6 +3,8 @@
   import { relativeTime, absoluteTime, shortTime } from '$lib/timeutil.js';
   import { navigate } from '$lib/router.svelte.js';
 
+  function displayAddr(a) { return a ? a.replace(/:\d+$/, '') : a; }
+
   let { address, onclose } = $props();
 
   let device = $state(null);
@@ -341,9 +343,9 @@
     {:else if device}
       <div class="drawer-title">
         <span class="badge {healthClass(device.health)}" style="margin-right:8px;">{device.health}</span>
-        <strong>{device.hostname || device.address}</strong>
+        <strong>{device.hostname || displayAddr(device.address)}</strong>
         {#if device.hostname && device.hostname !== device.address}
-          <span class="muted" style="font-size:12px; margin-left:6px;">{device.address}</span>
+          <span class="muted" style="font-size:12px; margin-left:6px;">{displayAddr(device.address)}</span>
         {/if}
       </div>
       <div class="drawer-meta">

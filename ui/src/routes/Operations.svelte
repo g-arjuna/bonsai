@@ -305,7 +305,7 @@
               <tr>
                 <td>
                   <strong>{dev.hostname || dev.address}</strong>
-                  {#if dev.hostname}<br><span class="mono-small">{dev.address}</span>{/if}
+                  {#if dev.hostname}<br><span class="mono-small">{dev.address.replace(/:\d+$/, '')}</span>{/if}
                 </td>
                 <td><span class="badge {dev.health}">{dev.health}</span></td>
                 <td>
