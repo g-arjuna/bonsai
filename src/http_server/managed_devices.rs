@@ -1709,6 +1709,24 @@ pub(super) async fn bulk_bootstrap_handler(
     Ok(Json(result))
 }
 
+/// GET /api/credentials/{alias}/resolve — resolve a credential alias to username+password.
+/// Used by bootstrap_agent.py. Requires the vault to be unlocked.
+/// Never called with a POST to avoid credentials appearing in request logs.
+pub(super) async fn resolve_credential_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(alias): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let cred = state
+        .credentials
+        .resolve(&alias, ResolvePurpose::Discover)
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("credential resolve failed: {e}")))?;
+    Ok(Json(serde_json::json!({
+        "alias": alias,
+        "username": cred.username,
+        "password": cred.password_string(),
+    })))
+}
+
 pub(super) fn site_subtree_ids(sites: &[SiteRecord], root_id: &str) -> std::collections::HashSet<String> {
     let mut ids = std::collections::HashSet::from([root_id.to_string()]);
     let mut changed = true;

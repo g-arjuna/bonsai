@@ -554,10 +554,21 @@ pub async fn list_ml_jobs_handler(State(state): State<AppState>) -> impl IntoRes
 
 #[derive(Debug, Deserialize)]
 pub struct CreateJobRequest {
+    /// Primary field name used by the Rust API.
+    #[serde(default)]
     pub job_type: String,
+    /// Legacy alias: some callers (guide, older Python) send `job_id` instead of `job_type`.
+    #[serde(default)]
+    pub job_id: String,
     pub trigger: String,
     pub input_parquet_id: Option<String>,
     pub config_json: Option<String>,
+}
+impl CreateJobRequest {
+    /// Return whichever of job_type / job_id is non-empty, preferring job_type.
+    pub fn effective_job_type(&self) -> &str {
+        if !self.job_type.is_empty() { &self.job_type } else { &self.job_id }
+    }
 }
 
 /// POST /api/ml/jobs
@@ -573,6 +584,10 @@ pub async fn create_ml_job_handler(
         let conn = Connection::new(&db)?;
         let id = Uuid::new_v4().to_string();
         let now = now_ns();
+        let effective_type = req.effective_job_type().to_string();
+        if effective_type.is_empty() {
+            return Err(anyhow::anyhow!("job_type (or job_id) is required"));
+        }
         let mut stmt = conn.prepare(
             "CREATE (:MlJobRun {id: $id, job_type: $jt, started_at_ns: $now, \
              completed_at_ns: 0, status: 'running', trigger: $trig, \
@@ -581,13 +596,13 @@ pub async fn create_ml_job_handler(
         )?;
         conn.execute(&mut stmt, vec![
             ("id", Value::String(id.clone())),
-            ("jt", Value::String(req.job_type.clone())),
+            ("jt", Value::String(effective_type.clone())),
             ("now", Value::Int64(now)),
             ("trig", Value::String(req.trigger)),
             ("ipid", Value::String(req.input_parquet_id.unwrap_or_default())),
             ("cfg", Value::String(req.config_json.unwrap_or_else(|| "{}".to_string()))),
         ])?;
-        Ok::<_, anyhow::Error>((id, req.job_type))
+        Ok::<_, anyhow::Error>((id, effective_type))
     })
     .await;
 
@@ -911,6 +926,11 @@ const DEFAULT_SCHEDULES: &[(&str, &str, &str)] = &[
     ("sched-anomaly_export",     "anomaly_export",     "0 2 * * *"),   // daily 02:00 UTC
     ("sched-remediation_export", "remediation_export", "0 2 * * 0"),   // weekly Sun 02:00 UTC
     ("sched-gnn_snapshot",       "gnn_snapshot",       "0 */4 * * *"), // every 4h
+    // EV1 ML pipeline schedules — expected by Python sidecar + EV1 guide
+    ("sched-graph_snapshot",     "graph_snapshot",     "0 */1 * * *"), // every 1h
+    ("sched-gnn_inference",      "gnn_inference",      "0 */4 * * *"), // every 4h
+    ("sched-syslog_embedding",   "syslog_embedding",   "* * * * *"),   // every 1 min (rolling)
+    ("sched-config_embedding",   "config_embedding",   "0 */6 * * *"), // every 6h
 ];
 
 /// Seed the three default export schedules (idempotent — skips existing rows).

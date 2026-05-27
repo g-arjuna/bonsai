@@ -568,9 +568,24 @@ curl -s -X POST http://localhost:3000/api/onboarding/devices \
   }' | python3 -m json.tool
 ```
 
-> **Note on address format**: The `[[target]]` TOML block uses `address = "172.100.100.11:57400"`
-> (with port). The bootstrap API takes `address = "172.100.100.11"` (no port — SSH port 22 is
-> assumed). The gNMI subscription uses the `:57400` form. These are different fields.
+> **Address normalisation (fixed)**: The bootstrap API accepts **either** form — bare IP
+> `172.100.100.11` or full `172.100.100.11:57400`. The agent automatically appends `:57400` if
+> no port is given, so the registered managed-device address always matches the `[[target]]` key
+> used for gNMI subscriptions. **Do not pass the bare IP** — always pass `172.100.100.11:57400`
+> to be explicit and avoid any edge case.
+>
+> **Duplicate device guard**: In older builds the bootstrap could create a second bare-IP managed
+> device alongside the intended `:57400` entry. This is fixed. If you see a duplicate bare-IP
+> entry after bootstrap, remove it:
+> ```bash
+> curl -s -X POST http://localhost:3000/api/onboarding/devices/remove \
+>   -H 'Content-Type: application/json' \
+>   -d '{"address": "172.100.100.11"}'
+> # Repeat for 172.100.100.12 and .13 if needed
+> # Confirm only :57400 entries remain:
+> curl -s http://localhost:3000/api/onboarding/devices | python3 -c \
+>   "import sys,json; [print(d['address']) for d in json.load(sys.stdin).get('devices',[])]"
+> ```
 
 ### 2.4 — Verify gNMI TLS readiness
 
@@ -625,7 +640,11 @@ grep -i "tls\|rpc\|handshake\|connect" ~/bonsai/runtime/bonsai.log | tail -20
 
 ### 2.5 — Assign gNMI path profile
 
-The path profile controls which gNMI paths Bonsai subscribes to. For the lab nodes:
+The path profile controls which gNMI paths Bonsai subscribes to.
+
+> **Route clarification**: `PATCH /api/devices/{address}/profile` is now wired and works.
+> It delegates to the same handler as `POST /api/devices/{address}/selected-paths`.
+> Both are equivalent — use whichever feels natural.
 
 ```bash
 # srl1 = spine role → dc_spine profile
@@ -641,8 +660,34 @@ for PORT_ADDR in 172.100.100.12%3A57400 172.100.100.13%3A57400; do
 done
 ```
 
+**If the PATCH returns 404 (older build)** — use the two-step fallback:
+```bash
+# Step 1: fetch recommended paths for a profile
+curl -s "http://localhost:3000/api/devices/172.100.100.11%3A57400/recommendations" | python3 -m json.tool
+
+# Step 2: apply selected paths explicitly
+curl -s -X POST http://localhost:3000/api/devices/172.100.100.11%3A57400/selected-paths \
+  -H 'Content-Type: application/json' \
+  -d '{"profile": "dc_spine"}' | python3 -m json.tool
+```
+
 Available profiles live in `config/path_profiles/`. For the SRL lab, `dc_spine` and `dc_leaf`
-are the correct ones. Do NOT use `campus_access` or `campus_core` — those are for IOS-XE/EOS.
+are the correct ones. Do **not** use `campus_access` or `campus_core` — those are for IOS-XE/EOS.
+
+> **Known issue — recommended SRL bundle**: The recommended SRL bundle may fail gNMI subscription
+> for some path combinations on older SRL images. If subscriptions fail after profile assignment,
+> use the minimal native bundle:
+> ```bash
+> curl -s -X POST http://localhost:3000/api/devices/172.100.100.11%3A57400/selected-paths \
+>   -H 'Content-Type: application/json' \
+>   -d '{
+>     "paths": [
+>       {"path": "/interface[name=*]/statistics", "mode": "SAMPLE", "sample_interval_ns": 30000000000},
+>       {"path": "/network-instance[name=*]/protocols/bgp/neighbor[peer-address=*]/session-state", "mode": "ON_CHANGE"},
+>       {"path": "/system/lldp/interface[name=*]", "mode": "ON_CHANGE"}
+>     ]
+>   }' | python3 -m json.tool
+> ```
 
 ### 2.6 — Check path recommendations after bootstrap
 
@@ -781,6 +826,21 @@ RETURN b.peer_address, b.state, b.adj_rib_in_routes, b.hold_time
 
 ## Phase 4 — Syslog Reception
 
+> **Prerequisite — receiver must be active**: Bonsai only starts the syslog receiver if
+> `[syslog] enabled = true` is set in `bonsai.toml`. Verify:
+> ```bash
+> grep -A3 '\[syslog\]' ~/bonsai/bonsai.toml
+> # Must show: enabled = true, bind = "0.0.0.0:5514"
+> curl -s http://localhost:3000/api/settings/receiver-status | python3 -m json.tool
+> # Expected: syslog_bound: true
+> ```
+> If `syslog_bound: false` or the section is missing, add it to `bonsai.toml` and restart:
+> ```toml
+> [syslog]
+> enabled = true
+> bind    = "0.0.0.0:5514"
+> ```
+
 Configure SRL to send syslog to bonsai (port 5514 UDP):
 ```bash
 # On srl1 via SSH — set remote syslog target to the Ubuntu host IP (replace 172.100.100.1 with actual host)
@@ -816,6 +876,21 @@ LIMIT 5
 ---
 
 ## Phase 5 — SNMP Trap Reception
+
+> **Prerequisite — receiver must be active**: Bonsai only starts the SNMP trap receiver if
+> `[snmp] enabled = true` is set in `bonsai.toml`. Verify:
+> ```bash
+> grep -A3 '\[snmp\]' ~/bonsai/bonsai.toml
+> curl -s http://localhost:3000/api/settings/receiver-status | python3 -m json.tool
+> # Expected: snmp_bound: true
+> ```
+> If `snmp_bound: false`, add to `bonsai.toml` and restart:
+> ```toml
+> [snmp]
+> enabled    = true
+> bind       = "0.0.0.0:9162"
+> community  = "public"
+> ```
 
 Send test SNMP v2c trap:
 ```bash
@@ -945,11 +1020,15 @@ RETURN r.status, r.outcome, r.executed_at_ns
 
 ### 9.1 Start the sidecar
 
+> **Port clarification**: The sidecar health API binds to `:9200` and Prometheus metrics to
+> `:9201`. These are the only ports it opens. The sidecar does **not** open a gRPC listen port
+> for incoming connections — it connects **out** to Bonsai core on `:50051`. If the guide or
+> older docs mention port `:8080` for the sidecar, that is incorrect.
+
 ```bash
 # Set environment
 export BONSAI_API_URL="http://localhost:3000"
 export BONSAI_CORE_ADDR="localhost:50051"
-export BONSAI_LOCAL_ADDR="localhost:50052"
 
 # Start sidecar (non-blocking startup — all background threads launch immediately)
 cd ~/bonsai
@@ -1037,34 +1116,41 @@ curl -s http://localhost:9200/health | python3 -m json.tool
 curl -s http://localhost:3000/api/ml/schedules | python3 -m json.tool
 ```
 
-**Expected schedules (7 defaults):**
-```
-anomaly_export_daily      - cron(hour=2)
-remediation_export_weekly - cron(day_of_week=0, hour=2)
-gnn_inference             - interval(minutes=5)
-syslog_embedding          - interval(seconds=60)
-graph_snapshot            - interval(hours=4)
-detection_clustering      - cron(day_of_week=0, hour=3)
-config_embedding          - interval(hours=6)
-```
-- [ ] All 7 schedules present and `enabled: true`
+**Expected schedules (7 defaults, seeded at startup — no manual creation needed):**
+
+| `job_id` | `cron_expr` | Description |
+|---|---|---|
+| `anomaly_export` | `0 2 * * *` | Daily 02:00 UTC |
+| `remediation_export` | `0 2 * * 0` | Weekly Sun 02:00 UTC |
+| `gnn_snapshot` | `0 */4 * * *` | Every 4 hours |
+| `graph_snapshot` | `0 */1 * * *` | Every 1 hour |
+| `gnn_inference` | `0 */4 * * *` | Every 4 hours |
+| `syslog_embedding` | `* * * * *` | Every minute (rolling) |
+| `config_embedding` | `0 */6 * * *` | Every 6 hours |
+
+- [ ] At least 7 schedules returned with `enabled: true`
 - [ ] Schedules visible in BonPy UI at `http://localhost:3000/bonpy/jobs`
 
 ### 10.2 Manually trigger a job
+
+> **API contract — field name**: Use `job_type` (not `job_id`) in the POST body. The API
+> also accepts `job_id` as a backwards-compat alias, but `job_type` is canonical.
 
 ```bash
 # Trigger graph snapshot job (captures live graph state → STGNN buffer)
 curl -s -X POST http://localhost:3000/api/ml/jobs \
   -H 'Content-Type: application/json' \
-  -d '{"job_id":"graph_snapshot","trigger":"manual"}' | python3 -m json.tool
+  -d '{"job_type":"graph_snapshot","trigger":"manual"}' | python3 -m json.tool
+# Expected: {"id": "<uuid>"}
 ```
 
 Wait 10 seconds, then:
 ```bash
 curl -s "http://localhost:3000/api/ml/jobs?limit=5" | python3 -m json.tool
 ```
-- [ ] Job run record appears with `status: "succeeded"` or `"running"`
+- [ ] Job run record appears with `status: "running"` or `"succeeded"`
 - [ ] `started_at_ns` populated
+- [ ] `job_type: "graph_snapshot"` in the record
 
 ### 10.3 Verify SSE ML event stream
 
@@ -1082,7 +1168,7 @@ curl -s -N http://localhost:3000/api/ml/events/stream
 # Start a long-running job
 JOB_ID=$(curl -s -X POST http://localhost:3000/api/ml/jobs \
   -H 'Content-Type: application/json' \
-  -d '{"job_id":"anomaly_export_daily","trigger":"manual"}' | python3 -m json.tool | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+  -d '{"job_type":"anomaly_export","trigger":"manual"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
 # Cancel it
 curl -s -X POST "http://localhost:3000/api/ml/jobs/${JOB_ID}/cancel"
@@ -1653,6 +1739,17 @@ print(f'Next job: {h.get(\"next_job\")}')
 
 ## Phase 17 — BonPy MLOps Console UI
 
+> **Build prerequisite — BonPy static assets**: BonPy is a separate Svelte SPA built from
+> `ui-bonpy/`. Bonsai serves it from `ui-bonpy/dist-bonpy/` (fixed — was incorrectly pointing
+> to `dist-bonpy/` at the repo root in older builds). If `/bonpy/` returns 404, the build step
+> was skipped. Run:
+> ```bash
+> cd ~/bonsai/ui-bonpy && npm ci && npm run build && cd ..
+> # Confirm the output directory exists:
+> ls ui-bonpy/dist-bonpy/index.html
+> # Then restart Bonsai so it picks up the new assets
+> ```
+
 All BonPy routes are served from the same Bonsai origin at `/bonpy/`.
 
 ### 17.1 Dashboard (`/bonpy/`)
@@ -1695,7 +1792,7 @@ open http://localhost:3000/bonpy/jobs
 - [ ] **Revert**: restore to `interval(seconds=60)`
 
 **Active job progress panel:**
-1. Trigger a training job: `curl -s -X POST http://localhost:3000/api/ml/jobs -H 'Content-Type: application/json' -d '{"job_id":"anomaly_export_daily","trigger":"manual"}'`
+1. Trigger a training job: `curl -s -X POST http://localhost:3000/api/ml/jobs -H 'Content-Type: application/json' -d '{"job_type":"anomaly_export","trigger":"manual"}'`
 2. Watch BonPy Jobs page
 - [ ] Progress bar appears for the running job
 - [ ] Step counter updates (e.g., `rows: 0/N`)

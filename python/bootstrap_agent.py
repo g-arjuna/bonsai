@@ -1119,6 +1119,20 @@ def _strip_port(address: str) -> str:
     return address
 
 
+def _ensure_gnmi_address(address: str, default_port: int = 57400) -> str:
+    """Ensure address has a gNMI port suffix.
+
+    If a bare IP or hostname is given (no colon), append the default gNMI port
+    so that the device is registered under the same key Bonsai uses internally
+    (host:port). Without this, bootstrapping '172.100.100.11' registers a plain-IP
+    managed device that then gets a non-TLS subscription attempt separate from
+    the intended '172.100.100.11:57400' target.
+    """
+    if ":" not in address:
+        return f"{address}:{default_port}"
+    return address
+
+
 # ── Core bootstrap logic ──────────────────────────────────────────────────────
 
 def bootstrap_device(
@@ -1129,6 +1143,11 @@ def bootstrap_device(
     api_url: str = "http://localhost:3000",
     dry_run: bool = False,
 ) -> BootstrapResult:
+    # Normalise address: always include the gNMI port so that registration matches
+    # the TargetConfig key Bonsai uses for subscriptions. Without this, a bare IP
+    # creates a second non-TLS managed device entry alongside the :57400 target.
+    address = _ensure_gnmi_address(address)
+
     # SR Linux: PyATS/Unicon has no SRL plugin — route to paramiko-based path
     vendor_lower = (vendor or "").lower()
     if vendor_lower in ("nokia_srl", "nokia_srlinux"):

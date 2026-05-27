@@ -71,7 +71,7 @@ use remediation::{approvals_approve_handler, approvals_create_handler, approvals
 use observability::{topology_handler, path_handler, blast_radius_handler, detections_handler, trace_handler, readiness_handler, operations_handler, test_status_handler, daily_check_handler, weekly_trend_handler, gnn_calibration_handler, gnn_score_handler, events_handler, events_history_handler, incidents_handler, graph_insights_handler, graph_quality_handler, flows_live_handler, device_flows_handler, endpoints_handler, explorer_query_handler, list_saved_queries_handler, create_saved_query_handler, delete_saved_query_handler, upsert_embeddings_handler, list_embeddings_handler, events_inject_handler, db_stats_handler, db_schema_handler, db_purge_handler, db_checkpoint_handler, db_export_handler, db_backup_handler, db_list_backups_handler, db_config_stats_handler, list_redundancy_groups_handler};
 use device::{device_detail_handler, device_enrichment_handler, device_enrichment_conflicts_handler, device_cmdb_handler, device_sensors_handler, device_optics_handler, device_config_history_handler, device_gnmi_readiness_handler, device_streaming_readiness_handler, device_recommendations_handler, yang_modules_handler, yang_search_handler, apply_device_selected_paths_handler, device_reparse_handler, profiles_handler, save_custom_profile_handler, enrichment_list_handler, enrichment_upsert_handler, enrichment_remove_handler, enrichment_test_handler, enrichment_run_handler, enrichment_audit_handler, netbox_import_handler};
 use device::InterfaceDetailJson;
-use managed_devices::{managed_devices_handler, discover_handler, credentials_handler, add_credential_handler, update_credential_handler, remove_credential_handler, test_credential_handler, add_managed_device_handler, add_managed_device_with_paths_handler, sites_handler, upsert_site_handler, site_summary_handler, remove_site_handler, remove_managed_device_handler, bulk_managed_device_action_handler, remove_impact_handler, bulk_import_handler, bootstrap_device_handler, device_seed_handler, bulk_bootstrap_handler};
+use managed_devices::{managed_devices_handler, discover_handler, credentials_handler, add_credential_handler, update_credential_handler, remove_credential_handler, test_credential_handler, add_managed_device_handler, add_managed_device_with_paths_handler, sites_handler, upsert_site_handler, site_summary_handler, remove_site_handler, remove_managed_device_handler, bulk_managed_device_action_handler, remove_impact_handler, bulk_import_handler, bootstrap_device_handler, device_seed_handler, bulk_bootstrap_handler, resolve_credential_handler};
 use governance::{assignment_override_handler, assignment_rules_handler, assignment_status_handler, collectors_handler, create_environment_handler, environments_handler, governance_state_handler, governance_history_handler, governance_pressure_handler, governance_profile_handler, health_handler, healthz_handler, readyz_handler, remove_environment_handler, assign_site_environment_handler, update_environment_handler, set_assignment_rules_handler, setup_status_handler, sidecars_handler, sidecar_status_handler, sidecar_rules_handler, sidecar_rule_toggle_handler, sidecar_rule_parameters_handler, patch_sidecar_rule_parameters_handler, sidecar_rule_shadow_mode_handler, sidecar_rule_analytics_handler, sidecar_rule_shadow_firings_handler, create_syslog_rule_handler, list_syslog_rules_handler};
 use outputs::{adapter_audit_handler, adapter_list_handler, adapter_remove_handler, adapter_test_handler, adapter_upsert_handler};
 use test_endpoints::{inject_detection_handler, parse_syslog_fixture_handler};
@@ -886,9 +886,9 @@ pub fn router(
     // see docs/architecture/sidecars.md. If `ui-bonpy/dist/` is missing (e.g.
     // a build that skipped the bonpy step), ServeDir returns 404 — bonsai UI
     // still works. Index fallback enables client-side routing within bonpy.
-    let bonpy_spa = ServeDir::new("dist-bonpy")
+    let bonpy_spa = ServeDir::new("ui-bonpy/dist-bonpy")
         .not_found_service(tower_http::services::ServeFile::new(
-            "dist-bonpy/index.html",
+            "ui-bonpy/dist-bonpy/index.html",
         ));
 
     Router::new()
@@ -1006,6 +1006,7 @@ fn device_routes() -> Router<AppState> {
         .route("/api/devices/{address}/streaming-readiness", get(device_streaming_readiness_handler))
         .route("/api/devices/{address}/recommendations", get(device_recommendations_handler))
         .route("/api/devices/{address}/selected-paths", post(apply_device_selected_paths_handler))
+        .route("/api/devices/{address}/profile", patch(apply_device_selected_paths_handler))
         .route("/api/devices/{address}/config-history", get(device_config_history_handler))
         .route("/api/devices/{address}/reparse", post(device_reparse_handler))
         .route("/api/profiles", get(profiles_handler))
@@ -1039,6 +1040,7 @@ fn managed_device_routes() -> Router<AppState> {
         .route("/api/credentials/update", post(update_credential_handler))
         .route("/api/credentials/remove", post(remove_credential_handler))
         .route("/api/credentials/test", post(test_credential_handler))
+        .route("/api/credentials/{alias}/resolve", get(resolve_credential_handler))
         .route("/api/vault/rekey", post(vault_rekey_handler))
 }
 
