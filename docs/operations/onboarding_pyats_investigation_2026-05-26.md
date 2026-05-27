@@ -738,3 +738,204 @@ Current practical EV1 status after these later-phase checks:
   - sidecar health/registration validation
   - BonPy UI route validation
   - guide-aligned ML schedule/job flow validation
+
+## Follow-up validation after upstream fixes pulled on 2026-05-27
+
+Pulled `origin/main` from:
+
+- `6ba0f2f`
+
+to:
+
+- `155fed7`
+
+The update included fixes in:
+
+- `python/bootstrap_agent.py`
+- `src/http_server/managed_devices.rs`
+- `src/http_server/ml_jobs.rs`
+- `src/http_server/mod.rs`
+- `docs/EV1_UBUNTU_TESTING_GUIDE.md`
+
+### Fixes confirmed working
+
+#### 1. BonPy route is fixed
+
+Observed result after rebuilding `ui-bonpy` and restarting Bonsai:
+
+- `GET /bonpy/` returned `200 OK`
+- Bonsai is now correctly serving:
+  - `ui-bonpy/dist-bonpy/index.html`
+
+This confirms the static path fix in the router is working.
+
+#### 2. ML default schedules are now seeded as expected
+
+Observed result from:
+
+- `GET /api/ml/schedules`
+
+Returned 7 enabled schedules including:
+
+- `anomaly_export`
+- `remediation_export`
+- `gnn_snapshot`
+- `graph_snapshot`
+- `gnn_inference`
+- `syslog_embedding`
+- `config_embedding`
+
+This matches the updated guide much more closely.
+
+#### 3. ML job trigger alias compatibility is fixed
+
+Observed result:
+
+- `POST /api/ml/jobs` with:
+  - `{"job_id":"graph_snapshot","trigger":"manual"}`
+
+now succeeds and returns a job id.
+
+This confirms the new `job_id` backwards-compat alias is active.
+
+#### 4. Syslog and SNMP receivers can now be enabled and bind correctly
+
+Important config correction:
+
+- the guide currently describes top-level:
+  - `[syslog]`
+  - `[snmp]`
+- but the code expects:
+  - `[signals.syslog]`
+  - `[signals.snmp]`
+
+Using the code-correct config:
+
+```toml
+[signals.syslog]
+enabled = true
+udp_addr = "0.0.0.0:5514"
+
+[signals.snmp]
+enabled = true
+udp_addr = "0.0.0.0:9162"
+community_allowlist = ["public"]
+```
+
+Observed runtime result after restart:
+
+- syslog UDP listener started on `0.0.0.0:5514`
+- syslog TCP listener started on `0.0.0.0:6514`
+- SNMP UDP listener started on `0.0.0.0:9162`
+
+#### 5. Syslog ingest now works end-to-end to event history
+
+Injected test message:
+
+- local UDP syslog to `127.0.0.1:5514`
+
+Observed results:
+
+- raw signal landed in:
+  - `runtime/signals/syslog.jsonl`
+- `GET /api/events/history?limit=15` showed a new event:
+  - `source_type: "syslog"`
+  - `event_type: "syslog_protocol"`
+  - `device_address: "172.100.100.11"`
+
+This means Phase 4 is now materially working on the updated build.
+
+### Remaining deviations / new regression after the fix drop
+
+#### 1. Receiver-status API mentioned in the updated guide is not present
+
+Guide expectation:
+
+- `GET /api/settings/receiver-status`
+
+Observed result:
+
+- response:
+  - `unknown config section: receiver-status`
+
+Operational note:
+
+- the receiver config and binding logic are real
+- but the verification endpoint named in the guide is not implemented in this build
+
+#### 2. Explicit-port bootstrap no longer creates a duplicate bare-IP device, but it can corrupt the existing managed-device record
+
+Validation method:
+
+- called bootstrap with explicit gNMI-form address:
+  - `172.100.100.11:57400`
+
+Positive result:
+
+- no separate bare-IP duplicate device like `172.100.100.11` was created
+
+New negative behavior:
+
+- the existing managed-device record for `172.100.100.11:57400` was overwritten with incomplete metadata
+- fields temporarily lost included:
+  - `tls_domain`
+  - `ca_cert`
+  - `hostname`
+  - `role`
+  - `site`
+- subscriber logs then showed a temporary non-TLS reconnect:
+  - `tls=false`
+  - `Capabilities RPC failed`
+  - `Subscribe RPC failed`
+
+Recovery/workaround used:
+
+- restarting Bonsai from `bonsai.toml` restored the correct target metadata
+- after restart, `172.100.100.11:57400` was again healthy with:
+  - `tls=true`
+  - correct CA cert
+  - correct hostname / role / site
+
+Operational conclusion:
+
+- the old duplicate-device bug appears improved
+- but there is still a bootstrap registration bug when bootstrapping an already-registered `:57400` target
+- the current safe practice remains:
+  - avoid re-bootstrapping an already healthy registered target unless necessary
+  - if the managed-device metadata is clobbered, restart from config to recover
+
+#### 3. SNMP receiver binding is fixed, but trap injection was not completed on this host
+
+Observed result:
+
+- SNMP UDP listener bound successfully on `:9162`
+
+Follow-up blocker:
+
+- local Python trap injection using `pysnmp` failed because:
+  - `ModuleNotFoundError: No module named 'pysnmp'`
+
+Operational note:
+
+- this is now a host dependency gap, not evidence that the Bonsai SNMP receiver is broken
+
+### Updated status after the fix drop
+
+Confirmed working now:
+
+- BonPy static route serving
+- 7 default ML schedules
+- `job_id` alias for manual ML job creation
+- syslog receiver bind
+- syslog raw archive
+- syslog event creation into event history
+- SNMP receiver bind
+
+Still needing follow-up:
+
+- guide update for the actual receiver config shape:
+  - `[signals.syslog]`
+  - `[signals.snmp]`
+- guide update or code addition for `/api/settings/receiver-status`
+- bootstrap-overwrite regression on already-registered SRL `:57400` targets
+- SNMP trap end-to-end test after installing a trap sender on the host
