@@ -1532,6 +1532,44 @@ pub async fn ml_embedding_stats_handler(State(state): State<AppState>) -> impl I
     }
 }
 
+/// GET /api/ml/syslog-clusters — list SyslogCluster nodes created by detection_clustering job
+pub async fn ml_syslog_clusters_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let db = state.store.db();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = Connection::new(&db)?;
+        let rows = conn.query(
+            "MATCH (c:SyslogCluster) \
+             RETURN c.id, c.label, c.event_count, c.centroid_event_id, c.top_event_types, c.created_at_ns \
+             ORDER BY c.event_count DESC LIMIT 200",
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .map(|r| {
+            let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
+            let n = |v: &Value| match v { Value::Int64(n) => *n, _ => 0 };
+            let top_types: Vec<String> = match &r[4] {
+                Value::String(s) => serde_json::from_str(s).unwrap_or_default(),
+                _ => vec![],
+            };
+            serde_json::json!({
+                "id": s(&r[0]),
+                "label": s(&r[1]),
+                "event_count": n(&r[2]),
+                "centroid_event_id": s(&r[3]),
+                "top_event_types": top_types,
+                "created_at_ns": n(&r[5]),
+            })
+        })
+        .collect::<Vec<_>>();
+        Ok::<_, anyhow::Error>(rows)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(rows)) => (StatusCode::OK, Json(serde_json::json!({"clusters": rows}))).into_response(),
+        Ok(Err(_)) | Err(_) => (StatusCode::OK, Json(serde_json::json!({"clusters": []}))).into_response(),
+    }
+}
+
 /// GET /api/ml/exports/quality — summary across recent exports
 pub async fn ml_export_quality_handler(State(state): State<AppState>) -> impl IntoResponse {
     let db = state.store.db();

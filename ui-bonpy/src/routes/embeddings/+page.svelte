@@ -8,7 +8,7 @@
   let selectedCluster = null;
 
   $: stats = $statsQ.data;
-  $: clusters = ($clustersQ.data || []).sort((a, b) => b.event_count - a.event_count);
+  $: clusters = ($clustersQ.data?.clusters ?? $clustersQ.data ?? []).sort((a, b) => b.event_count - a.event_count);
 
   function pct(a, b) {
     if (!a || !b) return 0;

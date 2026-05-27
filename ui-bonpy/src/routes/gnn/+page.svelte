@@ -14,7 +14,12 @@
   }
   function fmt(ns) { return ns ? new Date(ns / 1e6).toLocaleTimeString() : '—'; }
 
-  $: results = $gnnQ.data || [];
+  $: rawResults = $gnnQ.data?.results ?? $gnnQ.data ?? [];
+  $: results = rawResults.map(r => ({
+    ...r,
+    top_neighbour: r.top_neighbour ?? r.top_contributing_device,
+    top_attention: r.top_attention ?? r.attention_weight,
+  }));
   $: anomalous = results.filter(r => r.is_anomalous);
   $: selectedResult = results.find(r => r.device_address === selectedDevice);
   $: gnnLive = $lastGnnEvent?.payload;

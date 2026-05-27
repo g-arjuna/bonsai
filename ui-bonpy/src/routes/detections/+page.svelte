@@ -5,7 +5,7 @@
 
   const detectionsQ = createQuery({
     queryKey: ['detections'],
-    queryFn: () => api.events.list('?type=detection&limit=100'),
+    queryFn: () => api.detections.list(100),
     refetchInterval: 15000,
   });
 
@@ -32,7 +32,7 @@
   }
 
   $: liveEvent = $lastDetectionEvent;
-  $: rawDetections = $detectionsQ.data || [];
+  $: rawDetections = $detectionsQ.data?.detections ?? $detectionsQ.data ?? [];
   $: detections = rawDetections
     .filter(d => !severityFilter || d.severity === severityFilter)
     .filter(d => !deviceFilter || d.device_address?.includes(deviceFilter));

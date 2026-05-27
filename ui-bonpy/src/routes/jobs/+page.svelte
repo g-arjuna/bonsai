@@ -36,7 +36,7 @@
   }
 
   $: progress = $lastProgressEvent?.payload;
-  $: jobs = ($jobsQ.data || []).slice().reverse();
+  $: jobs = ($jobsQ.data?.jobs ?? $jobsQ.data ?? []).slice().reverse();
   $: deadLetter = jobs.filter(j => j.status === 'failed' && j.run_count > 3);
 </script>
 
@@ -49,7 +49,7 @@
     <table class="table">
       <thead><tr><th>Job ID</th><th>Cron</th><th>Last Run</th><th>Next Run</th><th>Outcome</th><th>Enabled</th></tr></thead>
       <tbody>
-        {#each $schedQ.data as s}
+        {#each ($schedQ.data?.schedules ?? $schedQ.data ?? []) as s}
         <tr>
           <td class="mono">{s.job_id}</td>
           <td class="mono text-sm">{s.cron_expr}</td>

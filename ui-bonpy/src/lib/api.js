@@ -36,6 +36,7 @@ export const api = {
   },
   embeddings: { stats: () => apiFetch('/api/ml/embeddings/stats') },
   gnn: { results: () => apiFetch('/api/gnn/results?limit=20') },
+  detections: { list: (limit = 100) => apiFetch(`/api/detections?limit=${limit}`) },
   events: { list: (params = '') => apiFetch(`/api/events${params}`) },
   sidecar: { status: () => apiFetch('/api/sidecar/status') },
   syslogClusters: () => apiFetch('/api/ml/syslog-clusters'),

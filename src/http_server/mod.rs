@@ -17,8 +17,9 @@ use tokio::sync::RwLock;
 
 use axum::{
     Router,
-    http::StatusCode,
-    routing::{delete, get, patch, post},
+    body::Body,
+    http::{Response, StatusCode},
+    routing::{delete, get, patch, post, any},
 };
 
 use lbug::{Connection, Value};
@@ -94,7 +95,7 @@ use ml_jobs::{
     events_unembedded_handler, events_embeddings_handler,
     devices_unembedded_config_handler, device_config_embedding_handler,
     ml_embedding_stats_handler, ml_lineage_handler, ml_similar_events_handler,
-    retry_ml_job_handler, list_dead_letter_handler,
+    retry_ml_job_handler, list_dead_letter_handler, ml_syslog_clusters_handler,
 };
 use playbooks::{
     list_playbooks_handler, get_playbook_handler, create_playbook_handler,
@@ -882,14 +883,15 @@ pub fn router(
         .not_found_service(tower_http::services::ServeFile::new("ui/dist/index.html"));
 
     // CV7 T4-5: Bonpy — a separate Svelte SPA for Python/ML/AIOps surfaces,
-    // mounted at /bonpy/ on the same Axum process. Distinct from bonsai UI;
-    // see docs/architecture/sidecars.md. If `ui-bonpy/dist/` is missing (e.g.
-    // a build that skipped the bonpy step), ServeDir returns 404 — bonsai UI
-    // still works. Index fallback enables client-side routing within bonpy.
-    let bonpy_spa = ServeDir::new("ui-bonpy/dist-bonpy")
-        .not_found_service(tower_http::services::ServeFile::new(
-            "ui-bonpy/dist-bonpy/index.html",
-        ));
+    // mounted at /bonpy/ on the same Axum process.
+    //
+    // SvelteKit adapter-static with base=/bonpy puts JS/CSS chunks under
+    // dist-bonpy/_app/. Those are served by ServeDir via /bonpy/_app/*.
+    // All SPA page routes (/bonpy, /bonpy/jobs, …) are handled by
+    // bonpy_shell_handler which returns index.html with HTTP 200, allowing
+    // the SvelteKit client-side router to hydrate. tower-http ServeDir's
+    // not_found_service preserves the 404 status, so we avoid it for SPA routes.
+    let bonpy_app_assets = ServeDir::new("ui-bonpy/dist-bonpy/_app");
 
     Router::new()
         .merge(observability_routes())
@@ -905,10 +907,35 @@ pub fn router(
         .merge(ml_routes())
         .merge(ev1_playbook_routes())
         .route("/mcp", post(crate::mcp_server::mcp_handler))
-        .nest_service("/bonpy", bonpy_spa)
+        // Static JS/CSS assets for BonPy (SvelteKit puts them under /_app/)
+        .nest_service("/bonpy/_app", bonpy_app_assets)
+        // SPA shell: all /bonpy page routes return 200 + index.html
+        .route("/bonpy", any(bonpy_shell_handler))
+        .route("/bonpy/", any(bonpy_shell_handler))
+        .route("/bonpy/{*path}", any(bonpy_shell_handler))
         .fallback_service(spa)
         .with_state(state)
         .layer(CorsLayer::permissive())
+}
+
+/// Serve the BonPy SPA shell for any /bonpy/* route that is not a static asset.
+/// Returns index.html with HTTP 200 so the SvelteKit client-side router can hydrate.
+/// If the build output is missing, returns a plain 503 to avoid silent failures.
+async fn bonpy_shell_handler() -> Response<Body> {
+    match tokio::fs::read("ui-bonpy/dist-bonpy/index.html").await {
+        Ok(bytes) => Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "text/html; charset=utf-8")
+            .body(Body::from(bytes))
+            .unwrap(),
+        Err(_) => Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header("Content-Type", "text/plain")
+            .body(Body::from(
+                "BonPy UI not built. Run: cd ui-bonpy && npm ci && npm run build",
+            ))
+            .unwrap(),
+    }
 }
 
 fn observability_routes() -> Router<AppState> {
@@ -971,6 +998,7 @@ fn ml_routes() -> Router<AppState> {
         .route("/api/ml/schedules", get(list_ml_schedules_handler).post(upsert_ml_schedule_handler))
         .route("/api/ml/schedules/{id}", axum::routing::delete(delete_ml_schedule_handler))
         .route("/api/ml/embeddings/stats", get(ml_embedding_stats_handler))
+        .route("/api/ml/syslog-clusters", get(ml_syslog_clusters_handler))
         .route("/api/gnn/inference-results", post(gnn_inference_results_handler))
         .route("/api/gnn/attention", post(gnn_attention_handler))
         .route("/api/gnn/results", get(gnn_results_query_handler))

@@ -23,10 +23,10 @@
     return q ? 'green' : 'red';
   }
 
-  $: exports = $exportsQ.data || [];
-  $: qualSummary = $qualityQ.data || [];
-  $: exportSchedules = ($schedQ.data || []).filter(s =>
-    ['anomaly_export_daily','remediation_export_weekly'].includes(s.job_id)
+  $: exports = $exportsQ.data?.exports ?? $exportsQ.data ?? [];
+  $: qualSummary = $qualityQ.data?.quality ?? $qualityQ.data ?? [];
+  $: exportSchedules = ($schedQ.data?.schedules ?? $schedQ.data ?? []).filter(s =>
+    ['anomaly_export_daily','remediation_export_weekly','anomaly_export','remediation_export'].includes(s.job_id)
   );
 </script>
 
