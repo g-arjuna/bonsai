@@ -1421,3 +1421,168 @@ Recommended follow-up:
 - either:
   - register a managed localhost test device with matching vendor semantics for the fallback path, or
   - use a trap/syslog source that actually maps to one of the real SRL managed-device addresses
+
+## Validation after pull to `88bcf87` on 2026-05-27
+
+Pulled latest `origin/main` again and validated the two targeted fixes in:
+
+- [src/signals/syslog.rs](/home/arjuna/Desktop/bonsai/src/signals/syslog.rs:762)
+- [src/http_server/mod.rs](/home/arjuna/Desktop/bonsai/src/http_server/mod.rs:1165)
+
+### 1. Receiver-status alias is fixed
+
+Confirmed:
+
+- `GET /api/settings/receiver-status`
+- `GET /api/receivers/status`
+
+Both now return the same JSON payload, including:
+
+- `syslog` receiver in `listening` state
+- `snmp` receiver in `listening` state
+
+Operational conclusion:
+
+- the updated guide’s receiver-status endpoint now exists and works
+
+### 2. Unmanaged localhost syslog fact extraction is fixed
+
+Re-ran the synthetic localhost Phase 6 fallback using the updated guide message:
+
+```text
+<11>May 25 10:05:00 127.0.0.1 bgpd: bgp neighbor 192.168.0.2 down
+```
+
+This time the signal path changed materially:
+
+- event history still showed the raw `syslog_protocol`
+- but it now also emitted `syslog_fact_orphan`
+- extracted fields included:
+  - `peer_address = 192.168.0.2`
+  - `new_state = down`
+
+Operational conclusion:
+
+- the new vendor-filter change works
+- unmanaged sources with `vendor=""` now do run the Nokia SR Linux fact patterns
+- the earlier “localhost syslog never became a fact” blocker is fixed
+
+### 3. Multi-source fusion still does not occur after fact extraction
+
+After the corrected localhost syslog fact was emitted, injected the same localhost SNMP trap:
+
+- trap OID:
+  - `1.3.6.1.2.1.15.7`
+- still no varbinds
+
+Observed:
+
+- SNMP still lands as:
+  - `snmp_enterprise_specific`
+  - `snmp_fact_orphan`
+- detections remain SNMP-only:
+  - `source_types: ["snmp"]`
+
+Operational conclusion:
+
+- the remaining problem has moved one layer deeper
+- it is no longer a syslog pattern / vendor-selection problem
+- it is now specifically a correlation/fusion problem after both facts exist
+
+### 4. Current narrowed EV1 conclusion
+
+On `88bcf87`:
+
+- receiver-status alias: fixed
+- unmanaged localhost syslog fact extraction: fixed
+- synthetic localhost syslog+SNMP fusion: still not proven
+
+This means the remaining EV1 Phase 6 gap is now tightly narrowed to post-extraction correlation
+behavior, not signal ingestion or pattern matching.
+
+## Follow-up patch validation on 2026-05-27
+
+After narrowing the remaining gap, identified and fixed an SNMP extractor issue locally in:
+
+- [src/signals/snmp.rs](/home/arjuna/Desktop/bonsai/src/signals/snmp.rs:178)
+
+### 1. Root cause found for the preferred SNMP varbind test
+
+The preferred Phase 6 test sends indexed BGP varbind OIDs such as:
+
+- `1.3.6.1.2.1.15.3.1.7.192.168.0.2`
+- `1.3.6.1.2.1.15.3.1.2.192.168.0.2`
+
+But the SNMP field extractor only matched exact OID strings against the configured pattern keys:
+
+- `1.3.6.1.2.1.15.3.1.7`
+- `1.3.6.1.2.1.15.3.1.2`
+
+Result before patch:
+
+- raw trap clearly contained the varbinds
+- emitted `snmp_fact_orphan` still had:
+  - `fields: {}`
+- correlation could not use `peer_address`
+
+Operational conclusion:
+
+- the preferred Phase 6 path was blocked by SNMP field extraction, not by the correlation buffer
+  itself
+
+### 2. Local patch applied
+
+Changed the SNMP fact extractor to treat a varbind as a field match when:
+
+- the varbind OID exactly matches the configured field OID, or
+- the varbind OID starts with the configured field OID plus `.` suffix components
+
+Operational meaning:
+
+- indexed SNMP table OIDs now populate fields correctly for traps like the BGP peer-state case
+
+### 3. Preferred Phase 6 test now succeeds end-to-end
+
+Rebuilt Bonsai, restarted on the patched binary, and re-ran the preferred correlation sequence:
+
+1. localhost syslog:
+   - `bgpd: bgp neighbor 192.168.0.2 down`
+2. localhost SNMP trap with peer-address varbinds
+
+Observed in `/api/events/history`:
+
+- `syslog_fact_orphan` with:
+  - `fields.peer_address = 192.168.0.2`
+- `snmp_fact_orphan` with:
+  - `fields.peer_address = 192.168.0.2`
+  - `fields.peer_state = 1`
+
+Observed in runtime log:
+
+- `detection event written ... sources=["syslog", "snmp"] multi_source=true`
+
+Observed in `/api/detections`:
+
+- top detection:
+  - `rule_id: bgp_neighbor_down`
+  - `source_types: ["syslog", "snmp"]`
+
+Operational conclusion:
+
+- the preferred EV1 multi-source correlation path is now working end-to-end
+
+### 4. Remaining gap after the successful preferred test
+
+The synthetic no-varbind localhost fallback still appears weaker than the preferred path.
+
+Most likely reason:
+
+- when SNMP `fields.peer_address` is absent, the correlation key still falls back to the SNMP
+  source socket address (`peer_addr`, e.g. `127.0.0.1:port`)
+- that does not naturally match the syslog key:
+  - `192.168.0.2`
+
+Operational conclusion:
+
+- preferred Phase 6 validation: working
+- no-varbind localhost fallback: still likely imperfect / lower confidence

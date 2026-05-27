@@ -177,8 +177,11 @@ impl SnmpFactExtractor {
         let mut fields: BTreeMap<String, String> = BTreeMap::new();
         for vb in &event.varbinds {
             let oid = vb.oid.trim_end_matches(".0");
-            if let Some(field_name) = pattern.fields.get(oid) {
-                fields.insert(field_name.clone(), vb.value.clone());
+            for (field_oid, field_name) in &pattern.fields {
+                let field_oid = field_oid.trim_end_matches(".0");
+                if oid == field_oid || oid.starts_with(&format!("{field_oid}.")) {
+                    fields.insert(field_name.clone(), vb.value.clone());
+                }
             }
         }
 
