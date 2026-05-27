@@ -962,6 +962,7 @@ def _bootstrap_srl(
         r.error = "paramiko not installed — pip install paramiko"
         return r
 
+    address = _ensure_gnmi_address(address)
     ssh_host = _strip_port(address)
     t0 = time.time()
     result = BootstrapResult(address=address)

@@ -575,6 +575,38 @@ curl -s -X POST http://localhost:3000/api/devices/bootstrap/bulk \
 - [ ] All 3 devices show `"status": "ok"` or `"partial"`
 - [ ] `seeded_count: 3` in bulk response
 
+### 2.2b — Remove stray bare-IP managed-device entries (post-bootstrap cleanup)
+
+> **Required step**: Fresh-reset testing (2026-05-27) confirmed that bootstrapping with a bare
+> IP address (e.g. `172.100.100.11`) causes Bonsai to register a **second** managed-device
+> entry at the bare IP (no port, no `ca_cert`, no `tls_domain`) alongside the correct
+> `172.100.100.11:57400` entry. Bonsai immediately tries to subscribe to the bare-IP entry
+> with `tls=false` → `Capabilities RPC failed` → `Subscribe RPC failed`.
+> Remove these entries before assigning path profiles:
+
+```bash
+# Check for stray entries (they will appear WITHOUT :57400)
+curl -s http://localhost:3000/api/onboarding/devices | \
+  python3 -c "
+import sys, json
+devs = json.load(sys.stdin).get('devices', [])
+for d in devs:
+    addr = d.get('address','')
+    print(addr, '  ← STRAY (no port, no TLS)' if ':57400' not in addr else '  OK')
+"
+```
+
+```bash
+# Remove each stray entry (bare IP, no port)
+for BARE_ADDR in 172.100.100.11 172.100.100.12 172.100.100.13; do
+  curl -s -X POST http://localhost:3000/api/onboarding/devices/remove \
+    -H 'Content-Type: application/json' \
+    -d "{\"address\": \"$BARE_ADDR\"}" | python3 -m json.tool
+done
+```
+
+- [ ] Only `:57400` targets remain — `172.100.100.11:57400`, `172.100.100.12:57400`, `172.100.100.13:57400`
+
 ### 2.3 — Register devices for gNMI subscription
 
 The `[[target]]` blocks in bonsai.toml (added in Phase 1.3) are loaded at startup — devices are
@@ -714,20 +746,32 @@ curl -s -X POST http://localhost:3000/api/devices/172.100.100.11%3A57400/selecte
 Available profiles live in `config/path_profiles/`. For the SRL lab, `dc_spine` and `dc_leaf`
 are the correct ones. Do **not** use `campus_access` or `campus_core` — those are for IOS-XE/EOS.
 
-> **Known issue — recommended SRL bundle**: The recommended SRL bundle may fail gNMI subscription
-> for some path combinations on older SRL images. If subscriptions fail after profile assignment,
-> use the minimal native bundle:
+> **Known issue — recommended SRL bundle**: Fresh-reset testing (2026-05-27) on the
+> fast-iteration SRL lab confirmed that applying the full recommended bundle triggers
+> repeated `Subscribe RPC failed` despite `Capabilities` succeeding. The minimal SR Linux
+> native 4-path bundle below is the **confirmed working starting point** for EV1:
+>
+> Apply this for **all three nodes** (change the address for srl2/srl3):
 > ```bash
-> curl -s -X POST http://localhost:3000/api/devices/172.100.100.11%3A57400/selected-paths \
->   -H 'Content-Type: application/json' \
->   -d '{
->     "paths": [
->       {"path": "/interface[name=*]/statistics", "mode": "SAMPLE", "sample_interval_ns": 30000000000},
->       {"path": "/network-instance[name=*]/protocols/bgp/neighbor[peer-address=*]/session-state", "mode": "ON_CHANGE"},
->       {"path": "/system/lldp/interface[name=*]", "mode": "ON_CHANGE"}
->     ]
->   }' | python3 -m json.tool
+> for ADDR in 172.100.100.11%3A57400 172.100.100.12%3A57400 172.100.100.13%3A57400; do
+>   curl -s -X POST "http://localhost:3000/api/devices/$ADDR/selected-paths" \
+>     -H 'Content-Type: application/json' \
+>     -d '{
+>       "paths": [
+>         {"path": "/interface[name=*]/statistics",  "mode": "SAMPLE", "sample_interval_ns": 30000000000},
+>         {"path": "/interface[name=*]/oper-state",  "mode": "ON_CHANGE"},
+>         {"path": "/network-instance[name=default]/protocols/bgp/neighbor[peer-address=*]", "mode": "ON_CHANGE"},
+>         {"path": "/system/lldp/interface[name=*]/neighbor[id=*]", "mode": "ON_CHANGE"}
+>       ]
+>     }' | python3 -m json.tool
+>   echo "---"
+> done
 > ```
+>
+> Once all paths show `status: "observed"` and `observed_subscriptions: 12` in
+> `GET /api/operations`, upgrade individual nodes to the full profile if desired.
+> **Do not spend time debugging Subscribe failures from the full profile bundle** until
+> the minimal bundle is confirmed stable.
 
 ### 2.6 — Check path recommendations after bootstrap
 
