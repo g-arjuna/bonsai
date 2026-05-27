@@ -159,6 +159,15 @@ echo "Ubuntu host IP on clab bridge: $UBUNTU_HOST_IP"
 
 ### 0.5 — Build latest code
 
+> **After a full `rm -rf runtime/` reset**, recreate the directory before starting Bonsai —
+> it does not auto-create it:
+> ```bash
+> mkdir -p ~/bonsai/runtime/tls
+> ```
+
+> **UI will 404 until built**: After a clean reset or `git pull`, both frontend bundles must be
+> (re-)built or `GET /` and `GET /bonpy/` will return 404. Always run the npm builds below.
+
 ```bash
 cd ~/bonsai
 git pull origin main
@@ -168,33 +177,46 @@ cargo build --release
 # Expected: Finished release [optimized]. Zero "error[E...]" lines.
 # etcd-client and lbug build warnings are normal — not errors.
 
-# UI builds
+# UI builds — REQUIRED after clean reset or git pull with UI changes
 cd ui && npm ci && npm run build && cd ..
 cd ui-bonpy && npm ci && npm run build && cd ..
 ```
 
 - [ ] `cargo build --release` exits 0 — no `error[E` lines
+- [ ] `ui/dist/index.html` exists
+- [ ] `ui-bonpy/dist-bonpy/index.html` exists
 
 ### 0.6 — Python ML dependencies
 
+> **Always use the repo `.venv`**, not the system `python3`. The Rust bootstrap handler
+> looks for `.venv/bin/python` first. A clean reset removes the venv — recreate it:
+
 ```bash
-cd ~/bonsai/python
-pip install -e ".[dev]" -q
+cd ~/bonsai
+
+# Create or recreate the project venv
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install project package + ML deps
+pip install -e python/ -q
 pip install sentence-transformers torch torch-geometric apscheduler \
-            pyarrow scikit-learn hdbscan paramiko requests pyyaml -q
-cd ..
+            pyarrow scikit-learn hdbscan paramiko requests pyyaml \
+            'pyats[full]' genie -q
+# Note: pyats/genie install may warn about oci-cli/click mismatch — this is harmless.
 
 # Verify all critical imports load
-python3 - <<'EOF'
+.venv/bin/python - <<'EOF'
 import torch, torch_geometric, sentence_transformers
 import apscheduler, pyarrow, paramiko, sklearn, hdbscan
+import pyats, genie
 print("torch:", torch.__version__)
-print("torch_geometric:", torch_geometric.__version__)
 print("ALL ML DEPS OK")
 EOF
 ```
 
 - [ ] Prints `ALL ML DEPS OK` — if any import fails, install that package before continuing
+- [ ] `.venv/bin/python` exists (the bootstrap handler requires this path)
 
 ### 0.7 — Locate the clab CA certificate
 
@@ -340,6 +362,17 @@ site             = "lab"
 credential_alias = "srl-lab"
 ca_cert          = "runtime/tls/clab-ca.pem"
 tls_domain       = "srl3"
+
+# Signal receivers — needed for Phase 4 (syslog) and Phase 5 (SNMP)
+# Section names MUST be [signals.syslog] / [signals.snmp] (not [syslog] / [snmp])
+[signals.syslog]
+enabled  = true
+udp_addr = "0.0.0.0:5514"
+
+[signals.snmp]
+enabled             = true
+udp_addr            = "0.0.0.0:9162"
+community_allowlist = ["public"]
 ```
 
 > **`tls_domain`** must exactly match the node name used by clab as the TLS CN (`srl1`, `srl2`,
@@ -574,9 +607,16 @@ curl -s -X POST http://localhost:3000/api/onboarding/devices \
 > used for gNMI subscriptions. **Do not pass the bare IP** — always pass `172.100.100.11:57400`
 > to be explicit and avoid any edge case.
 >
-> **Duplicate device guard**: In older builds the bootstrap could create a second bare-IP managed
-> device alongside the intended `:57400` entry. This is fixed. If you see a duplicate bare-IP
-> entry after bootstrap, remove it:
+> **Duplicate device guard**: Bootstrapping a bare IP (e.g. `172.100.100.11`) was creating
+> a second non-TLS managed device alongside the `:57400` entry. This is fixed — the agent
+> always normalises to `host:57400` before registering.
+>
+> **Bootstrap overwrite guard (fixed)**: Re-bootstrapping an already-registered `:57400`
+> target used to clobber `ca_cert`, `tls_domain`, `hostname`, `role`, and `site` with empty
+> values, causing a temporary non-TLS reconnect. This is now fixed — those fields are
+> preserved from the existing record when the bootstrap payload leaves them blank.
+>
+> **If you still see a stray bare-IP entry** (older build or manual error), clean it up:
 > ```bash
 > curl -s -X POST http://localhost:3000/api/onboarding/devices/remove \
 >   -H 'Content-Type: application/json' \
@@ -827,19 +867,21 @@ RETURN b.peer_address, b.state, b.adj_rib_in_routes, b.hold_time
 ## Phase 4 — Syslog Reception
 
 > **Prerequisite — receiver must be active**: Bonsai only starts the syslog receiver if
-> `[syslog] enabled = true` is set in `bonsai.toml`. Verify:
+> `[signals.syslog] enabled = true` is set in `bonsai.toml`. Verify the section exists:
 > ```bash
-> grep -A3 '\[syslog\]' ~/bonsai/bonsai.toml
-> # Must show: enabled = true, bind = "0.0.0.0:5514"
-> curl -s http://localhost:3000/api/settings/receiver-status | python3 -m json.tool
-> # Expected: syslog_bound: true
+> grep -A4 '\[signals.syslog\]' ~/bonsai/bonsai.toml
+> # Must show: enabled = true, udp_addr = "0.0.0.0:5514"
+> # Verify it's actually bound after startup:
+> ss -ulnp | grep 5514
+> # Expected: a UDP listener on 0.0.0.0:5514
 > ```
-> If `syslog_bound: false` or the section is missing, add it to `bonsai.toml` and restart:
+> If missing or not bound, add the following to `bonsai.toml` and restart Bonsai:
 > ```toml
-> [syslog]
-> enabled = true
-> bind    = "0.0.0.0:5514"
+> [signals.syslog]
+> enabled  = true
+> udp_addr = "0.0.0.0:5514"
 > ```
+> TCP syslog (port 6514) also starts automatically when `enabled = true`.
 
 Configure SRL to send syslog to bonsai (port 5514 UDP):
 ```bash
@@ -878,18 +920,19 @@ LIMIT 5
 ## Phase 5 — SNMP Trap Reception
 
 > **Prerequisite — receiver must be active**: Bonsai only starts the SNMP trap receiver if
-> `[snmp] enabled = true` is set in `bonsai.toml`. Verify:
+> `[signals.snmp] enabled = true` is set in `bonsai.toml`. Verify:
 > ```bash
-> grep -A3 '\[snmp\]' ~/bonsai/bonsai.toml
-> curl -s http://localhost:3000/api/settings/receiver-status | python3 -m json.tool
-> # Expected: snmp_bound: true
+> grep -A3 '\[signals.snmp\]' ~/bonsai/bonsai.toml
+> # Must show: enabled = true, udp_addr = "0.0.0.0:9162"
+> ss -ulnp | grep 9162
+> # Expected: a UDP listener on 0.0.0.0:9162
 > ```
-> If `snmp_bound: false`, add to `bonsai.toml` and restart:
+> If missing or not bound, add to `bonsai.toml` and restart:
 > ```toml
-> [snmp]
-> enabled    = true
-> bind       = "0.0.0.0:9162"
-> community  = "public"
+> [signals.snmp]
+> enabled             = true
+> udp_addr            = "0.0.0.0:9162"
+> community_allowlist = ["public"]
 > ```
 
 Send test SNMP v2c trap:

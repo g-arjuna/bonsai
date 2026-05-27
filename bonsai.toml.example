@@ -47,6 +47,18 @@ passphrase_env = "BONSAI_VAULT_PASSPHRASE"
 # site             = "dc-east"
 # credential_alias = "dc-east-gnmi"    # vault alias
 
+# ── Signal receivers (syslog / SNMP) ────────────────────────────────────────
+# Uncomment to enable. Section names MUST be [signals.syslog] / [signals.snmp].
+#
+# [signals.syslog]
+# enabled  = true
+# udp_addr = "0.0.0.0:5514"   # TCP syslog also starts on :6514 automatically
+#
+# [signals.snmp]
+# enabled             = true
+# udp_addr            = "0.0.0.0:9162"
+# community_allowlist = ["public"]
+
 # ── Optional bootstrap overrides ────────────────────────────────────────────
 # These sections provide TOML defaults for first boot.
 # Once a section is saved via PATCH /api/settings/{section}, the DB value

@@ -274,6 +274,26 @@ pub(super) async fn save_managed_device(
         if target.selected_paths.is_empty() {
             target.selected_paths = existing.selected_paths;
         }
+        // Preserve TLS and identity fields — critical to avoid bootstrap re-registration
+        // clobbering the ca_cert/tls_domain configured via bonsai.toml or manual onboarding.
+        if target.ca_cert.is_none() {
+            target.ca_cert = existing.ca_cert;
+        }
+        if target.tls_domain.is_none() {
+            target.tls_domain = existing.tls_domain;
+        }
+        if target.hostname.is_none() {
+            target.hostname = existing.hostname;
+        }
+        if target.role.is_none() {
+            target.role = existing.role;
+        }
+        if target.site.is_none() {
+            target.site = existing.site;
+        }
+        if target.vendor.is_none() {
+            target.vendor = existing.vendor;
+        }
     }
     let address = target.address.clone();
     let result = match state
