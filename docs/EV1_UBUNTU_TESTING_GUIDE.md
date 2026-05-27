@@ -64,25 +64,28 @@ cd ..
 # 4. Python ML deps
 cd python
 pip install -e ".[dev]"
-pip install sentence-transformers torch torch-geometric apscheduler pyarrow scikit-learn hdbscan
+pip install sentence-transformers torch torch-geometric apscheduler pyarrow scikit-learn hdbscan paramiko
 cd ..
 
-# 5. ContainerLab available
+# 5. Bootstrap agent deps (required for SRL SSH bootstrap)
+pip install paramiko requests pyyaml
+
+# 6. ContainerLab available
 sudo clab version   # expect: >= 0.54
 
-# 6. Docker running
+# 7. Docker running
 docker ps           # expect: daemon running
 
-# 7. Disk space
+# 8. Disk space
 df -h               # expect: >= 20 GB free on runtime partition
 
-# 8. Wipe any previous runtime
+# 9. Wipe any previous runtime (clean slate only — skip if resuming)
 rm -rf runtime/
 ```
 
 **EV1-specific Python ML dep check:**
 ```bash
-python3 -c "import torch; import torch_geometric; import sentence_transformers; import apscheduler; import pyarrow; print('ALL OK')"
+python3 -c "import torch; import torch_geometric; import sentence_transformers; import apscheduler; import pyarrow; import paramiko; print('ALL OK')"
 # Expected: ALL OK
 ```
 
@@ -97,23 +100,135 @@ python3 -c "import torch; import torch_geometric; import sentence_transformers; 
 
 ## Phase 1 — Clean-Slate Bonsai Core Startup
 
-```bash
-# Create minimal config
-cp bonsai.toml.example bonsai.toml
+### 1.0 — Lab topology overview
 
-# Set vault passphrase
+The EV1 fast-iteration lab is `lab/fast-iteration/3node-srl.clab.yml`.
+
+| Node | ContainerLab mgmt IP | Role | Hostname |
+|------|---------------------|------|----------|
+| srl1 | `172.100.100.11` | spine | srl1 |
+| srl2 | `172.100.100.12` | leaf  | srl2 |
+| srl3 | `172.100.100.13` | leaf  | srl3 |
+
+- Management network: `172.100.100.0/24`
+- SSH/gNMI credentials: `admin` / `NokiaSrl1!`
+- gNMI port: `57400` (clab default for SRL)
+- clab lab name: `bonsai-srl`
+
+### 1.1 — Start the ContainerLab
+
+```bash
+cd ~/bonsai/lab/fast-iteration
+sudo clab deploy -t 3node-srl.clab.yml
+cd ~/bonsai
+```
+
+Wait ~30 seconds for containers to boot, then verify:
+```bash
+ping -c1 172.100.100.11   # srl1
+ping -c1 172.100.100.12   # srl2
+ping -c1 172.100.100.13   # srl3
+ssh admin@172.100.100.11  # password: NokiaSrl1!  — should drop into SRL CLI
+```
+- [ ] All three nodes pingable
+- [ ] SSH login succeeds on srl1
+
+### 1.2 — Extract the ContainerLab CA certificate
+
+**This is mandatory for gNMI TLS.** ContainerLab automatically generates a per-lab CA and signs each
+node's gNMI certificate. Without this CA, every gNMI connection attempt returns an RPC TLS error
+(`transport: authentication handshake failed`).
+
+> **Real-world note**: In production you would use your own PKI / vendor-issued cert. The clab CA
+> is a self-signed lab-only CA — do NOT use it outside the lab.
+
+```bash
+# clab stores CA under ~/.clab/certs/<lab-name>/ca/
+# Lab name is from the 'name:' field in the yml — "bonsai-srl"
+CLAB_CA=~/.clab/certs/bonsai-srl/ca/ca.pem
+
+# Confirm it exists and is a valid PEM
+ls -lh "$CLAB_CA"
+openssl x509 -in "$CLAB_CA" -noout -subject -dates
+# Expected: subject=CN=bonsai-srl, notAfter shows future date
+
+# Copy into bonsai config directory for reference
+mkdir -p ~/bonsai/runtime/tls
+cp "$CLAB_CA" ~/bonsai/runtime/tls/clab-ca.pem
+```
+
+- [ ] `clab-ca.pem` file is non-empty and prints a valid X.509 subject
+- [ ] `notAfter` is in the future
+
+> **If `~/.clab/certs/bonsai-srl/` does not exist**: clab may store certs under the directory
+> where `clab deploy` was run. Check `ls ~/bonsai/lab/fast-iteration/clab-bonsai-srl/` or run
+> `sudo clab inspect -t 3node-srl.clab.yml` and look for the `ca.pem` path in the output.
+
+### 1.3 — Create `bonsai.toml`
+
+```bash
+cd ~/bonsai
+cp bonsai.toml.example bonsai.toml
+```
+
+Edit `bonsai.toml` to add the three SRL targets with the clab CA cert.
+Open the file and append the following **after** the `[credentials]` block:
+
+```toml
+# EV1 fast-iteration lab — 3-node SRL
+# ca_cert must point to the clab CA extracted in step 1.2
+# tls_domain must match the CN in the node's TLS cert (clab uses the node name as CN)
+
+[[target]]
+address          = "172.100.100.11:57400"
+hostname         = "srl1"
+role             = "spine"
+site             = "lab"
+credential_alias = "srl-lab"
+ca_cert          = "runtime/tls/clab-ca.pem"
+tls_domain       = "srl1"
+
+[[target]]
+address          = "172.100.100.12:57400"
+hostname         = "srl2"
+role             = "leaf"
+site             = "lab"
+credential_alias = "srl-lab"
+ca_cert          = "runtime/tls/clab-ca.pem"
+tls_domain       = "srl2"
+
+[[target]]
+address          = "172.100.100.13:57400"
+hostname         = "srl3"
+role             = "leaf"
+site             = "lab"
+credential_alias = "srl-lab"
+ca_cert          = "runtime/tls/clab-ca.pem"
+tls_domain       = "srl3"
+```
+
+> **`tls_domain`** must exactly match the node name used by clab as the TLS CN (`srl1`, `srl2`,
+> `srl3`). If gNMI returns `certificate is valid for clab-srl1, not srl1` then use the prefixed
+> form `clab-srl1` instead.
+
+### 1.4 — Start Bonsai
+
+```bash
+cd ~/bonsai
+
+# Set vault passphrase — must be set before first start and on every restart
 export BONSAI_VAULT_PASSPHRASE="test-passphrase-ev1-2026"
 
 # Start in mode=all (core + collector + local sidecar in one process)
-./target/release/bonsai --config bonsai.toml &
+./target/release/bonsai --config bonsai.toml 2>&1 | tee -a runtime/bonsai.log &
 BONSAI_PID=$!
 
-# Wait for health
+# Wait for startup
 sleep 5
 curl -s http://localhost:3000/health | python3 -m json.tool
 ```
 
-**Expected health response fields:**
+**Expected health response:**
 ```json
 {
   "status": "ok",
@@ -124,156 +239,360 @@ curl -s http://localhost:3000/health | python3 -m json.tool
 }
 ```
 
+- [ ] `status: "ok"` — if `status: "vault_locked"`, check `BONSAI_VAULT_PASSPHRASE` is exported
+- [ ] `mode: "all"` — if missing, confirm `[runtime] mode = "all"` in bonsai.toml
+- [ ] No `"error"` key in health response
+
 **UI check:**
 ```
 open http://localhost:3000
 ```
-- [ ] Onboarding wizard appears on first boot
+- [ ] Onboarding wizard or devices page loads (first boot may show wizard)
 - [ ] No JS console errors
 - [ ] BonPy console accessible at `http://localhost:3000/bonpy/`
 - [ ] BonPy nav shows: Dashboard, Jobs, Models, Exports, GNN, Embeddings, Rules, Detections
 
----
+### 1.5 — Add the SRL credential to the vault
 
-## Phase 2 — Device Onboarding (Two Methods)
+The vault must be populated before bootstrap or gNMI subscription can proceed.
 
-### Method A — PyATS Bootstrap (Automated)
-
-Requires ContainerLab SRL lab running. Start it:
-
-```bash
-# Start 3-node SRL fast-iteration lab
-cd lab/fast-iteration
-sudo clab deploy -t 3node-srl.clab.yml
-cd ../..
-
-# Verify lab nodes are reachable
-ping -c1 172.20.20.2   # srl1
-ping -c1 172.20.20.3   # srl2
-ping -c1 172.20.20.4   # srl3
-```
-
-Add device credential first:
 ```bash
 curl -s -X POST http://localhost:3000/api/credentials \
   -H 'Content-Type: application/json' \
-  -d '{"alias":"srl-lab","username":"admin","password":"NokiaSrl1!","type":"gnmi"}' | python3 -m json.tool
-```
-
-Bootstrap a device:
-```bash
-curl -s -X POST http://localhost:3000/api/devices/bootstrap \
-  -H 'Content-Type: application/json' \
   -d '{
-    "address": "172.20.20.2",
-    "credential_alias": "srl-lab",
-    "vendor": "nokia_srlinux",
-    "profile": "dc_leaf"
+    "alias":    "srl-lab",
+    "username": "admin",
+    "password": "NokiaSrl1!",
+    "type":     "gnmi"
   }' | python3 -m json.tool
 ```
 
-**Expected response fields:**
+- [ ] Response contains `"success": true`
+- [ ] No `"error"` field
+
+Verify it was stored:
+```bash
+curl -s http://localhost:3000/api/credentials | python3 -m json.tool
+# Expected: list contains alias "srl-lab" with type "gnmi"
+```
+
+---
+
+## Phase 2 — Device Onboarding
+
+### 2.0 — Why two steps: bootstrap then register
+
+Bootstrap (SSH/CLI) and gNMI subscription are separate:
+
+1. **Bootstrap** (paramiko SSH) — reads topology via SRL CLI, seeds the graph with interfaces/BGP/LLDP
+2. **Register as managed device** — tells Bonsai to open a gNMI subscription for live telemetry
+3. **Assign gNMI path profile** — selects which gNMI paths to subscribe (counter rates, BGP state, etc.)
+
+All three happen in sequence below. Skipping any step causes partial data or missing telemetry.
+
+### 2.1 — Bootstrap srl1 (SSH-based, paramiko)
+
+```bash
+# Bootstrap srl1 — uses paramiko SSH (NOT PyATS — SRL has no PyATS/Unicon plugin)
+curl -s -X POST http://localhost:3000/api/devices/bootstrap \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "address":          "172.100.100.11",
+    "credential_alias": "srl-lab",
+    "vendor":           "nokia_srlinux"
+  }' | python3 -m json.tool
+```
+
+**Expected response (success):**
 ```json
 {
-  "status": "seeded",
-  "device_address": "172.20.20.2",
-  "interfaces_seeded": 8,
+  "status": "ok",
+  "address": "172.100.100.11",
+  "hostname": "srl1",
+  "vendor": "nokia_srl",
+  "interfaces_seeded": 4,
   "bgp_neighbors_seeded": 2,
   "lldp_neighbors_seeded": 2,
-  "ospf_neighbors_seeded": 0,
-  "bfd_sessions_seeded": 0,
-  "platform_detail": {"model": "7220 IXR-D2", ...}
+  "elapsed_s": 12.4
 }
 ```
 
-**Verify in graph (Explorer → Cypher):**
-```cypher
-MATCH (d:Device {address: "172.20.20.2"})
-RETURN d.address, d.hostname, d.vendor, d.model, d.cpu_util_pct, d.memory_used_mb
-```
-- [ ] Device node exists with model/CPU/memory populated
-- [ ] `needs_config_embedding = true` on device node
+**If you get `"status": "failed"` with SSH error:**
+- Verify SSH works manually: `ssh admin@172.100.100.11` (password: `NokiaSrl1!`)
+- Confirm the credential alias was saved: `curl -s http://localhost:3000/api/credentials`
+- Check bonsai log: `tail -50 runtime/bonsai.log`
 
-```cypher
-MATCH (d:Device {address: "172.20.20.2"})-[:HAS_INTERFACE]->(i:Interface)
-RETURN i.name, i.if_index, i.is_in_lag
-```
-- [ ] Interfaces seeded (≥4 expected for SRL dc_leaf)
+**If you get `"status": "partial"` with SRL learn errors:**
+- SRL CLI JSON output parsing can fail if the SRL image version changed the path names
+- Check `runtime/bonsai.log` for `"SRL interface learn failed"` lines
+- Partial result is still useful — interfaces may be missing but BGP/LLDP still seeded
+- Continue to 2.2 and fix seed manually if needed
 
-**Bulk bootstrap** (all 3 lab nodes):
+**Verify graph seeded correctly:**
+```cypher
+MATCH (d:Device {address: "172.100.100.11"})-[:HAS_INTERFACE]->(i:Interface)
+RETURN i.id, i.name, i.oper_status, i.admin_status
+```
+- [ ] Interfaces show `id = "172.100.100.11:ethernet-1/X"` (the `id` field is critical for gNMI dedupe — see note below)
+- [ ] `oper_status` populated from CLI state
+
+> **Interface down storm fix**: The bootstrap seed now writes `i.id = "address:name"` matching
+> the gNMI subscriber's key. This prevents the first gNMI poll from firing `interface_down`
+> for every interface that was already `down` at bootstrap time (false-positive storm). If you
+> are testing on an older build without this fix, expect a burst of `interface_down` detections
+> ~30s after gNMI subscription starts — they are all false positives from the initial state sync.
+
+### 2.2 — Bootstrap srl2 and srl3
+
+```bash
+for ADDR in 172.100.100.12 172.100.100.13; do
+  echo "=== bootstrapping $ADDR ==="
+  curl -s -X POST http://localhost:3000/api/devices/bootstrap \
+    -H 'Content-Type: application/json' \
+    -d "{\"address\": \"$ADDR\", \"credential_alias\": \"srl-lab\", \"vendor\": \"nokia_srlinux\"}" \
+    | python3 -m json.tool
+  echo ""
+done
+```
+
+Or use bulk bootstrap:
 ```bash
 curl -s -X POST http://localhost:3000/api/devices/bootstrap/bulk \
   -H 'Content-Type: application/json' \
   -d '{
     "devices": [
-      {"address":"172.20.20.2","credential_alias":"srl-lab","vendor":"nokia_srlinux","profile":"dc_leaf"},
-      {"address":"172.20.20.3","credential_alias":"srl-lab","vendor":"nokia_srlinux","profile":"dc_leaf"},
-      {"address":"172.20.20.4","credential_alias":"srl-lab","vendor":"nokia_srlinux","profile":"dc_spine"}
+      {"address": "172.100.100.11", "credential_alias": "srl-lab", "vendor": "nokia_srlinux"},
+      {"address": "172.100.100.12", "credential_alias": "srl-lab", "vendor": "nokia_srlinux"},
+      {"address": "172.100.100.13", "credential_alias": "srl-lab", "vendor": "nokia_srlinux"}
     ],
     "parallel": 3
   }' | python3 -m json.tool
 ```
-- [ ] All 3 devices seeded
-- [ ] `seeded_count: 3` in response
+- [ ] All 3 devices show `"status": "ok"` or `"partial"`
+- [ ] `seeded_count: 3` in bulk response
 
-### Method B — Manual Onboarding via UI
+### 2.3 — Register devices for gNMI subscription
 
-For environments without PyATS access:
+The `[[target]]` blocks in bonsai.toml (added in Phase 1.3) are loaded at startup — devices are
+already registered. Confirm:
+```bash
+curl -s http://localhost:3000/api/onboarding/devices | python3 -m json.tool
+```
+- [ ] All 3 devices listed
+- [ ] Each has `"enabled": true`
+
+If a device is missing, register it manually:
+```bash
+curl -s -X POST http://localhost:3000/api/onboarding/devices \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "address":          "172.100.100.11:57400",
+    "hostname":         "srl1",
+    "vendor":           "nokia_srlinux",
+    "role":             "spine",
+    "site":             "lab",
+    "credential_alias": "srl-lab",
+    "ca_cert":          "runtime/tls/clab-ca.pem",
+    "tls_domain":       "srl1"
+  }' | python3 -m json.tool
+```
+
+> **Note on address format**: The `[[target]]` TOML block uses `address = "172.100.100.11:57400"`
+> (with port). The bootstrap API takes `address = "172.100.100.11"` (no port — SSH port 22 is
+> assumed). The gNMI subscription uses the `:57400` form. These are different fields.
+
+### 2.4 — Verify gNMI TLS readiness
+
+```bash
+curl -s http://localhost:3000/api/devices/172.100.100.11%3A57400/gnmi-readiness | python3 -m json.tool
+```
+
+**Expected (TLS working):**
+```json
+{
+  "report": {
+    "service_status": "reachable",
+    "blockers": [],
+    "tls_configured": true,
+    "ca_cert_path": "runtime/tls/clab-ca.pem"
+  }
+}
+```
+
+**If `service_status: "rpc_failed"` or `"unreachable"`:**
+
+This is the most common failure. Work through in order:
+
+```bash
+# Step 1: confirm basic TCP reachability to gNMI port
+nc -zv 172.100.100.11 57400
+# Expected: Connection to 172.100.100.11 57400 port [tcp/*] succeeded!
+
+# Step 2: confirm clab CA cert is valid and covers the node
+openssl s_client -connect 172.100.100.11:57400 \
+  -CAfile ~/bonsai/runtime/tls/clab-ca.pem \
+  -servername srl1 </dev/null 2>&1 | grep -E "Verify|subject|issuer|CN="
+# Expected: Verify return code: 0 (ok)
+
+# Step 3: if "Verify return code: 18 (self-signed)" or "20 (unable to get local issuer)"
+# → the CA cert path is wrong or clab used a different CA location
+# Find the real CA:
+sudo find / -name "ca.pem" 2>/dev/null | grep clab
+# Use whichever path contains "bonsai-srl"
+
+# Step 4: if CN mismatch (e.g. "certificate is valid for clab-srl1, not srl1")
+# → update tls_domain in bonsai.toml to match the actual CN:
+openssl x509 -in ~/bonsai/runtime/tls/clab-ca.pem -noout -text | grep -A1 "Subject Alternative"
+# Then set tls_domain = "clab-srl1" (or whatever the CN is) and restart bonsai
+
+# Step 5: check bonsai logs for the exact gRPC error
+grep -i "tls\|rpc\|handshake\|connect" ~/bonsai/runtime/bonsai.log | tail -20
+```
+
+- [ ] `service_status: "reachable"` — gNMI TLS handshake succeeded
+- [ ] `blockers: []` — no missing subscription paths
+
+### 2.5 — Assign gNMI path profile
+
+The path profile controls which gNMI paths Bonsai subscribes to. For the lab nodes:
+
+```bash
+# srl1 = spine role → dc_spine profile
+curl -s -X PATCH http://localhost:3000/api/devices/172.100.100.11%3A57400/profile \
+  -H 'Content-Type: application/json' \
+  -d '{"profile": "dc_spine"}' | python3 -m json.tool
+
+# srl2 and srl3 = leaf role → dc_leaf profile
+for PORT_ADDR in 172.100.100.12%3A57400 172.100.100.13%3A57400; do
+  curl -s -X PATCH "http://localhost:3000/api/devices/$PORT_ADDR/profile" \
+    -H 'Content-Type: application/json' \
+    -d '{"profile": "dc_leaf"}' | python3 -m json.tool
+done
+```
+
+Available profiles live in `config/path_profiles/`. For the SRL lab, `dc_spine` and `dc_leaf`
+are the correct ones. Do NOT use `campus_access` or `campus_core` — those are for IOS-XE/EOS.
+
+### 2.6 — Check path recommendations after bootstrap
+
+After bootstrap, Bonsai calculates which gNMI paths are recommended based on vendor + role.
+Check these **before** the first gNMI poll to confirm the profile is correctly applied:
+
+```bash
+curl -s http://localhost:3000/api/devices/172.100.100.11%3A57400/recommendations | python3 -m json.tool
+```
+
+**What to look for:**
+```json
+{
+  "report": {
+    "status": "ready",
+    "role": "spine",
+    "environment": "data_center",
+    "vendor": "nokia_srlinux",
+    "matched_rules": ["dc_spine", "nokia_srlinux"],
+    "recommended_paths": [
+      {"path": "/interface[name=*]/statistics", "mode": "SAMPLE", "sample_interval_ns": 30000000000},
+      {"path": "/network-instance[name=*]/protocols/bgp/neighbor[peer-address=*]/session-state", "mode": "ON_CHANGE"},
+      ...
+    ],
+    "missing_paths": []
+  }
+}
+```
+
+**If `missing_paths` is non-empty:**
+These are paths that the profile expects but are not yet subscribed. Common causes:
+
+| Missing path | Cause | Fix |
+|---|---|---|
+| `/interface[name=*]/statistics` | Profile not applied | Re-run PATCH profile step above |
+| `/platform/...` | SRL image too old | Check SRL version: `ssh admin@172.100.100.11 'info from state /system/information/version'` |
+| `/bfd/...` | BFD not configured in lab | Expected — ignore for 3-node OSPF-only lab |
+
+**Check subscription status after ~60s (first gNMI sample interval):**
+```bash
+curl -s http://localhost:3000/api/devices/172.100.100.11%3A57400/gnmi-readiness | python3 -c "
+import sys,json
+r=json.load(sys.stdin)
+rep=r.get('report',{})
+print('Status:', rep.get('service_status'))
+blockers=rep.get('blockers',[])
+if blockers:
+    print('Blockers:')
+    for b in blockers:
+        print(' -', b)
+else:
+    print('No blockers — all expected paths observed')
+"
+```
+- [ ] `service_status: "reachable"` with no blockers after first poll
+
+### 2.7 — Method B — Manual Onboarding via UI
+
+For environments without SSH/bootstrap access:
 
 1. Open `http://localhost:3000`
 2. Navigate to **Devices** → **Add Device**
 3. Fill form:
-   - Address: `192.168.1.1`
+   - Address: `172.100.100.11:57400`
    - Vendor: `Nokia SR Linux`
    - Credential: select `srl-lab` from vault
-   - Profile: `dc_leaf`
+   - CA Cert: `runtime/tls/clab-ca.pem`
+   - TLS Domain: `srl1`
 4. Click **Add Device**
 
 **Verify:**
 ```bash
 curl -s http://localhost:3000/api/onboarding/devices | python3 -m json.tool
 ```
-- [ ] Device appears in list with `status: "managed"`
+- [ ] Device appears in list with `"enabled": true`
 
-**Manual seed via API** (if PyATS unavailable, seed known topology):
+**Manual seed via API** (populate graph without SSH bootstrap):
 ```bash
 curl -s -X POST http://localhost:3000/api/devices/seed \
   -H 'Content-Type: application/json' \
   -d '{
-    "address": "192.168.1.1",
-    "hostname": "spine-1",
-    "vendor": "nokia_srlinux",
+    "address":  "172.100.100.11",
+    "hostname": "srl1",
+    "vendor":   "nokia_srlinux",
+    "os_version": "",
+    "source":   "manual",
     "interfaces": [
-      {"name": "ethernet-1/1", "ip": "10.0.0.1", "is_up": true},
-      {"name": "ethernet-1/2", "ip": "10.0.0.3", "is_up": true}
+      {"name": "ethernet-1/1", "oper_status": "up",   "admin_status": "enable", "speed": 0, "mac": "", "description": "to srl2"},
+      {"name": "ethernet-1/2", "oper_status": "up",   "admin_status": "enable", "speed": 0, "mac": "", "description": "to srl3"}
     ],
     "bgp_neighbors": [
-      {"peer_address": "10.0.0.2", "local_as": 65001, "remote_as": 65002, "state": "established"}
+      {"peer_address": "192.168.0.2", "peer_as": 65000, "state": "established", "vrf": "default"},
+      {"peer_address": "192.168.0.3", "peer_as": 65000, "state": "established", "vrf": "default"}
     ],
-    "lldp_neighbors": [
-      {"local_interface": "ethernet-1/1", "neighbor_chassis_id": "aa:bb:cc:dd:ee:ff", "neighbor_hostname": "leaf-1"}
-    ]
+    "lldp_neighbors": [],
+    "isis_adjacencies": [], "lag_groups": [], "vrrp_instances": [], "routes": [],
+    "arp_entries": [], "ospf_neighbors": [], "bfd_sessions": [], "stp_instances": [],
+    "vlans": [], "vrfs": [], "ntp_peers": [], "acl_summaries": [], "mpls_lsps": []
   }' | python3 -m json.tool
 ```
-- [ ] `status: "seeded"` in response
+- [ ] `"registered": true` and `"seeded": true` in response
 - [ ] Device queryable in Explorer
 
 ---
 
 ## Phase 3 — gNMI Telemetry Flow
 
-Start gNMI subscription to the lab device:
+> **Prerequisite**: Phase 1.3 bonsai.toml targets are configured with `ca_cert` and `tls_domain`.
+> gNMI subscriptions start automatically when Bonsai boots with `[[target]]` blocks present.
+
 ```bash
-# Verify gNMI readiness
-curl -s "http://localhost:3000/api/devices/172.20.20.2/gnmi-readiness" | python3 -m json.tool
-# Expected: {"reachable": true, "gnmi_available": true}
+# Verify gNMI TLS readiness (use %3A URL-encoding for the colon in address:port)
+curl -s "http://localhost:3000/api/devices/172.100.100.11%3A57400/gnmi-readiness" | python3 -m json.tool
+# Expected: service_status: "reachable", blockers: []
 ```
 
 In **Settings → Streaming**, confirm gNMI subscription is active. Then inject some traffic on the SRL nodes to generate interface counter updates.
 
-**Verify interface counters flowing:**
+**Verify interface counters flowing (after ~30s):**
 ```cypher
-MATCH (d:Device {address:"172.20.20.2"})-[:HAS_INTERFACE]->(i:Interface)
+MATCH (d:Device {address:"172.100.100.11:57400"})-[:HAS_INTERFACE]->(i:Interface)
 WHERE i.in_octets IS NOT NULL
 RETURN i.name, i.in_octets, i.out_octets, i.in_errors, i.out_errors
 ```
@@ -282,7 +601,7 @@ RETURN i.name, i.in_octets, i.out_octets, i.in_errors, i.out_errors
 
 **Verify BGP state flowing:**
 ```cypher
-MATCH (d:Device {address:"172.20.20.2"})-[:HAS_BGP_NEIGHBOR]->(b:BgpNeighbor)
+MATCH (d:Device {address:"172.100.100.11:57400"})-[:HAS_BGP_NEIGHBOR]->(b:BgpNeighbor)
 RETURN b.peer_address, b.state, b.adj_rib_in_routes, b.hold_time
 ```
 - [ ] BGP neighbors exist with state populated
@@ -293,15 +612,17 @@ RETURN b.peer_address, b.state, b.adj_rib_in_routes, b.hold_time
 
 Configure SRL to send syslog to bonsai (port 5514 UDP):
 ```bash
-# On SRL node via SSH
-ssh admin@172.20.20.2
+# On srl1 via SSH — set remote syslog target to the Ubuntu host IP (replace 172.100.100.1 with actual host)
+ssh admin@172.100.100.11
 # In SRL CLI:
-# /system logging remote 172.20.20.1 port 5514 facility local7
+#   enter candidate
+#   set / system logging remote-server 172.100.100.1 transport udp remote-port 5514
+#   commit now
 ```
 
-Or send test syslog directly:
+Or send test syslog directly from Ubuntu (no SRL config needed):
 ```bash
-echo '<14>May 25 10:00:00 172.20.20.2 bgpd: %BGP-5-ADJCHANGE: neighbor 10.0.0.2 Up' | \
+echo '<14>May 25 10:00:00 172.100.100.11 bgpd: %BGP-5-ADJCHANGE: neighbor 192.168.0.2 Up' | \
   nc -u -w1 localhost 5514
 ```
 
@@ -310,7 +631,7 @@ echo '<14>May 25 10:00:00 172.20.20.2 bgpd: %BGP-5-ADJCHANGE: neighbor 10.0.0.2 
 curl -s "http://localhost:3000/api/events/history?type=syslog&limit=5" | python3 -m json.tool
 ```
 - [ ] Syslog events appear with `fact_type` populated
-- [ ] Device address mapped correctly
+- [ ] `device_address` maps to `172.100.100.11` (not the Ubuntu host loopback)
 - [ ] Events with `needs_embedding = true` field
 
 ```cypher
@@ -360,7 +681,7 @@ Inject a BGP session down event via both syslog and SNMP within the 45-second co
 
 ```bash
 # Syslog: BGP down
-echo '<11>May 25 10:05:00 172.20.20.2 bgpd: %BGP-3-NOTIFICATION: neighbor 10.0.0.2 Down' | \
+echo '<11>May 25 10:05:00 172.100.100.11 bgpd: %BGP-3-NOTIFICATION: neighbor 192.168.0.2 Down' | \
   nc -u -w1 localhost 5514
 
 sleep 5
@@ -391,7 +712,7 @@ Inject a BGP all-peers-down scenario by flapping the BGP neighbor:
 ```bash
 # Simulate BGP all-peers-down detection via syslog storm
 for i in 1 2 3; do
-  echo "<11>May 25 10:10:0${i} 172.20.20.2 bgpd: %BGP-3-NOTIFICATION: neighbor 10.0.0.2 Down" | \
+  echo "<11>May 25 10:10:0${i} 172.100.100.11 bgpd: %BGP-3-NOTIFICATION: neighbor 192.168.0.2 Down" | \
     nc -u -w1 localhost 5514
   sleep 1
 done
@@ -407,7 +728,7 @@ curl -s "http://localhost:3000/api/detections?limit=5" | python3 -m json.tool
 
 **Verify blast radius:**
 ```bash
-DEVICE="172.20.20.2"
+DEVICE="172.100.100.11%3A57400"
 curl -s "http://localhost:3000/api/blast-radius/${DEVICE}" | python3 -m json.tool
 ```
 - [ ] Response includes `affected_interfaces`, `bgp_sessions`, `bfd_sessions`
@@ -702,7 +1023,7 @@ python3 -c "
 import requests, time, random
 
 base = 'http://localhost:3000'
-devices = ['172.20.20.2', '172.20.20.3', '172.20.20.4']
+devices = ['172.100.100.11:57400', '172.100.100.12:57400', '172.100.100.13:57400']
 
 for i in range(60):
     # Simulate periodic detection
@@ -894,7 +1215,7 @@ curl -s -X PATCH http://localhost:3000/api/settings/gnn \
 Now inject a fault and watch:
 ```bash
 # Inject BGP down via syslog
-echo '<11>May 25 12:00:00 172.20.20.2 bgpd: %BGP-3-NOTIFICATION: neighbor 10.0.0.2 Down' | \
+echo '<11>May 25 12:00:00 172.100.100.11 bgpd: %BGP-3-NOTIFICATION: neighbor 192.168.0.2 Down' | \
   nc -u -w1 localhost 5514
 
 # Wait for inference cycle (or trigger manually)
@@ -909,7 +1230,7 @@ sleep 30
 ```bash
 curl -s "http://localhost:3000/api/investigations?limit=5" | python3 -m json.tool
 ```
-- [ ] Investigation auto-created for device `172.20.20.2`
+- [ ] Investigation auto-created for device `172.100.100.11:57400`
 - [ ] `triggered_by: "gnn_anomaly"` in investigation record
 - [ ] Investigation prompt contains attention context ("GNN attention context: device X contributed...")
 
@@ -947,7 +1268,7 @@ for msg in \
   "ISIS adjacency to spine-1 lost — BFD session down" \
   "BGP NOTIFICATION received from 10.0.0.3 error=4 subcode=0" \
   "SRL cpu-util critical: 95% sustained for 5 minutes"; do
-  echo "<14>May 25 12:00:00 172.20.20.2 syslog: $msg" | nc -u -w1 localhost 5514
+  echo "<14>May 25 12:00:00 172.100.100.11 syslog: $msg" | nc -u -w1 localhost 5514
   sleep 0.5
 done
 
@@ -1107,7 +1428,7 @@ base = 'http://localhost:3000'
 for i in range(200):
     requests.post(f'{base}/api/detections', json={
         'rule_id': 'bgp_session_flap',
-        'device_address': f'10.0.{i//256}.{i%256}',
+        'device_address': f'172.100.100.{(i % 3) + 11}',  # cycles through .11/.12/.13
         'severity': 'info',
         'reason': f'Synthetic detection {i}'
     })
@@ -1343,7 +1664,7 @@ curl -s http://localhost:3000/api/sidecar/rules/bgp_session_flap/parameters | py
 **Test the changed threshold:** inject 3 BGP flaps (below the new threshold of 5):
 ```bash
 for i in 1 2 3; do
-  echo "<11>May 25 13:0${i}:00 172.20.20.2 bgpd: %BGP-3-NOTIFICATION: neighbor 10.0.0.2 Down" | \
+  echo "<11>May 25 13:0${i}:00 172.100.100.11 bgpd: %BGP-3-NOTIFICATION: neighbor 192.168.0.2 Down" | \
     nc -u -w1 localhost 5514
   sleep 2
 done
@@ -1379,7 +1700,7 @@ curl -s -X POST http://localhost:3000/api/sidecar/rules/interface_high_utilizati
 
 Inject interface utilization event:
 ```bash
-echo "<14>May 25 13:30:00 172.20.20.2 interface: ethernet-1/1 utilization 85%" | \
+echo "<14>May 25 13:30:00 172.100.100.11 interface: ethernet-1/1 utilization 85%" | \
   nc -u -w1 localhost 5514
 sleep 5
 ```
@@ -1467,7 +1788,7 @@ curl -s -X POST "http://localhost:3000/api/syslog-rules/${RULE_ID}/test" \
 
 Activate by sending a matching syslog:
 ```bash
-echo '<2>May 25 14:00:00 172.20.20.2 kernel: Out of memory: killed process bgpd (bgp) total-vm:512MB' | \
+echo '<2>May 25 14:00:00 172.100.100.11 kernel: Out of memory: killed process bgpd (bgp) total-vm:512MB' | \
   nc -u -w1 localhost 5514
 sleep 5
 curl -s "http://localhost:3000/api/detections?limit=5" | python3 -c "
@@ -1516,7 +1837,7 @@ Verify playbook test endpoint:
 PB_ID="<id-from-above>"
 curl -s -X POST "http://localhost:3000/api/playbooks-v2/${PB_ID}/test" \
   -H 'Content-Type: application/json' \
-  -d '{"device_address": "172.20.20.2"}' | python3 -m json.tool
+  -d '{"device_address": "172.100.100.11:57400"}' | python3 -m json.tool
 ```
 - [ ] `passed: true` or `passed: false` (depends on verify_graph state) — no 500 error
 
@@ -1538,13 +1859,13 @@ curl -s -X POST http://localhost:3000/api/changes \
     "risk": "low",
     "planned_start_ns": '"$(date -d 'now - 5 minutes' +%s%N)"',
     "planned_end_ns": '"$(date -d 'now + 55 minutes' +%s%N)"',
-    "affected_devices": ["172.20.20.2"]
+    "affected_devices": ["172.100.100.11:57400"]
   }' | python3 -m json.tool
 ```
 
 Now inject a fault on the same device:
 ```bash
-echo '<11>May 25 14:30:00 172.20.20.2 bgpd: %BGP-3-NOTIFICATION: neighbor 10.0.0.2 Down' | \
+echo '<11>May 25 14:30:00 172.100.100.11 bgpd: %BGP-3-NOTIFICATION: neighbor 192.168.0.2 Down' | \
   nc -u -w1 localhost 5514
 sleep 5
 ```
@@ -1564,7 +1885,7 @@ for det in d[:3]:
 ### 19.2 Change context API
 
 ```bash
-curl -s "http://localhost:3000/api/changes/context/172.20.20.2" | python3 -m json.tool
+curl -s "http://localhost:3000/api/changes/context/172.100.100.11%3A57400" | python3 -m json.tool
 ```
 - [ ] `in_change_window: true`
 - [ ] `active_changes[0].number: "CHG0010001"`
@@ -1610,15 +1931,15 @@ Fault injected → syslog/gNMI event → Detection fired → Syslog embedding qu
 
 ```bash
 # Step 1: BGP peer down (syslog)
-echo '<11>May 25 15:00:00 172.20.20.2 bgpd: %BGP-3-NOTIFICATION: neighbor 10.0.0.2 Down' | \
+echo '<11>May 25 15:00:00 172.100.100.11 bgpd: %BGP-3-NOTIFICATION: neighbor 192.168.0.2 Down' | \
   nc -u -w1 localhost 5514
 
 # Step 2: Interface down (syslog)
-echo '<11>May 25 15:00:01 172.20.20.2 intf: ethernet-1/1 link-state changed to down' | \
+echo '<11>May 25 15:00:01 172.100.100.11 intf: ethernet-1/1 link-state changed to down' | \
   nc -u -w1 localhost 5514
 
 # Step 3: BFD session down (syslog)
-echo '<11>May 25 15:00:02 172.20.20.2 bfdd: BFD session to 10.0.0.2 went Down' | \
+echo '<11>May 25 15:00:02 172.100.100.11 bfdd: BFD session to 192.168.0.2 went Down' | \
   nc -u -w1 localhost 5514
 
 sleep 5
@@ -1638,7 +1959,7 @@ else:
     print('No detection — check rule engine')
 "
 ```
-- [ ] Detection present for `172.20.20.2`
+- [ ] Detection present for `172.100.100.11:57400`
 - [ ] Multiple source event IDs (correlated)
 
 ### 20.3 Trigger full ML cycle
@@ -1657,7 +1978,7 @@ sleep 30
 ### 20.4 Check GNN scored the fault device
 
 ```bash
-curl -s "http://localhost:3000/api/gnn/inference-results?device_address=172.20.20.2&limit=3" | \
+curl -s "http://localhost:3000/api/gnn/inference-results?device_address=172.100.100.11%3A57400&limit=3" | \
   python3 -m json.tool
 ```
 - [ ] `anomaly_score > 0.5` for the fault device
@@ -1676,7 +1997,7 @@ for inv in invs[:2]:
     print(f'  Status: {inv.get(\"status\")}')
 "
 ```
-- [ ] Investigation for `172.20.20.2` present
+- [ ] Investigation for `172.100.100.11:57400` present
 - [ ] `triggered_by` is `"gnn_anomaly"` or `"detection_fired"` (depending on which triggered first)
 
 ### 20.6 Verify attention context in AI investigation
@@ -1726,7 +2047,7 @@ if p:
     print(f'  Status: {p[0].get(\"status\",\"unknown\")}')
 "
 ```
-- [ ] Proposal exists for `172.20.20.2`
+- [ ] Proposal exists for `172.100.100.11:57400`
 
 Execute the safe remediation:
 ```bash
@@ -1779,7 +2100,7 @@ curl -s -X POST http://localhost:3000/api/integrations/netbox/sync | python3 -m 
 
 Verify enrichment in graph:
 ```cypher
-MATCH (d:Device {address:"172.20.20.2"})
+MATCH (d:Device {address:"172.100.100.11:57400"})
 RETURN d.netbox_name, d.netbox_site, d.netbox_role, d.netbox_rack
 ```
 - [ ] NetBox properties present on device node

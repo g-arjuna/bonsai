@@ -1275,13 +1275,33 @@ pub(super) async fn device_seed_handler(
         )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
 
         // Seed interfaces
+        // IMPORTANT: we set i.id = 'address:name' to match the key used by
+        // emit_oper_status_event() in graph/mod.rs.  Without this the gNMI path
+        // sees previous_oper_status = None for every interface on the first poll
+        // and fires a false interface_down storm immediately after bootstrap.
         for iface in &req.interfaces {
+            let iface_id = format!("{}:{}", address, iface.name);
             conn.query(&format!(
-                "MERGE (i:Interface {{device_address: '{}', name: '{}'}}) \
-                 SET i.oper_status = '{}', i.admin_status = '{}', i.speed = {}, \
-                     i.mac = '{}', i.description = '{}', i.source = '{}', i.updated_at_ns = {}",
-                address, iface.name, iface.oper_status, iface.admin_status,
+                "MERGE (i:Interface {{id: '{}'}}) \
+                 ON CREATE SET \
+                   i.device_address = '{}', i.name = '{}', \
+                   i.oper_status = '{}', i.admin_status = '{}', i.speed = {}, \
+                   i.mac = '{}', i.description = '{}', i.source = '{}', i.updated_at_ns = {} \
+                 ON MATCH SET \
+                   i.oper_status = '{}', i.admin_status = '{}', i.speed = {}, \
+                   i.mac = '{}', i.description = '{}', i.source = '{}', i.updated_at_ns = {}",
+                iface_id,
+                address, iface.name,
+                iface.oper_status, iface.admin_status,
                 iface.speed, iface.mac, iface.description, source, now,
+                iface.oper_status, iface.admin_status,
+                iface.speed, iface.mac, iface.description, source, now,
+            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            // Ensure HAS_INTERFACE edge exists
+            conn.query(&format!(
+                "MATCH (d:Device {{address: '{}'}}), (i:Interface {{id: '{}'}}) \
+                 MERGE (d)-[:HAS_INTERFACE]->(i)",
+                address, iface_id,
             )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
