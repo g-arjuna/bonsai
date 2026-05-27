@@ -939,3 +939,296 @@ Still needing follow-up:
 - guide update or code addition for `/api/settings/receiver-status`
 - bootstrap-overwrite regression on already-registered SRL `:57400` targets
 - SNMP trap end-to-end test after installing a trap sender on the host
+
+## Continued validation on latest `origin/main` after 2026-05-27 follow-up pull
+
+Pulled `origin/main` from:
+
+- `5a7ddff`
+
+to:
+
+- `5d827ed`
+
+The update included:
+
+- `src/http_server/managed_devices.rs`
+- `docs/EV1_UBUNTU_TESTING_GUIDE.md`
+- `bonsai.toml.example`
+
+### Fixes confirmed in this round
+
+#### 1. Bootstrap overwrite guard is now working
+
+Retested:
+
+- `POST /api/devices/bootstrap`
+
+against an already-registered target:
+
+- `172.100.100.11:57400`
+
+Observed result:
+
+- no bare-IP duplicate device was created
+- the managed-device record remained intact after bootstrap completed
+- the following fields were preserved:
+  - `tls_domain`
+  - `ca_cert`
+  - `hostname`
+  - `role`
+  - `site`
+- the subscriber stayed healthy and continued using:
+  - `tls=true`
+
+Operational conclusion:
+
+- the overwrite regression previously seen on `:57400` targets appears fixed in this build
+
+#### 2. Guide/examples now reflect the correct signal receiver config shape
+
+Observed improvements:
+
+- `bonsai.toml.example` now documents:
+  - `[signals.syslog]`
+  - `[signals.snmp]`
+- the EV1 guide also now references those nested sections instead of the incorrect top-level
+  forms
+
+This matches the code-path that was required to bind the receivers successfully.
+
+### Additional remaining-phase validation
+
+#### 1. SNMP trap path now works end-to-end to raw archive, event history, and detection
+
+Used host tool:
+
+- `/usr/bin/snmptrap`
+
+Injected:
+
+- v2c trap to `127.0.0.1:9162`
+- OID:
+  - `1.3.6.1.2.1.15.7`
+
+Observed results:
+
+- raw trap landed in:
+  - `runtime/signals/snmp.jsonl`
+- event history showed:
+  - `source_type: "snmp"`
+  - `event_type: "snmp_enterprise_specific"`
+- event history also showed:
+  - `event_type: "snmp_fact_orphan"`
+- the runtime emitted a detection:
+  - `rule_id: "bgp_neighbor_down"`
+  - `device_address: "127.0.0.1"`
+  - `source_types: ["snmp"]`
+
+Operational conclusion:
+
+- SNMP is now proven beyond simple socket bind:
+  - receiver bind works
+  - archive write works
+  - event creation works
+  - detection firing works
+
+#### 2. Synthetic localhost SNMP remains orphaned from the real SRL graph
+
+Observed SNMP detection context:
+
+- `device_address: "127.0.0.1"`
+- join status:
+  - `orphan`
+
+Interpretation:
+
+- the synthetic local trap is associated with the local sender address rather than a lab node
+- this is sufficient for receiver-path validation
+- it is not sufficient to prove real graph-aware SNMP correlation against an SRL target
+
+#### 3. Synthetic localhost syslog + SNMP did not fuse into a multi-source detection
+
+Validation method:
+
+- injected a matching localhost syslog message:
+  - hostname `127.0.0.1`
+  - BGP neighbor `192.168.0.2 Down`
+- confirmed event history contained:
+  - `source_type: "syslog"`
+  - `device_address: "127.0.0.1"`
+- checked detections afterward
+
+Observed result:
+
+- the existing SNMP-based `bgp_neighbor_down` detection remained:
+  - `source_types: ["snmp"]`
+- no fused multi-source detection appeared
+- no detection with combined source types was observed
+
+Operational conclusion:
+
+- the synthetic localhost probe did not demonstrate multi-source correlation/fusion
+- possible reasons include:
+  - correlation key mismatch between the syslog and SNMP extracted facts
+  - syslog message created an event but did not generate a matching detection payload
+  - orphan-device handling for synthetic localhost sources may bypass the intended fusion path
+
+#### 4. ML job creation remains functional
+
+Observed result:
+
+- manual `graph_snapshot` job creation returned a new job id
+- `GET /api/ml/jobs` showed the new run in the listing
+
+This confirms the job listing path is still healthy after the latest pull/rebuild/restart.
+
+#### 5. Remediation proposal flow is still not activating from current tests
+
+Observed result:
+
+- `GET /api/approvals?limit=10` returned:
+  - no proposals
+  - no trust records
+  - no active rollbacks
+
+Operational conclusion:
+
+- current signal activity is still not sufficient to exercise the remediation proposal path
+- additional rule/approval prerequisites may be needed before Phase 8 can be considered covered
+
+### Current best understanding after pushing further
+
+Confirmed working now:
+
+- BonPy static route
+- 7 default ML schedules
+- `job_id` alias for ML jobs
+- syslog bind and archive
+- syslog event creation
+- SNMP bind and archive
+- SNMP event creation
+- SNMP-triggered detection creation
+- bootstrap duplicate guard
+- bootstrap overwrite guard on already-registered `:57400` targets
+
+Still not fully demonstrated:
+
+- true graph-aware SNMP mapping to an SRL device instead of localhost orphan context
+- multi-source syslog+SNMP correlation/fusion
+- remediation proposal generation/approval flow
+
+## BonPy HTTP and API validation before handoff
+
+The BonPy UI was additionally checked because the schedules view was visibly empty despite the
+ML schedules API returning valid data.
+
+### HTTP route behavior
+
+Checked BonPy route responses on the live Bonsai instance:
+
+- `GET /bonpy/` → `200 OK`
+- `GET /bonpy/jobs` → `404 Not Found`
+- `GET /bonpy/exports` → `404 Not Found`
+- `GET /bonpy/gnn` → `404 Not Found`
+- `GET /bonpy/embeddings` → `404 Not Found`
+- `GET /bonpy/rules` → `404 Not Found`
+- `GET /bonpy/detections` → `404 Not Found`
+
+Important nuance:
+
+- the deep routes return the BonPy HTML shell body
+- but the HTTP status code is still `404`
+
+Operational conclusion:
+
+- client-side navigation from inside the SPA may still appear to work
+- but direct navigation / refresh / bookmark loading for BonPy subroutes is broken at the HTTP layer
+- Bonsai should be returning the BonPy SPA shell with `200`, not `404`, for those subroutes
+
+### Jobs page / schedules view root cause
+
+The schedules API is healthy:
+
+- `GET /api/ml/schedules` returns 7 schedules under:
+  - `{"schedules":[...]}`
+
+However the BonPy jobs page implementation currently expects an array directly:
+
+- `schedQ = createQuery(... api.schedules.list ...)`
+- template uses:
+  - `{#each $schedQ.data as s}`
+
+But `api.schedules.list()` returns the wrapped object from:
+
+- `/api/ml/schedules`
+
+not the inner `schedules` array.
+
+The same page has the same problem for jobs:
+
+- `jobsQ.data` is an object:
+  - `{"jobs":[...]}`
+- page code does:
+  - `($jobsQ.data || []).slice().reverse()`
+
+Operational conclusion:
+
+- the empty/broken schedules display is not caused by missing backend schedules
+- it is a BonPy frontend data-binding bug
+- the page needs to unwrap:
+  - `$schedQ.data?.schedules ?? []`
+  - `$jobsQ.data?.jobs ?? []`
+
+### Broader BonPy API-shape mismatches
+
+This pattern appears in multiple BonPy pages:
+
+- `jobs/+page.svelte`
+  - expects raw arrays for jobs and schedules
+- `exports/+page.svelte`
+  - expects raw arrays for exports, quality, and schedules
+  - current APIs return wrapped objects such as:
+    - `{"exports":[]}`
+- `detections/+page.svelte`
+  - calls `api.events.list('?type=detection&limit=100')`
+  - but the validated detection API in use elsewhere is:
+    - `/api/detections`
+  - page also treats the response as a direct array
+- `embeddings/+page.svelte`
+  - likely depends on raw arrays/objects and should be checked with the same wrapper assumption in mind
+- `gnn/+page.svelte`
+  - expects `api.gnn.results()` to return a direct array
+
+Operational conclusion:
+
+- BonPy currently has at least two separate frontend issues:
+  - SPA deep-route HTTP status handling
+  - API response unwrapping mismatches
+- The schedules page problem is one symptom of the broader response-shape mismatch set
+
+### BonPy backend/API responses observed during this check
+
+Healthy backing responses:
+
+- `/api/ml/schedules` → returns 7 schedules
+- `/api/ml/jobs?limit=20` → returns job list under `jobs`
+- `/api/ml/exports` → returns wrapped payload:
+  - `{"exports":[]}`
+
+Observed environment limits that also affect BonPy tabs:
+
+- `/api/sidecar/status` → `{"sidecars":[]}`
+  - so rules/sidecar-driven tabs may be empty for genuine runtime reasons in addition to frontend bugs
+
+### Handoff summary for BonPy
+
+Confirmed BonPy problems to hand off:
+
+- subroutes under `/bonpy/*` return HTTP `404` instead of `200`
+- jobs page does not correctly unwrap `jobs` / `schedules` API payloads
+- exports page likely does not correctly unwrap wrapped API payloads
+- detections page appears to call the wrong backend endpoint shape for detections
+
+This explains why the ML console can appear partially loaded while still showing missing schedules
+or broken data panels.
