@@ -1232,3 +1232,192 @@ Confirmed BonPy problems to hand off:
 
 This explains why the ML console can appear partially loaded while still showing missing schedules
 or broken data panels.
+
+## Validation after pull to `1fc16b2` on 2026-05-27
+
+Pulled latest `origin/main` again and validated against the updated EV1 guide plus the latest
+BonPy and correlation fixes.
+
+### 1. Build and startup are clean on the new drop
+
+Confirmed:
+
+- `git pull --ff-only origin main` moved the repo to:
+  - `1fc16b23ef686729d210eccdb78edd1a8cd10b00`
+- `cargo build --release` completed successfully
+- `cd ui-bonpy && npm run build` completed successfully
+- restarted Bonsai on the new release binary with:
+  - `git_sha: "1fc16b23"`
+- `GET /health` returned HTTP `200` with:
+  - `status: "ok"`
+
+Operational conclusion:
+
+- the latest pulled code builds and boots cleanly on this Ubuntu EV1 host
+
+### 2. BonPy route fix is confirmed
+
+Rechecked the BonPy HTTP routes on the new runtime.
+
+All of the following now return HTTP `200` with HTML:
+
+- `/bonpy/`
+- `/bonpy/jobs`
+- `/bonpy/models`
+- `/bonpy/exports`
+- `/bonpy/gnn`
+- `/bonpy/embeddings`
+- `/bonpy/detections`
+- `/bonpy/rules`
+
+Operational conclusion:
+
+- the earlier BonPy deep-route `404` issue is fixed in this drop
+
+### 3. BonPy/ML API response-shape fixes are confirmed at the backend
+
+Checked the live backing APIs now used by BonPy:
+
+- `/api/ml/schedules`
+  - returns wrapped payload with 7 schedules under `schedules`
+- `/api/ml/jobs?limit=20`
+  - returns wrapped payload under `jobs`
+- `/api/ml/exports`
+  - returns wrapped payload under `exports`
+- `/api/gnn/results?limit=20`
+  - returns wrapped payload under `results`
+- `/api/ml/syslog-clusters`
+  - now exists and returns wrapped payload under `clusters`
+- `/api/detections?limit=20`
+  - returns wrapped payload under `detections`
+
+Operational conclusion:
+
+- the new BonPy-facing API additions are present
+- the backend response shapes now align with the recent frontend unwrapping fixes
+
+### 4. New doc/API drift found during this retest
+
+The EV1 guide still contains at least one stale route reference in its final automated checks:
+
+- guide still references:
+  - `GET /api/devices`
+- live route for managed device inventory remains:
+  - `GET /api/onboarding/devices`
+
+Observed behavior:
+
+- `GET /api/devices?limit=20` does not return the managed-device inventory
+- `GET /api/onboarding/devices` returns the expected managed-device JSON
+
+Operational conclusion:
+
+- the final EV1 checklist should be updated to use `/api/onboarding/devices`
+
+### 5. Phase 6 correlation code is present, but the localhost fallback test still does not prove fusion
+
+The updated guide now documents the new wildcard-correlation behavior and still proposes a
+synthetic localhost fallback:
+
+- localhost syslog first
+- localhost SNMP trap second
+- expect a fused detection with:
+  - `source_types: ["syslog", "snmp"]`
+
+Revalidated this on `1fc16b2`.
+
+#### 5.1 What is fixed in code
+
+Confirmed from the pulled source:
+
+- `src/correlation_buffer.rs` now includes sub-key wildcard matching
+- `src/http_server/mod.rs` now serves BonPy SPA deep routes with `200`
+- `src/http_server/ml_jobs.rs` now exposes:
+  - `/api/ml/syslog-clusters`
+
+#### 5.2 What actually happened at runtime
+
+Injected the guide's synthetic fallback pair:
+
+- syslog:
+  - `%BGP-3-NOTIFICATION: neighbor 192.168.0.2 Down`
+- SNMP:
+  - trap OID `1.3.6.1.2.1.15.7` without varbinds
+
+Observed:
+
+- both signals landed in `/api/events/history`
+- the SNMP trap produced:
+  - `snmp_enterprise_specific`
+  - `snmp_fact_orphan`
+- detection written remained SNMP-only:
+  - `source_types: ["snmp"]`
+
+The live runtime log confirmed:
+
+- `detection event written ... semantic=bgp_neighbor_down ... sources=["snmp"] multi_source=false`
+
+#### 5.3 Updated guide message format still does not match the shipped SR Linux syslog patterns
+
+Inspected the shipped SR Linux pattern file:
+
+- [config/syslog_patterns/nokia-srlinux.yaml](/home/arjuna/Desktop/bonsai/config/syslog_patterns/nokia-srlinux.yaml:1)
+
+Current BGP patterns expect messages like:
+
+- `bgp neighbor 192.168.0.2 down`
+- `Peer 192.168.0.2 moved ...`
+
+They do **not** match the guide's injected localhost fallback string:
+
+- `%BGP-3-NOTIFICATION: neighbor 192.168.0.2 Down`
+
+Retested with a pattern-matching syslog line:
+
+- `bgpd: bgp neighbor 192.168.0.2 down`
+
+Result:
+
+- event still landed only as `syslog_protocol`
+- no `syslog_fact_joined`
+- no `syslog_fact_orphan`
+- no fused detection
+
+#### 5.4 Most likely reason the localhost fallback still falls short
+
+The synthetic localhost source is not part of the managed SR Linux device inventory:
+
+- `/api/onboarding/devices` contains only:
+  - `172.100.100.11:57400`
+  - `172.100.100.12:57400`
+  - `172.100.100.13:57400`
+- `127.0.0.1` is not a managed SR Linux device
+
+Operational conclusion:
+
+- the wildcard correlation code may be present and correct
+- but the current localhost fallback still does not exercise the intended end-to-end syslog fact
+  extraction path on this host
+- the fallback remains blocked before fusion, at the syslog fact extraction / vendor-selection
+  layer
+
+### 6. Current status after this retest
+
+Confirmed fixed on latest pull:
+
+- release build succeeds
+- Bonsai starts healthy
+- BonPy deep routes return `200`
+- BonPy-facing ML API additions are present
+
+Still not fully validated:
+
+- multi-source syslog+SNMP fusion in the synthetic localhost fallback path
+
+Recommended follow-up:
+
+- update the EV1 guide's synthetic syslog sample to reflect the currently shipped SR Linux pattern
+  set
+- either:
+  - register a managed localhost test device with matching vendor semantics for the fallback path, or
+  - use a trap/syslog source that actually maps to one of the real SRL managed-device addresses
