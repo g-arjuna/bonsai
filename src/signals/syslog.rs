@@ -762,7 +762,7 @@ impl SyslogFactExtractor {
         let vendor = vendor.to_ascii_lowercase();
         self.patterns
             .iter()
-            .filter(|pattern| pattern.vendor.is_empty() || vendor.contains(&pattern.vendor))
+            .filter(|pattern| vendor.is_empty() || pattern.vendor.is_empty() || vendor.contains(&pattern.vendor))
             .filter(|pattern| {
                 pattern
                     .category

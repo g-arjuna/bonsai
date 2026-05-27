@@ -985,7 +985,10 @@ extractor can populate `fields.peer_address`:
 
 ```bash
 # Step 1 — syslog BGP-down first (opens correlation slot with sub_key=192.168.0.2)
-echo '<11>May 25 10:05:00 172.100.100.11 bgpd: %BGP-3-NOTIFICATION: neighbor 192.168.0.2 Down' | \
+# IMPORTANT: use a message format that matches the shipped nokia-srlinux.yaml patterns.
+# The pattern is: 'bgp neighbor <ip> <state>' (case-insensitive).
+# %BGP-3-NOTIFICATION format does NOT match and will land as syslog_protocol only.
+echo '<11>May 25 10:05:00 172.100.100.11 bgpd: bgp neighbor 192.168.0.2 down' | \
   nc -u -w1 localhost 5514
 
 sleep 3
@@ -1007,7 +1010,9 @@ orphan device so they share the same `device_address`.
 
 ```bash
 # Step 1 — syslog BGP-down (opens slot, sub_key=192.168.0.2)
-echo '<11>May 25 10:05:00 127.0.0.1 bgpd: %BGP-3-NOTIFICATION: neighbor 192.168.0.2 Down' | \
+# With the vendor-filter fix (2026-05-27), unmanaged sources (vendor="") now also
+# run vendor-specific patterns, so the nokia pattern will fire even from 127.0.0.1.
+echo '<11>May 25 10:05:00 127.0.0.1 bgpd: bgp neighbor 192.168.0.2 down' | \
   nc -u -w1 localhost 5514
 
 sleep 3
@@ -1036,13 +1041,15 @@ curl -s http://localhost:9201/metrics 2>/dev/null | grep correlation_multi_sourc
 ```
 - [ ] `bonsai_correlation_multi_source_total` counter ≥ 1
 
-> **If still showing only `["snmp"]`**: the syslog message did not match any `bgp_neighbor`
-> fact pattern. Confirm with:
+> **If still showing only `["snmp"]`**: the syslog message did not extract a `bgp_neighbor`
+> fact. Confirm with:
 > ```bash
-> grep syslog_fact_joined runtime/bonsai.log | tail -5
+> grep syslog_fact runtime/bonsai.log | tail -10
 > ```
-> If missing, the syslog pattern YAML for your vendor may not cover the injected message format.
-> Use the Nokia SRL pattern above which matches `%BGP-3-NOTIFICATION: neighbor <ip> Down`.
+> If only `syslog_protocol` appears (no `syslog_fact_orphan` / `syslog_fact_joined`), the
+> message did not match any pattern. Ensure the injected message contains the literal string
+> `bgp neighbor <ip> down` (matched by `nokia-srlinux.yaml`). The `%BGP-3-NOTIFICATION`
+> Cisco-style format is **not** matched by the shipped Nokia SRL patterns.
 
 ---
 
@@ -2518,8 +2525,8 @@ chk('Python rules loaded', lambda: len(requests.get(f'{base}/api/sidecar/rules',
 chk('DB-backed playbooks exist', lambda: len(requests.get(f'{base}/api/playbooks-v2', timeout=5).json()) >= 5)
 
 # Graph
-chk('Devices in graph', lambda: len(requests.get(f'{base}/api/devices', timeout=5).json()) >= 1)
-chk('Detections fired', lambda: len(requests.get(f'{base}/api/detections?limit=5', timeout=5).json()) >= 1)
+chk('Devices in graph', lambda: len(requests.get(f'{base}/api/onboarding/devices', timeout=5).json().get('devices', [])) >= 1)
+chk('Detections fired', lambda: len(requests.get(f'{base}/api/detections?limit=5', timeout=5).json().get('detections', [])) >= 1)
 
 # BonPy UI
 chk('BonPy UI reachable', lambda: requests.get(f'{base}/bonpy/', timeout=5).status_code == 200)

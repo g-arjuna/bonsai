@@ -1165,6 +1165,7 @@ fn settings_routes() -> Router<AppState> {
             get(get_streaming_settings_handler).patch(patch_streaming_settings_handler),
         )
         .route("/api/receivers/status", get(get_receiver_status_handler))
+        .route("/api/settings/receiver-status", get(get_receiver_status_handler))
         .route("/api/ai/config", get(get_ai_config_handler))
         .route("/api/ai/test", post(post_ai_test_handler))
         .route("/api/ai/providers", get(list_ai_providers_handler).post(upsert_ai_provider_handler))
