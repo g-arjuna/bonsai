@@ -708,6 +708,9 @@ def _schedule_to_cron(sched: dict) -> str:
         hours = sched.get("hours", 0)
         total_minutes = int(seconds / 60 + minutes + hours * 60)
         total_minutes = max(1, total_minutes)
+        if total_minutes >= 60 and total_minutes % 60 == 0:
+            total_hours = total_minutes // 60
+            return f"0 */{total_hours} * * *"
         return f"*/{total_minutes} * * * *"
     return "0 * * * *"
 
