@@ -1,3 +1,4 @@
+use anyhow::Context;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -16,6 +17,7 @@ use crate::ingest;
 use crate::registry::{ApiRegistry, DeviceRegistry};
 use crate::sidecar_registry::SidecarRegistry;
 use crate::store::BonsaiStore;
+use crate::write_coordinator::{PriorityWriteRequest, WriteCoordinator};
 
 pub const PROTOCOL_VERSION_CURRENT: u32 = 1;
 pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_CURRENT;
@@ -73,6 +75,7 @@ pub struct BonsaiService<S: BonsaiStore> {
     sidecar_registry: Arc<SidecarRegistry>,
     sqlite_store: Option<Arc<crate::sqlite_store::SqliteStore>>,
     ha_coordinator: Option<Arc<crate::ha_coordinator::HACoordinator>>,
+    detection_coordinator: Option<Arc<WriteCoordinator>>,
 }
 
 impl<S: BonsaiStore> BonsaiService<S> {
@@ -86,6 +89,7 @@ impl<S: BonsaiStore> BonsaiService<S> {
         sidecar_registry: Arc<SidecarRegistry>,
         sqlite_store: Option<Arc<crate::sqlite_store::SqliteStore>>,
         ha_coordinator: Option<Arc<crate::ha_coordinator::HACoordinator>>,
+        detection_coordinator: Option<Arc<WriteCoordinator>>,
     ) -> Self {
         Self {
             store,
@@ -97,6 +101,7 @@ impl<S: BonsaiStore> BonsaiService<S> {
             sidecar_registry,
             sqlite_store,
             ha_coordinator,
+            detection_coordinator,
         }
     }
 
@@ -108,6 +113,52 @@ impl<S: BonsaiStore> BonsaiService<S> {
     pub fn with_ha_coordinator(mut self, ha_coordinator: Arc<crate::ha_coordinator::HACoordinator>) -> Self {
         self.ha_coordinator = Some(ha_coordinator);
         self
+    }
+
+    async fn write_detection_for_ingest(
+        &self,
+        device_address: String,
+        rule_id: String,
+        severity: String,
+        features_json: String,
+        source_types_json: String,
+        latency_ns: i64,
+        fired_at_ns: i64,
+        state_change_event_id: String,
+        source_event_ids: Vec<String>,
+    ) -> Result<String, anyhow::Error> {
+        if let Some(coordinator) = &self.detection_coordinator {
+            let (reply_to, reply_rx) = tokio::sync::oneshot::channel();
+            coordinator
+                .submit_priority(PriorityWriteRequest::Detection {
+                    device_address,
+                    rule_id,
+                    severity,
+                    features_json,
+                    source_types_json,
+                    latency_ns,
+                    fired_at_ns,
+                    state_change_event_id,
+                    source_event_ids,
+                    reply_to,
+                })
+                .await?;
+            reply_rx.await.context("write coordinator reply dropped")?
+        } else {
+            self.store
+                .write_detection(
+                    device_address,
+                    rule_id,
+                    severity,
+                    features_json,
+                    source_types_json,
+                    latency_ns,
+                    fired_at_ns,
+                    state_change_event_id,
+                    source_event_ids,
+                )
+                .await
+        }
     }
 
     /// Extract TLS certificate fingerprint from the gRPC request.
@@ -918,8 +969,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         {
             let collector_id = d.collector_id.clone();
             match self
-                .store
-                .write_detection(
+                .write_detection_for_ingest(
                     d.device_address,
                     d.rule_id,
                     d.severity,
@@ -953,8 +1003,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
     ) -> Result<Response<CreateDetectionResponse>, Status> {
         let r = req.into_inner();
         match self
-            .store
-            .write_detection(
+            .write_detection_for_ingest(
                 r.device_address,
                 r.rule_id,
                 r.severity,

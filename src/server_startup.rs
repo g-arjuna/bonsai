@@ -501,6 +501,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     if let Some(Store::Core(ref s)) = store {
         let corr_buf = std::sync::Arc::clone(&s.correlation_buffer);
         let detection_store = std::sync::Arc::clone(s);
+        let detection_coordinator = coordinator.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -524,20 +525,45 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         serde_json::to_string(&slot.source_types).unwrap_or_default();
                     let first_sce_id =
                         slot.state_change_event_ids.first().cloned().unwrap_or_default();
-                    match detection_store
-                        .write_detection(
-                            slot.key.device_address.clone(),
-                            slot.key.semantic_type.clone(),
-                            severity.to_string(),
-                            slot.detail_json.clone(),
-                            source_types_json,
-                            0,
-                            slot.first_signal_ns,
-                            first_sce_id,
-                            slot.state_change_event_ids.clone(),
-                        )
-                        .await
-                    {
+                    let res = if let Some(ref coordinator) = detection_coordinator {
+                        let (reply_to, reply_rx) = tokio::sync::oneshot::channel();
+                        let submit = coordinator
+                            .submit_priority(bonsai::write_coordinator::PriorityWriteRequest::Detection {
+                                device_address: slot.key.device_address.clone(),
+                                rule_id: slot.key.semantic_type.clone(),
+                                severity: severity.to_string(),
+                                features_json: slot.detail_json.clone(),
+                                source_types_json,
+                                latency_ns: 0,
+                                fired_at_ns: slot.first_signal_ns,
+                                state_change_event_id: first_sce_id,
+                                source_event_ids: slot.state_change_event_ids.clone(),
+                                reply_to,
+                            })
+                            .await;
+                        match submit {
+                            Ok(()) => match reply_rx.await {
+                                Ok(res) => res,
+                                Err(e) => Err(anyhow::anyhow!("write coordinator reply dropped: {e}")),
+                            },
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        detection_store
+                            .write_detection(
+                                slot.key.device_address.clone(),
+                                slot.key.semantic_type.clone(),
+                                severity.to_string(),
+                                slot.detail_json.clone(),
+                                source_types_json,
+                                0,
+                                slot.first_signal_ns,
+                                first_sce_id,
+                                slot.state_change_event_ids.clone(),
+                            )
+                            .await
+                    };
+                    match res {
                         Ok(det_id) => {
                             tracing::info!(
                                 detection_id = %det_id,
@@ -1290,6 +1316,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         sidecar_registry_for_api,
                         None,
                         None,
+                        coordinator.clone(),
                     ))
                     .accept_compressed(CompressionEncoding::Zstd);
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {
@@ -1305,6 +1332,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         Some(std::sync::Arc::clone(&debouncer)),
                         None,
                         sidecar_registry_for_api,
+                        None,
                         None,
                         None,
                     ))

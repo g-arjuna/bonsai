@@ -1099,7 +1099,7 @@ pub(super) async fn sidecar_rule_shadow_firings_handler(
     }
     let snap = first.unwrap();
     let host = snap.entry.address.split(':').next().unwrap_or("127.0.0.1");
-    let health_port = std::env::var("BONSAI_SIDECAR_HEALTH_PORT").unwrap_or_else(|_| "9200".to_string());
+    let health_port = std::env::var("BONSAI_SIDECAR_HEALTH_PORT").unwrap_or_else(|_| "9292".to_string());
     let url = format!("http://{}:{}/shadow-firings/{}?since={}", host, health_port, rule_id, since_ns);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
@@ -1199,11 +1199,11 @@ pub(super) async fn sidecar_status_handler(
     for snap in &snapshots {
         let addr = &snap.entry.address;
         // Try to reach the sidecar's health HTTP endpoint.
-        // The Python sidecar runs health on port 9200 by default; try to
-        // derive the health URL from the registered gRPC address by using
-        // the same host with port 9200, or fall back to the sidecar address.
+        // The Python sidecar runs health on port 9292 by default; derive the
+        // health URL from the registered gRPC address by using the same host
+        // with the sidecar health port.
         let host = addr.split(':').next().unwrap_or("127.0.0.1");
-        let health_port = std::env::var("BONSAI_SIDECAR_HEALTH_PORT").unwrap_or_else(|_| "9200".to_string());
+        let health_port = std::env::var("BONSAI_SIDECAR_HEALTH_PORT").unwrap_or_else(|_| "9292".to_string());
         let health_url = format!("http://{}:{}/health", host, health_port);
 
         let (health_reachable, rules_loaded, last_det, det_today, uptime, queue) =

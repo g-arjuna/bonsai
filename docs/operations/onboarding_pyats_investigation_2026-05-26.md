@@ -2027,3 +2027,158 @@ Operational conclusion:
   syslog line as an error condition even when the core path successfully
   extracts `bgp_neighbor`
 - worth reviewing whether that rule is too broad for localhost synthetic tests
+
+## 2026-05-28 Follow-up: Closing the Remaining Local EV1 Gaps
+
+### 1. Fixed: core-side sidecar status now tracks the actual health port
+
+Local code change:
+
+- `src/http_server/governance.rs`
+  - changed the default `BONSAI_SIDECAR_HEALTH_PORT` fallback from `9200` to `9292`
+  - updated both:
+    - `sidecar_rule_shadow_firings_handler`
+    - `sidecar_status_handler`
+
+Validation on the live box after rebuild/restart:
+
+- `GET /api/sidecar/status`
+  - `health_reachable: true`
+  - `rules_loaded: 35`
+  - non-zero `uptime_secs`
+- `GET http://127.0.0.1:9292/health`
+  - still healthy at the same time
+
+Operational conclusion:
+
+- the old sidecar-status false negative was a real core-side bug
+- the fix is now locally validated
+
+### 2. Fixed: EV1 guide stale `:9200` / `:9201` references cleaned up
+
+Local doc change:
+
+- `docs/EV1_UBUNTU_TESTING_GUIDE.md`
+  - updated the remaining stale sidecar references from:
+    - health `:9200` → `:9292`
+    - Prometheus `:9201` → `:9293`
+
+Operational conclusion:
+
+- the guide and the live sidecar defaults now align locally
+
+### 3. Fixed: auto-proposals were bypassed for two real detection write paths
+
+Root cause analysis found that `auto_propose` only lived in the write coordinator,
+but two important detection paths were bypassing it:
+
+1. gRPC detection ingest in `src/api.rs`
+   - `detection_ingest`
+   - `create_detection`
+2. core correlation-buffer flush in `src/server_startup.rs`
+   - the `detection event written` path for locally correlated detections
+
+Both paths were calling:
+
+- `store.write_detection(...)`
+
+directly, which meant:
+
+- the `DetectionEvent` was written
+- but the write coordinator's `auto_propose` block never ran
+- so `/api/approvals` stayed empty with no warning
+
+Local code changes:
+
+- `src/api.rs`
+  - added optional `detection_coordinator` wiring to `BonsaiService`
+  - routed gRPC detection writes through `PriorityWriteRequest::Detection` when present
+- `src/server_startup.rs`
+  - routed correlation-buffer detection writes through the same coordinator path
+  - preserved the old direct-store fallback only when no coordinator exists
+
+Validation after rebuild/restart:
+
+- `bonsai.toml` on this host still had:
+  - `[remediation]`
+  - `auto_propose = true`
+- replayed the exact localhost EV1 syslog sample:
+  - `<11>May 25 10:05:00 127.0.0.1 bgpd: bgp neighbor 192.168.0.2 down`
+- replayed the localhost BGP SNMP trap
+
+Observed on the live API:
+
+- `GET /api/approvals?limit=10`
+  - now returns pending proposals
+- example proposal:
+  - `rule_id: bgp_neighbor_down`
+  - `playbook_id: srl_bgp_neighbor_admin_bounce`
+  - `status: pending`
+
+Operational conclusion:
+
+- the empty-approvals result was not only a config issue
+- it was also a real runtime bug caused by detection writes bypassing the coordinator
+- that bug is now locally fixed and validated
+
+### 4. Still open: standard BGP SNMP field extraction remains reversed at runtime
+
+After the auto-proposal fix, pending proposals started appearing for both:
+
+- syslog-originated `bgp_neighbor_down`
+- SNMP-originated `bgp_neighbor_down`
+
+However, the SNMP-side proposal is still malformed because the extracted fact fields are reversed.
+
+Observed in fresh post-reload SNMP events:
+
+- `event_type: snmp_fact_orphan`
+- `fields` contained:
+  - `peer_address: "1"`
+  - `peer_state: "192.168.0.2"`
+
+That is backwards for the test trap payload:
+
+- peer address should be `192.168.0.2`
+- peer state should be `1`
+
+What was checked locally:
+
+- `config/snmp_oid_patterns/default.yaml` was corrected so the standard BGP OIDs map as:
+  - `1.3.6.1.2.1.15.3.1.2` → `peer_address`
+  - `1.3.6.1.2.1.15.3.1.7` → `peer_state`
+- the live `snmp_oid_pattern:default` ConfigItem was also updated to the same content
+- `POST /api/config/reload-patterns` succeeded:
+  - `snmp_reloaded: true`
+
+Despite that, a fresh post-reload trap still produced reversed runtime fields.
+
+Operational conclusion:
+
+- the shipped/default SNMP pattern mapping was wrong and is now corrected locally on disk
+- but the remaining runtime reversal is not explained by stale config alone
+- there is still a code-path or pattern-interpretation bug in the standard BGP SNMP fact extraction flow
+- because of that, the SNMP-created remediation proposal still carries unusable field data on this host
+
+### 5. Current local end state
+
+Locally validated as fixed:
+
+- sidecar health/status port mismatch
+- stale EV1 guide sidecar port references
+- empty approvals caused by detection writes bypassing the write coordinator
+
+Locally validated as still open:
+
+- standard BGP SNMP orphan extraction still swaps `peer_address` and `peer_state`
+- sidecar-local `syslog_protocol_error` still fires on the localhost synthetic syslog line
+
+Most important live result:
+
+- the EV1 remediation path now works end-to-end for the localhost syslog sample:
+  - fresh detection
+  - pending remediation proposal in `/api/approvals`
+
+Remaining caution:
+
+- do not trust the SNMP-generated BGP proposal payload yet until the reversed field extraction is fixed

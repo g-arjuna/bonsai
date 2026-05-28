@@ -3,7 +3,7 @@
 > **Sprint**: EV1 — ML Intelligence, GNN Architecture & BonPy–Bonsai Unification
 > **Generated**: auto-merged from ev1/ev1-testing-part1..3.md
 > **Ubuntu ops box prerequisites**: Rust 1.95+, cmake, protoc, Docker 24+, ContainerLab ≥0.54, Python 3.12+
-> **Key ports**: Bonsai API `:3000`, Sidecar health `:9200`, Sidecar Prometheus `:9201`, PyATS sidecar `:5000`
+> **Key ports**: Bonsai API `:3000`, Sidecar health `:9292`, Sidecar Prometheus `:9293`, PyATS sidecar `:5000`
 
 ---
 
@@ -1569,7 +1569,7 @@ curl -s -X POST http://localhost:3000/api/ml/jobs \
   -d '{"job_id":"graph_snapshot","trigger":"manual"}'
 
 sleep 10
-curl -s http://localhost:9200/health | python3 -c "
+curl -s http://localhost:9292/health | python3 -c "
 import sys,json
 h=json.load(sys.stdin)
 print(f'Snapshot buffer size: {h[\"snapshot_buffer_size\"]} / 8')
@@ -1674,7 +1674,7 @@ curl -s -X PATCH http://localhost:3000/api/settings/gnn \
 The syslog embedding worker runs every 60s. Watch logs:
 ```bash
 # Check if sentence-transformers loaded
-curl -s http://localhost:9200/health | python3 -c "
+curl -s http://localhost:9292/health | python3 -c "
 import sys,json
 h=json.load(sys.stdin)
 print(f'Pending syslog embeddings: {h.get(\"embedding_pending_syslog\", 0)}')
@@ -1828,7 +1828,7 @@ curl -s "http://localhost:3000/api/ml/lineage/${MODEL_ID}" | python3 -m json.too
 
 ```bash
 # Check sidecar memory report
-curl -s http://localhost:9200/health | python3 -c "
+curl -s http://localhost:9292/health | python3 -c "
 import sys,json
 h=json.load(sys.stdin)
 print(f'RSS: {h[\"memory_usage_mb\"]} MB')
@@ -1836,7 +1836,7 @@ print(f'Job engine running: {h[\"job_engine_running\"]}')
 "
 
 # Get memory component breakdown from Prometheus
-curl -s http://localhost:9201/metrics | grep memory
+curl -s http://localhost:9293/metrics | grep memory
 ```
 - [ ] RSS < 2048 MB (systemd MemoryMax limit)
 - [ ] No `bonsai_sidecar_memory_oom_evictions_total` counter increasing
@@ -1860,7 +1860,7 @@ print('Done')
 "
 
 sleep 2
-curl -s http://localhost:9200/health | python3 -c "
+curl -s http://localhost:9292/health | python3 -c "
 import sys,json
 h=json.load(sys.stdin)
 print(f'Queue depth: {h[\"queue_depth\"]}')
@@ -1870,7 +1870,7 @@ print(f'Queue drops today: {h[\"queue_drops_today\"]}')
 
 Monitor Prometheus:
 ```bash
-curl -s http://localhost:9201/metrics | grep forward_queue
+curl -s http://localhost:9293/metrics | grep forward_queue
 ```
 - [ ] Queue depth stays < 1000
 - [ ] `bonsai_forward_queue_drops_total` may increment under heavy load — expected
@@ -1886,7 +1886,7 @@ curl -s http://localhost:3000/api/governance/pressure | python3 -m json.tool
 When `write_pressure: true`, verify sidecar pauses heavy jobs:
 ```bash
 # Simulate: check sidecar logs for "pausing heavy jobs due to memory pressure"
-curl -s http://localhost:9200/health | python3 -c "
+curl -s http://localhost:9292/health | python3 -c "
 import sys,json
 h=json.load(sys.stdin)
 print(f'Next job: {h.get(\"next_job\")}')
@@ -2054,7 +2054,7 @@ curl -s -X POST http://localhost:3000/api/sidecar/rules/interface_error_spike/to
 
 Wait 65 seconds for the rule override poller to pick up the change, then verify:
 ```bash
-curl -s http://localhost:9200/health | python3 -c "
+curl -s http://localhost:9292/health | python3 -c "
 import sys,json
 h=json.load(sys.stdin)
 print(f'Rules enabled: {h[\"rules_enabled\"]}')
@@ -2069,7 +2069,7 @@ curl -s -X POST http://localhost:3000/api/sidecar/rules/interface_error_spike/to
   -H 'Content-Type: application/json' \
   -d '{"enabled": true}'
 sleep 65
-curl -s http://localhost:9200/health | python3 -c "import sys,json; h=json.load(sys.stdin); print(f'Rules enabled: {h[\"rules_enabled\"]}')"
+curl -s http://localhost:9292/health | python3 -c "import sys,json; h=json.load(sys.stdin); print(f'Rules enabled: {h[\"rules_enabled\"]}')"
 ```
 - [ ] Count restored
 
@@ -2557,8 +2557,8 @@ python3 -c "
 import requests, json, sys
 
 base = 'http://localhost:3000'
-sidecar = 'http://localhost:9200'
-prometheus = 'http://localhost:9201'
+sidecar = 'http://localhost:9292'
+prometheus = 'http://localhost:9293'
 
 checks = []
 
