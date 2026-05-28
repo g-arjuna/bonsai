@@ -1129,10 +1129,15 @@ curl -s "http://localhost:3000/api/blast-radius/${DEVICE}" | python3 -m json.too
 
 ## Phase 8 — Remediation Proposal Flow
 
-> **Prerequisite — enable auto-proposals in `bonsai.toml`**: Remediation proposals are only
-> auto-created when `auto_propose = true` is set. This defaults to `false`. Add the following
-> to your `bonsai.toml` **before starting Bonsai** (or restart after adding it):
+> **Prerequisite — enable auto-proposals**: Remediation proposals are only auto-created when
+> `auto_propose = true`. This defaults to `false`. There are now two ways to enable it:
 >
+> **Option A — GUI toggle (recommended, no restart needed)**:
+> Navigate to **Bonsai UI → Sidecars → Process Control tab**. The "Auto Remediation Proposals"
+> section has a live toggle. Flipping it to Enabled writes to the DB immediately via
+> `PATCH /api/settings/remediation` and takes effect without restarting Bonsai.
+>
+> **Option B — `bonsai.toml` (requires restart)**:
 > ```toml
 > [remediation]
 > auto_propose = true
@@ -1180,31 +1185,72 @@ RETURN r.status, r.outcome, r.executed_at_ns
 
 ## Phase 9 — Python Sidecar Startup
 
-### 9.1 Start the sidecar
-
 > **Port clarification**: The sidecar health API binds to `:9292` (changed from `:9200` which
 > collides with Elasticsearch on Ubuntu). Prometheus metrics bind to `:9293`. These are the
 > only ports it opens. The sidecar does **not** open a gRPC listen port for incoming
-> connections — it connects **out** to Bonsai core on `:50051`. If older docs mention `:9200`
-> or `:8080` for the sidecar health port, those are incorrect.
+> connections — it connects **out** to Bonsai core on `:50051`.
 >
 > **`BONSAI_LOCAL_ADDR`** defaults to `localhost:50051` — the same address Bonsai core's gRPC
 > server binds to. In single-node EV1 deployments you do not need to set this env var.
 
+### 9.1 Start the sidecar
+
+> **Recommended: managed sidecar via Bonsai (commit 882cc3f+)**
+>
+> Bonsai core can now own the sidecar process lifecycle — no manual `python` invocation needed.
+> Choose one of the two methods below.
+
+#### Method A — `bonsai.toml` auto-start (sidecar comes up with Bonsai)
+
+Add to `bonsai.toml` before starting Bonsai:
+
+```toml
+[managed_sidecar]
+auto_start = true
+python     = ".venv/bin/python"
+script     = "python/collector_engine.py"
+# working_dir = "/home/ubuntu/bonsai"   # optional; defaults to bonsai binary cwd
+# env = { BONSAI_CORE_ADDR = "localhost:50051" }  # optional extra env vars
+```
+
+When Bonsai boots it will spawn the sidecar as a child process, pipe its stdout/stderr into
+Bonsai's own log stream, and restart it automatically on crash (exponential backoff, default
+5 s → 120 s cap).
+
+#### Method B — GUI / API on-demand start
+
+If `auto_start` is omitted or `false`, go to **Bonsai UI → Sidecars → Process Control tab**
+and click **Start**. The same Start/Stop/Restart controls are also available via API:
+
 ```bash
-# Set environment
+# Start
+curl -s -X POST http://localhost:3000/api/sidecar/start | python3 -m json.tool
+
+# Check OS-level process state (pid, state, restart_count, uptime_secs)
+curl -s http://localhost:3000/api/sidecar/process-status | python3 -m json.tool
+
+# Stop / Restart
+curl -s -X POST http://localhost:3000/api/sidecar/stop    | python3 -m json.tool
+curl -s -X POST http://localhost:3000/api/sidecar/restart | python3 -m json.tool
+```
+
+#### Method C — Legacy manual launch (fallback if managed_sidecar not configured)
+
+```bash
 export BONSAI_API_URL="http://localhost:3000"
 export BONSAI_CORE_ADDR="localhost:50051"
 export BONSAI_LOCAL_ADDR="localhost:50051"
 
-# Start sidecar (non-blocking startup — all background threads launch immediately)
 cd ~/bonsai
 .venv/bin/python python/collector_engine.py &
 SIDECAR_PID=$!
+```
 
-sleep 8
+---
 
-# Verify health
+After any of the above methods, wait ~8 s then verify:
+
+```bash
 curl -s http://localhost:9292/health | python3 -m json.tool
 ```
 
@@ -1257,21 +1303,34 @@ curl -s http://localhost:9293/metrics | grep bonsai_ml
 - [ ] `bonsai_ml_pending_embeddings` metric present
 - [ ] `bonsai_sidecar_memory_mb` gauge present
 
-### 9.4 Test graceful shutdown (then restart)
+### 9.4 Test graceful shutdown and restart
 
+**Via GUI**: Bonsai UI → Sidecars → Process Control → **Stop** / **Restart** buttons.
+The state badge updates live (running → stopping → stopped / running).
+
+**Via API**:
 ```bash
-kill -SIGTERM $SIDECAR_PID
+# Graceful stop
+curl -s -X POST http://localhost:3000/api/sidecar/stop | python3 -m json.tool
 sleep 12
-# Expected in sidecar logs: "received SIGTERM, shutting down gracefully"
-# Expected: forward queue drains, snapshot buffer saved
+# Expected in sidecar logs (piped into bonsai.log): "received SIGTERM, shutting down gracefully"
 
 # Restart
+curl -s -X POST http://localhost:3000/api/sidecar/restart | python3 -m json.tool
+sleep 8
+curl -s http://localhost:9292/health | python3 -m json.tool
+```
+
+**Legacy manual restart** (Method C only):
+```bash
+kill -SIGTERM $SIDECAR_PID && sleep 12
 .venv/bin/python python/collector_engine.py &
 SIDECAR_PID=$!
 sleep 5
 curl -s http://localhost:9292/health | python3 -m json.tool
 ```
 - [ ] Sidecar restarts cleanly, re-registers with core
+- [ ] `restart_count` increments in `/api/sidecar/process-status` (managed mode only)
 
 ---
 
