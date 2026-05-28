@@ -19,6 +19,8 @@
 
   $: gnnEvent = $lastGnnEvent;
   $: jobEvent = $lastJobEvent;
+  $: schedulerMode = $sidecarQ.data?.scheduler_mode ?? null;
+  $: schedulerOk = schedulerMode === 'apscheduler';
 
   $: nextJobs = ($schedulesQ.data || [])
     .filter(s => s.enabled && s.next_run_at)
@@ -32,6 +34,7 @@
   <div class="health-strip">
     {#each [
       { label: 'Sidecar',    ok: $sidecarQ.data?.healthy,   val: $sidecarQ.data ? 'healthy' : '—' },
+      { label: 'Scheduler',  ok: schedulerOk,               val: schedulerMode ?? '—' },
       { label: 'Model',      ok: $activeQ.data?.id,         val: $activeQ.data?.version || '—' },
       { label: 'Last GNN',   ok: !!gnnEvent,                val: gnnEvent ? fmt(gnnEvent.payload?.inference_at_ns) : '—' },
       { label: 'Last Export',ok: $exportsQ.data?.length > 0,val: $exportsQ.data?.[0] ? fmt($exportsQ.data[0].last_export_at) : '—' },

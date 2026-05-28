@@ -147,6 +147,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         except Exception:
             pass
 
+        scheduler_mode = "unavailable"
+        if engine is not None:
+            scheduler_mode = getattr(engine, "scheduler_mode", "apscheduler")
+
         body = json.dumps({
             "status": "ok",
             "uptime_secs": round(time.monotonic() - _start_time, 1),
@@ -169,6 +173,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             "connected_to_local": _connected_to_local,
             "job_engine_running": job_engine_running,
             "next_job": next_job,
+            "scheduler_mode": scheduler_mode,
         }).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

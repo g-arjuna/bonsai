@@ -6,6 +6,10 @@
   const qc = useQueryClient();
   const jobsQ = createQuery({ queryKey: ['jobs'], queryFn: api.jobs.list, refetchInterval: 10000 });
   const schedQ = createQuery({ queryKey: ['schedules'], queryFn: api.schedules.list });
+  const sidecarQ = createQuery({ queryKey: ['sidecar'], queryFn: api.sidecar.status, refetchInterval: 30000 });
+
+  $: schedulerMode = $sidecarQ.data?.scheduler_mode ?? null;
+  $: schedulerDegraded = schedulerMode === 'fallback_manual_only' || schedulerMode === 'unavailable';
 
   const cancelMut = createMutation({
     mutationFn: id => api.jobs.cancel(id),
@@ -42,6 +46,20 @@
 
 <div class="page">
   <h1 class="page-title">Jobs</h1>
+
+  {#if schedulerDegraded}
+  <div class="scheduler-warn">
+    <span class="warn-icon">⚠</span>
+    <div class="warn-body">
+      <strong>Scheduler degraded — {schedulerMode === 'unavailable' ? 'job engine not running' : 'APScheduler 4.x not installed'}</strong>
+      <span class="warn-sub">
+        Automated jobs will {schedulerMode === 'unavailable' ? 'not run' : 'run on a basic 60-second interval without DB persistence or crash recovery'}.
+        Fix: <code>pip install 'apscheduler&gt;=4.0.0a1' aiosqlite 'sqlalchemy[asyncio]' sniffio</code>
+        then restart the sidecar.
+      </span>
+    </div>
+  </div>
+  {/if}
 
   {#if $schedQ.data}
   <section class="section">
@@ -130,6 +148,12 @@
 
 <style>
   .page-title { font-size: 20px; font-weight: 700; margin: 0 0 20px; }
+  .scheduler-warn { display: flex; align-items: flex-start; gap: 10px; background: rgba(210,153,34,0.12); border: 1px solid rgba(210,153,34,0.5); border-radius: 6px; padding: 12px 16px; margin-bottom: 20px; }
+  .warn-icon { font-size: 18px; color: #d29922; line-height: 1.4; flex-shrink: 0; }
+  .warn-body { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+  .warn-body strong { color: #d29922; }
+  .warn-sub { color: var(--text-secondary, #8b949e); font-size: 12px; }
+  .warn-sub code { background: rgba(139,148,158,0.1); padding: 1px 5px; border-radius: 3px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
   .section { margin-bottom: 28px; }
   .section-title { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary, #8b949e); margin: 0 0 10px; }
   .section-title.dead { color: #f85149; }

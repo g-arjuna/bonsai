@@ -140,6 +140,8 @@ class BonsaiJobEngine:
         self._shedding_heavy: bool = False
         self._metrics: Optional[Any] = None
         self._running = False
+        # "apscheduler" when APScheduler 4.x is available, "fallback_manual_only" otherwise
+        self.scheduler_mode: str = "apscheduler"
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -277,9 +279,11 @@ class BonsaiJobEngine:
             log.info("JobEngine: APScheduler initialised (db=%s)", self.job_db_path)
         except ImportError:
             log.warning(
-                "apscheduler/sqlalchemy not installed — using in-memory fallback scheduler"
+                "apscheduler/sqlalchemy not installed — using in-memory fallback scheduler. "
+                "Install with: pip install 'apscheduler>=4.0.0a1' aiosqlite 'sqlalchemy[asyncio]' sniffio"
             )
             self._scheduler = _InMemoryFallbackScheduler(self)
+            self.scheduler_mode = "fallback_manual_only"
 
     async def _load_schedules_from_api(self) -> None:
         """Read MlJobSchedule records from /api/ml/schedules and register them."""
@@ -291,7 +295,7 @@ class BonsaiJobEngine:
                 ) as resp:
                     if resp.ok:
                         schedules = await resp.json()
-                        for sched in schedules:
+                        for sched in schedules.get("schedules", []):
                             if sched.get("enabled") and sched.get("job_id") in self._job_registry:
                                 await self._register_schedule(sched)
         except Exception as exc:
@@ -601,16 +605,57 @@ class BonsaiJobEngine:
 
 
 class _InMemoryFallbackScheduler:
-    """Minimal fallback when APScheduler is not installed. Only supports trigger_job()."""
+    """Fallback when APScheduler 4.x is not installed.
+
+    Runs a simple asyncio loop that fires registered jobs according to the
+    DEFAULT_SCHEDULES interval config.  Covers the common case where
+    'apscheduler>=4.0.0a1' is not yet installed in the virtualenv.
+    Install the full stack with:
+        pip install 'apscheduler>=4.0.0a1' aiosqlite 'sqlalchemy[asyncio]' sniffio
+    """
 
     def __init__(self, engine: BonsaiJobEngine) -> None:
         self._engine = engine
+        self._last_run: dict[str, float] = {}
+        self._task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
 
     async def start_in_background(self) -> None:
-        log.warning("JobEngine: APScheduler unavailable — only manual triggers work")
+        log.warning(
+            "JobEngine: APScheduler 4.x unavailable — running interval fallback scheduler. "
+            "Jobs will fire but without DB persistence or crash recovery."
+        )
+        self._task = asyncio.ensure_future(self._run_loop())
+
+    async def _run_loop(self) -> None:
+        """Poll every 60 s and fire any overdue DEFAULT_SCHEDULES jobs."""
+        while True:
+            await asyncio.sleep(60)
+            now = time.time()
+            for sched in DEFAULT_SCHEDULES:
+                job_id = sched["job_id"]
+                if job_id not in self._engine._job_registry:
+                    continue
+                interval_secs = self._interval_secs(sched)
+                last = self._last_run.get(job_id, 0.0)
+                if now - last >= interval_secs:
+                    self._last_run[job_id] = now
+                    log.debug("FallbackScheduler: triggering %s", job_id)
+                    asyncio.ensure_future(self._engine._run_job(job_id))
+
+    @staticmethod
+    def _interval_secs(sched: dict) -> float:
+        t = sched.get("trigger", "interval")
+        if t == "interval":
+            return (
+                sched.get("hours", 0) * 3600
+                + sched.get("minutes", 0) * 60
+                + sched.get("seconds", 0)
+            ) or 3600.0
+        return 86400.0  # cron jobs: daily fallback
 
     async def stop(self) -> None:
-        pass
+        if self._task:
+            self._task.cancel()
 
     async def add_schedule(self, *args: Any, **kwargs: Any) -> None:
         pass
