@@ -929,11 +929,12 @@ const DEFAULT_SCHEDULES: &[(&str, &str, &str)] = &[
     // EV1 ML pipeline schedules — expected by Python sidecar + EV1 guide
     ("sched-graph_snapshot",     "graph_snapshot",     "0 */1 * * *"), // every 1h
     ("sched-gnn_inference",      "gnn_inference",      "0 */4 * * *"), // every 4h
-    ("sched-syslog_embedding",   "syslog_embedding",   "* * * * *"),   // every 1 min (rolling)
+    ("sched-syslog_embedding",   "syslog_embedding",   "0 */1 * * *"), // every 1h from Rust tick; Python APScheduler runs it every 60s
     ("sched-config_embedding",   "config_embedding",   "0 */6 * * *"), // every 6h
 ];
 
 /// Seed the three default export schedules (idempotent — skips existing rows).
+/// Also cleans up stale `running` MlJobRun records left from a previous crashed session.
 pub fn seed_default_ml_schedules(db: Arc<lbug::Database>, write_lock: Arc<std::sync::Mutex<()>>) {
     let db = db.clone();
     let wl = write_lock.clone();
@@ -944,6 +945,24 @@ pub fn seed_default_ml_schedules(db: Arc<lbug::Database>, write_lock: Arc<std::s
             Err(e) => { warn!("seed_default_ml_schedules: cannot open connection: {e}"); return; }
         };
         let now = now_ns();
+
+        // Clean up stale `running` or `pending` jobs from a previous server session.
+        // These will never be patched to completed because the Python worker that owned
+        // them is gone. Mark them `interrupted` so the UI doesn't show perpetual spinners.
+        let cleanup = conn.prepare(
+            "MATCH (j:MlJobRun) WHERE j.status = 'running' OR j.status = 'pending' \
+             SET j.status = 'interrupted', j.completed_at_ns = $now, \
+                 j.error_message = 'server restarted before job completed'",
+        );
+        match cleanup {
+            Ok(mut stmt) => {
+                match conn.execute(&mut stmt, vec![("now", Value::Int64(now))]) {
+                    Ok(_) => info!("seed_default_ml_schedules: cleaned up stale running/pending jobs"),
+                    Err(e) => warn!("seed_default_ml_schedules: stale-job cleanup failed: {e}"),
+                }
+            }
+            Err(e) => warn!("seed_default_ml_schedules: could not prepare stale-job cleanup: {e}"),
+        }
         for (id, job_id, cron_expr) in DEFAULT_SCHEDULES {
             let mut check = match conn.prepare("MATCH (s:MlJobSchedule {id: $id}) RETURN s.id") {
                 Ok(s) => s,

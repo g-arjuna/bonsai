@@ -669,11 +669,57 @@ def build_default_engine(api_url: str = DEFAULT_API_URL) -> BonsaiJobEngine:
         clusterer = SyslogClusterer(api_url=api_url)
         clusterer.run()
 
-    engine.register_job("anomaly_export_daily",      anomaly_export,      "cron",     hour=2,  minute=0)
-    engine.register_job("remediation_export_weekly", remediation_export,  "cron",     day_of_week=0, hour=2, minute=0)
-    engine.register_job("syslog_embedding",          syslog_embedding,    "interval", seconds=60)
-    engine.register_job("config_embedding",          config_embedding,    "interval", hours=6)
-    engine.register_job("detection_clustering",      detection_clustering, "cron",    day_of_week=0, hour=3, minute=0)
+    async def _take_graph_snapshot(reporter: Any = None) -> Optional[dict]:
+        """Fetch the live graph snapshot and persist it to the SnapshotStore rolling buffer.
+
+        This is the handler for both the 'graph_snapshot' and 'gnn_snapshot' job IDs
+        that the Rust scheduler fires every 1h / 4h respectively.  The inference loop
+        reads the buffer to build the T=8 temporal window for STGNN inference.
+        """
+        try:
+            from .snapshot_client import GraphSnapshotClient
+            from .gnn.snapshot_store import SnapshotStore
+            from .gnn.model import build_hetero_data
+
+            client = GraphSnapshotClient(base_url=api_url)
+            snap = client.fetch()
+            if snap is None or not snap.devices:
+                log.warning("graph_snapshot: empty or missing snapshot — skipping")
+                return None
+
+            raw = {
+                "snapshot_ns": snap.snapshot_ns,
+                "devices": snap.devices,
+                "links": snap.links,
+                "bgp_sessions": snap.bgp_sessions,
+                "bfd_sessions": snap.bfd_sessions,
+                "detections": snap.detections,
+            }
+
+            try:
+                hetero = build_hetero_data(raw)
+                store = SnapshotStore()
+                store.write_snapshot(hetero, timestamp_ns=snap.snapshot_ns)
+                health = store.health()
+                log.info(
+                    "graph_snapshot: wrote snapshot to buffer (buffer_size=%d, stale=%s)",
+                    health.buffer_size, health.is_stale,
+                )
+            except Exception as exc:
+                log.warning("graph_snapshot: could not build/store HeteroData: %s", exc)
+
+            return raw
+        except Exception as exc:
+            log.error("graph_snapshot: failed: %s", exc, exc_info=True)
+            raise
+
+    engine.register_job("anomaly_export_daily",      anomaly_export,       "cron",     hour=2,  minute=0)
+    engine.register_job("remediation_export_weekly", remediation_export,   "cron",     day_of_week=0, hour=2, minute=0)
+    engine.register_job("syslog_embedding",          syslog_embedding,     "interval", seconds=60)
+    engine.register_job("config_embedding",          config_embedding,     "interval", hours=6)
+    engine.register_job("detection_clustering",      detection_clustering, "cron",     day_of_week=0, hour=3, minute=0)
+    engine.register_job("graph_snapshot",            _take_graph_snapshot, "interval", hours=1)
+    engine.register_job("gnn_snapshot",              _take_graph_snapshot, "interval", hours=4)
 
     engine.on_job_success_trigger(
         "anomaly_export_daily",
