@@ -1586,3 +1586,190 @@ Operational conclusion:
 
 - preferred Phase 6 validation: working
 - no-varbind localhost fallback: still likely imperfect / lower confidence
+
+## 2026-05-28 Reconfigure + latest-code retest
+
+### 1. Clean lab reconfigure and CA refresh
+
+Performed a full ContainerLab reconfigure for the EV1 `3node-srl` topology:
+
+- `clab deploy -t 3node-srl.clab.yml --reconfigure`
+
+After reconfigure, refreshed Bonsai's trusted CA from the regenerated lab files:
+
+- source:
+  - `lab/fast-iteration/clab-bonsai-srl/.tls/ca/ca.pem`
+- destination:
+  - `runtime/tls/clab-ca.pem`
+
+Host-side TLS validation against `172.100.100.11:57400` succeeded with:
+
+- `-servername srl1`
+- `Verify return code: 0 (ok)`
+
+Operational conclusion:
+
+- the reconfigured lab regenerated a valid CA as expected
+- Bonsai needed the refreshed CA copy in `runtime/tls/` before subscriptions could resume cleanly
+
+### 2. Latest code pulled, but running binary was stale
+
+Pulled latest `origin/main` to:
+
+- `1023f45` — `fix: stray bare-IP managed device from SRL bootstrap + guide updates`
+
+Important runtime mismatch found immediately after pull:
+
+- source tree included the newer SNMP extraction fix from:
+  - `568a71d` — `fix: extract indexed snmp trap fields`
+- but the running HTTP `/health` still reported:
+  - `git_sha: "88bcf87c"`
+
+This explained why the first post-pull correlation retest still behaved like the older build.
+
+Operational conclusion:
+
+- after `git pull`, the live Bonsai process was still serving an older release binary
+- a fresh release rebuild was required before treating retest results as valid
+
+### 3. Release rebuild and restart on the new binary
+
+Normal sandboxed `cargo build --release` was blocked by `sccache` wrapper permissions, so the
+successful rebuild path was:
+
+- `env RUSTC_WRAPPER= cargo build --release`
+
+After restart, `/health` reported:
+
+- `git_sha: "1023f459"`
+
+and `/api/operations` settled back to:
+
+- `observed_subscriptions: 18`
+- `pending_subscriptions: 0`
+
+Operational conclusion:
+
+- the reconfigured lab plus refreshed CA is stable on the latest release build
+- all 3 SRL targets resumed healthy TLS-backed subscription flow
+
+### 4. Bare-IP bootstrap fix validated again on the recovered lab
+
+Re-tested SRL bootstrap using a bare IP input:
+
+- `POST /api/devices/bootstrap`
+- payload address:
+  - `172.100.100.11`
+
+Observed bootstrap response normalized to:
+
+- `address: "172.100.100.11:57400"`
+
+Post-bootstrap inventory still contained only:
+
+- `172.100.100.11:57400`
+- `172.100.100.12:57400`
+- `172.100.100.13:57400`
+
+No stray bare-IP managed device entry was created.
+
+Operational conclusion:
+
+- the `1023f45` bootstrap normalization fix works as intended in the live EV1 lab
+
+### 5. Preferred Phase 6 correlation revalidated on the latest binary
+
+After rebuilding to `1023f45`, re-ran the preferred localhost correlation pair:
+
+1. syslog:
+   - `<11>May 25 10:05:00 127.0.0.1 bgpd: bgp neighbor 192.168.0.2 down`
+2. SNMP trap with indexed varbinds:
+   - peer address `192.168.0.2`
+   - peer state `1`
+
+Observed in `/api/detections`:
+
+- newest detection:
+  - `rule_id: bgp_neighbor_down`
+  - `source_types: ["snmp", "syslog"]`
+- SNMP fields now present:
+  - `fields.peer_address = 192.168.0.2`
+  - `fields.peer_state = 1`
+
+Operational conclusion:
+
+- the preferred EV1 Phase 6 correlation path still works after:
+  - lab reconfigure
+  - CA refresh
+  - latest code pull
+  - release rebuild
+
+### 6. Remaining follow-up gap
+
+Even after the successful correlated detection, remediation proposals were still absent:
+
+- `GET /api/approvals?limit=5`
+- result:
+  - `proposals: []`
+
+Also noted during this retest:
+
+- `/api/settings/receiver-status` still showed `packet_count: 0` for syslog and SNMP even after
+  successful localhost injections and downstream detections
+
+Operational conclusion:
+
+- correlation is confirmed working on the current build
+- auto-remediation proposal creation is still not demonstrated in this EV1 path
+- receiver-status counters may still lag or not reflect localhost synthetic injections correctly
+
+### 7. Phase 9 sidecar startup still blocked on this setup
+
+Checked Python environment first:
+
+- system `python3`:
+  - `ModuleNotFoundError: No module named 'bonsai_ml'`
+- project venv:
+  - `.venv/bin/python` successfully imports `bonsai_ml`
+
+This confirms the guide's `.venv` note is still necessary.
+
+Attempted sidecar start with:
+
+- `BONSAI_API_URL=http://localhost:3000`
+- `BONSAI_CORE_ADDR=localhost:50051`
+- `.venv/bin/python python/collector_engine.py`
+
+Observed startup problems:
+
+1. health port bind failure
+   - `failed to start health server on :9200: [Errno 98] Address already in use`
+2. local collector registration failure
+   - repeated gRPC reconnects to:
+     - `127.0.0.1:50052`
+     - `[::1]:50052`
+   - error:
+     - `Failed to connect to remote host: Connection refused`
+3. no sidecar registration visible from core
+   - `GET /api/sidecar/status`
+   - result:
+     - `{"sidecars":[]}`
+
+Additional runtime observation:
+
+- `ss -tlnp` showed `:9200` already occupied on this host, but the owner was not exposed in the
+  current output
+
+Operational conclusion:
+
+- EV1 Phase 9 is still blocked in the current environment
+- the sidecar path requires at least:
+  - resolving the `:9200` port collision
+  - understanding why the expected local collector endpoint on `:50052` is not present
+
+One good note:
+
+- sending `SIGTERM` to the sidecar still produced a clean graceful shutdown path:
+  - snapshot buffer persisted
+  - job engine stopped
+  - graceful shutdown complete
