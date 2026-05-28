@@ -94,7 +94,8 @@ def _fetch_unembedded_devices(api_url: str, limit: int) -> list[dict[str, Any]]:
             timeout=15,
         )
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        return data.get("devices", data) if isinstance(data, dict) else data
     except Exception as exc:
         log.debug("Failed to fetch unembedded devices: %s", exc)
         return []

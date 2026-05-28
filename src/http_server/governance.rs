@@ -882,6 +882,7 @@ pub(super) struct SidecarStatusEntry {
     pub uptime_secs: f64,
     pub queue_depth: i64,
     pub health_reachable: bool,
+    pub scheduler_mode: String,
 }
 
 // ── D4-9 T4: Sidecar rules visibility ─────────────────────────────────────
@@ -1062,13 +1063,18 @@ pub(super) async fn sidecar_rule_analytics_handler(
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
         let result = conn.query(
             "MATCH (d:DetectionEvent) \
-             RETURN d.rule_id, d.severity, count(*) AS cnt, max(d.occurred_at_ns) AS last_fired_ns \
+             RETURN d.rule_id, d.severity, count(*) AS cnt, \
+                    max(epoch_ns(d.fired_at)) AS last_fired_ns \
              ORDER BY cnt DESC LIMIT 100",
         )
         .map_err(|e| e.to_string())?;
         let rows: Vec<serde_json::Value> = result.map(|r| {
             let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
-            let n = |v: &Value| match v { Value::Int64(n) => *n, _ => 0 };
+            let n = |v: &Value| match v {
+                Value::Int64(n) => *n,
+                Value::Int32(n) => *n as i64,
+                _ => 0,
+            };
             serde_json::json!({
                 "rule_id": s(&r[0]),
                 "severity": s(&r[1]),
@@ -1206,7 +1212,7 @@ pub(super) async fn sidecar_status_handler(
         let health_port = std::env::var("BONSAI_SIDECAR_HEALTH_PORT").unwrap_or_else(|_| "9292".to_string());
         let health_url = format!("http://{}:{}/health", host, health_port);
 
-        let (health_reachable, rules_loaded, last_det, det_today, uptime, queue) =
+        let (health_reachable, rules_loaded, last_det, det_today, uptime, queue, sched_mode) =
             match client.get(&health_url).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     if let Ok(body) = resp.json::<serde_json::Value>().await {
@@ -1217,12 +1223,13 @@ pub(super) async fn sidecar_status_handler(
                             body.get("detections_today").and_then(|v| v.as_i64()).unwrap_or(0),
                             body.get("uptime_secs").and_then(|v| v.as_f64()).unwrap_or(0.0),
                             body.get("queue_depth").and_then(|v| v.as_i64()).unwrap_or(0),
+                            body.get("scheduler_mode").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
                         )
                     } else {
-                        (true, 0, 0, 0, 0.0, 0)
+                        (true, 0, 0, 0, 0.0, 0, "unknown".to_string())
                     }
                 }
-                _ => (false, 0, snap.entry.last_heartbeat_ns, 0, 0.0, 0),
+                _ => (false, 0, snap.entry.last_heartbeat_ns, 0, 0.0, 0, "unavailable".to_string()),
             };
 
         entries.push(SidecarStatusEntry {
@@ -1236,6 +1243,7 @@ pub(super) async fn sidecar_status_handler(
             uptime_secs: uptime,
             queue_depth: queue,
             health_reachable,
+            scheduler_mode: sched_mode,
         });
     }
     Json(SidecarStatusResponse { sidecars: entries })

@@ -8,7 +8,7 @@
   const schedQ = createQuery({ queryKey: ['schedules'], queryFn: api.schedules.list });
   const sidecarQ = createQuery({ queryKey: ['sidecar'], queryFn: api.sidecar.status, refetchInterval: 30000 });
 
-  $: schedulerMode = $sidecarQ.data?.scheduler_mode ?? null;
+  $: schedulerMode = $sidecarQ.data?.sidecars?.[0]?.scheduler_mode ?? null;
   $: schedulerDegraded = schedulerMode === 'fallback_manual_only' || schedulerMode === 'unavailable';
 
   const cancelMut = createMutation({

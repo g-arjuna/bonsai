@@ -4,7 +4,7 @@
   import { lastGnnEvent, lastJobEvent } from '$lib/sse.js';
 
   const sidecarQ  = createQuery({ queryKey: ['sidecar'],  queryFn: api.sidecar.status });
-  const activeQ   = createQuery({ queryKey: ['activeModel'], queryFn: () => api.models.active('stgnn') });
+  const activeQ   = createQuery({ queryKey: ['activeModel'], queryFn: () => api.models.active('stgnn').catch(() => null), retry: false });
   const exportsQ  = createQuery({ queryKey: ['exportsQuality'], queryFn: api.exports.quality });
   const schedulesQ = createQuery({ queryKey: ['schedules'], queryFn: api.schedules.list });
 
@@ -19,10 +19,11 @@
 
   $: gnnEvent = $lastGnnEvent;
   $: jobEvent = $lastJobEvent;
-  $: schedulerMode = $sidecarQ.data?.scheduler_mode ?? null;
+  $: sidecarHealth = $sidecarQ.data?.sidecars?.[0] ?? $sidecarQ.data?.sidecars?.find(s => s.health_reachable);
+  $: schedulerMode = sidecarHealth?.scheduler_mode ?? null;
   $: schedulerOk = schedulerMode === 'apscheduler';
 
-  $: nextJobs = ($schedulesQ.data || [])
+  $: nextJobs = ($schedulesQ.data?.schedules ?? $schedulesQ.data ?? [])
     .filter(s => s.enabled && s.next_run_at)
     .sort((a, b) => a.next_run_at - b.next_run_at)
     .slice(0, 5);
@@ -33,11 +34,11 @@
 
   <div class="health-strip">
     {#each [
-      { label: 'Sidecar',    ok: $sidecarQ.data?.healthy,   val: $sidecarQ.data ? 'healthy' : '—' },
+      { label: 'Sidecar',    ok: sidecarHealth?.health_reachable, val: sidecarHealth ? (sidecarHealth.health_reachable ? 'healthy' : 'unreachable') : '—' },
       { label: 'Scheduler',  ok: schedulerOk,               val: schedulerMode ?? '—' },
       { label: 'Model',      ok: $activeQ.data?.id,         val: $activeQ.data?.version || '—' },
       { label: 'Last GNN',   ok: !!gnnEvent,                val: gnnEvent ? fmt(gnnEvent.payload?.inference_at_ns) : '—' },
-      { label: 'Last Export',ok: $exportsQ.data?.length > 0,val: $exportsQ.data?.[0] ? fmt($exportsQ.data[0].last_export_at) : '—' },
+      { label: 'Last Export',ok: ($exportsQ.data?.quality ?? $exportsQ.data ?? []).length > 0, val: ($exportsQ.data?.quality ?? $exportsQ.data ?? [])[0] ? fmt(($exportsQ.data?.quality ?? $exportsQ.data)[0].last_export_at) : '—' },
     ] as item}
       <div class="health-chip {item.ok ? 'ok' : 'warn'}">
         <span class="dot"></span>
@@ -51,22 +52,23 @@
     <div class="card">
       <div class="card-title">Active Model</div>
       {#if $activeQ.isLoading}<span class="muted">Loading…</span>
-      {:else if $activeQ.data}
+      {:else if $activeQ.isError || !$activeQ.data}
+        <span class="muted">No active model — train one first</span>
+      {:else}
         <div class="big-val">{$activeQ.data.version || $activeQ.data.model_type}</div>
         <div class="meta">AUC {$activeQ.data.val_auc?.toFixed(3) ?? '—'} · F1 {$activeQ.data.val_f1?.toFixed(3) ?? '—'}</div>
         <div class="meta">Threshold {$activeQ.data.threshold ?? '—'} · Activated {fmt($activeQ.data.trained_at_ns)}</div>
-      {:else}<span class="muted">No active model</span>{/if}
+      {/if}
     </div>
 
     <div class="card">
       <div class="card-title">Parquet Freshness</div>
       {#if $exportsQ.isLoading}<span class="muted">Loading…</span>
-      {:else if $exportsQ.data?.length > 0}
-        {@const ex = $exportsQ.data[0]}
+      {:else if ($exportsQ.data?.quality ?? $exportsQ.data)?.length > 0}
+        {@const ex = ($exportsQ.data?.quality ?? $exportsQ.data)[0]}
         <div class="big-val">{ex.row_count?.toLocaleString() ?? '—'} rows</div>
         <div class="meta">Last export {fmt(ex.last_export_at)}</div>
-        <div class="badge {ex.quality_passed ? 'pass' : 'fail'}">{ex.quality_passed ? 'PASS' : 'FAIL'}</div>
-        <div class="meta">Class balance {ex.class_balance_pct?.toFixed(1) ?? '—'}%</div>
+        <div class="meta">Status: {ex.status ?? '—'}</div>
       {:else}<span class="muted">No exports yet</span>{/if}
     </div>
 
