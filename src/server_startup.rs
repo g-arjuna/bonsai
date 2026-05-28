@@ -681,6 +681,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         } else {
             None
         };
+        let syslog_supervisor = std::sync::Arc::clone(&supervisor);
         spawn_or_register!(
             "syslog",
             cfg.signals.syslog.udp_addr.clone() + "/" + &cfg.signals.syslog.tcp_addr,
@@ -691,6 +692,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                     syslog_cfg, pattern_dir, targets, syslog_bus, shutdown, governor,
                     shun_engine_for_syslog,
                     Some(syslog_pattern_rx),
+                    Some(syslog_supervisor),
                 ).await
             }
         );
@@ -701,6 +703,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         let targets   = cfg.target.clone();
         let snmp_bus  = std::sync::Arc::clone(&bus);
         let snmp_gov  = shared_governor.clone().map(std::sync::Arc::new);
+        let snmp_supervisor = std::sync::Arc::clone(&supervisor);
         spawn_or_register!(
             "snmp",
             cfg.signals.snmp.udp_addr.clone(),
@@ -710,6 +713,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 bonsai::signals::snmp::run_snmp_receiver(
                     snmp_cfg, targets, snmp_bus, shutdown, snmp_gov,
                     Some(snmp_pattern_rx),
+                    Some(snmp_supervisor),
                 ).await
             }
         );

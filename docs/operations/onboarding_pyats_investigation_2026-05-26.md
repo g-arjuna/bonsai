@@ -1773,3 +1773,59 @@ One good note:
   - snapshot buffer persisted
   - job engine stopped
   - graceful shutdown complete
+
+## 2026-05-28 Follow-up fixes (from retest report above)
+
+Three bugs identified from the retest observations and fixed in the same session:
+
+### Fix A — receiver-status `packet_count` always 0
+
+Root cause:
+
+- `record_packet()` method existed in `ReceiverSupervisor` but was never called
+- the `SharedReceiverSupervisor` was not passed into `run_syslog_receiver` or `run_snmp_receiver`
+
+Fix:
+
+- added `supervisor: Option<SharedReceiverSupervisor>` parameter to both receiver functions
+- call `supervisor.try_write().record_packet(name)` on every successful `recv_from` in the UDP loop
+- wired `syslog_supervisor` and `snmp_supervisor` through `server_startup.rs`
+
+### Fix B — sidecar health port `:9200` collides with Elasticsearch
+
+Root cause:
+
+- `HEALTH_PORT` in `collector_engine.py` defaulted to `9200`
+- `:9200` is Elasticsearch's default HTTP port, commonly bound on EV1 Ubuntu hosts
+
+Fix:
+
+- changed `HEALTH_PORT` default from `9200` to `9292`
+- updated `METRICS_PORT` in `bonsai_ml/job_engine.py` from `9201` to `9293` (kept adjacent)
+- updated `EV1_UBUNTU_TESTING_GUIDE.md` Phase 0 kill list and Phase 9 curl commands
+
+### Fix C — sidecar `BONSAI_LOCAL_ADDR` default `localhost:50052` wrong
+
+Root cause:
+
+- `BONSAI_LOCAL_ADDR` defaulted to `localhost:50052` in `collector_engine.py`
+- Bonsai core gRPC binds on `:50051` — nothing ever listens on `:50052`
+- caused repeated "Connection refused" in the local-connector thread
+
+Fix:
+
+- changed `BONSAI_LOCAL_ADDR` default from `localhost:50052` to `localhost:50051`
+- added explicit `export BONSAI_LOCAL_ADDR="localhost:50051"` in Phase 9.1 start block
+
+### Fix D — remediation proposals never created (`proposals: []`)
+
+Root cause:
+
+- `auto_propose` defaults to `false` in `RemediationConfig`; the guide did not instruct enabling it
+- no `bgp_neighbor_down.yaml` playbook existed in `playbooks/library/` — only `bgp_session_down.yaml`
+  - the EV1 Phase 6 correlation test fires `rule_id: bgp_neighbor_down` (not `bgp_session_down`)
+
+Fix:
+
+- added `playbooks/library/bgp_neighbor_down.yaml` with `detection_rule_id: bgp_neighbor_down`
+- updated Phase 8 of `EV1_UBUNTU_TESTING_GUIDE.md` with the required `[remediation]` toml stanza

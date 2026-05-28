@@ -14,6 +14,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::{SnmpConfig, TargetConfig};
 use crate::event_bus::InProcessBus;
+use crate::receiver_supervisor::SharedReceiverSupervisor;
 use crate::resource_governor::GovernorHandle;
 use crate::telemetry::TelemetryUpdate;
 
@@ -273,6 +274,7 @@ pub async fn run_snmp_receiver(
     mut shutdown: watch::Receiver<bool>,
     governor: Option<Arc<GovernorHandle>>,
     mut pattern_rx: Option<watch::Receiver<Arc<SnmpFactExtractor>>>,
+    supervisor: Option<SharedReceiverSupervisor>,
 ) -> Result<()> {
     let archive = SnmpArchive::open(&cfg.archive_path).await?;
     let target_map = SnmpTargetMap::new(&targets);
@@ -319,6 +321,11 @@ pub async fn run_snmp_receiver(
             recv = socket.recv_from(&mut buf) => {
                 match recv {
                     Ok((n, peer)) => {
+                        if let Some(ref sup) = supervisor {
+                            if let Ok(mut s) = sup.try_write() {
+                                s.record_packet("snmp");
+                            }
+                        }
                         let peer_addr = peer.to_string();
                         let peer_ip = peer.ip().to_string();
                         let timestamp_ns = now_ns();

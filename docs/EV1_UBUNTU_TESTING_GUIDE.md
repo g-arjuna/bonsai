@@ -56,13 +56,13 @@
 pkill -f "target/release/bonsai" 2>/dev/null || true
 pkill -f "bonsai --config"       2>/dev/null || true
 
-# Kill Python sidecar (collector_engine.py, binds :9200, :9201)
+# Kill Python sidecar (collector_engine.py, binds :9292, :9293)
 pkill -f "collector_engine.py"   2>/dev/null || true
 pkill -f "bonsai_agent"          2>/dev/null || true
 
 # Confirm nothing is holding the ports
 sleep 2
-ss -tlnp | grep -E "3000|9200|50051|50052|5514|9162" || echo "All ports free"
+ss -tlnp | grep -E "3000|9292|50051|5514|9162" || echo "All ports free"
 # Expected: no output (all ports free)
 ```
 
@@ -1129,6 +1129,22 @@ curl -s "http://localhost:3000/api/blast-radius/${DEVICE}" | python3 -m json.too
 
 ## Phase 8 — Remediation Proposal Flow
 
+> **Prerequisite — enable auto-proposals in `bonsai.toml`**: Remediation proposals are only
+> auto-created when `auto_propose = true` is set. This defaults to `false`. Add the following
+> to your `bonsai.toml` **before starting Bonsai** (or restart after adding it):
+>
+> ```toml
+> [remediation]
+> auto_propose = true
+> playbook_library_dir = "playbooks/library"
+> ```
+>
+> **Playbook matching**: A proposal is only created when a YAML file in `playbook_library_dir`
+> has a `detection_rule_id` matching the fired detection's `rule_id`. For EV1 Phase 6
+> correlation testing, the fired rule is **`bgp_neighbor_down`** — the matching playbook is
+> `playbooks/library/bgp_neighbor_down.yaml` (added in commit `fix: EV1 sidecar + receiver
+> fixes`). If `proposals: []` is returned, verify both conditions above are met.
+
 ```bash
 # Check if a remediation proposal was auto-created
 curl -s "http://localhost:3000/api/approvals?limit=5" | python3 -m json.tool
@@ -1158,7 +1174,7 @@ RETURN r.status, r.outcome, r.executed_at_ns
 ---
 
 > **Prerequisites**: Part 1 complete. Bonsai running. Lab devices seeded. Python ML deps installed.
-> **Key ports**: Bonsai API `:3000`, Sidecar health `:9200`, Sidecar Prometheus `:9201`
+> **Key ports**: Bonsai API `:3000`, Sidecar health `:9292`, Sidecar Prometheus `:9293`
 
 ---
 
@@ -1166,25 +1182,30 @@ RETURN r.status, r.outcome, r.executed_at_ns
 
 ### 9.1 Start the sidecar
 
-> **Port clarification**: The sidecar health API binds to `:9200` and Prometheus metrics to
-> `:9201`. These are the only ports it opens. The sidecar does **not** open a gRPC listen port
-> for incoming connections — it connects **out** to Bonsai core on `:50051`. If the guide or
-> older docs mention port `:8080` for the sidecar, that is incorrect.
+> **Port clarification**: The sidecar health API binds to `:9292` (changed from `:9200` which
+> collides with Elasticsearch on Ubuntu). Prometheus metrics bind to `:9293`. These are the
+> only ports it opens. The sidecar does **not** open a gRPC listen port for incoming
+> connections — it connects **out** to Bonsai core on `:50051`. If older docs mention `:9200`
+> or `:8080` for the sidecar health port, those are incorrect.
+>
+> **`BONSAI_LOCAL_ADDR`** defaults to `localhost:50051` — the same address Bonsai core's gRPC
+> server binds to. In single-node EV1 deployments you do not need to set this env var.
 
 ```bash
 # Set environment
 export BONSAI_API_URL="http://localhost:3000"
 export BONSAI_CORE_ADDR="localhost:50051"
+export BONSAI_LOCAL_ADDR="localhost:50051"
 
 # Start sidecar (non-blocking startup — all background threads launch immediately)
 cd ~/bonsai
-python python/collector_engine.py &
+.venv/bin/python python/collector_engine.py &
 SIDECAR_PID=$!
 
 sleep 8
 
 # Verify health
-curl -s http://localhost:9200/health | python3 -m json.tool
+curl -s http://localhost:9292/health | python3 -m json.tool
 ```
 
 **Expected full health response:**
@@ -1230,7 +1251,7 @@ curl -s http://localhost:3000/api/sidecar/status | python3 -m json.tool
 ### 9.3 Verify Prometheus metrics endpoint
 
 ```bash
-curl -s http://localhost:9201/metrics | grep bonsai_ml
+curl -s http://localhost:9293/metrics | grep bonsai_ml
 ```
 - [ ] `bonsai_ml_job_runs_total` metric present
 - [ ] `bonsai_ml_pending_embeddings` metric present
@@ -1245,10 +1266,10 @@ sleep 12
 # Expected: forward queue drains, snapshot buffer saved
 
 # Restart
-python python/collector_engine.py &
+.venv/bin/python python/collector_engine.py &
 SIDECAR_PID=$!
 sleep 5
-curl -s http://localhost:9200/health | python3 -m json.tool
+curl -s http://localhost:9292/health | python3 -m json.tool
 ```
 - [ ] Sidecar restarts cleanly, re-registers with core
 

@@ -1,0 +1,42 @@
+detection_rule_id: bgp_neighbor_down
+description: |
+  BGP neighbor reported down via syslog or SNMP trap (bgp_neighbor_down rule).
+  Mirrors bgp_session_down playbooks — same remediation action applies once a
+  bgp_neighbor_down detection is confirmed from signal sources.
+
+playbooks:
+  - name: srl_bgp_neighbor_admin_bounce
+    vendor: nokia_srl
+    operation: BGP neighbor admin-state bounce
+    description: |
+      Disable then re-enable a BGP neighbor's admin-state to force a clean
+      session reset on SR Linux. Use this when a neighbor is reported down
+      via syslog/SNMP and a targeted reset is appropriate.
+    risk_tier: safe
+    verified_on: []
+    confidence: unverified
+    preconditions:
+      - features.peer_address != ""
+    steps:
+      - gnmi_set:
+          path: "network-instance[name=default]/protocols/bgp/neighbor[peer-address={peer_address}]/admin-state"
+          value: '"disable"'
+      - sleep: 1
+      - gnmi_set:
+          path: "network-instance[name=default]/protocols/bgp/neighbor[peer-address={peer_address}]/admin-state"
+          value: '"enable"'
+    verification:
+      wait_seconds: 30
+      expected_graph_state: |
+        MATCH (d:Device {address: $device_address})-[:PEERS_WITH]->(n:BgpNeighbor {peer_address: $peer_address})
+        WHERE n.session_state = "established"
+        RETURN count(n) > 0
+    source_doc:
+      url: "https://documentation.nokia.com/srlinux/24-10/books/routing-protocols/bgp.html"
+      excerpt_summary: |
+        SR Linux exposes BGP neighbor admin-state as a writable leaf under
+        network-instance/protocols/bgp/neighbor. Disabling and re-enabling
+        restarts the session cleanly.
+    notes: |
+      Path validated against the SR Linux data model reference tree. Assumes
+      the peer lives in network-instance[name=default].

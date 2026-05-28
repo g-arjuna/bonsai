@@ -14,6 +14,7 @@ use tracing::{info, warn};
 
 use crate::config::{SyslogConfig, TargetConfig};
 use crate::event_bus::InProcessBus;
+use crate::receiver_supervisor::SharedReceiverSupervisor;
 use crate::resource_governor::GovernorHandle;
 use crate::shun::{ShunEngine, ShunOutcome};
 use crate::telemetry::TelemetryUpdate;
@@ -97,6 +98,7 @@ pub async fn run_syslog_receiver(
     governor: Option<GovernorHandle>,
     shun_engine: Option<Arc<ShunEngine>>,
     pattern_rx: Option<watch::Receiver<Arc<SyslogFactExtractor>>>,
+    supervisor: Option<SharedReceiverSupervisor>,
 ) -> Result<()> {
     let archive = SyslogArchive::open(&cfg.archive_path).await?;
     let fact_extractor = Arc::new(SyslogFactExtractor::load_from_dir(&pattern_dir));
@@ -121,6 +123,7 @@ pub async fn run_syslog_receiver(
             governor.clone(),
             shun_engine.clone(),
             pattern_rx.clone(),
+            supervisor.clone(),
         )));
     }
 
@@ -168,6 +171,7 @@ async fn run_udp(
     governor: Option<Arc<GovernorHandle>>,
     shun_engine: Option<Arc<ShunEngine>>,
     mut pattern_rx: Option<watch::Receiver<Arc<SyslogFactExtractor>>>,
+    supervisor: Option<SharedReceiverSupervisor>,
 ) {
     let mut buf = vec![0_u8; max_frame_bytes.max(1)];
     loop {
@@ -191,6 +195,11 @@ async fn run_udp(
             recv = socket.recv_from(&mut buf) => {
                 match recv {
                     Ok((n, peer)) => {
+                        if let Some(ref sup) = supervisor {
+                            if let Ok(mut s) = sup.try_write() {
+                                s.record_packet("syslog");
+                            }
+                        }
                         let raw = String::from_utf8_lossy(&buf[..n]).trim_end().to_string();
                         handle_frame(
                             raw,

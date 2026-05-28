@@ -12,8 +12,8 @@ bonpy UI so the operator knows the sidecar is bound. See
 
 Usage:
     export BONSAI_COLLECTOR_ID="collector-alpha"
-    export BONSAI_CORE_ADDR="core-host:50051"
-    export BONSAI_LOCAL_ADDR="localhost:50052"
+    export BONSAI_CORE_ADDR="localhost:50051"
+    export BONSAI_LOCAL_ADDR="localhost:50051"
     python python/collector_engine.py
 """
 import http.server
@@ -64,7 +64,7 @@ _job_engine_ref: Optional[object] = None  # set after job engine starts
 _inference_loop_ref: Optional[object] = None
 _engine_ref: Optional[object] = None  # EV1-7 T3: RuleEngine ref for shadow-firings HTTP endpoint
 
-HEALTH_PORT = int(os.environ.get("BONSAI_SIDECAR_HEALTH_PORT", "9200"))
+HEALTH_PORT = int(os.environ.get("BONSAI_SIDECAR_HEALTH_PORT", "9292"))
 
 
 class _HealthHandler(http.server.BaseHTTPRequestHandler):
@@ -442,7 +442,7 @@ def _local_connect_loop(local_addr: str, sidecar_name: str) -> None:
 def main():
     global _job_engine_ref
     core_addr    = os.environ.get("BONSAI_CORE_ADDR", "[::1]:50051")
-    local_addr   = os.environ.get("BONSAI_LOCAL_ADDR", "localhost:50052")
+    local_addr   = os.environ.get("BONSAI_LOCAL_ADDR", "localhost:50051")
     sidecar_name = os.environ.get("BONSAI_COLLECTOR_ID", "rules-local")
     api_url      = os.environ.get("BONSAI_API_URL", "http://localhost:3000")
 

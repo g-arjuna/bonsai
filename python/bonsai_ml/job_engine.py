@@ -8,7 +8,7 @@ Architecture:
   - On job finish: PATCH /api/ml/jobs/{id} (update status/metrics)
   - Dependency chain: on_job_success_trigger() wires parent→child job chains
   - Retry: max_retries=3 with exponential back-off (5min, 15min, 45min)
-  - Prometheus metrics exposed on :9201/metrics
+  - Prometheus metrics exposed on :9293/metrics
   - Resource governor: polls GET /api/governance/pressure every 30s, pauses heavy jobs
 
 Default schedules (created at first startup if not already in DB):
@@ -40,7 +40,7 @@ DEFAULT_API_URL = "http://localhost:3000"
 DEFAULT_JOB_DB = "runtime/ml_jobs.db"
 SCHEDULE_POLL_INTERVAL = 60
 GOVERNANCE_POLL_INTERVAL = 30
-METRICS_PORT = 9201
+METRICS_PORT = 9293
 
 RETRY_DELAYS = [300, 900, 2700]
 MAX_RETRIES = 3
@@ -116,7 +116,7 @@ class BonsaiJobEngine:
         api_url: Bonsai core API URL. Used to create/update MlJobRun records
             and query governance pressure.
         job_db_path: SQLite path for APScheduler job store.
-        enable_metrics: If True, start Prometheus HTTP server on :9201.
+        enable_metrics: If True, start Prometheus HTTP server on :9293.
     """
 
     def __init__(
