@@ -1829,3 +1829,201 @@ Fix:
 
 - added `playbooks/library/bgp_neighbor_down.yaml` with `detection_rule_id: bgp_neighbor_down`
 - updated Phase 8 of `EV1_UBUNTU_TESTING_GUIDE.md` with the required `[remediation]` toml stanza
+
+## 2026-05-28 Retest on `807cf89`
+
+### 1. Release build recovered after one compile fix
+
+After upgrading the host `sccache` install to the official `0.15.0` prebuilt binary, the plain:
+
+- `cargo build --release`
+
+path resumed working normally with:
+
+- `sccache`
+- `mold`
+
+One additional compile break in this drop had to be fixed locally before the build could finish:
+
+- `src/http_server/settings.rs`
+
+Root cause:
+
+- live-reload receiver restart call sites were not updated after
+  `run_syslog_receiver(...)` and `run_snmp_receiver(...)` gained the optional
+  `supervisor` parameter
+
+Fix applied locally:
+
+- added trailing `None` supervisor arguments at both call sites in
+  `src/http_server/settings.rs`
+
+Operational conclusion:
+
+- the `807cf89` drop as pulled was not build-clean until those call sites were updated
+
+### 2. Core runtime on `807cf89` is healthy
+
+Restarted Bonsai on the rebuilt binary and verified:
+
+- `/health`
+  - `git_sha: "807cf899"`
+  - `status: "ok"`
+- `/api/operations`
+  - `observed_subscriptions: 18`
+  - `pending_subscriptions: 0`
+
+Operational conclusion:
+
+- core startup, subscriber recovery, and SRL telemetry flow are healthy on `807cf89`
+
+### 3. Receiver-status packet counters are now fixed
+
+Re-ran the preferred localhost Phase 6 injection pair:
+
+1. syslog:
+   - `<11>May 25 10:05:00 127.0.0.1 bgpd: bgp neighbor 192.168.0.2 down`
+2. SNMP trap with indexed varbinds
+
+Observed in `/api/settings/receiver-status`:
+
+- `syslog.packet_count: 1`
+- `snmp.packet_count: 1`
+
+This directly validates Fix A from the earlier investigation section.
+
+Operational conclusion:
+
+- receiver packet accounting is working correctly on `807cf89`
+
+### 4. Sidecar startup path is materially fixed
+
+Started the sidecar with:
+
+- `BONSAI_API_URL=http://localhost:3000`
+- `BONSAI_CORE_ADDR=localhost:50051`
+- `.venv/bin/python python/collector_engine.py`
+
+Observed:
+
+- health endpoint started successfully on:
+  - `:9292`
+- connected to core:
+  - `localhost:50051`
+- connected to local collector:
+  - `localhost:50051`
+- registered successfully:
+  - `registered as sidecar 8aba9c0e-67fa-4f65-bbcf-8b5a80a34721`
+
+Observed in sidecar self-health:
+
+- `GET http://127.0.0.1:9292/health`
+  - `status: "ok"`
+  - `connected_to_core: true`
+  - `connected_to_local: true`
+  - `job_engine_running: true`
+  - `rules_loaded: 35`
+
+Operational conclusion:
+
+- the previous sidecar blockers (`:9200` collision and bad `50052` local address) are fixed in practice
+
+### 5. New bug: Bonsai sidecar-status proxy still assumes old health port
+
+Despite the healthy sidecar on `:9292`, Bonsai core still reported:
+
+- `GET /api/sidecar/status`
+  - `health_reachable: false`
+  - `rules_loaded: 0`
+  - `uptime_secs: 0.0`
+
+while the sidecar's own health endpoint simultaneously reported:
+
+- `rules_loaded: 35`
+- non-zero uptime
+- healthy core/local connectivity
+
+Root cause found in code:
+
+- `python/collector_engine.py` now defaults:
+  - `BONSAI_SIDECAR_HEALTH_PORT = 9292`
+- but `src/http_server/governance.rs` still defaults to:
+  - `BONSAI_SIDECAR_HEALTH_PORT = 9200`
+  - in both:
+    - `sidecar_rule_shadow_firings_handler`
+    - `sidecar_status_handler`
+
+So unless the Bonsai core process itself is started with:
+
+- `BONSAI_SIDECAR_HEALTH_PORT=9292`
+
+the HTTP proxy layer still probes the wrong port and marks the sidecar unreachable.
+
+Operational conclusion:
+
+- this is a real core-side bug / stale default mismatch
+- sidecar runtime is healthy; the status API is misreporting it
+
+### 6. Guide still contains stale sidecar port references
+
+The guide was partially updated to `9292`, but stale `9200` references remain in later phases.
+
+Examples still present in `docs/EV1_UBUNTU_TESTING_GUIDE.md`:
+
+- line `1572`
+- line `1677`
+- line `1831`
+- line `1863`
+- line `1889`
+- line `2057`
+- line `2072`
+- line `2560`
+
+Operational conclusion:
+
+- the guide currently contains mixed sidecar port assumptions
+- later phases may still mislead operators into probing `:9200` instead of `:9292`
+
+### 7. Correlation still works; approvals still absent for a configuration reason
+
+Observed on `807cf89` after the new localhost injection:
+
+- newest `bgp_neighbor_down` detection still had:
+  - `source_types: ["snmp", "syslog"]`
+
+Observed in `/api/approvals`:
+
+- still empty
+
+Code/path analysis:
+
+- `WriteCoordinator` only auto-creates remediation proposals when:
+  - `cfg.remediation.auto_propose == true`
+- `RemediationConfig::default()` still sets:
+  - `auto_propose: false`
+- current `bonsai.toml` on this host does not contain a `[remediation]` section enabling it
+
+Operational conclusion:
+
+- on this retest, empty approvals are expected from current config
+- this is not a new code regression in `807cf89`
+- however, the EV1 workflow still depends on explicitly enabling:
+  - `[remediation]`
+  - `auto_propose = true`
+
+### 8. New sidecar-local rule behavior worth review
+
+The sidecar emitted a local detection:
+
+- `rule_id: syslog_protocol_error`
+
+for the same localhost test syslog line that core also used successfully for
+Phase 6 correlation.
+
+Operational conclusion:
+
+- this is not blocking the EV1 path
+- but it suggests the sidecar-local ruleset interprets the localhost protocol
+  syslog line as an error condition even when the core path successfully
+  extracts `bgp_neighbor`
+- worth reviewing whether that rule is too broad for localhost synthetic tests

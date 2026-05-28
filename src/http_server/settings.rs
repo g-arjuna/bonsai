@@ -451,14 +451,14 @@ pub async fn patch_streaming_settings_handler(
             let pdir = pattern_dir.clone();
             let addr = format!("{}/{}", new_syslog_udp_addr, new_syslog_tcp_addr);
             sup.spawn("syslog", addr, move |sd| async move {
-                crate::signals::syslog::run_syslog_receiver(c, pdir, tgts, bus2, sd, gov2, None, None).await
+                crate::signals::syslog::run_syslog_receiver(c, pdir, tgts, bus2, sd, gov2, None, None, None).await
             });
         }
         if let Some(c) = snmp_to_restart {
             let bus2 = std::sync::Arc::clone(&bus);
             let tgts = targets.clone();
             sup.spawn("snmp", new_snmp_udp_addr.clone(), move |sd| async move {
-                crate::signals::snmp::run_snmp_receiver(c, tgts, bus2, sd, None, None).await
+                crate::signals::snmp::run_snmp_receiver(c, tgts, bus2, sd, None, None, None).await
             });
         }
     }
