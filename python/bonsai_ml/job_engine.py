@@ -109,6 +109,23 @@ class JobStatus:
         }
 
 
+_global_engine: Optional[BonsaiJobEngine] = None
+
+
+async def _trigger_job_from_scheduler(job_id: str) -> None:
+    """Module-level serializable function for APScheduler 4.x.
+
+    Calls the global engine instance to run the job.
+    """
+    global _global_engine
+    if _global_engine:
+        await _global_engine._run_job(job_id)
+    else:
+        logging.getLogger(__name__).error(
+            "JobEngine: _trigger_job_from_scheduler called but _global_engine is not set"
+        )
+
+
 class BonsaiJobEngine:
     """APScheduler-backed ML job engine with catalog, dependency chains, retries.
 
@@ -125,6 +142,9 @@ class BonsaiJobEngine:
         job_db_path: str = DEFAULT_JOB_DB,
         enable_metrics: bool = True,
     ) -> None:
+        global _global_engine
+        _global_engine = self
+
         self.api_url = api_url.rstrip("/")
         self.job_db_path = job_db_path
         self.enable_metrics = enable_metrics
@@ -239,48 +259,49 @@ class BonsaiJobEngine:
 
     async def _async_main(self) -> None:
         await self._init_scheduler()
-        await self._load_schedules_from_api()
-        await self._ensure_default_schedules()
+        async with self._scheduler:
+            await self._load_schedules_from_api()
+            await self._ensure_default_schedules()
 
-        if self.enable_metrics:
-            self._start_metrics_server()
+            if self.enable_metrics:
+                self._start_metrics_server()
 
-        self._running = True
-        governance_task = asyncio.create_task(self._governance_loop())
-        schedule_sync_task = asyncio.create_task(self._schedule_sync_loop())
+            self._running = True
+            governance_task = asyncio.create_task(self._governance_loop())
+            schedule_sync_task = asyncio.create_task(self._schedule_sync_loop())
 
-        try:
-            await self._scheduler.start_in_background()
-            log.info("JobEngine: APScheduler started")
-            while self._running:
-                await asyncio.sleep(5)
-        finally:
-            governance_task.cancel()
-            schedule_sync_task.cancel()
-            await self._scheduler.stop()
+            try:
+                await self._scheduler.start_in_background()
+                log.info("JobEngine: scheduler started")
+                while self._running:
+                    await asyncio.sleep(5)
+            finally:
+                governance_task.cancel()
+                schedule_sync_task.cancel()
 
     async def _init_scheduler(self) -> None:
         try:
             from apscheduler import AsyncScheduler
             from apscheduler.datastores.sqlalchemy import SQLAlchemyDataStore
             from apscheduler.eventbrokers.local import LocalEventBroker
-            import sqlalchemy
+            from sqlalchemy.ext.asyncio import create_async_engine
 
             db_url = f"sqlite+aiosqlite:///{self.job_db_path}"
             import pathlib
             pathlib.Path(self.job_db_path).parent.mkdir(parents=True, exist_ok=True)
 
-            data_store = SQLAlchemyDataStore(sqlalchemy.create_async_engine(db_url))
+            data_store = SQLAlchemyDataStore(create_async_engine(db_url))
             event_broker = LocalEventBroker()
             self._scheduler = AsyncScheduler(
                 data_store=data_store,
                 event_broker=event_broker,
             )
             log.info("JobEngine: APScheduler initialised (db=%s)", self.job_db_path)
-        except ImportError:
+        except Exception as exc:
             log.warning(
-                "apscheduler/sqlalchemy not installed — using in-memory fallback scheduler. "
-                "Install with: pip install 'apscheduler>=4.0.0a1' aiosqlite 'sqlalchemy[asyncio]' sniffio"
+                "JobEngine: APScheduler 4.x initialization failed (%s) — using in-memory fallback scheduler. "
+                "Install with: pip install 'apscheduler>=4.0.0a1' aiosqlite 'sqlalchemy[asyncio]' sniffio",
+                exc,
             )
             self._scheduler = _InMemoryFallbackScheduler(self)
             self.scheduler_mode = "fallback_manual_only"
@@ -341,13 +362,14 @@ class BonsaiJobEngine:
                 trigger = IntervalTrigger(minutes=5)
 
             await self._scheduler.add_schedule(
-                lambda jid=job_id: asyncio.ensure_future(self._run_job(jid)),
+                _trigger_job_from_scheduler,
                 trigger,
                 id=job_id,
+                args=[job_id],
                 conflict_policy="replace",
             )
         except Exception as exc:
-            log.debug("Could not register schedule for %s: %s", job_id, exc)
+            log.warning("JobEngine: Could not register schedule for %s: %s", job_id, exc)
 
     async def _run_job(self, job_id: str) -> None:
         fn = self._job_registry.get(job_id)
@@ -618,6 +640,12 @@ class _InMemoryFallbackScheduler:
         self._engine = engine
         self._last_run: dict[str, float] = {}
         self._task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
+
+    async def __aenter__(self) -> _InMemoryFallbackScheduler:
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        await self.stop()
 
     async def start_in_background(self) -> None:
         log.warning(
