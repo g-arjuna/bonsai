@@ -73,7 +73,7 @@ use observability::{topology_handler, path_handler, blast_radius_handler, detect
 use device::{device_detail_handler, device_enrichment_handler, device_enrichment_conflicts_handler, device_cmdb_handler, device_sensors_handler, device_optics_handler, device_config_history_handler, device_gnmi_readiness_handler, device_streaming_readiness_handler, device_recommendations_handler, yang_modules_handler, yang_search_handler, apply_device_selected_paths_handler, device_reparse_handler, profiles_handler, save_custom_profile_handler, enrichment_list_handler, enrichment_upsert_handler, enrichment_remove_handler, enrichment_test_handler, enrichment_run_handler, enrichment_audit_handler, netbox_import_handler};
 use device::InterfaceDetailJson;
 use managed_devices::{managed_devices_handler, discover_handler, credentials_handler, add_credential_handler, update_credential_handler, remove_credential_handler, test_credential_handler, add_managed_device_handler, add_managed_device_with_paths_handler, sites_handler, upsert_site_handler, site_summary_handler, remove_site_handler, remove_managed_device_handler, bulk_managed_device_action_handler, remove_impact_handler, bulk_import_handler, bootstrap_device_handler, device_seed_handler, bulk_bootstrap_handler, resolve_credential_handler};
-use governance::{assignment_override_handler, assignment_rules_handler, assignment_status_handler, collectors_handler, create_environment_handler, environments_handler, governance_state_handler, governance_history_handler, governance_pressure_handler, governance_profile_handler, health_handler, healthz_handler, readyz_handler, remove_environment_handler, assign_site_environment_handler, update_environment_handler, set_assignment_rules_handler, setup_status_handler, sidecars_handler, sidecar_status_handler, sidecar_rules_handler, sidecar_rule_toggle_handler, sidecar_rule_parameters_handler, patch_sidecar_rule_parameters_handler, sidecar_rule_shadow_mode_handler, sidecar_rule_analytics_handler, sidecar_rule_shadow_firings_handler, create_syslog_rule_handler, list_syslog_rules_handler};
+use governance::{assignment_override_handler, assignment_rules_handler, assignment_status_handler, collectors_handler, create_environment_handler, environments_handler, governance_state_handler, governance_history_handler, governance_pressure_handler, governance_profile_handler, health_handler, healthz_handler, readyz_handler, remove_environment_handler, assign_site_environment_handler, update_environment_handler, set_assignment_rules_handler, setup_status_handler, sidecars_handler, sidecar_status_handler, sidecar_process_status_handler, sidecar_start_handler, sidecar_stop_handler, sidecar_restart_handler, sidecar_rules_handler, sidecar_rule_toggle_handler, sidecar_rule_parameters_handler, patch_sidecar_rule_parameters_handler, sidecar_rule_shadow_mode_handler, sidecar_rule_analytics_handler, sidecar_rule_shadow_firings_handler, create_syslog_rule_handler, list_syslog_rules_handler};
 use outputs::{adapter_audit_handler, adapter_list_handler, adapter_remove_handler, adapter_test_handler, adapter_upsert_handler};
 use test_endpoints::{inject_detection_handler, parse_syslog_fixture_handler};
 use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler, get_ai_config_handler, post_ai_test_handler, list_ai_providers_handler, upsert_ai_provider_handler, remove_ai_provider_handler, test_ai_provider_handler, activate_ai_provider_handler, get_active_ai_provider_handler, reload_patterns_handler, mib_upload_handler, tsdb_config_handler, tsdb_query_handler, list_settings_handler, get_settings_section_handler, patch_settings_section_handler, export_settings_handler, list_certs_handler, upsert_cert_handler, get_cert_pem_handler, delete_cert_handler, verify_cert_path_handler, apply_cert_handler, list_applied_certs_handler};
@@ -737,6 +737,8 @@ pub struct AppState {
     pub tsdb_config: crate::config::TsdbConfig,
     /// EV1-4 T1: ML event bus for SSE streaming to Python sidecar and BonPy UI.
     pub ml_event_bus: std::sync::Arc<crate::ml_event_bus::MlEventBus>,
+    /// Managed sidecar process manager — None when sidecar management is disabled.
+    pub sidecar_manager: Option<crate::sidecar_manager::SharedSidecarManager>,
 }
 
 impl axum::extract::FromRef<AppState> for Option<Arc<crate::ha_coordinator::HACoordinator>> {
@@ -792,6 +794,7 @@ pub fn router(
     ldap_config: crate::config::LdapConfig,
     tsdb_config: crate::config::TsdbConfig,
     ml_event_bus: std::sync::Arc<crate::ml_event_bus::MlEventBus>,
+    sidecar_manager: Option<crate::sidecar_manager::SharedSidecarManager>,
 ) -> Router {
     let state = AppState {
         store,
@@ -836,6 +839,7 @@ pub fn router(
         ldap_config,
         tsdb_config,
         ml_event_bus,
+        sidecar_manager,
     };
 
     // D3-6 T6: consume auto-investigate requests from the write coordinator.
@@ -1129,6 +1133,10 @@ fn adapter_and_schema_routes() -> Router<AppState> {
         .route("/api/openapi.json", get(openapi_json_handler))
         .route("/api/sidecars", get(sidecars_handler))
         .route("/api/sidecar/status", get(sidecar_status_handler))
+        .route("/api/sidecar/process-status", get(sidecar_process_status_handler))
+        .route("/api/sidecar/start", post(sidecar_start_handler))
+        .route("/api/sidecar/stop", post(sidecar_stop_handler))
+        .route("/api/sidecar/restart", post(sidecar_restart_handler))
         // D4-9 T4: Sidecar rules visibility
         .route("/api/sidecar/rules", get(sidecar_rules_handler))
         .route("/api/sidecar/rules/analytics", get(sidecar_rule_analytics_handler))

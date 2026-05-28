@@ -1579,7 +1579,29 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             if let Err(e) = bonsai::security::initialize_security(cfg.security.clone()).await {
                 error!(error = %e, "failed to initialize security module");
             }
-            
+
+            // Managed sidecar process lifecycle — spawn Python sidecar as a supervised
+            // child process when auto_start is enabled, otherwise leave as None so the
+            // GUI start/stop/restart buttons still work on demand.
+            let sidecar_mgr: Option<bonsai::sidecar_manager::SharedSidecarManager> =
+                if run_core {
+                    let mgr = bonsai::sidecar_manager::SidecarProcessManager::new(
+                        cfg.managed_sidecar.clone(),
+                    );
+                    if cfg.managed_sidecar.auto_start {
+                        info!("managed_sidecar.auto_start=true — spawning sidecar process");
+                        if let Err(e) = mgr.start().await {
+                            warn!(error = %e, "auto-start sidecar failed — will be startable from UI");
+                        } else {
+                            let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+                            std::sync::Arc::clone(&mgr).run_supervised(shutdown_rx);
+                        }
+                    }
+                    Some(mgr)
+                } else {
+                    None
+                };
+
             http_task = Some(tokio::spawn(async move {
                 let router = bonsai::http_server::router(
                         http_store,
@@ -1625,6 +1647,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         cfg.auth.ldap.clone(),
                         cfg.integrations.tsdb.clone(),
                         std::sync::Arc::clone(&ml_event_bus),
+                        sidecar_mgr,
                 );
                 let serve_result = if let Some(tls) = http_tls_acceptor {
                     // HTTPS: accept each TCP connection, upgrade to TLS, then serve.

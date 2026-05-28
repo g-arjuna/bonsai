@@ -67,7 +67,61 @@ pub struct Config {
     pub security: SecurityConfig,
     #[serde(default)]
     pub ddos: DdosConfig,
+    #[serde(default)]
+    pub managed_sidecar: ManagedSidecarConfig,
 }
+
+// ── Managed sidecar process lifecycle ────────────────────────────────────────
+
+/// Config for the Python collector-engine sidecar process managed by Bonsai core.
+/// When `auto_start = true` Bonsai will spawn the process at boot time and keep
+/// it running (with exponential backoff on crashes). Start/stop/restart are also
+/// available via `POST /api/sidecar/start|stop|restart`.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct ManagedSidecarConfig {
+    /// Whether to start the sidecar automatically on Bonsai boot. Default: false.
+    #[serde(default)]
+    pub auto_start: bool,
+    /// Path to the Python interpreter. Default: ".venv/bin/python".
+    #[serde(default = "default_sidecar_python")]
+    pub python: String,
+    /// Path to the collector engine script. Default: "python/collector_engine.py".
+    #[serde(default = "default_sidecar_script")]
+    pub script: String,
+    /// Working directory for the sidecar process. Defaults to the bonsai binary cwd.
+    #[serde(default)]
+    pub working_dir: String,
+    /// Extra environment variables passed to the sidecar process.
+    /// Example: [{"BONSAI_COLLECTOR_ID": "rules-local"}]
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+    /// Seconds to wait between crash-restart attempts. Grows exponentially up to max.
+    /// Default: 5.
+    #[serde(default = "default_sidecar_restart_delay")]
+    pub restart_delay_secs: u64,
+    /// Maximum restart delay cap in seconds. Default: 120.
+    #[serde(default = "default_sidecar_max_delay")]
+    pub max_restart_delay_secs: u64,
+}
+
+impl Default for ManagedSidecarConfig {
+    fn default() -> Self {
+        Self {
+            auto_start: false,
+            python: default_sidecar_python(),
+            script: default_sidecar_script(),
+            working_dir: String::new(),
+            env: std::collections::HashMap::new(),
+            restart_delay_secs: default_sidecar_restart_delay(),
+            max_restart_delay_secs: default_sidecar_max_delay(),
+        }
+    }
+}
+
+fn default_sidecar_python() -> String { ".venv/bin/python".to_string() }
+fn default_sidecar_script() -> String { "python/collector_engine.py".to_string() }
+fn default_sidecar_restart_delay() -> u64 { 5 }
+fn default_sidecar_max_delay() -> u64 { 120 }
 
 // ── Auth / LDAP (D4-3 T2/T3) ────────────────────────────────────────────────
 

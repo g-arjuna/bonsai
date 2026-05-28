@@ -1240,3 +1240,84 @@ pub(super) async fn sidecar_status_handler(
     }
     Json(SidecarStatusResponse { sidecars: entries })
 }
+
+// ── Managed sidecar process control ──────────────────────────────────────────
+
+/// GET /api/sidecar/process-status — OS-level process state (pid, state, restarts).
+pub(super) async fn sidecar_process_status_handler(
+    State(state): State<AppState>,
+) -> axum::response::Response {
+    match &state.sidecar_manager {
+        Some(mgr) => {
+            let status = mgr.status().await;
+            axum::response::IntoResponse::into_response(axum::Json(status))
+        }
+        None => axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "managed sidecar not configured"})),
+        )),
+    }
+}
+
+/// POST /api/sidecar/start — spawn the sidecar process.
+pub(super) async fn sidecar_start_handler(
+    State(state): State<AppState>,
+) -> axum::response::Response {
+    match &state.sidecar_manager {
+        Some(mgr) => match mgr.start().await {
+            Ok(()) => axum::response::IntoResponse::into_response(
+                axum::Json(serde_json::json!({"ok": true})),
+            ),
+            Err(e) => axum::response::IntoResponse::into_response((
+                axum::http::StatusCode::CONFLICT,
+                axum::Json(serde_json::json!({"error": e.to_string()})),
+            )),
+        },
+        None => axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "managed sidecar not configured"})),
+        )),
+    }
+}
+
+/// POST /api/sidecar/stop — send SIGTERM to the sidecar process.
+pub(super) async fn sidecar_stop_handler(
+    State(state): State<AppState>,
+) -> axum::response::Response {
+    match &state.sidecar_manager {
+        Some(mgr) => match mgr.stop().await {
+            Ok(()) => axum::response::IntoResponse::into_response(
+                axum::Json(serde_json::json!({"ok": true})),
+            ),
+            Err(e) => axum::response::IntoResponse::into_response((
+                axum::http::StatusCode::CONFLICT,
+                axum::Json(serde_json::json!({"error": e.to_string()})),
+            )),
+        },
+        None => axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "managed sidecar not configured"})),
+        )),
+    }
+}
+
+/// POST /api/sidecar/restart — stop then respawn the sidecar process.
+pub(super) async fn sidecar_restart_handler(
+    State(state): State<AppState>,
+) -> axum::response::Response {
+    match &state.sidecar_manager {
+        Some(mgr) => match mgr.restart().await {
+            Ok(()) => axum::response::IntoResponse::into_response(
+                axum::Json(serde_json::json!({"ok": true})),
+            ),
+            Err(e) => axum::response::IntoResponse::into_response((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": e.to_string()})),
+            )),
+        },
+        None => axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "managed sidecar not configured"})),
+        )),
+    }
+}
