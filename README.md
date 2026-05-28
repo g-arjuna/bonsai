@@ -782,6 +782,7 @@ See `DECISIONS.md` and `docs/architecture/` for rationale behind key choices:
 - **HostEndpoint node** — arch-agnostic, optional; SP deployments = zero HostEndpoints
 - **PyATS-first bootstrap** — see `docs/architecture/adr_suzieq_vs_pyats.md`
 - **Cross-device correlation** — see `docs/architecture/adr_cross_device_correlation.md`
+- **STGNN (EV1) — full GNN architecture, training pipeline, uncertainty, embeddings** — see `docs/architecture/GNN_ARCHITECTURE_EV1.md`
 
 ---
 
