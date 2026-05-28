@@ -1592,9 +1592,6 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         info!("managed_sidecar.auto_start=true — spawning sidecar process");
                         if let Err(e) = mgr.start().await {
                             warn!(error = %e, "auto-start sidecar failed — will be startable from UI");
-                        } else {
-                            let (_, shutdown_rx) = tokio::sync::watch::channel(false);
-                            std::sync::Arc::clone(&mgr).run_supervised(shutdown_rx);
                         }
                     }
                     Some(mgr)

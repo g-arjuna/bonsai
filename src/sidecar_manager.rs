@@ -89,9 +89,10 @@ impl SidecarProcessManager {
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    /// Spawn the sidecar process. Returns immediately; supervision runs in the
-    /// background task started by `run_supervised`.
-    pub async fn start(&self) -> Result<()> {
+    /// Spawn the sidecar process and attach a persistent supervisor loop.
+    /// Safe to call from HTTP handlers or server_startup — supervisor uses
+    /// the manager's own `shutdown_tx` so its lifetime matches the manager.
+    pub async fn start(self: &Arc<Self>) -> Result<()> {
         let mut guard = self.inner.lock().await;
         if guard.state == SidecarProcessState::Running
             || guard.state == SidecarProcessState::Starting
@@ -100,11 +101,19 @@ impl SidecarProcessManager {
         }
         guard.state = SidecarProcessState::Starting;
         drop(guard);
-        self.spawn_child().await
+        self.spawn_child().await?;
+
+        // Subscribe to the persistent shutdown channel — the sender lives as
+        // long as the Arc<SidecarProcessManager>, so the receiver will never
+        // see a spurious close.
+        let shutdown_rx = self.shutdown_tx.subscribe();
+        Arc::clone(self).run_supervised(shutdown_rx);
+        Ok(())
     }
 
-    /// Send SIGTERM to the running child. The supervisor loop will see the exit
-    /// and set state to Stopped.
+    /// Send SIGTERM to the running child.
+    /// If the supervisor has already taken the child handle out of the lock
+    /// (which it does before awaiting `wait()`), fall back to signalling via PID.
     pub async fn stop(&self) -> Result<()> {
         let mut guard = self.inner.lock().await;
         match guard.state {
@@ -113,6 +122,18 @@ impl SidecarProcessManager {
                 if let Some(child) = guard.child.as_mut() {
                     child.start_kill().context("SIGTERM to sidecar")?;
                     info!("sent SIGTERM to sidecar (pid {:?})", guard.pid);
+                } else if let Some(pid) = guard.pid {
+                    // Supervisor has taken the child handle — send SIGTERM via PID.
+                    let status = Command::new("kill")
+                        .arg("-15")
+                        .arg(pid.to_string())
+                        .status()
+                        .await;
+                    match status {
+                        Ok(s) if s.success() => info!(pid, "sent SIGTERM to sidecar via PID"),
+                        Ok(s) => warn!(pid, exit_status = ?s, "kill -15 returned non-zero"),
+                        Err(e) => warn!(pid, error = %e, "failed to execute kill -15"),
+                    }
                 }
                 Ok(())
             }
@@ -120,11 +141,20 @@ impl SidecarProcessManager {
         }
     }
 
-    /// Stop then start.
+    /// Stop the running sidecar, wait for it to reach Stopped, then start again.
     pub async fn restart(self: &Arc<Self>) -> Result<()> {
         let _ = self.stop().await;
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        self.spawn_child().await
+        // Poll up to 5 s for the supervisor to mark state as Stopped.
+        for _ in 0..50 {
+            {
+                let guard = self.inner.lock().await;
+                if guard.state == SidecarProcessState::Stopped {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        self.start().await
     }
 
     /// Current process status snapshot.
