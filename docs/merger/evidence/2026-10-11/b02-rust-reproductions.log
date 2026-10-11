@@ -1,0 +1,84 @@
+   Compiling rbmp-core v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-core)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1.54s
+     Running ../../tests/regressions/bmp_rfc_contract.rs (/home/arjuna/rustybmp/target/debug/deps/bmp_rfc_contract-61044a6cc1a094d7)
+
+running 11 tests
+test local_instance_is_inbound_when_o_is_clear ... FAILED
+test initiation_tlv_assignments_follow_rfc7854 ... FAILED
+test termination_tlv_assignments_follow_rfc7854 ... FAILED
+test zero_and_short_declared_lengths_are_rejected ... FAILED
+test locrib_reserved_bits_do_not_imply_filtering ... FAILED
+test truncated_declared_bmp_message_is_rejected ... FAILED
+test incorrect_embedded_bgp_length_is_rejected ... FAILED
+test six_byte_header_with_required_initiation_tlvs_is_accepted ... ok
+test locrib_filtered_flag_is_the_high_bit ... FAILED
+test original_invalid_generator_fixtures_remain_negative_inputs ... ok
+test outbound_o_flag_applies_to_peer_types_zero_through_two ... ok
+
+failures:
+
+---- local_instance_is_inbound_when_o_is_clear stdout ----
+
+thread 'local_instance_is_inbound_when_o_is_clear' (1936122) panicked at crates/rbmp-core/../../tests/regressions/bmp_rfc_contract.rs:75:5:
+assertion `left == right` failed
+  left: AdjRibOutPrePolicy
+ right: AdjRibInPrePolicy
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- initiation_tlv_assignments_follow_rfc7854 stdout ----
+
+thread 'initiation_tlv_assignments_follow_rfc7854' (1936121) panicked at crates/rbmp-core/../../tests/regressions/bmp_rfc_contract.rs:30:5:
+assertion `left == right` failed
+  left: Some("router")
+ right: Some("edge-a")
+
+---- termination_tlv_assignments_follow_rfc7854 stdout ----
+
+thread 'termination_tlv_assignments_follow_rfc7854' (1936128) panicked at crates/rbmp-core/../../tests/regressions/bmp_rfc_contract.rs:47:5:
+assertion `left == right` failed
+  left: 28271
+ right: 3
+
+---- zero_and_short_declared_lengths_are_rejected stdout ----
+
+thread 'zero_and_short_declared_lengths_are_rejected' (1936130) panicked at crates/rbmp-core/../../tests/regressions/bmp_rfc_contract.rs:102:9:
+assertion failed: parse(&bytes).is_err()
+
+---- locrib_reserved_bits_do_not_imply_filtering stdout ----
+
+thread 'locrib_reserved_bits_do_not_imply_filtering' (1936124) panicked at crates/rbmp-core/../../tests/regressions/bmp_rfc_contract.rs:94:5:
+assertion `left == right` failed
+  left: LocRibFiltered
+ right: LocRib
+
+---- truncated_declared_bmp_message_is_rejected stdout ----
+
+thread 'truncated_declared_bmp_message_is_rejected' (1936129) panicked at crates/rbmp-core/../../tests/regressions/bmp_rfc_contract.rs:110:5:
+assertion failed: parse(&bytes).is_err()
+
+---- incorrect_embedded_bgp_length_is_rejected stdout ----
+
+thread 'incorrect_embedded_bgp_length_is_rejected' (1936120) panicked at crates/rbmp-core/../../tests/regressions/bmp_rfc_contract.rs:117:5:
+assertion failed: parse(&bytes).is_err()
+
+---- locrib_filtered_flag_is_the_high_bit stdout ----
+
+thread 'locrib_filtered_flag_is_the_high_bit' (1936123) panicked at crates/rbmp-core/../../tests/regressions/bmp_rfc_contract.rs:89:5:
+assertion `left == right` failed
+  left: LocRib
+ right: LocRibFiltered
+
+
+failures:
+    incorrect_embedded_bgp_length_is_rejected
+    initiation_tlv_assignments_follow_rfc7854
+    local_instance_is_inbound_when_o_is_clear
+    locrib_filtered_flag_is_the_high_bit
+    locrib_reserved_bits_do_not_imply_filtering
+    termination_tlv_assignments_follow_rfc7854
+    truncated_declared_bmp_message_is_rejected
+    zero_and_short_declared_lengths_are_rejected
+
+test result: FAILED. 3 passed; 8 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p rbmp-core --test bmp_rfc_contract`

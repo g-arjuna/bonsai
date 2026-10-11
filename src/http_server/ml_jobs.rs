@@ -1293,13 +1293,13 @@ pub async fn events_unembedded_handler(
         let cypher = if event_type.is_empty() {
             format!(
                 "MATCH (e:StateChangeEvent) WHERE e.needs_embedding = 1 \
-                 RETURN e.id, e.device_address, e.event_type, e.detail_json, e.occurred_at \
+                 RETURN e.id, e.device_address, e.event_type, e.detail, e.occurred_at \
                  ORDER BY e.occurred_at DESC LIMIT {limit}"
             )
         } else {
             format!(
-                "MATCH (e:StateChangeEvent) WHERE e.needs_embedding = 1 AND e.event_type = '{}' \
-                 RETURN e.id, e.device_address, e.event_type, e.detail_json, e.occurred_at \
+                "MATCH (e:StateChangeEvent) WHERE e.needs_embedding = 1 AND e.event_type STARTS WITH '{}' \
+                 RETURN e.id, e.device_address, e.event_type, e.detail, e.occurred_at \
                  ORDER BY e.occurred_at DESC LIMIT {limit}",
                 event_type.replace('\'', "")
             )

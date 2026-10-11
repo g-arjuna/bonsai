@@ -1,0 +1,63 @@
+[
+  {
+    "package": "bonsai",
+    "targets": [
+      {
+        "name": "bonsai",
+        "kind": [
+          "lib"
+        ],
+        "test": true,
+        "source": "/home/arjuna/Desktop/bonsai/src/lib.rs"
+      },
+      {
+        "name": "bonsai",
+        "kind": [
+          "bin"
+        ],
+        "test": true,
+        "source": "/home/arjuna/Desktop/bonsai/src/main.rs"
+      },
+      {
+        "name": "bonsai-query",
+        "kind": [
+          "bin"
+        ],
+        "test": true,
+        "source": "/home/arjuna/Desktop/bonsai/src/bin/query.rs"
+      },
+      {
+        "name": "healthcheck",
+        "kind": [
+          "bin"
+        ],
+        "test": true,
+        "source": "/home/arjuna/Desktop/bonsai/src/bin/healthcheck.rs"
+      },
+      {
+        "name": "vault-rekey",
+        "kind": [
+          "bin"
+        ],
+        "test": true,
+        "source": "/home/arjuna/Desktop/bonsai/src/bin/vault_rekey.rs"
+      },
+      {
+        "name": "config_example",
+        "kind": [
+          "test"
+        ],
+        "test": true,
+        "source": "/home/arjuna/Desktop/bonsai/tests/config_example.rs"
+      },
+      {
+        "name": "build-script-build",
+        "kind": [
+          "custom-build"
+        ],
+        "test": false,
+        "source": "/home/arjuna/Desktop/bonsai/build.rs"
+      }
+    ]
+  }
+]

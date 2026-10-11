@@ -1,0 +1,32 @@
+command: cargo +1.95.0 test -p rbmp-core --test integration frr_bmp:: --locked -- --ignored
+Docker probe replaced with an unavailable stub; no router started.
+exit: 101
+
+running 2 tests
+test frr_bmp::tests::frr_bmp_session_connects ... FAILED
+test frr_bmp::tests::frr_bmp_route_monitoring_received ... FAILED
+
+failures:
+
+---- frr_bmp::tests::frr_bmp_session_connects stdout ----
+
+thread 'frr_bmp::tests::frr_bmp_session_connects' (1910286) panicked at crates/rbmp-core/../../tests/integration/frr_bmp.rs:44:9:
+Explicitly requested FRR test requires Docker and frrouting/frr:9.1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- frr_bmp::tests::frr_bmp_route_monitoring_received stdout ----
+
+thread 'frr_bmp::tests::frr_bmp_route_monitoring_received' (1910285) panicked at crates/rbmp-core/../../tests/integration/frr_bmp.rs:120:9:
+Explicitly requested FRR test requires Docker and frrouting/frr:9.1
+
+
+failures:
+    frr_bmp::tests::frr_bmp_route_monitoring_received
+    frr_bmp::tests::frr_bmp_session_connects
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.01s
+
+   Compiling rbmp-core v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-core)
+    Finished `test` profile [optimized + debuginfo] target(s) in 4.54s
+     Running ../../tests/integration/mod.rs (/home/arjuna/rustybmp/target/debug/deps/integration-2c3ef0d4a5d196d4)
+error: test failed, to rerun pass `-p rbmp-core --test integration`

@@ -1,0 +1,130 @@
+[
+  {
+    "package": "rbmp-core",
+    "targets": [
+      {
+        "name": "rbmp_core",
+        "kind": [
+          "lib"
+        ],
+        "test": true,
+        "source": "/home/arjuna/rustybmp/crates/rbmp-core/src/lib.rs"
+      },
+      {
+        "name": "integration",
+        "kind": [
+          "test"
+        ],
+        "test": true,
+        "source": "/home/arjuna/rustybmp/crates/rbmp-core/../../tests/integration/mod.rs"
+      },
+      {
+        "name": "bmp_parse",
+        "kind": [
+          "bench"
+        ],
+        "test": false,
+        "source": "/home/arjuna/rustybmp/crates/rbmp-core/../../benches/bmp_parse.rs"
+      }
+    ]
+  },
+  {
+    "package": "rbmp-rib",
+    "targets": [
+      {
+        "name": "rbmp_rib",
+        "kind": [
+          "lib"
+        ],
+        "test": true,
+        "source": "/home/arjuna/rustybmp/crates/rbmp-rib/src/lib.rs"
+      }
+    ]
+  },
+  {
+    "package": "rbmp-store",
+    "targets": [
+      {
+        "name": "rbmp_store",
+        "kind": [
+          "lib"
+        ],
+        "test": true,
+        "source": "/home/arjuna/rustybmp/crates/rbmp-store/src/lib.rs"
+      }
+    ]
+  },
+  {
+    "package": "rbmp-server",
+    "targets": [
+      {
+        "name": "rbmp-collector",
+        "kind": [
+          "bin"
+        ],
+        "test": true,
+        "source": "/home/arjuna/rustybmp/crates/rbmp-server/src/bin/collector.rs"
+      },
+      {
+        "name": "rustybmp",
+        "kind": [
+          "bin"
+        ],
+        "test": true,
+        "source": "/home/arjuna/rustybmp/crates/rbmp-server/src/main.rs"
+      }
+    ]
+  },
+  {
+    "package": "rbmp-enrichment",
+    "targets": [
+      {
+        "name": "rbmp_enrichment",
+        "kind": [
+          "lib"
+        ],
+        "test": true,
+        "source": "/home/arjuna/rustybmp/crates/rbmp-enrichment/src/lib.rs"
+      }
+    ]
+  },
+  {
+    "package": "rbmp-kafka",
+    "targets": [
+      {
+        "name": "rbmp_kafka",
+        "kind": [
+          "lib"
+        ],
+        "test": true,
+        "source": "/home/arjuna/rustybmp/crates/rbmp-kafka/src/lib.rs"
+      }
+    ]
+  },
+  {
+    "package": "rbmp-nats",
+    "targets": [
+      {
+        "name": "rbmp_nats",
+        "kind": [
+          "lib"
+        ],
+        "test": true,
+        "source": "/home/arjuna/rustybmp/crates/rbmp-nats/src/lib.rs"
+      }
+    ]
+  },
+  {
+    "package": "rbmp-mrt",
+    "targets": [
+      {
+        "name": "rbmp_mrt",
+        "kind": [
+          "lib"
+        ],
+        "test": true,
+        "source": "/home/arjuna/rustybmp/crates/rbmp-mrt/src/lib.rs"
+      }
+    ]
+  }
+]

@@ -445,6 +445,11 @@ def _local_connect_loop(local_addr: str, sidecar_name: str) -> None:
 
 
 def main():
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     global _job_engine_ref
     core_addr    = os.environ.get("BONSAI_CORE_ADDR", "[::1]:50051")
     local_addr   = os.environ.get("BONSAI_LOCAL_ADDR", "localhost:50051")

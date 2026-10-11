@@ -1,0 +1,87 @@
+[
+  {
+    "case": "failure",
+    "command": [
+      "/home/arjuna/rustybmp/.venv/bin/python",
+      "scripts/run_required_tests.py",
+      "-p",
+      "no:cacheprovider",
+      "-q",
+      "/tmp/rbmp-b01-gate-iaqbt4fw/test_failure.py"
+    ],
+    "exit": 1,
+    "expected": 1,
+    "output": "F                                                                        [100%]\n=================================== FAILURES ===================================\n_________________________________ test_failure _________________________________\n\n    def test_failure():\n>       assert False, \"B01 failure propagation probe\"\nE       AssertionError: B01 failure propagation probe\nE       assert False\n\n/tmp/rbmp-b01-gate-iaqbt4fw/test_failure.py:2: AssertionError\n=========================== short test summary info ============================\nFAILED ../../../tmp/rbmp-b01-gate-iaqbt4fw/test_failure.py::test_failure - As...\n1 failed in 0.05s\n"
+  },
+  {
+    "case": "skip",
+    "command": [
+      "/home/arjuna/rustybmp/.venv/bin/python",
+      "scripts/run_required_tests.py",
+      "-p",
+      "no:cacheprovider",
+      "-q",
+      "/tmp/rbmp-b01-gate-iaqbt4fw/test_skip.py"
+    ],
+    "exit": 1,
+    "expected": 1,
+    "output": "s                                                                        [100%]\nRequired suite rejected 1 skipped test report(s).\n\n1 skipped in 0.01s\n"
+  },
+  {
+    "case": "empty",
+    "command": [
+      "/home/arjuna/rustybmp/.venv/bin/python",
+      "scripts/run_required_tests.py",
+      "-p",
+      "no:cacheprovider",
+      "-q",
+      "/tmp/rbmp-b01-gate-iaqbt4fw/test_empty.py"
+    ],
+    "exit": 5,
+    "expected": 5,
+    "output": "\nno tests ran in 0.01s\n"
+  },
+  {
+    "case": "pass",
+    "command": [
+      "/home/arjuna/rustybmp/.venv/bin/python",
+      "scripts/run_required_tests.py",
+      "-p",
+      "no:cacheprovider",
+      "-q",
+      "/tmp/rbmp-b01-gate-iaqbt4fw/test_pass.py"
+    ],
+    "exit": 0,
+    "expected": 0,
+    "output": ".                                                                        [100%]\n1 passed in 0.01s\n"
+  },
+  {
+    "case": "missing_backend",
+    "command": [
+      "/home/arjuna/rustybmp/.venv/bin/python",
+      "scripts/run_required_tests.py",
+      "tests/api/",
+      "-p",
+      "no:cacheprovider",
+      "-q"
+    ],
+    "exit": 1,
+    "expected": 1,
+    "output": "ssssssssssssssssssssssss                                                 [100%]\nRequired suite rejected 24 skipped test report(s).\n\n24 skipped in 0.28s\n"
+  },
+  {
+    "case": "missing_import_among_passing_tests",
+    "command": [
+      "/home/arjuna/rustybmp/.venv/bin/python",
+      "scripts/run_required_tests.py",
+      "-p",
+      "no:cacheprovider",
+      "-q",
+      "-ra",
+      "/tmp/rbmp-b01-import-probe-4ywy6m0z"
+    ],
+    "exit": 1,
+    "expected": 1,
+    "output": ".                                                                        [100%]\nRequired suite rejected 1 skipped test report(s).\n\n=========================== short test summary info ============================\nSKIPPED [1] ../../../tmp/rbmp-b01-import-probe-4ywy6m0z/test_dependency.py:2: could not import 'b01_nonexistent_dependency': No module named 'b01_nonexistent_dependency'\n1 passed, 1 skipped in 0.02s\n"
+  }
+]

@@ -19,6 +19,58 @@ const BMP_VERSION: u8 = 3;
 const BMP_HEADER_LEN: usize = 6;
 const BMP_COMMON_PEER_HEADER_LEN: usize = 42;
 const BGP_HEADER_LEN: usize = 19;
+pub const DEFAULT_BMP_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+pub const DEFAULT_BMP_BODY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Read a single RFC 7854 §4.1 BMP frame (`(msg_type, payload)`) from an async stream,
+/// enforcing pre-allocation length bounds (`6..=max_frame_bytes`) and separate header/body
+/// read deadlines. Returns `Ok(None)` on clean EOF before the first header byte.
+pub async fn read_bmp_frame<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+    max_frame_bytes: usize,
+    header_timeout: std::time::Duration,
+    body_timeout: std::time::Duration,
+) -> Result<Option<(u8, Vec<u8>)>> {
+    let mut header = [0_u8; BMP_HEADER_LEN];
+    let first_byte = match tokio::time::timeout(header_timeout, reader.read(&mut header[..1])).await {
+        Ok(Ok(0)) => return Ok(None),
+        Ok(Ok(n)) => n,
+        Ok(Err(error)) => return Err(anyhow!(error).context("BMP read header failed")),
+        Err(_) => bail!("BMP header read timed out after {:?}", header_timeout),
+    };
+    debug_assert_eq!(first_byte, 1);
+
+    match tokio::time::timeout(body_timeout, reader.read_exact(&mut header[1..])).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => return Err(anyhow!(error).context("BMP truncated header")),
+        Err(_) => bail!("BMP header remainder timed out after {:?}", body_timeout),
+    }
+
+    if header[0] != BMP_VERSION {
+        bail!("unsupported BMP version {}", header[0]);
+    }
+    let length = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
+    if !(BMP_HEADER_LEN..=max_frame_bytes).contains(&length) {
+        bail!(
+            "BMP frame length {} outside configured bounds {}..={}",
+            length,
+            BMP_HEADER_LEN,
+            max_frame_bytes
+        );
+    }
+
+    let mut payload = vec![0_u8; length - BMP_HEADER_LEN];
+    if !payload.is_empty() {
+        match tokio::time::timeout(body_timeout, reader.read_exact(&mut payload)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => return Err(anyhow!(error).context("BMP payload read failed")),
+            Err(_) => bail!("BMP payload read timed out after {:?}", body_timeout),
+        }
+    }
+
+    Ok(Some((header[5], payload)))
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BmpEvent {
@@ -132,35 +184,30 @@ pub async fn run_bmp_receiver(
                         let governor = governor.clone();
                         tokio::spawn(async move {
                             loop {
-                                let mut header = [0_u8; BMP_HEADER_LEN];
-                                if let Err(error) = stream.read_exact(&mut header).await {
-                                    if error.kind() != std::io::ErrorKind::UnexpectedEof {
-                                        warn!(%error, peer = %peer, "BMP read header failed");
-                                    }
-                                    break;
-                                }
-                                let length = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
-                                if header[0] != BMP_VERSION {
-                                    warn!(peer = %peer, version = header[0], "unsupported BMP version");
-                                    break;
-                                }
-                                if !(BMP_HEADER_LEN..=max_frame_bytes).contains(&length) {
-                                    warn!(peer = %peer, length, "BMP frame exceeded configured bounds");
-                                    break;
-                                }
-                                let mut payload = vec![0_u8; length - BMP_HEADER_LEN];
-                                if let Err(error) = stream.read_exact(&mut payload).await {
-                                    warn!(%error, peer = %peer, "BMP payload read failed");
-                                    break;
-                                }
-                                match parse_bmp_message(header[5], &payload, peer.to_string()) {
-                                    Ok(event) => {
-                                        if let Err(error) = archive.append(&event).await {
-                                            warn!(%error, "failed to archive BMP event");
+                                match read_bmp_frame(
+                                    &mut stream,
+                                    max_frame_bytes,
+                                    DEFAULT_BMP_HEADER_TIMEOUT,
+                                    DEFAULT_BMP_BODY_TIMEOUT,
+                                )
+                                .await
+                                {
+                                    Ok(Some((msg_type, payload))) => {
+                                        match parse_bmp_message(msg_type, &payload, peer.to_string()) {
+                                            Ok(event) => {
+                                                if let Err(error) = archive.append(&event).await {
+                                                    warn!(%error, "failed to archive BMP event");
+                                                }
+                                                publish_event(&bus, &target_map, event, governor.as_deref());
+                                            }
+                                            Err(error) => warn!(%error, peer = %peer, "failed to parse BMP message"),
                                         }
-                                        publish_event(&bus, &target_map, event, governor.as_deref());
                                     }
-                                    Err(error) => warn!(%error, peer = %peer, "failed to parse BMP message"),
+                                    Ok(None) => break,
+                                    Err(error) => {
+                                        warn!(%error, peer = %peer, "BMP frame read failed");
+                                        break;
+                                    }
                                 }
                             }
                         });
@@ -212,7 +259,7 @@ fn publish_event(
     });
 }
 
-fn parse_bmp_message(message_type: u8, payload: &[u8], collector_peer: String) -> Result<BmpEvent> {
+pub fn parse_bmp_message(message_type: u8, payload: &[u8], collector_peer: String) -> Result<BmpEvent> {
     let timestamp_ns = now_ns();
 
     // Initiation (4) and Termination (5) carry TLVs only — no per-peer header (RFC 7854 §4.3, §4.5)
@@ -370,7 +417,7 @@ fn parse_peer_down_reason(body: &[u8]) -> (u8, String) {
     (reason, name.to_string())
 }
 
-fn parse_initiation(payload: &[u8], collector_peer: String, timestamp_ns: i64) -> Result<BmpEvent> {
+pub fn parse_initiation(payload: &[u8], collector_peer: String, timestamp_ns: i64) -> Result<BmpEvent> {
     let mut sys_name = None;
     let mut sys_descr = None;
     let mut init_admin_string = None;
@@ -381,16 +428,19 @@ fn parse_initiation(payload: &[u8], collector_peer: String, timestamp_ns: i64) -
         let tlv_len = u16::from_be_bytes([payload[cursor + 2], payload[cursor + 3]]) as usize;
         cursor += 4;
         if cursor + tlv_len > payload.len() {
-            break;
+            bail!("truncated BMP initiation TLV");
         }
         let value = &payload[cursor..cursor + tlv_len];
         cursor += tlv_len;
         match tlv_type {
-            0 => sys_descr = Some(String::from_utf8_lossy(value).into_owned()),
-            1 => sys_name = Some(String::from_utf8_lossy(value).into_owned()),
-            2 => init_admin_string = Some(String::from_utf8_lossy(value).into_owned()),
+            0 => init_admin_string = Some(String::from_utf8_lossy(value).into_owned()),
+            1 => sys_descr = Some(String::from_utf8_lossy(value).into_owned()),
+            2 => sys_name = Some(String::from_utf8_lossy(value).into_owned()),
             _ => {}
         }
+    }
+    if cursor != payload.len() {
+        bail!("truncated BMP initiation TLV header");
     }
 
     Ok(BmpEvent {
@@ -421,7 +471,7 @@ fn parse_initiation(payload: &[u8], collector_peer: String, timestamp_ns: i64) -
     })
 }
 
-fn parse_termination(
+pub fn parse_termination(
     payload: &[u8],
     collector_peer: String,
     timestamp_ns: i64,
@@ -436,13 +486,16 @@ fn parse_termination(
         let tlv_len = u16::from_be_bytes([payload[cursor + 2], payload[cursor + 3]]) as usize;
         cursor += 4;
         if cursor + tlv_len > payload.len() {
-            break;
+            bail!("truncated BMP termination TLV");
         }
         let value = &payload[cursor..cursor + tlv_len];
         cursor += tlv_len;
         match tlv_type {
             0 => termination_message = Some(String::from_utf8_lossy(value).into_owned()),
-            1 if tlv_len == 2 => {
+            1 => {
+                if tlv_len != 2 {
+                    bail!("invalid BMP termination reason TLV length {tlv_len}");
+                }
                 let code = u16::from_be_bytes([value[0], value[1]]);
                 let name = match code {
                     0 => "session_admin_closed",
@@ -457,6 +510,9 @@ fn parse_termination(
             }
             _ => {}
         }
+    }
+    if cursor != payload.len() {
+        bail!("truncated BMP termination TLV header");
     }
 
     Ok(BmpEvent {
@@ -504,7 +560,7 @@ fn parse_common_peer_header(input: &[u8]) -> Result<ParsedPeer> {
     let raw_addr: [u8; 16] = input[10..26]
         .try_into()
         .map_err(|_| anyhow!("invalid BMP peer address length"))?;
-    let is_ipv6 = peer_flags & 0x80 != 0;
+    let is_ipv6 = peer_type != 3 && (peer_flags & 0x80 != 0);
     let peer_address = if is_ipv6 {
         IpAddr::V6(Ipv6Addr::from(raw_addr)).to_string()
     } else {
@@ -533,27 +589,29 @@ fn parse_common_peer_header(input: &[u8]) -> Result<ParsedPeer> {
     })
 }
 
-/// RFC 7854 §4.2, RFC 8671, RFC 9069 — classify RIB type from peer_type + peer_flags.
-/// peer_type 0 = Global Instance Peer (Adj-RIB-In pre/post-policy based on L flag)
+/// RFC 7854 §4.2, RFC 8671 §4, RFC 9069 §4.2 — classify RIB type from peer_type + peer_flags.
+/// peer_type 0 = Global Instance Peer
 /// peer_type 1 = RD Instance Peer
-/// peer_type 2 = Local Instance Peer (RFC 8671: Adj-RIB-Out)
-/// peer_type 3 = Loc-RIB (RFC 9069)
-/// L flag (bit 6, 0x40) = 0 → pre-policy, 1 → post-policy
-fn classify_rib_type(peer_type: u8, peer_flags: u8) -> String {
+/// peer_type 2 = Local Instance Peer
+/// peer_type 3 = Loc-RIB (RFC 9069: F flag bit 0 / 0x80 indicates filtered Loc-RIB)
+/// For peer_type 0..=2: O flag (0x10) selects Adj-RIB-Out vs Adj-RIB-In; L flag (0x40) selects post- vs pre-policy.
+pub fn classify_rib_type(peer_type: u8, peer_flags: u8) -> String {
     match peer_type {
-        3 => "loc-rib".to_string(),
-        2 => {
-            if peer_flags & 0x40 != 0 {
-                "adj-rib-out-post-policy".to_string()
+        3 => {
+            if peer_flags & 0x80 != 0 {
+                "loc-rib-filtered".to_string()
             } else {
-                "adj-rib-out-pre-policy".to_string()
+                "loc-rib".to_string()
             }
         }
         _ => {
-            if peer_flags & 0x40 != 0 {
-                "adj-rib-in-post-policy".to_string()
-            } else {
-                "adj-rib-in-pre-policy".to_string()
+            let is_outbound = peer_flags & 0x10 != 0;
+            let is_post_policy = peer_flags & 0x40 != 0;
+            match (is_outbound, is_post_policy) {
+                (false, false) => "adj-rib-in-pre-policy".to_string(),
+                (false, true) => "adj-rib-in-post-policy".to_string(),
+                (true, false) => "adj-rib-out-pre-policy".to_string(),
+                (true, true) => "adj-rib-out-post-policy".to_string(),
             }
         }
     }
@@ -695,8 +753,18 @@ fn parse_route_monitoring(payload: &[u8]) -> Result<Vec<BmpRouteEntry>> {
         bail!("invalid BGP marker in route monitoring payload");
     }
     let length = u16::from_be_bytes([payload[16], payload[17]]) as usize;
-    if length > payload.len() || payload[18] != 2 {
-        return Ok(Vec::new());
+    if !(BGP_HEADER_LEN + 4..=4096).contains(&length) || length != payload.len() {
+        bail!(
+            "declared BGP length {} does not match route monitoring payload length {}",
+            length,
+            payload.len()
+        );
+    }
+    if payload[18] != 2 {
+        bail!(
+            "unexpected BGP message type {} in route monitoring",
+            payload[18]
+        );
     }
     parse_bgp_update(&payload[19..length])
 }
@@ -1165,12 +1233,12 @@ mod tests {
         let sys_descr = b"Nokia SR Linux";
         let sys_name = b"srl-spine1";
         let mut payload = Vec::new();
-        // TLV type=0 (sysDescr)
-        payload.extend_from_slice(&[0x00, 0x00]);
+        // TLV type=1 (sysDescr)
+        payload.extend_from_slice(&[0x00, 0x01]);
         payload.extend_from_slice(&(sys_descr.len() as u16).to_be_bytes());
         payload.extend_from_slice(sys_descr);
-        // TLV type=1 (sysName)
-        payload.extend_from_slice(&[0x00, 0x01]);
+        // TLV type=2 (sysName)
+        payload.extend_from_slice(&[0x00, 0x02]);
         payload.extend_from_slice(&(sys_name.len() as u16).to_be_bytes());
         payload.extend_from_slice(sys_name);
 
@@ -1200,30 +1268,32 @@ mod tests {
         assert_eq!(classify_rib_type(0, 0x00), "adj-rib-in-pre-policy");
         assert_eq!(classify_rib_type(0, 0x40), "adj-rib-in-post-policy");
         assert_eq!(classify_rib_type(1, 0x00), "adj-rib-in-pre-policy");
-        assert_eq!(classify_rib_type(2, 0x00), "adj-rib-out-pre-policy");
-        assert_eq!(classify_rib_type(2, 0x40), "adj-rib-out-post-policy");
+        assert_eq!(classify_rib_type(2, 0x00), "adj-rib-in-pre-policy");
+        assert_eq!(classify_rib_type(2, 0x40), "adj-rib-in-post-policy");
+        assert_eq!(classify_rib_type(2, 0x10), "adj-rib-out-pre-policy");
+        assert_eq!(classify_rib_type(2, 0x50), "adj-rib-out-post-policy");
         assert_eq!(classify_rib_type(3, 0x00), "loc-rib");
-        assert_eq!(classify_rib_type(3, 0x40), "loc-rib");
+        assert_eq!(classify_rib_type(3, 0x80), "loc-rib-filtered");
     }
 
     #[test]
     fn parse_initiation_extracts_admin_string_tlv() {
         let mut payload = Vec::new();
-        // TLV type=0 (sysDescr)
-        let descr = b"FRRouting/10.2.1";
-        payload.extend_from_slice(&[0x00, 0x00]);
-        payload.extend_from_slice(&(descr.len() as u16).to_be_bytes());
-        payload.extend_from_slice(descr);
-        // TLV type=1 (sysName)
-        let name = b"frr-rr";
-        payload.extend_from_slice(&[0x00, 0x01]);
-        payload.extend_from_slice(&(name.len() as u16).to_be_bytes());
-        payload.extend_from_slice(name);
-        // TLV type=2 (admin string)
+        // TLV type=0 (admin string)
         let admin = b"lab bmp source";
-        payload.extend_from_slice(&[0x00, 0x02]);
+        payload.extend_from_slice(&[0x00, 0x00]);
         payload.extend_from_slice(&(admin.len() as u16).to_be_bytes());
         payload.extend_from_slice(admin);
+        // TLV type=1 (sysDescr)
+        let descr = b"FRRouting/10.2.1";
+        payload.extend_from_slice(&[0x00, 0x01]);
+        payload.extend_from_slice(&(descr.len() as u16).to_be_bytes());
+        payload.extend_from_slice(descr);
+        // TLV type=2 (sysName)
+        let name = b"frr-rr";
+        payload.extend_from_slice(&[0x00, 0x02]);
+        payload.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        payload.extend_from_slice(name);
 
         let event =
             parse_initiation(&payload, "10.0.0.1".to_string(), 0).expect("parse initiation");
@@ -1310,3 +1380,32 @@ mod tests {
         assert_eq!(capability_name(99), "cap-99");
     }
 }
+
+#[cfg(test)]
+mod rfc_contract_reproductions {
+    use super::{classify_rib_type, parse_initiation};
+
+    #[test]
+    fn initiation_uses_rfc7854_tlv_numbers() {
+        let payload = b"\x00\x00\x00\x04note\x00\x01\x00\x06router\x00\x02\x00\x06edge-a";
+        let event = parse_initiation(payload, "192.0.2.1".into(), 0).unwrap();
+        assert_eq!(event.sys_name.as_deref(), Some("edge-a"));
+        assert_eq!(event.sys_descr.as_deref(), Some("router"));
+        assert_eq!(event.init_admin_string.as_deref(), Some("note"));
+    }
+
+    #[test]
+    fn local_instance_is_inbound_without_o_flag() {
+        assert_eq!(classify_rib_type(2, 0), "adj-rib-in-pre-policy");
+        assert_eq!(classify_rib_type(2, 0x40), "adj-rib-in-post-policy");
+    }
+
+    #[test]
+    fn outbound_view_follows_o_flag_for_all_adj_rib_peer_types() {
+        for peer_type in 0..=2 {
+            assert_eq!(classify_rib_type(peer_type, 0x10), "adj-rib-out-pre-policy");
+            assert_eq!(classify_rib_type(peer_type, 0x50), "adj-rib-out-post-policy");
+        }
+    }
+}
+

@@ -1,0 +1,310 @@
+Full local log: /tmp/rbmp-b01-format.log
+Lines: 19449
+
+Diff in /home/arjuna/rustybmp-b01/benches/bmp_parse.rs:8:
+ ///   - Route Monitor PDU:   > 1 M msgs/sec
+ use std::hint::black_box;
+ 
++use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
++use rbmp_core::bmp::parser::{DEFAULT_MAX_FRAME, parse_bmp_message};
+ use std::net::{IpAddr, Ipv4Addr};
+-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+-use rbmp_core::bmp::parser::{parse_bmp_message, DEFAULT_MAX_FRAME};
+ 
+ const SPEAKER: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+ 
+Diff in /home/arjuna/rustybmp-b01/benches/bmp_parse.rs:17:
+ // ── PDU fixtures ─────────────────────────────────────────────────────────────
+ 
+-const INITIATION_PDU: &[u8] = &[
+-    0x03, 0x00, 0x00, 0x00, 0x06, 0x04,
+-];
++const INITIATION_PDU: &[u8] = &[0x03, 0x00, 0x00, 0x00, 0x06, 0x04];
+ 
+ /// Route Monitor with a single withdrawn prefix (192.0.2.0/24)
+ const ROUTE_MONITOR_WITHDRAW: &[u8] = &[
+Diff in /home/arjuna/rustybmp-b01/benches/bmp_parse.rs:25:
+     // BMP common header
+-    0x03, 0x00, 0x00, 0x00, 0x36, 0x00,
+-    // Peer header (42 bytes)
+-    0x00, 0x00,
+-    0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00,
+-    0x00,0x00,0x00,0x00, 0xC0,0x00,0x02,0x01,
+-    0x00,0x00,0xFD,0xE8,
+-    0x0A,0x00,0x00,0x01,
+-    0x67,0xAC,0x00,0x00, 0x00,0x00,0x00,0x00,
+-    // BGP UPDATE
+-    0xFF,0xFF,0xFF,0xFF, 0xFF,0xFF,0xFF,0xFF,
+-    0xFF,0xFF,0xFF,0xFF, 0xFF,0xFF,0xFF,0xFF,
+-    0x00, 0x1C, 0x02,
+-    0x00, 0x04, 0x18, 0xC0, 0x00, 0x02,
+-    0x00, 0x00,
++    0x03, 0x00, 0x00, 0x00, 0x36, 0x00, // Peer header (42 bytes)
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00,
++    0x02, 0x01, 0x00, 0x00, 0xFD, 0xE8, 0x0A, 0x00, 0x00, 0x01, 0x67, 0xAC, 0x00, 0x00, 0x00, 0x00,
++    0x00, 0x00, // BGP UPDATE
++    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
++    0x00, 0x1C, 0x02, 0x00, 0x04, 0x18, 0xC0, 0x00, 0x02, 0x00, 0x00,
+ ];
+ 
+ /// Route Monitor with an IPv4 unicast announcement (203.0.113.0/24)
+Diff in /home/arjuna/rustybmp-b01/benches/bmp_parse.rs:43:
+ /// and minimal path attributes (ORIGIN + AS_PATH + NEXT_HOP)
+ const ROUTE_MONITOR_ANNOUNCE: &[u8] = &[
+     // BMP common header
+-    0x03, 0x00, 0x00, 0x00, 0x51, 0x00,
+-    // Peer header (42 bytes)
+-    0x00, 0x00,
+-    0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00,
+-    0x00,0x00,0x00,0x00, 0xC0,0x00,0x02,0x01,
+-    0x00,0x00,0xFD,0xE8,
+-    0x0A,0x00,0x00,0x01,
+-    0x67,0xAC,0x00,0x00, 0x00,0x00,0x00,0x00,
+-    // BGP UPDATE (37 bytes)
+-    0xFF,0xFF,0xFF,0xFF, 0xFF,0xFF,0xFF,0xFF,
+-    0xFF,0xFF,0xFF,0xFF, 0xFF,0xFF,0xFF,0xFF,
+-    0x00, 0x25, 0x02,
+-    0x00, 0x00,  // withdrawn len = 0
+-    0x00, 0x12,  // path attrs len = 18
++    0x03, 0x00, 0x00, 0x00, 0x51, 0x00, // Peer header (42 bytes)
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00,
++    0x02, 0x01, 0x00, 0x00, 0xFD, 0xE8, 0x0A, 0x00, 0x00, 0x01, 0x67, 0xAC, 0x00, 0x00, 0x00, 0x00,
++    0x00, 0x00, // BGP UPDATE (37 bytes)
++    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
++    0x00, 0x25, 0x02, 0x00, 0x00, // withdrawn len = 0
++    0x00, 0x12, // path attrs len = 18
+     // ORIGIN = IGP
+-    0x40, 0x01, 0x01, 0x00,
+-    // AS_PATH: seq len=1, AS=65000
+-    0x40, 0x02, 0x06, 0x02, 0x01, 0x00, 0x00, 0xFD, 0xE8,
+-    // NEXT_HOP = 192.0.2.1
+-    0x40, 0x03, 0x04, 0xC0, 0x00, 0x02, 0x01,
+-    // NLRI: 203.0.113.0/24
++    0x40, 0x01, 0x01, 0x00, // AS_PATH: seq len=1, AS=65000
++    0x40, 0x02, 0x06, 0x02, 0x01, 0x00, 0x00, 0xFD, 0xE8, // NEXT_HOP = 192.0.2.1
++    0x40, 0x03, 0x04, 0xC0, 0x00, 0x02, 0x01, // NLRI: 203.0.113.0/24
+     0x18, 0xCB, 0x00, 0x71,
+ ];
+ 
+Diff in /home/arjuna/rustybmp-b01/benches/bmp_parse.rs:80:
+ 
+ fn bench_route_monitor(c: &mut Criterion) {
+     let pdus: &[(&str, &[u8])] = &[
+-        ("withdraw",  ROUTE_MONITOR_WITHDRAW),
+-        ("announce",  ROUTE_MONITOR_ANNOUNCE),
++        ("withdraw", ROUTE_MONITOR_WITHDRAW),
++        ("announce", ROUTE_MONITOR_ANNOUNCE),
+     ];
+     let mut g = c.benchmark_group("bmp_parse");
+     g.throughput(Throughput::Elements(1));
+Diff in /home/arjuna/rustybmp-b01/benches/bmp_parse.rs:88:
+     for (name, pdu) in pdus {
+-        g.bench_with_input(
+-            BenchmarkId::new("route_monitor", name),
+-            pdu,
+-            |b, &pdu| b.iter(|| parse_bmp_message(black_box(pdu), SPEAKER, DEFAULT_MAX_FRAME)),
+-        );
++        g.bench_with_input(BenchmarkId::new("route_monitor", name), pdu, |b, &pdu| {
++            b.iter(|| parse_bmp_message(black_box(pdu), SPEAKER, DEFAULT_MAX_FRAME))
++        });
+     }
+     g.finish();
+ }
+Diff in /home/arjuna/rustybmp-b01/benches/bmp_parse.rs:102:
+     g.bench_function("route_monitor_batch_1k", |b| {
+         b.iter(|| {
+             for _ in 0..N {
+-                let _ = parse_bmp_message(black_box(ROUTE_MONITOR_ANNOUNCE), SPEAKER, DEFAULT_MAX_FRAME);
++                let _ = parse_bmp_message(
++                    black_box(ROUTE_MONITOR_ANNOUNCE),
++                    SPEAKER,
++                    DEFAULT_MAX_FRAME,
++                );
+             }
+         })
+     });
+Diff in /home/arjuna/rustybmp-b01/benches/bmp_parse.rs:109:
+     g.finish();
+ }
+ 
+-criterion_group!(benches, bench_initiation, bench_route_monitor, bench_batch_throughput);
++criterion_group!(
++    benches,
++    bench_initiation,
++    bench_route_monitor,
++    bench_batch_throughput
++);
+ criterion_main!(benches);
+ 
+Diff in /home/arjuna/rustybmp-b01/crates/rbmp-core/src/bgp/attributes.rs:1:
+-use std::net::{IpAddr, Ipv4Addr};
+-use bytes::Buf;
+-use crate::{Error, Result};
+-use super::types::*;
+-use super::nlri::{decode_nlri, decode_labeled_nlri, decode_vpn_nlri, decode_next_hops, decode_vpls_nlri};
++use super::bgpls::{decode_bgpls_reach, decode_bgpls_unreach, parse_bgpls_attribute};
+ use super::evpn::decode_evpn_nlri;
+-use super::flowspec::{decode_flowspec_nlri, FlowspecNlri};
++use super::flowspec::{FlowspecNlri, decode_flowspec_nlri};
++use super::nlri::{
++    decode_labeled_nlri, decode_next_hops, decode_nlri, decode_vpls_nlri, decode_vpn_nlri,
++};
++use super::srpolicy::{RtcNlri, SrPolicyNlri, decode_rtc_nlri, decode_srpolicy_nlri};
+ use super::srv6::parse_prefix_sid;
+-use super::bgpls::{decode_bgpls_reach, decode_bgpls_unreach, parse_bgpls_attribute};
+-use super::srpolicy::{decode_srpolicy_nlri, decode_rtc_nlri, SrPolicyNlri, RtcNlri};
++use super::types::*;
++use crate::{Error, Result};
++use bytes::Buf;
++use std::net::{IpAddr, Ipv4Addr};
+ 
+ // ─── Attribute flag bits ──────────────────────────────────────────────────────
+-#[allow(dead_code)] const FLAG_OPTIONAL:   u8 = 0x80;
+-#[allow(dead_code)] const FLAG_TRANSITIVE: u8 = 0x40;
+-#[allow(dead_code)] const FLAG_PARTIAL:    u8 = 0x20;
+-const FLAG_EXT_LEN:    u8 = 0x10;
++#[allow(dead_code)]
++const FLAG_OPTIONAL: u8 = 0x80;
++#[allow(dead_code)]
++const FLAG_TRANSITIVE: u8 = 0x40;
++#[allow(dead_code)]
++const FLAG_PARTIAL: u8 = 0x20;
++const FLAG_EXT_LEN: u8 = 0x10;
+ 
+ /// Parse all path attributes from buf, returning a PathAttributes struct.
+ /// buf must contain exactly the path attributes section (already length-delimited).
+Diff in /home/arjuna/rustybmp-b01/crates/rbmp-core/src/bgp/attributes.rs:20:
+ pub fn parse_path_attributes(mut buf: impl Buf) -> Result<PathAttributes> {
+     let mut attrs = PathAttributes::default();
+     while buf.remaining() >= 3 {
+-        let flags     = buf.get_u8();
++        let flags = buf.get_u8();
+         let type_code = buf.get_u8();
+         let attr_len = if flags & FLAG_EXT_LEN != 0 {
+             if buf.remaining() < 2 {
+Diff in /home/arjuna/rustybmp-b01/crates/rbmp-core/src/bgp/attributes.rs:27:
+-                return Err(Error::UnexpectedEof { needed: 2, have: buf.remaining() });
++                return Err(Error::UnexpectedEof {
++                    needed: 2,
++                    have: buf.remaining(),
++                });
+             }
+             buf.get_u16() as usize
+         } else {
+Diff in /home/arjuna/rustybmp-b01/crates/rbmp-core/src/bgp/attributes.rs:40:
+         }
+ 
+         let attr_data = buf.copy_to_bytes(attr_len);
+-        let attr_buf  = attr_data.as_ref();
++        let attr_buf = attr_data.as_ref();
+ 
+         match type_code {
+             // Type 1: ORIGIN
+Diff in /home/arjuna/rustybmp-b01/crates/rbmp-core/src/bgp/attributes.rs:53:
+             }
+             // Type 3: NEXT_HOP
+             3 if attr_len == 4 => {
+-                attrs.next_hop = Some(IpAddr::V4(Ipv4Addr::from([attr_buf[0], attr_buf[1], attr_buf[2], attr_buf[3]])));
++                attrs.next_hop = Some(IpAddr::V4(Ipv4Addr::from([
++                    attr_buf[0],
++                    attr_buf[1],
++                    attr_buf[2],
++                    attr_buf[3],
++                ])));
+             }
+             // Type 4: MULTI_EXIT_DISC
+             4 if attr_len == 4 => {
+Diff in /home/arjuna/rustybmp-b01/crates/rbmp-core/src/bgp/attributes.rs:70:
+             // Type 7: AGGREGATOR (2+4 or 4+4 byte forms)
+             7 if attr_len == 6 => {
+                 let asn = u16::from_be_bytes([attr_buf[0], attr_buf[1]]) as u32;
+-                let id  = Ipv4Addr::from([attr_buf[2], attr_buf[3], attr_buf[4], attr_buf[5]]);
++                let id = Ipv4Addr::from([attr_buf[2], attr_buf[3], attr_buf[4], attr_buf[5]]);
+                 attrs.aggregator = Some((asn, id));
+             }
+             7 if attr_len == 8 => {
+Diff in /home/arjuna/rustybmp-b01/crates/rbmp-core/src/bgp/attributes.rs:77:
+                 let asn = u32::from_be_bytes([attr_buf[0], attr_buf[1], attr_buf[2], attr_buf[3]]);
+-                let id  = Ipv4Addr::from([attr_buf[4], attr_buf[5], attr_buf[6], attr_buf[7]]);
++                let id = Ipv4Addr::from([attr_buf[4], attr_buf[5], attr_buf[6], attr_buf[7]]);
+                 attrs.aggregator = Some((asn, id));
+             }
+             // Type 8: COMMUNITY (RFC 1997)
+Diff in /home/arjuna/rustybmp-b01/crates/rbmp-core/src/bgp/attributes.rs:89:
+             }
+             // Type 9: ORIGINATOR_ID (RFC 4456)
+             9 if attr_len == 4 => {
+-                attrs.originator_id = Some(Ipv4Addr::from([attr_buf[0], attr_buf[1], attr_buf[2], attr_buf[3]]));
++                attrs.originator_id = Some(Ipv4Addr::from([
++                    attr_buf[0],
++                    attr_buf[1],
++                    attr_buf[2],
++                    attr_buf[3],
++                ]));
+             }
+             // Type 10: CLUSTER_LIST (RFC 4456)
+             10 => {
+Diff in /home/arjuna/rustybmp-b01/crates/rbmp-core/src/bgp/attributes.rs:96:
+                 let mut cb = attr_data.as_ref();
+                 while cb.len() >= 4 {
+-                    attrs.cluster_list.push(Ipv4Addr::from([cb[0], cb[1], cb[2], cb[3]]));
++                    attrs
++                        .cluster_list
++                        .push(Ipv4Addr::from([cb[0], cb[1], cb[2], cb[3]]));
+                     cb = &cb[4..];
+                 }
+             }
+Diff in /home/arjuna/rustybmp-b01/crates/rbmp-core/src/bgp/attributes.rs:102:
+             // Type 14: MP_REACH_NLRI (RFC 4760)
+             14 if attr_len >= 4 => {
+-                let (mp, evpn_reach, flowspec_reach, bgpls_reach, sr_nlris, rtc_nlris)
+-                    = parse_mp_reach(attr_data.as_ref())?;
+-                attrs.mp_reach          = Some(mp);
+-                attrs.evpn_reach        = evpn_reach;
+-                attrs.flowspec_reach    = flowspec_reach;
+-                attrs.bgpls_reach       = bgpls_reach;
+-                attrs.sr_policy_nlris   = sr_nlris;
+-                attrs.rtc_nlris         = rtc_nlris;
++                let (mp, evpn_reach, flowspec_reach, bgpls_reach, sr_nlris, rtc_nlris) =
++                    parse_mp_reach(attr_data.as_ref())?;
++                attrs.mp_reach = Some(mp);
++                attrs.evpn_reach = evpn_reach;
++                attrs.flowspec_reach = flowspec_reach;
++                attrs.bgpls_reach = bgpls_reach;
++                attrs.sr_policy_nlris = sr_nlris;
++                attrs.rtc_nlris = rtc_nlris;
+             }
+             // Type 15: MP_UNREACH_NLRI (RFC 4760)
+             15 if attr_len >= 3 => {
+Diff in /home/arjuna/rustybmp-b01/crates/rbmp-core/src/bgp/attributes.rs:115:
+-                let (mp, evpn_unreach, flowspec_unreach, bgpls_unreach, sr_wd, _rtc_wd)
+-                    = parse_mp_unreach(attr_data.as_ref())?;
+-                attrs.mp_unreach        = Some(mp);
+-                attrs.evpn_unreach      = evpn_unreach;
+-                attrs.flowspec_unreach  = flowspec_unreach;
+-                attrs.bgpls_unreach     = bgpls_unreach;
++                let (mp, evpn_unreach, flowspec_unreach, bgpls_unreach, sr_wd, _rtc_wd) =
++                    parse_mp_unreach(attr_data.as_ref())?;
++                attrs.mp_unreach = Some(mp);
++                attrs.evpn_unreach = evpn_unreach;
++                attrs.flowspec_unreach = flowspec_unreach;
++                attrs.bgpls_unreach = bgpls_unreach;
+                 if let Some(nlris) = sr_wd {
+                     attrs.sr_policy_nlris = nlris;
+                 }
+Diff in /home/arjuna/rustybmp-b01/crates/rbmp-core/src/bgp/attributes.rs:127:
+                 let mut cb = attr_data.as_ref();
+                 while cb.len() >= 8 {
+                     let raw: [u8; 8] = cb[..8].try_into().unwrap();
+-                    attrs.extended_communities.push(ExtendedCommunity::from_bytes(&raw));
++                    attrs
++                        .extended_communities
++                        .push(ExtendedCommunity::from_bytes(&raw));
+                     cb = &cb[8..];
+                 }
+             }
+Diff in /home/arjuna/rustybmp-b01/crates/rbmp-core/src/bgp/attributes.rs:138:
+             // Type 18: AS4_AGGREGATOR (RFC 6793)
+             18 if attr_len == 8 => {
+                 let asn = u32::from_be_bytes([attr_buf[0], attr_buf[1], attr_buf[2], attr_buf[3]]);
+-                let id  =

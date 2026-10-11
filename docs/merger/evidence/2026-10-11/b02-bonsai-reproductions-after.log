@@ -1,0 +1,13 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized] target(s) in 2m 28s
+     Running tests/bmp_rfc_contract.rs (target/debug/deps/bmp_rfc_contract-1108faef83a3407b)
+
+running 6 tests
+test initiation_uses_rfc7854_tlv_numbers ... ok
+test local_instance_is_inbound_without_o_flag ... ok
+test locrib_filtered_flag_is_high_bit_without_ipv6_misclassification ... ok
+test outbound_view_follows_o_flag_for_all_adj_rib_peer_types ... ok
+test route_monitoring_rejects_declared_bgp_length_mismatch ... ok
+test termination_uses_rfc7854_tlv_numbers ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

@@ -19,9 +19,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: clippy, rustfmt
+
+      - name: Install native build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang cmake pkg-config libssl-dev protobuf-compiler sccache mold
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -108,9 +113,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: llvm-tools-preview
+
+      - name: Install native build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang cmake pkg-config libssl-dev protobuf-compiler sccache mold
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -176,7 +186,7 @@ jobs:
             --cov-fail-under=30
 
       - name: Python dependency security audit
-        run: pip-audit --requirement python/requirements.txt --skip-editable 2>/dev/null || pip-audit -r python/requirements.txt || true
+        run: pip-audit --requirement python/requirements.txt --skip-editable
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
@@ -228,7 +238,7 @@ jobs:
 
       - name: Audit dependencies
         working-directory: ui
-        run: npm audit --audit-level=high || true
+        run: npm audit --audit-level=high
 
   # ── Docker: amd64 on PRs, multi-arch on main ──────────────────────────────
   docker:

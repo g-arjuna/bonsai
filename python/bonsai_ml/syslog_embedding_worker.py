@@ -94,9 +94,10 @@ def _fetch_unembedded_events(api_url: str, limit: int) -> list[dict[str, Any]]:
             timeout=15,
         )
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        return data.get("events", data) if isinstance(data, dict) else data
     except Exception as exc:
-        log.debug("Failed to fetch unembedded events: %s", exc)
+        log.warning("Failed to fetch unembedded events: %s", exc)
         return []
 
 
@@ -107,7 +108,17 @@ def _embed_and_post(
 ) -> int:
     import numpy as np
 
-    texts = [e.get("message") or e.get("reason") or "" for e in events]
+    texts = []
+    for e in events:
+        text = e.get("message") or e.get("reason") or ""
+        if not text and "detail_json" in e:
+            try:
+                import json
+                detail = json.loads(e["detail_json"])
+                text = detail.get("message") or detail.get("reason") or ""
+            except Exception:
+                pass
+        texts.append(text)
     event_ids = [e.get("id") or e.get("event_id") for e in events]
 
     valid_pairs = [

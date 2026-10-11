@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "run-bonsai": "cd .. && export RUST_LOG=\"info,sidecar=debug\" && export BONSAI_VAULT_PASSPHRASE=\"test-passphrase-ev1-2026\" && ./target/release/bonsai --config bonsai.toml"
   },
   "dependencies": {
     "@tanstack/svelte-query": "^5.45.1",

@@ -1,0 +1,129 @@
+   Compiling serde_json v1.0.150
+   Compiling pest_generator v2.8.6
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling dashmap v6.2.1
+   Compiling rbmp-core v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-core)
+   Compiling tinytemplate v1.2.1
+   Compiling criterion v0.5.1
+   Compiling pest_derive v2.8.6
+   Compiling rbmp-rib v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-rib)
+    Finished `test` profile [optimized + debuginfo] target(s) in 28.54s
+     Running unittests src/lib.rs (/home/arjuna/rustybmp/target/debug/deps/rbmp_core-c291daad3cd7b809)
+bgp::attributes::tests::parse_as_path_accepts_two_byte_encoding: test
+bgp::attributes::tests::parse_as_path_falls_back_to_four_byte_encoding: test
+bgp::bgpls::tests::test_bgpls_attr_link_metrics_srlg_adjsid: test
+bgp::bgpls::tests::test_bgpls_attr_node_name: test
+bgp::bgpls::tests::test_bgpls_attr_sr_capabilities: test
+bgp::bgpls::tests::test_empty_buf_returns_empty: test
+bgp::bgpls::tests::test_node_nlri_protocol_identifier: test
+bgp::bgpls::tests::test_unknown_nlri_type_preserved: test
+bgp::evpn::tests::test_evpn_type11_leaf_ad: test
+bgp::evpn::tests::test_evpn_type1_auto_discovery: test
+bgp::evpn::tests::test_evpn_type3_imet: test
+bgp::evpn::tests::test_evpn_type6_selective_multicast: test
+bgp::evpn::tests::test_evpn_type7_igmp_join: test
+bgp::evpn::tests::test_evpn_type9_per_region_ipmsi: test
+bgp::evpn::tests::test_evpn_unknown_type: test
+bgp::flowspec::tests::test_flowspec_dest_prefix_ipv4: test
+bgp::flowspec::tests::test_flowspec_protocol_tcp: test
+bgp::flowspec::tests::test_flowspec_tcp_flags: test
+bgp::mvpn::tests::test_parse_inter_as_ipmsi: test
+bgp::mvpn::tests::test_parse_list: test
+bgp::mvpn::tests::test_parse_unknown_type: test
+bgp::srpolicy::tests::test_rtc_specific_with_origin_as: test
+bgp::srpolicy::tests::test_rtc_wildcard: test
+bgp::srpolicy::tests::test_srpolicy_nlri_ipv4: test
+bgp::srpolicy::tests::test_srpolicy_nlri_ipv6: test
+bgp::srv6::tests::test_prefix_sid_label_index: test
+bgp::srv6::tests::test_prefix_sid_unknown_tlv_preserved: test
+bmp::parser::tests::test_frame_too_large: test
+bmp::parser::tests::test_invalid_version: test
+bmp::parser::tests::test_parse_initiation: test
+bmp::path_status_tlv::tests::test_add_path_bit: test
+bmp::path_status_tlv::tests::test_all_reason_codes_non_empty: test
+bmp::path_status_tlv::tests::test_best_external_bit: test
+bmp::path_status_tlv::tests::test_default_tlv_is_zero: test
+bmp::path_status_tlv::tests::test_find_in_tlv_stream: test
+bmp::path_status_tlv::tests::test_find_path_status_tlv_empty_stream: test
+bmp::path_status_tlv::tests::test_find_path_status_tlv_not_found: test
+bmp::path_status_tlv::tests::test_nonselected_with_aspath_reason: test
+bmp::path_status_tlv::tests::test_nonselected_with_localpref_reason: test
+bmp::path_status_tlv::tests::test_parse_backup_with_reason: test
+bmp::path_status_tlv::tests::test_parse_best_path: test
+bmp::path_status_tlv::tests::test_parse_filtered_inbound: test
+bmp::path_status_tlv::tests::test_parse_multi_bit: test
+bmp::path_status_tlv::tests::test_parse_too_short: test
+bmp::path_status_tlv::tests::test_reason_labels: test
+bmp::path_status_tlv::tests::test_stale_bit: test
+bmp::path_status_tlv::tests::test_suppressed_bit: test
+bmp::path_status_tlv::tests::test_unknown_reason_is_empty_string: test
+collector_protocol::tests::test_async_frame_roundtrip: test
+collector_protocol::tests::test_encode_decode_roundtrip: test
+collector_protocol::tests::test_eof_returns_none: test
+
+51 tests, 0 benchmarks
+     Running ../../tests/integration/mod.rs (/home/arjuna/rustybmp/target/debug/deps/integration-c2445b639c13d3ab)
+bmp_pdu::tests::oversized_pdu_returns_error: test
+bmp_pdu::tests::parse_initiation_message: test
+bmp_pdu::tests::parse_route_monitor_with_withdraw: test
+bmp_pdu::tests::truncated_pdu_returns_error: test
+frr_bmp::tests::frr_bmp_route_monitoring_received: test
+frr_bmp::tests::frr_bmp_session_connects: test
+mcp_tools::tests::test_eleven_tools_defined: test
+mcp_tools::tests::test_initialize_request_shape: test
+mcp_tools::tests::test_nl_query_announce_mapping: test
+mcp_tools::tests::test_nl_query_withdraw_mapping: test
+mcp_tools::tests::test_rpc_err_envelope_shape: test
+mcp_tools::tests::test_rpc_ok_envelope_shape: test
+mcp_tools::tests::test_tools_call_get_anomalies: test
+mcp_tools::tests::test_tools_call_get_peer_flaps: test
+mcp_tools::tests::test_tools_call_get_prefix_history: test
+mcp_tools::tests::test_tools_call_nl_query_convergence: test
+mcp_tools::tests::test_tools_call_rpki_invalids: test
+mcp_tools::tests::test_tools_list_request_shape: test
+
+18 tests, 0 benchmarks
+     Running unittests src/lib.rs (/home/arjuna/rustybmp/target/debug/deps/rbmp_rib-509bc66c0a151059)
+filter::tests::test_accept_by_peer_as: test
+filter::tests::test_as_path_contains_filter: test
+filter::tests::test_bogon_10_slash_8_rejected: test
+filter::tests::test_bogon_192_168_rejected: test
+filter::tests::test_deny_bogon_prefix: test
+filter::tests::test_empty_engine_default_accept: test
+filter::tests::test_filter_by_community: test
+filter::tests::test_filter_name_returned_on_match: test
+filter::tests::test_filter_peer_as_in_expr: test
+filter::tests::test_filter_reject_invalid_and_too_specific: test
+filter::tests::test_local_pref_range: test
+filter_expr::tests::test_action_eq: test
+filter_expr::tests::test_action_withdraw: test
+filter_expr::tests::test_and_compound: test
+filter_expr::tests::test_as_path_len_gt: test
+filter_expr::tests::test_as_path_len_le: test
+filter_expr::tests::test_community_has: test
+filter_expr::tests::test_community_missing: test
+filter_expr::tests::test_complex_expr: test
+filter_expr::tests::test_has_prepend: test
+filter_expr::tests::test_in_set: test
+filter_expr::tests::test_local_pref: test
+filter_expr::tests::test_local_pref_eq: test
+filter_expr::tests::test_local_pref_lt_false: test
+filter_expr::tests::test_med_gt_false: test
+filter_expr::tests::test_med_lt: test
+filter_expr::tests::test_nested_and_or: test
+filter_expr::tests::test_not: test
+filter_expr::tests::test_or: test
+filter_expr::tests::test_origin_as_not_in: test
+filter_expr::tests::test_parse_error_bad_syntax: test
+filter_expr::tests::test_peer_as_not_in: test
+filter_expr::tests::test_prefix_len_ge_boundary: test
+filter_expr::tests::test_rpki_eq: test
+filter_expr::tests::test_simple_comparison: test
+roto_filter::tests::test_noop_engine_accepts: test
+roto_filter::tests::test_stats_default: test
+
+37 tests, 0 benchmarks
+   Doc-tests rbmp_core
+0 tests, 0 benchmarks
+   Doc-tests rbmp_rib
+0 tests, 0 benchmarks

@@ -1,0 +1,46 @@
+     Running ../../tests/regressions/bmp_rfc_contract.rs (/home/arjuna/rustybmp/target/debug/deps/bmp_rfc_contract-b833bf9190d752c2)
+
+running 13 tests
+test incorrect_embedded_bgp_length_is_rejected ... ok
+test initiation_tlv_assignments_follow_rfc7854 ... ok
+test local_instance_is_inbound_when_o_is_clear ... ok
+test locrib_filtered_flag_is_the_high_bit ... ok
+test locrib_reserved_bits_do_not_imply_filtering ... ok
+test original_invalid_generator_fixtures_remain_negative_inputs ... ok
+test outbound_o_flag_applies_to_peer_types_zero_through_two ... ok
+test six_byte_header_with_required_initiation_tlvs_is_accepted ... ok
+test repaired_positive_fixtures_parse_cleanly ... ok
+test truncated_declared_bmp_message_is_rejected ... ok
+test unknown_initiation_tlv_and_unknown_termination_reason_are_preserved ... ok
+test zero_and_short_declared_lengths_are_rejected ... ok
+test termination_tlv_assignments_follow_rfc7854 ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running ../../tests/integration/mod.rs (/home/arjuna/rustybmp/target/debug/deps/integration-ed0e8d6ac29831db)
+
+running 19 tests
+test bmp_pdu::tests::legacy_malformed_route_monitor_pdu_is_rejected ... ok
+test bmp_pdu::tests::oversized_pdu_returns_error ... ok
+test bmp_pdu::tests::parse_initiation_message ... ok
+test frr_bmp::tests::frr_bmp_route_monitoring_received ... ignored, requires docker + frrouting/frr:9.1 image
+test frr_bmp::tests::frr_bmp_session_connects ... ignored, requires docker + frrouting/frr:9.1 image
+test bmp_pdu::tests::parse_route_monitor_with_withdraw ... ok
+test bmp_pdu::tests::truncated_pdu_returns_error ... ok
+test mcp_tools::tests::test_eleven_tools_defined ... ok
+test mcp_tools::tests::test_initialize_request_shape ... ok
+test mcp_tools::tests::test_nl_query_announce_mapping ... ok
+test mcp_tools::tests::test_nl_query_withdraw_mapping ... ok
+test mcp_tools::tests::test_rpc_err_envelope_shape ... ok
+test mcp_tools::tests::test_rpc_ok_envelope_shape ... ok
+test mcp_tools::tests::test_tools_call_get_anomalies ... ok
+test mcp_tools::tests::test_tools_call_get_peer_flaps ... ok
+test mcp_tools::tests::test_tools_call_get_prefix_history ... ok
+test mcp_tools::tests::test_tools_call_nl_query_convergence ... ok
+test mcp_tools::tests::test_tools_call_rpki_invalids ... ok
+test mcp_tools::tests::test_tools_list_request_shape ... ok
+
+test result: ok. 17 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+Python required suite (tests/protocol/ + tests/ml/):
+102 passed in 13.16s

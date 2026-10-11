@@ -1,0 +1,39 @@
+cwd: /home/arjuna/rustybmp
+command: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. /home/arjuna/rustybmp/.venv/bin/python -m pytest -p no:cacheprovider tests/protocol/ --collect-only -q
+exit: 0
+tests/protocol/test_bmp_pdu.py::TestInitiation::test_initiation_common_header
+tests/protocol/test_bmp_pdu.py::TestInitiation::test_initiation_length_consistent
+tests/protocol/test_bmp_pdu.py::TestInitiation::test_initiation_has_info_tlv
+tests/protocol/test_bmp_pdu.py::TestPeerUp::test_peer_up_type
+tests/protocol/test_bmp_pdu.py::TestPeerUp::test_peer_up_per_peer_header
+tests/protocol/test_bmp_pdu.py::TestRouteMonitorAnnounce::test_route_monitor_announce_type
+tests/protocol/test_bmp_pdu.py::TestRouteMonitorAnnounce::test_route_monitor_announce_bgp_marker
+tests/protocol/test_bmp_pdu.py::TestRouteMonitorAnnounce::test_route_monitor_announce_bgp_type
+tests/protocol/test_bmp_pdu.py::TestRouteMonitorWithdraw::test_route_monitor_withdraw_type
+tests/protocol/test_bmp_pdu.py::TestRouteMonitorWithdraw::test_route_monitor_withdraw_has_withdrawn_routes
+tests/protocol/test_bmp_pdu.py::TestPathStatusTLV::test_path_status_best_contains_tlv
+tests/protocol/test_bmp_pdu.py::TestPathStatusTLV::test_path_status_nonselected
+tests/protocol/test_bmp_pdu.py::TestPeerDown::test_peer_down_type
+tests/protocol/test_bmp_pdu.py::TestPeerDown::test_peer_down_reason_code
+tests/protocol/test_bmp_pdu.py::TestStatsReport::test_stats_report_type
+tests/protocol/test_bmp_pdu.py::TestStatsReport::test_stats_report_counter
+tests/protocol/test_bmp_pdu.py::TestRouteMonitorIPv6::test_ipv6_peer_flags
+tests/protocol/test_bmp_pdu.py::TestTermination::test_termination_type
+tests/protocol/test_bmp_pdu.py::TestTermination::test_termination_reason_tlv
+tests/protocol/test_convergence_detector.py::TestConvergenceDetector::test_peer_down_starts_tracking
+tests/protocol/test_convergence_detector.py::TestConvergenceDetector::test_peer_up_without_down_is_noop
+tests/protocol/test_convergence_detector.py::TestConvergenceDetector::test_withdraw_increments_counter
+tests/protocol/test_convergence_detector.py::TestConvergenceDetector::test_stats_eor_finalizes
+tests/protocol/test_convergence_detector.py::TestConvergenceDetector::test_stats_type8_eor_finalizes
+tests/protocol/test_convergence_detector.py::TestConvergenceDetector::test_stats_nonzero_does_not_finalize
+tests/protocol/test_convergence_detector.py::TestConvergenceDetector::test_idle_check_finalizes_quiet_peer
+tests/protocol/test_convergence_detector.py::TestConvergenceDetector::test_idle_check_requires_min_withdrawals
+tests/protocol/test_convergence_detector.py::TestConvergenceDetector::test_peer_up_finalizes_active_episode
+tests/protocol/test_convergence_detector.py::TestConvergenceDetector::test_on_event_callback_invoked
+tests/protocol/test_convergence_detector.py::TestConvergenceDetector::test_convergence_ms_calculation
+tests/protocol/test_convergence_detector.py::TestConvergenceDetector::test_affected_prefixes_counted
+tests/protocol/test_convergence_detector.py::TestConvergenceDetector::test_multiple_peers_tracked_independently
+tests/protocol/test_convergence_detector.py::TestConvergenceDetector::test_route_for_unknown_peer_ignored
+tests/protocol/test_convergence_detector.py::TestConvergenceDetector::test_double_finalize_is_safe
+
+34 tests collected in 0.64s

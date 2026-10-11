@@ -1,0 +1,73 @@
+{
+  "date": "2026-10-11",
+  "timezone": "Asia/Kolkata",
+  "bonsai_sha": "20903963155c27b35a8c511df229d71b848f7aa0",
+  "rustybmp_sha": "e2a1189392db520b25a376795e1bfae72eca5b55",
+  "rustybmp_worktree": "/home/arjuna/rustybmp-b01",
+  "branch": "integration/b01-baseline",
+  "toolchain": "1.95.0",
+  "baseline_rust": {
+    "discovered": 229,
+    "passed": 227,
+    "ignored": 2,
+    "failed": 0
+  },
+  "current_rust_discovered": 240,
+  "b02_regressions": {
+    "passed": 3,
+    "failed": 8,
+    "ignored": 0,
+    "parser_implementation_changed": false
+  },
+  "required_python": {
+    "protocol_and_ml_passed": 101,
+    "api_host_passed": 24,
+    "skips": 0
+  },
+  "wiring": {
+    "passed": 15,
+    "total": 15
+  },
+  "failure_probes": {
+    "python": [
+      {
+        "case": "failure",
+        "exit": 1
+      },
+      {
+        "case": "skip",
+        "exit": 1
+      },
+      {
+        "case": "empty",
+        "exit": 5
+      },
+      {
+        "case": "pass",
+        "exit": 0
+      },
+      {
+        "case": "missing_backend",
+        "exit": 1
+      },
+      {
+        "case": "missing_import_among_passing_tests",
+        "exit": 1
+      }
+    ],
+    "rust_assertion_exit": 101,
+    "missing_frr_prerequisites_exit": 101,
+    "missing_http_exit": 1
+  },
+  "workflow_validation": {
+    "actionlint": "1.7.7",
+    "result": "pass",
+    "shellcheck_pyflakes": "not run"
+  },
+  "format_gate": "fails pre-existing drift in both repositories",
+  "clippy_gate": "fails 19 rbmp-core diagnostics; later crates not reached",
+  "docker_verification": "in progress",
+  "cloud_ci": "not run",
+  "live_router_or_lab_changes": false,
+  "b02_positive_initiation": "includes required sysDescr and sysName TLVs"
+}

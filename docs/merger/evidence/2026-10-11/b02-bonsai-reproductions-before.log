@@ -1,0 +1,55 @@
+     Running tests/bmp_rfc_contract.rs (target/debug/deps/bmp_rfc_contract-1108faef83a3407b)
+
+running 6 tests
+test initiation_uses_rfc7854_tlv_numbers ... FAILED
+test locrib_filtered_flag_is_high_bit_without_ipv6_misclassification ... FAILED
+test local_instance_is_inbound_without_o_flag ... FAILED
+test outbound_view_follows_o_flag_for_all_adj_rib_peer_types ... FAILED
+test route_monitoring_rejects_declared_bgp_length_mismatch ... FAILED
+test termination_uses_rfc7854_tlv_numbers ... ok
+
+failures:
+
+---- initiation_uses_rfc7854_tlv_numbers stdout ----
+
+thread 'initiation_uses_rfc7854_tlv_numbers' (2471) panicked at tests/bmp_rfc_contract.rs:12:5:
+assertion `left == right` failed
+  left: Some("router")
+ right: Some("edge-a")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- locrib_filtered_flag_is_high_bit_without_ipv6_misclassification stdout ----
+
+thread 'locrib_filtered_flag_is_high_bit_without_ipv6_misclassification' (2473) panicked at tests/bmp_rfc_contract.rs:47:5:
+assertion `left == right` failed
+  left: "loc-rib"
+ right: "loc-rib-filtered"
+
+---- local_instance_is_inbound_without_o_flag stdout ----
+
+thread 'local_instance_is_inbound_without_o_flag' (2472) panicked at tests/bmp_rfc_contract.rs:31:5:
+assertion `left == right` failed
+  left: "adj-rib-out-pre-policy"
+ right: "adj-rib-in-pre-policy"
+
+---- outbound_view_follows_o_flag_for_all_adj_rib_peer_types stdout ----
+
+thread 'outbound_view_follows_o_flag_for_all_adj_rib_peer_types' (2474) panicked at tests/bmp_rfc_contract.rs:38:9:
+assertion `left == right` failed
+  left: "adj-rib-in-pre-policy"
+ right: "adj-rib-out-pre-policy"
+
+---- route_monitoring_rejects_declared_bgp_length_mismatch stdout ----
+
+thread 'route_monitoring_rejects_declared_bgp_length_mismatch' (2475) panicked at tests/bmp_rfc_contract.rs:56:5:
+assertion failed: parse_bmp_message(0, &payload, "192.0.2.1".into()).is_err()
+
+
+failures:
+    initiation_uses_rfc7854_tlv_numbers
+    local_instance_is_inbound_without_o_flag
+    locrib_filtered_flag_is_high_bit_without_ipv6_misclassification
+    outbound_view_follows_o_flag_for_all_adj_rib_peer_types
+    route_monitoring_rejects_declared_bgp_length_mismatch
+
+test result: FAILED. 1 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

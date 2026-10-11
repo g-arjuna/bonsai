@@ -1,0 +1,111 @@
+{
+  "reference": "RFC 7854 section 4.1: version at 0, length at 1..4, type at 5",
+  "fixtures": [
+    {
+      "file": "01_initiation.bin",
+      "sha256": "dc65755df20b08a1e43b090cc367f7510fe7d912351c6b276d994eaf94024591",
+      "actual_length": 31,
+      "version": 3,
+      "rfc_length": 67108864,
+      "rfc_type": 30,
+      "first_seven_bytes_hex": "03040000001e00",
+      "length_matches": false
+    },
+    {
+      "file": "02_peer_up.bin",
+      "sha256": "1d7d88384df4e361194cc707428b87e0a21ef6a0afaec1caa0a706f180eac0dd",
+      "actual_length": 97,
+      "version": 3,
+      "rfc_length": 50331648,
+      "rfc_type": 96,
+      "first_seven_bytes_hex": "03030000006000",
+      "length_matches": false
+    },
+    {
+      "file": "03_route_monitor_announce.bin",
+      "sha256": "cd89584a5a1732ceb53a57957c4e0494005e9eac6a2b5f8782582ebb29f31d8c",
+      "actual_length": 96,
+      "version": 3,
+      "rfc_length": 0,
+      "rfc_type": 95,
+      "first_seven_bytes_hex": "03000000005f00",
+      "length_matches": false
+    },
+    {
+      "file": "04_route_monitor_withdraw.bin",
+      "sha256": "e2422e6c93693d37989452ec0375860c7d57aceed0e828575516f80cae32127f",
+      "actual_length": 76,
+      "version": 3,
+      "rfc_length": 0,
+      "rfc_type": 75,
+      "first_seven_bytes_hex": "03000000004b00",
+      "length_matches": false
+    },
+    {
+      "file": "05_route_monitor_path_status_best.bin",
+      "sha256": "0b68f5320990d735c724128da3e9cd1c789d7a4a406c1b9fed53e776a73508ec",
+      "actual_length": 106,
+      "version": 3,
+      "rfc_length": 0,
+      "rfc_type": 105,
+      "first_seven_bytes_hex": "03000000006900",
+      "length_matches": false
+    },
+    {
+      "file": "06_route_monitor_path_status_nonsel.bin",
+      "sha256": "7216b11eb2773c48a681db825fc69d7bcdeafdf5e924721fdc3e25ed4ea102e6",
+      "actual_length": 106,
+      "version": 3,
+      "rfc_length": 0,
+      "rfc_type": 105,
+      "first_seven_bytes_hex": "03000000006900",
+      "length_matches": false
+    },
+    {
+      "file": "07_peer_down.bin",
+      "sha256": "d0b00979881c1c1db43a334c845241358c717c19582115f82764752634931482",
+      "actual_length": 50,
+      "version": 3,
+      "rfc_length": 33554432,
+      "rfc_type": 49,
+      "first_seven_bytes_hex": "03020000003100",
+      "length_matches": false
+    },
+    {
+      "file": "08_stats_report.bin",
+      "sha256": "f51d34742f5a2b546b1adad99ed56cefb919695ea24ca2990924b779553212ce",
+      "actual_length": 61,
+      "version": 3,
+      "rfc_length": 16777216,
+      "rfc_type": 60,
+      "first_seven_bytes_hex": "03010000003c00",
+      "length_matches": false
+    },
+    {
+      "file": "09_route_monitor_ipv6.bin",
+      "sha256": "2d5dac0f127a442bda4455393b88a6f52ab411ed5b9ccee99880162ce0ebf528",
+      "actual_length": 90,
+      "version": 3,
+      "rfc_length": 0,
+      "rfc_type": 89,
+      "first_seven_bytes_hex": "03000000005900",
+      "length_matches": false
+    },
+    {
+      "file": "10_termination.bin",
+      "sha256": "9e86910347a84251b58678198b83b7de2ff92ee83b891f930cf7472d16909705",
+      "actual_length": 13,
+      "version": 3,
+      "rfc_length": 83886080,
+      "rfc_type": 12,
+      "first_seven_bytes_hex": "03050000000c00",
+      "length_matches": false
+    }
+  ],
+  "inline_route_monitor": {
+    "actual_length": 75,
+    "declared_length": 76,
+    "bgp_actual_length": 27,
+    "bgp_declared_length": 28
+  }
+}

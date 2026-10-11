@@ -1,0 +1,25 @@
+command: cargo +1.95.0 test -p rbmp-core --test b01_failure_probe --locked
+exit: 101
+
+running 1 test
+test required_assertion_failure ... FAILED
+
+failures:
+
+---- required_assertion_failure stdout ----
+
+thread 'required_assertion_failure' (1898549) panicked at crates/rbmp-core/tests/b01_failure_probe.rs:2:35:
+B01 temporary assertion probe
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    required_assertion_failure
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Blocking waiting for file lock on artifact directory
+   Compiling rbmp-core v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-core)
+    Finished `test` profile [optimized + debuginfo] target(s) in 30.41s
+     Running tests/b01_failure_probe.rs (/home/arjuna/rustybmp/target/debug/deps/b01_failure_probe-2718115c37a7228f)
+error: test failed, to rerun pass `-p rbmp-core --test b01_failure_probe`

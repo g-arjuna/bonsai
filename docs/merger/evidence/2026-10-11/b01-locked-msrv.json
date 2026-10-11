@@ -1,0 +1,102 @@
+[
+  {
+    "name": "icu_collections",
+    "version": "2.2.0",
+    "rust_version": "1.86"
+  },
+  {
+    "name": "icu_locale_core",
+    "version": "2.2.0",
+    "rust_version": "1.86"
+  },
+  {
+    "name": "icu_normalizer",
+    "version": "2.2.0",
+    "rust_version": "1.86"
+  },
+  {
+    "name": "icu_normalizer_data",
+    "version": "2.2.0",
+    "rust_version": "1.86"
+  },
+  {
+    "name": "icu_properties",
+    "version": "2.2.0",
+    "rust_version": "1.86"
+  },
+  {
+    "name": "icu_properties_data",
+    "version": "2.2.0",
+    "rust_version": "1.86"
+  },
+  {
+    "name": "icu_provider",
+    "version": "2.2.0",
+    "rust_version": "1.86"
+  },
+  {
+    "name": "idna_adapter",
+    "version": "1.2.2",
+    "rust_version": "1.86"
+  },
+  {
+    "name": "rbmp-core",
+    "version": "0.1.0",
+    "rust_version": "1.95"
+  },
+  {
+    "name": "rbmp-enrichment",
+    "version": "0.1.0",
+    "rust_version": "1.95"
+  },
+  {
+    "name": "rbmp-kafka",
+    "version": "0.1.0",
+    "rust_version": "1.95"
+  },
+  {
+    "name": "rbmp-mrt",
+    "version": "0.1.0",
+    "rust_version": "1.95"
+  },
+  {
+    "name": "rbmp-nats",
+    "version": "0.1.0",
+    "rust_version": "1.95"
+  },
+  {
+    "name": "rbmp-rib",
+    "version": "0.1.0",
+    "rust_version": "1.95"
+  },
+  {
+    "name": "rbmp-server",
+    "version": "0.1.0",
+    "rust_version": "1.95"
+  },
+  {
+    "name": "rbmp-store",
+    "version": "0.1.0",
+    "rust_version": "1.95"
+  },
+  {
+    "name": "time",
+    "version": "0.3.49",
+    "rust_version": "1.88.0"
+  },
+  {
+    "name": "time-core",
+    "version": "0.1.9",
+    "rust_version": "1.88.0"
+  },
+  {
+    "name": "time-macros",
+    "version": "0.2.29",
+    "rust_version": "1.88.0"
+  },
+  {
+    "name": "wasip2",
+    "version": "1.0.4+wasi-0.2.12",
+    "rust_version": "1.87.0"
+  }
+]

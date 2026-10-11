@@ -1,0 +1,221 @@
+Full local log: /tmp/rbmp-b01-clippy.log
+Lines: 218
+
+    Checking rbmp-core v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-core)
+    Checking rdkafka-sys v4.10.0+2.12.1
+    Checking rdkafka v0.36.2
+error: unnecessary `>= y + 1` or `x - 1 >=`
+   --> crates/rbmp-core/src/bgp/bgpls.rs:283:20
+    |
+283 |                 if val.len() >= 1 + octets {
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^ help: change it to: `val.len() > octets`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#int_plus_one
+    = note: `-D clippy::int-plus-one` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::int_plus_one)]`
+
+error: large size difference between variants
+   --> crates/rbmp-core/src/bmp/types.rs:268:1
+    |
+268 | /  pub enum BmpPayload {
+269 | |      Initiation {
+270 | |          sys_name:  Option<String>,
+271 | |          sys_descr: Option<String>,
+...   |
+278 | |      PeerUp(PeerUpMessage),
+    | |      --------------------- the second-largest variant contains at least 152 bytes
+...   |
+283 | |/     RouteMonitoring {
+284 | ||         peer_header: PeerHeader,
+285 | ||         update:      BgpUpdate,
+286 | ||     },
+    | ||_____- the largest variant contains at least 1368 bytes
+...   |
+295 | |      },
+296 | |  }
+    | |__^ the entire enum is at least 1368 bytes
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#large_enum_variant
+    = note: `-D clippy::large-enum-variant` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::large_enum_variant)]`
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+    |
+285 -         update:      BgpUpdate,
+285 +         update:      Box<BgpUpdate>,
+    |
+
+error: this `map_or` can be simplified
+   --> crates/rbmp-core/src/bgp/types.rs:885:16
+    |
+885 |             && self.attributes.mp_unreach.as_ref().map_or(true, |u| u.prefixes.is_empty())
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#unnecessary_map_or
+    = note: `-D clippy::unnecessary-map-or` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::unnecessary_map_or)]`
+help: use `is_none_or` instead
+    |
+885 -             && self.attributes.mp_unreach.as_ref().map_or(true, |u| u.prefixes.is_empty())
+885 +             && self.attributes.mp_unreach.as_ref().is_none_or(|u| u.prefixes.is_empty())
+    |
+
+error: very complex type used. Consider factoring parts into `type` definitions
+   --> crates/rbmp-core/src/bgp/attributes.rs:241:34
+    |
+241 | ...-> Result<(MpReachNlri, Option<EvpnReachNlri>, Option<Vec<FlowspecNlri>>, Option<BgpLsReachNlri>, Vec<SrPolicyNlri>, Vec<RtcNlri>)> {
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#type_complexity
+    = note: `-D clippy::type-complexity` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::type_complexity)]`
+
+error: very complex type used. Consider factoring parts into `type` definitions
+   --> crates/rbmp-core/src/bgp/attributes.rs:310:36
+    |
+310 | ...-> Result<(MpUnreachNlri, Option<EvpnUnreachNlri>, Option<Vec<FlowspecNlri>>, Option<BgpLsUnreachNlri>, Option<Vec<SrPolicyNlri>>, Vec<RtcNlri>)> {
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#type_complexity
+
+error: this `if` can be collapsed into the outer `match`
+   --> crates/rbmp-core/src/bgp/attributes.rs:406:17
+    |
+406 | /                 if data.len() >= 6 {
+407 | |                     color = Some(u32::from_be_bytes([data[2], data[3], data[4], data[5]]));
+408 | |                 }
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_match
+    = note: `-D clippy::collapsible-match` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::collapsible_match)]`
+help: collapse nested if block
+    |
+404 ~             9 if data.len() >= 4
+405 |                 // Color sub-TLV: flags(1) + reserved(1) + color(4) — skip flags+reserved
+406 ~                 && data.len() >= 6 => {
+407 |                     color = Some(u32::from_be_bytes([data[2], data[3], data[4], data[5]]));
+408 ~                 }
+    |
+
+error: manually reimplementing `div_ceil`
+  --> crates/rbmp-core/src/bgp/nlri.rs:24:22
+   |
+24 |         let octets = (prefix_len as usize + 7) / 8;
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `(prefix_len as usize).div_ceil(8)`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#manual_div_ceil
+   = note: `-D clippy::manual-div-ceil` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::manual_div_ceil)]`
+
+error: manually reimplementing `div_ceil`
+  --> crates/rbmp-core/src/bgp/nlri.rs:62:22
+   |
+62 |         let octets = (prefix_len as usize + 7) / 8;
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `(prefix_len as usize).div_ceil(8)`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#manual_div_ceil
+
+error: manually reimplementing `div_ceil`
+   --> crates/rbmp-core/src/bgp/nlri.rs:116:22
+    |
+116 |         let octets = (prefix_len as usize + 7) / 8;
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `(prefix_len as usize).div_ceil(8)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#manual_div_ceil
+
+error: manually reimplementing `div_ceil`
+   --> crates/rbmp-core/src/bgp/nlri.rs:165:22
+    |
+165 |         let octets = (prefix_len as usize + 7) / 8;
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `(prefix_len as usize).div_ceil(8)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#manual_div_ceil
+
+error: taken reference of right operand
+  --> crates/rbmp-core/src/bgp/open.rs:14:8
+   |
+14 |     if marker.as_ref() != &[0xFF_u8; 16] {
+   |        ^^^^^^^^^^^^^^^^^^^--------------
+   |                           |
+   |                           help: use the right value directly: `[0xFF_u8; 16]`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#op_ref
+   = note: `-D clippy::op-ref` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::op_ref)]`
+
+error: taken reference of right operand
+  --> crates/rbmp-core/src/bgp/update.rs:15:8
+   |
+15 |     if marker.as_ref() != &[0xFF_u8; 16] {
+   |        ^^^^^^^^^^^^^^^^^^^--------------
+   |                           |
+   |                           help: use the right value directly: `[0xFF_u8; 16]`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#op_ref
+
+error: this OR pattern can be rewritten using a range
+   --> crates/rbmp-core/src/bgp/evpn.rs:257:9
+    |
+257 |         6 | 7 | 8 => {
+    |         ^^^^^^^^^ help: try: `6..=8`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#manual_range_patterns
+    = note: `-D clippy::manual-range-patterns` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_range_patterns)]`
+
+error: manually reimplementing `div_ceil`
+   --> crates/rbmp-core/src/bgp/flowspec.rs:100:26
+    |
+100 |             let octets = (prefix_len as usize + 7) / 8;
+    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `(prefix_len as usize).div_ceil(8)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#manual_div_ceil
+
+error: wildcard pattern covers any other pattern as it will match anyway
+   --> crates/rbmp-core/src/bgp/bgpls.rs:297:13
+    |
+297 |             PD_OSPF_ROUTE_TYPE | _ => {}
+    |             ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider handling `_` separately
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#wildcard_in_or_patterns
+    = note: `-D clippy::wildcard-in-or-patterns` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::wildcard_in_or_patterns)]`
+
+error: length comparison to one
+   --> crates/rbmp-core/src/bgp/bgpls.rs:279:35
+    |
+279 |             PD_IP_REACHABILITY if val.len() >= 1 => {
+    |                                   ^^^^^^^^^^^^^^ help: using `!is_empty` is clearer and more explicit: `!val.is_empty()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#len_zero
+    = note: `-D clippy::len-zero` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::len_zero)]`
+
+error: manually reimplementing `div_ceil`
+   --> crates/rbmp-core/src/bgp/bgpls.rs:282:30
+    |
+282 |                 let octets = (plen as usize + 7) / 8;
+    |                              ^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `(plen as usize).div_ceil(8)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#manual_div_ceil
+
+error: manual `RangeInclusive::contains` implementation
+   --> crates/rbmp-core/src/bgp/bgpls.rs:497:21
+    |
+497 |             1095 if tlv_len >= 1 && tlv_len <= 4 => {
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: use: `(1..=4).contains(&tlv_len)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#manual_range_contains
+    = note: `-D clippy::manual-range-contains` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_range_contains)]`
+
+error: manually reimplementing `div_ceil`
+   --> crates/rbmp-core/src/bgp/srpolicy.rs:290:22
+    |
+290 |         let octets = (prefix_len + 7) / 8;
+    |                      ^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `prefix_len.div_ceil(8)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#manual_div_ceil
+
+error: could not compile `rbmp-core` (lib) due to 19 previous errors

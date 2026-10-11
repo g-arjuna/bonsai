@@ -6,6 +6,7 @@
 
 # Bonpy SPA build artefacts (built by CI; checked out by Ubuntu)
 ui-bonpy/node_modules/
+ui-bonpy/.svelte-kit/
 ui-bonpy/dist/
 ui-bonpy/dist-bonpy/
 # SvelteKit route files must never be gitignored (+ prefix is a SvelteKit convention)
@@ -83,6 +84,7 @@ ui/node_modules/
 # Without this, `*.log` would silently drop the diagnostic logs the validation
 # script captures into docs/test_results/cv7-validation-*.logs/.
 !docs/test_results/**/*.log
+!docs/merger/evidence/**/*.log
 runtime/
 
 # Claude Code session memory (local tooling state, not project content)

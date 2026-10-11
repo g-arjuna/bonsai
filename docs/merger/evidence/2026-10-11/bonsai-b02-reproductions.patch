@@ -1,0 +1,35 @@
+diff --git a/src/streaming/bmp.rs b/src/streaming/bmp.rs
+--- a/src/streaming/bmp.rs
++++ b/src/streaming/bmp.rs
+@@ -1310,3 +1310,31 @@
+         assert_eq!(capability_name(99), "cap-99");
+     }
+ }
++
++#[cfg(test)]
++mod rfc_contract_reproductions {
++    use super::{classify_rib_type, parse_initiation};
++
++    #[test]
++    fn initiation_uses_rfc7854_tlv_numbers() {
++        let payload = b"\x00\x00\x00\x04note\x00\x01\x00\x06router\x00\x02\x00\x06edge-a";
++        let event = parse_initiation(payload, "192.0.2.1".into(), 0).unwrap();
++        assert_eq!(event.sys_name.as_deref(), Some("edge-a"));
++        assert_eq!(event.sys_descr.as_deref(), Some("router"));
++        assert_eq!(event.init_admin_string.as_deref(), Some("note"));
++    }
++
++    #[test]
++    fn local_instance_is_inbound_without_o_flag() {
++        assert_eq!(classify_rib_type(2, 0), "adj-rib-in-pre-policy");
++        assert_eq!(classify_rib_type(2, 0x40), "adj-rib-in-post-policy");
++    }
++
++    #[test]
++    fn outbound_view_follows_o_flag_for_all_adj_rib_peer_types() {
++        for peer_type in 0..=2 {
++            assert_eq!(classify_rib_type(peer_type, 0x10), "adj-rib-out-pre-policy");
++            assert_eq!(classify_rib_type(peer_type, 0x50), "adj-rib-out-post-policy");
++        }
++    }
++}

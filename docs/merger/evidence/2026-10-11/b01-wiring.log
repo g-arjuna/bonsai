@@ -1,0 +1,18 @@
+PASS: api/filters wired in mod.rs
+PASS: api/governance wired in mod.rs
+PASS: api/external wired in mod.rs
+PASS: api/schema (swagger) wired in mod.rs
+PASS: mcp_server module referenced in main.rs
+PASS: mcp TOOL_NAMES has >= 11 entries
+PASS: output/elasticsearch.rs exists
+PASS: output/splunk.rs exists
+PASS: no BONSAI_VAULT_PASSPHRASE used as env var in crates/
+PASS: no BONSAI_BOOTSTRAP_ in bmppy/
+PASS: config/filters.roto exists
+PASS: config/filters.yaml exists
+PASS: tests/seed.sql exists
+PASS: bmppy/rbmppy/internet.py has RipeStatClient
+PASS: bmppy/policy_fetcher.py is valid Python syntax
+
+Wiring checks: 15/15 passed
+All wiring checks passed

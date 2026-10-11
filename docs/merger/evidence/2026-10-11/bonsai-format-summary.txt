@@ -1,0 +1,51 @@
+command: cargo fmt --all -- --check
+exit: 1
+Full output at /tmp/bonsai-fmt-baseline.log (not committed).
+Output lines: 19619
+Diff blocks: 1233
+
+Diff in /home/arjuna/Desktop/bonsai/src/bin/vault_rekey.rs:10:
+ ///
+ /// After success, restart bonsai with `BONSAI_VAULT_PASSPHRASE=<new>`.
+ fn main() {
+-    let vault_root = std::env::args()
+-        .nth(1)
+-        .unwrap_or_else(|| ".".to_string());
++    let vault_root = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
+ 
+     println!("bonsai vault-rekey: vault root = {vault_root}");
+ 
+Diff in /home/arjuna/Desktop/bonsai/src/bin/vault_rekey.rs:19:
+-    let vault = bonsai::credentials::CredentialVault::open(
+-        &vault_root,
+-        "BONSAI_VAULT_PASSPHRASE",
+-    )
+-    .unwrap_or_else(|e| {
+-        eprintln!("ERROR: failed to open vault: {e:#}");
+-        std::process::exit(1);
+-    });
++    let vault = bonsai::credentials::CredentialVault::open(&vault_root, "BONSAI_VAULT_PASSPHRASE")
++        .unwrap_or_else(|e| {
++            eprintln!("ERROR: failed to open vault: {e:#}");
++            std::process::exit(1);
++        });
+ 
+     vault
+         .rekey("BONSAI_VAULT_NEW_PASSPHRASE")
+Diff in /home/arjuna/Desktop/bonsai/src/ai_provider.rs:19:
+ 
+ impl AiMessage {
+     pub fn user(text: impl Into<String>) -> Self {
+-        Self { role: "user".into(), content: Some(text.into()), tool_calls: vec![], tool_call_id: None, raw_parts: None }
++        Self {
++            role: "user".into(),
++            content: Some(text.into()),
++            tool_calls: vec![],
++            tool_call_id: None,
++            raw_parts: None,
++        }
+     }
+     pub fn system(text: impl Into<String>) -> Self {
+-        Self { role: "system".into(), content: Some(text.into()), tool_calls: vec![], tool_call_id: None, raw_parts: None }
++        Self {
++            role: "system".into(),

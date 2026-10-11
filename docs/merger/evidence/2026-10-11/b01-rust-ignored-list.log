@@ -1,0 +1,6 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.49s
+     Running ../../tests/integration/mod.rs (/home/arjuna/rustybmp/target/debug/deps/integration-2c3ef0d4a5d196d4)
+frr_bmp::tests::frr_bmp_route_monitoring_received: test
+frr_bmp::tests::frr_bmp_session_connects: test
+
+2 tests, 0 benchmarks
