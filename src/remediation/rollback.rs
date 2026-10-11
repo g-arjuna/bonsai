@@ -5,12 +5,15 @@
 //! trigger a rollback within the window via POST /api/approvals/{id}/rollback.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-#[derive(Debug, Clone, Serialize)]
+const ROLLBACK_STATE_FILE: &str = "rollback_windows.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RollbackState {
     /// ID of the RemediationProposal that was executed.
     pub proposal_id: String,
@@ -38,11 +41,38 @@ pub type SharedRollbackRegistry = Arc<RwLock<RollbackRegistry>>;
 pub struct RollbackRegistry {
     // keyed by proposal_id
     states: HashMap<String, RollbackState>,
+    path: Option<PathBuf>,
 }
 
 impl RollbackRegistry {
+    /// Load or initialize a durable rollback registry backed by `runtime_dir/rollback_windows.json`.
+    pub fn load(runtime_dir: &Path) -> Self {
+        let path = runtime_dir.join(ROLLBACK_STATE_FILE);
+        let states: HashMap<String, RollbackState> = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        Self {
+            states,
+            path: Some(path),
+        }
+    }
+
+    fn persist(&self) {
+        let Some(ref path) = self.path else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(&self.states) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+
     pub fn register(&mut self, state: RollbackState) {
         self.states.insert(state.proposal_id.clone(), state);
+        self.persist();
     }
 
     pub fn get(&self, proposal_id: &str) -> Option<&RollbackState> {
@@ -59,17 +89,26 @@ impl RollbackRegistry {
     pub fn mark_rolled_back(&mut self, proposal_id: &str) {
         if let Some(s) = self.states.get_mut(proposal_id) {
             s.rolled_back = true;
+            self.persist();
         }
     }
 
     /// Drop expired entries to keep memory bounded.
     pub fn prune(&mut self, now_ns: i64) {
+        let before = self.states.len();
         self.states.retain(|_, s| !s.is_expired(now_ns));
+        if self.states.len() != before {
+            self.persist();
+        }
     }
 }
 
 pub fn new_rollback_registry() -> SharedRollbackRegistry {
     Arc::new(RwLock::new(RollbackRegistry::default()))
+}
+
+pub fn new_persistent_rollback_registry(runtime_dir: &Path) -> SharedRollbackRegistry {
+    Arc::new(RwLock::new(RollbackRegistry::load(runtime_dir)))
 }
 
 #[cfg(test)]

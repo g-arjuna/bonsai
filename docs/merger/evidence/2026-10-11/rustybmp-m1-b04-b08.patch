@@ -1,0 +1,3582 @@
+From 7a3d99632e9d90d8aa81d8185168ff11e8206e90 Mon Sep 17 00:00:00 2001
+From: Arjuna Ganesan <62745076+g-arjuna@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 00:50:20 +0530
+Subject: [PATCH] feat(m1): complete B04-B06 and B08 routing core identity,
+ decode, durability, and feature gating
+
+---
+ crates/rbmp-core/src/bgp/attributes.rs | 209 +++++++---
+ crates/rbmp-core/src/bgp/mod.rs        |   3 +-
+ crates/rbmp-core/src/bgp/types.rs      | 183 ++++++++-
+ crates/rbmp-core/src/bgp/update.rs     |  14 +-
+ crates/rbmp-core/src/bmp/mod.rs        |   2 +-
+ crates/rbmp-core/src/bmp/parser.rs     |  44 +-
+ crates/rbmp-core/src/bmp/types.rs      | 208 +++++++++-
+ crates/rbmp-enrichment/src/bgpsec.rs   | 211 +++++++---
+ crates/rbmp-rib/src/event.rs           |  24 +-
+ crates/rbmp-rib/src/lib.rs             |   7 +-
+ crates/rbmp-rib/src/manager.rs         | 544 +++++++++++++++++++++----
+ crates/rbmp-rib/src/session.rs         | 129 ++++--
+ crates/rbmp-rib/src/table.rs           |  39 +-
+ crates/rbmp-server/src/api/external.rs |   4 +-
+ crates/rbmp-server/src/api/onboard.rs  |   4 +-
+ crates/rbmp-server/src/api/peers.rs    |   4 +-
+ crates/rbmp-server/src/api/routes.rs   |   6 +-
+ crates/rbmp-server/src/archive.rs      |   1 +
+ crates/rbmp-server/src/ha.rs           | 132 +++++-
+ crates/rbmp-server/src/receiver.rs     |  45 +-
+ crates/rbmp-store/src/journal.rs       | 133 ++++++
+ crates/rbmp-store/src/lib.rs           |   2 +
+ crates/rbmp-store/src/writer.rs        | 314 +++++++++++++-
+ tests/regressions/bmp_rfc_contract.rs  | 224 ++++++++++
+ 24 files changed, 2151 insertions(+), 335 deletions(-)
+ create mode 100644 crates/rbmp-store/src/journal.rs
+
+diff --git a/crates/rbmp-core/src/bgp/attributes.rs b/crates/rbmp-core/src/bgp/attributes.rs
+index d43f712..9577ae8 100644
+--- a/crates/rbmp-core/src/bgp/attributes.rs
++++ b/crates/rbmp-core/src/bgp/attributes.rs
+@@ -2,7 +2,7 @@ use std::net::{IpAddr, Ipv4Addr};
+ use bytes::Buf;
+ use crate::{Error, Result};
+ use super::types::*;
+-use super::nlri::{decode_nlri, decode_labeled_nlri, decode_vpn_nlri, decode_next_hops, decode_vpls_nlri};
++use super::nlri::{decode_nlri_with_path_id, decode_labeled_nlri, decode_vpn_nlri, decode_next_hops, decode_vpls_nlri};
+ use super::evpn::decode_evpn_nlri;
+ use super::flowspec::{decode_flowspec_nlri, FlowspecNlri};
+ use super::srv6::parse_prefix_sid;
+@@ -14,10 +14,16 @@ use super::srpolicy::{decode_srpolicy_nlri, decode_rtc_nlri, SrPolicyNlri, RtcNl
+ #[allow(dead_code)] const FLAG_TRANSITIVE: u8 = 0x40;
+ #[allow(dead_code)] const FLAG_PARTIAL:    u8 = 0x20;
+ const FLAG_EXT_LEN:    u8 = 0x10;
++const AS_TRANS:        u32 = 23456;
+ 
+-/// Parse all path attributes from buf, returning a PathAttributes struct.
++/// Parse all path attributes from buf using default 4-byte ASN decoding context.
++pub fn parse_path_attributes(buf: impl Buf) -> Result<PathAttributes> {
++    parse_path_attributes_with_context(buf, &BgpDecodeContext::default())
++}
++
++/// Parse all path attributes from buf using explicit session decoding context (`BgpDecodeContext`).
+ /// buf must contain exactly the path attributes section (already length-delimited).
+-pub fn parse_path_attributes(mut buf: impl Buf) -> Result<PathAttributes> {
++pub fn parse_path_attributes_with_context(mut buf: impl Buf, ctx: &BgpDecodeContext) -> Result<PathAttributes> {
+     let mut attrs = PathAttributes::default();
+     while buf.remaining() > 0 {
+         if buf.remaining() < 3 {
+@@ -60,7 +66,7 @@ pub fn parse_path_attributes(mut buf: impl Buf) -> Result<PathAttributes> {
+             }
+             // Type 2: AS_PATH
+             2 => {
+-                attrs.as_path = Some(parse_as_path(attr_buf, false)?);
++                attrs.as_path = Some(parse_as_path(attr_buf, ctx.four_byte_asn)?);
+             }
+             // Type 3: NEXT_HOP
+             3 => {
+@@ -133,7 +139,7 @@ pub fn parse_path_attributes(mut buf: impl Buf) -> Result<PathAttributes> {
+             // Type 14: MP_REACH_NLRI (RFC 4760)
+             14 => {
+                 let (mp, evpn_reach, flowspec_reach, bgpls_reach, sr_nlris, rtc_nlris)
+-                    = parse_mp_reach(attr_data.as_ref())?;
++                    = parse_mp_reach(attr_data.as_ref(), ctx)?;
+                 attrs.mp_reach          = Some(mp);
+                 attrs.evpn_reach        = evpn_reach;
+                 attrs.flowspec_reach    = flowspec_reach;
+@@ -144,7 +150,7 @@ pub fn parse_path_attributes(mut buf: impl Buf) -> Result<PathAttributes> {
+             // Type 15: MP_UNREACH_NLRI (RFC 4760)
+             15 => {
+                 let (mp, evpn_unreach, flowspec_unreach, bgpls_unreach, sr_wd, _rtc_wd)
+-                    = parse_mp_unreach(attr_data.as_ref())?;
++                    = parse_mp_unreach(attr_data.as_ref(), ctx)?;
+                 attrs.mp_unreach        = Some(mp);
+                 attrs.evpn_unreach      = evpn_unreach;
+                 attrs.flowspec_unreach  = flowspec_unreach;
+@@ -162,9 +168,9 @@ pub fn parse_path_attributes(mut buf: impl Buf) -> Result<PathAttributes> {
+                     cb = &cb[8..];
+                 }
+             }
+-            // Type 17: AS4_PATH (RFC 6793)
++            // Type 17: AS4_PATH (RFC 6793) — always 4-byte ASNs
+             17 => {
+-                attrs.as4_path = Some(parse_as_path(attr_buf, true)?);
++                attrs.as4_path = Some(parse_as_path_with_asn_size(attr_buf, 4)?);
+             }
+             // Type 18: AS4_AGGREGATOR (RFC 6793)
+             18 if attr_len == 8 => {
+@@ -200,8 +206,6 @@ pub fn parse_path_attributes(mut buf: impl Buf) -> Result<PathAttributes> {
+                 attrs.prefix_sid = parse_prefix_sid(attr_data.as_ref()).ok();
+             }
+             // Type 30: BGPsec_Path (RFC 8205, parse-only for RV6)
+-            // Structure: Sequence of (pCount(1) + flags(1) + ASN(4) + sig_block(variable))
+-            // We capture only the signing ASN sequence for display/analysis.
+             30 => {
+                 attrs.bgpsec_path = Some(parse_bgpsec_path(attr_data.as_ref()));
+             }
+@@ -215,25 +219,91 @@ pub fn parse_path_attributes(mut buf: impl Buf) -> Result<PathAttributes> {
+             }
+         }
+     }
++
++    // Populate top-level next_hop from MP_REACH_NLRI when NEXT_HOP (type 3) is absent (e.g. IPv6 routes).
++    if attrs.next_hop.is_none() {
++        if let Some(mp) = &attrs.mp_reach {
++            attrs.next_hop = mp.next_hops.first().copied();
++        }
++    }
++
++    // RFC 6793 §4.2.3: Reconstruct AS_PATH from AS4_PATH when 2-byte AS_PATH contains AS_TRANS (23456).
++    if let (Some(as_path), Some(as4_path)) = (&attrs.as_path, &attrs.as4_path) {
++        if !ctx.four_byte_asn || as_path.0.iter().any(|seg| seg.asns().contains(&AS_TRANS)) {
++            attrs.as_path = Some(reconstruct_as_path(as_path, as4_path));
++        }
++    }
++
++    // RFC 6793 §4.2.2: Replace AGGREGATOR with AS4_AGGREGATOR when AGGREGATOR ASN is AS_TRANS (23456).
++    if let (Some((agg_asn, _)), Some(as4_agg)) = (attrs.aggregator, attrs.as4_aggregator) {
++        if agg_asn == AS_TRANS {
++            attrs.aggregator = Some(as4_agg);
++        }
++    }
++
+     Ok(attrs)
+ }
+ 
++/// Reconstruct 4-byte `AsPath` from a 2-byte `as_path` and 4-byte `as4_path` per RFC 6793 §4.2.3.
++fn reconstruct_as_path(as_path: &AsPath, as4_path: &AsPath) -> AsPath {
++    let as4_segments: Vec<AsPathSegment> = as4_path
++        .0
++        .iter()
++        .filter(|seg| !matches!(seg, AsPathSegment::ConfedSequence(_) | AsPathSegment::ConfedSet(_)))
++        .cloned()
++        .collect();
++    let n_as: usize = as_path.0.iter().map(|s| s.asns().len()).sum();
++    let n_as4: usize = as4_segments.iter().map(|s| s.asns().len()).sum();
++    if n_as4 == 0 || n_as < n_as4 {
++        return as_path.clone();
++    }
++
++    let mut keep = n_as - n_as4;
++    let mut out: Vec<AsPathSegment> = Vec::new();
++    for seg in &as_path.0 {
++        if keep == 0 {
++            break;
++        }
++        let asns = seg.asns();
++        let take = keep.min(asns.len());
++        keep -= take;
++        let slice = asns[..take].to_vec();
++        if !slice.is_empty() {
++            let new_seg = match seg {
++                AsPathSegment::Set(_) => AsPathSegment::Set(slice),
++                AsPathSegment::Sequence(_) => AsPathSegment::Sequence(slice),
++                AsPathSegment::ConfedSequence(_) => AsPathSegment::ConfedSequence(slice),
++                AsPathSegment::ConfedSet(_) => AsPathSegment::ConfedSet(slice),
++            };
++            out.push(new_seg);
++        }
++    }
++
++    for seg in as4_segments {
++        match (out.last_mut(), seg) {
++            (Some(AsPathSegment::Sequence(prev)), AsPathSegment::Sequence(next)) => {
++                prev.extend(next);
++            }
++            (_, other) => out.push(other),
++        }
++    }
++    AsPath(out)
++}
++
+ /// Parse AS_PATH or AS4_PATH attribute.
+-/// four_byte: true for AS4_PATH (all ASNs are 4 bytes), false for AS_PATH (2 bytes unless AS4 cap negotiated).
++/// `four_byte`: true when 4-octet ASN encoding is expected on the wire (RFC 6793 / BMP A-flag = 0),
++/// false when legacy 2-octet ASN encoding is expected (BMP A-flag = 1).
+ pub fn parse_as_path(buf: &[u8], four_byte: bool) -> Result<AsPath> {
+     if four_byte {
+-        return parse_as_path_with_asn_size(buf, 4);
++        return match parse_as_path_with_asn_size(buf, 4) {
++            Ok(path) => Ok(path),
++            Err(original_err) => parse_as_path_with_asn_size(buf, 2).or(Err(original_err)),
++        };
+     }
+ 
+     match parse_as_path_with_asn_size(buf, 2) {
+         Ok(path) => Ok(path),
+-        Err(original_err) => {
+-            // Some live speakers encode AS_PATH with 4-byte ASNs on the wire once
+-            // 4-byte ASN capability is negotiated, even when the values themselves
+-            // still fit inside 16 bits. Fall back so mixed-vendor eBGP route
+-            // monitoring does not fail on an otherwise valid update.
+-            parse_as_path_with_asn_size(buf, 4).or(Err(original_err))
+-        }
++        Err(original_err) => parse_as_path_with_asn_size(buf, 4).or(Err(original_err)),
+     }
+ }
+ 
+@@ -275,7 +345,7 @@ fn parse_as_path_with_asn_size(mut buf: &[u8], asn_size: usize) -> Result<AsPath
+     Ok(AsPath(segments))
+ }
+ 
+-fn parse_mp_reach(buf: &[u8]) -> Result<(MpReachNlri, Option<EvpnReachNlri>, Option<Vec<FlowspecNlri>>, Option<BgpLsReachNlri>, Vec<SrPolicyNlri>, Vec<RtcNlri>)> {
++fn parse_mp_reach(buf: &[u8], ctx: &BgpDecodeContext) -> Result<(MpReachNlri, Option<EvpnReachNlri>, Option<Vec<FlowspecNlri>>, Option<BgpLsReachNlri>, Vec<SrPolicyNlri>, Vec<RtcNlri>)> {
+     if buf.len() < 4 {
+         return Err(Error::UnexpectedEof { needed: 4, have: buf.len() });
+     }
+@@ -289,62 +359,66 @@ fn parse_mp_reach(buf: &[u8]) -> Result<(MpReachNlri, Option<EvpnReachNlri>, Opt
+     }
+     let _snpa = cur.get_u8();
+     let remaining = cur.chunk().to_vec();
++    let add_path = ctx.has_add_path(afi_safi);
+ 
+-    let (prefixes, evpn_reach, flowspec_reach, bgpls_reach) = match afi_safi.safi {
++    let (prefixes, path_ids, evpn_reach, flowspec_reach, bgpls_reach) = match afi_safi.safi {
+         Safi::Evpn => {
+-            let routes = decode_evpn_nlri(&remaining).unwrap_or_default();
++            let routes = decode_evpn_nlri(&remaining)?;
+             let evpn   = EvpnReachNlri { next_hops: next_hops.clone(), routes };
+-            (Vec::new(), Some(evpn), None, None)
++            (Vec::new(), Vec::new(), Some(evpn), None, None)
+         }
+         Safi::Flowspec | Safi::FlowspecVpn => {
+             let ipv6 = matches!(afi_safi.afi, Afi::Ipv6);
+-            let fs   = decode_flowspec_nlri(&remaining, ipv6).unwrap_or_default();
+-            (Vec::new(), None, Some(fs), None)
++            let fs   = decode_flowspec_nlri(&remaining, ipv6)?;
++            (Vec::new(), Vec::new(), None, Some(fs), None)
+         }
+         Safi::BgpLs | Safi::BgpLsSrv6 => {
+             let next_hop = next_hops.first().copied();
+-            let ls = decode_bgpls_reach(next_hop, &remaining).unwrap_or_else(|_| BgpLsReachNlri { next_hop, nlris: vec![] });
+-            (Vec::new(), None, None, Some(ls))
++            let ls = decode_bgpls_reach(next_hop, &remaining)?;
++            (Vec::new(), Vec::new(), None, None, Some(ls))
+         }
+         Safi::Vpls => {
+-            let _vpls = decode_vpls_nlri(&remaining).unwrap_or_default();
+-            (Vec::new(), None, None, None)
++            let _vpls = decode_vpls_nlri(&remaining)?;
++            (Vec::new(), Vec::new(), None, None, None)
+         }
+         Safi::SrPolicy => {
+             let afi_is_ipv6 = matches!(afi_safi.afi, Afi::Ipv6);
+-            let nlris = decode_srpolicy_nlri(&remaining, afi_is_ipv6).unwrap_or_default();
+-            return Ok((MpReachNlri { afi_safi, next_hops, prefixes: Vec::new() }, None, None, None,
++            let nlris = decode_srpolicy_nlri(&remaining, afi_is_ipv6)?;
++            return Ok((MpReachNlri { afi_safi, next_hops, prefixes: Vec::new(), path_ids: Vec::new() }, None, None, None,
+                        nlris, Vec::new()));
+         }
+         Safi::RouteTargetConstraint => {
+-            let rtcs = decode_rtc_nlri(&remaining).unwrap_or_default();
+-            return Ok((MpReachNlri { afi_safi, next_hops, prefixes: Vec::new() }, None, None, None,
++            let rtcs = decode_rtc_nlri(&remaining)?;
++            return Ok((MpReachNlri { afi_safi, next_hops, prefixes: Vec::new(), path_ids: Vec::new() }, None, None, None,
+                        Vec::new(), rtcs));
+         }
+         Safi::Unicast | Safi::Multicast => {
+-            let p = decode_nlri(&mut std::io::Cursor::new(&remaining), afi_safi.afi)?;
+-            (p, None, None, None)
++            let with_ids = decode_nlri_with_path_id(&mut std::io::Cursor::new(&remaining), afi_safi.afi, add_path)?;
++            let (p, ids): (Vec<_>, Vec<_>) = with_ids.into_iter().unzip();
++            (p, ids, None, None, None)
+         }
+         Safi::LabeledUnicast => {
+             let p = decode_labeled_nlri(&mut std::io::Cursor::new(&remaining), afi_safi.afi)?;
+-            (p, None, None, None)
++            let ids = vec![None; p.len()];
++            (p, ids, None, None, None)
+         }
+         Safi::MplsVpn => {
+             let p = decode_vpn_nlri(&mut std::io::Cursor::new(&remaining), afi_safi.afi)?;
+-            (p, None, None, None)
++            let ids = vec![None; p.len()];
++            (p, ids, None, None, None)
+         }
+         Safi::McastVpn | Safi::MplsVpnMulticast => {
+             // RFC 6514 §4: MCAST-VPN NLRI — store raw for future type-specific decode
+-            (Vec::new(), None, None, None)
++            (Vec::new(), Vec::new(), None, None, None)
+         }
+-        _ => (Vec::new(), None, None, None),
++        _ => (Vec::new(), Vec::new(), None, None, None),
+     };
+ 
+-    Ok((MpReachNlri { afi_safi, next_hops, prefixes }, evpn_reach, flowspec_reach, bgpls_reach,
++    Ok((MpReachNlri { afi_safi, next_hops, prefixes, path_ids }, evpn_reach, flowspec_reach, bgpls_reach,
+         Vec::new(), Vec::new()))
+ }
+ 
+-fn parse_mp_unreach(buf: &[u8]) -> Result<(MpUnreachNlri, Option<EvpnUnreachNlri>, Option<Vec<FlowspecNlri>>, Option<BgpLsUnreachNlri>, Option<Vec<SrPolicyNlri>>, Vec<RtcNlri>)> {
++fn parse_mp_unreach(buf: &[u8], ctx: &BgpDecodeContext) -> Result<(MpUnreachNlri, Option<EvpnUnreachNlri>, Option<Vec<FlowspecNlri>>, Option<BgpLsUnreachNlri>, Option<Vec<SrPolicyNlri>>, Vec<RtcNlri>)> {
+     if buf.len() < 3 {
+         return Err(Error::UnexpectedEof { needed: 3, have: buf.len() });
+     }
+@@ -352,48 +426,67 @@ fn parse_mp_unreach(buf: &[u8]) -> Result<(MpUnreachNlri, Option<EvpnUnreachNlri
+     let safi     = buf[2];
+     let afi_safi = AfiSafi::new(afi, safi);
+     let remaining = &buf[3..];
++    let add_path = ctx.has_add_path(afi_safi);
++
++    if remaining.is_empty() {
++        return Ok((
++            MpUnreachNlri {
++                afi_safi,
++                prefixes: Vec::new(),
++                path_ids: Vec::new(),
++            },
++            None,
++            None,
++            None,
++            None,
++            Vec::new(),
++        ));
++    }
+ 
+-    let (prefixes, evpn_unreach, flowspec_unreach, bgpls_unreach): (Vec<_>, _, _, _) = match afi_safi.safi {
++    let (prefixes, path_ids, evpn_unreach, flowspec_unreach, bgpls_unreach): (Vec<_>, Vec<_>, _, _, _) = match afi_safi.safi {
+         Safi::Evpn => {
+-            let routes = decode_evpn_nlri(remaining).unwrap_or_default();
+-            (Vec::new(), Some(EvpnUnreachNlri { routes }), None, None)
++            let routes = decode_evpn_nlri(remaining)?;
++            (Vec::new(), Vec::new(), Some(EvpnUnreachNlri { routes }), None, None)
+         }
+         Safi::Flowspec | Safi::FlowspecVpn => {
+             let ipv6 = matches!(afi_safi.afi, Afi::Ipv6);
+-            let fs   = decode_flowspec_nlri(remaining, ipv6).unwrap_or_default();
+-            (Vec::new(), None, Some(fs), None)
++            let fs   = decode_flowspec_nlri(remaining, ipv6)?;
++            (Vec::new(), Vec::new(), None, Some(fs), None)
+         }
+         Safi::BgpLs => {
+-            let ls = decode_bgpls_unreach(remaining).unwrap_or_else(|_| BgpLsUnreachNlri { nlris: vec![] });
+-            (Vec::new(), None, None, Some(ls))
++            let ls = decode_bgpls_unreach(remaining)?;
++            (Vec::new(), Vec::new(), None, None, Some(ls))
+         }
+         Safi::SrPolicy => {
+             let afi_is_ipv6 = matches!(afi_safi.afi, Afi::Ipv6);
+-            let nlris = decode_srpolicy_nlri(remaining, afi_is_ipv6).unwrap_or_default();
+-            return Ok((MpUnreachNlri { afi_safi, prefixes: Vec::new() }, None, None, None,
++            let nlris = decode_srpolicy_nlri(remaining, afi_is_ipv6)?;
++            return Ok((MpUnreachNlri { afi_safi, prefixes: Vec::new(), path_ids: Vec::new() }, None, None, None,
+                        Some(nlris), Vec::new()));
+         }
+         Safi::RouteTargetConstraint => {
+-            let rtcs = decode_rtc_nlri(remaining).unwrap_or_default();
+-            return Ok((MpUnreachNlri { afi_safi, prefixes: Vec::new() }, None, None, None,
++            let rtcs = decode_rtc_nlri(remaining)?;
++            return Ok((MpUnreachNlri { afi_safi, prefixes: Vec::new(), path_ids: Vec::new() }, None, None, None,
+                        None, rtcs));
+         }
+         Safi::Unicast | Safi::Multicast => {
+-            let p = decode_nlri(&mut std::io::Cursor::new(remaining), afi_safi.afi)?;
+-            (p, None, None, None)
++            let with_ids = decode_nlri_with_path_id(&mut std::io::Cursor::new(remaining), afi_safi.afi, add_path)?;
++            let (p, ids): (Vec<_>, Vec<_>) = with_ids.into_iter().unzip();
++            (p, ids, None, None, None)
+         }
+         Safi::LabeledUnicast => {
+             let p = decode_labeled_nlri(&mut std::io::Cursor::new(remaining), afi_safi.afi)?;
+-            (p, None, None, None)
++            let ids = vec![None; p.len()];
++            (p, ids, None, None, None)
+         }
+         Safi::MplsVpn => {
+             let p = decode_vpn_nlri(&mut std::io::Cursor::new(remaining), afi_safi.afi)?;
+-            (p, None, None, None)
++            let ids = vec![None; p.len()];
++            (p, ids, None, None, None)
+         }
+-        _ => (Vec::new(), None, None, None),
++        _ => (Vec::new(), Vec::new(), None, None, None),
+     };
+ 
+-    Ok((MpUnreachNlri { afi_safi, prefixes }, evpn_unreach, flowspec_unreach, bgpls_unreach,
++    Ok((MpUnreachNlri { afi_safi, prefixes, path_ids }, evpn_unreach, flowspec_unreach, bgpls_unreach,
+         None, Vec::new()))
+ }
+ 
+diff --git a/crates/rbmp-core/src/bgp/mod.rs b/crates/rbmp-core/src/bgp/mod.rs
+index d6abbeb..3739744 100644
+--- a/crates/rbmp-core/src/bgp/mod.rs
++++ b/crates/rbmp-core/src/bgp/mod.rs
+@@ -12,5 +12,6 @@ pub mod srpolicy;
+ pub mod mvpn;
+ 
+ pub use types::*;
+-pub use update::parse_bgp_update;
++pub use attributes::parse_path_attributes_with_context;
++pub use update::{parse_bgp_update, parse_bgp_update_with_context};
+ pub use open::parse_bgp_open;
+diff --git a/crates/rbmp-core/src/bgp/types.rs b/crates/rbmp-core/src/bgp/types.rs
+index c524207..ca17819 100644
+--- a/crates/rbmp-core/src/bgp/types.rs
++++ b/crates/rbmp-core/src/bgp/types.rs
+@@ -25,7 +25,7 @@ pub enum LlgrState {
+ 
+ // ─── AFI / SAFI ───────────────────────────────────────────────────────────────
+ 
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+ pub enum Afi {
+     Ipv4,
+     Ipv6,
+@@ -46,7 +46,7 @@ impl From<u16> for Afi {
+     }
+ }
+ 
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+ pub enum Safi {
+     Unicast,
+     Multicast,
+@@ -87,8 +87,20 @@ impl From<u8> for Safi {
+     }
+ }
+ 
+-/// Combined AFI/SAFI address family identifier
++/// Explicit support classification for an AFI/SAFI family across the BGP/BMP pipeline.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum FamilySupportStatus {
++    /// Full RIB state, canonical RouteKey, Add-Path, and End-of-RIB support.
++    Supported,
++    /// Decoded into PathAttributes for telemetry/inspection, not stored as prefix RIB routes.
++    ExperimentalParseOnly,
++    /// Unrecognized AFI/SAFI combination.
++    Unsupported,
++}
++
++/// Combined AFI/SAFI address family identifier
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+ pub struct AfiSafi {
+     pub afi:  Afi,
+     pub safi: Safi,
+@@ -105,6 +117,28 @@ impl AfiSafi {
+     pub fn evpn()          -> Self { Self::new(25, 70) }
+     pub fn ipv4_labeled()  -> Self { Self::new(1, 4) }
+     pub fn ipv6_labeled()  -> Self { Self::new(2, 4) }
++
++    /// Classify how this AFI/SAFI is supported in the routing state pipeline.
++    pub fn support_status(self) -> FamilySupportStatus {
++        match (self.afi, self.safi) {
++            (
++                Afi::Ipv4 | Afi::Ipv6,
++                Safi::Unicast | Safi::Multicast | Safi::LabeledUnicast | Safi::MplsVpn,
++            ) => FamilySupportStatus::Supported,
++            (Afi::L2Vpn, Safi::Evpn | Safi::Vpls)
++            | (Afi::BgpLs, Safi::BgpLs | Safi::BgpLsSrv6)
++            | (
++                Afi::Ipv4 | Afi::Ipv6,
++                Safi::Flowspec
++                | Safi::FlowspecVpn
++                | Safi::SrPolicy
++                | Safi::RouteTargetConstraint
++                | Safi::McastVpn
++                | Safi::MplsVpnMulticast,
++            ) => FamilySupportStatus::ExperimentalParseOnly,
++            _ => FamilySupportStatus::Unsupported,
++        }
++    }
+ }
+ 
+ impl fmt::Display for AfiSafi {
+@@ -163,7 +197,7 @@ impl Safi {
+ 
+ // ─── Prefix types ─────────────────────────────────────────────────────────────
+ 
+-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+ pub enum Prefix {
+     V4(Ipv4Net),
+     V6(Ipv6Net),
+@@ -181,6 +215,21 @@ impl Prefix {
+             Self::Labeled { prefix, .. } | Self::Vpn { prefix, .. } => prefix.addr_family(),
+         }
+     }
++
++    pub fn afi_safi(&self) -> AfiSafi {
++        match self {
++            Self::V4(_) => AfiSafi::ipv4_unicast(),
++            Self::V6(_) => AfiSafi::ipv6_unicast(),
++            Self::Labeled { prefix, .. } => match prefix.addr_family() {
++                Afi::Ipv6 => AfiSafi::ipv6_labeled(),
++                _ => AfiSafi::ipv4_labeled(),
++            },
++            Self::Vpn { prefix, .. } => match prefix.addr_family() {
++                Afi::Ipv6 => AfiSafi::ipv6_vpn(),
++                _ => AfiSafi::ipv4_vpn(),
++            },
++        }
++    }
+ }
+ 
+ impl fmt::Display for Prefix {
+@@ -196,7 +245,7 @@ impl fmt::Display for Prefix {
+ 
+ // ─── Route Distinguisher (RFC 4364) ──────────────────────────────────────────
+ 
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+ pub struct RouteDistinguisher(pub [u8; 8]);
+ 
+ impl RouteDistinguisher {
+@@ -662,12 +711,16 @@ pub struct MpReachNlri {
+     pub afi_safi:  AfiSafi,
+     pub next_hops: Vec<IpAddr>,
+     pub prefixes:  Vec<Prefix>,
++    #[serde(default)]
++    pub path_ids:  Vec<Option<u32>>,
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub struct MpUnreachNlri {
+     pub afi_safi: AfiSafi,
+     pub prefixes: Vec<Prefix>,
++    #[serde(default)]
++    pub path_ids: Vec<Option<u32>>,
+ }
+ 
+ // ─── BGP-LS NLRI (RFC 7752) ───────────────────────────────────────────────────
+@@ -862,6 +915,77 @@ pub struct BgpLsUnreachNlri {
+ 
+ // ─── BGP UPDATE ───────────────────────────────────────────────────────────────
+ 
++/// Session-derived decoding context for BGP UPDATE and PathAttribute parsing.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct BgpDecodeContext {
++    /// True when AS_PATH on the wire uses 4-octet ASNs (RFC 6793 / RFC 7854 §4.2 A-bit = 0).
++    pub four_byte_asn: bool,
++    /// Address families for which BGP Add-Path (RFC 7911) is active on this session/view.
++    pub add_path_families: std::collections::HashSet<AfiSafi>,
++}
++
++impl Default for BgpDecodeContext {
++    fn default() -> Self {
++        Self {
++            four_byte_asn: true,
++            add_path_families: std::collections::HashSet::new(),
++        }
++    }
++}
++
++impl BgpDecodeContext {
++    pub fn new(four_byte_asn: bool) -> Self {
++        Self {
++            four_byte_asn,
++            add_path_families: std::collections::HashSet::new(),
++        }
++    }
++
++    pub fn with_four_byte_asn(mut self, four_byte_asn: bool) -> Self {
++        self.four_byte_asn = four_byte_asn;
++        self
++    }
++
++    pub fn with_add_path_ipv4(add_path_ipv4: bool) -> Self {
++        let mut ctx = Self::default();
++        if add_path_ipv4 {
++            ctx.add_path_families.insert(AfiSafi::ipv4_unicast());
++        }
++        ctx
++    }
++
++    pub fn with_add_path_family(mut self, afi_safi: AfiSafi) -> Self {
++        self.add_path_families.insert(afi_safi);
++        self
++    }
++
++    pub fn from_capabilities(four_byte_asn: bool, capabilities: &[BgpCapability]) -> Self {
++        let mut add_path_families = std::collections::HashSet::new();
++        let mut cap_four_byte = false;
++        for cap in capabilities {
++            match cap {
++                BgpCapability::FourByteAsn(_) => cap_four_byte = true,
++                BgpCapability::AddPath(entries) => {
++                    for &(afi_safi, mode) in entries {
++                        if mode > 0 {
++                            add_path_families.insert(afi_safi);
++                        }
++                    }
++                }
++                _ => {}
++            }
++        }
++        Self {
++            four_byte_asn: four_byte_asn || cap_four_byte,
++            add_path_families,
++        }
++    }
++
++    pub fn has_add_path(&self, afi_safi: AfiSafi) -> bool {
++        self.add_path_families.contains(&afi_safi)
++    }
++}
++
+ /// Parsed BGP UPDATE message
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub struct BgpUpdate {
+@@ -877,12 +1001,37 @@ pub struct BgpUpdate {
+ }
+ 
+ impl BgpUpdate {
++    /// Returns `Some(afi_safi)` when this BGP UPDATE is a true End-of-RIB marker (RFC 4724 §2),
++    /// or `None` when it carries any route announcements, withdrawals (including EVPN/FlowSpec/BGP-LS/SR-Policy),
++    /// or non-empty path attributes.
++    pub fn eor_afi_safi(&self) -> Option<AfiSafi> {
++        if !self.withdrawn.is_empty()
++            || !self.announced.is_empty()
++            || self.attributes.mp_reach.is_some()
++            || self.attributes.origin.is_some()
++            || self.attributes.as_path.is_some()
++            || self.attributes.next_hop.is_some()
++            || self.attributes.evpn_reach.is_some()
++            || self.attributes.evpn_unreach.is_some()
++            || self.attributes.flowspec_reach.is_some()
++            || self.attributes.flowspec_unreach.is_some()
++            || self.attributes.bgpls_reach.is_some()
++            || self.attributes.bgpls_unreach.is_some()
++            || !self.attributes.sr_policy_nlris.is_empty()
++            || !self.attributes.rtc_nlris.is_empty()
++            || !self.attributes.unknown.is_empty()
++        {
++            return None;
++        }
++        match &self.attributes.mp_unreach {
++            None => Some(AfiSafi::ipv4_unicast()),
++            Some(u) if u.prefixes.is_empty() => Some(u.afi_safi),
++            Some(_) => None,
++        }
++    }
++
+     pub fn is_eor(&self) -> bool {
+-        // End-of-RIB marker: empty UPDATE or MP_UNREACH with no prefixes (RFC 4724)
+-        self.withdrawn.is_empty()
+-            && self.announced.is_empty()
+-            && self.attributes.mp_reach.is_none()
+-            && self.attributes.mp_unreach.as_ref().map_or(true, |u| u.prefixes.is_empty())
++        self.eor_afi_safi().is_some()
+     }
+ 
+     /// Returns (prefix, path_id) pairs for all announced prefixes across IPv4 and MP_REACH.
+@@ -892,7 +1041,12 @@ impl BgpUpdate {
+             .map(|(p, id)| (p, *id))
+             .collect();
+         if let Some(mp) = &self.attributes.mp_reach {
+-            out.extend(mp.prefixes.iter().map(|p| (p, None)));
++            out.extend(
++                mp.prefixes
++                    .iter()
++                    .zip(mp.path_ids.iter().chain(std::iter::repeat(&None)))
++                    .map(|(p, id)| (p, *id)),
++            );
+         }
+         out
+     }
+@@ -904,7 +1058,12 @@ impl BgpUpdate {
+             .map(|(p, id)| (p, *id))
+             .collect();
+         if let Some(mp) = &self.attributes.mp_unreach {
+-            out.extend(mp.prefixes.iter().map(|p| (p, None)));
++            out.extend(
++                mp.prefixes
++                    .iter()
++                    .zip(mp.path_ids.iter().chain(std::iter::repeat(&None)))
++                    .map(|(p, id)| (p, *id)),
++            );
+         }
+         out
+     }
+diff --git a/crates/rbmp-core/src/bgp/update.rs b/crates/rbmp-core/src/bgp/update.rs
+index 2e5ce74..3e519fe 100644
+--- a/crates/rbmp-core/src/bgp/update.rs
++++ b/crates/rbmp-core/src/bgp/update.rs
+@@ -1,15 +1,20 @@
+ use bytes::Buf;
+ use crate::{Error, Result};
+-use super::types::{Afi, BgpUpdate};
++use super::types::{Afi, AfiSafi, BgpDecodeContext, BgpUpdate};
+ use super::nlri::decode_nlri_with_path_id;
+-use super::attributes::parse_path_attributes;
++use super::attributes::parse_path_attributes_with_context;
+ 
+ const BGP_UPDATE_TYPE: u8 = 2;
+ 
+ /// Parse a BGP UPDATE message.
+ /// `buf` must start at the BGP common header (16-byte marker + 2-byte length + 1-byte type).
+ /// `add_path_ipv4` — set true when the peer negotiated Add-Path for IPv4 unicast (RFC 7911).
+-pub fn parse_bgp_update(mut buf: impl Buf, add_path_ipv4: bool) -> Result<BgpUpdate> {
++pub fn parse_bgp_update(buf: impl Buf, add_path_ipv4: bool) -> Result<BgpUpdate> {
++    parse_bgp_update_with_context(buf, &BgpDecodeContext::with_add_path_ipv4(add_path_ipv4))
++}
++
++/// Parse a BGP UPDATE message using session-derived decoding context (`BgpDecodeContext`).
++pub fn parse_bgp_update_with_context(mut buf: impl Buf, ctx: &BgpDecodeContext) -> Result<BgpUpdate> {
+     if buf.remaining() < 19 {
+         return Err(Error::UnexpectedEof {
+             needed: 19,
+@@ -47,6 +52,7 @@ pub fn parse_bgp_update(mut buf: impl Buf, add_path_ipv4: bool) -> Result<BgpUpd
+     }
+     let body_bytes = buf.copy_to_bytes(body_len);
+     let mut body = body_bytes.as_ref();
++    let add_path_ipv4 = ctx.has_add_path(AfiSafi::ipv4_unicast());
+ 
+     // Withdrawn routes (IPv4 unicast NLRI)
+     if body.remaining() < 2 {
+@@ -71,7 +77,7 @@ pub fn parse_bgp_update(mut buf: impl Buf, add_path_ipv4: bool) -> Result<BgpUpd
+         return Err(Error::UnexpectedEof { needed: attr_len, have: body.remaining() });
+     }
+     let attr_bytes = body.copy_to_bytes(attr_len);
+-    let attributes = parse_path_attributes(attr_bytes.as_ref())?;
++    let attributes = parse_path_attributes_with_context(attr_bytes.as_ref(), ctx)?;
+ 
+     // Announced routes (remaining NLRI = IPv4 unicast)
+     let announced_with_ids = decode_nlri_with_path_id(&mut body, Afi::Ipv4, add_path_ipv4)?;
+diff --git a/crates/rbmp-core/src/bmp/mod.rs b/crates/rbmp-core/src/bmp/mod.rs
+index 1e4eff8..32b2448 100644
+--- a/crates/rbmp-core/src/bmp/mod.rs
++++ b/crates/rbmp-core/src/bmp/mod.rs
+@@ -3,5 +3,5 @@ pub mod parser;
+ pub mod path_status_tlv;
+ 
+ pub use types::*;
+-pub use parser::parse_bmp_message;
++pub use parser::{parse_bmp_message, parse_bmp_message_with_context, parse_bmp_message_with_peer_context};
+ pub use path_status_tlv::{PathStatusTlv, PATH_STATUS_TLV_TYPE};
+diff --git a/crates/rbmp-core/src/bmp/parser.rs b/crates/rbmp-core/src/bmp/parser.rs
+index 57d2aaf..7601bfd 100644
+--- a/crates/rbmp-core/src/bmp/parser.rs
++++ b/crates/rbmp-core/src/bmp/parser.rs
+@@ -3,8 +3,8 @@ use chrono::{TimeZone, Utc};
+ use crate::{Error, Result};
+ use super::types::*;
+ use super::path_status_tlv::{find_path_status_tlv, PATH_STATUS_TLV_TYPE};
+-use crate::bgp::types::AfiSafi;
+-use crate::bgp::update::parse_bgp_update;
++use crate::bgp::types::{AfiSafi, BgpDecodeContext};
++use crate::bgp::update::parse_bgp_update_with_context;
+ use crate::bgp::open::parse_bgp_open;
+ 
+ const BMP_VERSION: u8 = 3;
+@@ -124,9 +124,34 @@ where
+ /// Returns (BmpPayload, speaker_addr) — caller wraps into BmpMessage with id/received_at.
+ pub fn parse_bmp_message(
+     buf: &[u8],
+-    _speaker_addr: IpAddr,
++    speaker_addr: IpAddr,
++    max_frame: u32,
++) -> Result<BmpPayload> {
++    parse_bmp_message_with_peer_context(buf, speaker_addr, max_frame, |_| {
++        BgpDecodeContext::default()
++    })
++}
++
++/// Parse a single BMP message with an explicit `BgpDecodeContext` (e.g. negotiated Add-Path families).
++pub fn parse_bmp_message_with_context(
++    buf: &[u8],
++    speaker_addr: IpAddr,
+     max_frame: u32,
++    ctx: &BgpDecodeContext,
+ ) -> Result<BmpPayload> {
++    parse_bmp_message_with_peer_context(buf, speaker_addr, max_frame, |_| ctx.clone())
++}
++
++/// Parse a single BMP message resolving the `BgpDecodeContext` from the decoded `PeerHeader`.
++pub fn parse_bmp_message_with_peer_context<F>(
++    buf: &[u8],
++    _speaker_addr: IpAddr,
++    max_frame: u32,
++    resolve_ctx: F,
++) -> Result<BmpPayload>
++where
++    F: FnOnce(&PeerHeader) -> BgpDecodeContext,
++{
+     let (msg_len_usize, msg_type) = validate_bmp_header(buf, max_frame)?;
+     if buf.len() < msg_len_usize {
+         return Err(Error::UnexpectedEof {
+@@ -149,7 +174,7 @@ pub fn parse_bmp_message(
+         BmpMsgType::Termination   => parse_termination(body),
+         BmpMsgType::PeerUp        => parse_peer_up(body),
+         BmpMsgType::PeerDown      => parse_peer_down(body),
+-        BmpMsgType::RouteMonitoring => parse_route_monitoring(body),
++        BmpMsgType::RouteMonitoring => parse_route_monitoring(body, resolve_ctx),
+         BmpMsgType::StatsReport   => parse_stats_report(body),
+         BmpMsgType::RouteMirroring => parse_route_mirroring(body),
+     }
+@@ -362,7 +387,10 @@ fn parse_peer_down(buf: &[u8]) -> Result<BmpPayload> {
+     Ok(BmpPayload::PeerDown { peer_header, reason })
+ }
+ 
+-fn parse_route_monitoring(buf: &[u8]) -> Result<BmpPayload> {
++fn parse_route_monitoring<F>(buf: &[u8], resolve_ctx: F) -> Result<BmpPayload>
++where
++    F: FnOnce(&PeerHeader) -> BgpDecodeContext,
++{
+     let (peer_header, rest) = parse_peer_header(buf)?;
+     if rest.len() < 19 {
+         return Err(Error::UnexpectedEof { needed: 19, have: rest.len() });
+@@ -373,8 +401,12 @@ fn parse_route_monitoring(buf: &[u8]) -> Result<BmpPayload> {
+     // any leading bytes for TLV structures until we hit the BGP marker.
+     // This handles implementations that prepend BMP TLVs before the BGP UPDATE.
+     let path_status = find_path_status_tlv(rest, PATH_STATUS_TLV_TYPE);
++    let mut ctx = resolve_ctx(&peer_header);
++    // RFC 7854 §4.2: A-flag (0x20) in Per-Peer Header specifies whether AS_PATH in this
++    // RouteMonitoring message uses legacy 2-byte ASNs (as2() == true) or 4-byte ASNs (as2() == false).
++    ctx.four_byte_asn = !peer_header.peer_flags.as2();
+ 
+-    let mut update = parse_bgp_update(rest, false)?;
++    let mut update = parse_bgp_update_with_context(rest, &ctx)?;
+     if let Some(ps) = path_status {
+         update.attributes.path_status = Some(ps);
+     }
+diff --git a/crates/rbmp-core/src/bmp/types.rs b/crates/rbmp-core/src/bmp/types.rs
+index 5e9d42e..38f6072 100644
+--- a/crates/rbmp-core/src/bmp/types.rs
++++ b/crates/rbmp-core/src/bmp/types.rs
+@@ -1,11 +1,11 @@
+ use std::net::{IpAddr, Ipv4Addr};
+ use chrono::{DateTime, Utc};
+ use serde::{Deserialize, Serialize};
+-use crate::bgp::types::{BgpCapability, BgpUpdate, AfiSafi};
++use crate::bgp::types::{BgpCapability, BgpUpdate, AfiSafi, Prefix};
+ 
+ // ─── BMP message type (RFC 7854 §4) ──────────────────────────────────────────
+ 
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+ #[repr(u8)]
+ pub enum BmpMsgType {
+     RouteMonitoring  = 0,
+@@ -35,7 +35,7 @@ impl TryFrom<u8> for BmpMsgType {
+ 
+ // ─── Peer type (RFC 7854 §4.2) ───────────────────────────────────────────────
+ 
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+ #[repr(u8)]
+ pub enum PeerType {
+     GlobalInstance = 0,  // Default — global BGP instance
+@@ -59,7 +59,7 @@ impl TryFrom<u8> for PeerType {
+ 
+ // ─── Peer flags (RFC 7854 §4.2 bits) ─────────────────────────────────────────
+ 
+-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+ pub struct PeerFlags(pub u8);
+ 
+ impl PeerFlags {
+@@ -72,7 +72,7 @@ impl PeerFlags {
+ 
+ // ─── RIB type derived from peer_type + peer_flags ────────────────────────────
+ 
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+ pub enum RibType {
+     AdjRibInPrePolicy,
+     AdjRibInPostPolicy,
+@@ -101,7 +101,7 @@ impl RibType {
+ 
+ // ─── Common peer header (RFC 7854 §4.2, 42 bytes) ────────────────────────────
+ 
+-#[derive(Debug, Clone, Serialize, Deserialize)]
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ pub struct PeerHeader {
+     pub peer_type:          PeerType,
+     pub peer_flags:         PeerFlags,
+@@ -115,6 +115,202 @@ pub struct PeerHeader {
+     pub rib_type:           RibType,
+ }
+ 
++// ─── B04 Typed Routing Identities (ADR-001) ──────────────────────────────────
++
++pub const EVENT_SCHEMA_VERSION: u16 = 2;
++
++/// Collector + exporter + instance + connection epoch identity.
++/// TCP source IP is retained as an attribute while `session_epoch` fences stale disconnects.
++#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
++pub struct ObservationSource {
++    pub collector_id:      String,
++    pub exporter_id:       String,
++    pub exporter_addr:     IpAddr,
++    pub exporter_instance: String,
++    pub session_epoch:     u64,
++}
++
++impl ObservationSource {
++    pub fn new(exporter_addr: IpAddr, session_epoch: u64) -> Self {
++        Self {
++            collector_id: "default".to_string(),
++            exporter_id: exporter_addr.to_string(),
++            exporter_addr,
++            exporter_instance: "default".to_string(),
++            session_epoch,
++        }
++    }
++
++    pub fn with_ids(
++        collector_id: impl Into<String>,
++        exporter_id: impl Into<String>,
++        exporter_addr: IpAddr,
++        exporter_instance: impl Into<String>,
++        session_epoch: u64,
++    ) -> Self {
++        Self {
++            collector_id: collector_id.into(),
++            exporter_id: exporter_id.into(),
++            exporter_addr,
++            exporter_instance: exporter_instance.into(),
++            session_epoch,
++        }
++    }
++}
++
++/// Composite peer/instance identity preventing cross-exporter and cross-VRF collisions.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
++pub struct PeerKey {
++    pub speaker_addr:       IpAddr,
++    pub peer_type:          PeerType,
++    pub peer_distinguisher: [u8; 8],
++    pub peer_address:       IpAddr,
++}
++
++impl PeerKey {
++    pub fn new(
++        speaker_addr: IpAddr,
++        peer_type: PeerType,
++        peer_distinguisher: [u8; 8],
++        peer_address: IpAddr,
++    ) -> Self {
++        Self {
++            speaker_addr,
++            peer_type,
++            peer_distinguisher,
++            peer_address,
++        }
++    }
++
++    pub fn from_header(speaker_addr: IpAddr, hdr: &PeerHeader) -> Self {
++        Self {
++            speaker_addr,
++            peer_type: hdr.peer_type,
++            peer_distinguisher: hdr.peer_distinguisher,
++            peer_address: hdr.peer_address,
++        }
++    }
++}
++
++/// Direction of a BMP view relative to the exporting router.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum ViewDirection {
++    Inbound,
++    Outbound,
++    Local,
++}
++
++/// Typed BMP RIB view identity (peer/instance + AFI/SAFI + direction + policy stage + filtered).
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
++pub struct ViewKey {
++    pub peer:           PeerKey,
++    pub afi_safi:       AfiSafi,
++    pub rib_type:       RibType,
++    pub direction:      ViewDirection,
++    pub is_post_policy: bool,
++    pub is_filtered:    bool,
++}
++
++impl ViewKey {
++    pub fn from_peer(peer: PeerKey, afi_safi: AfiSafi, rib_type: RibType, flags: PeerFlags) -> Self {
++        let (direction, is_post_policy, is_filtered) = match rib_type {
++            RibType::AdjRibInPrePolicy => (ViewDirection::Inbound, false, false),
++            RibType::AdjRibInPostPolicy => (ViewDirection::Inbound, true, false),
++            RibType::AdjRibOutPrePolicy => (ViewDirection::Outbound, false, false),
++            RibType::AdjRibOutPostPolicy => (ViewDirection::Outbound, true, false),
++            RibType::LocRib => (ViewDirection::Local, true, flags.filtered()),
++            RibType::LocRibFiltered => (ViewDirection::Local, true, true),
++        };
++        Self {
++            peer,
++            afi_safi,
++            rib_type,
++            direction,
++            is_post_policy,
++            is_filtered,
++        }
++    }
++}
++
++/// Family-specific NLRI identity, keeping L3VPN/EVPN RDs separate from BMP peer distinguishers.
++#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
++#[serde(tag = "family", rename_all = "snake_case")]
++pub enum CanonicalNlri {
++    IpUnicast(Prefix),
++    L3Vpn { rd: [u8; 8], prefix: Prefix },
++    Evpn { rd: String, route_type: u8, key: String },
++}
++
++impl CanonicalNlri {
++    pub fn from_prefix(prefix: &Prefix) -> Self {
++        match prefix {
++            Prefix::Vpn { rd, prefix: inner, .. } => Self::L3Vpn {
++                rd: rd.0,
++                prefix: (**inner).clone(),
++            },
++            other => Self::IpUnicast(other.clone()),
++        }
++    }
++
++    pub fn matches_prefix(&self, target: &Prefix) -> bool {
++        match (self, target) {
++            (Self::IpUnicast(p), t) => p == t,
++            (Self::L3Vpn { rd, prefix }, Prefix::Vpn { rd: trd, prefix: tp, .. }) => {
++                *rd == trd.0 && prefix == &**tp
++            }
++            _ => false,
++        }
++    }
++}
++
++/// Typed intra-table key (`CanonicalNlri` + optional RFC 7911 `path_id`) replacing string formatting.
++#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
++pub struct TableRouteKey {
++    pub nlri:    CanonicalNlri,
++    pub path_id: Option<u32>,
++}
++
++impl TableRouteKey {
++    pub fn from_prefix(prefix: &Prefix, path_id: Option<u32>) -> Self {
++        Self {
++            nlri: CanonicalNlri::from_prefix(prefix),
++            path_id,
++        }
++    }
++
++    pub fn matches_prefix(&self, prefix: &Prefix) -> bool {
++        self.nlri.matches_prefix(prefix)
++    }
++}
++
++/// Full route identity across exporter, peer/instance, view, NLRI, and Add-Path ID.
++#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
++pub struct RouteKey {
++    pub view:    ViewKey,
++    pub nlri:    CanonicalNlri,
++    pub path_id: Option<u32>,
++}
++
++/// Versioned durable event identity (schema version + observation source + monotonic sequence).
++#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
++pub struct EventKey {
++    pub schema_version: u16,
++    pub source:         ObservationSource,
++    pub sequence:       u64,
++}
++
++impl EventKey {
++    pub fn new(source: ObservationSource, sequence: u64) -> Self {
++        Self {
++            schema_version: EVENT_SCHEMA_VERSION,
++            source,
++            sequence,
++        }
++    }
++}
++
++
+ // ─── BMP initiation TLV (RFC 7854 §4.4) ──────────────────────────────────────
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+diff --git a/crates/rbmp-enrichment/src/bgpsec.rs b/crates/rbmp-enrichment/src/bgpsec.rs
+index e8a253a..4154616 100644
+--- a/crates/rbmp-enrichment/src/bgpsec.rs
++++ b/crates/rbmp-enrichment/src/bgpsec.rs
+@@ -23,8 +23,11 @@ use rbmp_core::bgp::attributes::BgpsecPath;
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+ #[serde(tag = "verdict", rename_all = "snake_case")]
+ pub enum BgpsecVerdict {
+-    /// All hops verified successfully.
++    /// All hops verified cryptographically against a supplied RFC 8205 Signature_Input.
+     Valid,
++    /// Certificates are present and structure is well-formed, but RFC 8205 Signature_Input
++    /// wire digest is unavailable (e.g. passive BMP observation without reconstructed input).
++    Unverified { reason: String },
+     /// One hop failed ECDSA verification.
+     Invalid { hop: u8, reason: String },
+     /// No router certificate available for one or more ASNs in the path.
+@@ -38,11 +41,12 @@ pub enum BgpsecVerdict {
+ impl BgpsecVerdict {
+     pub fn verdict_str(&self) -> &'static str {
+         match self {
+-            Self::Valid         => "valid",
+-            Self::Invalid { .. }=> "invalid",
+-            Self::NotFound { .. }=> "not_found",
+-            Self::Malformed     => "malformed",
+-            Self::Absent        => "absent",
++            Self::Valid              => "valid",
++            Self::Unverified { .. }  => "unverified",
++            Self::Invalid { .. }     => "invalid",
++            Self::NotFound { .. }    => "not_found",
++            Self::Malformed          => "malformed",
++            Self::Absent             => "absent",
+         }
+     }
+ }
+@@ -109,17 +113,10 @@ impl BgpsecValidator {
+ 
+     /// Validate a BGPsec_Path attribute.
+     ///
+-    /// This performs the per-hop ECDSA P-256 verification described in
+-    /// RFC 8205 §5.2.  For each Secure_Path segment we:
+-    ///   1. Look up the router certificate for that AS.
+-    ///   2. Verify the Signature_Segment ECDSA signature covers the expected
+-    ///      digest (prefix || Secure_Path_Segment_hdr || prev_digest).
+-    ///
+-    /// NOTE: Full RFC 8205 §5 validation requires constructing the
+-    /// Signature_Input from the update and prior segments.  This
+-    /// implementation performs structural verification; full digest
+-    /// construction requires access to the original UPDATE wire bytes,
+-    /// which must be passed when available.
++    /// Performs per-hop ECDSA P-256 verification (RFC 8205 §5.2) when the caller
++    /// supplies `update_wire` (the RFC 8205 Signature_Input bytes). When `update_wire`
++    /// is `None` (passive BMP observation without reconstructed Signature_Input),
++    /// returns `BgpsecVerdict::Unverified` rather than claiming cryptographic validity.
+     pub fn validate_path(
+         &self,
+         bgpsec: &BgpsecPath,
+@@ -140,85 +137,97 @@ impl BgpsecValidator {
+             }
+         }
+ 
+-        // Phase 2: Verify each signature block against the raw bytes.
+-        // When update_wire is available, perform actual ECDSA verification.
+-        // Without it (common in BMP observation mode), we return Valid if all
+-        // certs are present (optimistic — correct for BMP passive mode where
+-        // the original UPDATE digest is unavailable).
+-        if let Some(wire) = update_wire {
+-            if let Some(verdict) = self.verify_signatures(bgpsec, wire) {
+-                return verdict;
+-            }
+-        }
++        // Phase 2: Require explicit signature input for cryptographic verification.
++        let Some(signed_input) = update_wire else {
++            debug!(asns = ?bgpsec.signing_asns, "BGPsec: certs present but RFC 8205 signature input unavailable");
++            return BgpsecVerdict::Unverified {
++                reason: "passive_bmp_missing_signature_input".to_string(),
++            };
++        };
+ 
+-        // All certs present + no wire bytes → optimistic valid
+-        debug!(asns = ?bgpsec.signing_asns, "BGPsec: cert-check pass (optimistic)");
+-        BgpsecVerdict::Valid
++        self.verify_signatures(bgpsec, signed_input)
+     }
+ 
+-    /// Inner: attempt full ECDSA verification of each signature block.
+-    /// Returns Some(verdict) if verification could be performed, None if
+-    /// the wire format is too ambiguous to extract individual signatures.
++    /// Perform full ECDSA P-256 verification of each signature segment against `signed_input`.
+     fn verify_signatures(
+         &self,
+         bgpsec: &BgpsecPath,
+-        _wire: &[u8],
+-    ) -> Option<BgpsecVerdict> {
++        signed_input: &[u8],
++    ) -> BgpsecVerdict {
+         use ring::signature::{UnparsedPublicKey, ECDSA_P256_SHA256_ASN1};
+ 
++        if signed_input.is_empty() {
++            return BgpsecVerdict::Unverified {
++                reason: "empty_signature_input".to_string(),
++            };
++        }
++
+         // Walk the raw BGPsec_Path bytes to extract Signature_Segments.
+-        // RFC 8205 §3.2 wire format:
+-        //   Secure_Path (2-byte length + N × 6-byte segment)
+-        //   Signature_Block* (2-byte length + 1-byte algo + 1-byte flags + Signature_Segments)
++        // Wire layout used by rbmp-core:
++        //   Secure_Path (2-byte length + secure_path_len bytes)
++        //   Signature_Block* (2-byte block_len + 1-byte algo + Signature_Segments)
+         //     Each Signature_Segment: SKI(20) + sig_len(2) + sig(sig_len)
+         let raw = &bgpsec.raw;
+-        if raw.len() < 4 { return None; }
++        if raw.len() < 4 {
++            return BgpsecVerdict::Malformed;
++        }
+ 
+         let secure_path_len = u16::from_be_bytes([raw[0], raw[1]]) as usize;
+         let sig_block_start = 2 + secure_path_len;
+-        if raw.len() <= sig_block_start + 4 { return None; }
++        if raw.len() <= sig_block_start + 4 {
++            return BgpsecVerdict::Malformed;
++        }
+ 
+         let mut pos = sig_block_start;
+-        let mut hop: u8 = 0;
++        let mut hop: usize = 0;
+ 
+         while pos + 4 <= raw.len() {
+-            let block_len = u16::from_be_bytes([raw[pos], raw[pos+1]]) as usize;
+-            if block_len < 2 || pos + 2 + block_len > raw.len() { break; }
++            let block_len = u16::from_be_bytes([raw[pos], raw[pos + 1]]) as usize;
++            if block_len < 2 || pos + 2 + block_len > raw.len() {
++                return BgpsecVerdict::Malformed;
++            }
+             let _algo = raw[pos + 2];
+             let mut seg_pos = pos + 3;
+-            let block_end  = pos + 2 + block_len;
++            let block_end = pos + 2 + block_len;
+ 
+             while seg_pos + 22 <= block_end {
+-                // SKI = 20 bytes, then sig_len = 2 bytes, then sig
+-                let sig_len = u16::from_be_bytes([raw[seg_pos+20], raw[seg_pos+21]]) as usize;
++                let sig_len = u16::from_be_bytes([raw[seg_pos + 20], raw[seg_pos + 21]]) as usize;
+                 seg_pos += 22;
+-                if seg_pos + sig_len > block_end { break; }
++                if sig_len == 0 || seg_pos + sig_len > block_end {
++                    return BgpsecVerdict::Malformed;
++                }
+ 
+-                let sig_bytes = &raw[seg_pos..seg_pos+sig_len];
++                let sig_bytes = &raw[seg_pos..seg_pos + sig_len];
+                 seg_pos += sig_len;
+ 
+-                // Identify which ASN this hop corresponds to (by index)
+-                let asn = bgpsec.signing_asns.get(hop as usize).copied().unwrap_or(0);
+-                if let Some(pub_key) = self.router_keys.get(&asn) {
+-                    // Construct a minimal digest covering the signature bytes
+-                    // (in full RFC 8205 this is the full Signature_Input; here
+-                    // we verify the signature is well-formed ECDSA P-256 DER).
+-                    let verifier = UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, pub_key);
+-                    // The message to verify over is the raw signature input
+-                    // blob.  In pure BMP observation mode we only have the
+-                    // signature bytes themselves; we use them as a self-check
+-                    // structure test (ASN1 parse).  Full validation requires
+-                    // the original UPDATE wire bytes + NLRI from the caller.
+-                    let _ = verifier.verify(sig_bytes, sig_bytes);
+-                    // We do NOT fail on this; the real digest isn't available.
++                let Some(&asn) = bgpsec.signing_asns.get(hop) else {
++                    return BgpsecVerdict::Malformed;
++                };
++                let Some(pub_key) = self.router_keys.get(&asn) else {
++                    return BgpsecVerdict::NotFound { missing_asn: asn };
++                };
++
++                let verifier = UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, pub_key);
++                if verifier.verify(signed_input, sig_bytes).is_err() {
++                    return BgpsecVerdict::Invalid {
++                        hop: hop as u8,
++                        reason: format!("ecdsa_verification_failed_for_as_{asn}"),
++                    };
+                 }
+ 
+                 hop += 1;
+             }
++            if seg_pos != block_end {
++                return BgpsecVerdict::Malformed;
++            }
+             pos += 2 + block_len;
+         }
+ 
+-        None  // Let caller handle verdict
++        if hop != bgpsec.signing_asns.len() {
++            return BgpsecVerdict::Malformed;
++        }
++
++        BgpsecVerdict::Valid
+     }
+ }
+ 
+@@ -240,6 +249,25 @@ mod tests {
+         }
+     }
+ 
++    fn build_single_hop_bgpsec(asn: u32, sig_bytes: &[u8]) -> BgpsecPath {
++        let mut raw = Vec::new();
++        raw.extend_from_slice(&6u16.to_be_bytes());
++        raw.push(1); // pcount = 1
++        raw.push(0); // flags = 0
++        raw.extend_from_slice(&asn.to_be_bytes());
++        let block_len: u16 = 1 + 20 + 2 + (sig_bytes.len() as u16);
++        raw.extend_from_slice(&block_len.to_be_bytes());
++        raw.push(1); // algorithm suite 1 (ECDSA P-256 / SHA-256)
++        raw.extend_from_slice(&[0xAA; 20]); // 20-byte SKI
++        raw.extend_from_slice(&(sig_bytes.len() as u16).to_be_bytes());
++        raw.extend_from_slice(sig_bytes);
++        BgpsecPath {
++            signing_asns: vec![asn],
++            sig_block_count: 1,
++            raw,
++        }
++    }
++
+     #[test]
+     fn absent_when_empty_raw() {
+         let v = BgpsecValidator::new();
+@@ -255,12 +283,14 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn valid_with_loaded_cert() {
++    fn unverified_with_loaded_cert_when_wire_absent() {
+         let mut v = BgpsecValidator::new();
+-        // Load a fake 65-byte key (all zeros — structural test only)
+         v.load_raw_key(65001, vec![0u8; 65]).unwrap();
+         let b = dummy_bgpsec(vec![65001]);
+-        assert_eq!(v.validate_path(&b, None), BgpsecVerdict::Valid);
++        assert!(matches!(
++            v.validate_path(&b, None),
++            BgpsecVerdict::Unverified { .. }
++        ));
+     }
+ 
+     #[test]
+@@ -300,6 +330,7 @@ mod tests {
+     #[test]
+     fn verdict_str_covers_all_variants() {
+         assert_eq!(BgpsecVerdict::Valid.verdict_str(), "valid");
++        assert_eq!(BgpsecVerdict::Unverified { reason: "passive".into() }.verdict_str(), "unverified");
+         assert_eq!(BgpsecVerdict::Invalid { hop: 0, reason: "bad".into() }.verdict_str(), "invalid");
+         assert_eq!(BgpsecVerdict::NotFound { missing_asn: 1 }.verdict_str(), "not_found");
+         assert_eq!(BgpsecVerdict::Malformed.verdict_str(), "malformed");
+@@ -313,4 +344,52 @@ mod tests {
+         v.load_raw_key(65001, vec![1u8; 65]).unwrap();
+         assert_eq!(v.cert_count(), 1, "overwriting a cert should not increase count");
+     }
++
++    #[test]
++    fn b08_passive_bmp_without_signature_input_is_not_valid() {
++        let mut v = BgpsecValidator::new();
++        v.load_raw_key(65001, vec![0x04; 65]).unwrap();
++        let b = dummy_bgpsec(vec![65001]);
++        let verdict = v.validate_path(&b, None);
++        assert_ne!(
++            verdict,
++            BgpsecVerdict::Valid,
++            "passive BMP without RFC 8205 signature input must not report Valid"
++        );
++        assert_eq!(verdict.verdict_str(), "unverified");
++    }
++
++    #[test]
++    fn b08_forged_signature_bytes_rejected_when_update_wire_provided() {
++        let mut v = BgpsecValidator::new();
++        v.load_raw_key(65001, vec![0x04; 65]).unwrap();
++        let b = build_single_hop_bgpsec(65001, &[0x30u8; 16]);
++        assert!(
++            matches!(v.validate_path(&b, Some(b"rfc8205-signed-input")), BgpsecVerdict::Invalid { hop: 0, .. }),
++            "forged signature bytes must fail ECDSA verification when signature input is provided"
++        );
++    }
++
++    #[test]
++    fn b08_authentic_ecdsa_p256_signature_verifies_valid() {
++        use ring::rand::SystemRandom;
++        use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
++
++        let rng = SystemRandom::new();
++        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
++        let key_pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng).unwrap();
++
++        let signed_input = b"rfc8205-canonical-signature-input";
++        let sig = key_pair.sign(&rng, signed_input).unwrap();
++
++        let mut v = BgpsecValidator::new();
++        v.load_raw_key(65001, key_pair.public_key().as_ref().to_vec()).unwrap();
++
++        let b = build_single_hop_bgpsec(65001, sig.as_ref());
++        assert_eq!(v.validate_path(&b, Some(signed_input)), BgpsecVerdict::Valid);
++        assert!(matches!(
++            v.validate_path(&b, Some(b"tampered-signature-input")),
++            BgpsecVerdict::Invalid { hop: 0, .. }
++        ));
++    }
+ }
+diff --git a/crates/rbmp-rib/src/event.rs b/crates/rbmp-rib/src/event.rs
+index 68bd39a..f80410b 100644
+--- a/crates/rbmp-rib/src/event.rs
++++ b/crates/rbmp-rib/src/event.rs
+@@ -2,15 +2,24 @@ use std::net::IpAddr;
+ use chrono::{DateTime, Utc};
+ use serde::{Deserialize, Serialize};
+ use rbmp_core::bgp::types::{PathAttributes, Prefix};
+-use rbmp_core::bmp::types::{PeerHeader, RibType, StatEntry};
++use rbmp_core::bmp::types::{
++    EventKey, PeerHeader, PeerKey, RibType, RouteKey, StatEntry, ViewKey, EVENT_SCHEMA_VERSION,
++};
++
++fn default_schema_version() -> u16 {
++    EVENT_SCHEMA_VERSION
++}
+ 
+ /// Every state change emitted by the RIB engine
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub struct RibEvent {
+-    pub id:          uuid::Uuid,
+-    pub occurred_at: DateTime<Utc>,
+-    pub speaker:     IpAddr,
+-    pub payload:     RibEventPayload,
++    #[serde(default = "default_schema_version")]
++    pub schema_version: u16,
++    pub event_key:      EventKey,
++    pub id:             uuid::Uuid,
++    pub occurred_at:    DateTime<Utc>,
++    pub speaker:        IpAddr,
++    pub payload:        RibEventPayload,
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+@@ -52,8 +61,12 @@ pub enum RibEventPayload {
+ pub struct RouteChange {
+     pub action:      RouteAction,
+     pub peer_header: PeerHeader,
++    pub peer_key:    PeerKey,
++    pub view_key:    ViewKey,
++    pub route_key:   RouteKey,
+     pub rib_type:    RibType,
+     pub prefix:      Prefix,
++    pub path_id:     Option<u32>,
+     /// Attributes present for Announce, None for Withdraw
+     pub attributes:  Option<PathAttributes>,
+ }
+@@ -64,3 +77,4 @@ pub enum RouteAction {
+     Announce,
+     Withdraw,
+ }
++
+diff --git a/crates/rbmp-rib/src/lib.rs b/crates/rbmp-rib/src/lib.rs
+index 82ce651..a776a47 100644
+--- a/crates/rbmp-rib/src/lib.rs
++++ b/crates/rbmp-rib/src/lib.rs
+@@ -10,8 +10,13 @@ pub mod roto_filter;
+ pub use session::{BmpSession, PeerSession, PeerState};
+ pub use table::RibTable;
+ pub use manager::RibManager;
+-pub use event::{RibEvent, RouteAction};
++pub use event::{RibEvent, RouteAction, RouteChange};
++pub use rbmp_core::bmp::types::{
++    CanonicalNlri, EventKey, ObservationSource, PeerKey, RouteKey, TableRouteKey, ViewDirection,
++    ViewKey, EVENT_SCHEMA_VERSION,
++};
+ pub use filter::{FilterEngine, FilterVerdict, RouteFilter, FilterAction, build_route_ctx};
+ pub use filter_expr::{Expr, RouteCtx, parse_expr};
+ pub use roto_ctx::RouteCtx as RotoRouteCtx;
+ pub use roto_filter::RotoFilterEngine;
++
+diff --git a/crates/rbmp-rib/src/manager.rs b/crates/rbmp-rib/src/manager.rs
+index 68216ac..1ea5f13 100644
+--- a/crates/rbmp-rib/src/manager.rs
++++ b/crates/rbmp-rib/src/manager.rs
+@@ -1,10 +1,13 @@
+ use std::collections::HashMap;
+ use std::net::IpAddr;
+-use chrono::Utc;
++use chrono::{DateTime, Utc};
+ use tokio::sync::broadcast;
+ use tracing::{info, debug};
+ use metrics::counter;
+-use rbmp_core::bmp::types::{BmpMessage, BmpPayload};
++use rbmp_core::bmp::types::{
++    BmpMessage, BmpPayload, CanonicalNlri, EventKey, ObservationSource, PeerKey, RouteKey,
++    ViewKey, EVENT_SCHEMA_VERSION,
++};
+ use rbmp_core::bgp::types::BgpCapability;
+ use crate::event::{RibEvent, RibEventPayload, RibEventPayload::*, RouteChange, RouteAction};
+ use crate::session::{BmpSession, PeerSession};
+@@ -13,12 +16,14 @@ use crate::filter::{FilterEngine, FilterVerdict};
+ use crate::roto_filter::RotoFilterEngine;
+ use crate::roto_ctx::RouteCtx as RotoCtx;
+ 
+-/// Central RIB manager: owns all per-speaker sessions and per-peer route tables.
+-/// Driven by BmpMessage from the receiver; emits RibEvents to subscribers.
++/// Central RIB manager: owns all per-speaker sessions and per-(speaker, peer_type, distinguisher, peer_addr) route tables.
++/// Driven by BmpMessage from the receiver; emits versioned RibEvents to subscribers.
+ pub struct RibManager {
+     speakers: HashMap<IpAddr, BmpSession>,
+-    /// peer_addr → RIB table (across all speakers; a peer is globally unique by address)
+-    ribs: HashMap<IpAddr, RibTable>,
++    /// Typed `PeerKey` → RIB table (isolates multiple exporters and multiple VRF distinguishers).
++    ribs: HashMap<PeerKey, RibTable>,
++    next_session_epoch: u64,
++    next_event_seq: u64,
+     event_tx: broadcast::Sender<RibEvent>,
+     /// Optional programmable route filter chain (YAML DSL)
+     filter: Option<FilterEngine>,
+@@ -30,11 +35,13 @@ impl RibManager {
+     pub fn new(event_capacity: usize) -> (Self, broadcast::Receiver<RibEvent>) {
+         let (tx, rx) = broadcast::channel(event_capacity);
+         (Self {
+-            speakers: HashMap::new(),
+-            ribs:     HashMap::new(),
+-            event_tx:    tx,
+-            filter:      None,
+-            roto_filter: None,
++            speakers:           HashMap::new(),
++            ribs:               HashMap::new(),
++            next_session_epoch: 1,
++            next_event_seq:     1,
++            event_tx:           tx,
++            filter:             None,
++            roto_filter:        None,
+         }, rx)
+     }
+ 
+@@ -58,52 +65,141 @@ impl RibManager {
+         self.roto_filter = Some(engine);
+     }
+ 
+-    /// Expire LLGR-stale routes for a peer whose stale timer has elapsed.
+-    /// Returns count of routes deleted.
+-    pub fn expire_stale_for_peer(&mut self, peer_addr: IpAddr, stale_secs: u32) -> usize {
++    /// Allocate a new session epoch when a BMP speaker establishes a TCP connection.
++    /// Older epochs closing later will be fenced and cannot clear this session's state.
++    pub fn open_speaker_session(&mut self, speaker: IpAddr, at: DateTime<Utc>) -> u64 {
++        let epoch = self.next_session_epoch;
++        self.next_session_epoch += 1;
++        let source = ObservationSource::new(speaker, epoch);
++        match self.speakers.get_mut(&speaker) {
++            Some(sess) => {
++                sess.source = source;
++                sess.connected_at = at;
++            }
++            None => {
++                self.speakers.insert(speaker, BmpSession::with_source(source, at));
++            }
++        }
++        epoch
++    }
++
++    /// Expire LLGR-stale routes for a specific `PeerKey` whose stale timer has elapsed.
++    pub fn expire_stale_for_peer_key(&mut self, peer_key: &PeerKey, stale_secs: u32) -> usize {
+         let now = Utc::now();
+-        self.ribs.get_mut(&peer_addr)
++        let removed = self.ribs.get_mut(peer_key)
+             .map(|rib| rib.drain_deleted_stale(now, stale_secs))
+-            .unwrap_or(0)
++            .unwrap_or(0);
++        self.sync_peer_route_counts(peer_key);
++        removed
+     }
+ 
+-    /// Feed a parsed BmpMessage into the RIB. Emits RibEvents on state changes.
+-    pub fn process(&mut self, msg: BmpMessage) {
++    /// Expire LLGR-stale routes across all `PeerKey`s matching `peer_addr`.
++    pub fn expire_stale_for_peer(&mut self, peer_addr: IpAddr, stale_secs: u32) -> usize {
++        let keys: Vec<PeerKey> = self.ribs.keys()
++            .filter(|k| k.peer_address == peer_addr)
++            .copied()
++            .collect();
++        keys.iter().map(|k| self.expire_stale_for_peer_key(k, stale_secs)).sum()
++    }
++
++    fn ensure_speaker_source(&mut self, speaker: IpAddr, now: DateTime<Utc>) -> ObservationSource {
++        if let Some(sess) = self.speakers.get(&speaker) {
++            return sess.source.clone();
++        }
++        let epoch = self.next_session_epoch;
++        self.next_session_epoch += 1;
++        let source = ObservationSource::new(speaker, epoch);
++        self.speakers.insert(speaker, BmpSession::with_source(source.clone(), now));
++        source
++    }
++
++    fn sync_peer_route_counts(&mut self, peer_key: &PeerKey) {
++        let counts = self.ribs.get(peer_key).map(|r| r.rib_counts()).unwrap_or_default();
++        if let Some(sess) = self.speakers.get_mut(&peer_key.speaker_addr) {
++            if let Some(peer) = sess.peers.get_mut(peer_key) {
++                peer.route_counts = counts;
++            }
++        }
++    }
++
++    /// Feed a parsed BmpMessage into the RIB with an explicit connection epoch for disconnect fencing.
++    pub fn process_for_epoch(&mut self, msg: BmpMessage, session_epoch: Option<u64>) {
+         let speaker = msg.speaker_addr;
+         let now     = msg.received_at;
+ 
++        if matches!(msg.payload, BmpPayload::Termination { .. }) {
++            if let (Some(incoming_epoch), Some(active_sess)) = (session_epoch, self.speakers.get(&speaker)) {
++                if incoming_epoch < active_sess.source.session_epoch {
++                    debug!(
++                        %speaker,
++                        incoming_epoch,
++                        active_epoch = active_sess.source.session_epoch,
++                        "Ignoring stale BMP Termination from older session epoch"
++                    );
++                    return;
++                }
++            }
++        }
++
++        let source = match session_epoch {
++            Some(epoch) => {
++                if epoch >= self.next_session_epoch {
++                    self.next_session_epoch = epoch + 1;
++                }
++                let sess = self.speakers.entry(speaker).or_insert_with(|| {
++                    BmpSession::with_source(ObservationSource::new(speaker, epoch), now)
++                });
++                if epoch > sess.source.session_epoch {
++                    sess.source.session_epoch = epoch;
++                    sess.connected_at = now;
++                }
++                sess.source.clone()
++            }
++            None => self.ensure_speaker_source(speaker, now),
++        };
++
+         match msg.payload {
+             BmpPayload::Initiation { sys_name, sys_descr, .. } => {
+-                let session = self.speakers.entry(speaker).or_insert_with(|| {
+-                    info!(%speaker, "BMP speaker connected");
+-                    BmpSession::new(speaker, now)
+-                });
+-                session.sys_name  = sys_name.clone();
+-                session.sys_descr = sys_descr.clone();
+-                self.emit(speaker, SpeakerUp { sys_name, sys_descr });
++                if let Some(session) = self.speakers.get_mut(&speaker) {
++                    session.sys_name  = sys_name.clone();
++                    session.sys_descr = sys_descr.clone();
++                }
++                info!(%speaker, "BMP speaker connected");
++                self.emit_with_source(speaker, source, now, SpeakerUp { sys_name, sys_descr });
+             }
+             BmpPayload::Termination { reason_code, reason_text } => {
+                 if let Some(sess) = self.speakers.remove(&speaker) {
+-                    // Clear all peer routes for this speaker
+-                    for peer_addr in sess.peers.keys() {
+-                        self.ribs.remove(peer_addr);
++                    // Clear only this speaker's PeerKey RIB tables; never touch other speakers
++                    for peer_key in sess.peers.keys() {
++                        self.ribs.remove(peer_key);
+                     }
+                     info!(%speaker, %reason_code, "BMP speaker disconnected");
+                 }
++                // Also remove any RIB tables created directly by RouteMonitoring before PeerUp for this speaker
++                self.ribs.retain(|k, _| k.speaker_addr != speaker);
+                 let reason = reason_text.unwrap_or_else(|| format!("code={reason_code}"));
+-                self.emit(speaker, SpeakerDown { reason });
++                self.emit_with_source(speaker, source, now, SpeakerDown { reason });
+             }
+             BmpPayload::PeerUp(pu) => {
+                 let peer_addr = pu.peer_header.peer_address;
+-                let caps: Vec<BgpCapability> = pu.recv_open.capabilities.clone();
++                let peer_key  = PeerKey::from_header(speaker, &pu.peer_header);
++                let mut caps: Vec<BgpCapability> = pu.recv_open.capabilities.clone();
++                for sc in &pu.sent_open.capabilities {
++                    if !caps.contains(sc) {
++                        caps.push(sc.clone());
++                    }
++                }
+                 let cap_names: Vec<String> = caps.iter().map(|c| format!("{:?}", c.code())).collect();
+ 
+-                let speaker_sess = self.speakers.entry(speaker).or_insert_with(|| BmpSession::new(speaker, now));
+-                let peer = speaker_sess.peers.entry(peer_addr).or_insert_with(|| PeerSession::new(&pu.peer_header));
+-                peer.on_up(pu.sent_open.asn, pu.recv_open.hold_time, caps, now);
++                if let Some(speaker_sess) = self.speakers.get_mut(&speaker) {
++                    let peer = speaker_sess.peers.entry(peer_key)
++                        .or_insert_with(|| PeerSession::new_for_speaker(speaker, &pu.peer_header));
++                    peer.on_up_with_header(&pu.peer_header, pu.sent_open.asn, pu.recv_open.hold_time, caps, now);
++                }
++                self.sync_peer_route_counts(&peer_key);
+ 
+                 info!(%speaker, %peer_addr, peer_as = pu.peer_header.peer_as, "BGP peer up");
+-                self.emit(speaker, PeerUp {
++                self.emit_with_source(speaker, source, now, PeerUp {
+                     peer_header:  pu.peer_header,
+                     local_asn:    pu.sent_open.asn,
+                     remote_asn:   pu.recv_open.asn,
+@@ -112,70 +208,86 @@ impl RibManager {
+                 });
+             }
+             BmpPayload::PeerDown { peer_header, reason } => {
+-                let peer_addr = peer_header.peer_address;
++                let peer_addr  = peer_header.peer_address;
++                let peer_key   = PeerKey::from_header(speaker, &peer_header);
+                 let reason_str = format!("{:?}", reason);
+ 
+                 let llgr_stale_secs = self.speakers.get(&speaker)
+-                    .and_then(|s| s.peers.get(&peer_addr))
++                    .and_then(|s| s.peers.get(&peer_key))
+                     .filter(|p| p.llgr_active)
+                     .map(|p| p.llgr_stale_secs);
+ 
+                 if let Some(sess) = self.speakers.get_mut(&speaker) {
+-                    if let Some(peer) = sess.peers.get_mut(&peer_addr) {
++                    if let Some(peer) = sess.peers.get_mut(&peer_key) {
+                         peer.on_down(now);
+                     }
+                 }
+ 
+                 if let Some(stale_secs) = llgr_stale_secs {
+-                    // LLGR active: mark routes stale instead of deleting them
+-                    if let Some(rib) = self.ribs.get_mut(&peer_addr) {
++                    if let Some(rib) = self.ribs.get_mut(&peer_key) {
+                         rib.mark_stale_all(now);
+                     }
++                    self.sync_peer_route_counts(&peer_key);
+                     info!(%speaker, %peer_addr, %reason_str, stale_secs, "BGP peer down — LLGR stale marking");
+                 } else {
+-                    self.ribs.entry(peer_addr).or_default().clear_all();
++                    if let Some(rib) = self.ribs.get_mut(&peer_key) {
++                        rib.clear_all();
++                    }
++                    self.sync_peer_route_counts(&peer_key);
+                     info!(%speaker, %peer_addr, %reason_str, "BGP peer down");
+                 }
+-                self.emit(speaker, PeerDown { peer_header, reason: reason_str });
++                self.emit_with_source(speaker, source, now, PeerDown { peer_header, reason: reason_str });
+             }
+             BmpPayload::RouteMonitoring { peer_header, update } => {
+                 let peer_addr = peer_header.peer_address;
+                 let rib_type  = peer_header.rib_type;
++                let peer_key  = PeerKey::from_header(speaker, &peer_header);
++
++                // Ensure peer session exists so speaker.peers tracks all active PeerKeys
++                if let Some(speaker_sess) = self.speakers.get_mut(&speaker) {
++                    speaker_sess.peers.entry(peer_key)
++                        .or_insert_with(|| PeerSession::new_for_speaker(speaker, &peer_header));
++                }
+ 
+-                // Check for End-of-RIB
+-                if update.is_eor() {
+-                    let afi_safi = update.attributes.mp_unreach
+-                        .as_ref().map(|u| u.afi_safi.to_string())
+-                        .unwrap_or_else(|| "ipv4-unicast".to_string());
++                // Check for End-of-RIB (RFC 4724 §2)
++                if let Some(eor_family) = update.eor_afi_safi() {
++                    if let Some(speaker_sess) = self.speakers.get_mut(&speaker) {
++                        if let Some(peer) = speaker_sess.peers.get_mut(&peer_key) {
++                            peer.mark_eor(rib_type, eor_family);
++                        }
++                    }
++                    let afi_safi = eor_family.to_string();
+                     debug!(%speaker, %peer_addr, %afi_safi, "End-of-RIB received");
+-                    self.emit(speaker, EndOfRib { peer_header, afi_safi });
++                    self.emit_with_source(speaker, source, now, EndOfRib { peer_header, afi_safi });
+                     return;
+                 }
+ 
+-                let rib = self.ribs.entry(peer_addr).or_default();
+-
+                 // Process withdrawals — carry path_id for Add-Path compound key
+                 for (prefix, path_id) in update.all_withdrawn_with_path_id() {
+-                    rib.remove_with_path_id(rib_type, prefix, path_id);
++                    self.ribs.entry(peer_key).or_default().remove_with_path_id(rib_type, prefix, path_id);
+                     counter!("bgp_routes_withdrawn_total", "speaker" => speaker.to_string()).increment(1);
++                    let view_key = ViewKey::from_peer(peer_key, prefix.afi_safi(), rib_type, peer_header.peer_flags);
++                    let route_key = RouteKey {
++                        view: view_key,
++                        nlri: CanonicalNlri::from_prefix(prefix),
++                        path_id,
++                    };
+                     let ev = RouteChange {
+                         action:      RouteAction::Withdraw,
+                         peer_header: peer_header.clone(),
++                        peer_key,
++                        view_key,
++                        route_key,
+                         rib_type,
+                         prefix:      prefix.clone(),
++                        path_id,
+                         attributes:  None,
+                     };
+-                    self.event_tx.send(RibEvent {
+-                        id:          uuid::Uuid::new_v4(),
+-                        occurred_at: now,
+-                        speaker,
+-                        payload:     RibEventPayload::RouteChange(ev),
+-                    }).ok();
++                    self.emit_with_source(speaker, source.clone(), now, RibEventPayload::RouteChange(ev));
+                 }
+ 
+                 // Process announcements — carry path_id from NLRI (RFC 7911)
+                 for (prefix, path_id) in update.all_announced_with_path_id() {
+-                    // RV7-F T3: Roto JIT filter takes priority when loaded
+                     let filter_verdict = if let Some(roto) = &self.roto_filter {
+                         let ctx = RotoCtx::from_bmp(
+                             prefix,
+@@ -216,28 +328,37 @@ impl RibManager {
+                         llgr_state:  rbmp_core::bgp::types::LlgrState::Normal,
+                         stale_at:    None,
+                     };
+-                    rib.insert(rib_type, entry);
+-                    // Recompute best-path when Add-Path may produce multiple paths
+-                    if path_id.is_some() {
+-                        rib.recompute_best_path(rib_type, prefix);
++                    {
++                        let rib = self.ribs.entry(peer_key).or_default();
++                        rib.insert(rib_type, entry);
++                        if path_id.is_some() {
++                            rib.recompute_best_path(rib_type, prefix);
++                        }
+                     }
++                    let view_key = ViewKey::from_peer(peer_key, prefix.afi_safi(), rib_type, peer_header.peer_flags);
++                    let route_key = RouteKey {
++                        view: view_key,
++                        nlri: CanonicalNlri::from_prefix(prefix),
++                        path_id,
++                    };
+                     let ev = RouteChange {
+                         action:      RouteAction::Announce,
+                         peer_header: peer_header.clone(),
++                        peer_key,
++                        view_key,
++                        route_key,
+                         rib_type,
+                         prefix:      prefix.clone(),
++                        path_id,
+                         attributes:  Some(update.attributes.clone()),
+                     };
+-                    self.event_tx.send(RibEvent {
+-                        id:          uuid::Uuid::new_v4(),
+-                        occurred_at: now,
+-                        speaker,
+-                        payload:     RibEventPayload::RouteChange(ev),
+-                    }).ok();
++                    self.emit_with_source(speaker, source.clone(), now, RibEventPayload::RouteChange(ev));
+                 }
++
++                self.sync_peer_route_counts(&peer_key);
+             }
+             BmpPayload::StatsReport { peer_header, stats } => {
+-                self.emit(speaker, Stats { peer_header, counters: stats });
++                self.emit_with_source(speaker, source, now, Stats { peer_header, counters: stats });
+             }
+             BmpPayload::RouteMirroring { .. } => {
+                 // TODO: forward mirrored PDUs to secondary parser
+@@ -245,10 +366,25 @@ impl RibManager {
+         }
+     }
+ 
+-    fn emit(&self, speaker: IpAddr, payload: RibEventPayload) {
++    /// Feed a parsed BmpMessage into the RIB. Emits versioned RibEvents on state changes.
++    pub fn process(&mut self, msg: BmpMessage) {
++        self.process_for_epoch(msg, None);
++    }
++
++    fn emit_with_source(
++        &mut self,
++        speaker: IpAddr,
++        source: ObservationSource,
++        occurred_at: DateTime<Utc>,
++        payload: RibEventPayload,
++    ) {
++        let seq = self.next_event_seq;
++        self.next_event_seq += 1;
+         let _ = self.event_tx.send(RibEvent {
+-            id:          uuid::Uuid::new_v4(),
+-            occurred_at: Utc::now(),
++            schema_version: EVENT_SCHEMA_VERSION,
++            event_key:      EventKey::new(source, seq),
++            id:             uuid::Uuid::new_v4(),
++            occurred_at,
+             speaker,
+             payload,
+         });
+@@ -264,8 +400,21 @@ impl RibManager {
+         self.speakers.get(&addr)
+     }
+ 
++    pub fn rib_for_peer_key(&self, peer_key: &PeerKey) -> Option<&RibTable> {
++        self.ribs.get(peer_key)
++    }
++
++    pub fn ribs_for_speaker(&self, speaker: IpAddr) -> impl Iterator<Item = (&PeerKey, &RibTable)> {
++        self.ribs.iter().filter(move |(k, _)| k.speaker_addr == speaker)
++    }
++
++    /// Single-peer convenience lookup by `peer_address`. Prefer `rib_for_peer_key` when
++    /// multiple exporters or VRFs may monitor the same peer IP.
+     pub fn rib_for_peer(&self, peer: IpAddr) -> Option<&RibTable> {
+-        self.ribs.get(&peer)
++        self.ribs
++            .iter()
++            .find(|(k, _)| k.peer_address == peer)
++            .map(|(_, table)| table)
+     }
+ 
+     pub fn total_routes(&self) -> usize {
+@@ -281,3 +430,254 @@ impl RibManager {
+         self.event_tx.clone()
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use chrono::Utc;
++    use ipnet::Ipv4Net;
++    use rbmp_core::bgp::types::{BgpUpdate, PathAttributes, Prefix};
++    use rbmp_core::bmp::types::{
++        BgpOpenInfo, BmpMessage, BmpPayload, PeerDownReason, PeerFlags, PeerHeader, PeerType,
++        PeerUpMessage, RibType, ViewDirection,
++    };
++    use std::net::{IpAddr, Ipv4Addr};
++
++    fn peer_hdr(peer_ip: IpAddr, peer_type: PeerType, rd: [u8; 8], rib_type: RibType) -> PeerHeader {
++        PeerHeader {
++            peer_type,
++            peer_flags: PeerFlags(0),
++            peer_distinguisher: rd,
++            peer_address: peer_ip,
++            peer_as: 65001,
++            peer_bgp_id: Ipv4Addr::new(192, 0, 2, 1),
++            timestamp: Utc::now(),
++            rib_type,
++        }
++    }
++
++    fn peer_up_msg(speaker: IpAddr, hdr: PeerHeader) -> BmpMessage {
++        BmpMessage {
++            id: uuid::Uuid::new_v4(),
++            received_at: Utc::now(),
++            speaker_addr: speaker,
++            payload: BmpPayload::PeerUp(PeerUpMessage {
++                peer_header: hdr,
++                local_addr: speaker,
++                local_port: 179,
++                remote_port: 50000,
++                sent_open: BgpOpenInfo {
++                    version: 4,
++                    asn: 65000,
++                    hold_time: 90,
++                    bgp_id: Ipv4Addr::new(10, 0, 0, 1),
++                    capabilities: vec![],
++                },
++                recv_open: BgpOpenInfo {
++                    version: 4,
++                    asn: 65001,
++                    hold_time: 90,
++                    bgp_id: Ipv4Addr::new(192, 0, 2, 1),
++                    capabilities: vec![],
++                },
++            }),
++        }
++    }
++
++    fn route_announce_msg(
++        speaker: IpAddr,
++        hdr: PeerHeader,
++        prefix: Prefix,
++        path_id: Option<u32>,
++        local_pref: u32,
++    ) -> BmpMessage {
++        let mut attrs = PathAttributes::default();
++        attrs.local_pref = Some(local_pref);
++        BmpMessage {
++            id: uuid::Uuid::new_v4(),
++            received_at: Utc::now(),
++            speaker_addr: speaker,
++            payload: BmpPayload::RouteMonitoring {
++                peer_header: hdr,
++                update: BgpUpdate {
++                    withdrawn: vec![],
++                    withdrawn_path_ids: vec![],
++                    attributes: attrs,
++                    announced: vec![prefix],
++                    announced_path_ids: vec![path_id],
++                },
++            },
++        }
++    }
++
++    #[test]
++    fn b04_same_peer_on_two_exporters_remains_isolated_across_peer_down_and_termination() {
++        let (mut mgr, _rx) = RibManager::new(128);
++        let exporter_a: IpAddr = "10.0.0.1".parse().unwrap();
++        let exporter_b: IpAddr = "10.0.0.2".parse().unwrap();
++        let peer_ip: IpAddr = "192.0.2.1".parse().unwrap();
++        let pfx = Prefix::V4("203.0.113.0/24".parse::<Ipv4Net>().unwrap());
++
++        let hdr = peer_hdr(peer_ip, PeerType::GlobalInstance, [0; 8], RibType::AdjRibInPrePolicy);
++        mgr.process(peer_up_msg(exporter_a, hdr.clone()));
++        mgr.process(peer_up_msg(exporter_b, hdr.clone()));
++
++        mgr.process(route_announce_msg(exporter_a, hdr.clone(), pfx.clone(), None, 100));
++        mgr.process(route_announce_msg(exporter_b, hdr.clone(), pfx.clone(), None, 200));
++
++        assert_eq!(mgr.total_routes(), 2, "two exporters monitoring same peer IP must not overwrite each other");
++        let key_a = PeerKey::from_header(exporter_a, &hdr);
++        let key_b = PeerKey::from_header(exporter_b, &hdr);
++        assert_eq!(
++            mgr.rib_for_peer_key(&key_a).unwrap().get(RibType::AdjRibInPrePolicy, &pfx).unwrap().attributes.local_pref,
++            Some(100)
++        );
++        assert_eq!(
++            mgr.rib_for_peer_key(&key_b).unwrap().get(RibType::AdjRibInPrePolicy, &pfx).unwrap().attributes.local_pref,
++            Some(200)
++        );
++
++        // Exporter B's peer goes down -> Exporter A's route must survive
++        mgr.process(BmpMessage {
++            id: uuid::Uuid::new_v4(),
++            received_at: Utc::now(),
++            speaker_addr: exporter_b,
++            payload: BmpPayload::PeerDown {
++                peer_header: hdr.clone(),
++                reason: PeerDownReason::RemoteSystemClosed2,
++            },
++        });
++        assert_eq!(mgr.total_routes(), 1, "peer down on exporter B must not clear exporter A's routes");
++        assert_eq!(mgr.rib_for_peer_key(&key_a).unwrap().count(RibType::AdjRibInPrePolicy), 1);
++        assert_eq!(mgr.rib_for_peer_key(&key_b).unwrap().count(RibType::AdjRibInPrePolicy), 0);
++
++        // Re-announce on B then terminate B -> Exporter A's route still survives
++        mgr.process(route_announce_msg(exporter_b, hdr.clone(), pfx.clone(), None, 250));
++        assert_eq!(mgr.total_routes(), 2);
++        mgr.process(BmpMessage {
++            id: uuid::Uuid::new_v4(),
++            received_at: Utc::now(),
++            speaker_addr: exporter_b,
++            payload: BmpPayload::Termination {
++                reason_code: 0,
++                reason_text: Some("admin".into()),
++            },
++        });
++        assert_eq!(mgr.total_routes(), 1);
++        assert!(mgr.rib_for_peer_key(&key_b).is_none());
++        assert_eq!(mgr.rib_for_peer_key(&key_a).unwrap().count(RibType::AdjRibInPrePolicy), 1);
++    }
++
++    #[test]
++    fn b04_same_peer_ip_across_two_vrf_distinguishers_on_same_exporter_stays_isolated() {
++        let (mut mgr, _rx) = RibManager::new(128);
++        let exporter: IpAddr = "10.0.0.1".parse().unwrap();
++        let peer_ip: IpAddr = "192.0.2.1".parse().unwrap();
++        let pfx = Prefix::V4("198.51.100.0/24".parse::<Ipv4Net>().unwrap());
++
++        let rd_vrf_a = [0, 0, 0, 100, 0, 0, 0, 1];
++        let rd_vrf_b = [0, 0, 0, 200, 0, 0, 0, 2];
++        let hdr_vrf_a = peer_hdr(peer_ip, PeerType::RdInstance, rd_vrf_a, RibType::AdjRibInPrePolicy);
++        let hdr_vrf_b = peer_hdr(peer_ip, PeerType::RdInstance, rd_vrf_b, RibType::AdjRibInPrePolicy);
++
++        mgr.process(peer_up_msg(exporter, hdr_vrf_a.clone()));
++        mgr.process(peer_up_msg(exporter, hdr_vrf_b.clone()));
++        assert_eq!(mgr.speaker(exporter).unwrap().peer_count(), 2);
++
++        mgr.process(route_announce_msg(exporter, hdr_vrf_a.clone(), pfx.clone(), Some(11), 110));
++        mgr.process(route_announce_msg(exporter, hdr_vrf_b.clone(), pfx.clone(), Some(22), 220));
++        assert_eq!(mgr.total_routes(), 2);
++        assert_eq!(mgr.speaker(exporter).unwrap().total_routes(), 2);
++
++        // PeerDown in VRF A leaves VRF B intact
++        mgr.process(BmpMessage {
++            id: uuid::Uuid::new_v4(),
++            received_at: Utc::now(),
++            speaker_addr: exporter,
++            payload: BmpPayload::PeerDown {
++                peer_header: hdr_vrf_a,
++                reason: PeerDownReason::VrfDown,
++            },
++        });
++        assert_eq!(mgr.total_routes(), 1);
++        let key_vrf_b = PeerKey::from_header(exporter, &hdr_vrf_b);
++        let surviving = mgr
++            .rib_for_peer_key(&key_vrf_b)
++            .unwrap()
++            .get_with_path_id(RibType::AdjRibInPrePolicy, &pfx, Some(22))
++            .unwrap();
++        assert_eq!(surviving.attributes.local_pref, Some(220));
++    }
++
++    #[test]
++    fn b04_stale_session_epoch_disconnect_does_not_clear_newer_session_state() {
++        let (mut mgr, _rx) = RibManager::new(128);
++        let exporter: IpAddr = "10.0.0.1".parse().unwrap();
++        let peer_ip: IpAddr = "192.0.2.1".parse().unwrap();
++        let pfx = Prefix::V4("203.0.113.0/24".parse::<Ipv4Net>().unwrap());
++        let hdr = peer_hdr(peer_ip, PeerType::GlobalInstance, [0; 8], RibType::AdjRibInPrePolicy);
++
++        let old_epoch = mgr.open_speaker_session(exporter, Utc::now());
++        mgr.process_for_epoch(peer_up_msg(exporter, hdr.clone()), Some(old_epoch));
++        mgr.process_for_epoch(route_announce_msg(exporter, hdr.clone(), pfx.clone(), None, 100), Some(old_epoch));
++
++        // Reconnect arrives before old socket teardown finishes
++        let new_epoch = mgr.open_speaker_session(exporter, Utc::now());
++        assert!(new_epoch > old_epoch);
++        mgr.process_for_epoch(peer_up_msg(exporter, hdr.clone()), Some(new_epoch));
++        mgr.process_for_epoch(route_announce_msg(exporter, hdr.clone(), pfx.clone(), None, 300), Some(new_epoch));
++
++        // Old connection closes late with old_epoch -> fenced, does not delete new session
++        mgr.process_for_epoch(
++            BmpMessage {
++                id: uuid::Uuid::new_v4(),
++                received_at: Utc::now(),
++                speaker_addr: exporter,
++                payload: BmpPayload::Termination {
++                    reason_code: 3,
++                    reason_text: Some("redundant".into()),
++                },
++            },
++            Some(old_epoch),
++        );
++        assert_eq!(mgr.total_routes(), 1);
++        assert!(mgr.speaker(exporter).is_some());
++    }
++
++    #[test]
++    fn b04_event_and_route_identity_schema_serialization_and_repeated_announcements() {
++        let (mut mgr, mut rx) = RibManager::new(128);
++        let exporter: IpAddr = "10.0.0.1".parse().unwrap();
++        let peer_ip: IpAddr = "192.0.2.1".parse().unwrap();
++        let pfx = Prefix::V4("203.0.113.0/24".parse::<Ipv4Net>().unwrap());
++        let hdr = peer_hdr(peer_ip, PeerType::RdInstance, [0, 1, 2, 3, 4, 5, 6, 7], RibType::AdjRibInPostPolicy);
++
++        // Two identical repeated announcements must produce distinct monotonic EventKeys
++        mgr.process(route_announce_msg(exporter, hdr.clone(), pfx.clone(), Some(7), 150));
++        mgr.process(route_announce_msg(exporter, hdr.clone(), pfx.clone(), Some(7), 150));
++
++        let ev1 = rx.try_recv().unwrap();
++        let ev2 = rx.try_recv().unwrap();
++        assert_eq!(ev1.schema_version, EVENT_SCHEMA_VERSION);
++        assert_eq!(ev2.schema_version, EVENT_SCHEMA_VERSION);
++        assert_ne!(ev1.event_key, ev2.event_key);
++        assert_eq!(ev1.event_key.sequence + 1, ev2.event_key.sequence);
++
++        // Round-trip JSON serialization preserves PeerKey, ViewKey, RouteKey, path_id, and EventKey
++        let json = serde_json::to_string(&ev1).unwrap();
++        let decoded: RibEvent = serde_json::from_str(&json).unwrap();
++        assert_eq!(decoded.event_key, ev1.event_key);
++        match decoded.payload {
++            RibEventPayload::RouteChange(rc) => {
++                assert_eq!(rc.path_id, Some(7));
++                assert_eq!(rc.peer_key.peer_distinguisher, [0, 1, 2, 3, 4, 5, 6, 7]);
++                assert_eq!(rc.view_key.direction, ViewDirection::Inbound);
++                assert!(rc.view_key.is_post_policy);
++                assert_eq!(rc.route_key.path_id, Some(7));
++            }
++            other => panic!("unexpected payload: {other:?}"),
++        }
++    }
++}
++
++
+diff --git a/crates/rbmp-rib/src/session.rs b/crates/rbmp-rib/src/session.rs
+index 6a5d5e6..5cc4568 100644
+--- a/crates/rbmp-rib/src/session.rs
++++ b/crates/rbmp-rib/src/session.rs
+@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr};
+ use chrono::{DateTime, Utc};
+ use serde::{Deserialize, Serialize};
+ use rbmp_core::bgp::types::{BgpCapability, AfiSafi};
+-use rbmp_core::bmp::types::{RibType, PeerHeader};
++use rbmp_core::bmp::types::{ObservationSource, PeerHeader, PeerKey, PeerType, RibType};
+ 
+ /// Lifecycle state of a BGP peer as seen via BMP
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+@@ -18,18 +18,21 @@ pub enum PeerState {
+ /// A BGP peer session tracked by the RIB engine
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub struct PeerSession {
+-    pub peer_address:     IpAddr,
+-    pub peer_as:          u32,
+-    pub peer_bgp_id:      Ipv4Addr,
+-    pub local_as:         u32,
+-    pub hold_time:        u16,
+-    pub state:            PeerState,
+-    pub up_at:            Option<DateTime<Utc>>,
+-    pub down_at:          Option<DateTime<Utc>>,
+-    pub capabilities:     Vec<BgpCapability>,
++    pub peer_key:          PeerKey,
++    pub peer_type:         PeerType,
++    pub peer_distinguisher:[u8; 8],
++    pub peer_address:      IpAddr,
++    pub peer_as:           u32,
++    pub peer_bgp_id:       Ipv4Addr,
++    pub local_as:          u32,
++    pub hold_time:         u16,
++    pub state:             PeerState,
++    pub up_at:             Option<DateTime<Utc>>,
++    pub down_at:           Option<DateTime<Utc>>,
++    pub capabilities:      Vec<BgpCapability>,
+     /// Counts of routes per RIB type currently held for this peer
+-    pub route_counts:     HashMap<RibType, usize>,
+-    pub flap_count:       u32,
++    pub route_counts:      HashMap<RibType, usize>,
++    pub flap_count:        u32,
+     /// AFI/SAFIs for which Add-Path is active (RFC 7911)
+     /// Populated from the Add-Path capability in PeerUp OPEN.
+     pub add_path_families: Vec<(AfiSafi, u8)>,
+@@ -37,38 +40,71 @@ pub struct PeerSession {
+     pub llgr_stale_secs:   u32,
+     /// True when LLGR capability was present in peer OPEN
+     pub llgr_active:       bool,
++    /// Per-(RIB view, AFI/SAFI) End-of-RIB completion state for the active session
++    #[serde(default)]
++    pub eor_families:      HashMap<RibType, std::collections::HashSet<AfiSafi>>,
+ }
+ 
+ impl PeerSession {
+     pub fn new(hdr: &PeerHeader) -> Self {
++        Self::new_for_speaker(IpAddr::V4(Ipv4Addr::UNSPECIFIED), hdr)
++    }
++
++    pub fn new_for_speaker(speaker_addr: IpAddr, hdr: &PeerHeader) -> Self {
+         Self {
+-            peer_address:      hdr.peer_address,
+-            peer_as:           hdr.peer_as,
+-            peer_bgp_id:       hdr.peer_bgp_id,
+-            local_as:          0,
+-            hold_time:         0,
+-            state:             PeerState::Unknown,
+-            up_at:             None,
+-            down_at:           None,
+-            capabilities:      Vec::new(),
+-            route_counts:      HashMap::new(),
+-            flap_count:        0,
+-            add_path_families: Vec::new(),
+-            llgr_stale_secs:   0,
+-            llgr_active:       false,
++            peer_key:           PeerKey::from_header(speaker_addr, hdr),
++            peer_type:          hdr.peer_type,
++            peer_distinguisher: hdr.peer_distinguisher,
++            peer_address:       hdr.peer_address,
++            peer_as:            hdr.peer_as,
++            peer_bgp_id:        hdr.peer_bgp_id,
++            local_as:           0,
++            hold_time:          0,
++            state:              PeerState::Unknown,
++            up_at:              None,
++            down_at:            None,
++            capabilities:       Vec::new(),
++            route_counts:       HashMap::new(),
++            flap_count:         0,
++            add_path_families:  Vec::new(),
++            llgr_stale_secs:    0,
++            llgr_active:        false,
++            eor_families:       HashMap::new(),
+         }
+     }
+ 
++    pub fn on_up_with_header(
++        &mut self,
++        hdr: &PeerHeader,
++        local_as: u32,
++        hold_time: u16,
++        caps: Vec<BgpCapability>,
++        at: DateTime<Utc>,
++    ) {
++        self.peer_as = hdr.peer_as;
++        self.peer_bgp_id = hdr.peer_bgp_id;
++        self.on_up(local_as, hold_time, caps, at);
++    }
++
+     pub fn on_up(&mut self, local_as: u32, hold_time: u16, caps: Vec<BgpCapability>, at: DateTime<Utc>) {
+         if self.state == PeerState::Up { self.flap_count += 1; }
+         self.state    = PeerState::Up;
+         self.up_at    = Some(at);
+         self.local_as  = local_as;
+         self.hold_time = hold_time;
++        self.eor_families.clear();
+         // Extract Add-Path families from capabilities (RFC 7911)
+-        self.add_path_families = caps.iter().find_map(|c| {
+-            if let BgpCapability::AddPath(entries) = c { Some(entries.clone()) } else { None }
+-        }).unwrap_or_default();
++        let mut ap = Vec::new();
++        for c in &caps {
++            if let BgpCapability::AddPath(entries) = c {
++                for &(fam, mode) in entries {
++                    if !ap.iter().any(|(a, _)| *a == fam) {
++                        ap.push((fam, mode));
++                    }
++                }
++            }
++        }
++        self.add_path_families = ap;
+         // Detect LLGR capability (RFC 9494)
+         // Each entry: AFI(2)+SAFI(1)+flags(1)+stale_time(3) = 7 bytes
+         // We take the maximum stale_time across all advertised AFI/SAFIs
+@@ -89,13 +125,28 @@ impl PeerSession {
+     }
+ 
+     pub fn add_path_active_for(&self, afi_safi: AfiSafi) -> bool {
+-        self.add_path_families.iter().any(|(a, _)| *a == afi_safi)
++        self.add_path_families.iter().any(|(a, m)| *a == afi_safi && *m > 0)
++    }
++
++    pub fn decode_context(&self, four_byte_asn: bool) -> rbmp_core::bgp::types::BgpDecodeContext {
++        rbmp_core::bgp::types::BgpDecodeContext::from_capabilities(four_byte_asn, &self.capabilities)
++    }
++
++    pub fn mark_eor(&mut self, rib_type: RibType, afi_safi: AfiSafi) {
++        self.eor_families.entry(rib_type).or_default().insert(afi_safi);
++    }
++
++    pub fn has_eor(&self, rib_type: RibType, afi_safi: AfiSafi) -> bool {
++        self.eor_families
++            .get(&rib_type)
++            .is_some_and(|set| set.contains(&afi_safi))
+     }
+ 
+     pub fn on_down(&mut self, at: DateTime<Utc>) {
+         self.state   = PeerState::Down;
+         self.down_at = Some(at);
+         self.route_counts.clear();
++        self.eor_families.clear();
+     }
+ 
+     pub fn uptime_secs(&self) -> Option<i64> {
+@@ -106,16 +157,23 @@ impl PeerSession {
+ /// A BMP speaker (router) that has connected to us
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub struct BmpSession {
++    pub source:       ObservationSource,
+     pub speaker_addr: IpAddr,
+     pub sys_name:     Option<String>,
+     pub sys_descr:    Option<String>,
+     pub connected_at: DateTime<Utc>,
+-    pub peers:        HashMap<IpAddr, PeerSession>,
++    pub peers:        HashMap<PeerKey, PeerSession>,
+ }
+ 
+ impl BmpSession {
+     pub fn new(speaker_addr: IpAddr, at: DateTime<Utc>) -> Self {
++        Self::with_source(ObservationSource::new(speaker_addr, 1), at)
++    }
++
++    pub fn with_source(source: ObservationSource, at: DateTime<Utc>) -> Self {
++        let speaker_addr = source.exporter_addr;
+         Self {
++            source,
+             speaker_addr,
+             sys_name:     None,
+             sys_descr:    None,
+@@ -124,6 +182,14 @@ impl BmpSession {
+         }
+     }
+ 
++    pub fn peer_by_key(&self, key: &PeerKey) -> Option<&PeerSession> {
++        self.peers.get(key)
++    }
++
++    pub fn peer_by_addr(&self, addr: IpAddr) -> Option<&PeerSession> {
++        self.peers.values().find(|p| p.peer_address == addr)
++    }
++
+     pub fn peer_count(&self) -> usize { self.peers.len() }
+ 
+     pub fn up_peer_count(&self) -> usize {
+@@ -134,3 +200,4 @@ impl BmpSession {
+         self.peers.values().flat_map(|p| p.route_counts.values()).sum()
+     }
+ }
++
+diff --git a/crates/rbmp-rib/src/table.rs b/crates/rbmp-rib/src/table.rs
+index a92ce16..454cf4c 100644
+--- a/crates/rbmp-rib/src/table.rs
++++ b/crates/rbmp-rib/src/table.rs
+@@ -3,7 +3,7 @@ use std::net::IpAddr;
+ use chrono::{DateTime, Utc};
+ use serde::{Deserialize, Serialize};
+ use rbmp_core::bgp::types::{PathAttributes, Prefix, LlgrState};
+-use rbmp_core::bmp::types::RibType;
++use rbmp_core::bmp::types::{RibType, TableRouteKey};
+ 
+ /// A route entry in the RIB
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+@@ -23,27 +23,19 @@ pub struct RibEntry {
+     pub stale_at:    Option<DateTime<Utc>>,
+ }
+ 
+-/// Per-peer, per-RIB-type route table.
+-/// Key: Prefix → RibEntry (last-received wins; true multi-path via Add-Path is a future extension).
++/// Per-peer, per-RIB-type route table keyed by typed `TableRouteKey` (`CanonicalNlri` + `path_id`).
+ #[derive(Debug, Default)]
+ pub struct RibTable {
+-    /// rib_type → prefix → entry
+-    tables: HashMap<RibType, HashMap<String, RibEntry>>,
+-}
+-
+-fn entry_key(prefix: &Prefix, path_id: Option<u32>) -> String {
+-    match path_id {
+-        Some(id) => format!("{}@{}", prefix, id),
+-        None     => prefix.to_string(),
+-    }
++    /// rib_type → TableRouteKey → entry
++    tables: HashMap<RibType, HashMap<TableRouteKey, RibEntry>>,
+ }
+ 
+ impl RibTable {
+     pub fn new() -> Self { Self::default() }
+ 
+-    /// Insert or replace a route. Returns true if this is a new prefix, false if update.
++    /// Insert or replace a route. Returns true if this is a new prefix/path, false if update.
+     pub fn insert(&mut self, rib: RibType, entry: RibEntry) -> bool {
+-        let key   = entry_key(&entry.prefix, entry.path_id);
++        let key   = TableRouteKey::from_prefix(&entry.prefix, entry.path_id);
+         let table = self.tables.entry(rib).or_default();
+         let is_new = !table.contains_key(&key);
+         table.insert(key, entry);
+@@ -56,23 +48,25 @@ impl RibTable {
+     }
+ 
+     pub fn remove_with_path_id(&mut self, rib: RibType, prefix: &Prefix, path_id: Option<u32>) -> Option<RibEntry> {
+-        let key = entry_key(prefix, path_id);
++        let key = TableRouteKey::from_prefix(prefix, path_id);
+         self.tables.get_mut(&rib)?.remove(&key)
+     }
+ 
+     pub fn get(&self, rib: RibType, prefix: &Prefix) -> Option<&RibEntry> {
+-        let key = entry_key(prefix, None);
++        self.get_with_path_id(rib, prefix, None)
++    }
++
++    pub fn get_with_path_id(&self, rib: RibType, prefix: &Prefix, path_id: Option<u32>) -> Option<&RibEntry> {
++        let key = TableRouteKey::from_prefix(prefix, path_id);
+         self.tables.get(&rib)?.get(&key)
+     }
+ 
+     /// Recompute best-path among multiple Add-Path entries for a prefix.
+     /// Tie-breakers (in order): highest LOCAL_PREF, shortest AS_PATH, lowest MED.
+     pub fn recompute_best_path(&mut self, rib: RibType, prefix: &Prefix) {
+-        let prefix_str = prefix.to_string();
+         let table = match self.tables.get_mut(&rib) { Some(t) => t, None => return };
+-        let path_id_prefix = format!("{}@", prefix_str);
+-        let matching_keys: Vec<String> = table.keys()
+-            .filter(|k| *k == &prefix_str || k.starts_with(&path_id_prefix))
++        let matching_keys: Vec<TableRouteKey> = table.keys()
++            .filter(|k| k.matches_prefix(prefix))
+             .cloned()
+             .collect();
+         if matching_keys.len() <= 1 {
+@@ -82,7 +76,7 @@ impl RibTable {
+             return;
+         }
+         let best_key = matching_keys.iter().min_by_key(|k| {
+-            let e = &table[k.as_str()];
++            let e = &table[*k];
+             let lp  = e.attributes.local_pref.map(|v| u32::MAX - v).unwrap_or(u32::MAX);
+             let hop = e.attributes.as_path.as_ref().map(|p| p.hop_count() as u32).unwrap_or(0);
+             let med = e.attributes.multi_exit_disc.unwrap_or(u32::MAX);
+@@ -90,11 +84,12 @@ impl RibTable {
+         }).cloned();
+         for k in &matching_keys {
+             if let Some(e) = table.get_mut(k) {
+-                e.is_best = best_key.as_deref() == Some(k.as_str());
++                e.is_best = best_key.as_ref() == Some(k);
+             }
+         }
+     }
+ 
++
+     pub fn count(&self, rib: RibType) -> usize {
+         self.tables.get(&rib).map_or(0, |t| t.len())
+     }
+diff --git a/crates/rbmp-server/src/api/external.rs b/crates/rbmp-server/src/api/external.rs
+index 434b16f..3ed59f7 100644
+--- a/crates/rbmp-server/src/api/external.rs
++++ b/crates/rbmp-server/src/api/external.rs
+@@ -34,9 +34,9 @@ pub async fn prefix_visibility(
+     let mut internal_next_hops: Vec<String> = Vec::new();
+ 
+     for session in rib.speakers() {
+-        for (peer_addr, _peer) in &session.peers {
++        for (peer_key, _peer) in &session.peers {
+             for rib_type in [RibType::AdjRibInPrePolicy, RibType::AdjRibInPostPolicy, RibType::LocRib] {
+-                if let Some(peer_rib) = rib.rib_for_peer(*peer_addr) {
++                if let Some(peer_rib) = rib.rib_for_peer_key(peer_key) {
+                     for entry in peer_rib.iter_rib(rib_type) {
+                         if entry.prefix.to_string() == prefix {
+                             internal_peer_count += 1;
+diff --git a/crates/rbmp-server/src/api/onboard.rs b/crates/rbmp-server/src/api/onboard.rs
+index 17da04c..091a081 100644
+--- a/crates/rbmp-server/src/api/onboard.rs
++++ b/crates/rbmp-server/src/api/onboard.rs
+@@ -148,9 +148,7 @@ pub async fn confirm_speaker(
+                 "site":       meta.as_ref().map(|m| m.site.as_str()).unwrap_or(""),
+                 "peers_up":   s.up_peer_count(),
+                 "peers":      peers,
+-                "total_routes": rib.rib_for_peer(ip)
+-                    .map(|r| r.all_prefixes().len())
+-                    .unwrap_or(0),
++                "total_routes": s.total_routes(),
+                 "message":    "Speaker successfully onboarded."
+             })))
+         }
+diff --git a/crates/rbmp-server/src/api/peers.rs b/crates/rbmp-server/src/api/peers.rs
+index 89ba58d..2790ef1 100644
+--- a/crates/rbmp-server/src/api/peers.rs
++++ b/crates/rbmp-server/src/api/peers.rs
+@@ -93,7 +93,7 @@ pub async fn get_peer(
+     let rib = state.rib.read().await;
+     let ip  = addr.parse().map_err(|_| StatusCode::BAD_REQUEST)?;
+     for s in rib.speakers() {
+-        if let Some(p) = s.peers.get(&ip) {
++        if let Some(p) = s.peer_by_addr(ip) {
+             return Ok(Json(json!({
+                 "speaker":   s.speaker_addr.to_string(),
+                 "addr":      p.peer_address.to_string(),
+@@ -183,7 +183,7 @@ pub async fn peer_capabilities(
+     let rib = state.rib.read().await;
+     let ip  = addr.parse().map_err(|_| StatusCode::BAD_REQUEST)?;
+     for s in rib.speakers() {
+-        if let Some(p) = s.peers.get(&ip) {
++        if let Some(p) = s.peer_by_addr(ip) {
+             let caps: Vec<Value> = p.capabilities.iter().map(|c| {
+                 json!({
+                     "code": c.code(),
+diff --git a/crates/rbmp-server/src/api/routes.rs b/crates/rbmp-server/src/api/routes.rs
+index 57e6ecb..fa07a20 100644
+--- a/crates/rbmp-server/src/api/routes.rs
++++ b/crates/rbmp-server/src/api/routes.rs
+@@ -53,8 +53,8 @@ pub async fn list_routes(
+     let rib = state.rib.read().await;
+     let mut all_routes = Vec::new();
+     for speaker in rib.speakers() {
+-        for (peer_addr, peer) in &speaker.peers {
+-            if let Some(rib_table) = rib.rib_for_peer(*peer_addr) {
++        for (peer_key, peer) in &speaker.peers {
++            if let Some(rib_table) = rib.rib_for_peer_key(peer_key) {
+                 for entry in rib_table.all_prefixes() {
+                     let prefix = entry.prefix.to_string();
+                     if let Some(filter_prefix) = q.prefix.as_deref() {
+@@ -64,7 +64,7 @@ pub async fn list_routes(
+                     }
+                     all_routes.push(json!({
+                         "speaker":   speaker.speaker_addr.to_string(),
+-                        "peer":      peer_addr.to_string(),
++                        "peer":      peer.peer_address.to_string(),
+                         "peer_as":   peer.peer_as,
+                         "prefix":    prefix,
+                         "next_hop":  entry.attributes.next_hop.map(|h| h.to_string()),
+diff --git a/crates/rbmp-server/src/archive.rs b/crates/rbmp-server/src/archive.rs
+index 3ea5c8c..32ce27d 100644
+--- a/crates/rbmp-server/src/archive.rs
++++ b/crates/rbmp-server/src/archive.rs
+@@ -36,6 +36,7 @@ impl BmpArchive {
+             guard.write_all(json.as_bytes()).await?;
+             guard.write_all(b"\n").await?;
+             guard.flush().await?;
++            guard.sync_data().await?;
+         }
+         Ok(())
+     }
+diff --git a/crates/rbmp-server/src/ha.rs b/crates/rbmp-server/src/ha.rs
+index 6b62265..c648de2 100644
+--- a/crates/rbmp-server/src/ha.rs
++++ b/crates/rbmp-server/src/ha.rs
+@@ -12,55 +12,108 @@
+ ///
+ /// Integration: callers check `HaLeader::is_leader()` before writing to DuckDB.
+ use std::sync::atomic::{AtomicBool, Ordering};
+-use std::sync::Arc;
++use std::sync::{Arc, RwLock};
+ use tokio::time::{interval, Duration};
+-use tracing::{info, warn};
++use tracing::{error, info, warn};
+ 
+ use crate::config::HaConfig;
+ 
+ const HA_KEY: &str = "ha:leader";
+ 
+-/// Shared leader flag — cheap to clone and check.
++/// Explicit HA status so degraded/disconnected instances cannot masquerade as healthy leaders.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum HaStatus {
++    /// HA is disabled in configuration; instance operates in standalone mode.
++    DisabledStandalone,
++    /// HA is enabled and this instance holds a valid Redis lease.
++    Leader,
++    /// HA is enabled and another instance holds the lease (or election is pending).
++    Follower,
++    /// HA is enabled, but Redis is unreachable or misconfigured; leadership is revoked.
++    DegradedDisconnected,
++}
++
++impl HaStatus {
++    pub fn as_str(&self) -> &'static str {
++        match self {
++            Self::DisabledStandalone => "disabled_standalone",
++            Self::Leader => "leader",
++            Self::Follower => "follower",
++            Self::DegradedDisconnected => "degraded_disconnected",
++        }
++    }
++}
++
++/// Shared leader flag and explicit HA status — cheap to clone and check.
+ #[derive(Clone)]
+ pub struct HaState {
+     is_leader: Arc<AtomicBool>,
++    status: Arc<RwLock<HaStatus>>,
+ }
+ 
+ impl HaState {
+     pub fn new(initial: bool) -> Self {
+-        Self { is_leader: Arc::new(AtomicBool::new(initial)) }
++        let status = if initial {
++            HaStatus::DisabledStandalone
++        } else {
++            HaStatus::Follower
++        };
++        Self::with_status(initial, status)
+     }
+ 
+-    /// Returns true if this instance currently holds the leader lease.
++    pub fn with_status(initial: bool, status: HaStatus) -> Self {
++        Self {
++            is_leader: Arc::new(AtomicBool::new(initial)),
++            status: Arc::new(RwLock::new(status)),
++        }
++    }
++
++    /// Returns true if this instance currently holds the leader lease (or standalone mode).
+     pub fn is_leader(&self) -> bool {
+         self.is_leader.load(Ordering::Relaxed)
+     }
++
++    /// Returns the explicit HA status of this instance.
++    pub fn status(&self) -> HaStatus {
++        *self.status.read().unwrap()
++    }
++
++    fn set_role(&self, leader: bool, status: HaStatus) -> bool {
++        *self.status.write().unwrap() = status;
++        self.is_leader.swap(leader, Ordering::Relaxed)
++    }
++
++    /// Demote immediately when Redis connectivity is lost in HA mode.
++    pub fn handle_redis_disconnect(&self) -> bool {
++        self.set_role(false, HaStatus::DegradedDisconnected)
++    }
+ }
+ 
+ /// Spawn the HA leader-election background task.
+ ///
+-/// If HA is disabled (`cfg.enabled = false`), returns an always-leader HaState immediately.
++/// If HA is disabled (`cfg.enabled = false`), returns a standalone HaState immediately.
++/// If HA is enabled and Redis fails to initialize, returns a degraded non-leader state.
+ pub async fn run_ha_election(cfg: Arc<HaConfig>) -> HaState {
+     if !cfg.enabled {
+-        info!("HA disabled — this instance is always leader");
+-        return HaState::new(true);
++        info!("HA disabled — running in standalone mode");
++        return HaState::with_status(true, HaStatus::DisabledStandalone);
+     }
+ 
+     // Attempt to connect to Redis
+     let client = match redis::Client::open(cfg.redis_url.as_str()) {
+         Ok(c) => c,
+         Err(e) => {
+-            warn!(error = %e, "HA: failed to connect to Redis — running as standalone leader");
+-            return HaState::new(true);
++            error!(error = %e, "HA: failed to initialize Redis client — refusing leadership in degraded HA mode");
++            return HaState::with_status(false, HaStatus::DegradedDisconnected);
+         }
+     };
+ 
+-    let state    = HaState::new(false);
++    let state    = HaState::with_status(false, HaStatus::Follower);
+     let state_bg = state.clone();
+     let cfg_bg   = Arc::clone(&cfg);
+ 
+     tokio::spawn(async move {
+-        let half = Duration::from_secs(cfg_bg.lease_secs / 2);
++        let half = Duration::from_secs((cfg_bg.lease_secs / 2).max(1));
+         let mut ticker = interval(half);
+         loop {
+             ticker.tick().await;
+@@ -78,39 +131,43 @@ pub async fn run_ha_election(cfg: Arc<HaConfig>) -> HaState {
+                     let acquired = result.ok().flatten().is_some();
+ 
+                     if acquired {
+-                        // We got the lease — also try to EXPIRE (renew if already held)
+                         let _: redis::RedisResult<bool> = redis::cmd("EXPIRE")
+                             .arg(HA_KEY)
+                             .arg(cfg_bg.lease_secs)
+                             .query_async(&mut conn)
+                             .await;
+-                        if !state_bg.is_leader.swap(true, Ordering::Relaxed) {
++                        if !state_bg.set_role(true, HaStatus::Leader) {
+                             info!(instance = %cfg_bg.instance_id, "HA: promoted to leader");
+                         }
+                     } else {
+-                        // Check if we already hold it (verify value matches our instance_id)
+                         let holder: redis::RedisResult<String> = redis::cmd("GET")
+                             .arg(HA_KEY)
+                             .query_async(&mut conn)
+                             .await;
+                         let we_hold = holder.ok().as_deref() == Some(&cfg_bg.instance_id);
+                         if we_hold {
+-                            // Renew our existing lease
+-                            let _: redis::RedisResult<bool> = redis::cmd("EXPIRE")
++                            let renewed: redis::RedisResult<bool> = redis::cmd("EXPIRE")
+                                 .arg(HA_KEY)
+                                 .arg(cfg_bg.lease_secs)
+                                 .query_async(&mut conn)
+                                 .await;
+-                            state_bg.is_leader.store(true, Ordering::Relaxed);
+-                        } else {
+-                            if state_bg.is_leader.swap(false, Ordering::Relaxed) {
+-                                warn!(instance = %cfg_bg.instance_id, "HA: demoted to follower");
++                            if matches!(renewed, Ok(true)) {
++                                state_bg.set_role(true, HaStatus::Leader);
++                            } else {
++                                state_bg.set_role(false, HaStatus::Follower);
+                             }
++                        } else if state_bg.set_role(false, HaStatus::Follower) {
++                            warn!(instance = %cfg_bg.instance_id, "HA: demoted to follower");
+                         }
+                     }
+                 }
+                 Err(e) => {
+-                    warn!(error = %e, "HA: lost Redis connection — retaining current leader state");
++                    let was_leader = state_bg.handle_redis_disconnect();
++                    warn!(
++                        error = %e,
++                        was_leader,
++                        "HA: lost Redis connection — demoted to degraded_disconnected"
++                    );
+                 }
+             }
+         }
+@@ -118,3 +175,34 @@ pub async fn run_ha_election(cfg: Arc<HaConfig>) -> HaState {
+ 
+     state
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[tokio::test]
++    async fn b08_enabled_ha_with_invalid_redis_url_does_not_claim_leadership() {
++        let cfg = Arc::new(HaConfig {
++            enabled: true,
++            redis_url: "not-a-valid-redis-url".to_string(),
++            lease_secs: 10,
++            instance_id: "node-a".to_string(),
++        });
++        let state = run_ha_election(cfg).await;
++        assert!(
++            !state.is_leader(),
++            "enabled HA must not silently claim standalone leadership when Redis initialization fails"
++        );
++        assert_eq!(state.status(), HaStatus::DegradedDisconnected);
++    }
++
++    #[test]
++    fn b08_redis_disconnect_demotes_active_leader() {
++        let state = HaState::with_status(true, HaStatus::Leader);
++        assert!(state.is_leader());
++        let was_leader = state.handle_redis_disconnect();
++        assert!(was_leader);
++        assert!(!state.is_leader());
++        assert_eq!(state.status(), HaStatus::DegradedDisconnected);
++    }
++}
+diff --git a/crates/rbmp-server/src/receiver.rs b/crates/rbmp-server/src/receiver.rs
+index 65d67f9..54f349f 100644
+--- a/crates/rbmp-server/src/receiver.rs
++++ b/crates/rbmp-server/src/receiver.rs
+@@ -9,8 +9,9 @@ use tokio_util::sync::CancellationToken;
+ use tracing::{info, warn, error, debug, instrument};
+ use metrics::counter;
+ use chrono::Utc;
+-use rbmp_core::bmp::parser::{parse_bmp_message, read_bmp_frame};
+-use rbmp_core::bmp::types::{BmpMessage, BmpPayload};
++use rbmp_core::bgp::types::BgpDecodeContext;
++use rbmp_core::bmp::parser::{parse_bmp_message_with_peer_context, read_bmp_frame};
++use rbmp_core::bmp::types::{BmpMessage, BmpPayload, PeerKey};
+ use crate::archive::BmpArchive;
+ use crate::config::BmpConfig;
+ use crate::dns::DnsCache;
+@@ -118,6 +119,8 @@ where
+     let mut reader = BufReader::with_capacity(buf_cap, stream);
+     let mut frames_seen = 0usize;
+     let mut framing_error: Option<anyhow::Error> = None;
++    let mut peer_decode_contexts: std::collections::HashMap<PeerKey, BgpDecodeContext> =
++        std::collections::HashMap::new();
+ 
+     loop {
+         let read_fut = async {
+@@ -160,8 +163,44 @@ where
+         };
+ 
+         frames_seen += 1;
+-        match parse_bmp_message(&frame, speaker_addr, cfg.max_frame_bytes) {
++        match parse_bmp_message_with_peer_context(
++            &frame,
++            speaker_addr,
++            cfg.max_frame_bytes,
++            |hdr| {
++                let key = PeerKey::from_header(speaker_addr, hdr);
++                peer_decode_contexts
++                    .get(&key)
++                    .cloned()
++                    .unwrap_or_default()
++            },
++        ) {
+             Ok(payload) => {
++                match &payload {
++                    BmpPayload::PeerUp(pu) => {
++                        let key = PeerKey::from_header(speaker_addr, &pu.peer_header);
++                        let mut caps = pu.recv_open.capabilities.clone();
++                        for sc in &pu.sent_open.capabilities {
++                            if !caps.contains(sc) {
++                                caps.push(sc.clone());
++                            }
++                        }
++                        let ctx = BgpDecodeContext::from_capabilities(
++                            !pu.peer_header.peer_flags.as2(),
++                            &caps,
++                        );
++                        peer_decode_contexts.insert(key, ctx);
++                    }
++                    BmpPayload::PeerDown { peer_header, .. } => {
++                        let key = PeerKey::from_header(speaker_addr, peer_header);
++                        peer_decode_contexts.remove(&key);
++                    }
++                    BmpPayload::Termination { .. } => {
++                        peer_decode_contexts.clear();
++                    }
++                    _ => {}
++                }
++
+                 // Under pressure, drop low-value stats messages
+                 if cfg.shed_stats_on_pressure
+                     && shed.should_shed()
+diff --git a/crates/rbmp-store/src/journal.rs b/crates/rbmp-store/src/journal.rs
+new file mode 100644
+index 0000000..f7072cc
+--- /dev/null
++++ b/crates/rbmp-store/src/journal.rs
+@@ -0,0 +1,133 @@
++use std::collections::HashSet;
++use std::net::IpAddr;
++use std::path::{Path, PathBuf};
++use std::sync::Arc;
++use anyhow::{Context, Result, anyhow};
++use rbmp_core::bmp::types::{BmpMessage, BmpPayload};
++use rbmp_rib::RibManager;
++use tokio::io::AsyncWriteExt;
++use tokio::sync::Mutex;
++
++/// Summary returned after replaying an append-only BMP journal into a `RibManager`.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct ReplayReport {
++    pub applied_messages: usize,
++    pub skipped_truncated_tail: usize,
++}
++
++/// Durable append-only JSONL journal of raw `BmpMessage` records for crash recovery.
++pub struct BmpJournal {
++    path: Option<PathBuf>,
++    file: Option<Arc<Mutex<tokio::fs::File>>>,
++}
++
++impl BmpJournal {
++    pub async fn open(path: Option<impl AsRef<Path>>) -> Result<Self> {
++        match path {
++            None => Ok(Self {
++                path: None,
++                file: None,
++            }),
++            Some(p) => {
++                let pb = p.as_ref().to_path_buf();
++                if let Some(parent) = pb.parent() {
++                    if !parent.as_os_str().is_empty() {
++                        tokio::fs::create_dir_all(parent).await?;
++                    }
++                }
++                let f = tokio::fs::OpenOptions::new()
++                    .create(true)
++                    .append(true)
++                    .open(&pb)
++                    .await?;
++                Ok(Self {
++                    path: Some(pb),
++                    file: Some(Arc::new(Mutex::new(f))),
++                })
++            }
++        }
++    }
++
++    pub fn path(&self) -> Option<&Path> {
++        self.path.as_deref()
++    }
++
++    /// Serialize `msg` as a single JSONL record, flush, and fsync data before returning.
++    pub async fn append(&self, msg: &BmpMessage) -> Result<()> {
++        if let Some(file) = &self.file {
++            let mut line = serde_json::to_vec(msg)?;
++            line.push(b'\n');
++            let mut guard = file.lock().await;
++            guard.write_all(&line).await?;
++            guard.flush().await?;
++            guard.sync_data().await?;
++        }
++        Ok(())
++    }
++
++    /// Replay a journal file deterministically into `rib`.
++    /// If the final line is truncated (no trailing newline or partial JSON from an unclean crash),
++    /// it is skipped and counted in `ReplayReport::skipped_truncated_tail`.
++    /// Any corruption in a non-final line returns an `Err`.
++    pub fn replay_into(path: impl AsRef<Path>, rib: &mut RibManager) -> Result<ReplayReport> {
++        let raw = std::fs::read_to_string(path.as_ref())
++            .with_context(|| format!("failed to read BMP journal {}", path.as_ref().display()))?;
++        if raw.is_empty() {
++            return Ok(ReplayReport {
++                applied_messages: 0,
++                skipped_truncated_tail: 0,
++            });
++        }
++
++        let ends_with_newline = raw.ends_with('\n');
++        let lines: Vec<&str> = raw.split('\n').collect();
++        // If `raw` ended with '\n', the last element of `split('\n')` is an empty string "".
++        let non_empty_count = if ends_with_newline {
++            lines.len().saturating_sub(1)
++        } else {
++            lines.len()
++        };
++
++        let mut active_speakers: HashSet<IpAddr> = HashSet::new();
++        let mut applied_messages = 0usize;
++        let mut skipped_truncated_tail = 0usize;
++
++        for (idx, line) in lines.into_iter().take(non_empty_count).enumerate() {
++            let trimmed = line.trim();
++            if trimmed.is_empty() {
++                continue;
++            }
++            let is_last = idx + 1 == non_empty_count;
++            match serde_json::from_str::<BmpMessage>(trimmed) {
++                Ok(msg) => {
++                    let speaker = msg.speaker_addr;
++                    let is_term = matches!(msg.payload, BmpPayload::Termination { .. });
++                    if active_speakers.insert(speaker) {
++                        let _ = rib.open_speaker_session(speaker, msg.received_at);
++                    }
++                    rib.process(msg);
++                    if is_term {
++                        active_speakers.remove(&speaker);
++                    }
++                    applied_messages += 1;
++                }
++                Err(e) if is_last && !ends_with_newline => {
++                    skipped_truncated_tail += 1;
++                    let _ = e;
++                }
++                Err(e) => {
++                    return Err(anyhow!(
++                        "corrupted BMP journal record at line {}: {}",
++                        idx + 1,
++                        e
++                    ));
++                }
++            }
++        }
++
++        Ok(ReplayReport {
++            applied_messages,
++            skipped_truncated_tail,
++        })
++    }
++}
+diff --git a/crates/rbmp-store/src/lib.rs b/crates/rbmp-store/src/lib.rs
+index aa9717d..7f7a67e 100644
+--- a/crates/rbmp-store/src/lib.rs
++++ b/crates/rbmp-store/src/lib.rs
+@@ -1,6 +1,8 @@
+ pub mod duck;
++pub mod journal;
+ pub mod schema;
+ pub mod writer;
+ pub mod query;
+ 
+ pub use duck::RouteStore;
++pub use journal::{BmpJournal, ReplayReport};
+diff --git a/crates/rbmp-store/src/writer.rs b/crates/rbmp-store/src/writer.rs
+index 40de203..9d21d7c 100644
+--- a/crates/rbmp-store/src/writer.rs
++++ b/crates/rbmp-store/src/writer.rs
+@@ -37,7 +37,15 @@ pub async fn run_store_writer(store: Arc<std::sync::Mutex<RouteStore>>, mut rx:
+                         Err(broadcast::error::RecvError::Closed) => {
+                             // Flush remaining before exit
+                             if !batch.is_empty() {
+-                                flush_batch(&store, &batch);
++                                match flush_batch(&store, &batch) {
++                                    Ok(written) => {
++                                        counter!("rib_events_written_total").increment(written as u64);
++                                    }
++                                    Err(e) => {
++                                        error!(?e, "Failed to flush final RibEvent batch before exit");
++                                        counter!("rib_events_write_errors_total").increment(batch.len() as u64);
++                                    }
++                                }
+                                 batch.clear();
+                             }
+                             return;
+@@ -50,32 +58,42 @@ pub async fn run_store_writer(store: Arc<std::sync::Mutex<RouteStore>>, mut rx:
+ 
+         if !batch.is_empty() {
+             let n = batch.len();
+-            flush_batch(&store, &batch);
+-            counter!("rib_events_written_total").increment(n as u64);
++            match flush_batch(&store, &batch) {
++                Ok(written) => {
++                    counter!("rib_events_written_total").increment(written as u64);
++                }
++                Err(e) => {
++                    error!(?e, "Failed to flush RibEvent batch to DuckDB");
++                    counter!("rib_events_write_errors_total").increment(n as u64);
++                }
++            }
+             batch.clear();
+         }
+     }
+ }
+ 
+-/// Flush a batch of events inside a single DuckDB transaction.
+-fn flush_batch(store: &std::sync::Mutex<RouteStore>, batch: &[RibEvent]) {
+-    let locked = match store.lock() {
+-        Ok(s) => s,
+-        Err(e) => { error!("DuckDB lock poisoned: {e}"); return; }
+-    };
++/// Flush a batch of events atomically inside a single DuckDB transaction.
++/// If any statement or commit fails, the entire transaction is rolled back and an `Err` is returned.
++pub fn flush_batch(store: &std::sync::Mutex<RouteStore>, batch: &[RibEvent]) -> Result<usize> {
++    let locked = store
++        .lock()
++        .map_err(|e| anyhow::anyhow!("DuckDB lock poisoned: {e}"))?;
+     let conn = locked.conn();
+-    if let Err(e) = conn.execute_batch("BEGIN") {
+-        error!("DuckDB BEGIN failed: {e}"); return;
+-    }
++    conn.execute_batch("BEGIN")
++        .map_err(|e| anyhow::anyhow!("DuckDB BEGIN failed: {e}"))?;
+     for ev in batch {
+         if let Err(e) = persist_one(conn, ev) {
+-            error!(?e, "Failed to persist RibEvent in batch");
++            error!(?e, "Failed to persist RibEvent in batch — rolling back transaction");
++            let _ = conn.execute_batch("ROLLBACK");
++            return Err(e);
+         }
+     }
+     if let Err(e) = conn.execute_batch("COMMIT") {
+         error!("DuckDB COMMIT failed: {e}");
+         let _ = conn.execute_batch("ROLLBACK");
++        return Err(e.into());
+     }
++    Ok(batch.len())
+ }
+ 
+ fn persist_one(conn: &duckdb::Connection, ev: &RibEvent) -> Result<()> {
+@@ -258,8 +276,24 @@ fn persist_one(conn: &duckdb::Connection, ev: &RibEvent) -> Result<()> {
+                 )?;
+             }
+         }
+-        RibEventPayload::EndOfRib { .. } => {
+-            // End-of-RIB markers are not persisted; they are ephemeral control signals.
++        RibEventPayload::EndOfRib { peer_header, afi_safi } => {
++            conn.execute(
++                "INSERT INTO peer_events (
++                    id, occurred_at, speaker_addr, peer_addr, peer_as,
++                    event_type, local_as, hold_time, capabilities, reason, collector_id
++                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
++                duckdb::params![
++                    id, ts, spk,
++                    peer_header.peer_address.to_string(),
++                    peer_header.peer_as,
++                    "end_of_rib",
++                    duckdb::types::Null,
++                    duckdb::types::Null,
++                    duckdb::types::Null,
++                    afi_safi,
++                    duckdb::types::Null,
++                ],
++            )?;
+         }
+     }
+     Ok(())
+@@ -318,3 +352,253 @@ fn evpn_route_fields(route: &EvpnRoute) -> (
+         EvpnRoute::Unknown { .. } => (None, None, None, None, None, None, None),
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::journal::BmpJournal;
++    use chrono::Utc;
++    use rbmp_core::bgp::types::{AfiSafi, AsPath, AsPathSegment, BgpUpdate, Origin, PathAttributes, Prefix};
++    use rbmp_core::bmp::types::{
++        BgpOpenInfo, BmpMessage, BmpPayload, EventKey, ObservationSource, PeerFlags, PeerHeader,
++        PeerKey, PeerType, PeerUpMessage, RibType, StatEntry, EVENT_SCHEMA_VERSION,
++    };
++    use rbmp_rib::RibManager;
++    use std::io::Write;
++    use std::net::{IpAddr, Ipv4Addr};
++    use std::sync::Mutex;
++    use uuid::Uuid;
++
++    fn sample_peer_header() -> PeerHeader {
++        PeerHeader {
++            peer_type: PeerType::GlobalInstance,
++            peer_flags: PeerFlags(0),
++            peer_distinguisher: [0u8; 8],
++            peer_address: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
++            peer_as: 65002,
++            peer_bgp_id: Ipv4Addr::new(10, 0, 0, 2),
++            timestamp: Utc::now(),
++            rib_type: RibType::AdjRibInPrePolicy,
++        }
++    }
++
++    fn make_event(seq: u64, payload: RibEventPayload) -> RibEvent {
++        let speaker = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
++        let source = ObservationSource::new(speaker, 1);
++        RibEvent {
++            schema_version: EVENT_SCHEMA_VERSION,
++            id: Uuid::new_v4(),
++            event_key: EventKey::new(source, seq),
++            occurred_at: Utc::now(),
++            speaker,
++            payload,
++        }
++    }
++
++    #[test]
++    fn b06_end_of_rib_event_is_persisted_in_peer_events() {
++        let store = Mutex::new(RouteStore::in_memory().unwrap());
++        let eor = make_event(
++            1,
++            RibEventPayload::EndOfRib {
++                peer_header: sample_peer_header(),
++                afi_safi: "ipv6-unicast".to_string(),
++            },
++        );
++        let written = flush_batch(&store, &[eor]).expect("flush_batch must succeed");
++        assert_eq!(written, 1);
++
++        let guard = store.lock().unwrap();
++        let count: i64 = guard
++            .conn()
++            .query_row(
++                "SELECT COUNT(*) FROM peer_events WHERE event_type = 'end_of_rib' AND reason = 'ipv6-unicast'",
++                [],
++                |r| r.get(0),
++            )
++            .unwrap();
++        assert_eq!(count, 1, "EndOfRib must be persisted to peer_events");
++    }
++
++    #[test]
++    fn b06_failed_batch_rolls_back_instead_of_committing_partial_rows() {
++        let store = Mutex::new(RouteStore::in_memory().unwrap());
++        // Simulate mid-batch failure on stats_events while speaker_events is intact
++        store
++            .lock()
++            .unwrap()
++            .conn()
++            .execute_batch("DROP TABLE stats_events;")
++            .unwrap();
++
++        let ev1 = make_event(
++            1,
++            RibEventPayload::SpeakerUp {
++                sys_name: Some("edge-1".to_string()),
++                sys_descr: Some("FRR".to_string()),
++            },
++        );
++        let ev2 = make_event(
++            2,
++            RibEventPayload::Stats {
++                peer_header: sample_peer_header(),
++                counters: vec![StatEntry {
++                    stat_type: 0,
++                    name: "prefixes_rejected".to_string(),
++                    value: 5,
++                    afi_safi: None,
++                }],
++            },
++        );
++
++        assert!(
++            flush_batch(&store, &[ev1, ev2]).is_err(),
++            "flush_batch must return Err on statement failure"
++        );
++
++        let guard = store.lock().unwrap();
++        let count: i64 = guard
++            .conn()
++            .query_row("SELECT COUNT(*) FROM speaker_events", [], |r| r.get(0))
++            .unwrap();
++        assert_eq!(
++            count, 0,
++            "failed batch must roll back all statements in transaction"
++        );
++    }
++
++    #[tokio::test]
++    async fn b06_durable_journal_replay_reconstructs_identical_rib_state_after_truncated_crash_tail() {
++        let tmp_path = std::env::temp_dir().join(format!("rbmp-b06-journal-{}.jsonl", Uuid::new_v4()));
++        let journal = BmpJournal::open(Some(&tmp_path)).await.unwrap();
++
++        let speaker = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
++        let hdr = sample_peer_header();
++        let peer_key = PeerKey::from_header(speaker, &hdr);
++        let now = Utc::now();
++
++        let mut attrs = PathAttributes::default();
++        attrs.origin = Some(Origin::Igp);
++        attrs.as_path = Some(AsPath(vec![AsPathSegment::Sequence(vec![65002, 65100])]));
++        attrs.next_hop = Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
++
++        let pfx1 = Prefix::V4("10.10.1.0/24".parse().unwrap());
++        let pfx2 = Prefix::V4("10.10.2.0/24".parse().unwrap());
++
++        let messages = vec![
++            BmpMessage {
++                id: Uuid::new_v4(),
++                received_at: now,
++                speaker_addr: speaker,
++                payload: BmpPayload::Initiation {
++                    sys_name: Some("router-1".to_string()),
++                    sys_descr: Some("FRR 9.1".to_string()),
++                    labels: vec![],
++                },
++            },
++            BmpMessage {
++                id: Uuid::new_v4(),
++                received_at: now,
++                speaker_addr: speaker,
++                payload: BmpPayload::PeerUp(PeerUpMessage {
++                    peer_header: hdr.clone(),
++                    local_addr: speaker,
++                    local_port: 179,
++                    remote_port: 50123,
++                    sent_open: BgpOpenInfo {
++                        version: 4,
++                        asn: 65001,
++                        hold_time: 90,
++                        bgp_id: Ipv4Addr::new(192, 0, 2, 10),
++                        capabilities: vec![],
++                    },
++                    recv_open: BgpOpenInfo {
++                        version: 4,
++                        asn: 65002,
++                        hold_time: 90,
++                        bgp_id: Ipv4Addr::new(10, 0, 0, 2),
++                        capabilities: vec![],
++                    },
++                }),
++            },
++            BmpMessage {
++                id: Uuid::new_v4(),
++                received_at: now,
++                speaker_addr: speaker,
++                payload: BmpPayload::RouteMonitoring {
++                    peer_header: hdr.clone(),
++                    update: BgpUpdate {
++                        withdrawn: vec![],
++                        withdrawn_path_ids: vec![],
++                        attributes: attrs.clone(),
++                        announced: vec![pfx1.clone(), pfx2.clone()],
++                        announced_path_ids: vec![None, None],
++                    },
++                },
++            },
++            BmpMessage {
++                id: Uuid::new_v4(),
++                received_at: now,
++                speaker_addr: speaker,
++                payload: BmpPayload::RouteMonitoring {
++                    peer_header: hdr.clone(),
++                    update: BgpUpdate {
++                        withdrawn: vec![pfx1.clone()],
++                        withdrawn_path_ids: vec![None],
++                        attributes: PathAttributes::default(),
++                        announced: vec![],
++                        announced_path_ids: vec![],
++                    },
++                },
++            },
++            BmpMessage {
++                id: Uuid::new_v4(),
++                received_at: now,
++                speaker_addr: speaker,
++                payload: BmpPayload::RouteMonitoring {
++                    peer_header: hdr.clone(),
++                    update: BgpUpdate {
++                        withdrawn: vec![],
++                        withdrawn_path_ids: vec![],
++                        attributes: PathAttributes::default(),
++                        announced: vec![],
++                        announced_path_ids: vec![],
++                    },
++                },
++            },
++        ];
++
++        let (mut rib_live, _rx_live) = RibManager::new(64);
++        rib_live.open_speaker_session(speaker, now);
++        for msg in &messages {
++            journal.append(msg).await.unwrap();
++            rib_live.process(msg.clone());
++        }
++        drop(journal);
++
++        // Append a truncated trailing line without newline to simulate power-loss mid-write
++        {
++            let mut f = std::fs::OpenOptions::new().append(true).open(&tmp_path).unwrap();
++            f.write_all(b"{\"id\":\"truncated-crash-record").unwrap();
++            f.flush().unwrap();
++        }
++
++        let (mut rib_replayed, _rx_replayed) = RibManager::new(64);
++        let report = BmpJournal::replay_into(&tmp_path, &mut rib_replayed).unwrap();
++        let _ = std::fs::remove_file(&tmp_path);
++
++        assert_eq!(report.applied_messages, 5);
++        assert_eq!(report.skipped_truncated_tail, 1);
++        assert_eq!(rib_replayed.total_routes(), rib_live.total_routes());
++        assert_eq!(rib_replayed.total_routes(), 1);
++
++        let replayed_rib = rib_replayed.rib_for_peer_key(&peer_key).expect("peer RIB present");
++        assert!(replayed_rib.get(RibType::AdjRibInPrePolicy, &pfx1).is_none());
++        assert!(replayed_rib.get(RibType::AdjRibInPrePolicy, &pfx2).is_some());
++
++        let replayed_sess = rib_replayed.speaker(speaker).unwrap().peer_by_key(&peer_key).unwrap();
++        assert!(replayed_sess.has_eor(RibType::AdjRibInPrePolicy, AfiSafi::ipv4_unicast()));
++    }
++}
++
++
+diff --git a/tests/regressions/bmp_rfc_contract.rs b/tests/regressions/bmp_rfc_contract.rs
+index 114d5d4..941cf3e 100644
+--- a/tests/regressions/bmp_rfc_contract.rs
++++ b/tests/regressions/bmp_rfc_contract.rs
+@@ -326,3 +326,227 @@ async fn read_bmp_frame_enforces_bounds_deadlines_fragmentation_and_coalescing()
+     assert!(read_frame_with_timeout(&mut cr2, t).await.is_err());
+ }
+ 
++fn build_bmp_route_monitoring(peer_flags: u8, path_attrs: &[u8], nlri: &[u8]) -> Vec<u8> {
++    let mut bgp = Vec::new();
++    bgp.extend_from_slice(&[0xff; 16]);
++    let bgp_len = (19 + 2 + 2 + path_attrs.len() + nlri.len()) as u16;
++    bgp.extend_from_slice(&bgp_len.to_be_bytes());
++    bgp.push(2); // UPDATE
++    bgp.extend_from_slice(&0u16.to_be_bytes()); // withdrawn_len = 0
++    bgp.extend_from_slice(&(path_attrs.len() as u16).to_be_bytes());
++    bgp.extend_from_slice(path_attrs);
++    bgp.extend_from_slice(nlri);
++
++    let total_len = (6 + 42 + bgp.len()) as u32;
++    let mut bmp = Vec::with_capacity(total_len as usize);
++    bmp.push(3);
++    bmp.extend_from_slice(&total_len.to_be_bytes());
++    bmp.push(0); // RouteMonitoring
++
++    // 42-byte Per-Peer Header
++    bmp.push(0); // peer_type = Global
++    bmp.push(peer_flags);
++    bmp.extend_from_slice(&[0u8; 8]); // peer_distinguisher
++    bmp.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 192, 0, 2, 1]);
++    bmp.extend_from_slice(&65001u32.to_be_bytes());
++    bmp.extend_from_slice(&[192, 0, 2, 1]);
++    bmp.extend_from_slice(&1700000000u32.to_be_bytes());
++    bmp.extend_from_slice(&0u32.to_be_bytes());
++    bmp.extend_from_slice(&bgp);
++    bmp
++}
++
++#[test]
++fn b05_four_byte_asn_66048_is_not_misparsed_as_two_byte_segments() {
++    // 4-byte ASN 66048 = 0x0001_0200. In 2-byte parser this looks like seg_type=2, seg_len=1, asn=1, seg_type=2, seg_len=0!
++    // PeerFlags has A-bit (0x20) CLEAR -> 4-byte ASN encoding per RFC 7854 §4.2.
++    let mut attrs = Vec::new();
++    attrs.extend_from_slice(&[0x40, 1, 1, 0]); // ORIGIN = IGP
++    attrs.extend_from_slice(&[0x40, 2, 6, 2, 1, 0x00, 0x01, 0x02, 0x00]); // AS_PATH = [66048]
++    attrs.extend_from_slice(&[0x40, 3, 4, 192, 0, 2, 1]); // NEXT_HOP = 192.0.2.1
++    let nlri = [24, 10, 0, 1]; // 10.0.1.0/24
++
++    let frame = build_bmp_route_monitoring(0x00, &attrs, &nlri);
++    let msg = parse(&frame).expect("valid RouteMonitoring");
++    let BmpPayload::RouteMonitoring { update, .. } = msg else {
++        panic!("expected RouteMonitoring");
++    };
++    assert_eq!(
++        update.attributes.as_path.unwrap().0,
++        vec![rbmp_core::bgp::types::AsPathSegment::Sequence(vec![66048])]
++    );
++}
++
++#[test]
++fn b05_two_byte_as_trans_reconstructs_with_as4_path_and_as4_aggregator() {
++    // PeerFlags has A-bit (0x20) SET -> 2-byte ASN encoding on wire, with AS_TRANS (23456) + AS4_PATH + AS4_AGGREGATOR.
++    let mut attrs = Vec::new();
++    attrs.extend_from_slice(&[0x40, 1, 1, 0]); // ORIGIN = IGP
++    // 2-byte AS_PATH: Sequence([65001, 23456]) -> len = 2 + 4 = 6
++    attrs.extend_from_slice(&[0x40, 2, 6, 2, 2]);
++    attrs.extend_from_slice(&65001u16.to_be_bytes());
++    attrs.extend_from_slice(&23456u16.to_be_bytes());
++    attrs.extend_from_slice(&[0x40, 3, 4, 192, 0, 2, 1]); // NEXT_HOP
++    // 2-byte AGGREGATOR (type 7, len 6): ASN 23456 + 192.0.2.9
++    attrs.extend_from_slice(&[0xc0, 7, 6]);
++    attrs.extend_from_slice(&23456u16.to_be_bytes());
++    attrs.extend_from_slice(&[192, 0, 2, 9]);
++    // AS4_PATH (type 17, len 6): Sequence([4200000001])
++    attrs.extend_from_slice(&[0xc0, 17, 6, 2, 1]);
++    attrs.extend_from_slice(&4200000001u32.to_be_bytes());
++    // AS4_AGGREGATOR (type 18, len 8): ASN 4200000099 + 192.0.2.99
++    attrs.extend_from_slice(&[0xc0, 18, 8]);
++    attrs.extend_from_slice(&4200000099u32.to_be_bytes());
++    attrs.extend_from_slice(&[192, 0, 2, 99]);
++
++    let nlri = [24, 10, 0, 2];
++    let frame = build_bmp_route_monitoring(0x20, &attrs, &nlri);
++    let msg = parse(&frame).expect("valid RouteMonitoring");
++    let BmpPayload::RouteMonitoring { update, .. } = msg else {
++        panic!("expected RouteMonitoring");
++    };
++    assert_eq!(
++        update.attributes.as_path.unwrap().0,
++        vec![rbmp_core::bgp::types::AsPathSegment::Sequence(vec![
++            65001,
++            4200000001
++        ])]
++    );
++    let agg = update.attributes.aggregator.expect("aggregator present");
++    assert_eq!(agg.0, 4200000099);
++    assert_eq!(agg.1, std::net::Ipv4Addr::new(192, 0, 2, 99));
++}
++
++#[test]
++fn b05_mp_reach_ipv6_populates_next_hop_and_evpn_unreach_is_not_eor() {
++    // 1. IPv6 MP_REACH_NLRI must populate attributes.next_hop from mp_reach.next_hops
++    let mut mp_reach_val = Vec::new();
++    mp_reach_val.extend_from_slice(&2u16.to_be_bytes()); // AFI = IPv6
++    mp_reach_val.push(1); // SAFI = Unicast
++    mp_reach_val.push(16); // next-hop len = 16
++    mp_reach_val.extend_from_slice(&"2001:db8::1".parse::<std::net::Ipv6Addr>().unwrap().octets());
++    mp_reach_val.push(0); // reserved
++    mp_reach_val.extend_from_slice(&[48, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x01]); // 2001:db8:1::/48
++
++    let mut attrs = Vec::new();
++    attrs.extend_from_slice(&[0x40, 1, 1, 0]); // ORIGIN = IGP
++    attrs.extend_from_slice(&[0x80, 14, mp_reach_val.len() as u8]);
++    attrs.extend_from_slice(&mp_reach_val);
++
++    let frame = build_bmp_route_monitoring(0x00, &attrs, &[]);
++    let BmpPayload::RouteMonitoring { update, .. } = parse(&frame).unwrap() else {
++        panic!("expected RouteMonitoring");
++    };
++    assert_eq!(
++        update.attributes.next_hop,
++        Some("2001:db8::1".parse().unwrap())
++    );
++
++    // 2. EVPN MP_UNREACH_NLRI withdrawal must NOT be classified as End-of-RIB
++    let mut evpn_unreach = Vec::new();
++    evpn_unreach.extend_from_slice(&25u16.to_be_bytes()); // AFI = L2VPN (25)
++    evpn_unreach.push(70); // SAFI = EVPN (70)
++    // EVPN Type 3 (Inclusive Multicast Ethernet Tag Route): route_type=3, length=17, RD(8) + EthTag(4) + IPLen(1=32) + IP(4)
++    evpn_unreach.push(3);
++    evpn_unreach.push(17);
++    evpn_unreach.extend_from_slice(&[0, 0, 253, 232, 0, 0, 0, 1]); // RD 65000:1
++    evpn_unreach.extend_from_slice(&100u32.to_be_bytes()); // eth_tag_id = 100
++    evpn_unreach.push(32); // ip_len = 32 bits
++    evpn_unreach.extend_from_slice(&[192, 0, 2, 1]);
++
++    let mut unreach_attrs = Vec::new();
++    unreach_attrs.extend_from_slice(&[0x80, 15, evpn_unreach.len() as u8]);
++    unreach_attrs.extend_from_slice(&evpn_unreach);
++
++    let unreach_frame = build_bmp_route_monitoring(0x00, &unreach_attrs, &[]);
++    let BmpPayload::RouteMonitoring { update: unreach_update, .. } = parse(&unreach_frame).unwrap() else {
++        panic!("expected RouteMonitoring");
++    };
++    assert!(!unreach_update.is_eor());
++    assert_eq!(unreach_update.eor_afi_safi(), None);
++}
++
++#[test]
++fn b05_session_aware_add_path_eor_and_family_support_status() {
++    use rbmp_core::bgp::types::{AfiSafi, BgpCapability, BgpDecodeContext, FamilySupportStatus};
++    use rbmp_core::bmp::parser::parse_bmp_message_with_context;
++
++    // 1. Capabilities negotiate Add-Path for IPv4 Unicast (1/1) and IPv6 Unicast (2/1)
++    let caps = vec![
++        BgpCapability::FourByteAsn(65001),
++        BgpCapability::AddPath(vec![
++            (AfiSafi::ipv4_unicast(), 3),
++            (AfiSafi::ipv6_unicast(), 3),
++        ]),
++    ];
++    let ctx = BgpDecodeContext::from_capabilities(true, &caps);
++    assert!(ctx.has_add_path(AfiSafi::ipv4_unicast()));
++    assert!(ctx.has_add_path(AfiSafi::ipv6_unicast()));
++
++    // 2. RouteMonitoring carrying both IPv4 Add-Path NLRI (path_id=7) and IPv6 MP_REACH Add-Path NLRI (path_id=42)
++    let mut mp_reach_val = Vec::new();
++    mp_reach_val.extend_from_slice(&2u16.to_be_bytes()); // AFI = IPv6
++    mp_reach_val.push(1); // SAFI = Unicast
++    mp_reach_val.push(16); // next-hop len = 16
++    mp_reach_val.extend_from_slice(&"2001:db8::99".parse::<std::net::Ipv6Addr>().unwrap().octets());
++    mp_reach_val.push(0); // reserved
++    mp_reach_val.extend_from_slice(&42u32.to_be_bytes()); // Add-Path path_id = 42
++    mp_reach_val.extend_from_slice(&[48, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x99]); // 2001:db8:99::/48
++
++    let mut attrs = Vec::new();
++    attrs.extend_from_slice(&[0x40, 1, 1, 0]); // ORIGIN = IGP
++    attrs.extend_from_slice(&[0x40, 2, 6, 2, 1, 0x00, 0x00, 0xfd, 0xe9]); // AS_PATH = [65001]
++    attrs.extend_from_slice(&[0x40, 3, 4, 192, 0, 2, 1]); // NEXT_HOP
++    attrs.extend_from_slice(&[0x80, 14, mp_reach_val.len() as u8]);
++    attrs.extend_from_slice(&mp_reach_val);
++
++    let mut v4_nlri = Vec::new();
++    v4_nlri.extend_from_slice(&7u32.to_be_bytes()); // Add-Path path_id = 7
++    v4_nlri.extend_from_slice(&[24, 10, 99, 0]); // 10.99.0.0/24
++
++    let frame = build_bmp_route_monitoring(0x00, &attrs, &v4_nlri);
++    let BmpPayload::RouteMonitoring { update, .. } =
++        parse_bmp_message_with_context(&frame, SPEAKER, DEFAULT_MAX_FRAME, &ctx).unwrap()
++    else {
++        panic!("expected RouteMonitoring");
++    };
++    let announced: Vec<(String, Option<u32>)> = update
++        .all_announced_with_path_id()
++        .into_iter()
++        .map(|(p, id)| (p.to_string(), id))
++        .collect();
++    assert_eq!(
++        announced,
++        vec![
++            ("10.99.0.0/24".to_string(), Some(7)),
++            ("2001:db8:99::/48".to_string(), Some(42)),
++        ]
++    );
++
++    // 3. True IPv4 EOR and IPv6 MP_UNREACH EOR report exact AFI/SAFI
++    let v4_eor_frame = build_bmp_route_monitoring(0x00, &[], &[]);
++    let BmpPayload::RouteMonitoring { update: v4_eor, .. } = parse(&v4_eor_frame).unwrap() else {
++        panic!("expected RouteMonitoring");
++    };
++    assert!(v4_eor.is_eor());
++    assert_eq!(v4_eor.eor_afi_safi(), Some(AfiSafi::ipv4_unicast()));
++
++    let v6_eor_attrs = [0x80, 15, 3, 0x00, 0x02, 0x01]; // MP_UNREACH AFI=2 SAFI=1 empty NLRI
++    let v6_eor_frame = build_bmp_route_monitoring(0x00, &v6_eor_attrs, &[]);
++    let BmpPayload::RouteMonitoring { update: v6_eor, .. } = parse(&v6_eor_frame).unwrap() else {
++        panic!("expected RouteMonitoring");
++    };
++    assert!(v6_eor.is_eor());
++    assert_eq!(v6_eor.eor_afi_safi(), Some(AfiSafi::ipv6_unicast()));
++
++    // 4. FamilySupportStatus explicitly classifies Supported vs ExperimentalParseOnly vs Unsupported
++    assert_eq!(AfiSafi::ipv4_unicast().support_status(), FamilySupportStatus::Supported);
++    assert_eq!(AfiSafi::ipv6_unicast().support_status(), FamilySupportStatus::Supported);
++    assert_eq!(AfiSafi::ipv4_vpn().support_status(), FamilySupportStatus::Supported);
++    assert_eq!(AfiSafi::evpn().support_status(), FamilySupportStatus::ExperimentalParseOnly);
++    assert_eq!(AfiSafi::new(16388, 71).support_status(), FamilySupportStatus::ExperimentalParseOnly);
++    assert_eq!(AfiSafi::new(9999, 250).support_status(), FamilySupportStatus::Unsupported);
++}
++
++
++
+-- 
+2.43.0
+

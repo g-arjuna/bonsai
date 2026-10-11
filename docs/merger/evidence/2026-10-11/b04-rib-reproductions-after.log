@@ -1,0 +1,51 @@
+
+running 41 tests
+test filter::tests::test_accept_by_peer_as ... ok
+test filter::tests::test_bogon_192_168_rejected ... ok
+test filter::tests::test_as_path_contains_filter ... ok
+test filter::tests::test_bogon_10_slash_8_rejected ... ok
+test filter::tests::test_empty_engine_default_accept ... ok
+test filter::tests::test_filter_by_community ... ok
+test filter::tests::test_filter_name_returned_on_match ... ok
+test filter::tests::test_local_pref_range ... ok
+test filter::tests::test_filter_reject_invalid_and_too_specific ... ok
+test filter_expr::tests::test_and_compound ... ok
+test filter_expr::tests::test_action_withdraw ... ok
+test filter_expr::tests::test_community_has ... ok
+test filter_expr::tests::test_as_path_len_gt ... ok
+test filter_expr::tests::test_community_missing ... ok
+test filter::tests::test_deny_bogon_prefix ... ok
+test filter_expr::tests::test_as_path_len_le ... ok
+test filter::tests::test_filter_peer_as_in_expr ... ok
+test filter_expr::tests::test_in_set ... ok
+test filter_expr::tests::test_local_pref_lt_false ... ok
+test filter_expr::tests::test_med_gt_false ... ok
+test filter_expr::tests::test_nested_and_or ... ok
+test filter_expr::tests::test_complex_expr ... ok
+test filter_expr::tests::test_has_prepend ... ok
+test filter_expr::tests::test_local_pref ... ok
+test filter_expr::tests::test_med_lt ... ok
+test filter_expr::tests::test_local_pref_eq ... ok
+test filter_expr::tests::test_origin_as_not_in ... ok
+test filter_expr::tests::test_peer_as_not_in ... ok
+test filter_expr::tests::test_prefix_len_ge_boundary ... ok
+test filter_expr::tests::test_rpki_eq ... ok
+test filter_expr::tests::test_simple_comparison ... ok
+test filter_expr::tests::test_or ... ok
+test filter_expr::tests::test_parse_error_bad_syntax ... ok
+test manager::tests::b04_same_peer_ip_across_two_vrf_distinguishers_on_same_exporter_stays_isolated ... ok
+test manager::tests::b04_event_and_route_identity_schema_serialization_and_repeated_announcements ... ok
+test filter_expr::tests::test_action_eq ... ok
+test filter_expr::tests::test_not ... ok
+test manager::tests::b04_same_peer_on_two_exporters_remains_isolated_across_peer_down_and_termination ... ok
+test manager::tests::b04_stale_session_epoch_disconnect_does_not_clear_newer_session_state ... ok
+test roto_filter::tests::test_noop_engine_accepts ... ok
+test roto_filter::tests::test_stats_default ... ok
+
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

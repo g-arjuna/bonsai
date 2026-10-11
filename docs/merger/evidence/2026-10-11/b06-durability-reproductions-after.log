@@ -1,0 +1,12 @@
+   Compiling rbmp-store v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-store)
+    Finished `test` profile [optimized + debuginfo] target(s) in 19.12s
+     Running unittests src/lib.rs (/home/arjuna/rustybmp/target/debug/deps/rbmp_store-622fc3fcf9f91be9)
+
+running 4 tests
+test writer::tests::b06_durable_journal_replay_reconstructs_identical_rib_state_after_truncated_crash_tail ... ok
+test query::tests::bmp_stats_history_returns_rows_with_afi_safi ... ok
+test writer::tests::b06_end_of_rib_event_is_persisted_in_peer_events ... ok
+test writer::tests::b06_failed_batch_rolls_back_instead_of_committing_partial_rows ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+

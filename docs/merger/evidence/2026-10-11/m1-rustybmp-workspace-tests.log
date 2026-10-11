@@ -1,0 +1,383 @@
+   Compiling rbmp-mrt v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-mrt)
+   Compiling rbmp-server v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-server)
+   Compiling rbmp-core v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-core)
+   Compiling rbmp-enrichment v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-enrichment)
+   Compiling rbmp-store v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-store)
+   Compiling rbmp-nats v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-nats)
+   Compiling rbmp-kafka v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-kafka)
+   Compiling rbmp-rib v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-rib)
+    Finished `test` profile [optimized + debuginfo] target(s) in 34.18s
+     Running unittests src/lib.rs (/home/arjuna/rustybmp/target/debug/deps/rbmp_core-984f69c39d6aab3d)
+
+running 51 tests
+test bgp::attributes::tests::parse_as_path_accepts_two_byte_encoding ... ok
+test bgp::attributes::tests::parse_as_path_falls_back_to_four_byte_encoding ... ok
+test bgp::bgpls::tests::test_bgpls_attr_node_name ... ok
+test bgp::bgpls::tests::test_bgpls_attr_sr_capabilities ... ok
+test bgp::bgpls::tests::test_bgpls_attr_link_metrics_srlg_adjsid ... ok
+test bgp::bgpls::tests::test_empty_buf_returns_empty ... ok
+test bgp::bgpls::tests::test_unknown_nlri_type_preserved ... ok
+test bgp::bgpls::tests::test_node_nlri_protocol_identifier ... ok
+test bgp::evpn::tests::test_evpn_type11_leaf_ad ... ok
+test bgp::evpn::tests::test_evpn_type3_imet ... ok
+test bgp::evpn::tests::test_evpn_type6_selective_multicast ... ok
+test bgp::evpn::tests::test_evpn_type7_igmp_join ... ok
+test bgp::evpn::tests::test_evpn_type9_per_region_ipmsi ... ok
+test bgp::evpn::tests::test_evpn_unknown_type ... ok
+test bgp::flowspec::tests::test_flowspec_dest_prefix_ipv4 ... ok
+test bgp::flowspec::tests::test_flowspec_protocol_tcp ... ok
+test bgp::mvpn::tests::test_parse_unknown_type ... ok
+test bgp::srpolicy::tests::test_rtc_specific_with_origin_as ... ok
+test bgp::mvpn::tests::test_parse_inter_as_ipmsi ... ok
+test bgp::flowspec::tests::test_flowspec_tcp_flags ... ok
+test bgp::mvpn::tests::test_parse_list ... ok
+test bgp::evpn::tests::test_evpn_type1_auto_discovery ... ok
+test bgp::srpolicy::tests::test_srpolicy_nlri_ipv6 ... ok
+test bmp::parser::tests::test_parse_initiation ... ok
+test bgp::srv6::tests::test_prefix_sid_label_index ... ok
+test bgp::srpolicy::tests::test_srpolicy_nlri_ipv4 ... ok
+test bgp::srv6::tests::test_prefix_sid_unknown_tlv_preserved ... ok
+test bmp::path_status_tlv::tests::test_add_path_bit ... ok
+test bmp::path_status_tlv::tests::test_best_external_bit ... ok
+test bmp::path_status_tlv::tests::test_find_in_tlv_stream ... ok
+test bmp::path_status_tlv::tests::test_find_path_status_tlv_empty_stream ... ok
+test bmp::parser::tests::test_frame_too_large ... ok
+test bmp::path_status_tlv::tests::test_default_tlv_is_zero ... ok
+test bmp::parser::tests::test_invalid_version ... ok
+test bmp::path_status_tlv::tests::test_all_reason_codes_non_empty ... ok
+test bmp::path_status_tlv::tests::test_nonselected_with_localpref_reason ... ok
+test bmp::path_status_tlv::tests::test_nonselected_with_aspath_reason ... ok
+test bmp::path_status_tlv::tests::test_parse_best_path ... ok
+test bmp::path_status_tlv::tests::test_parse_filtered_inbound ... ok
+test bmp::path_status_tlv::tests::test_parse_backup_with_reason ... ok
+test bmp::path_status_tlv::tests::test_parse_too_short ... ok
+test bmp::path_status_tlv::tests::test_parse_multi_bit ... ok
+test bmp::path_status_tlv::tests::test_find_path_status_tlv_not_found ... ok
+test bmp::path_status_tlv::tests::test_suppressed_bit ... ok
+test collector_protocol::tests::test_encode_decode_roundtrip ... ok
+test bmp::path_status_tlv::tests::test_reason_labels ... ok
+test bmp::path_status_tlv::tests::test_stale_bit ... ok
+test collector_protocol::tests::test_async_frame_roundtrip ... ok
+test bmp::path_status_tlv::tests::test_unknown_reason_is_empty_string ... ok
+test collector_protocol::tests::test_eof_returns_none ... ok
+test bgp::srpolicy::tests::test_rtc_wildcard ... ok
+
+test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running ../../tests/regressions/bmp_rfc_contract.rs (/home/arjuna/rustybmp/target/debug/deps/bmp_rfc_contract-fca1794210c61b36)
+
+running 20 tests
+test b05_four_byte_asn_66048_is_not_misparsed_as_two_byte_segments ... ok
+test b05_mp_reach_ipv6_populates_next_hop_and_evpn_unreach_is_not_eor ... ok
+test b05_session_aware_add_path_eor_and_family_support_status ... ok
+test b05_two_byte_as_trans_reconstructs_with_as4_path_and_as4_aggregator ... ok
+test huge_stats_report_count_is_rejected_without_unbounded_allocation ... ok
+test incorrect_embedded_bgp_length_is_rejected ... ok
+test initiation_tlv_assignments_follow_rfc7854 ... ok
+test local_instance_is_inbound_when_o_is_clear ... ok
+test original_invalid_generator_fixtures_remain_negative_inputs ... ok
+test locrib_filtered_flag_is_the_high_bit ... ok
+test public_bgp_parsers_reject_short_truncated_and_mismatched_inputs ... ok
+test repaired_positive_fixtures_parse_cleanly ... ok
+test locrib_reserved_bits_do_not_imply_filtering ... ok
+test six_byte_header_with_required_initiation_tlvs_is_accepted ... ok
+test unknown_initiation_tlv_and_unknown_termination_reason_are_preserved ... ok
+test truncated_declared_bmp_message_is_rejected ... ok
+test outbound_o_flag_applies_to_peer_types_zero_through_two ... ok
+test termination_tlv_assignments_follow_rfc7854 ... ok
+test zero_and_short_declared_lengths_are_rejected ... ok
+test read_bmp_frame_enforces_bounds_deadlines_fragmentation_and_coalescing ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running ../../tests/integration/mod.rs (/home/arjuna/rustybmp/target/debug/deps/integration-7ce31451c69d15f3)
+
+running 19 tests
+test frr_bmp::tests::frr_bmp_route_monitoring_received ... ignored, requires docker + frrouting/frr:9.1 image
+test frr_bmp::tests::frr_bmp_session_connects ... ignored, requires docker + frrouting/frr:9.1 image
+test mcp_tools::tests::test_eleven_tools_defined ... ok
+test bmp_pdu::tests::parse_route_monitor_with_withdraw ... ok
+test mcp_tools::tests::test_initialize_request_shape ... ok
+test mcp_tools::tests::test_nl_query_withdraw_mapping ... ok
+test mcp_tools::tests::test_rpc_err_envelope_shape ... ok
+test mcp_tools::tests::test_rpc_ok_envelope_shape ... ok
+test mcp_tools::tests::test_tools_call_get_anomalies ... ok
+test bmp_pdu::tests::truncated_pdu_returns_error ... ok
+test mcp_tools::tests::test_tools_call_nl_query_convergence ... ok
+test mcp_tools::tests::test_nl_query_announce_mapping ... ok
+test mcp_tools::tests::test_tools_call_rpki_invalids ... ok
+test mcp_tools::tests::test_tools_call_get_prefix_history ... ok
+test bmp_pdu::tests::oversized_pdu_returns_error ... ok
+test bmp_pdu::tests::legacy_malformed_route_monitor_pdu_is_rejected ... ok
+test mcp_tools::tests::test_tools_list_request_shape ... ok
+test bmp_pdu::tests::parse_initiation_message ... ok
+test mcp_tools::tests::test_tools_call_get_peer_flaps ... ok
+
+test result: ok. 17 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (/home/arjuna/rustybmp/target/debug/deps/rbmp_enrichment-0b07749d6babc54e)
+
+running 58 tests
+test aspa::tests::test_invalid_path_route_leak ... ok
+test aspa::tests::test_empty_path ... ok
+test aspa::tests::test_aspa_validity_display ... ok
+test aspa::tests::test_parse_as_path_prepend_collapsed_middle ... ok
+test aspa::tests::test_is_empty_then_populated ... ok
+test aspa::tests::test_partial_coverage_unknown ... ok
+test aspa::tests::test_parse_as_path_empty_string ... ok
+test aspa::tests::test_invalid_violated_hop_is_reported ... ok
+test aspa::tests::test_load_overwrites_existing ... ok
+test aspa::tests::test_parse_as_path_single ... ok
+test aspa::tests::test_prepend_collapsed ... ok
+test aspa::tests::test_single_hop_no_record ... ok
+test aspa::tests::test_single_hop_with_record_no_pair ... ok
+test bgpsec::tests::b08_passive_bmp_without_signature_input_is_not_valid ... ok
+test bgpsec::tests::bad_raw_key_rejected ... ok
+test bgpsec::tests::cert_count_tracks_loads ... ok
+test bgpsec::tests::b08_authentic_ecdsa_p256_signature_verifies_valid ... ok
+test aspa::tests::test_unknown_no_records ... ok
+test bgpsec::tests::not_found_when_cert_missing ... ok
+test bgpsec::tests::multi_hop_all_certs_required ... ok
+test aspa::tests::test_upsert_merges_providers ... ok
+test bgpsec::tests::malformed_when_no_signing_asns_but_raw_present ... ok
+test aspa::tests::test_valid_path ... ok
+test bgpsec::tests::overwrite_cert_updates_key ... ok
+test netbox::tests::default_cache_ttl ... ok
+test netbox::tests::device_result_handles_missing_fields ... ok
+test netbox::tests::device_result_to_device ... ok
+test bgpsec::tests::b08_forged_signature_bytes_rejected_when_update_wire_provided ... ok
+test bgpsec::tests::unverified_with_loaded_cert_when_wire_absent ... ok
+test bgpsec::tests::absent_when_empty_raw ... ok
+test bgpsec::tests::verdict_str_covers_all_variants ... ok
+test servicenow_cmdb::tests::cmdb_device_serialize ... ok
+test servicenow_cmdb::tests::change_record_fields ... ok
+test vault::tests::test_round_trip ... ok
+test vrp_cache::tests::test_covering_prefix_not_covered_by_more_specific ... ok
+test vault::tests::test_wrong_passphrase_rejected ... ok
+test vrp_cache::tests::test_delta_add ... ok
+test vrp_cache::tests::test_delta_add_remove ... ok
+test vault::tests::test_remove ... ok
+test vrp_cache::tests::test_invalid_exceeds_maxlen ... ok
+test vault::tests::test_ssh_fetch_purpose ... ok
+test vrp_cache::tests::test_empty_cache_not_found ... ok
+test vrp_cache::tests::test_invalid_wrong_origin ... ok
+test vrp_cache::tests::test_is_empty_then_reset ... ok
+test vrp_cache::tests::test_multi_roa_best_match ... ok
+test vrp_cache::tests::test_not_found ... ok
+test vrp_cache::tests::test_rpki_state_display ... ok
+test vrp_cache::tests::test_ipv6_invalid_wrong_origin ... ok
+test vrp_cache::tests::test_serial_after_reset ... ok
+test vrp_cache::tests::test_ipv6_valid ... ok
+test vrp_cache::tests::test_ipv6_exceeds_maxlen ... ok
+test vrp_cache::tests::test_serial_initial_zero ... ok
+test vrp_cache::tests::test_valid_more_specific_within_maxlen ... ok
+test vrp_cache::tests::test_valid_exact ... ok
+test netbox::tests::enricher_starts_with_empty_cache ... ok
+test servicenow_cmdb::tests::enricher_starts_empty ... ok
+test servicenow_cmdb::tests::cache_clear ... ok
+test netbox::tests::cache_clear_works ... ok
+
+test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+
+     Running unittests src/lib.rs (/home/arjuna/rustybmp/target/debug/deps/rbmp_kafka-e25e89874dba5834)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/arjuna/rustybmp/target/debug/deps/rbmp_mrt-4aa8da544c221b01)
+
+running 15 tests
+test reader::tests::test_bgp4mp_message_peer_addr_preserved ... ok
+test reader::tests::test_bgp4mp_message_peer_as_preserved ... ok
+test reader::tests::test_five_records_roundtrip ... ok
+test reader::tests::test_eof_returns_none ... ok
+test reader::tests::test_is_bgp4mp_true ... ok
+test reader::tests::test_reader_empty_stream_yields_no_records ... ok
+test reader::tests::test_roundtrip_bgp4mp_message ... ok
+test reader::tests::test_roundtrip_state_change ... ok
+test reader::tests::test_mrt_reader_iterator ... ok
+test reader::tests::test_truncated_header_returns_error ... ok
+test writer::tests::test_bgp4mp_message_roundtrip_length ... ok
+test writer::tests::test_peer_index_table_written ... ok
+test writer::tests::test_state_change_length ... ok
+test reader::tests::test_timestamp_preserved ... ok
+test writer::tests::test_rib_ipv4_unicast_written ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/arjuna/rustybmp/target/debug/deps/rbmp_nats-496fc0428b88bee1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/arjuna/rustybmp/target/debug/deps/rbmp_rib-c66c7f64206bbae6)
+
+running 41 tests
+test filter::tests::test_as_path_contains_filter ... ok
+test filter::tests::test_accept_by_peer_as ... ok
+test filter::tests::test_bogon_10_slash_8_rejected ... ok
+test filter::tests::test_deny_bogon_prefix ... ok
+test filter::tests::test_empty_engine_default_accept ... ok
+test filter::tests::test_bogon_192_168_rejected ... ok
+test filter::tests::test_filter_by_community ... ok
+test filter::tests::test_filter_name_returned_on_match ... ok
+test filter::tests::test_local_pref_range ... ok
+test filter::tests::test_filter_reject_invalid_and_too_specific ... ok
+test filter_expr::tests::test_action_withdraw ... ok
+test filter_expr::tests::test_as_path_len_gt ... ok
+test filter_expr::tests::test_and_compound ... ok
+test filter_expr::tests::test_as_path_len_le ... ok
+test filter_expr::tests::test_community_missing ... ok
+test filter_expr::tests::test_complex_expr ... ok
+test filter_expr::tests::test_community_has ... ok
+test filter::tests::test_filter_peer_as_in_expr ... ok
+test filter_expr::tests::test_has_prepend ... ok
+test filter_expr::tests::test_action_eq ... ok
+test filter_expr::tests::test_in_set ... ok
+test filter_expr::tests::test_local_pref_lt_false ... ok
+test filter_expr::tests::test_med_lt ... ok
+test filter_expr::tests::test_not ... ok
+test filter_expr::tests::test_or ... ok
+test filter_expr::tests::test_med_gt_false ... ok
+test filter_expr::tests::test_nested_and_or ... ok
+test filter_expr::tests::test_local_pref ... ok
+test filter_expr::tests::test_local_pref_eq ... ok
+test filter_expr::tests::test_peer_as_not_in ... ok
+test filter_expr::tests::test_prefix_len_ge_boundary ... ok
+test filter_expr::tests::test_rpki_eq ... ok
+test filter_expr::tests::test_simple_comparison ... ok
+test filter_expr::tests::test_origin_as_not_in ... ok
+test filter_expr::tests::test_parse_error_bad_syntax ... ok
+test roto_filter::tests::test_noop_engine_accepts ... ok
+test manager::tests::b04_same_peer_ip_across_two_vrf_distinguishers_on_same_exporter_stays_isolated ... ok
+test manager::tests::b04_event_and_route_identity_schema_serialization_and_repeated_announcements ... ok
+test manager::tests::b04_stale_session_epoch_disconnect_does_not_clear_newer_session_state ... ok
+test manager::tests::b04_same_peer_on_two_exporters_remains_isolated_across_peer_down_and_termination ... ok
+test roto_filter::tests::test_stats_default ... ok
+
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/collector.rs (/home/arjuna/rustybmp/target/debug/deps/rbmp_collector-5b9d38c1c7593cb3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/home/arjuna/rustybmp/target/debug/deps/rustybmp-c53b6a14d234fe88)
+
+running 58 tests
+test auth::tests::jwt_wrong_secret_rejected ... ok
+test auth::tests::claims_fields_round_trip ... ok
+test auth::tests::token_bucket_capacity_100_allows_100_burst ... ok
+test auth::tests::jwt_encode_decode_roundtrip ... ok
+test auth::tests::token_bucket_exhaustion ... ok
+test auth::tests::token_bucket_unlimited ... ok
+test auth::tests::token_bucket_capacity_1_allows_exactly_one_burst ... ok
+test dns::tests::test_evict_expired ... ok
+test governor::tests::initial_state_no_pressure ... ok
+test governor::tests::manual_memory_pressure_flag ... ok
+test governor::tests::clone_shares_atomic_state ... ok
+test governor::tests::different_rate_budgets_reflected_in_snapshot ... ok
+test governor::tests::memory_shrink_count_increments_independently ... ok
+test governor::tests::rate_shed_count_increments_independently ... ok
+test governor::tests::manual_rate_shedding_flag ... ok
+test governor::tests::record_event_increments_counter ... ok
+test governor::tests::record_many_events_counter_monotonic ... ok
+test dns::tests::test_cache_miss_then_hit ... ok
+test governor::tests::snapshot_reflects_cfg ... ok
+test governor::tests::write_pressure_flag_roundtrip ... ok
+test ha::tests::b08_enabled_ha_with_invalid_redis_url_does_not_claim_leadership ... ok
+test ha::tests::b08_redis_disconnect_demotes_active_leader ... ok
+test mcp_server::tests::anomaly_catalogue_each_has_verification_query ... ok
+test mcp_server::tests::anomaly_catalogue_has_five_entries ... ok
+test mcp_server::tests::nl_query_to_sql_flap ... ok
+test mcp_server::tests::nl_query_to_sql_rpki ... ok
+test mcp_server::tests::nl_to_sql_convergence_keyword ... ok
+test mcp_server::tests::tool_names_contains_nl_query ... ok
+test mcp_server::tests::tool_names_count_is_11 ... ok
+test mcp_server::tests::anomaly_catalogue_kinds_unique ... ok
+test mcp_server::tests::nl_query_to_sql_default_returns_route_events ... ok
+test mcp_server::tests::token_budget_initially_allows_small_queries ... ok
+test output::servicenow_em::tests::severity_filter_blocks_info_when_min_warn ... ok
+test output::servicenow_em::tests::severity_mapping ... ok
+test output::tests::arc_adapter_object_safe ... ok
+test output::tests::batch_size_is_256 ... ok
+test output::tests::noop_adapter_name ... ok
+test output::tests::noop_adapter_is_healthy ... ok
+test mcp_server::tests::tool_names_no_duplicates ... ok
+test output::tests::noop_adapter_send_batch_empty_ok ... ok
+test auth::tests::token_bucket_refills_over_time ... ok
+test output::webhook::tests::opsgenie_payload_has_priority ... ok
+test output::webhook::tests::pagerduty_payload_has_routing_key ... ok
+test output::webhook::tests::passes_min_filter ... ok
+test output::webhook::tests::severity_rank_ordering ... ok
+test output::webhook::tests::slack_payload_has_attachments ... ok
+test output::webhook::tests::teams_payload_is_adaptive_card ... ok
+test receiver::tests::fragmented_and_coalesced_frames_decode_in_order ... ok
+test receiver::tests::oversized_declared_length_is_rejected_immediately_at_header ... ok
+test receiver::tests::stalled_header_and_stalled_body_time_out_cleanly ... ok
+test receiver::tests::zero_and_short_length_headers_terminate_without_spinning ... ok
+test output::webhook::tests::dedup_suppresses ... ok
+test output::servicenow_em::tests::dedup_allows_different_keys ... ok
+test output::servicenow_em::tests::dedup_suppresses_repeat ... ok
+test output::servicenow_em::tests::em_event_url_format ... ok
+test output::webhook::tests::custom_profile_with_template ... ok
+test output::servicenow_em::tests::adapter_name ... ok
+test output::webhook::tests::adapter_name ... ok
+
+test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+     Running unittests src/lib.rs (/home/arjuna/rustybmp/target/debug/deps/rbmp_store-4921f5242db1d1d1)
+
+running 4 tests
+test writer::tests::b06_durable_journal_replay_reconstructs_identical_rib_state_after_truncated_crash_tail ... ok
+test writer::tests::b06_end_of_rib_event_is_persisted_in_peer_events ... ok
+test query::tests::bmp_stats_history_returns_rows_with_afi_safi ... ok
+test writer::tests::b06_failed_batch_rolls_back_instead_of_committing_partial_rows ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+   Doc-tests rbmp_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rbmp_enrichment
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rbmp_kafka
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rbmp_mrt
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rbmp_nats
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rbmp_rib
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rbmp_store
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

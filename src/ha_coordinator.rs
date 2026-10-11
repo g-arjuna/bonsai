@@ -59,6 +59,7 @@ pub struct HACoordinator {
     pub mode: HAMode,
     state: Arc<RwLock<LeaderState>>,
     pub etcd_config: Option<EtcdConfig>,
+    etcd_connected: Arc<std::sync::atomic::AtomicBool>,
     shutdown_signal: Arc<RwLock<bool>>,
     // G3 Session 8: Callback to notify when leadership changes
     leadership_change_callback: Mutex<Option<Box<dyn Fn(LeaderState) + Send + Sync>>>,
@@ -70,6 +71,7 @@ impl HACoordinator {
             mode,
             state: Arc::new(RwLock::new(LeaderState::Electing)),
             etcd_config: None,
+            etcd_connected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             shutdown_signal: Arc::new(RwLock::new(false)),
             leadership_change_callback: Mutex::new(None),
         }
@@ -78,6 +80,12 @@ impl HACoordinator {
     pub fn with_etcd_config(mut self, config: EtcdConfig) -> Self {
         self.etcd_config = Some(config);
         self
+    }
+
+    /// Returns true if an active etcd session is connected in cluster mode.
+    pub fn is_etcd_connected(&self) -> bool {
+        self.etcd_connected
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Get current leader state
@@ -121,28 +129,40 @@ impl HACoordinator {
     /// Start leader election loop
     ///
     /// In standalone mode, immediately becomes leader.
-    /// In cluster mode, uses etcd for distributed election.
+    /// In cluster mode, uses etcd for distributed election and refuses leadership if etcd is unavailable.
     pub async fn start_election(&self) {
         match &self.mode {
             HAMode::Standalone => {
+                self.etcd_connected
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
                 self.set_state(LeaderState::Leader).await;
                 tracing::info!("HA mode: standalone, assumed leader");
             }
             HAMode::Cluster { node_id } => {
-                // G3 Session 2: Implement etcd-based leader election
                 if let Some(ref etcd_config) = self.etcd_config {
                     match self.run_etcd_election(node_id.clone(), etcd_config).await {
                         Ok(_) => {
                             tracing::info!(%node_id, "HA mode: cluster, leader election completed");
                         }
                         Err(e) => {
-                            tracing::error!(%node_id, error = %e, "HA mode: cluster, leader election failed, falling back to leader assumption");
-                            self.set_state(LeaderState::Leader).await; // Fallback
+                            tracing::error!(
+                                %node_id,
+                                error = %e,
+                                "HA mode: cluster, leader election failed; remaining non-leader (Electing)"
+                            );
+                            self.etcd_connected
+                                .store(false, std::sync::atomic::Ordering::Relaxed);
+                            self.set_state(LeaderState::Electing).await;
                         }
                     }
                 } else {
-                    tracing::warn!(%node_id, "HA mode: cluster but no etcd config provided");
-                    self.set_state(LeaderState::Leader).await; // Fallback
+                    tracing::warn!(
+                        %node_id,
+                        "HA mode: cluster but no etcd config provided; refusing leadership"
+                    );
+                    self.etcd_connected
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
+                    self.set_state(LeaderState::Electing).await;
                 }
             }
         }
@@ -150,7 +170,9 @@ impl HACoordinator {
 
     /// Run etcd-based leader election (cluster mode).
     async fn run_etcd_election(&self, node_id: String, config: &EtcdConfig) -> Result<()> {
-        use etcd_client::{Client, ConnectOptions};
+        use etcd_client::{
+            Client, Compare, CompareOp, ConnectOptions, PutOptions, Txn, TxnOp, TxnOpResponse,
+        };
         use tokio::time::{interval, Duration};
 
         let endpoints: Vec<&str> = config.endpoints.iter().map(|s| s.as_str()).collect();
@@ -158,23 +180,62 @@ impl HACoordinator {
             .await
             .context("failed to connect to etcd")?;
 
+        self.etcd_connected
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+
         let lease_resp = client.lease_grant(config.election_ttl_secs, None).await?;
         let lease_id = lease_resp.id();
         let election_key = format!("{}/leader", config.config_prefix);
 
         tracing::info!(%node_id, lease_id, %election_key, "starting etcd leader election");
 
-        // Try to become leader by putting our node_id under the election key
-        let put_key = format!("{}/{}", election_key, node_id);
-        let opts = etcd_client::PutOptions::new().with_lease(lease_id);
-        client.put(put_key.clone(), node_id.as_bytes(), Some(opts)).await
-            .context("failed to put election key")?;
+        // Attempt exclusive ownership of `election_key` via etcd CAS transaction (create_revision == 0)
+        let opts = PutOptions::new().with_lease(lease_id);
+        let txn = Txn::new()
+            .when(vec![Compare::create_revision(
+                election_key.as_str(),
+                CompareOp::Equal,
+                0,
+            )])
+            .and_then(vec![TxnOp::put(
+                election_key.as_str(),
+                node_id.as_bytes(),
+                Some(opts),
+            )])
+            .or_else(vec![TxnOp::get(election_key.as_str(), None)]);
 
-        self.set_state(LeaderState::Leader).await;
-        tracing::info!(%node_id, "assumed leader role (simplified election)");
+        let txn_resp = client
+            .txn(txn)
+            .await
+            .context("failed to execute etcd leader election transaction")?;
+
+        if txn_resp.succeeded() {
+            self.set_state(LeaderState::Leader).await;
+            tracing::info!(%node_id, "acquired exclusive etcd leader lease");
+        } else {
+            let current_leader = txn_resp
+                .op_responses()
+                .into_iter()
+                .find_map(|op| match op {
+                    TxnOpResponse::Get(get_resp) => get_resp
+                        .kvs()
+                        .first()
+                        .map(|kv| String::from_utf8_lossy(kv.value()).to_string()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            if current_leader == node_id {
+                self.set_state(LeaderState::Leader).await;
+            } else {
+                self.set_state(LeaderState::Follower {
+                    leader_id: current_leader,
+                })
+                .await;
+            }
+        }
 
         // Maintain lease (heartbeat)
-        let mut ticker = interval(Duration::from_secs(config.election_ttl_secs as u64 / 2));
+        let mut ticker = interval(Duration::from_secs((config.election_ttl_secs as u64 / 2).max(1)));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
@@ -184,6 +245,8 @@ impl HACoordinator {
                         .context("failed to start keep-alive stream")?;
                     if let Err(e) = keeper.keep_alive().await {
                         tracing::error!(error = %e, "failed to keep lease alive, resigning leadership");
+                        self.etcd_connected
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
                         self.set_state(LeaderState::Electing).await;
                         return Err(e.into());
                     }
@@ -191,6 +254,8 @@ impl HACoordinator {
                 _ = self.watch_shutdown_signal() => {
                     tracing::info!(%node_id, "shutdown requested, resigning leadership");
                     let _ = client.lease_revoke(lease_id).await;
+                    self.etcd_connected
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
                     self.set_state(LeaderState::Electing).await;
                     return Ok(());
                 }

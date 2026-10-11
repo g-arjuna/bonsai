@@ -1,0 +1,94 @@
+   Compiling rbmp-enrichment v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-enrichment)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.39s
+     Running unittests src/lib.rs (/home/arjuna/rustybmp/target/debug/deps/rbmp_enrichment-1d0c975356bee95d)
+
+running 58 tests
+test aspa::tests::test_aspa_validity_display ... ok
+test aspa::tests::test_empty_path ... ok
+test aspa::tests::test_invalid_violated_hop_is_reported ... ok
+test aspa::tests::test_invalid_path_route_leak ... ok
+test aspa::tests::test_is_empty_then_populated ... ok
+test aspa::tests::test_load_overwrites_existing ... ok
+test aspa::tests::test_parse_as_path_empty_string ... ok
+test aspa::tests::test_parse_as_path_prepend_collapsed_middle ... ok
+test aspa::tests::test_parse_as_path_single ... ok
+test aspa::tests::test_partial_coverage_unknown ... ok
+test aspa::tests::test_prepend_collapsed ... ok
+test aspa::tests::test_single_hop_no_record ... ok
+test aspa::tests::test_single_hop_with_record_no_pair ... ok
+test aspa::tests::test_upsert_merges_providers ... ok
+test aspa::tests::test_valid_path ... ok
+test bgpsec::tests::b08_forged_signature_bytes_rejected_when_update_wire_provided ... ok
+test bgpsec::tests::b08_passive_bmp_without_signature_input_is_not_valid ... ok
+test bgpsec::tests::cert_count_tracks_loads ... ok
+test bgpsec::tests::bad_raw_key_rejected ... ok
+test bgpsec::tests::overwrite_cert_updates_key ... ok
+test bgpsec::tests::unverified_with_loaded_cert_when_wire_absent ... ok
+test aspa::tests::test_unknown_no_records ... ok
+test bgpsec::tests::absent_when_empty_raw ... ok
+test bgpsec::tests::b08_authentic_ecdsa_p256_signature_verifies_valid ... ok
+test bgpsec::tests::malformed_when_no_signing_asns_but_raw_present ... ok
+test bgpsec::tests::multi_hop_all_certs_required ... ok
+test bgpsec::tests::not_found_when_cert_missing ... ok
+test netbox::tests::default_cache_ttl ... ok
+test netbox::tests::device_result_handles_missing_fields ... ok
+test netbox::tests::device_result_to_device ... ok
+test servicenow_cmdb::tests::cmdb_device_serialize ... ok
+test bgpsec::tests::verdict_str_covers_all_variants ... ok
+test servicenow_cmdb::tests::change_record_fields ... ok
+test vault::tests::test_ssh_fetch_purpose ... ok
+test vault::tests::test_round_trip ... ok
+test vrp_cache::tests::test_delta_add ... ok
+test vrp_cache::tests::test_covering_prefix_not_covered_by_more_specific ... ok
+test vrp_cache::tests::test_delta_add_remove ... ok
+test vrp_cache::tests::test_empty_cache_not_found ... ok
+test vrp_cache::tests::test_invalid_exceeds_maxlen ... ok
+test vrp_cache::tests::test_invalid_wrong_origin ... ok
+test vrp_cache::tests::test_ipv6_exceeds_maxlen ... ok
+test vrp_cache::tests::test_ipv6_invalid_wrong_origin ... ok
+test vault::tests::test_remove ... ok
+test vrp_cache::tests::test_ipv6_valid ... ok
+test vault::tests::test_wrong_passphrase_rejected ... ok
+test vrp_cache::tests::test_is_empty_then_reset ... ok
+test vrp_cache::tests::test_multi_roa_best_match ... ok
+test vrp_cache::tests::test_not_found ... ok
+test vrp_cache::tests::test_serial_after_reset ... ok
+test vrp_cache::tests::test_serial_initial_zero ... ok
+test vrp_cache::tests::test_valid_more_specific_within_maxlen ... ok
+test vrp_cache::tests::test_rpki_state_display ... ok
+test vrp_cache::tests::test_valid_exact ... ok
+test servicenow_cmdb::tests::cache_clear ... ok
+test netbox::tests::cache_clear_works ... ok
+test netbox::tests::enricher_starts_with_empty_cache ... ok
+test servicenow_cmdb::tests::enricher_starts_empty ... ok
+
+test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+   Doc-tests rbmp_enrichment
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling rbmp-enrichment v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-enrichment)
+   Compiling rbmp-server v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-server)
+    Finished `test` profile [optimized + debuginfo] target(s) in 15.33s
+     Running unittests src/main.rs (/home/arjuna/rustybmp/target/debug/deps/rustybmp-c53b6a14d234fe88)
+
+running 2 tests
+test ha::tests::b08_redis_disconnect_demotes_active_leader ... ok
+test ha::tests::b08_enabled_ha_with_invalid_redis_url_does_not_claim_leadership ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 56 filtered out; finished in 0.00s
+
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3m 56s
+     Running tests/b08_feature_gating.rs (target/debug/deps/b08_feature_gating-b00d2f28a7d0eae6)
+
+running 3 tests
+test b08_cluster_mode_without_etcd_does_not_fallback_to_leader ... ok
+test b08_cluster_mode_with_unreachable_etcd_does_not_fallback_to_leader ... ok
+test b08_rollback_registry_persists_active_windows_across_reload ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

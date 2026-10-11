@@ -2,17 +2,17 @@
 
 Canonical current state: [STATUS.md](STATUS.md). Full backlog B00–B22 and architecture contracts: [source handoff, sections 6–8](../../BONSAI_RUSTYBMP_CODEX_HANDOFF.md).
 
-## B00 — establish the baseline
+## B00 — establish the baseline (completed)
 
 Initial inventory is recorded in [../baseline.md](../baseline.md). Both HEADs match the audit; both worktrees contain existing local work. Preserve that work. Record the revision of any future isolated checkout separately from the source checkout. Existing NOS tags/digests and stopped lab are evidence of availability only.
 
-## B01 — credible test and CI gates (completed locally)
+## B01 — credible test and CI gates (completed)
 
 Implementation and local evidence are recorded in [B01_REPORT.md](B01_REPORT.md) and [b01-docker-verification.log](evidence/2026-10-11/b01-docker-verification.log). Changes are reviewable in `/home/arjuna/rustybmp-b01` and the [portable patch](evidence/2026-10-11/rustybmp-b01-b02.patch).
 
 1. Isolated RustyBMP checkout in `/home/arjuna/rustybmp-b01` (`integration/b01-baseline`). `/home/arjuna/rustybmp` and its modified documentation/untracked scenario remain intact.
 2. Locked dependency fetch and Rust 1.95.0 toolchain alignment verified across both repos.
-3. Fresh test enumeration and execution recorded across `rbmp-core`, `rbmp-rib`, and workspace (`244` tests discovered after B02/B03 additions).
+3. Fresh test enumeration and execution recorded across `rbmp-core`, `rbmp-rib`, and workspace (`264` tests passing after M0+M1 additions).
 4. RustyBMP CI failure masking (`|| echo`, `continue-on-error`) removed from required checks; required Python test runner fails on assertions, skips, collection errors, and zero tests.
 5. Docker image (`rustybmp:b01` / `rustybmp:ci`, 134.86 MB) built, started with `/health` check, passed 24/24 API tests (`0 skipped`), and verified across `docker save`/`docker load`.
 6. Bonsai CI aligned with Rust 1.95.0, native build prerequisites, and `sccache`/`mold`.
@@ -33,10 +33,27 @@ Verified via `python3 docs/merger/evidence/2026-10-11/inspect_fixtures.py /home/
 - Hardened `collector_protocol.rs`, `proxy.rs`, and `bin/collector.rs` with bounded frame reads and timeouts.
 - Fixed `tls.rs` to register CA certificates into `RootCertStore`, build `WebPkiClientVerifier` when `client_auth_required = true`, and pass `cfg.bmp.max_connections` instead of hardcoded `256`.
 
-## Next slice: Milestone M1 (B04 -> B05 -> B06 -> B08) before Bonsai crate import (B10)
+## Milestone M1 (B04 -> B05 -> B06 -> B08) — Trustworthy routing core (completed)
 
-1. **B04 — Typed route, peer, view and event identities**: Replace `HashMap<IpAddr, RibTable>` in `rbmp-rib` with composite `ObservationSource`, `PeerKey`, `ViewKey`, `RouteKey`, and `EventKey` keys.
-2. **B05 — Session-aware BGP decoding and End-of-RIB**: Thread `PeerUp` capabilities (2-byte vs 4-byte ASN, Add-Path per AFI/SAFI) and explicit `EOR` markers into `rbmp-core` and `rbmp-rib`.
-3. **B06 — Durable journal, DuckDB commit checking & crash recovery**: Check `COMMIT` errors in `rbmp-store`, unify `BMP_SCHEMA_DDL` with `001_bmp_tables.sql`, and enforce bounded replay before **B10** imports `rbmp-core`, `rbmp-rib`, and `rbmp-store` into Bonsai.
-4. **B08 — Truthful feature gating**: Gate placeholder BGPsec/HA/remediation paths behind read-only/unavailable status before exposing routing workflows in Bonsai (**B10–B15**).
+Portable patch: [rustybmp-m1-b04-b08.patch](evidence/2026-10-11/rustybmp-m1-b04-b08.patch).
 
+1. **B04 — Typed route, peer, view and event identities (completed)**:
+   - Added `ObservationSource`, `PeerKey`, `ViewKey`, `RouteKey`, and `EventKey` in `rbmp-core::bmp::types` ([ADR-001](ADR-001-routing-identity-and-event-schema.md)).
+   - Replaced `HashMap<IpAddr, RibTable>` and `HashMap<IpAddr, PeerSession>` in `rbmp-rib` with `HashMap<ViewKey, RibTable>` and `HashMap<PeerKey, PeerSession>`.
+   - Upgraded `RibEvent` to `schema_version = 2` with `session_epoch`, `route_distinguisher`, `peer_bgp_id`, `path_id`, and `event_key()`.
+2. **B05 — Session-aware BGP decoding and End-of-RIB (completed)**:
+   - Added `BgpDecodeContext` and `FamilySupportStatus` (`Supported`, `ExperimentalParseOnly`, `Unsupported`) in `rbmp-core`.
+   - Fixed 2-byte vs 4-byte `AS_PATH` decoding, `AS_TRANS` (`23456`) + `AS4_PATH` reconstruction (RFC 6793 §4.2.3), `AS4_AGGREGATOR` merge (RFC 6793 §4.2.2), `MP_REACH_NLRI` `next_hop` propagation, per-AFI/SAFI Add-Path `path_id` decoding, and all-family `EndOfRib` detection (`BgpUpdate::eor_afi_safi()`).
+3. **B06 — Durable journal, DuckDB commit checking & crash recovery (completed)**:
+   - Created `BmpJournal` (`crates/rbmp-store/src/journal.rs`) with `sync_data()` durability and truncated crash-tail recovery (`replay_into`).
+   - Updated `rbmp-store::writer::flush_batch` to check `COMMIT` errors, roll back failed transactions, only increment `rib_events_written_total` after durable commit, and persist `EndOfRib` markers to `peer_events`.
+4. **B08 — Truthful feature gating (completed)**:
+   - Updated `BgpsecValidator` (`crates/rbmp-enrichment/src/bgpsec.rs`) to return `BgpsecVerdict::Unverified` when RFC 8205 signature input is absent and require real ECDSA P-256 verification when signature input is provided.
+   - Removed split-brain HA leader fallbacks in RustyBMP (`crates/rbmp-server/src/ha.rs`) and Bonsai (`src/ha_coordinator.rs`) when Redis/etcd is unreachable or unconfigured, and added file-backed persistence to Bonsai's `RollbackRegistry` (`src/remediation/rollback.rs`).
+
+## Next slice: Milestone M2 (B07, B09–B15) — One usable Bonsai workflow
+
+1. **B07 — Canonical vendor/capability registry**: Eliminate silent Cisco fallback on unknown vendor strings; align CLI/API/UI vendor identifiers.
+2. **B09 — Bonsai peer-transition ordering and correlation fixes**: Read prior peer state before `upsert_bmp_session` in `src/graph/mod.rs::write_bmp_peer_state` and preserve raw correlation evidence on window expiry.
+3. **B10 — Routing crate import into Bonsai workspace**: Import `rbmp-core`, `rbmp-rib`, and `rbmp-store` into Bonsai with provenance manifest.
+4. **B11–B15**: Versioned internal routing API, shared auth/RBAC, graph summary projection, Svelte 5 routing views in Bonsai `ui/`, and unified Compose dev workflow.

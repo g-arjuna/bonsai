@@ -1,0 +1,42 @@
+   Compiling rbmp-core v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-core)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1.36s
+     Running ../../tests/regressions/bmp_rfc_contract.rs (/home/arjuna/rustybmp/target/debug/deps/bmp_rfc_contract-61044a6cc1a094d7)
+
+running 3 tests
+test b05_mp_reach_ipv6_populates_next_hop_and_evpn_unreach_is_not_eor ... FAILED
+test b05_four_byte_asn_66048_is_not_misparsed_as_two_byte_segments ... FAILED
+test b05_two_byte_as_trans_reconstructs_with_as4_path_and_as4_aggregator ... FAILED
+
+failures:
+
+---- b05_mp_reach_ipv6_populates_next_hop_and_evpn_unreach_is_not_eor stdout ----
+
+thread 'b05_mp_reach_ipv6_populates_next_hop_and_evpn_unreach_is_not_eor' (2705364) panicked at crates/rbmp-core/../../tests/regressions/bmp_rfc_contract.rs:440:5:
+assertion `left == right` failed
+  left: None
+ right: Some(2001:db8::1)
+
+---- b05_four_byte_asn_66048_is_not_misparsed_as_two_byte_segments stdout ----
+
+thread 'b05_four_byte_asn_66048_is_not_misparsed_as_two_byte_segments' (2705363) panicked at crates/rbmp-core/../../tests/regressions/bmp_rfc_contract.rs:374:5:
+assertion `left == right` failed
+  left: [Sequence([1]), Sequence([])]
+ right: [Sequence([66048])]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- b05_two_byte_as_trans_reconstructs_with_as4_path_and_as4_aggregator stdout ----
+
+thread 'b05_two_byte_as_trans_reconstructs_with_as4_path_and_as4_aggregator' (2705365) panicked at crates/rbmp-core/../../tests/regressions/bmp_rfc_contract.rs:408:5:
+assertion `left == right` failed
+  left: [Sequence([65001, 23456])]
+ right: [Sequence([65001, 4200000001])]
+
+
+failures:
+    b05_four_byte_asn_66048_is_not_misparsed_as_two_byte_segments
+    b05_mp_reach_ipv6_populates_next_hop_and_evpn_unreach_is_not_eor
+    b05_two_byte_as_trans_reconstructs_with_as4_path_and_as4_aggregator
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p rbmp-core --test bmp_rfc_contract`

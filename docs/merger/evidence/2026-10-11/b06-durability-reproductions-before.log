@@ -1,0 +1,33 @@
+   Compiling rbmp-store v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-store)
+    Finished `test` profile [optimized + debuginfo] target(s) in 4.90s
+     Running unittests src/lib.rs (/home/arjuna/rustybmp/target/debug/deps/rbmp_store-622fc3fcf9f91be9)
+
+running 2 tests
+test writer::tests::b06_end_of_rib_event_is_persisted_in_peer_events ... FAILED
+test writer::tests::b06_failed_batch_rolls_back_instead_of_committing_partial_rows ... FAILED
+
+failures:
+
+---- writer::tests::b06_end_of_rib_event_is_persisted_in_peer_events stdout ----
+
+thread 'writer::tests::b06_end_of_rib_event_is_persisted_in_peer_events' (2736899) panicked at crates/rbmp-store/src/writer.rs:381:9:
+assertion `left == right` failed: EndOfRib must be persisted to peer_events
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- writer::tests::b06_failed_batch_rolls_back_instead_of_committing_partial_rows stdout ----
+
+thread 'writer::tests::b06_failed_batch_rolls_back_instead_of_committing_partial_rows' (2736900) panicked at crates/rbmp-store/src/writer.rs:422:9:
+assertion `left == right` failed: failed batch must roll back all statements in transaction
+  left: 1
+ right: 0
+
+
+failures:
+    writer::tests::b06_end_of_rib_event_is_persisted_in_peer_events
+    writer::tests::b06_failed_batch_rolls_back_instead_of_committing_partial_rows
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `-p rbmp-store --lib`

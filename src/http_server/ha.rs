@@ -65,7 +65,7 @@ pub async fn ha_status_handler(
         };
         
         let is_leader = matches!(state, LeaderState::Leader);
-        let etcd_connected = ha.etcd_config.is_some();
+        let etcd_connected = ha.is_etcd_connected();
         let etcd_endpoints = ha.etcd_config.as_ref().map(|c| c.endpoints.join(","));
         
         Ok(Json(HAStatusResponse {

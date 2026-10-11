@@ -1505,7 +1505,9 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 std::path::Path::new(&runtime_dir),
                 cfg.remediation.clone(),
             );
-            let rollback_registry = bonsai::remediation::rollback::new_rollback_registry();
+            let rollback_registry = bonsai::remediation::rollback::new_persistent_rollback_registry(
+                std::path::Path::new(&runtime_dir),
+            );
             let remediation_config = cfg.remediation.clone();
             let servicenow_config = cfg.integrations.servicenow.clone();
 

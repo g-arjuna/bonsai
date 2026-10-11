@@ -1,0 +1,75 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.24s
+     Running unittests src/lib.rs (/home/arjuna/rustybmp/target/debug/deps/rbmp_enrichment-1d0c975356bee95d)
+
+running 2 tests
+
+thread 'bgpsec::tests::b08_forged_signature_bytes_rejected_when_update_wire_provided' (2750731) panicked at crates/rbmp-enrichment/src/bgpsec.rs:354:9:
+forged signature bytes must fail ECDSA verification when signature input is provided
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'bgpsec::tests::b08_passive_bmp_without_signature_input_is_not_valid' (2750732) panicked at crates/rbmp-enrichment/src/bgpsec.rs:322:9:
+assertion `left != right` failed: passive BMP without RFC 8205 signature input must not report Valid
+  left: Valid
+ right: Valid
+test bgpsec::tests::b08_passive_bmp_without_signature_input_is_not_valid ... FAILED
+test bgpsec::tests::b08_forged_signature_bytes_rejected_when_update_wire_provided ... FAILED
+
+failures:
+
+failures:
+    bgpsec::tests::b08_forged_signature_bytes_rejected_when_update_wire_provided
+    bgpsec::tests::b08_passive_bmp_without_signature_input_is_not_valid
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 55 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p rbmp-enrichment --lib`
+   Compiling rbmp-core v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-core)
+   Compiling rbmp-rib v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-rib)
+   Compiling rbmp-enrichment v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-enrichment)
+   Compiling rbmp-kafka v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-kafka)
+   Compiling rbmp-nats v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-nats)
+   Compiling rbmp-store v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-store)
+   Compiling rbmp-server v0.1.0 (/home/arjuna/rustybmp-b01/crates/rbmp-server)
+    Finished `test` profile [optimized + debuginfo] target(s) in 45.72s
+     Running unittests src/main.rs (/home/arjuna/rustybmp/target/debug/deps/rustybmp-c53b6a14d234fe88)
+
+running 1 test
+
+thread 'ha::tests::b08_enabled_ha_with_invalid_redis_url_does_not_claim_leadership' (2751775) panicked at crates/rbmp-server/src/ha.rs:135:9:
+enabled HA must not silently claim standalone leadership when Redis initialization fails
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test ha::tests::b08_enabled_ha_with_invalid_redis_url_does_not_claim_leadership ... FAILED
+
+failures:
+
+failures:
+    ha::tests::b08_enabled_ha_with_invalid_redis_url_does_not_claim_leadership
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 56 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p rbmp-server --bin rustybmp`
+    Blocking waiting for file lock on artifact directory
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 4m 16s
+     Running tests/b08_feature_gating.rs (target/debug/deps/b08_feature_gating-b00d2f28a7d0eae6)
+
+running 2 tests
+
+thread 'b08_cluster_mode_without_etcd_does_not_fallback_to_leader' (2755854) panicked at tests/b08_feature_gating.rs:9:5:
+cluster mode without etcd config must not silently assume leadership
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test b08_cluster_mode_without_etcd_does_not_fallback_to_leader ... FAILED
+
+thread 'b08_cluster_mode_with_unreachable_etcd_does_not_fallback_to_leader' (2755853) panicked at tests/b08_feature_gating.rs:26:5:
+cluster mode with unreachable etcd must not silently assume leadership
+test b08_cluster_mode_with_unreachable_etcd_does_not_fallback_to_leader ... FAILED
+
+failures:
+
+failures:
+    b08_cluster_mode_with_unreachable_etcd_does_not_fallback_to_leader
+    b08_cluster_mode_without_etcd_does_not_fallback_to_leader
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test b08_feature_gating`
