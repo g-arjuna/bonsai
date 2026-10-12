@@ -33,6 +33,31 @@
   let historyPrefix = $state('');
   let loadingHistory = $state(false);
 
+  // A09 / A10: Grounded Missing-Prefix Investigator & Structured Operator Adjudication
+  let investigatePrefix = $state('203.0.113.0/24');
+  let investigateVrfRd = $state('0:0');
+  let investigateSpeaker = $state('');
+  let investigateQuestion = $state('Why is prefix 203.0.113.0/24 missing or degraded?');
+  let loadingInvestigation = $state(false);
+  let explanation = $state(null);
+
+  // Structured Operator Adjudication form state (Strategy §8, A10)
+  let adjVerdict = $state('unknown');
+  let adjCheckUtility = $state('useful');
+  let adjRecommendationAccepted = $state(false);
+  let adjActionOutcome = $state('not_executed');
+  let adjOperator = $state('netops-oncall');
+  let adjRationale = $state('');
+  let adjSelectedEvidenceIds = $state([]);
+  let adjRejectedHypId = $state('');
+  let adjRejectedHypReason = $state('');
+  let adjCorrectionField = $state('');
+  let adjCorrectionValue = $state('');
+  let adjStatusMsg = $state('');
+  let adjErrorMsg = $state('');
+  let adjudicationSummary = $state(null);
+  let adjudicationHistory = $state([]);
+
   const RIB_VIEWS = [
     { value: '', label: 'All Views' },
     { value: 'AdjRibInPrePolicy', label: 'Adj-RIB-In (Pre-Policy)' },
@@ -83,6 +108,7 @@
       coverage = cData.families || [];
 
       await loadRoutes();
+      await loadAdjudications();
       if (historyPrefix.trim()) {
         await loadPrefixHistory(historyPrefix.trim());
       }
@@ -90,6 +116,108 @@
       error = e.message;
     } finally {
       loading = false;
+    }
+  }
+
+  async function runPrefixInvestigation(pfxOverride) {
+    if (pfxOverride) {
+      investigatePrefix = pfxOverride;
+    }
+    if (!investigatePrefix.trim()) return;
+    loadingInvestigation = true;
+    adjStatusMsg = '';
+    adjErrorMsg = '';
+    try {
+      const params = new URLSearchParams({
+        prefix: investigatePrefix.trim(),
+        vrf_rd: investigateVrfRd.trim() || '0:0',
+        question: investigateQuestion.trim() || `Explain routing state for ${investigatePrefix.trim()}`,
+      });
+      if (investigateSpeaker.trim()) {
+        params.set('speaker', investigateSpeaker.trim());
+      }
+      const r = await fetch(`/api/routing/v1/explain-prefix?${params.toString()}`);
+      const data = await r.json();
+      explanation = data;
+      adjSelectedEvidenceIds = [...(data.supporting_evidence_ids || [])];
+    } catch (e) {
+      adjErrorMsg = e.message;
+    } finally {
+      loadingInvestigation = false;
+    }
+  }
+
+  async function loadAdjudications() {
+    try {
+      const r = await fetch('/api/routing/v1/adjudications');
+      if (r.ok) {
+        const data = await r.json();
+        adjudicationSummary = data.adjudicated_accuracy || null;
+        adjudicationHistory = data.adjudications || [];
+      }
+    } catch (_) {
+      // ignore background adjudication fetch errors
+    }
+  }
+
+  function toggleEvidenceId(obsId) {
+    if (adjSelectedEvidenceIds.includes(obsId)) {
+      adjSelectedEvidenceIds = adjSelectedEvidenceIds.filter((id) => id !== obsId);
+    } else {
+      adjSelectedEvidenceIds = [...adjSelectedEvidenceIds, obsId];
+    }
+  }
+
+  async function submitAdjudication() {
+    adjStatusMsg = '';
+    adjErrorMsg = '';
+    const rejected_hypotheses =
+      adjRejectedHypId.trim() && adjRejectedHypReason.trim()
+        ? [{ hypothesis_id: adjRejectedHypId.trim(), reason: adjRejectedHypReason.trim() }]
+        : [];
+    const entity_corrections =
+      adjCorrectionField.trim() && adjCorrectionValue.trim()
+        ? [
+            {
+              field: adjCorrectionField.trim(),
+              original_value: explanation?.root_cause_type || 'unknown',
+              corrected_value: adjCorrectionValue.trim(),
+            },
+          ]
+        : [];
+
+    const payload = {
+      prefix: investigatePrefix.trim(),
+      vrf_rd: investigateVrfRd.trim() || '0:0',
+      speaker: investigateSpeaker.trim() || null,
+      diagnosis_verdict: adjVerdict,
+      next_check_utility: adjCheckUtility,
+      recommendation_accepted: adjRecommendationAccepted,
+      action_outcome: adjActionOutcome,
+      adjudicated_by: adjOperator.trim(),
+      adjudication_evidence_ids: adjSelectedEvidenceIds,
+      rejected_hypotheses,
+      entity_corrections,
+      missing_evidence_noted: explanation?.missing_observations || [],
+      rationale: adjRationale.trim(),
+    };
+
+    try {
+      const r = await fetch('/api/routing/v1/adjudicate-prefix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await r.json();
+      if (!r.ok || !data.accepted) {
+        adjErrorMsg = data.message || 'Adjudication rejected by validation contract.';
+        return;
+      }
+      adjudicationSummary = data.adjudicated_accuracy;
+      adjStatusMsg = `Recorded adjudication ${data.adjudication.adjudication_id} (root_cause_verified=${data.adjudication.root_cause_verified}, eligible_for_training=${data.adjudication.eligible_for_training})`;
+      await loadAdjudications();
+    } catch (e) {
+      adjErrorMsg = e.message;
     }
   }
 
@@ -148,14 +276,19 @@
   function completenessBadgeClass(state) {
     switch (state) {
       case 'complete_for_observed_view':
+      case 'supported':
         return 'badge-ok';
       case 'syncing':
+      case 'hypothesis_only':
         return 'badge-info';
       case 'stale':
+      case 'stale_observation':
+      case 'insufficient_evidence':
         return 'badge-warn';
       case 'gap':
       case 'unsupported':
       case 'unavailable':
+      case 'conflicted':
         return 'badge-danger';
       default:
         return 'badge-neutral';
@@ -488,6 +621,281 @@
     {/if}
   </section>
 
+  <!-- A09 / A10: Grounded Missing-Prefix Investigator & Operator Adjudication -->
+  <section class="panel" aria-label="Missing-Prefix Investigator and Operator Adjudication">
+    <div class="panel-header">
+      <div>
+        <h3>Missing-Prefix Investigator &amp; Operator Adjudication (A09 / A10)</h3>
+        <p class="muted">
+          Separates observed BMP/BGP facts from ranked hypotheses, citations (<code>observation_id</code>), missing planes, and structured operator adjudication.
+        </p>
+      </div>
+      <div class="filter-bar">
+        <input
+          type="text"
+          placeholder="Prefix (e.g. 203.0.113.0/24)"
+          bind:value={investigatePrefix}
+          aria-label="Investigate Prefix"
+        />
+        <input
+          type="text"
+          placeholder="VRF RD (0:0)"
+          bind:value={investigateVrfRd}
+          aria-label="Investigate VRF RD"
+        />
+        <input
+          type="text"
+          placeholder="Speaker IP (optional)"
+          bind:value={investigateSpeaker}
+          aria-label="Investigate Speaker IP"
+        />
+        <button class="btn-primary" onclick={() => runPrefixInvestigation()} disabled={loadingInvestigation}>
+          {loadingInvestigation ? 'Investigating...' : 'Explain Prefix'}
+        </button>
+      </div>
+    </div>
+
+    {#if adjudicationSummary}
+      <div class="coverage-row" style="margin-bottom: 0.75rem;">
+        <div class="coverage-chip">
+          <span>Adjudicated RCA Precision:</span>
+          <strong>{adjudicationSummary.adjudicated_precision_pct}%</strong>
+        </div>
+        <div class="coverage-chip">
+          <span>Verified Correct:</span>
+          <strong>{adjudicationSummary.verified_correct_count}</strong>
+        </div>
+        <div class="coverage-chip">
+          <span>Verified Incorrect:</span>
+          <strong>{adjudicationSummary.verified_incorrect_count}</strong>
+        </div>
+        <div class="coverage-chip">
+          <span>Accepted w/o RCA Proof:</span>
+          <strong>{adjudicationSummary.recommendation_accepted_without_rca_proof_count}</strong>
+        </div>
+        <div class="coverage-chip">
+          <span>Training-Eligible:</span>
+          <strong>{adjudicationSummary.training_eligible_count}</strong>
+        </div>
+      </div>
+    {/if}
+
+    {#if explanation}
+      <!-- 1. Impact & Epistemic Scope Summary -->
+      <div class="alert {explanation.status === 'supported' ? 'alert-info' : 'alert-warn'}" style="margin-bottom: 0.75rem;">
+        <div class="header-badges" style="margin-bottom: 0.35rem;">
+          <span class="badge {completenessBadgeClass(explanation.epistemic_state)}">
+            Epistemic State: {explanation.epistemic_state}
+          </span>
+          <span class="badge {completenessBadgeClass(explanation.completeness_state)}">
+            RIB Completeness: {explanation.completeness_state}
+          </span>
+          <span class="badge badge-neutral">
+            Root Cause Class: {explanation.root_cause_type}
+          </span>
+          {#if explanation.confidence_is_uncalibrated}
+            <span class="badge badge-warn" title="Confidence scores are heuristic until conformal calibration on held-out faults">
+              Uncalibrated Heuristic Score
+            </span>
+          {/if}
+        </div>
+        <div><strong>Conclusion:</strong> {explanation.conclusion}</div>
+      </div>
+
+      <!-- 2 & 3. Observed Facts vs Ranked Hypotheses & Counterevidence -->
+      <div class="panel-grid" style="margin-bottom: 0.75rem;">
+        <div class="subpanel">
+          <h4>Observed Control-Plane Facts ({(explanation.observed_facts || []).length})</h4>
+          {#if (explanation.observed_facts || []).length === 0}
+            <p class="empty-hint">No direct BMP/RIB observations recorded for this prefix yet.</p>
+          {:else}
+            <ul class="evidence-list">
+              {#each explanation.observed_facts as fact}
+                <li>
+                  <div>{fact.statement}</div>
+                  <div class="citation-row">
+                    <span class="badge badge-neutral">{fact.source_plane}</span>
+                    {#if fact.completeness_state}
+                      <span class="badge {completenessBadgeClass(fact.completeness_state)}">
+                        {fact.completeness_state}
+                      </span>
+                    {/if}
+                    {#if fact.observation_id}
+                      <button
+                        type="button"
+                        class="btn-small"
+                        onclick={() => toggleEvidenceId(fact.observation_id)}
+                        title="Toggle citation in operator adjudication"
+                      >
+                        {adjSelectedEvidenceIds.includes(fact.observation_id) ? '✓ ' : ''}{fact.observation_id}
+                      </button>
+                    {/if}
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+
+          <h4 style="margin-top: 0.75rem;">Explicitly Missing / Unobserved Planes</h4>
+          <ul class="evidence-list">
+            {#each explanation.missing_observations || [] as missing}
+              <li class="muted">{missing}</li>
+            {/each}
+          </ul>
+        </div>
+
+        <div class="subpanel">
+          <h4>Ranked Hypotheses &amp; Counterevidence ({(explanation.hypotheses || []).length})</h4>
+          {#if (explanation.hypotheses || []).length === 0}
+            <p class="empty-hint">No candidate hypotheses generated.</p>
+          {:else}
+            <ul class="evidence-list">
+              {#each explanation.hypotheses as hyp}
+                <li>
+                  <div class="header-badges">
+                    <strong>#{hyp.rank} [{hyp.hypothesis_id}]</strong>
+                    <span class="badge badge-info">{hyp.failure_class}</span>
+                    <span class="badge badge-warn">
+                      Score: {hyp.heuristic_score} ({hyp.score_semantics || 'uncalibrated'})
+                    </span>
+                    <button
+                      type="button"
+                      class="btn-small"
+                      onclick={() => {
+                        adjRejectedHypId = hyp.hypothesis_id;
+                      }}
+                    >
+                      Reject Hypothesis
+                    </button>
+                  </div>
+                  <div style="margin-top: 0.25rem;">{hyp.statement}</div>
+                  <div class="citation-row">
+                    <span class="muted">
+                      Supporting: {(hyp.supporting_evidence_ids || []).join(', ') || 'none'}
+                    </span>
+                    {#if (hyp.counterevidence_ids || []).length > 0}
+                      <span class="badge badge-danger">
+                        Counterevidence: {hyp.counterevidence_ids.join(', ')}
+                      </span>
+                    {/if}
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+
+          {#if explanation.next_check}
+            <div class="next-check-box">
+              <h4>Recommended Next Discriminating Check</h4>
+              <div>
+                <code>{explanation.next_check.tool_or_command}</code>
+                <span class="badge {explanation.next_check.read_only ? 'badge-ok' : 'badge-danger'}">
+                  {explanation.next_check.read_only ? 'READ-ONLY' : 'MUTATING'}
+                </span>
+              </div>
+              <p class="muted" style="margin: 0.25rem 0 0 0;">{explanation.next_check.reason}</p>
+            </div>
+          {/if}
+        </div>
+      </div>
+
+      <!-- 5. Structured Operator Adjudication Form (Strategy §8, A10) -->
+      <div class="subpanel">
+        <h4>Structured Operator Adjudication (Separates Recommendation Acceptance from Verified RCA)</h4>
+        <div class="filter-bar" style="margin-top: 0.5rem;">
+          <label>
+            Diagnosis Verdict:
+            <select bind:value={adjVerdict} aria-label="Diagnosis Verdict">
+              <option value="unknown">unknown (unresolved)</option>
+              <option value="correct">correct (verified root cause)</option>
+              <option value="incorrect">incorrect (refuted root cause)</option>
+            </select>
+          </label>
+
+          <label>
+            Next-Check Utility:
+            <select bind:value={adjCheckUtility} aria-label="Next-Check Utility">
+              <option value="useful">useful</option>
+              <option value="useless">useless</option>
+              <option value="not_evaluated">not_evaluated</option>
+            </select>
+          </label>
+
+          <label>
+            Action Outcome:
+            <select bind:value={adjActionOutcome} aria-label="Action Outcome">
+              <option value="not_executed">not_executed</option>
+              <option value="resolved">resolved</option>
+              <option value="not_resolved">not_resolved</option>
+            </select>
+          </label>
+
+          <label class="checkbox-label">
+            <input type="checkbox" bind:checked={adjRecommendationAccepted} />
+            Recommendation Accepted (does NOT imply verified RCA)
+          </label>
+        </div>
+
+        <div class="filter-bar" style="margin-top: 0.5rem;">
+          <input
+            type="text"
+            placeholder="Operator ID (e.g. netops-oncall)"
+            bind:value={adjOperator}
+            aria-label="Operator Identity"
+          />
+          <input
+            type="text"
+            placeholder="Reject Hypothesis ID (e.g. H1)"
+            bind:value={adjRejectedHypId}
+            aria-label="Reject Hypothesis ID"
+          />
+          <input
+            type="text"
+            placeholder="Hypothesis rejection reason"
+            bind:value={adjRejectedHypReason}
+            aria-label="Hypothesis Rejection Reason"
+          />
+          <input
+            type="text"
+            placeholder="Corrected field (e.g. root_cause_type)"
+            bind:value={adjCorrectionField}
+            aria-label="Entity Correction Field"
+          />
+          <input
+            type="text"
+            placeholder="Corrected value"
+            bind:value={adjCorrectionValue}
+            aria-label="Entity Correction Value"
+          />
+        </div>
+
+        <div class="filter-bar" style="margin-top: 0.5rem;">
+          <input
+            type="text"
+            style="flex: 1; min-width: 280px;"
+            placeholder="Operator adjudication rationale (required for training-eligible feedback)"
+            bind:value={adjRationale}
+            aria-label="Adjudication Rationale"
+          />
+          <button class="btn-primary" onclick={submitAdjudication}>
+            Record Adjudication
+          </button>
+        </div>
+
+        {#if adjStatusMsg}
+          <p class="badge badge-ok" style="margin-top: 0.5rem;">{adjStatusMsg}</p>
+        {/if}
+        {#if adjErrorMsg}
+          <p class="badge badge-danger" style="margin-top: 0.5rem;">{adjErrorMsg}</p>
+        {/if}
+      </div>
+    {:else}
+      <p class="empty-hint">
+        Enter a prefix above and click <strong>Explain Prefix</strong> to inspect grounded control-plane facts, ranked hypotheses, citations, and operator adjudication controls.
+      </p>
+    {/if}
+  </section>
+
   <!-- Address-Family Coverage Matrix -->
   <section class="panel">
     <h3>AFI / SAFI Protocol Coverage Matrix</h3>
@@ -659,6 +1067,55 @@
     color: var(--text, #e6edf3);
     padding: 0.35rem 0.7rem;
     font-size: 0.8rem;
+  }
+  .alert-info {
+    background: rgba(56, 139, 253, 0.12);
+    border: 1px solid rgba(56, 139, 253, 0.35);
+  }
+  .subpanel {
+    background: var(--surface-1, #0d1117);
+    border: 1px solid var(--border, #30363d);
+    border-radius: 6px;
+    padding: 0.75rem 0.9rem;
+  }
+  .subpanel h4 {
+    margin: 0 0 0.5rem 0;
+    font-size: 0.9rem;
+  }
+  .evidence-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+  }
+  .evidence-list li {
+    padding: 0.45rem 0.6rem;
+    border-radius: 4px;
+    background: var(--surface-2, #161b22);
+    border: 1px solid var(--border, #21262d);
+  }
+  .citation-row {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-top: 0.3rem;
+  }
+  .next-check-box {
+    margin-top: 0.75rem;
+    padding: 0.6rem 0.75rem;
+    border-radius: 4px;
+    border: 1px dashed var(--border, #30363d);
+    background: var(--surface-2, #161b22);
+  }
+  .checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.82rem;
   }
   .empty-hint,
   .muted {

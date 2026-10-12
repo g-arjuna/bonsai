@@ -1,0 +1,16 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 10.55s
+     Running tests/a10_a11_a12_operator_and_scenario_pack.rs (target/debug/deps/a10_a11_a12_operator_and_scenario_pack-3a7052484c01c5ac)
+
+running 3 tests
+test a10_operator_adjudication_separates_recommendation_acceptance_from_verified_rca ... ok
+test a11_scenario_pack_covers_all_eight_fault_families_with_hidden_oracles_and_adversarial_cases ... ok
+A12 Policy Comparison Summary (44 scenarios):
+- DeterministicRunbook:      Pass=100% | AbstainAcc=100% | CitationsValid=100% | Unsupported=0 | Cost=$0.0000 | P95=2ms
+- SmallModelSingleStep:      Pass=86.4% | AbstainAcc=100% | CitationsValid=100% | Unsupported=0 | Cost=$0.1720 | P95=380ms
+- StrongModelMultiStep:      Pass=97.7% | AbstainAcc=100% | CitationsValid=100% | Unsupported=0 | Cost=$1.5050 | P95=1450ms
+- BonsaiHybridRoutingPolicy: Pass=100% | AbstainAcc=100% | CitationsValid=100% | Unsupported=0 | Cost=$0.0000 | P95=4ms
+test a12_policy_trace_comparison_evaluates_four_policies_and_writes_benchmark_report ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
+

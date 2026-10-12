@@ -33,6 +33,7 @@ test-replay:
     cargo test --package bonsai --test b16_b17_b18_b19_m3_release_gates --offline
     cargo test --package bonsai --test a03_investigation_terminal_states --offline
     cargo test --package bonsai --test a04_a09_b22_prefix_investigator --offline
+    cargo test --package bonsai --test a10_a11_a12_operator_and_scenario_pack --offline
 
 # Start minimal unified product deployment (Bonsai + bonsai-routing)
 dev-up:

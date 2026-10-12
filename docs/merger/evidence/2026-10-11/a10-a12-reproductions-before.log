@@ -1,0 +1,23 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 9.62s
+     Running tests/a10_a11_a12_operator_and_scenario_pack.rs (target/debug/deps/a10_a11_a12_operator_and_scenario_pack-3a7052484c01c5ac)
+
+running 1 test
+InvestigationAccuracy before A10 fix: total_feedback=1, positive=1, precision_pct=100
+
+thread 'a10_reproduce_binary_feedback_counting_unresolved_recommendation_acceptance_as_accurate_rca' (3638089) panicked at tests/a10_a11_a12_operator_and_scenario_pack.rs:29:5:
+assertion `left == right` failed: Legacy binary feedback conflates recommendation acceptance with verified root-cause accuracy (reported 100%)
+  left: 100.0
+ right: 0.0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test a10_reproduce_binary_feedback_counting_unresolved_recommendation_acceptance_as_accurate_rca ... FAILED
+
+failures:
+
+failures:
+    a10_reproduce_binary_feedback_counting_unresolved_recommendation_acceptance_as_accurate_rca
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.29s
+
+error: test failed, to rerun pass `--test a10_a11_a12_operator_and_scenario_pack`

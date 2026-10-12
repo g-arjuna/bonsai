@@ -407,6 +407,14 @@ pub fn build_internal_routing_router(state: Arc<RoutingServiceState>) -> Router 
             "/internal/routing/v1/explain-prefix",
             get(internal_explain_prefix_handler),
         )
+        .route(
+            "/internal/routing/v1/adjudicate-prefix",
+            post(internal_adjudicate_prefix_handler),
+        )
+        .route(
+            "/internal/routing/v1/adjudications",
+            get(internal_adjudications_handler),
+        )
         .route("/internal/routing/v1/events", get(internal_events_handler))
         .route("/internal/routing/v1/ingest-bmp", post(internal_ingest_bmp_handler))
         .with_state(state)
@@ -532,6 +540,28 @@ async fn internal_explain_prefix_handler(
     }
     let (status, val) = build_explain_prefix_json(&state, &q).await;
     (status, Json(val)).into_response()
+}
+
+async fn internal_adjudicate_prefix_handler(
+    State(state): State<Arc<RoutingServiceState>>,
+    headers: HeaderMap,
+    Json(req): Json<OperatorAdjudicationRequest>,
+) -> Response {
+    if let Err(resp) = check_internal_token(&headers, &state) {
+        return resp;
+    }
+    let (status, val) = build_adjudicate_prefix_json(req);
+    (status, Json(val)).into_response()
+}
+
+async fn internal_adjudications_handler(
+    State(state): State<Arc<RoutingServiceState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = check_internal_token(&headers, &state) {
+        return resp;
+    }
+    Json(build_adjudications_json()).into_response()
 }
 
 async fn internal_events_handler(
@@ -1374,6 +1404,8 @@ pub fn sample_bmp_session_frames(
 pub mod diagnostics;
 pub use diagnostics::*;
 pub mod migration;
+pub mod scenario_pack;
+pub use scenario_pack::*;
 
 /// Build a canonical 6-byte BMP RouteMonitoring (type 0) withdrawal frame for `prefix_octets/24`.
 pub fn sample_bmp_withdraw_frame(

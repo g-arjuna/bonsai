@@ -69,6 +69,17 @@ Portable patch: [rustybmp-m1-b04-b08.patch](evidence/2026-10-11/rustybmp-m1-b04-
 3. **A08–A09 & B22 — Pre-call budget reservation & grounded read-only prefix investigator (completed)**:
    - Implemented `BudgetReservationLedger` and `ToolCallDeduplicator` in `src/investigation_runtime.rs` and `build_explain_prefix_json` in `src/routing_service/diagnostics.rs`, verified across supported diagnosis (`import_policy_rejected_before_loc_rib`), contradicted hypothesis (`peer_session_down`), collector transport gap abstention, and pre-policy-only / FIB abstention in `tests/a04_a09_b22_prefix_investigator.rs` ([a04-a09-reproductions-after.log](evidence/2026-10-11/a04-a09-reproductions-after.log)).
 
-## Next Slice P2 (A10–A12) — Operator evidence/feedback UI, scenario runner with hidden oracles & model/prompt trace comparison
+## Strategy Slice P2 (A10–A12) — Operator evidence/feedback UI, scenario runner with hidden oracles & model/prompt trace comparison (completed)
+
+1. **A10 — Operator evidence & structured adjudication UI/API (completed)**:
+   - Reproduced legacy binary feedback counting recommendation acceptance (`"positive"`) with `"unknown"` root-cause diagnosis as 100% verified RCA accuracy ([a10-a12-reproductions-before.log](evidence/2026-10-11/a10-a12-reproductions-before.log)).
+   - Added `OperatorAdjudicationRequest`, `OperatorAdjudicationRecord`, `AdjudicatedAccuracySummary`, `/internal/routing/v1/adjudicate-prefix`, `/internal/routing/v1/adjudications`, and `/api/routing/v1/*` proxy routes (`src/routing_service/diagnostics.rs`, `src/routing_service/mod.rs`, `src/http_server/mod.rs`), plus the "Missing-Prefix Investigator & Operator Adjudication (A09 / A10)" view in `ui/src/routes/Routing.svelte`.
+2. **A11 — Executable 44-scenario pack with hidden oracles across all 8 fault families (completed)**:
+   - Implemented `build_starter_scenario_pack(seed)` (`SCENARIO_PACK_VERSION = "2026.10.v1"`, 8 fault families $\times$ 5 variants + 4 negative/adversarial cases = 44 scenarios) with strict separation between `AgentAccessibleScenarioInput` and `HiddenScenarioOracle` in `src/routing_service/scenario_pack.rs`.
+3. **A12 — Model / prompt / policy trace comparison with OpenTelemetry GenAI lineage (completed)**:
+   - Implemented `compare_investigator_policies_on_pack` (`OTEL_GENAI_SEMCONV_VERSION = "1.28.0"`) comparing `DeterministicRunbook`, `SmallModelSingleStep`, `StrongModelMultiStep`, and `BonsaiHybridRoutingPolicy` across all 44 scenarios ([a11-a12-scenario-benchmark-report.json](evidence/2026-10-11/a11-a12-scenario-benchmark-report.json), [a10-a12-reproductions-after.log](evidence/2026-10-11/a10-a12-reproductions-after.log)).
+
+## Next Slice P3 (A13–A14) — Approval-gated change planning & digital-twin verification gate (only after P0–P2 pass)
+
 
 

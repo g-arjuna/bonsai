@@ -989,6 +989,14 @@ where
             "/api/routing/v1/explain-prefix",
             get(routing_v1_proxy_get_handler),
         )
+        .route(
+            "/api/routing/v1/adjudicate-prefix",
+            post(routing_v1_proxy_post_handler),
+        )
+        .route(
+            "/api/routing/v1/adjudications",
+            get(routing_v1_proxy_get_handler),
+        )
         .route("/api/routing/v1/events", get(routing_v1_proxy_get_handler))
         .route(
             "/api/routing/v1/ingest-bmp",

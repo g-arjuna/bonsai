@@ -1713,3 +1713,289 @@ pub async fn build_explain_prefix_json(
         }),
     )
 }
+
+// ── A10: Structured Operator Evidence & Adjudication Feedback ─────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HypothesisRejection {
+    pub hypothesis_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EntityCorrection {
+    pub field: String,
+    pub original_value: String,
+    pub corrected_value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OperatorAdjudicationRequest {
+    pub prefix: String,
+    #[serde(default)]
+    pub vrf_rd: Option<String>,
+    #[serde(default)]
+    pub speaker: Option<String>,
+    /// "correct" | "incorrect" | "unknown"
+    pub diagnosis_verdict: String,
+    /// "useful" | "useless" | "not_evaluated"
+    #[serde(default)]
+    pub next_check_utility: Option<String>,
+    /// Whether the operator accepted a recommended action/check.
+    /// Per Strategy §8: "Acceptance of a recommendation is not proof that the root cause was correct."
+    #[serde(default)]
+    pub recommendation_accepted: bool,
+    /// "resolved" | "not_resolved" | "not_executed"
+    #[serde(default)]
+    pub action_outcome: Option<String>,
+    pub adjudicated_by: String,
+    #[serde(default)]
+    pub adjudication_evidence_ids: Vec<String>,
+    #[serde(default)]
+    pub rejected_hypotheses: Vec<HypothesisRejection>,
+    #[serde(default)]
+    pub entity_corrections: Vec<EntityCorrection>,
+    #[serde(default)]
+    pub missing_evidence_noted: Vec<String>,
+    #[serde(default)]
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorAdjudicationRecord {
+    pub adjudication_id: String,
+    pub created_at: String,
+    pub prefix: String,
+    pub vrf_rd: String,
+    pub speaker: Option<String>,
+    pub diagnosis_verdict: String,
+    pub next_check_utility: String,
+    pub recommendation_accepted: bool,
+    pub action_outcome: String,
+    pub adjudicated_by: String,
+    pub adjudication_evidence_ids: Vec<String>,
+    pub rejected_hypotheses: Vec<HypothesisRejection>,
+    pub entity_corrections: Vec<EntityCorrection>,
+    pub missing_evidence_noted: Vec<String>,
+    pub rationale: String,
+    /// True ONLY when `diagnosis_verdict == "correct"` and `adjudication_evidence_ids` is non-empty.
+    /// Accepting a recommendation alone never sets `root_cause_verified = true`.
+    pub root_cause_verified: bool,
+    /// True ONLY when `diagnosis_verdict` is resolved (`"correct"` or `"incorrect"`),
+    /// `adjudication_evidence_ids` is non-empty, and `rationale` is non-empty.
+    /// Per Strategy §8: "Never silently train on unresolved feedback."
+    pub eligible_for_training: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AdjudicatedAccuracySummary {
+    pub total_adjudications: usize,
+    pub verified_correct_count: usize,
+    pub verified_incorrect_count: usize,
+    pub unresolved_or_unknown_count: usize,
+    pub recommendation_accepted_without_rca_proof_count: usize,
+    pub training_eligible_count: usize,
+    pub adjudicated_precision_pct: f64,
+}
+
+static ADJUDICATION_STORE: OnceLock<StdRwLock<Vec<OperatorAdjudicationRecord>>> = OnceLock::new();
+
+/// Validate and normalize an operator adjudication request (Strategy §8, A10).
+pub fn validate_and_normalize_adjudication(
+    req: OperatorAdjudicationRequest,
+) -> Result<OperatorAdjudicationRecord, String> {
+    let prefix = req.prefix.trim().to_string();
+    if prefix.is_empty() {
+        return Err("prefix must not be empty".to_string());
+    }
+
+    let adjudicated_by = req.adjudicated_by.trim().to_string();
+    if adjudicated_by.is_empty() {
+        return Err("adjudicated_by (operator identity) must not be empty".to_string());
+    }
+
+    let verdict = req.diagnosis_verdict.trim().to_lowercase();
+    if !matches!(verdict.as_str(), "correct" | "incorrect" | "unknown") {
+        return Err(format!(
+            "diagnosis_verdict must be 'correct', 'incorrect', or 'unknown', got {:?}",
+            req.diagnosis_verdict
+        ));
+    }
+
+    let check_util = req
+        .next_check_utility
+        .as_deref()
+        .unwrap_or("not_evaluated")
+        .trim()
+        .to_lowercase();
+    if !matches!(check_util.as_str(), "useful" | "useless" | "not_evaluated") {
+        return Err(format!(
+            "next_check_utility must be 'useful', 'useless', or 'not_evaluated', got {:?}",
+            check_util
+        ));
+    }
+
+    let action_outcome = req
+        .action_outcome
+        .as_deref()
+        .unwrap_or("not_executed")
+        .trim()
+        .to_lowercase();
+    if !matches!(
+        action_outcome.as_str(),
+        "resolved" | "not_resolved" | "not_executed"
+    ) {
+        return Err(format!(
+            "action_outcome must be 'resolved', 'not_resolved', or 'not_executed', got {:?}",
+            action_outcome
+        ));
+    }
+
+    for rej in &req.rejected_hypotheses {
+        if rej.hypothesis_id.trim().is_empty() || rej.reason.trim().is_empty() {
+            return Err(
+                "each rejected_hypothesis must include both hypothesis_id and reason".to_string(),
+            );
+        }
+    }
+
+    for corr in &req.entity_corrections {
+        if corr.field.trim().is_empty() || corr.corrected_value.trim().is_empty() {
+            return Err(
+                "each entity_correction must include non-empty field and corrected_value"
+                    .to_string(),
+            );
+        }
+    }
+
+    let evidence_ids: Vec<String> = req
+        .adjudication_evidence_ids
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let rationale = req.rationale.trim().to_string();
+    let has_evidence = !evidence_ids.is_empty();
+    let has_rationale = !rationale.is_empty();
+
+    // Strategy §8: Acceptance of a recommendation is not proof that the root cause was correct.
+    let root_cause_verified = verdict == "correct" && has_evidence;
+
+    // Strategy §8: Never silently train on unresolved feedback.
+    let eligible_for_training =
+        (verdict == "correct" || verdict == "incorrect") && has_evidence && has_rationale;
+
+    Ok(OperatorAdjudicationRecord {
+        adjudication_id: format!("adj-{}", uuid::Uuid::new_v4()),
+        created_at: Utc::now().to_rfc3339(),
+        prefix,
+        vrf_rd: req.vrf_rd.unwrap_or_else(|| "0:0".to_string()),
+        speaker: req.speaker,
+        diagnosis_verdict: verdict,
+        next_check_utility: check_util,
+        recommendation_accepted: req.recommendation_accepted,
+        action_outcome,
+        adjudicated_by,
+        adjudication_evidence_ids: evidence_ids,
+        rejected_hypotheses: req.rejected_hypotheses,
+        entity_corrections: req.entity_corrections,
+        missing_evidence_noted: req.missing_evidence_noted,
+        rationale,
+        root_cause_verified,
+        eligible_for_training,
+    })
+}
+
+pub fn submit_operator_adjudication(
+    req: OperatorAdjudicationRequest,
+) -> Result<OperatorAdjudicationRecord, String> {
+    let record = validate_and_normalize_adjudication(req)?;
+    let lock = ADJUDICATION_STORE.get_or_init(|| StdRwLock::new(Vec::new()));
+    if let Ok(mut guard) = lock.write() {
+        guard.push(record.clone());
+    }
+    Ok(record)
+}
+
+pub fn list_operator_adjudications() -> Vec<OperatorAdjudicationRecord> {
+    let lock = ADJUDICATION_STORE.get_or_init(|| StdRwLock::new(Vec::new()));
+    lock.read().map(|g| g.clone()).unwrap_or_default()
+}
+
+pub fn compute_adjudicated_accuracy(
+    records: &[OperatorAdjudicationRecord],
+) -> AdjudicatedAccuracySummary {
+    let total_adjudications = records.len();
+    let verified_correct_count = records.iter().filter(|r| r.root_cause_verified).count();
+    let verified_incorrect_count = records
+        .iter()
+        .filter(|r| r.diagnosis_verdict == "incorrect" && !r.adjudication_evidence_ids.is_empty())
+        .count();
+    let unresolved_or_unknown_count = records
+        .iter()
+        .filter(|r| r.diagnosis_verdict == "unknown" || r.adjudication_evidence_ids.is_empty())
+        .count();
+    let recommendation_accepted_without_rca_proof_count = records
+        .iter()
+        .filter(|r| r.recommendation_accepted && !r.root_cause_verified)
+        .count();
+    let training_eligible_count = records.iter().filter(|r| r.eligible_for_training).count();
+
+    let resolved_denom = verified_correct_count + verified_incorrect_count;
+    let adjudicated_precision_pct = if resolved_denom == 0 {
+        0.0
+    } else {
+        (verified_correct_count as f64 / resolved_denom as f64 * 100.0 * 10.0).round() / 10.0
+    };
+
+    AdjudicatedAccuracySummary {
+        total_adjudications,
+        verified_correct_count,
+        verified_incorrect_count,
+        unresolved_or_unknown_count,
+        recommendation_accepted_without_rca_proof_count,
+        training_eligible_count,
+        adjudicated_precision_pct,
+    }
+}
+
+pub fn build_adjudicate_prefix_json(req: OperatorAdjudicationRequest) -> (StatusCode, JsonValue) {
+    match submit_operator_adjudication(req) {
+        Ok(record) => {
+            let all = list_operator_adjudications();
+            let summary = compute_adjudicated_accuracy(&all);
+            (
+                StatusCode::OK,
+                json!({
+                    "api_version": ROUTING_API_VERSION,
+                    "accepted": true,
+                    "adjudication": record,
+                    "adjudicated_accuracy": summary,
+                }),
+            )
+        }
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            json!({
+                "api_version": ROUTING_API_VERSION,
+                "accepted": false,
+                "error": "invalid_adjudication_request",
+                "message": err,
+            }),
+        ),
+    }
+}
+
+pub fn build_adjudications_json() -> JsonValue {
+    let records = list_operator_adjudications();
+    let summary = compute_adjudicated_accuracy(&records);
+    json!({
+        "api_version": ROUTING_API_VERSION,
+        "as_of": Utc::now().to_rfc3339(),
+        "adjudicated_accuracy": summary,
+        "adjudications": records,
+    })
+}
+
+
