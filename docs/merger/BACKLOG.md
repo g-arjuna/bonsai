@@ -79,7 +79,17 @@ Portable patch: [rustybmp-m1-b04-b08.patch](evidence/2026-10-11/rustybmp-m1-b04-
 3. **A12 — Model / prompt / policy trace comparison with OpenTelemetry GenAI lineage (completed)**:
    - Implemented `compare_investigator_policies_on_pack` (`OTEL_GENAI_SEMCONV_VERSION = "1.28.0"`) comparing `DeterministicRunbook`, `SmallModelSingleStep`, `StrongModelMultiStep`, and `BonsaiHybridRoutingPolicy` across all 44 scenarios ([a11-a12-scenario-benchmark-report.json](evidence/2026-10-11/a11-a12-scenario-benchmark-report.json), [a10-a12-reproductions-after.log](evidence/2026-10-11/a10-a12-reproductions-after.log)).
 
-## Next Slice P3 (A13–A14) — Approval-gated change planning & digital-twin verification gate (only after P0–P2 pass)
+## Strategy Slice P3 (A13–A20) — Second-NOS adapter pilot, forecasting/STGNN ablations, approval-bound change assurance & release readiness (completed)
+
+1. **A13 — Second-NOS adapter workshop pilot (completed)**:
+   - Implemented deterministic Nokia SR Linux BGP neighbor parser (`parse_nokia_srl_bgp_neighbor_json`) with `ParseQualityState` (`Complete`, `PartialUnknownFields`, `SchemaMismatch`) in `src/remediation/approval.rs`, separating NOS release output drift from network failure.
+2. **A14–A15 — Forecasting challenger & STGNN ablation benchmarks (completed)**:
+   - Implemented strict chronological split (`chronological_train_val_test_split`), covariate-aware forecasting challenger vs univariate EWMA at equal false-alert budget (`run_forecasting_challenger_experiment`), foundation-model weight-license ledger (`Chronos-2` Apache-2.0 vs `TimesFM 3.0` weight license), and STGNN `no_topology` / `no_temporal` / `cold_start` ablation runner (`run_stgnn_ablation_experiment`) in `python/bonsai_ml/gnn/ablation.py` ([a14-a15-forecasting-and-ablation.log](evidence/2026-10-11/a14-a15-forecasting-and-ablation.log)).
+3. **A16–A20 — Typed `RemediationPlan`, digital-twin verification gate, approval-bound executor, shadow pilot & release report (completed)**:
+   - Reproduced unverified auto-silent remediation gap ([a13-a20-reproductions-before.log](evidence/2026-10-11/a13-a20-reproductions-before.log)).
+   - Implemented `RemediationPlan` (`compute_plan_hash`), `verify_plan_in_digital_twin` + MCP `evaluate_change_plan`, `ApprovalBoundExecutor` + `SignedPlanApproval`, and `summarize_shadow_pilot` in `src/remediation/approval.rs` and `src/mcp_server.rs` ([a13-a20-reproductions-after.log](evidence/2026-10-11/a13-a20-reproductions-after.log)).
+   - Published [AGENTIC_NETOPS_RELEASE_REPORT.md](AGENTIC_NETOPS_RELEASE_REPORT.md).
+
 
 
 

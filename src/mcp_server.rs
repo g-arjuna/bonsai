@@ -564,6 +564,18 @@ pub fn tool_schemas() -> JsonValue {
                     },
                     "required": ["prefix"]
                 }
+            },
+            {
+                "name": "evaluate_change_plan",
+                "description": "Evaluate a typed RemediationPlan against a DigitalTwinSnapshot before human approval, returning plan_hash, invariant results, unsupported constructs, and emulation fidelity limitations.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "plan": { "type": "object", "description": "Typed RemediationPlan JSON object" },
+                        "digital_twin_snapshot": { "type": "object", "description": "DigitalTwinSnapshot JSON object" }
+                    },
+                    "required": ["plan", "digital_twin_snapshot"]
+                }
             }
         ]
     })
@@ -1034,6 +1046,17 @@ pub async fn call_tool_with_store_and_routing(
             };
             let st = resolve_routing_state(routing).await?;
             let (_, val) = build_explain_prefix_json(&st, &q).await;
+            Ok(enforce_tool_output_bounds(val))
+        }
+        "evaluate_change_plan" => {
+            let plan: crate::remediation::RemediationPlan =
+                serde_json::from_value(args["plan"].clone())
+                    .map_err(|e| format!("invalid RemediationPlan: {e}"))?;
+            let twin: crate::remediation::DigitalTwinSnapshot =
+                serde_json::from_value(args["digital_twin_snapshot"].clone())
+                    .map_err(|e| format!("invalid DigitalTwinSnapshot: {e}"))?;
+            let report = crate::remediation::verify_plan_in_digital_twin(&plan, &twin);
+            let val = serde_json::to_value(report).map_err(|e| e.to_string())?;
             Ok(enforce_tool_output_bounds(val))
         }
         other => Err(format!("unknown tool: {other}")),

@@ -17,7 +17,7 @@ doctor:
 # Fast protocol, vendor registry, ML/eval truthfulness, and routing contract checks
 check-fast:
     cargo test -p rbmp-core -p rbmp-rib -p rbmp-store --offline
-    PYTHONPATH=.:python .venv/bin/pytest tests/test_b07_vendor_registry.py tests/test_b15_ssh_host_key_policy.py tests/test_a01_conformal_and_eval_metrics.py tests/test_a02_stgnn_entity_alignment.py -v
+    PYTHONPATH=.:python .venv/bin/pytest tests/test_b07_vendor_registry.py tests/test_b15_ssh_host_key_policy.py tests/test_a01_conformal_and_eval_metrics.py tests/test_a02_stgnn_entity_alignment.py tests/test_a14_a15_forecasting_and_gnn_ablation.py -v
 
 # Real parser golden, negative, and RFC contract corpus
 test-protocol:
@@ -25,7 +25,7 @@ test-protocol:
     cargo test --package bonsai --test bmp_rfc_contract --offline
     python3 docs/merger/evidence/2026-10-11/inspect_fixtures.py crates/rbmp-core
 
-# Journal, RIB, history equivalence, RBAC, investigation runtime, prefix investigator, and M3 oracle/load/migration gates
+# Journal, RIB, history equivalence, RBAC, investigation runtime, prefix investigator, scenario pack, change assurance, and M3 release gates
 test-replay:
     cargo test -p rbmp-rib -p rbmp-store --offline
     cargo test --package bonsai --test b09_peer_and_correlation --offline
@@ -34,6 +34,7 @@ test-replay:
     cargo test --package bonsai --test a03_investigation_terminal_states --offline
     cargo test --package bonsai --test a04_a09_b22_prefix_investigator --offline
     cargo test --package bonsai --test a10_a11_a12_operator_and_scenario_pack --offline
+    cargo test --package bonsai --test a13_a20_change_assurance_and_executor --offline
 
 # Start minimal unified product deployment (Bonsai + bonsai-routing)
 dev-up:
@@ -51,7 +52,7 @@ lab-test target="frr":
 verify-release:
     just test-protocol
     just test-replay
-    PYTHONPATH=.:python .venv/bin/pytest tests/test_b07_vendor_registry.py tests/test_b15_ssh_host_key_policy.py tests/test_a01_conformal_and_eval_metrics.py tests/test_a02_stgnn_entity_alignment.py -v
+    PYTHONPATH=.:python .venv/bin/pytest tests/test_b07_vendor_registry.py tests/test_b15_ssh_host_key_policy.py tests/test_a01_conformal_and_eval_metrics.py tests/test_a02_stgnn_entity_alignment.py tests/test_a14_a15_forecasting_and_gnn_ablation.py -v
     cd ui && npm run build
     BONSAI_VAULT_PASSPHRASE=verify-passphrase DOCKER_HOST=unix:///var/run/docker.sock docker compose --profile standalone config -q
 

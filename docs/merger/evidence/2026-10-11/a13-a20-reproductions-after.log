@@ -1,0 +1,12 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3m 41s
+     Running tests/a13_a20_change_assurance_and_executor.rs (target/debug/deps/a13_a20_change_assurance_and_executor-eb77708be006b6f5)
+
+running 4 tests
+test a13_nokia_srl_adapter_separates_nos_schema_drift_from_network_failure ... ok
+test a19_shadow_operational_pilot_records_utility_and_enforces_zero_writes ... ok
+test a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idempotency_and_recovery ... ok
+test a16_a17_digital_twin_assurance_gate_and_mcp_evaluate_change_plan ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.25s
+

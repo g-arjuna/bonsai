@@ -1,0 +1,30 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+warning: unused import: `TrustState`
+ --> tests/a13_a20_change_assurance_and_executor.rs:4:37
+  |
+4 | use bonsai::remediation::{TrustKey, TrustState, TrustStore};
+  |                                     ^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `bonsai` (test "a13_a20_change_assurance_and_executor") generated 1 warning (run `cargo fix --test "a13_a20_change_assurance_and_executor" -p bonsai` to apply 1 suggestion)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3m 06s
+     Running tests/a13_a20_change_assurance_and_executor.rs (target/debug/deps/a13_a20_change_assurance_and_executor-eb77708be006b6f5)
+
+running 1 test
+TrustStore record state before A16-A18 plan-hash/digital-twin gate: AutoSilent, requires_approval=false
+
+thread 'a16_a18_reproduce_trust_store_allowing_auto_silent_without_plan_hash_or_digital_twin_gate' (3686488) panicked at tests/a13_a20_change_assurance_and_executor.rs:24:5:
+Legacy TrustState::AutoSilent allows unverified config mutation without plan_hash, baseline config revision check, or digital-twin assurance
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test a16_a18_reproduce_trust_store_allowing_auto_silent_without_plan_hash_or_digital_twin_gate ... FAILED
+
+failures:
+
+failures:
+    a16_a18_reproduce_trust_store_allowing_auto_silent_without_plan_hash_or_digital_twin_gate
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test a13_a20_change_assurance_and_executor`

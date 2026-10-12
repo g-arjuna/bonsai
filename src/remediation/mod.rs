@@ -7,10 +7,12 @@
 //! - `RollbackRegistry` tracks active AutoWithNotification executions within their window.
 //! - Every trust-state-affecting decision writes to the audit log (`purpose=trust_op`).
 
+pub mod approval;
 pub mod graduation;
 pub mod rollback;
 pub mod trust;
 
+pub use approval::*;
 pub use graduation::{GraduationHint, check_graduation};
 pub use rollback::{RollbackRegistry, RollbackState, SharedRollbackRegistry};
 pub use trust::{SharedTrustStore, TrustKey, TrustRecord, TrustState, TrustStore};
