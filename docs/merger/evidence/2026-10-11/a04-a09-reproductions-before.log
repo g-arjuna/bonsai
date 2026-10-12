@@ -1,0 +1,7 @@
+
+running 1 test
+Global coverage JSON before A06 fix: {"api_version":"v1","completeness_state":"complete_for_observed_view","durable_sequence":5,"families":[{"afi":1,"family":"ipv4-unicast","safi":1,"support_status":"supported"},{"afi":2,"family":"ipv6-unicast","safi":1,"support_status":"supported"},{"afi":1,"family":"ipv4-vpn","safi":128,"support_status":"supported"},{"afi":2,"family":"ipv6-vpn","safi":128,"support_status":"supported"},{"afi":25,"family":"l2vpn-evpn","safi":70,"support_status":"experimental_parse_only"},{"afi":16388,"family":"bgp-ls","safi":71,"support_status":"experimental_parse_only"}],"receive_time":"2026-10-12T09:30:23.046219284+00:00"}
+test a06_reproduce_healthy_speaker_masking_target_speaker_gap_in_global_coverage ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

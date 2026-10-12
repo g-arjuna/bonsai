@@ -417,7 +417,11 @@ fn mcp_content(value: JsonValue) -> JsonValue {
 
 // ── Tool schema definitions ───────────────────────────────────────────────────
 
-fn tool_schemas() -> JsonValue {
+pub const MAX_GRAPH_ROWS: usize = 200;
+pub const MAX_TOOL_OUTPUT_BYTES: usize = 65_536;
+pub const TOOL_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+pub fn tool_schemas() -> JsonValue {
     json!({
         "tools": [
             {
@@ -468,13 +472,97 @@ fn tool_schemas() -> JsonValue {
             },
             {
                 "name": "query_graph",
-                "description": "Execute a read-only Cypher query against the bonsai graph database. Mutation keywords (CREATE, SET, DELETE, MERGE, REMOVE, DETACH) are rejected.",
+                "description": "Execute a read-only Cypher query against the bonsai graph database (bounded to 200 rows and 64 KiB). Mutation keywords are rejected.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "cypher": { "type": "string", "description": "Read-only Cypher query string" }
                     },
                     "required": ["cypher"]
+                }
+            },
+            {
+                "name": "get_prefix_journey",
+                "description": "Return scoped route visibility, view divergence (AdjRibInPrePolicy, AdjRibInPostPolicy, LocRib, AdjRibOutPostPolicy), attribute transitions, and canonical observation envelopes for a prefix and optional VRF/speaker.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "prefix": { "type": "string", "description": "IPv4 or IPv6 CIDR prefix (e.g. '203.0.113.0/24')" },
+                        "vrf_rd": { "type": "string", "description": "Optional Route Distinguisher / VRF scope (e.g. '0:0' or '65001:100')" },
+                        "speaker": { "type": "string", "description": "Optional BMP speaker IP address" },
+                        "view": { "type": "string", "description": "Optional RIB view filter" },
+                        "limit": { "type": "integer", "description": "Maximum observations to return (default 50, max 200)", "default": 50 },
+                        "tenant_id": { "type": "string", "description": "Optional tenant scope identifier" }
+                    },
+                    "required": ["prefix"]
+                }
+            },
+            {
+                "name": "get_peer_timeline",
+                "description": "Return session epochs, BGP peer state transitions (PeerUp, PeerDown, EndOfRib), route-count summaries, and collector transport disconnect gaps.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "speaker": { "type": "string", "description": "Optional BMP speaker IP address" },
+                        "peer": { "type": "string", "description": "Optional BGP peer IP address" },
+                        "vrf_rd": { "type": "string", "description": "Optional VRF Route Distinguisher scope" },
+                        "limit": { "type": "integer", "description": "Maximum transitions to return (default 100, max 500)", "default": 100 },
+                        "tenant_id": { "type": "string", "description": "Optional tenant scope identifier" }
+                    }
+                }
+            },
+            {
+                "name": "get_evidence_coverage",
+                "description": "Return incident-scoped evidence completeness, observed vs missing BMP views, End-of-RIB status, and transport gaps for a specific speaker/VRF/prefix.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "speaker": { "type": "string", "description": "Target BMP speaker / router IP address" },
+                        "vrf_rd": { "type": "string", "description": "Target VRF Route Distinguisher (e.g. '0:0' or '65001:100')" },
+                        "prefix": { "type": "string", "description": "Target CIDR prefix" },
+                        "tenant_id": { "type": "string", "description": "Optional tenant scope identifier" }
+                    }
+                }
+            },
+            {
+                "name": "get_changes",
+                "description": "Return recent configuration snapshots and change records scoped to a device address and bounded limit.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "device_address": { "type": "string", "description": "Target device IP address or hostname" },
+                        "limit": { "type": "integer", "description": "Maximum change records to return (default 25, max 100)", "default": 25 }
+                    }
+                }
+            },
+            {
+                "name": "compare_snapshots",
+                "description": "Deterministically compare routing state between two durable RibEventJournal sequence numbers (before_seq and after_seq) with observation ID citations.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "before_seq": { "type": "integer", "description": "Earlier durable sequence number" },
+                        "after_seq": { "type": "integer", "description": "Later durable sequence number" },
+                        "speaker": { "type": "string", "description": "Optional BMP speaker IP filter" },
+                        "vrf_rd": { "type": "string", "description": "Optional VRF Route Distinguisher filter" },
+                        "prefix": { "type": "string", "description": "Optional CIDR prefix filter" },
+                        "limit": { "type": "integer", "description": "Maximum diffs per category (default 100, max 500)", "default": 100 }
+                    }
+                }
+            },
+            {
+                "name": "explain_missing_prefix",
+                "description": "Run the grounded read-only 'Explain a Missing Prefix' investigator for a prefix and VRF/speaker, returning observed facts, ranked hypotheses, evidence citations, missing observations, and next discriminating check.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "prefix": { "type": "string", "description": "Target CIDR prefix (e.g. '203.0.113.0/24')" },
+                        "vrf_rd": { "type": "string", "description": "Target VRF Route Distinguisher (default '0:0')" },
+                        "speaker": { "type": "string", "description": "Target BMP speaker / router IP address" },
+                        "question": { "type": "string", "description": "Optional operator question" },
+                        "tenant_id": { "type": "string", "description": "Optional tenant scope identifier" }
+                    },
+                    "required": ["prefix"]
                 }
             }
         ]
@@ -728,7 +816,34 @@ fn contains_keyword(upper: &str, kw: &str) -> bool {
     false
 }
 
-async fn tool_query_graph(state: &AppState, args: &JsonValue) -> Result<JsonValue, String> {
+/// Enforce a hard byte ceiling (`MAX_TOOL_OUTPUT_BYTES`) and attach `as_of` / `truncated` metadata (A04).
+pub fn enforce_tool_output_bounds(mut payload: JsonValue) -> JsonValue {
+    if let Some(obj) = payload.as_object_mut() {
+        obj.entry("as_of".to_string())
+            .or_insert_with(|| json!(chrono::Utc::now().to_rfc3339()));
+        obj.entry("truncated".to_string())
+            .or_insert_with(|| json!(false));
+        obj.insert("byte_cap".to_string(), json!(MAX_TOOL_OUTPUT_BYTES));
+    }
+    let serialized = payload.to_string();
+    if serialized.len() <= MAX_TOOL_OUTPUT_BYTES {
+        return payload;
+    }
+    let preview_len = MAX_TOOL_OUTPUT_BYTES.saturating_sub(512);
+    let preview: String = serialized.chars().take(preview_len).collect();
+    json!({
+        "as_of": chrono::Utc::now().to_rfc3339(),
+        "truncated": true,
+        "byte_cap": MAX_TOOL_OUTPUT_BYTES,
+        "original_bytes": serialized.len(),
+        "truncated_preview": preview,
+    })
+}
+
+pub async fn tool_query_graph_with_store(
+    store: & std::sync::Arc<crate::graph::GraphStore>,
+    args: &JsonValue,
+) -> Result<JsonValue, String> {
     let cypher = args["cypher"].as_str().ok_or("missing argument: cypher")?;
 
     if !is_readonly_cypher(cypher) {
@@ -736,22 +851,193 @@ async fn tool_query_graph(state: &AppState, args: &JsonValue) -> Result<JsonValu
     }
 
     let cypher = cypher.to_string();
-    let db = state.store.db();
+    let db = store.db();
 
-    let rows: Vec<Vec<String>> = tokio::task::spawn_blocking(move || {
+    let rows: Vec<Vec<String>> = tokio::time::timeout(
+        TOOL_QUERY_TIMEOUT,
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+            let result: Vec<Vec<String>> = conn
+                .query(&cypher)
+                .map_err(|e| e.to_string())?
+                .map(|row| row.iter().map(|v| format!("{v:?}")).collect())
+                .collect();
+            Ok::<_, String>(result)
+        }),
+    )
+    .await
+    .map_err(|_| "query_graph timed out after 5s".to_string())?
+    .map_err(|e| e.to_string())??;
+
+    let total_rows = rows.len();
+    let truncated = total_rows > MAX_GRAPH_ROWS;
+    let capped_rows: Vec<Vec<String>> = rows.into_iter().take(MAX_GRAPH_ROWS).collect();
+    let row_count = capped_rows.len();
+
+    Ok(enforce_tool_output_bounds(json!({
+        "rows": capped_rows,
+        "row_count": row_count,
+        "total_rows": total_rows,
+        "row_cap": MAX_GRAPH_ROWS,
+        "truncated": truncated,
+    })))
+}
+
+async fn tool_query_graph(state: &AppState, args: &JsonValue) -> Result<JsonValue, String> {
+    tool_query_graph_with_store(&state.store, args).await
+}
+
+pub async fn tool_get_changes_with_store(
+    store: &std::sync::Arc<crate::graph::GraphStore>,
+    args: &JsonValue,
+) -> Result<JsonValue, String> {
+    let device_filter = args["device_address"].as_str().map(|s| s.to_string());
+    let limit = args["limit"].as_u64().unwrap_or(25).clamp(1, 100) as usize;
+    let db = store.db();
+    let dev_clone = device_filter.clone();
+
+    let snapshots: Vec<JsonValue> = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
-        let result: Vec<Vec<String>> = conn
-            .query(&cypher)
+        let rows: Vec<JsonValue> = conn
+            .query("MATCH (c:ConfigSnapshot) RETURN c.id, c.device_address, c.trigger, c.summary, c.captured_at")
             .map_err(|e| e.to_string())?
-            .map(|row| row.iter().map(|v| format!("{v:?}")).collect())
+            .filter_map(|row| {
+                let id = read_str(&row[0]);
+                let dev = read_str(&row[1]);
+                let trig = read_str(&row[2]);
+                let sum = read_str(&row[3]);
+                let cap = read_str(&row[4]);
+                if let Some(ref f) = dev_clone {
+                    if dev != *f {
+                        return None;
+                    }
+                }
+                Some(json!({
+                    "snapshot_id": id,
+                    "device_address": dev,
+                    "trigger": trig,
+                    "summary": sum,
+                    "captured_at": cap,
+                }))
+            })
             .collect();
-        Ok::<_, String>(result)
+        Ok::<_, String>(rows)
     })
     .await
     .map_err(|e| e.to_string())??;
 
-    let row_count = rows.len();
-    Ok(json!({ "rows": rows, "row_count": row_count }))
+    let total = snapshots.len();
+    let truncated = total > limit;
+    let items: Vec<JsonValue> = snapshots.into_iter().take(limit).collect();
+
+    Ok(enforce_tool_output_bounds(json!({
+        "scope": { "device_address": device_filter },
+        "changes": items,
+        "count": items.len(),
+        "total_matching": total,
+        "truncated": truncated,
+    })))
+}
+
+async fn resolve_routing_state(
+    explicit: Option<&std::sync::Arc<crate::routing_service::RoutingServiceState>>,
+) -> Result<std::sync::Arc<crate::routing_service::RoutingServiceState>, String> {
+    if let Some(st) = explicit {
+        return Ok(std::sync::Arc::clone(st));
+    }
+    if let Some(st) = crate::routing_service::default_routing_service() {
+        return Ok(st);
+    }
+    Err("routing service state is not registered in-process".to_string())
+}
+
+/// Dispatch a single MCP tool call using `GraphStore` and an optional in-process `RoutingServiceState` (A04).
+pub async fn call_tool_with_store_and_routing(
+    store: &std::sync::Arc<crate::graph::GraphStore>,
+    routing: Option<&std::sync::Arc<crate::routing_service::RoutingServiceState>>,
+    name: &str,
+    args: &JsonValue,
+) -> Result<JsonValue, String> {
+    use crate::routing_service::{
+        build_compare_snapshots_json, build_evidence_coverage_json, build_explain_prefix_json,
+        build_peer_timeline_json, build_prefix_journey_json, CompareSnapshotsQuery,
+        EvidenceCoverageQuery, ExplainPrefixQuery, PeerTimelineQuery, PrefixJourneyQuery,
+    };
+
+    match name {
+        "query_graph" => tool_query_graph_with_store(store, args).await,
+        "get_changes" => tool_get_changes_with_store(store, args).await,
+        "get_prefix_journey" => {
+            let prefix = args["prefix"]
+                .as_str()
+                .ok_or("missing argument: prefix")?
+                .to_string();
+            let q = PrefixJourneyQuery {
+                prefix: Some(prefix),
+                vrf_rd: args["vrf_rd"].as_str().map(String::from),
+                speaker: args["speaker"].as_str().map(String::from),
+                view: args["view"].as_str().map(String::from),
+                limit: args["limit"].as_u64().map(|v| v as usize),
+                tenant_id: args["tenant_id"].as_str().map(String::from),
+            };
+            let st = resolve_routing_state(routing).await?;
+            let (_, val) = build_prefix_journey_json(&st, &q).await;
+            Ok(enforce_tool_output_bounds(val))
+        }
+        "get_peer_timeline" => {
+            let q = PeerTimelineQuery {
+                speaker: args["speaker"].as_str().map(String::from),
+                peer: args["peer"].as_str().map(String::from),
+                vrf_rd: args["vrf_rd"].as_str().map(String::from),
+                limit: args["limit"].as_u64().map(|v| v as usize),
+                tenant_id: args["tenant_id"].as_str().map(String::from),
+            };
+            let st = resolve_routing_state(routing).await?;
+            let val = build_peer_timeline_json(&st, &q).await;
+            Ok(enforce_tool_output_bounds(val))
+        }
+        "get_evidence_coverage" => {
+            let q = EvidenceCoverageQuery {
+                speaker: args["speaker"].as_str().map(String::from),
+                vrf_rd: args["vrf_rd"].as_str().map(String::from),
+                prefix: args["prefix"].as_str().map(String::from),
+                tenant_id: args["tenant_id"].as_str().map(String::from),
+            };
+            let st = resolve_routing_state(routing).await?;
+            let val = build_evidence_coverage_json(&st, &q).await;
+            Ok(enforce_tool_output_bounds(val))
+        }
+        "compare_snapshots" => {
+            let q = CompareSnapshotsQuery {
+                before_seq: args["before_seq"].as_u64(),
+                after_seq: args["after_seq"].as_u64(),
+                speaker: args["speaker"].as_str().map(String::from),
+                vrf_rd: args["vrf_rd"].as_str().map(String::from),
+                prefix: args["prefix"].as_str().map(String::from),
+                limit: args["limit"].as_u64().map(|v| v as usize),
+            };
+            let st = resolve_routing_state(routing).await?;
+            let val = build_compare_snapshots_json(&st, &q).await;
+            Ok(enforce_tool_output_bounds(val))
+        }
+        "explain_missing_prefix" => {
+            let prefix = args["prefix"]
+                .as_str()
+                .ok_or("missing argument: prefix")?
+                .to_string();
+            let q = ExplainPrefixQuery {
+                question: args["question"].as_str().map(String::from),
+                prefix: Some(prefix),
+                vrf_rd: args["vrf_rd"].as_str().map(String::from),
+                speaker: args["speaker"].as_str().map(String::from),
+                tenant_id: args["tenant_id"].as_str().map(String::from),
+            };
+            let st = resolve_routing_state(routing).await?;
+            let (_, val) = build_explain_prefix_json(&st, &q).await;
+            Ok(enforce_tool_output_bounds(val))
+        }
+        other => Err(format!("unknown tool: {other}")),
+    }
 }
 
 // ── MCP POST /mcp handler ─────────────────────────────────────────────────────
@@ -778,14 +1064,7 @@ pub async fn mcp_handler(
             let name = req.params["name"].as_str().unwrap_or("").to_string();
             let args = &req.params["arguments"];
 
-            let result = match name.as_str() {
-                "get_incident" => tool_get_incident(&state, args).await,
-                "query_devices" => tool_query_devices(&state, args).await,
-                "get_device_blast_radius" => tool_get_device_blast_radius(&state, args).await,
-                "list_active_detections" => tool_list_active_detections(&state, args).await,
-                "query_graph" => tool_query_graph(&state, args).await,
-                other => Err(format!("unknown tool: {other}")),
-            };
+            let result = call_tool(&state, &name, args).await;
 
             match result {
                 Ok(payload) => McpRpcResponse::ok(id, mcp_content(payload)),
@@ -806,12 +1085,20 @@ pub async fn call_tool(
     args: &JsonValue,
 ) -> Result<JsonValue, String> {
     match name {
-        "get_incident" => tool_get_incident(state, args).await,
-        "query_devices" => tool_query_devices(state, args).await,
-        "get_device_blast_radius" => tool_get_device_blast_radius(state, args).await,
-        "list_active_detections" => tool_list_active_detections(state, args).await,
+        "get_incident" => tool_get_incident(state, args)
+            .await
+            .map(enforce_tool_output_bounds),
+        "query_devices" => tool_query_devices(state, args)
+            .await
+            .map(enforce_tool_output_bounds),
+        "get_device_blast_radius" => tool_get_device_blast_radius(state, args)
+            .await
+            .map(enforce_tool_output_bounds),
+        "list_active_detections" => tool_list_active_detections(state, args)
+            .await
+            .map(enforce_tool_output_bounds),
         "query_graph" => tool_query_graph(state, args).await,
-        other => Err(format!("unknown tool: {other}")),
+        other => call_tool_with_store_and_routing(&state.store, None, other, args).await,
     }
 }
 

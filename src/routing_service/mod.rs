@@ -242,6 +242,10 @@ impl RoutingServiceState {
         let mut any_peer = false;
         let mut all_complete = true;
         for spk in speakers {
+            if spk.peers.is_empty() {
+                all_complete = false;
+                continue;
+            }
             for peer in spk.peers.values() {
                 any_peer = true;
                 if peer.state != PeerState::Up {
@@ -383,6 +387,26 @@ pub fn build_internal_routing_router(state: Arc<RoutingServiceState>) -> Router 
             get(internal_prefix_history_handler),
         )
         .route("/internal/routing/v1/coverage", get(internal_coverage_handler))
+        .route(
+            "/internal/routing/v1/evidence-coverage",
+            get(internal_evidence_coverage_handler),
+        )
+        .route(
+            "/internal/routing/v1/prefix-journey",
+            get(internal_prefix_journey_handler),
+        )
+        .route(
+            "/internal/routing/v1/peer-timeline",
+            get(internal_peer_timeline_handler),
+        )
+        .route(
+            "/internal/routing/v1/compare-snapshots",
+            get(internal_compare_snapshots_handler),
+        )
+        .route(
+            "/internal/routing/v1/explain-prefix",
+            get(internal_explain_prefix_handler),
+        )
         .route("/internal/routing/v1/events", get(internal_events_handler))
         .route("/internal/routing/v1/ingest-bmp", post(internal_ingest_bmp_handler))
         .with_state(state)
@@ -451,6 +475,63 @@ async fn internal_coverage_handler(
         return resp;
     }
     Json(build_coverage_json(&state).await).into_response()
+}
+
+async fn internal_evidence_coverage_handler(
+    State(state): State<Arc<RoutingServiceState>>,
+    headers: HeaderMap,
+    Query(q): Query<EvidenceCoverageQuery>,
+) -> Response {
+    if let Err(resp) = check_internal_token(&headers, &state) {
+        return resp;
+    }
+    Json(build_evidence_coverage_json(&state, &q).await).into_response()
+}
+
+async fn internal_prefix_journey_handler(
+    State(state): State<Arc<RoutingServiceState>>,
+    headers: HeaderMap,
+    Query(q): Query<PrefixJourneyQuery>,
+) -> Response {
+    if let Err(resp) = check_internal_token(&headers, &state) {
+        return resp;
+    }
+    let (status, val) = build_prefix_journey_json(&state, &q).await;
+    (status, Json(val)).into_response()
+}
+
+async fn internal_peer_timeline_handler(
+    State(state): State<Arc<RoutingServiceState>>,
+    headers: HeaderMap,
+    Query(q): Query<PeerTimelineQuery>,
+) -> Response {
+    if let Err(resp) = check_internal_token(&headers, &state) {
+        return resp;
+    }
+    Json(build_peer_timeline_json(&state, &q).await).into_response()
+}
+
+async fn internal_compare_snapshots_handler(
+    State(state): State<Arc<RoutingServiceState>>,
+    headers: HeaderMap,
+    Query(q): Query<CompareSnapshotsQuery>,
+) -> Response {
+    if let Err(resp) = check_internal_token(&headers, &state) {
+        return resp;
+    }
+    Json(build_compare_snapshots_json(&state, &q).await).into_response()
+}
+
+async fn internal_explain_prefix_handler(
+    State(state): State<Arc<RoutingServiceState>>,
+    headers: HeaderMap,
+    Query(q): Query<ExplainPrefixQuery>,
+) -> Response {
+    if let Err(resp) = check_internal_token(&headers, &state) {
+        return resp;
+    }
+    let (status, val) = build_explain_prefix_json(&state, &q).await;
+    (status, Json(val)).into_response()
 }
 
 async fn internal_events_handler(
@@ -1290,6 +1371,8 @@ pub fn sample_bmp_session_frames(
     (init, peer_up, rm)
 }
 
+pub mod diagnostics;
+pub use diagnostics::*;
 pub mod migration;
 
 /// Build a canonical 6-byte BMP RouteMonitoring (type 0) withdrawal frame for `prefix_octets/24`.

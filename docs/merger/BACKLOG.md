@@ -59,9 +59,16 @@ Portable patch: [rustybmp-m1-b04-b08.patch](evidence/2026-10-11/rustybmp-m1-b04-
 4. **A03 — Typed investigation results & honest terminal states (completed)**:
    - Reproduced malformed RCA JSON acceptance and global-quality masking of device-specific gaps ([a03-reproductions-before.log](evidence/2026-10-11/a03-reproductions-before.log)) and implemented `InvestigationTerminalState`, `TypedInvestigationRca`, `resolve_investigation_outcome`, fail-closed budget check, and device-scoped `evaluate_preflight_warning` in `src/investigation_runtime.rs` ([a03-reproductions-after.log](evidence/2026-10-11/a03-reproductions-after.log)).
 
-## Next Slice P1 (A04–A09 + B22) — Scoped routing diagnostic tools & grounded prefix investigator
+## Strategy Slice P1 (A04–A09 + B22) — Scoped routing diagnostic tools & grounded prefix investigator (completed)
 
-- **A04**: Scoped read-only diagnostic tools (`get_prefix_journey`, `get_peer_timeline`, `get_evidence_coverage`, `get_changes`, `compare_snapshots`) with row/byte/timeout caps.
-- **A05–A07**: Versioned observation envelope, incident-specific evidence coverage, and prefix journey + temporal comparison over `RoutingService` and `RibEventJournal`.
-- **A08–A09 & B22**: Durable workflow/budget reservations and first read-only grounded prefix investigator ("Explain a Missing Prefix").
+1. **A04 — Bounded scoped diagnostic tools (completed)**:
+   - Registered `get_prefix_journey`, `get_peer_timeline`, `get_evidence_coverage`, `get_changes`, `compare_snapshots`, and `explain_missing_prefix` in `src/mcp_server.rs`, enforcing `MAX_GRAPH_ROWS = 200`, `MAX_TOOL_OUTPUT_BYTES = 65536`, and 5s query timeouts.
+2. **A05–A07 — Versioned observation envelope, incident-specific coverage & prefix journey (completed)**:
+   - Implemented `ObservationEnvelope` (`schema_version = 1`), `build_evidence_coverage_json`, `build_prefix_journey_json`, `build_peer_timeline_json`, and `build_compare_snapshots_json` in `src/routing_service/diagnostics.rs` and wired `/internal/routing/v1/*` + `/api/routing/v1/*` routes.
+   - Reproduced and fixed global coverage masking when a connected speaker has 0 peers ([a04-a09-reproductions-before.log](evidence/2026-10-11/a04-a09-reproductions-before.log)).
+3. **A08–A09 & B22 — Pre-call budget reservation & grounded read-only prefix investigator (completed)**:
+   - Implemented `BudgetReservationLedger` and `ToolCallDeduplicator` in `src/investigation_runtime.rs` and `build_explain_prefix_json` in `src/routing_service/diagnostics.rs`, verified across supported diagnosis (`import_policy_rejected_before_loc_rib`), contradicted hypothesis (`peer_session_down`), collector transport gap abstention, and pre-policy-only / FIB abstention in `tests/a04_a09_b22_prefix_investigator.rs` ([a04-a09-reproductions-after.log](evidence/2026-10-11/a04-a09-reproductions-after.log)).
+
+## Next Slice P2 (A10–A12) — Operator evidence/feedback UI, scenario runner with hidden oracles & model/prompt trace comparison
+
 

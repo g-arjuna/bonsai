@@ -41,6 +41,7 @@ impl InvestigationTerminalState {
 pub enum LoopExitReason {
     ModelEndTurn,
     IterationLimitReached { max_iterations: usize },
+    RepeatedToolCallDetected { tool_name: String },
     PerInvestigationBudgetExceeded { cost: f64, budget: f64 },
     DailyBudgetExceeded { spent: f64, daily_budget: f64 },
     DailyBudgetCheckFailed { error: String },
@@ -426,6 +427,17 @@ pub fn resolve_investigation_outcome(
                 validated_rca: partial_rca,
             }
         }
+        LoopExitReason::RepeatedToolCallDetected { tool_name } => InvestigationOutcome {
+            state: InvestigationTerminalState::Partial,
+            stop_reason: "repeated_tool_call_detected".to_string(),
+            summary: if raw_summary.trim().is_empty() {
+                format!("STOP_REASON=repeated_tool_call_detected ({tool_name})")
+            } else {
+                format!("STOP_REASON=repeated_tool_call_detected ({tool_name})\n\n{raw_summary}")
+            },
+            proposal_json: "{}".to_string(),
+            validated_rca: None,
+        },
         LoopExitReason::Cancelled { reason } => InvestigationOutcome {
             state: InvestigationTerminalState::Cancelled,
             stop_reason: "cancelled".to_string(),
@@ -735,4 +747,133 @@ pub fn extract_rca_json(summary: &str) -> String {
         Err(_) => "{}".to_string(),
     }
 }
+
+// ── A08: Pre-Call Budget Reservation Ledger & Tool-Call Deduplicator ──────────
+
+/// Pre-call budget reservation ledger (Strategy §10, A08).
+///
+/// Reserves estimated model spend BEFORE invoking the provider so concurrent or
+/// sequential iterations cannot overshoot `per_investigation_budget_usd` or
+/// `daily_budget_usd`. Reconciles actual spend on completion or releases on error/cancel.
+#[derive(Debug, Clone, Default)]
+pub struct BudgetReservationLedger {
+    daily_committed_usd: f64,
+    committed_by_investigation: std::collections::HashMap<String, f64>,
+    /// Maps `reservation_id -> (investigation_id, reserved_usd)`.
+    active_reservations: std::collections::HashMap<String, (String, f64)>,
+}
+
+impl BudgetReservationLedger {
+    pub fn new(initial_daily_committed_usd: f64) -> Self {
+        Self {
+            daily_committed_usd: initial_daily_committed_usd.max(0.0),
+            committed_by_investigation: std::collections::HashMap::new(),
+            active_reservations: std::collections::HashMap::new(),
+        }
+    }
+
+    pub fn total_reserved_usd(&self) -> f64 {
+        self.active_reservations.values().map(|(_, amt)| *amt).sum()
+    }
+
+    pub fn investigation_reserved_usd(&self, investigation_id: &str) -> f64 {
+        self.active_reservations
+            .values()
+            .filter(|(inv_id, _)| inv_id == investigation_id)
+            .map(|(_, amt)| *amt)
+            .sum()
+    }
+
+    pub fn investigation_committed_usd(&self, investigation_id: &str) -> f64 {
+        self.committed_by_investigation
+            .get(investigation_id)
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    pub fn daily_committed_usd(&self) -> f64 {
+        self.daily_committed_usd
+    }
+
+    /// Reserve `estimated_usd` prior to an AI provider call.
+    /// Fails closed if either the per-investigation limit or the daily limit would be exceeded.
+    pub fn reserve(
+        &mut self,
+        reservation_id: &str,
+        investigation_id: &str,
+        estimated_usd: f64,
+        per_investigation_limit_usd: f64,
+        daily_limit_usd: f64,
+    ) -> Result<(), LoopExitReason> {
+        let est = estimated_usd.max(0.0);
+        let inv_committed = self.investigation_committed_usd(investigation_id);
+        let inv_reserved = self.investigation_reserved_usd(investigation_id);
+        if per_investigation_limit_usd > 0.0
+            && (inv_committed + inv_reserved + est) > per_investigation_limit_usd
+        {
+            return Err(LoopExitReason::PerInvestigationBudgetExceeded {
+                cost: inv_committed + inv_reserved + est,
+                budget: per_investigation_limit_usd,
+            });
+        }
+
+        let total_reserved = self.total_reserved_usd();
+        if daily_limit_usd > 0.0
+            && (self.daily_committed_usd + total_reserved + est) > daily_limit_usd
+        {
+            return Err(LoopExitReason::DailyBudgetExceeded {
+                spent: self.daily_committed_usd + total_reserved + est,
+                daily_budget: daily_limit_usd,
+            });
+        }
+
+        self.active_reservations.insert(
+            reservation_id.to_string(),
+            (investigation_id.to_string(), est),
+        );
+        Ok(())
+    }
+
+    /// Reconcile a reservation with actual provider spend.
+    pub fn commit(&mut self, reservation_id: &str, actual_usd: f64) -> Result<f64, String> {
+        let (inv_id, _) = self
+            .active_reservations
+            .remove(reservation_id)
+            .ok_or_else(|| format!("unknown reservation_id: {reservation_id}"))?;
+        let actual = actual_usd.max(0.0);
+        self.daily_committed_usd += actual;
+        *self.committed_by_investigation.entry(inv_id).or_insert(0.0) += actual;
+        Ok(actual)
+    }
+
+    /// Release an uncommitted reservation on provider error or cancellation.
+    pub fn release(&mut self, reservation_id: &str) -> Option<f64> {
+        self.active_reservations
+            .remove(reservation_id)
+            .map(|(_, amt)| amt)
+    }
+}
+
+/// Detects repeated identical `(tool_name, canonical_args_json)` calls within an investigation (Strategy §5, A08).
+#[derive(Debug, Clone, Default)]
+pub struct ToolCallDeduplicator {
+    seen_calls: std::collections::HashSet<String>,
+}
+
+impl ToolCallDeduplicator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns `true` if this exact `(tool_name, args)` call was already executed in this investigation.
+    pub fn record_or_detect_repeat(
+        &mut self,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> bool {
+        let key = format!("{}::{}", tool_name.trim(), args);
+        !self.seen_calls.insert(key)
+    }
+}
+
 

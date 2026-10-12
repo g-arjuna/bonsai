@@ -1,0 +1,10 @@
+
+running 5 tests
+test a04_scoped_mcp_tools_and_output_byte_caps ... ok
+test a06_incident_specific_evidence_coverage_never_masks_target_speaker_gap ... ok
+test a07_compare_snapshots_and_a08_budget_reservation_and_deduplicator ... ok
+test a05_canonical_observation_envelope_preserves_identity_and_lineage ... ok
+test a07_a09_b22_prefix_investigator_three_held_out_diagnostic_cases ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

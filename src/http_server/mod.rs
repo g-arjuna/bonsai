@@ -969,6 +969,26 @@ where
             get(routing_v1_proxy_get_handler),
         )
         .route("/api/routing/v1/coverage", get(routing_v1_proxy_get_handler))
+        .route(
+            "/api/routing/v1/evidence-coverage",
+            get(routing_v1_proxy_get_handler),
+        )
+        .route(
+            "/api/routing/v1/prefix-journey",
+            get(routing_v1_proxy_get_handler),
+        )
+        .route(
+            "/api/routing/v1/peer-timeline",
+            get(routing_v1_proxy_get_handler),
+        )
+        .route(
+            "/api/routing/v1/compare-snapshots",
+            get(routing_v1_proxy_get_handler),
+        )
+        .route(
+            "/api/routing/v1/explain-prefix",
+            get(routing_v1_proxy_get_handler),
+        )
         .route("/api/routing/v1/events", get(routing_v1_proxy_get_handler))
         .route(
             "/api/routing/v1/ingest-bmp",

@@ -25,13 +25,14 @@ test-protocol:
     cargo test --package bonsai --test bmp_rfc_contract --offline
     python3 docs/merger/evidence/2026-10-11/inspect_fixtures.py crates/rbmp-core
 
-# Journal, RIB, history equivalence, RBAC, investigation runtime, and M3 oracle/load/migration gates
+# Journal, RIB, history equivalence, RBAC, investigation runtime, prefix investigator, and M3 oracle/load/migration gates
 test-replay:
     cargo test -p rbmp-rib -p rbmp-store --offline
     cargo test --package bonsai --test b09_peer_and_correlation --offline
     cargo test --package bonsai --test b11_b12_b13_routing_workflow --offline
     cargo test --package bonsai --test b16_b17_b18_b19_m3_release_gates --offline
     cargo test --package bonsai --test a03_investigation_terminal_states --offline
+    cargo test --package bonsai --test a04_a09_b22_prefix_investigator --offline
 
 # Start minimal unified product deployment (Bonsai + bonsai-routing)
 dev-up:
