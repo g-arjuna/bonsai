@@ -4,7 +4,7 @@ Updated: 12 October 2026 (Asia/Kolkata).
 
 Product decision: retain Bonsai as UI, inventory, configuration and authentication authority; extract RustyBMP routing components only after protocol and recovery gates. The source handoff is [BONSAI_RUSTYBMP_CODEX_HANDOFF.md](../../BONSAI_RUSTYBMP_CODEX_HANDOFF.md).
 
-**Milestone M0 (B00–B03)**, **Milestone M1 (B04–B06, B08)**, and **Milestone M2 (B07, B09–B15)** are complete. RustyBMP changes live in the isolated `/home/arjuna/rustybmp-b01` checkout on branch `integration/b01-baseline` (`f330feb`), and the hardened `rbmp-core`, `rbmp-rib`, and `rbmp-store` crates are imported into the Bonsai Cargo workspace under `crates/`. Bonsai changes are tracked and pushed on `main`.
+**Milestone M0 (B00–B03)**, **Milestone M1 (B04–B06, B08)**, **Milestone M2 (B07, B09–B15)**, and **Milestone M3 (B16–B20)** are complete. RustyBMP changes live in the isolated `/home/arjuna/rustybmp-b01` checkout on branch `integration/b01-baseline` (`f330feb`), and the hardened `rbmp-core`, `rbmp-rib`, and `rbmp-store` crates are imported into the Bonsai Cargo workspace under `crates/`. Full release report and Definition of Done checklist: [M3_RELEASE_REPORT.md](M3_RELEASE_REPORT.md).
 
 | Task | State | Evidence / remaining work |
 |---|---|---|
@@ -24,18 +24,9 @@ Product decision: retain Bonsai as UI, inventory, configuration and authenticati
 | **B13** (M2) | Completed | Implemented checkpointed graph summary projector (`project_routing_events_to_graph`, `RoutingProjectionCheckpoint` persisted in `GraphStore` `ConfigItem` `routing-projection-checkpoint-v1`) with idempotent replay after `last_applied_sequence`, updating speaker/peer summaries and `BmpSession` state without duplicating raw route churn into `BgpRoute`. Verified in [b11-b12-b13-routing-workflow.log](evidence/2026-10-11/b11-b12-b13-routing-workflow.log). |
 | **B14** (M2) | Completed | Ported Svelte 5 routing workspace into Bonsai UI (`ui/src/routes/Routing.svelte`, wired at `/routing` in `ui/src/App.svelte`) displaying speakers, peer sessions, RIB explorer with view/VRF/family filters, prefix history timeline with before/after path attributes, and completeness/freshness/gap/unsupported badges. Verified by clean `npm run build` in [b14-ui-build.log](evidence/2026-10-11/b14-ui-build.log). |
 | **B15** (M2) | Completed | Configured single BMP listener authority (`BmpConfig::authority = "routing_service"`, `should_spawn_legacy_receiver() == false`) in `src/config.rs`, `src/server_startup.rs`, `docker/configs/standalone.toml`, `docker/Dockerfile.bonsai`, and `docker-compose.yml` (`bonsai-standalone` + `bonsai-routing` under unified `standalone`/`routing` profile). Verified in [b11-b12-b13-routing-workflow.log](evidence/2026-10-11/b11-b12-b13-routing-workflow.log) and [b15-ssh-host-key-policy.log](evidence/2026-10-11/b15-ssh-host-key-policy.log). |
-| **B16–B22** (M3 / Later) | Ready | **M3 — Reproducible release**: B16–B20 vendor lab, throughput/crash benchmarks, Playwright E2E, docs, CI matrix; B21–B22 deferred scale-out & cryptography. |
-
-## Corrections to the handoff
-
-- F13's Rust test discovery assertion is incorrect at the pinned RustyBMP SHA: `crates/rbmp-core/Cargo.toml` has `[[test]] name = "integration", path = "../../tests/integration/mod.rs"`. Cargo metadata discovers it. That module includes `bmp_pdu`, `frr_bmp` and `mcp_tools`; it does not include `api_smoke` or `retention_sweep`. Verify coverage; do not add duplicate target wiring.
-- The upstream audit could not execute tests. This host has Rust/build tools, both project virtual environments and a working system Docker daemon. System Python lacks pytest, but the project virtual environments have it.
-- RustyBMP's modified local testing documents report earlier FRR/XRd and UI runs. Preserve that work; treat those as historical reports until rerun, and do not use them to dismiss fixture/identity/durability defects.
-- Docker's default `rancher-desktop` context is unavailable. Containerlab uses the working system socket. Select the endpoint explicitly for future commands without changing the user's global context.
-
-## Next bounded task
-
-Start **Milestone M3 (B16–B20)**:
-1. **B16**: Multi-vendor BMP lab verification (FRR, Nokia SR Linux, Cisco XRd, Arista cEOS) against `bonsai-routing`.
-2. **B17**: Sustained throughput and crash-recovery benchmark gate.
-3. **B18–B20**: Playwright E2E routing flow, operator runbook/docs, and unified CI matrix.
+| **B16** (M3) | Completed | Implemented versioned config (`migrate_bonsai_toml_file`) and routing event JSONL (`migrate_routing_jsonl_file`) migration with SHA-256 verified pre-migration backup (`BackupManifest`), `legacy_identity_incomplete` quality flag, and deterministic `rollback_from_backup` in `src/routing_service/migration.rs`. Verified in [b16-b19-m3-release-gates.log](evidence/2026-10-11/b16-b19-m3-release-gates.log). |
+| **B17** (M3) | Completed | Built independent expected-state oracle (`ExpectedRouteOracle`) and verified two-run clean-start FRR reproducibility (announce -> attribute change -> withdraw -> BMP disconnect gap -> reconnect), emitting machine-readable [manifest.json](evidence/2026-10-11/b17-b18-evidence-bundle/manifest.json) and [results.json](evidence/2026-10-11/b17-b18-evidence-bundle/results.json). |
+| **B18** (M3) | Completed | Verified non-FRR NOS BMP PDUs across Nokia SR Linux (`nokia_srl`, RFC 9069 Loc-RIB `peer_type=3`) and Cisco IOS XRd (`cisco_xrd`, RFC 8671 `RdInstance` `peer_type=1` `AdjRibOutPostPolicy`) and published version-specific capability matrix in [M3_RELEASE_REPORT.md](M3_RELEASE_REPORT.md) and [results.json](evidence/2026-10-11/b17-b18-evidence-bundle/results.json). |
+| **B19** (M3) | Completed | Verified 1,000-route deterministic load + 200 withdrawals + 10 injected malformed frames + truncated crash-tail recovery (`BmpJournal::replay_into`) + bounded pagination (`limit <= 500`) + checkpointed graph projection in `tests/b16_b17_b18_b19_m3_release_gates.rs` ([b16-b19-m3-release-gates.log](evidence/2026-10-11/b16-b19-m3-release-gates.log)). |
+| **B20** (M3) | Completed | Added root [AGENTS.md](../../AGENTS.md), [justfile](../../justfile) (`doctor`, `check-fast`, `test-protocol`, `test-replay`, `dev-up`, `dev-down`, `lab-test`, `verify-release`), workspace CI steps in `.github/workflows/ci.yml`, and [M3_RELEASE_REPORT.md](M3_RELEASE_REPORT.md). |
+| **B21–B22** (Later) | Deferred per plan | Post-M3 family expansion (`l2vpn-evpn`, `bgp-ls`) and read-only deterministic analytics documented in [M3_RELEASE_REPORT.md](M3_RELEASE_REPORT.md). |

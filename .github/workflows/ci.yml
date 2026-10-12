@@ -48,7 +48,7 @@ jobs:
         id: build
         run: |
           START=$(date +%s)
-          cargo build --release
+          cargo build --release --workspace
           END=$(date +%s)
           ELAPSED=$((END - START))
           echo "build_seconds=${ELAPSED}" >> "$GITHUB_OUTPUT"
@@ -58,7 +58,7 @@ jobs:
         run: bash scripts/check_wiring.sh
 
       - name: Test
-        run: cargo nextest run --release
+        run: cargo nextest run --release --workspace
 
       - name: Clippy
         run: cargo clippy --release -- -D warnings

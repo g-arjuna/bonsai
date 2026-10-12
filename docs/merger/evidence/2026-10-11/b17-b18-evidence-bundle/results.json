@@ -1,0 +1,80 @@
+{
+  "counts": {
+    "blocked": 0,
+    "failed": 0,
+    "passed": 4,
+    "skipped": 0
+  },
+  "frr_clean_runs": [
+    {
+      "durable_sequence": 9,
+      "final_digest": "644c6a9ed93082dca83a2271dbf8e057b5ab68ccd2498415c1d4c6b18f915d09",
+      "final_route_count": 1,
+      "initial_digest": "b3f0a5efe350003e17454f833a54b3e5bc132bddc58305f32ddee3f0fb7c7c69",
+      "prefix_10_10_1_0_events": 3,
+      "run_number": 1,
+      "status": "passed"
+    },
+    {
+      "durable_sequence": 9,
+      "final_digest": "644c6a9ed93082dca83a2271dbf8e057b5ab68ccd2498415c1d4c6b18f915d09",
+      "final_route_count": 1,
+      "initial_digest": "b3f0a5efe350003e17454f833a54b3e5bc132bddc58305f32ddee3f0fb7c7c69",
+      "prefix_10_10_1_0_events": 3,
+      "run_number": 2,
+      "status": "passed"
+    }
+  ],
+  "non_frr_nos_verified": [
+    "nokia_srl (LocRib RFC 9069)",
+    "cisco_xrd (RdInstance AdjRibOut RFC 8671)"
+  ],
+  "reproducible_digest_match": true,
+  "suite": "B17-B18 FRR Reproducibility & Multi-Vendor NOS Verification",
+  "vendor_capability_matrix": [
+    {
+      "bgp_ls_support": "conditional",
+      "bgpsec_crypto_validation": "unsupported_without_rfc8205_wire_pdu",
+      "bmp_adj_rib_out_rfc8671": true,
+      "bmp_loc_rib_rfc9069": true,
+      "bmp_support": "native",
+      "local_image": "quay.io/frrouting/frr:9.1.0",
+      "os": "frr",
+      "platform_id": "frr",
+      "vendor": "frr"
+    },
+    {
+      "bgp_ls_support": "native",
+      "bgpsec_crypto_validation": "unsupported_without_rfc8205_wire_pdu",
+      "bmp_adj_rib_out_rfc8671": false,
+      "bmp_loc_rib_rfc9069": true,
+      "bmp_support": "native",
+      "local_image": "ghcr.io/nokia/srlinux:24.10.1",
+      "os": "srlinux",
+      "platform_id": "nokia.srlinux",
+      "vendor": "nokia"
+    },
+    {
+      "bgp_ls_support": "native",
+      "bgpsec_crypto_validation": "unsupported_without_rfc8205_wire_pdu",
+      "bmp_adj_rib_out_rfc8671": true,
+      "bmp_loc_rib_rfc9069": false,
+      "bmp_support": "native",
+      "local_image": "ios-xr/xrd-control-plane:24.4.1",
+      "os": "iosxr",
+      "platform_id": "cisco.iosxr",
+      "vendor": "cisco"
+    },
+    {
+      "bgp_ls_support": "native",
+      "bgpsec_crypto_validation": "unsupported_without_rfc8205_wire_pdu",
+      "bmp_adj_rib_out_rfc8671": false,
+      "bmp_loc_rib_rfc9069": false,
+      "bmp_support": "native",
+      "local_image": "ceos:4.33.1F",
+      "os": "eos",
+      "platform_id": "arista.eos",
+      "vendor": "arista"
+    }
+  ]
+}

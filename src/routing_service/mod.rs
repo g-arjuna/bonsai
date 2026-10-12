@@ -1289,3 +1289,83 @@ pub fn sample_bmp_session_frames(
 
     (init, peer_up, rm)
 }
+
+pub mod migration;
+
+/// Build a canonical 6-byte BMP RouteMonitoring (type 0) withdrawal frame for `prefix_octets/24`.
+pub fn sample_bmp_withdraw_frame(
+    peer_ip: Ipv4Addr,
+    peer_as: u32,
+    prefix_octets: [u8; 3],
+) -> Vec<u8> {
+    let mut peer_hdr = Vec::with_capacity(42);
+    peer_hdr.push(0); // GlobalInstance
+    peer_hdr.push(0); // flags = 0 (IPv4, 4-byte ASN)
+    peer_hdr.extend_from_slice(&[0u8; 8]);
+    peer_hdr.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    peer_hdr.extend_from_slice(&peer_ip.octets());
+    peer_hdr.extend_from_slice(&peer_as.to_be_bytes());
+    peer_hdr.extend_from_slice(&peer_ip.octets());
+    peer_hdr.extend_from_slice(&1700000010u32.to_be_bytes());
+    peer_hdr.extend_from_slice(&0u32.to_be_bytes());
+
+    let withdrawn = [24, prefix_octets[0], prefix_octets[1], prefix_octets[2]];
+    let mut bgp_update = Vec::new();
+    bgp_update.extend_from_slice(&[0xff; 16]);
+    let bgp_len = (19 + 2 + withdrawn.len() + 2) as u16;
+    bgp_update.extend_from_slice(&bgp_len.to_be_bytes());
+    bgp_update.push(2); // UPDATE
+    bgp_update.extend_from_slice(&(withdrawn.len() as u16).to_be_bytes());
+    bgp_update.extend_from_slice(&withdrawn);
+    bgp_update.extend_from_slice(&0u16.to_be_bytes()); // total_path_attr_len = 0
+
+    let rm_len = (6 + 42 + bgp_update.len()) as u32;
+    let mut rm = Vec::with_capacity(rm_len as usize);
+    rm.push(3);
+    rm.extend_from_slice(&rm_len.to_be_bytes());
+    rm.push(0); // RouteMonitoring
+    rm.extend_from_slice(&peer_hdr);
+    rm.extend_from_slice(&bgp_update);
+    rm
+}
+
+/// Compute a deterministic SHA-256 digest of all active routes in `RoutingServiceState`
+/// sorted by `(speaker_addr, peer_address, peer_distinguisher, view, prefix, path_id, next_hop, local_pref, as_path)`.
+pub async fn compute_rib_digest(state: &RoutingServiceState) -> (usize, String) {
+    use sha2::{Digest, Sha256};
+    let rib = state.rib.read().await;
+    let mut canonical_rows = Vec::new();
+    for spk in rib.speakers() {
+        for (peer_key, table) in rib.ribs_for_speaker(spk.speaker_addr) {
+            for rib_type in [
+                RibType::AdjRibInPrePolicy,
+                RibType::AdjRibInPostPolicy,
+                RibType::LocRib,
+                RibType::LocRibFiltered,
+                RibType::AdjRibOutPrePolicy,
+                RibType::AdjRibOutPostPolicy,
+            ] {
+                for entry in table.iter_rib(rib_type) {
+                    canonical_rows.push(format!(
+                        "{}|{}|{}|{:?}|{}|{:?}|{:?}|{:?}|{:?}",
+                        spk.speaker_addr,
+                        peer_key.peer_address,
+                        peer_key.distinguisher_string(),
+                        rib_type,
+                        entry.prefix,
+                        entry.path_id,
+                        entry.attributes.next_hop,
+                        entry.attributes.local_pref,
+                        entry.attributes.as_path.as_ref().map(|p| p.to_string()),
+                    ));
+                }
+            }
+        }
+    }
+    canonical_rows.sort();
+    let count = canonical_rows.len();
+    let joined = canonical_rows.join("\n");
+    let digest = hex::encode(Sha256::digest(joined.as_bytes()));
+    (count, digest)
+}
+

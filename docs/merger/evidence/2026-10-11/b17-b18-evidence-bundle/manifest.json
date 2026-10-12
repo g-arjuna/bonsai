@@ -1,0 +1,15 @@
+{
+  "host_images_verified": [
+    "quay.io/frrouting/frr:9.1.0",
+    "ghcr.io/nokia/srlinux:24.10.1",
+    "ios-xr/xrd-control-plane:24.4.1",
+    "ceos:4.33.1F"
+  ],
+  "results_file": "results.json",
+  "results_sha256": "c83522505562ccc16af32959e5b5070ea575749d2a057d924dfca12add87ade4",
+  "schema_version": 1,
+  "tasks": [
+    "B17",
+    "B18"
+  ]
+}

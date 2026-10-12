@@ -1,0 +1,12 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 8.26s
+     Running tests/b16_b17_b18_b19_m3_release_gates.rs (target/debug/deps/b16_b17_b18_b19_m3_release_gates-7350a8831f5926fd)
+
+running 3 tests
+test b16_versioned_config_and_routing_jsonl_migration_with_rollback ... ok
+test b17_b18_frr_two_clean_runs_and_multivendor_capability_matrix ... ok
+B19 load/fault/replay passed in 7585 ms: 1202 events, 800 active routes, digest=2b0b91fde9fcd4d3ff9c717e52d29f07ee8489d51093c4432966f4aebc9abdf3
+test b19_deterministic_load_fault_injection_and_crash_replay_equivalence ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.16s
+
