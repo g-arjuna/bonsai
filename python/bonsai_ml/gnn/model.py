@@ -267,8 +267,11 @@ def build_hetero_data(snapshot: dict[str, Any]) -> Any:
     IFACE_DIM = 14
     x_iface = np.zeros((len(interfaces), IFACE_DIM), dtype=np.float32)
     iface_to_device: list[tuple[int, int]] = []
+    iface_ids: list[str] = []
     for k, iface in enumerate(interfaces):
         dev_addr = str(iface.get("device_address") or iface.get("device") or "")
+        iface_name = str(iface.get("name") or iface.get("id") or k)
+        iface_ids.append(f"{dev_addr}:{iface_name}")
         if dev_addr in node_index:
             iface_to_device.append((node_index[dev_addr], k))
         x_iface[k, 0] = float(iface.get("in_error_rate") or 0.0)
@@ -292,8 +295,11 @@ def build_hetero_data(snapshot: dict[str, Any]) -> Any:
     BGP_DIM = 12
     x_bgp = np.zeros((len(bgp_sessions), BGP_DIM), dtype=np.float32)
     bgp_to_device: list[tuple[int, int]] = []
+    bgp_ids: list[str] = []
     for k, sess in enumerate(bgp_sessions):
         dev_addr = str(sess.get("device_address") or sess.get("local_address") or "")
+        peer_id = str(sess.get("peer_address") or sess.get("neighbor_address") or sess.get("id") or k)
+        bgp_ids.append(f"{dev_addr}:{peer_id}")
         if dev_addr in node_index:
             bgp_to_device.append((node_index[dev_addr], k))
         x_bgp[k, 0] = 1.0 if str(sess.get("session_state") or "").lower() == "established" else 0.0
@@ -314,8 +320,11 @@ def build_hetero_data(snapshot: dict[str, Any]) -> Any:
     BFD_DIM = 10
     x_bfd = np.zeros((len(bfd_sessions), BFD_DIM), dtype=np.float32)
     bfd_to_device: list[tuple[int, int]] = []
+    bfd_ids: list[str] = []
     for k, sess in enumerate(bfd_sessions):
         dev_addr = str(sess.get("device_address") or "")
+        peer_id = str(sess.get("peer_address") or sess.get("id") or k)
+        bfd_ids.append(f"{dev_addr}:{peer_id}")
         if dev_addr in node_index:
             bfd_to_device.append((node_index[dev_addr], k))
         x_bfd[k, 0] = 1.0 if str(sess.get("state") or "").lower() == "up" else 0.0
@@ -334,8 +343,11 @@ def build_hetero_data(snapshot: dict[str, Any]) -> Any:
     OSPF_DIM = 8
     x_ospf = np.zeros((len(ospf_neighbors), OSPF_DIM), dtype=np.float32)
     ospf_to_device: list[tuple[int, int]] = []
+    ospf_ids: list[str] = []
     for k, nbr in enumerate(ospf_neighbors):
         dev_addr = str(nbr.get("device_address") or "")
+        nbr_id = str(nbr.get("neighbor_id") or nbr.get("neighbor_address") or nbr.get("id") or k)
+        ospf_ids.append(f"{dev_addr}:{nbr_id}")
         if dev_addr in node_index:
             ospf_to_device.append((node_index[dev_addr], k))
         state = str(nbr.get("state") or "").lower()
@@ -355,7 +367,9 @@ def build_hetero_data(snapshot: dict[str, Any]) -> Any:
     RG_DIM = 6
     x_rg = np.zeros((len(redundancy_groups), RG_DIM), dtype=np.float32)
     rg_device_edges: list[tuple[int, int]] = []
+    rg_ids: list[str] = []
     for k, rg in enumerate(redundancy_groups):
+        rg_ids.append(str(rg.get("id") or rg.get("group_id") or rg.get("name") or k))
         rg_type = str(rg.get("group_type") or "").lower()
         x_rg[k, 0] = 1.0 if rg_type == "lag" else 0.0
         x_rg[k, 1] = 1.0 if rg_type == "vrrp" else 0.0
@@ -372,8 +386,11 @@ def build_hetero_data(snapshot: dict[str, Any]) -> Any:
     SENSOR_DIM = 4
     x_sensor = np.zeros((len(sensors), SENSOR_DIM), dtype=np.float32)
     sensor_to_device: list[tuple[int, int]] = []
+    sensor_ids: list[str] = []
     for k, s in enumerate(sensors):
         dev_addr = str(s.get("device_address") or "")
+        s_name = str(s.get("sensor_name") or s.get("id") or k)
+        sensor_ids.append(f"{dev_addr}:{s_name}")
         if dev_addr in node_index:
             sensor_to_device.append((node_index[dev_addr], k))
         temp = s.get("temperature_celsius")
@@ -389,8 +406,11 @@ def build_hetero_data(snapshot: dict[str, Any]) -> Any:
     AF_DIM = 6
     x_af = np.zeros((len(app_flows), AF_DIM), dtype=np.float32)
     af_to_device: list[tuple[int, int]] = []
+    af_ids: list[str] = []
     for k, af in enumerate(app_flows):
         dev_addr = str(af.get("device_address") or "")
+        flow_id = str(af.get("flow_id") or af.get("id") or k)
+        af_ids.append(f"{dev_addr}:{flow_id}")
         if dev_addr in node_index:
             af_to_device.append((node_index[dev_addr], k))
         x_af[k, 0] = math.log1p(float(af.get("bytes_per_sec") or 0.0))
@@ -402,17 +422,25 @@ def build_hetero_data(snapshot: dict[str, Any]) -> Any:
 
     # ── Assemble HeteroData ───────────────────────────────────────────────────
     data = HeteroData()
+    data.snapshot_ns = snapshot_ns
     data["device"].x = torch.tensor(x_device, dtype=torch.float32)
     data["device"].y = torch.tensor(y_device, dtype=torch.long)
     data["device"].node_ids = node_ids
 
     data["interface"].x = torch.tensor(x_iface, dtype=torch.float32)
+    data["interface"].node_ids = iface_ids
     data["bgp_neighbor"].x = torch.tensor(x_bgp, dtype=torch.float32)
+    data["bgp_neighbor"].node_ids = bgp_ids
     data["bfd_session"].x = torch.tensor(x_bfd, dtype=torch.float32)
+    data["bfd_session"].node_ids = bfd_ids
     data["ospf_neighbor"].x = torch.tensor(x_ospf, dtype=torch.float32)
+    data["ospf_neighbor"].node_ids = ospf_ids
     data["redundancy_group"].x = torch.tensor(x_rg, dtype=torch.float32)
+    data["redundancy_group"].node_ids = rg_ids
     data["sensor_reading"].x = torch.tensor(x_sensor, dtype=torch.float32)
+    data["sensor_reading"].node_ids = sensor_ids
     data["app_flow"].x = torch.tensor(x_af, dtype=torch.float32)
+    data["app_flow"].node_ids = af_ids
 
     def _make_edges(pairs: list[tuple[int, int]]) -> "torch.Tensor":
         if not pairs:

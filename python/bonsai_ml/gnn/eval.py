@@ -49,7 +49,14 @@ class ConfusionMatrix:
 
 @dataclass
 class GnnEvalReport:
-    """Output schema for a GNN evaluation run — feeds the model card."""
+    """Output schema for a GNN evaluation run — feeds the model card.
+
+    Primary metrics are raw point-wise ``f1``, ``event_recall``,
+    ``within_delay_event_recall``, ``mean_detection_delay_steps``, and
+    ``false_alert_rate``. Point-adjusted F1 (``pa_f1``) is retained only as a
+    diagnostic field because a single late detection in a long anomaly window
+    inflates ``pa_f1`` to 1.0 (see BONSAI_AGENTIC_NETOPS_STRATEGY_2026.md §3).
+    """
 
     model_tag: str
     num_samples: int
@@ -61,6 +68,12 @@ class GnnEvalReport:
     threshold: float
     notes: str = ""
     feature_ablation: dict[str, float] = field(default_factory=dict)
+    event_recall: float = 0.0
+    within_delay_event_recall: float = 0.0
+    mean_detection_delay_steps: float = float("nan")
+    false_alert_count: int = 0
+    false_alert_rate: float = 0.0
+    pa_f1_is_diagnostic_only: bool = True
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -68,8 +81,18 @@ class GnnEvalReport:
         return d
 
     def summary_line(self) -> str:
+        delay_str = (
+            f"{self.mean_detection_delay_steps:.1f}"
+            if not math.isnan(self.mean_detection_delay_steps)
+            else "n/a"
+        )
         return (
-            f"{self.model_tag}: F1={self.f1:.3f} PA-F1={self.pa_f1:.3f} "
+            f"{self.model_tag}: F1={self.f1:.3f} "
+            f"EventRecall={self.event_recall:.3f} "
+            f"EarlyEventRecall={self.within_delay_event_recall:.3f} "
+            f"Delay={delay_str} "
+            f"FAR={self.false_alert_rate:.4f} "
+            f"PA-F1={self.pa_f1:.3f}(diag) "
             f"AUC-ROC={self.auc_roc:.3f} "
             f"(n={self.num_samples}, anomalies={self.num_anomalies})"
         )
@@ -93,33 +116,9 @@ def compute_confusion(
     return cm
 
 
-def point_adjusted_f1(
-    y_true: list[int],
-    y_score: list[float],
-    threshold: float = 0.5,
-) -> float:
-    """Compute point-adjustment F1 (PA-F1) per arxiv 2603.09675.
-
-    Point adjustment: if any point in a contiguous anomaly segment is detected,
-    the entire segment is considered detected. This is the standard TSAD metric
-    that accounts for detection latency within a fault window.
-
-    Args:
-        y_true: Ground-truth binary labels (1=anomalous).
-        y_score: Model anomaly scores in [0, 1].
-        threshold: Score threshold for classifying as anomalous.
-
-    Returns:
-        PA-F1 score.
-    """
-    if len(y_true) != len(y_score):
-        raise ValueError("y_true and y_score must have equal length")
-    if not y_true:
-        return 0.0
-
-    y_pred = [1 if s >= threshold else 0 for s in y_score]
-
-    anomaly_segments: list[tuple[int, int]] = []
+def extract_anomaly_segments(y_true: list[int]) -> list[tuple[int, int]]:
+    """Return contiguous (start_idx, end_idx) inclusive segments where y_true == 1."""
+    segments: list[tuple[int, int]] = []
     in_segment = False
     start = 0
     for i, label in enumerate(y_true):
@@ -127,10 +126,77 @@ def point_adjusted_f1(
             in_segment = True
             start = i
         elif label == 0 and in_segment:
-            anomaly_segments.append((start, i - 1))
+            segments.append((start, i - 1))
             in_segment = False
     if in_segment:
-        anomaly_segments.append((start, len(y_true) - 1))
+        segments.append((start, len(y_true) - 1))
+    return segments
+
+
+def compute_event_metrics(
+    y_true: list[int],
+    y_pred: list[int],
+    max_delay_steps: int = 5,
+) -> tuple[float, float, float]:
+    """Compute (event_recall, within_delay_event_recall, mean_detection_delay_steps).
+
+    Args:
+        y_true: Ground-truth binary labels (1=anomalous).
+        y_pred: Predicted binary labels (1=anomalous).
+        max_delay_steps: Maximum allowed steps after segment start for an event
+            detection to count toward ``within_delay_event_recall``.
+
+    Returns:
+        Tuple of ``(event_recall, within_delay_event_recall, mean_detection_delay_steps)``.
+    """
+    segments = extract_anomaly_segments(y_true)
+    if not segments:
+        return 0.0, 0.0, float("nan")
+
+    detected = 0
+    detected_within_delay = 0
+    delays: list[int] = []
+
+    for seg_start, seg_end in segments:
+        first_hit = None
+        for j in range(seg_start, seg_end + 1):
+            if y_pred[j] == 1:
+                first_hit = j
+                break
+        if first_hit is not None:
+            detected += 1
+            delay = first_hit - seg_start
+            delays.append(delay)
+            if delay <= max_delay_steps:
+                detected_within_delay += 1
+
+    n_seg = len(segments)
+    event_recall = detected / n_seg
+    within_delay_recall = detected_within_delay / n_seg
+    mean_delay = sum(delays) / len(delays) if delays else float("nan")
+    return event_recall, within_delay_recall, mean_delay
+
+
+def point_adjusted_f1(
+    y_true: list[int],
+    y_score: list[float],
+    threshold: float = 0.5,
+) -> float:
+    """Compute point-adjustment F1 (PA-F1) — DIAGNOSTIC ONLY.
+
+    WARNING: If any single point in a contiguous anomaly segment is detected
+    (even the very last point of a 100-step window), PA-F1 marks the entire
+    segment as detected. Do NOT use PA-F1 as the primary ranking metric; use
+    raw ``f1``, ``within_delay_event_recall``, ``mean_detection_delay_steps``,
+    and ``false_alert_rate`` from :func:`evaluate_gnn`.
+    """
+    if len(y_true) != len(y_score):
+        raise ValueError("y_true and y_score must have equal length")
+    if not y_true:
+        return 0.0
+
+    y_pred = [1 if s >= threshold else 0 for s in y_score]
+    anomaly_segments = extract_anomaly_segments(y_true)
 
     y_pred_pa = list(y_pred)
     for seg_start, seg_end in anomaly_segments:
@@ -181,6 +247,7 @@ def evaluate_gnn(
     threshold: float = 0.5,
     notes: str = "",
     feature_ablation: dict[str, float] | None = None,
+    max_delay_steps: int = 5,
 ) -> GnnEvalReport:
     """Run the full TSAD evaluation suite for a GNN model.
 
@@ -192,15 +259,25 @@ def evaluate_gnn(
         notes: Free-form notes for the model card.
         feature_ablation: Optional dict mapping feature name → F1-delta when
             that feature is ablated. Populated by the feature ablation runner.
+        max_delay_steps: Maximum allowed detection delay in steps for
+            ``within_delay_event_recall`` (default 5).
 
     Returns:
         :class:`GnnEvalReport` with all metrics populated.
     """
+    if len(y_true) != len(y_score):
+        raise ValueError("y_true and y_score must have equal length")
+
     y_pred = [1 if s >= threshold else 0 for s in y_score]
     cm = compute_confusion(y_true, y_pred)
     f1 = cm.f1
     pa_f1 = point_adjusted_f1(y_true, y_score, threshold)
     auc = compute_auc_roc(y_true, y_score)
+    event_recall, within_delay_recall, mean_delay = compute_event_metrics(
+        y_true, y_pred, max_delay_steps=max_delay_steps
+    )
+    total_normal = cm.tn + cm.fp
+    false_alert_rate = (cm.fp / total_normal) if total_normal > 0 else 0.0
 
     return GnnEvalReport(
         model_tag=model_tag,
@@ -213,6 +290,12 @@ def evaluate_gnn(
         threshold=threshold,
         notes=notes,
         feature_ablation=feature_ablation or {},
+        event_recall=event_recall,
+        within_delay_event_recall=within_delay_recall,
+        mean_detection_delay_steps=mean_delay,
+        false_alert_count=cm.fp,
+        false_alert_rate=false_alert_rate,
+        pa_f1_is_diagnostic_only=True,
     )
 
 
@@ -223,12 +306,17 @@ class ComparisonStudyRow:
     pa_f1: float
     auc_roc: float
     notes: str = ""
+    event_recall: float = 0.0
+    within_delay_event_recall: float = 0.0
+    mean_detection_delay_steps: float = float("nan")
+    false_alert_rate: float = 0.0
 
 
 def run_comparison_study(
     y_true: list[int],
     detectors: list[tuple[str, list[float], str]],
     threshold: float = 0.5,
+    max_delay_steps: int = 5,
 ) -> list[ComparisonStudyRow]:
     """Compare multiple detectors on the same ground-truth labels.
 
@@ -236,18 +324,37 @@ def run_comparison_study(
         y_true: Shared ground-truth binary labels.
         detectors: List of ``(name, y_scores, notes)`` tuples.
         threshold: Shared classification threshold for all detectors.
+        max_delay_steps: Max allowed delay for early event detection credit.
 
     Returns:
-        List of :class:`ComparisonStudyRow`, one per detector, sorted by F1 descending.
+        List of :class:`ComparisonStudyRow`, sorted by raw ``f1`` and
+        ``within_delay_event_recall`` descending (never by inflated ``pa_f1``).
     """
     rows = []
     for name, y_score, notes in detectors:
-        report = evaluate_gnn(name, y_true, y_score, threshold=threshold, notes=notes)
-        rows.append(ComparisonStudyRow(
-            detector=name,
-            f1=report.f1,
-            pa_f1=report.pa_f1,
-            auc_roc=report.auc_roc,
+        report = evaluate_gnn(
+            name,
+            y_true,
+            y_score,
+            threshold=threshold,
             notes=notes,
-        ))
-    return sorted(rows, key=lambda r: r.f1, reverse=True)
+            max_delay_steps=max_delay_steps,
+        )
+        rows.append(
+            ComparisonStudyRow(
+                detector=name,
+                f1=report.f1,
+                pa_f1=report.pa_f1,
+                auc_roc=report.auc_roc,
+                notes=notes,
+                event_recall=report.event_recall,
+                within_delay_event_recall=report.within_delay_event_recall,
+                mean_detection_delay_steps=report.mean_detection_delay_steps,
+                false_alert_rate=report.false_alert_rate,
+            )
+        )
+    return sorted(
+        rows,
+        key=lambda r: (r.f1, r.within_delay_event_recall, -r.false_alert_rate),
+        reverse=True,
+    )

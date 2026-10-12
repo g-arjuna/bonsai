@@ -1,0 +1,27 @@
+
+running 2 tests
+test a03_device_specific_weak_coverage_warns_even_when_global_graph_healthy ... FAILED
+test a03_invalid_or_empty_rca_json_must_be_rejected ... FAILED
+
+failures:
+
+---- a03_device_specific_weak_coverage_warns_even_when_global_graph_healthy stdout ----
+
+thread 'a03_device_specific_weak_coverage_warns_even_when_global_graph_healthy' (3554601) panicked at tests/a03_investigation_terminal_states.rs:50:5:
+Target device missing gnmi/bmp/syslog must trigger preflight warning even when global score is 96.0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- a03_invalid_or_empty_rca_json_must_be_rejected stdout ----
+
+thread 'a03_invalid_or_empty_rca_json_must_be_rejected' (3554602) panicked at tests/a03_investigation_terminal_states.rs:40:5:
+assertion `left == right` failed: Malformed RCA JSON with empty root_cause_type and confidence=2.5 must be rejected
+  left: "{\"confidence\":2.5,\"root_cause_type\":\"\"}"
+ right: "{}"
+
+
+failures:
+    a03_device_specific_weak_coverage_warns_even_when_global_graph_healthy
+    a03_invalid_or_empty_rca_json_must_be_rejected
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

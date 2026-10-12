@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::ai_provider::{AiMessage, AiProvider, build_provider_with_key};
@@ -9,6 +10,84 @@ use crate::http_server::AppState;
 use crate::http_server::nl_query::GRAPH_SCHEMA;
 
 const MAX_ITERATIONS: usize = 15;
+
+/// Honest terminal states for an investigation run (A03).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvestigationTerminalState {
+    Completed,
+    Partial,
+    BudgetExhausted,
+    Failed,
+    Cancelled,
+    AwaitingHuman,
+}
+
+impl InvestigationTerminalState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Partial => "partial",
+            Self::BudgetExhausted => "budget_exhausted",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::AwaitingHuman => "awaiting_human",
+        }
+    }
+}
+
+/// Reason why the investigation runtime exited.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoopExitReason {
+    ModelEndTurn,
+    IterationLimitReached { max_iterations: usize },
+    PerInvestigationBudgetExceeded { cost: f64, budget: f64 },
+    DailyBudgetExceeded { spent: f64, daily_budget: f64 },
+    DailyBudgetCheckFailed { error: String },
+    ProviderUnavailable { error: String },
+    ProviderCallFailed { error: String, iteration: usize },
+    Cancelled { reason: String },
+}
+
+fn default_epistemic_state() -> String {
+    "plausible".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Validated structured RCA payload (A03).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TypedInvestigationRca {
+    pub root_cause_type: String,
+    pub confidence: f64,
+    #[serde(default = "default_true")]
+    pub confidence_is_uncalibrated: bool,
+    #[serde(default = "default_epistemic_state")]
+    pub epistemic_state: String,
+    #[serde(default)]
+    pub affected_scope: Vec<String>,
+    pub recommended_action: String,
+    #[serde(default)]
+    pub missing_data: Vec<String>,
+    #[serde(default)]
+    pub supporting_evidence_ids: Vec<String>,
+    #[serde(default)]
+    pub counterevidence_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_check: Option<String>,
+}
+
+/// Resolved terminal outcome for persistence in `GraphStore::complete_investigation`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InvestigationOutcome {
+    pub state: InvestigationTerminalState,
+    pub stop_reason: String,
+    pub summary: String,
+    pub proposal_json: String,
+    pub validated_rca: Option<TypedInvestigationRca>,
+}
 
 /// Pre-fetch device and incident context before entering the agent loop.
 /// Returns a markdown-formatted string injected into the first user message,
@@ -71,7 +150,7 @@ async fn run_investigation(
     ai_cfg: AiConfig,
     api_key: String,
 ) {
-    // Daily budget gate — abort before building the provider if today's spend is over limit.
+    // Daily budget gate — fail closed if spend query fails or budget is exceeded (A03).
     let daily_budget = ai_cfg.daily_budget_usd;
     if daily_budget > 0.0 {
         match store.query_daily_investigation_cost().await {
@@ -80,20 +159,41 @@ async fn run_investigation(
                     id = %investigation_id,
                     spent,
                     daily_budget,
-                    "daily AI budget exceeded — investigation skipped"
+                    "daily AI budget exceeded — investigation halted"
+                );
+                let outcome = resolve_investigation_outcome(
+                    LoopExitReason::DailyBudgetExceeded { spent, daily_budget },
+                    "",
                 );
                 let _ = store.complete_investigation(
                     investigation_id,
-                    "skipped".to_string(),
-                    format!("Daily AI budget ({daily_budget:.4} USD) exceeded; today spent {spent:.4} USD."),
-                    "{}".to_string(),
+                    outcome.state.as_str().to_string(),
+                    outcome.summary,
+                    outcome.proposal_json,
                     0,
                     0.0,
                 ).await;
                 return;
             }
             Err(e) => {
-                warn!(id = %investigation_id, error = %e, "daily cost query failed — proceeding");
+                warn!(
+                    id = %investigation_id,
+                    error = %e,
+                    "daily cost query failed — failing closed to prevent unbudgeted spend"
+                );
+                let outcome = resolve_investigation_outcome(
+                    LoopExitReason::DailyBudgetCheckFailed { error: e.to_string() },
+                    "",
+                );
+                let _ = store.complete_investigation(
+                    investigation_id,
+                    outcome.state.as_str().to_string(),
+                    outcome.summary,
+                    outcome.proposal_json,
+                    0,
+                    0.0,
+                ).await;
+                return;
             }
             _ => {}
         }
@@ -103,11 +203,15 @@ async fn run_investigation(
         Ok(p) => p,
         Err(e) => {
             warn!(id = %investigation_id, error = %e, "AI provider unavailable");
+            let outcome = resolve_investigation_outcome(
+                LoopExitReason::ProviderUnavailable { error: e.to_string() },
+                "",
+            );
             let _ = store.complete_investigation(
                 investigation_id,
-                "failed".to_string(),
-                format!("AI provider unavailable: {e}"),
-                "{}".to_string(),
+                outcome.state.as_str().to_string(),
+                outcome.summary,
+                outcome.proposal_json,
                 0,
                 0.0,
             ).await;
@@ -118,37 +222,20 @@ async fn run_investigation(
     let tools = crate::mcp_server::ai_tool_definitions();
     let per_budget = ai_cfg.per_investigation_budget_usd;
 
-    // D4-6 T4: Pre-flight quality check — warn if graph data is sparse.
+    // D4-6 T4 & A03: Pre-flight quality check — warn if target device has missing signals or graph is sparse.
     let quality = preflight_quality(&store, &device_address).await;
     let quality_score = quality.as_ref().map(|q| q.overall_score).unwrap_or(-1.0);
-    let quality_warning = match &quality {
-        Some(q) if q.overall_score < 40.0 => {
-            let missing: Vec<String> = q.weak_devices.iter()
-                .filter(|w| w.address == device_address)
-                .flat_map(|w| w.missing.clone())
-                .collect();
-            let missing_str = if missing.is_empty() {
-                "multiple signal sources".to_string()
-            } else {
-                missing.join(", ")
-            };
-            warn!(
-                id = %investigation_id,
-                score = q.overall_score,
-                missing = %missing_str,
-                "graph data sparse for investigation device"
-            );
-            Some(format!(
-                "WARNING: Graph data sparse for {} (quality score {:.0}/100, missing: {}). \
-                 Findings may be incomplete.",
-                device_address, q.overall_score, missing_str
-            ))
-        }
-        _ => None,
-    };
+    let quality_warning = evaluate_preflight_warning(&quality, &device_address);
+    if let Some(ref w) = quality_warning {
+        warn!(
+            id = %investigation_id,
+            score = quality_score,
+            warning = %w,
+            "evidence coverage gap detected for investigation device"
+        );
+    }
 
     let context = build_context(&device_address, detection_id.as_deref(), &state).await;
-    // D4-8 T5: Inject graph schema into system prompt so the agent can write valid Cypher.
     let mut messages = vec![
         AiMessage::system(system_prompt(&device_address, detection_id.as_deref())),
         AiMessage::user(format!("{}{context}", user_prompt(&device_address, detection_id.as_deref()))),
@@ -156,22 +243,31 @@ async fn run_investigation(
 
     let mut total_cost = 0.0f64;
     let mut total_tokens = 0i64;
-
-    // D4-8 T3: Track which tool calls the agent used (for coverage gap analysis).
     let mut queried_paths: Vec<String> = Vec::new();
+    let mut exit_reason = LoopExitReason::IterationLimitReached {
+        max_iterations: MAX_ITERATIONS,
+    };
 
     info!(id = %investigation_id, "investigation started");
 
     for iteration in 0..MAX_ITERATIONS {
-        if total_cost >= per_budget {
-            warn!(id = %investigation_id, cost = total_cost, "investigation budget exceeded");
+        if per_budget > 0.0 && total_cost >= per_budget {
+            warn!(id = %investigation_id, cost = total_cost, per_budget, "investigation budget exceeded");
+            exit_reason = LoopExitReason::PerInvestigationBudgetExceeded {
+                cost: total_cost,
+                budget: per_budget,
+            };
             break;
         }
 
         let resp = match provider.complete(messages.clone(), tools.clone()).await {
             Ok(r) => r,
             Err(e) => {
-                warn!(id = %investigation_id, error = %e, "LLM call failed");
+                warn!(id = %investigation_id, error = %e, iteration, "LLM call failed");
+                exit_reason = LoopExitReason::ProviderCallFailed {
+                    error: e.to_string(),
+                    iteration,
+                };
                 break;
             }
         };
@@ -188,34 +284,11 @@ async fn run_investigation(
         });
 
         if resp.tool_calls.is_empty() || resp.stop_reason == "end_turn" {
-            let raw_summary = resp.content.unwrap_or_else(|| "Investigation complete.".into());
-            // D4-8 T1: Structured RCA extraction pass.
-            let result_json = extract_rca_json(&raw_summary);
-            // D4-8 T3: Append coverage gap report.
-            let gap_report = compute_coverage_gaps(&quality, &queried_paths, &device_address);
-            // D4-6 T4: Prefix quality warning if graph was sparse.
-            let mut summary = match &quality_warning {
-                Some(warning) => format!("{warning}\n\n{raw_summary}"),
-                None => raw_summary,
-            };
-            if !gap_report.is_empty() {
-                summary.push_str("\n\n");
-                summary.push_str(&gap_report);
-            }
-            let _ = store.complete_investigation(
-                investigation_id.clone(),
-                "completed".to_string(),
-                summary,
-                result_json,
-                total_tokens,
-                total_cost,
-            ).await;
-            info!(id = %investigation_id, iterations = iteration + 1, cost = total_cost, quality_score, "investigation completed");
-            return;
+            exit_reason = LoopExitReason::ModelEndTurn;
+            break;
         }
 
         for tc in &resp.tool_calls {
-            // D4-8 T3: Record tool call names for coverage gap analysis.
             queried_paths.push(tc.name.clone());
 
             let input_json = serde_json::to_string(&tc.arguments).unwrap_or_default();
@@ -236,33 +309,173 @@ async fn run_investigation(
         }
     }
 
-    let raw_fallback = messages
+    let raw_assistant_text = messages
         .iter()
         .rev()
         .find(|m| m.role == "assistant" && m.content.is_some())
         .and_then(|m| m.content.clone())
-        .unwrap_or_else(|| "Investigation terminated at iteration or budget limit.".into());
+        .unwrap_or_default();
 
-    let result_json = extract_rca_json(&raw_fallback);
+    let mut outcome = resolve_investigation_outcome(exit_reason, &raw_assistant_text);
     let gap_report = compute_coverage_gaps(&quality, &queried_paths, &device_address);
-    let mut fallback_summary = match &quality_warning {
-        Some(warning) => format!("{warning}\n\n{raw_fallback}"),
-        None => raw_fallback,
-    };
+    if let Some(warning) = &quality_warning {
+        outcome.summary = format!("{warning}\n\n{}", outcome.summary);
+    }
     if !gap_report.is_empty() {
-        fallback_summary.push_str("\n\n");
-        fallback_summary.push_str(&gap_report);
+        outcome.summary.push_str("\n\n");
+        outcome.summary.push_str(&gap_report);
     }
 
     let _ = store.complete_investigation(
         investigation_id.clone(),
-        "completed".to_string(),
-        fallback_summary,
-        result_json,
+        outcome.state.as_str().to_string(),
+        outcome.summary,
+        outcome.proposal_json,
         total_tokens,
         total_cost,
     ).await;
-    info!(id = %investigation_id, cost = total_cost, quality_score, "investigation hit limit");
+    info!(
+        id = %investigation_id,
+        status = outcome.state.as_str(),
+        stop_reason = %outcome.stop_reason,
+        cost = total_cost,
+        quality_score,
+        "investigation finished"
+    );
+}
+
+/// Resolve the honest terminal state, stop reason, summary, and validated RCA JSON (A03).
+pub fn resolve_investigation_outcome(
+    exit_reason: LoopExitReason,
+    raw_summary: &str,
+) -> InvestigationOutcome {
+    match exit_reason {
+        LoopExitReason::DailyBudgetExceeded { spent, daily_budget } => InvestigationOutcome {
+            state: InvestigationTerminalState::BudgetExhausted,
+            stop_reason: "daily_budget_exceeded".to_string(),
+            summary: format!(
+                "STOP_REASON=daily_budget_exceeded: Daily AI budget ({daily_budget:.4} USD) exceeded; today spent {spent:.4} USD."
+            ),
+            proposal_json: "{}".to_string(),
+            validated_rca: None,
+        },
+        LoopExitReason::DailyBudgetCheckFailed { error } => InvestigationOutcome {
+            state: InvestigationTerminalState::Failed,
+            stop_reason: "daily_budget_check_failed".to_string(),
+            summary: format!(
+                "STOP_REASON=daily_budget_check_failed: Failed to verify daily AI budget ({error}); halting model spend."
+            ),
+            proposal_json: "{}".to_string(),
+            validated_rca: None,
+        },
+        LoopExitReason::ProviderUnavailable { error } => InvestigationOutcome {
+            state: InvestigationTerminalState::Failed,
+            stop_reason: "provider_unavailable".to_string(),
+            summary: format!("STOP_REASON=provider_unavailable: AI provider unavailable: {error}"),
+            proposal_json: "{}".to_string(),
+            validated_rca: None,
+        },
+        LoopExitReason::PerInvestigationBudgetExceeded { cost, budget } => {
+            let partial_rca = parse_and_validate_rca(raw_summary).ok();
+            let proposal_json = partial_rca
+                .as_ref()
+                .and_then(|r| serde_json::to_string(r).ok())
+                .unwrap_or_else(|| "{}".to_string());
+            let body = if raw_summary.trim().is_empty() {
+                format!("Investigation halted: per-investigation budget ({budget:.4} USD) exhausted at {cost:.4} USD.")
+            } else {
+                format!(
+                    "STOP_REASON=investigation_budget_exceeded (spent {cost:.4}/{budget:.4} USD)\n\n{raw_summary}"
+                )
+            };
+            InvestigationOutcome {
+                state: InvestigationTerminalState::BudgetExhausted,
+                stop_reason: "investigation_budget_exceeded".to_string(),
+                summary: body,
+                proposal_json,
+                validated_rca: partial_rca,
+            }
+        }
+        LoopExitReason::ProviderCallFailed { error, iteration } => InvestigationOutcome {
+            state: InvestigationTerminalState::Failed,
+            stop_reason: "provider_call_failed".to_string(),
+            summary: if raw_summary.trim().is_empty() {
+                format!("STOP_REASON=provider_call_failed at iteration {iteration}: {error}")
+            } else {
+                format!("STOP_REASON=provider_call_failed at iteration {iteration}: {error}\n\n{raw_summary}")
+            },
+            proposal_json: "{}".to_string(),
+            validated_rca: None,
+        },
+        LoopExitReason::IterationLimitReached { max_iterations } => {
+            let partial_rca = parse_and_validate_rca(raw_summary).ok();
+            let proposal_json = partial_rca
+                .as_ref()
+                .and_then(|r| serde_json::to_string(r).ok())
+                .unwrap_or_else(|| "{}".to_string());
+            let body = if raw_summary.trim().is_empty() {
+                format!("STOP_REASON=iteration_limit_reached: Exhausted {max_iterations} iterations without final RCA.")
+            } else {
+                format!("STOP_REASON=iteration_limit_reached ({max_iterations} iterations)\n\n{raw_summary}")
+            };
+            InvestigationOutcome {
+                state: InvestigationTerminalState::Partial,
+                stop_reason: "iteration_limit_reached".to_string(),
+                summary: body,
+                proposal_json,
+                validated_rca: partial_rca,
+            }
+        }
+        LoopExitReason::Cancelled { reason } => InvestigationOutcome {
+            state: InvestigationTerminalState::Cancelled,
+            stop_reason: "cancelled".to_string(),
+            summary: format!("STOP_REASON=cancelled: {reason}"),
+            proposal_json: "{}".to_string(),
+            validated_rca: None,
+        },
+        LoopExitReason::ModelEndTurn => match parse_and_validate_rca(raw_summary) {
+            Ok(rca) => {
+                let proposal_json = serde_json::to_string(&rca).unwrap_or_else(|_| "{}".to_string());
+                let (state, stop_reason) = match rca.epistemic_state.as_str() {
+                    "awaiting_human" => (
+                        InvestigationTerminalState::AwaitingHuman,
+                        "awaiting_human_review".to_string(),
+                    ),
+                    "insufficient_evidence" | "contradicted" => (
+                        InvestigationTerminalState::Partial,
+                        format!("epistemic_{}", rca.epistemic_state),
+                    ),
+                    _ => (
+                        InvestigationTerminalState::Completed,
+                        "completed_valid_rca".to_string(),
+                    ),
+                };
+                InvestigationOutcome {
+                    state,
+                    stop_reason,
+                    summary: raw_summary.to_string(),
+                    proposal_json,
+                    validated_rca: Some(rca),
+                }
+            }
+            Err(validation_err) => {
+                let summary = if raw_summary.trim().is_empty() {
+                    format!("STOP_REASON=invalid_or_missing_rca_schema: {validation_err}")
+                } else {
+                    format!(
+                        "{raw_summary}\n\n[Validation Note: Output did not satisfy TypedInvestigationRca schema ({validation_err}); marked partial rather than completed.]"
+                    )
+                };
+                InvestigationOutcome {
+                    state: InvestigationTerminalState::Partial,
+                    stop_reason: "invalid_or_missing_rca_schema".to_string(),
+                    summary,
+                    proposal_json: "{}".to_string(),
+                    validated_rca: None,
+                }
+            }
+        },
+    }
 }
 
 // ── D4-8 T3: Coverage gap reporter ─────────────────────────────────────────
@@ -350,7 +563,6 @@ fn compute_coverage_gaps(
 }
 
 fn system_prompt(device_address: &str, detection_id: Option<&str>) -> String {
-    // D4-8 T5: Include graph schema so the agent can write valid Cypher in query_graph calls.
     format!(
         "You are a network operations AI analyst for Bonsai, a network monitoring platform.\n\
          You have tools to query the live graph database.\n\
@@ -369,10 +581,11 @@ fn system_prompt(device_address: &str, detection_id: Option<&str>) -> String {
          \n\
          End with a JSON-formatted structured summary (inside a ```json code fence):\n\
          {{\n\
-           \"root_cause_type\": \"<bgp_session_loss | interface_down | config_error | link_flap | ...>\",\n\
+           \"root_cause_type\": \"<bgp_session_loss | interface_down | config_error | link_flap | insufficient_evidence | ...>\",\n\
+           \"epistemic_state\": \"<supported | plausible | contradicted | insufficient_evidence | awaiting_human>\",\n\
            \"confidence\": <0.0-1.0>,\n\
            \"affected_scope\": [\"<device or service 1>\", \"<device or service 2>\"],\n\
-           \"recommended_action\": \"<one-line remediation step>\",\n\
+           \"recommended_action\": \"<one-line remediation or next verification step>\",\n\
            \"missing_data\": [\"<signal or data that would increase confidence>\"]\n\
          }}",
         detection_id
@@ -393,7 +606,7 @@ fn user_prompt(device_address: &str, detection_id: Option<&str>) -> String {
     }
 }
 
-// ── D4-6 T4: Pre-flight quality check ─────────────────────────────────────────
+// ── D4-6 T4 & A03: Pre-flight quality check ───────────────────────────────────
 
 async fn preflight_quality(store: &Arc<GraphStore>, _device_address: &str) -> Option<GraphQuality> {
     let db = store.db();
@@ -406,45 +619,120 @@ async fn preflight_quality(store: &Arc<GraphStore>, _device_address: &str) -> Op
     .flatten()
 }
 
-// ── D4-8 T1: Structured RCA extraction ────────────────────────────────────────
+/// Evaluate incident/device-specific pre-flight evidence coverage warning (A03).
+///
+/// Warns whenever the target `device_address` itself is missing signals in
+/// `weak_devices` (even if the global graph `overall_score` is high because
+/// other routers are healthy), or when the global graph quality is sparse (`< 40.0`).
+pub fn evaluate_preflight_warning(
+    quality: &Option<GraphQuality>,
+    device_address: &str,
+) -> Option<String> {
+    let q = quality.as_ref()?;
+    let device_missing: Vec<String> = q
+        .weak_devices
+        .iter()
+        .filter(|w| w.address == device_address)
+        .flat_map(|w| w.missing.clone())
+        .collect();
 
-/// Try to extract a JSON object with root_cause_type, confidence, etc. from the
-/// LLM's final summary. Falls back to `"{}"` if no valid JSON is found.
-fn extract_rca_json(summary: &str) -> String {
-    // 1. Try ```json ... ``` fenced block
+    if !device_missing.is_empty() {
+        return Some(format!(
+            "WARNING: Target device {} is missing telemetry signals ({}) (global graph score {:.0}/100). \
+             Findings for this device may be incomplete.",
+            device_address,
+            device_missing.join(", "),
+            q.overall_score
+        ));
+    }
+
+    if q.overall_score < 40.0 {
+        return Some(format!(
+            "WARNING: Graph data sparse for {} (global quality score {:.0}/100, missing: multiple signal sources). \
+             Findings may be incomplete.",
+            device_address, q.overall_score
+        ));
+    }
+
+    None
+}
+
+// ── D4-8 T1 & A03: Strict Typed RCA Extraction & Validation ───────────────────
+
+const VALID_EPISTEMIC_STATES: &[&str] = &[
+    "supported",
+    "plausible",
+    "contradicted",
+    "insufficient_evidence",
+    "awaiting_human",
+];
+
+fn extract_json_candidate(summary: &str) -> Option<&str> {
     if let Some(start) = summary.find("```json") {
         let after = &summary[start + 7..];
         if let Some(end) = after.find("```") {
-            let candidate = after[..end].trim();
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(candidate) {
-                if v.get("root_cause_type").is_some() {
-                    return serde_json::to_string(&v).unwrap_or_else(|_| "{}".into());
-                }
-            }
+            return Some(after[..end].trim());
         }
     }
-    // 2. Try ``` ... ``` fenced block
     if let Some(start) = summary.find("```") {
         let after = &summary[start + 3..];
         if let Some(end) = after.find("```") {
             let candidate = after[..end].trim();
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(candidate) {
-                if v.get("root_cause_type").is_some() {
-                    return serde_json::to_string(&v).unwrap_or_else(|_| "{}".into());
-                }
+            if candidate.starts_with('{') && candidate.ends_with('}') {
+                return Some(candidate);
             }
         }
     }
-    // 3. Try to find a JSON object with root_cause_type anywhere in the text
     if let (Some(s), Some(e)) = (summary.find('{'), summary.rfind('}')) {
         if e > s {
-            let candidate = &summary[s..=e];
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(candidate) {
-                if v.get("root_cause_type").is_some() {
-                    return serde_json::to_string(&v).unwrap_or_else(|_| "{}".into());
-                }
-            }
+            return Some(&summary[s..=e]);
         }
     }
-    "{}".to_string()
+    None
 }
+
+/// Parse and strictly validate a `TypedInvestigationRca` from the LLM summary (A03).
+pub fn parse_and_validate_rca(summary: &str) -> Result<TypedInvestigationRca, String> {
+    let candidate = extract_json_candidate(summary)
+        .ok_or_else(|| "no JSON block found in summary".to_string())?;
+    let mut rca: TypedInvestigationRca = serde_json::from_str(candidate)
+        .map_err(|e| format!("invalid RCA JSON structure: {e}"))?;
+
+    rca.root_cause_type = rca.root_cause_type.trim().to_string();
+    if rca.root_cause_type.is_empty() {
+        return Err("root_cause_type must not be empty".to_string());
+    }
+
+    if !rca.confidence.is_finite() || !(0.0..=1.0).contains(&rca.confidence) {
+        return Err(format!(
+            "confidence must be a finite number in [0.0, 1.0], got {}",
+            rca.confidence
+        ));
+    }
+
+    rca.recommended_action = rca.recommended_action.trim().to_string();
+    if rca.recommended_action.is_empty() {
+        return Err("recommended_action must not be empty".to_string());
+    }
+
+    rca.epistemic_state = rca.epistemic_state.trim().to_lowercase();
+    if !VALID_EPISTEMIC_STATES.contains(&rca.epistemic_state.as_str()) {
+        return Err(format!(
+            "epistemic_state must be one of {:?}, got {:?}",
+            VALID_EPISTEMIC_STATES, rca.epistemic_state
+        ));
+    }
+
+    // Model-reported confidence is always marked as uncalibrated judgment per Strategy §5.
+    rca.confidence_is_uncalibrated = true;
+    Ok(rca)
+}
+
+/// Extract a validated RCA JSON string from `summary`, or return `"{}"` if validation fails.
+pub fn extract_rca_json(summary: &str) -> String {
+    match parse_and_validate_rca(summary) {
+        Ok(rca) => serde_json::to_string(&rca).unwrap_or_else(|_| "{}".to_string()),
+        Err(_) => "{}".to_string(),
+    }
+}
+

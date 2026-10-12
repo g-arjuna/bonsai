@@ -43,11 +43,16 @@ class CalibrationResult:
     quantile_level: float
     threshold: float
     empirical_coverage: float
+    calibration_target: str = "anomaly_recall"
+    empirical_clean_specificity: float = float("nan")
+    assumptions: str = "exchangeable_samples_no_unmodeled_temporal_drift"
 
     def __str__(self) -> str:
         return (
-            f"ConformalCalibration(alpha={self.alpha}, n={self.n_cal}, "
-            f"threshold={self.threshold:.4f}, coverage={self.empirical_coverage:.3f})"
+            f"ConformalCalibration(target={self.calibration_target}, alpha={self.alpha}, "
+            f"n={self.n_cal}, threshold={self.threshold:.4f}, "
+            f"anomaly_recall={self.empirical_coverage:.3f}, "
+            f"clean_specificity={self.empirical_clean_specificity:.3f})"
         )
 
 
@@ -61,17 +66,35 @@ class ConformalCalibrator:
     decision boundary used during training.
 
     Args:
-        alpha: Miscoverage level (default 0.1 → 90% coverage guarantee).
-            Lower alpha → higher coverage → more conservative threshold.
+        alpha: Miscoverage level (default 0.1 → 90% target).
         score_type: ``"anomaly"`` (high = anomalous) or ``"normal"``
             (high = normal, e.g. softmax probability for class 0).
+        calibration_target:
+            - ``"anomaly_recall"`` (default): Calibrates nonconformity on positive
+              (``label == 1``) examples so that true anomalies are covered with
+              finite-sample marginal guarantee ``>= 1 - alpha`` under exchangeability.
+            - ``"clean_false_alarm"``: Calibrates on clean (``label == 0``) examples
+              to bound false alarms on normal points at rate ``<= alpha`` under
+              exchangeability. Does NOT guarantee recall on unseen anomalies.
     """
 
-    def __init__(self, alpha: float = 0.1, score_type: str = "anomaly") -> None:
+    VALID_TARGETS = ("anomaly_recall", "clean_false_alarm")
+
+    def __init__(
+        self,
+        alpha: float = 0.1,
+        score_type: str = "anomaly",
+        calibration_target: str = "anomaly_recall",
+    ) -> None:
         if not 0 < alpha < 1:
             raise ValueError(f"alpha must be in (0, 1), got {alpha}")
+        if calibration_target not in self.VALID_TARGETS:
+            raise ValueError(
+                f"calibration_target must be one of {self.VALID_TARGETS}, got {calibration_target!r}"
+            )
         self.alpha = alpha
         self.score_type = score_type
+        self.calibration_target = calibration_target
         self._threshold: Optional[float] = None
         self._cal_scores: Optional[np.ndarray] = None
         self._cal_labels: Optional[np.ndarray] = None
@@ -95,10 +118,6 @@ class ConformalCalibrator:
     ) -> CalibrationResult:
         """Calibrate the threshold using split conformal prediction.
 
-        For binary anomaly detection, the nonconformity score for a *clean*
-        sample (label=0) is the anomaly score itself. The 1-alpha quantile
-        of these scores (with +1 adjustment) becomes the threshold.
-
         Args:
             scores: Anomaly scores in [0, 1] for calibration samples.
                 Shape ``[N]``. May be a numpy array, list, or torch tensor.
@@ -116,52 +135,72 @@ class ConformalCalibrator:
                 f"scores shape {scores_np.shape} != labels shape {labels_np.shape}"
             )
 
-        # Nonconformity scores for CLEAN samples (label == 0).
-        # We calibrate to cover true anomalies (label == 1) at rate 1-alpha,
-        # so we use clean-sample scores to set the lower bound.
-        if self.score_type == "anomaly":
-            clean_scores = scores_np[labels_np == 0]
+        effective_scores = (
+            scores_np if self.score_type == "anomaly" else (1.0 - scores_np)
+        )
+        anom_mask = labels_np == 1
+        clean_mask = labels_np == 0
+        anom_scores = effective_scores[anom_mask]
+        clean_scores = effective_scores[clean_mask]
+
+        if self.calibration_target == "anomaly_recall":
+            n = len(anom_scores)
+            if n == 0:
+                raise ValueError(
+                    "No anomalous (label=1) samples in calibration set for anomaly_recall calibration"
+                )
+            k = min(n, math.ceil((n + 1) * (1.0 - self.alpha)))
+            quantile_level = k / n
+            # Order statistic on descending anomalous scores: k-th largest score
+            # guarantees at least k / n >= (n+1)(1-alpha)/n anomalous calibration
+            # samples satisfy score >= threshold without float subtraction drift.
+            sorted_desc = np.sort(anom_scores)[::-1]
+            self._threshold = float(sorted_desc[k - 1])
         else:
-            # Invert so high = more anomalous
-            clean_scores = 1.0 - scores_np[labels_np == 0]
+            n = len(clean_scores)
+            if n == 0:
+                raise ValueError(
+                    "No clean (label=0) samples in calibration set for clean_false_alarm calibration"
+                )
+            k = min(n, math.ceil((n + 1) * (1.0 - self.alpha)))
+            quantile_level = k / n
+            sorted_asc = np.sort(clean_scores)
+            self._threshold = float(sorted_asc[k - 1])
 
-        n = len(clean_scores)
-        if n == 0:
-            raise ValueError("No clean (label=0) samples in calibration set")
-
-        # Finite-sample conformal quantile: ceil((n+1)(1-alpha))/n
-        quantile_level = math.ceil((n + 1) * (1.0 - self.alpha)) / n
-        quantile_level = min(quantile_level, 1.0)
-
-        self._threshold = float(np.quantile(clean_scores, quantile_level))
         self._cal_scores = scores_np
         self._cal_labels = labels_np
 
-        # Empirical coverage on calibration set
-        if self.score_type == "anomaly":
-            preds = scores_np >= self._threshold
-        else:
-            preds = (1.0 - scores_np) >= self._threshold
-
-        # Coverage = fraction of anomalous samples correctly predicted as anomalous
-        anom_mask = labels_np == 1
+        preds = effective_scores >= self._threshold
         if anom_mask.sum() > 0:
             empirical_coverage = float(preds[anom_mask].mean())
         else:
             empirical_coverage = float("nan")
 
+        if clean_mask.sum() > 0:
+            empirical_clean_specificity = float((~preds[clean_mask]).mean())
+        else:
+            empirical_clean_specificity = float("nan")
+
         self._result = CalibrationResult(
             alpha=self.alpha,
             n_cal=n,
             n_anomalous=int(anom_mask.sum()),
-            n_clean=n,
+            n_clean=int(clean_mask.sum()),
             quantile_level=quantile_level,
             threshold=self._threshold,
             empirical_coverage=empirical_coverage,
+            calibration_target=self.calibration_target,
+            empirical_clean_specificity=empirical_clean_specificity,
         )
         log.info(
-            "conformal calibration: alpha=%.2f n_cal=%d threshold=%.4f coverage=%.3f",
-            self.alpha, n, self._threshold, empirical_coverage,
+            "conformal calibration (%s): alpha=%.2f n_cal=%d threshold=%.4f "
+            "anomaly_recall=%.3f clean_specificity=%.3f",
+            self.calibration_target,
+            self.alpha,
+            n,
+            self._threshold,
+            empirical_coverage,
+            empirical_clean_specificity,
         )
         return self._result
 
@@ -195,21 +234,39 @@ class ConformalCalibrator:
         return margin >= 0, margin
 
     def coverage_interval(self, scores: Any, alpha: Optional[float] = None) -> dict:
-        """Compute marginal coverage interval at the given miscoverage level.
+        """Report calibration diagnostics and qualified statistical bounds.
 
-        Returns a dict with ``threshold``, ``alpha``, and ``coverage_guarantee``.
+        Only reports ``anomaly_coverage_guarantee`` when calibrated with
+        ``calibration_target="anomaly_recall"``. When calibrated on clean samples
+        only (``calibration_target="clean_false_alarm"``), ``anomaly_coverage_guarantee``
+        is ``None`` and ``clean_specificity_bound`` is reported instead.
         """
         a = alpha if alpha is not None else self.alpha
         scores_np = self._to_numpy(scores)
         if self.score_type == "anomaly":
-            frac = float((scores_np >= self.threshold).mean())
+            positive_rate = float((scores_np >= self.threshold).mean())
         else:
-            frac = float(((1.0 - scores_np) >= self.threshold).mean())
+            positive_rate = float(((1.0 - scores_np) >= self.threshold).mean())
+
+        if self.calibration_target == "anomaly_recall":
+            return {
+                "calibration_target": self.calibration_target,
+                "threshold": self.threshold,
+                "alpha": a,
+                "coverage_guarantee": 1.0 - a,
+                "anomaly_coverage_guarantee": 1.0 - a,
+                "clean_specificity_bound": None,
+                "predicted_positive_rate": positive_rate,
+                "assumptions": "exchangeable_positive_samples_no_unmodeled_temporal_drift",
+            }
         return {
+            "calibration_target": self.calibration_target,
             "threshold": self.threshold,
             "alpha": a,
-            "coverage_guarantee": 1.0 - a,
-            "empirical_coverage": frac,
+            "anomaly_coverage_guarantee": None,
+            "clean_specificity_bound": 1.0 - a,
+            "predicted_positive_rate": positive_rate,
+            "assumptions": "exchangeable_clean_samples_no_unmodeled_temporal_drift",
         }
 
     def save(self, path: str | Path) -> None:
@@ -218,16 +275,32 @@ class ConformalCalibrator:
             str(path),
             threshold=np.array([self._threshold]),
             alpha=np.array([self.alpha]),
+            calibration_target=np.array([self.calibration_target]),
         )
-        log.info("saved conformal calibrator to %s (threshold=%.4f)", path, self._threshold)
+        log.info(
+            "saved conformal calibrator to %s (target=%s, threshold=%.4f)",
+            path,
+            self.calibration_target,
+            self._threshold,
+        )
 
     @classmethod
     def load(cls, path: str | Path) -> "ConformalCalibrator":
         """Load calibration state from a .npz file saved by :meth:`save`."""
-        data = np.load(str(path))
-        cal = cls(alpha=float(data["alpha"][0]))
+        data = np.load(str(path), allow_pickle=False)
+        target = (
+            str(data["calibration_target"][0])
+            if "calibration_target" in data
+            else "anomaly_recall"
+        )
+        cal = cls(alpha=float(data["alpha"][0]), calibration_target=target)
         cal._threshold = float(data["threshold"][0])
-        log.info("loaded conformal calibrator from %s (threshold=%.4f)", path, cal._threshold)
+        log.info(
+            "loaded conformal calibrator from %s (target=%s, threshold=%.4f)",
+            path,
+            cal.calibration_target,
+            cal._threshold,
+        )
         return cal
 
     @staticmethod

@@ -1,0 +1,13 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.3, pluggy-1.6.0 -- /home/arjuna/Desktop/bonsai/.venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/arjuna/Desktop/bonsai
+plugins: anyio-4.13.0, cov-7.1.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 3 items
+
+tests/test_a02_stgnn_entity_alignment.py::test_stgnn_forward_invariance_under_historical_node_insertion_and_permutation PASSED [ 33%]
+tests/test_a02_stgnn_entity_alignment.py::test_stgnn_forward_invariance_under_reordered_historical_node_ids PASSED [ 66%]
+tests/test_a02_stgnn_entity_alignment.py::test_build_hetero_data_populates_all_node_ids_and_timestamps PASSED [100%]
+
+============================== 3 passed in 3.73s ===============================

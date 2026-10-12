@@ -1,0 +1,24 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.3, pluggy-1.6.0 -- /home/arjuna/Desktop/bonsai/.venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/arjuna/Desktop/bonsai/python
+configfile: pyproject.toml
+plugins: anyio-4.13.0, cov-7.1.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 13 items
+
+python::test_counterexample_1_anomaly_recall_calibration_covers_anomalies PASSED [  7%]
+python::test_clean_false_alarm_calibration_does_not_claim_anomaly_recall_guarantee PASSED [ 15%]
+python::test_anomaly_recall_calibration_rejects_missing_positive_samples PASSED [ 23%]
+python::test_counterexample_2_late_single_point_detection_is_not_inflated_in_primary_metrics PASSED [ 30%]
+python/tests/test_gnn_scaffolding.py::test_compute_confusion_perfect PASSED [ 38%]
+python/tests/test_gnn_scaffolding.py::test_compute_confusion_all_wrong PASSED [ 46%]
+python/tests/test_gnn_scaffolding.py::test_evaluate_gnn_basic PASSED     [ 53%]
+python/tests/test_gnn_scaffolding.py::test_evaluate_gnn_perfect_detector PASSED [ 61%]
+python/tests/test_gnn_scaffolding.py::test_point_adjusted_f1_full_segment_credit PASSED [ 69%]
+python/tests/test_gnn_scaffolding.py::test_point_adjusted_f1_empty PASSED [ 76%]
+python/tests/test_gnn_scaffolding.py::test_run_comparison_study_sorted_by_f1 PASSED [ 84%]
+python/tests/test_gnn_scaffolding.py::test_gnn_eval_report_summary_line PASSED [ 92%]
+python/tests/test_gnn_scaffolding.py::test_gnn_eval_report_as_dict PASSED [100%]
+
+============================== 13 passed in 2.55s ==============================

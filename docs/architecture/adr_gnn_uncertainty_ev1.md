@@ -87,12 +87,14 @@ CW-GNN modifies the training loss per-sample:
 
 **Rationale:** Distribution-free, post-hoc, no retraining required. Provides a mathematically rigorous coverage guarantee: "With probability 1−α, the true label is in the prediction set." Works with any trained model.
 
-**Implementation:**
+**Implementation (`A01` & `A02` hardened):**
 - `python/bonsai_ml/gnn/conformal.py`: `ConformalCalibrator`, `ConformalCalibrator.calibrate()`.
-- Nonconformity score: `s_i = 1 − softmax(logit_fault)[i]` for positive (fault) calibration samples.
-- Threshold: `q_hat = (ceil((n+1)(1−α)) / n)`-quantile of `{s_i}` (finite-sample correction).
+- Explicit `calibration_target`:
+  - `calibration_target="anomaly_recall"` (default): calibrates nonconformity `s_i = 1 − score_i` on positive (`label == 1`) calibration samples and sets `threshold` via the finite-sample order statistic `k = min(n, ceil((n+1)(1−α)))` so at least `1 − α` of positive calibration samples are covered. Raises `ValueError` if no positive calibration samples exist.
+  - `calibration_target="clean_false_alarm"`: calibrates on clean (`label == 0`) samples to bound false alarms on normal data (`clean_specificity_bound = 1 − α`), and explicitly sets `anomaly_coverage_guarantee = None` so clean-only quantiles are never misrepresented as anomaly recall guarantees.
+- **Temporal dependence qualification**: Finite-sample split conformal guarantees assume exchangeability between calibration and test samples (`assumptions = "exchangeable_samples_no_unmodeled_temporal_drift"`). Under temporal drift or topology changes, empirical recall and false-alert rates must be monitored continuously.
+- **Temporal entity alignment (`A02`)**: `python/bonsai_ml/gnn/stgnn.py` (`align_temporal_embeddings_by_id`) aligns spatial embeddings across snapshots using stable `node_ids` for all 8 node types (with explicit `presence_mask` and `elapsed_seconds`), preventing row-index history mixing when devices are added, removed, or reordered.
 - Coverage targets: α=0.1 (90%) in production; α=0.05 (95%) for high-stakes auto-remediation paths.
-- Requires ≥30 fault examples in the calibration set. Triggered automatically after every training run.
 
 ### Option B: MC Dropout
 

@@ -47,3 +47,21 @@ Portable patch: [rustybmp-m1-b04-b08.patch](evidence/2026-10-11/rustybmp-m1-b04-
    - Verified 1,000-route deterministic burst + 200 withdrawals + 10 malformed frames + truncated crash-tail recovery + bounded pagination (`limit <= 500`) + checkpointed graph projection in [b16-b19-m3-release-gates.log](evidence/2026-10-11/b16-b19-m3-release-gates.log).
 5. **B20 — Unified developer workflow, docs, and release checklist (completed)**:
    - Created root [AGENTS.md](../../AGENTS.md), [justfile](../../justfile), workspace CI steps in `.github/workflows/ci.yml`, and [M3_RELEASE_REPORT.md](M3_RELEASE_REPORT.md).
+
+## Strategy Slice P0 (A00–A03) — Truthful ML, evaluation & investigation runtime (completed)
+
+1. **A00 — AI/ML & investigation runtime baseline reconciliation (completed)**:
+   - Recorded exact line-level audit of `conformal.py`, `eval.py`, `stgnn.py`, `model.py`, and `src/investigation_runtime.rs` in [A00_AI_ML_BASELINE.md](A00_AI_ML_BASELINE.md).
+2. **A01 — Conformal calibration & TSAD evaluation metrics (completed)**:
+   - Reproduced both Strategy §3 counterexamples ([a01-reproductions-before.log](evidence/2026-10-11/a01-reproductions-before.log)) and fixed `python/bonsai_ml/gnn/conformal.py` + `python/bonsai_ml/gnn/eval.py` ([a01-reproductions-after.log](evidence/2026-10-11/a01-reproductions-after.log)).
+3. **A02 — STGNN temporal entity alignment by stable ID (completed)**:
+   - Reproduced entity row-shift corruption ([a02-reproductions-before.log](evidence/2026-10-11/a02-reproductions-before.log)) and implemented `align_temporal_embeddings_by_id` with `presence_mask` and `elapsed_seconds` in `python/bonsai_ml/gnn/stgnn.py` and `node_ids` for all 8 node types in `python/bonsai_ml/gnn/model.py` ([a02-reproductions-after.log](evidence/2026-10-11/a02-reproductions-after.log)).
+4. **A03 — Typed investigation results & honest terminal states (completed)**:
+   - Reproduced malformed RCA JSON acceptance and global-quality masking of device-specific gaps ([a03-reproductions-before.log](evidence/2026-10-11/a03-reproductions-before.log)) and implemented `InvestigationTerminalState`, `TypedInvestigationRca`, `resolve_investigation_outcome`, fail-closed budget check, and device-scoped `evaluate_preflight_warning` in `src/investigation_runtime.rs` ([a03-reproductions-after.log](evidence/2026-10-11/a03-reproductions-after.log)).
+
+## Next Slice P1 (A04–A09 + B22) — Scoped routing diagnostic tools & grounded prefix investigator
+
+- **A04**: Scoped read-only diagnostic tools (`get_prefix_journey`, `get_peer_timeline`, `get_evidence_coverage`, `get_changes`, `compare_snapshots`) with row/byte/timeout caps.
+- **A05–A07**: Versioned observation envelope, incident-specific evidence coverage, and prefix journey + temporal comparison over `RoutingService` and `RibEventJournal`.
+- **A08–A09 & B22**: Durable workflow/budget reservations and first read-only grounded prefix investigator ("Explain a Missing Prefix").
+

@@ -358,6 +358,12 @@ def build_stgnn(config: Any | None = None) -> Any:
         ) -> tuple[dict, list[dict]]:
             """Process T snapshots through spatial then temporal layers.
 
+            Aligns temporal embeddings across snapshots using each node type's
+            stable ``node_ids`` attribute (falling back to positional alignment
+            only if ``node_ids`` is absent). Records per-node presence masks in
+            ``self.last_presence_masks`` and inter-snapshot elapsed seconds in
+            ``self.last_elapsed_seconds``.
+
             Args:
                 snapshot_sequence: List of HeteroData objects, oldest first.
                     May have fewer than T entries (cold-start); padded with zeros.
@@ -368,19 +374,26 @@ def build_stgnn(config: Any | None = None) -> Any:
                 (logit_dict, attention_snapshots_list) where logit_dict maps
                 node_type → anomaly logits for the latest snapshot nodes.
             """
-            import torch
+            if not snapshot_sequence:
+                return {}, []
 
             T = self.temporal_window
-            actual_t = len(snapshot_sequence)
+            windowed_snapshots = snapshot_sequence[-T:]
+            actual_t = len(windowed_snapshots)
 
             per_snapshot_embeddings: dict[str, list] = {
                 ntype: [] for ntype in STGNN_NODE_TYPES
                 if ntype in self.node_encoders
             }
+            per_snapshot_node_ids: dict[str, list[Optional[list[str]]]] = {
+                ntype: [] for ntype in per_snapshot_embeddings
+            }
+            snapshot_timestamps_ns: list[int] = []
             attention_list: list[dict] = []
 
-            for t_idx, snapshot in enumerate(snapshot_sequence):
+            for t_idx, snapshot in enumerate(windowed_snapshots):
                 is_last = (t_idx == actual_t - 1)
+                snapshot_timestamps_ns.append(int(getattr(snapshot, "snapshot_ns", 0) or 0))
                 x_dict, attn = self._encode_snapshot(
                     snapshot, return_attention=(return_attention and is_last)
                 )
@@ -390,23 +403,34 @@ def build_stgnn(config: Any | None = None) -> Any:
                     emb = x_dict.get(ntype)
                     if emb is not None:
                         per_snapshot_embeddings[ntype].append(emb)
+                        nids = None
+                        try:
+                            raw_ids = getattr(snapshot[ntype], "node_ids", None)
+                            if raw_ids is not None:
+                                nids = [str(x) for x in raw_ids]
+                        except (KeyError, AttributeError):
+                            nids = None
+                        per_snapshot_node_ids[ntype].append(nids)
 
             logit_dict: dict = {}
-            latest_snapshot = snapshot_sequence[-1]
+            self.last_presence_masks: dict[str, Any] = {}
+            self.last_elapsed_seconds: Any = None
 
             for ntype, gru in self.temporal_grus.items():
                 embeddings = per_snapshot_embeddings.get(ntype, [])
                 if not embeddings:
                     continue
+                if embeddings[-1].shape[0] == 0:
+                    continue
 
-                num_nodes = embeddings[-1].shape[0]
-                hidden_dim = self.cfg.hidden_channels
-
-                padded = torch.zeros(num_nodes, T, hidden_dim, device=embeddings[-1].device)
-                offset = T - len(embeddings)
-                for i, emb in enumerate(embeddings):
-                    n = min(num_nodes, emb.shape[0])
-                    padded[:n, offset + i, :] = emb[:n]
+                padded, presence_mask, elapsed_sec = align_temporal_embeddings_by_id(
+                    embeddings_per_snapshot=embeddings,
+                    node_ids_per_snapshot=per_snapshot_node_ids.get(ntype, []),
+                    temporal_window=T,
+                    snapshot_timestamps_ns=snapshot_timestamps_ns,
+                )
+                self.last_presence_masks[ntype] = presence_mask
+                self.last_elapsed_seconds = elapsed_sec
 
                 _, h_n = gru(padded)
                 z = h_n[-1]
@@ -416,6 +440,80 @@ def build_stgnn(config: Any | None = None) -> Any:
             return logit_dict, attention_list
 
     return STGNNModel(config)
+
+
+build_stgnn_model = build_stgnn
+
+
+def align_temporal_embeddings_by_id(
+    embeddings_per_snapshot: list[Any],
+    node_ids_per_snapshot: list[Optional[list[str]]],
+    temporal_window: int,
+    snapshot_timestamps_ns: Optional[list[int]] = None,
+) -> tuple[Any, Any, Any]:
+    """Align per-snapshot spatial embeddings by stable entity ID to the latest snapshot.
+
+    Args:
+        embeddings_per_snapshot: List of ``[N_t, hidden_dim]`` tensors (oldest first).
+        node_ids_per_snapshot: Parallel list of ``list[str]`` node IDs for each snapshot.
+        temporal_window: Target window length ``T``.
+        snapshot_timestamps_ns: Optional list of snapshot timestamps in nanoseconds.
+
+    Returns:
+        Tuple of ``(padded_embeddings, presence_mask, elapsed_seconds)``:
+        - ``padded_embeddings``: Tensor ``[N_latest, T, hidden_dim]``
+        - ``presence_mask``: Tensor ``[N_latest, T]`` (1.0 if entity present at step t, else 0.0)
+        - ``elapsed_seconds``: Tensor ``[T]`` (seconds prior to latest snapshot, 0.0 for padded slots)
+    """
+    import torch
+
+    windowed_embs = embeddings_per_snapshot[-temporal_window:]
+    windowed_ids = (
+        node_ids_per_snapshot[-temporal_window:]
+        if node_ids_per_snapshot
+        else [None] * len(windowed_embs)
+    )
+    latest_emb = windowed_embs[-1]
+    num_nodes = latest_emb.shape[0]
+    hidden_dim = latest_emb.shape[1]
+    device = latest_emb.device
+    dtype = latest_emb.dtype
+
+    padded = torch.zeros(num_nodes, temporal_window, hidden_dim, device=device, dtype=dtype)
+    presence_mask = torch.zeros(num_nodes, temporal_window, device=device, dtype=dtype)
+    elapsed_seconds = torch.zeros(temporal_window, device=device, dtype=dtype)
+
+    offset = temporal_window - len(windowed_embs)
+    latest_ids = windowed_ids[-1] if windowed_ids else None
+
+    if snapshot_timestamps_ns:
+        windowed_ts = snapshot_timestamps_ns[-temporal_window:]
+        latest_ts = windowed_ts[-1] if windowed_ts else 0
+        for i, ts_ns in enumerate(windowed_ts):
+            if latest_ts > 0 and ts_ns > 0 and latest_ts >= ts_ns:
+                elapsed_seconds[offset + i] = float(latest_ts - ts_ns) / 1e9
+
+    for i, emb in enumerate(windowed_embs):
+        slot = offset + i
+        snap_ids = windowed_ids[i] if i < len(windowed_ids) else None
+        if (
+            latest_ids is not None
+            and snap_ids is not None
+            and len(latest_ids) == num_nodes
+            and len(snap_ids) == emb.shape[0]
+        ):
+            snap_row_by_id = {nid: row_idx for row_idx, nid in enumerate(snap_ids)}
+            for target_row, nid in enumerate(latest_ids):
+                src_row = snap_row_by_id.get(nid)
+                if src_row is not None:
+                    padded[target_row, slot, :] = emb[src_row]
+                    presence_mask[target_row, slot] = 1.0
+        else:
+            n = min(num_nodes, emb.shape[0])
+            padded[:n, slot, :] = emb[:n]
+            presence_mask[:n, slot] = 1.0
+
+    return padded, presence_mask, elapsed_seconds
 
 
 # ── Attention extraction helpers ──────────────────────────────────────────────
