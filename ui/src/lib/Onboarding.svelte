@@ -40,13 +40,13 @@
   ];
 
   const VENDOR_DEFAULTS = [
-    { value: 'nokia-srl',    label: 'Nokia SR Linux',  patterns: ['syslog_patterns/nokia-srlinux', 'path_profiles/nokia-srlinux', 'snmp_oid_patterns/default'] },
-    { value: 'nokia-sros',   label: 'Nokia SR-OS',     patterns: ['syslog_patterns/nokia-sros', 'path_profiles/nokia-sros'] },
-    { value: 'cisco-iosxr',  label: 'Cisco IOS-XR',    patterns: ['syslog_patterns/cisco-iosxr', 'path_profiles/cisco-iosxr'] },
-    { value: 'cisco-iosxe',  label: 'Cisco IOS-XE',    patterns: ['syslog_patterns/cisco-iosxe', 'path_profiles/cisco-iosxe'] },
-    { value: 'arista-eos',   label: 'Arista EOS',      patterns: ['syslog_patterns/arista-eos', 'path_profiles/arista-eos'] },
-    { value: 'juniper-junos', label: 'Juniper JunOS',  patterns: ['syslog_patterns/juniper-junos', 'path_profiles/juniper-junos'] },
-    { value: 'frr',          label: 'FRRouting',       patterns: ['syslog_patterns/frr'] },
+    { value: 'nokia.srlinux', label: 'Nokia SR Linux',  aliases: ['nokia-srl', 'nokia_srl', 'nokia-srlinux'], patterns: ['syslog_patterns/nokia-srlinux', 'path_profiles/nokia-srlinux', 'snmp_oid_patterns/default'] },
+    { value: 'nokia.sros',    label: 'Nokia SR-OS',     aliases: ['nokia-sros', 'nokia_sros'],               patterns: ['syslog_patterns/nokia-sros', 'path_profiles/nokia-sros'] },
+    { value: 'cisco.iosxr',   label: 'Cisco IOS-XR',    aliases: ['cisco-iosxr', 'cisco_xrd', 'cisco_iosxr'], patterns: ['syslog_patterns/cisco-iosxr', 'path_profiles/cisco-iosxr'] },
+    { value: 'cisco.iosxe',   label: 'Cisco IOS-XE',    aliases: ['cisco-iosxe', 'cisco_iosxe'],             patterns: ['syslog_patterns/cisco-iosxe', 'path_profiles/cisco-iosxe'] },
+    { value: 'arista.eos',    label: 'Arista EOS',      aliases: ['arista-eos', 'arista_ceos', 'arista_eos'], patterns: ['syslog_patterns/arista-eos', 'path_profiles/arista-eos'] },
+    { value: 'juniper.junos', label: 'Juniper JunOS',   aliases: ['juniper-junos', 'juniper_crpd'],          patterns: ['syslog_patterns/juniper-junos', 'path_profiles/juniper-junos'] },
+    { value: 'frr',           label: 'FRRouting',       aliases: ['frrouting'],                              patterns: ['syslog_patterns/frr'] },
   ];
 
   let frResourceProfile = $state('standard');

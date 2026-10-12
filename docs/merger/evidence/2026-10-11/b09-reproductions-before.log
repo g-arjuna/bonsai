@@ -1,0 +1,33 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 5.06s
+     Running tests/b09_peer_and_correlation.rs (target/debug/deps/b09_peer_and_correlation-c8e01bf499a8418e)
+
+running 3 tests
+
+thread 'b09_bmp_target_map_does_not_attribute_unknown_exporter_to_remote_peer' (3242533) panicked at tests/b09_peer_and_correlation.rs:128:5:
+assertion `left == right` failed: unknown BMP exporter 172.20.0.99 must not be misattributed to onboarded remote peer 10.0.0.1
+  left: "10.0.0.1"
+ right: "172.20.0.99"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test b09_bmp_target_map_does_not_attribute_unknown_exporter_to_remote_peer ... FAILED
+
+thread 'b09_correlation_buffer_preserves_expired_slot_and_avoids_ambiguous_wildcard_merge' (3242534) panicked at tests/b09_peer_and_correlation.rs:159:5:
+expired slot evt-1 must be preserved for draining rather than overwritten: got ["evt-2"]
+test b09_correlation_buffer_preserves_expired_slot_and_avoids_ambiguous_wildcard_merge ... FAILED
+
+thread 'b09_bmp_peer_state_transition_emits_state_change_event' (3242532) panicked at tests/b09_peer_and_correlation.rs:110:5:
+assertion `left == right` failed: initial PeerUp (RD=0), PeerDown (RD=0), and independent VRF PeerDown (RD=200) must emit 3 bmp_session_change events
+  left: 0
+ right: 3
+test b09_bmp_peer_state_transition_emits_state_change_event ... FAILED
+
+failures:
+
+failures:
+    b09_bmp_peer_state_transition_emits_state_change_event
+    b09_bmp_target_map_does_not_attribute_unknown_exporter_to_remote_peer
+    b09_correlation_buffer_preserves_expired_slot_and_avoids_ambiguous_wildcard_merge
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.55s
+
+error: test failed, to rerun pass `--test b09_peer_and_correlation`

@@ -254,90 +254,78 @@ fn protocol_status(
 }
 
 fn normalized_vendor(target: &TargetConfig) -> String {
-    target
-        .vendor
-        .clone()
-        .or_else(|| infer_vendor_from_hostname(target.hostname.as_deref()))
-        .unwrap_or_else(|| "unknown".to_string())
-        .to_lowercase()
-}
-
-fn infer_vendor_from_hostname(hostname: Option<&str>) -> Option<String> {
-    let host = hostname?.to_lowercase();
-    if host.starts_with("xrd") {
-        Some("cisco_xrd".to_string())
-    } else if host.starts_with("srl") {
-        Some("nokia_srl".to_string())
-    } else if host.starts_with("ceos") {
-        Some("arista_ceos".to_string())
-    } else if host.starts_with("crpd") || host.starts_with("vjunos") {
-        Some("juniper_crpd".to_string())
-    } else if host.starts_with("frr") || host.starts_with("holo") {
-        Some("frr".to_string())
-    } else {
-        None
-    }
+    crate::platform_registry::resolve_target_platform(target)
+        .platform_id
+        .to_string()
 }
 
 fn role_supports_bgp_monitoring(role: &str) -> bool {
-    matches!(
-        role,
-        "leaf" | "spine" | "super-spine" | "pe" | "p" | "rr" | "ce" | "core"
-    )
+    role.is_empty()
+        || matches!(
+            role,
+            "leaf"
+                | "spine"
+                | "super-spine"
+                | "superspine"
+                | "border"
+                | "edge"
+                | "pe"
+                | "p"
+                | "rr"
+                | "ce"
+                | "ce-facing"
+                | "peering"
+                | "core"
+                | "router"
+        )
 }
 
 fn role_supports_te_topology(role: &str) -> bool {
     matches!(
         role,
-        "leaf" | "spine" | "super-spine" | "pe" | "p" | "rr" | "core"
+        "leaf" | "spine" | "super-spine" | "superspine" | "border" | "edge" | "pe" | "p" | "rr" | "core" | "router"
     )
 }
 
 fn role_supports_pcep(role: &str) -> bool {
-    matches!(role, "pe" | "p" | "rr" | "core")
+    matches!(role, "pe" | "p" | "rr" | "core" | "edge")
 }
 
 fn bmp_support_for_vendor(vendor: &str) -> (SupportLevel, String) {
-    let note = "BMP support is evaluated against RFC 7854-style export and assumes the device can source BMP to an external collector.".to_string();
-    if matches_vendor(
-        vendor,
-        &[
-            "nokia_srl",
-            "cisco_xrd",
-            "juniper_crpd",
-            "arista_ceos",
-            "frr",
-        ],
-    ) {
-        (SupportLevel::Native, note)
+    let profile = crate::platform_registry::lookup_platform(vendor);
+    let note = if profile.platform_id == "unknown" {
+        "Unknown platform can still supply standards-based RFC 7854 BMP telemetry without a vendor CLI adapter.".to_string()
     } else {
-        (SupportLevel::Conditional, note)
-    }
+        "BMP support is evaluated against RFC 7854-style export and assumes the device can source BMP to an external collector.".to_string()
+    };
+    let level = match profile.bmp_support {
+        "native" => SupportLevel::Native,
+        "conditional" => SupportLevel::Conditional,
+        _ => SupportLevel::Unsupported,
+    };
+    (level, note)
 }
 
 fn bgp_ls_support_for_vendor(vendor: &str) -> (SupportLevel, String) {
+    let profile = crate::platform_registry::lookup_platform(vendor);
     let note = "BGP-LS support assumes a standards-based AFI/SAFI 16388/71 feed, usually relayed through a route reflector or GoBGP sidecar.".to_string();
-    if matches_vendor(
-        vendor,
-        &["nokia_srl", "cisco_xrd", "juniper_crpd", "arista_ceos"],
-    ) {
-        (SupportLevel::Native, note)
-    } else {
-        (SupportLevel::Conditional, note)
-    }
+    let level = match profile.bgp_ls_support {
+        "native" => SupportLevel::Native,
+        "conditional" => SupportLevel::Conditional,
+        _ => SupportLevel::Unsupported,
+    };
+    (level, note)
 }
 
 fn pcep_support_for_vendor(vendor: &str) -> (SupportLevel, String) {
+    let profile = crate::platform_registry::lookup_platform(vendor);
     let note = "PCEP readiness is advisory only in this sprint because Bonsai does not yet run a production PCEP parser.".to_string();
-    if matches_vendor(vendor, &["nokia_srl", "cisco_xrd", "juniper_crpd"]) {
-        (SupportLevel::Conditional, note)
-    } else {
-        (SupportLevel::Unsupported, note)
-    }
-}
-
-fn matches_vendor(vendor: &str, supported: &[&str]) -> bool {
-    supported.iter().any(|item| vendor.contains(item))
+    let level = match profile.pcep_support {
+        "native" => SupportLevel::Native,
+        "conditional" => SupportLevel::Conditional,
+        _ => SupportLevel::Unsupported,
+    };
+    (level, note)
 }
 
 #[cfg(test)]

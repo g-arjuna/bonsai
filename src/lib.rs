@@ -36,6 +36,7 @@ pub mod mcp_server;
 pub mod memory_profile;
 pub mod output;
 pub mod parser_chain;
+pub mod platform_registry;
 pub mod playbook;
 pub mod receiver_supervisor;
 pub mod reconciler;

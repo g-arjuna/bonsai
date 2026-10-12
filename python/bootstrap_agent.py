@@ -1114,24 +1114,90 @@ def _bootstrap_srl(
 
 
 def _strip_port(address: str) -> str:
-    """Strip :port suffix from an address for SSH use (SSH is always port 22)."""
-    if ":" in address:
-        return address.split(":")[0]
-    return address
+    """Strip :port suffix from an IPv4, [IPv6]:port, unbracketed IPv6, or hostname endpoint."""
+    raw = (address or "").strip()
+    if raw.startswith("["):
+        end = raw.find("]")
+        if end != -1:
+            return raw[1:end]
+    # Unbracketed IPv6 literal has multiple colons; do not split on ':'
+    if raw.count(":") > 1:
+        return raw
+    if ":" in raw:
+        return raw.rsplit(":", 1)[0]
+    return raw
 
 
 def _ensure_gnmi_address(address: str, default_port: int = 57400) -> str:
-    """Ensure address has a gNMI port suffix.
+    """Ensure address has a gNMI port suffix (handling IPv4, IPv6, and hostnames)."""
+    raw = (address or "").strip()
+    if raw.startswith("["):
+        if "]:" in raw:
+            return raw
+        return f"{raw}:{default_port}"
+    if raw.count(":") > 1:
+        return f"[{raw}]:{default_port}"
+    if ":" not in raw:
+        return f"{raw}:{default_port}"
+    return raw
 
-    If a bare IP or hostname is given (no colon), append the default gNMI port
-    so that the device is registered under the same key Bonsai uses internally
-    (host:port). Without this, bootstrapping '172.100.100.11' registers a plain-IP
-    managed device that then gets a non-TLS subscription attempt separate from
-    the intended '172.100.100.11:57400' target.
-    """
-    if ":" not in address:
-        return f"{address}:{default_port}"
-    return address
+
+CANONICAL_VENDOR_ALIASES: Dict[str, str] = {
+    "nokia.srlinux": "nokia.srlinux",
+    "nokia_srlinux": "nokia.srlinux",
+    "nokia-srlinux": "nokia.srlinux",
+    "nokia_srl": "nokia.srlinux",
+    "nokia-srl": "nokia.srlinux",
+    "srl": "nokia.srlinux",
+    "srlinux": "nokia.srlinux",
+    "nokia.sros": "nokia.sros",
+    "nokia_sros": "nokia.sros",
+    "nokia-sros": "nokia.sros",
+    "sros": "nokia.sros",
+    "cisco.iosxr": "cisco.iosxr",
+    "cisco_iosxr": "cisco.iosxr",
+    "cisco-iosxr": "cisco.iosxr",
+    "cisco_xrd": "cisco.iosxr",
+    "iosxr": "cisco.iosxr",
+    "vxr": "cisco.iosxr",
+    "xrd": "cisco.iosxr",
+    "cisco.iosxe": "cisco.iosxe",
+    "cisco_iosxe": "cisco.iosxe",
+    "cisco-iosxe": "cisco.iosxe",
+    "iosxe": "cisco.iosxe",
+    "cisco.ios": "cisco.ios",
+    "cisco_ios": "cisco.ios",
+    "cisco-ios": "cisco.ios",
+    "ios": "cisco.ios",
+    "cisco.nxos": "cisco.nxos",
+    "cisco_nxos": "cisco.nxos",
+    "cisco-nxos": "cisco.nxos",
+    "nxos": "cisco.nxos",
+    "arista.eos": "arista.eos",
+    "arista_eos": "arista.eos",
+    "arista-eos": "arista.eos",
+    "arista_ceos": "arista.eos",
+    "eos": "arista.eos",
+    "arista": "arista.eos",
+    "ceos": "arista.eos",
+    "juniper.junos": "juniper.junos",
+    "juniper_junos": "juniper.junos",
+    "juniper-junos": "juniper.junos",
+    "juniper_crpd": "juniper.junos",
+    "junos": "juniper.junos",
+    "juniper": "juniper.junos",
+    "crpd": "juniper.junos",
+    "vjunos": "juniper.junos",
+    "frr": "frr",
+    "frrouting": "frr",
+}
+
+
+def normalize_bootstrap_vendor(vendor: Optional[str]) -> Optional[str]:
+    v = (vendor or "").strip().lower()
+    if not v or v == "unknown":
+        return None
+    return CANONICAL_VENDOR_ALIASES.get(v)
 
 
 # ── Core bootstrap logic ──────────────────────────────────────────────────────
@@ -1144,14 +1210,22 @@ def bootstrap_device(
     api_url: str = "http://localhost:3000",
     dry_run: bool = False,
 ) -> BootstrapResult:
-    # Normalise address: always include the gNMI port so that registration matches
-    # the TargetConfig key Bonsai uses for subscriptions. Without this, a bare IP
-    # creates a second non-TLS managed device entry alongside the :57400 target.
     address = _ensure_gnmi_address(address)
 
+    canonical_vendor = normalize_bootstrap_vendor(vendor)
+    if canonical_vendor is None:
+        r = BootstrapResult(address=address)
+        r.status = "failed"
+        r.vendor = "unknown"
+        supported = ", ".join(sorted(set(CANONICAL_VENDOR_ALIASES.values())))
+        r.error = (
+            f"Unsupported or unspecified vendor {vendor!r}; refusing Cisco IOS-XE fallback. "
+            f"Specify one of: {supported}"
+        )
+        return r
+
     # SR Linux: PyATS/Unicon has no SRL plugin — route to paramiko-based path
-    vendor_lower = (vendor or "").lower()
-    if vendor_lower in ("nokia_srl", "nokia_srlinux"):
+    if canonical_vendor == "nokia.srlinux":
         logger.info("SRL detected — using paramiko-native bootstrap (PyATS/Unicon has no SRL plugin)")
         return _bootstrap_srl(address, username, password, api_url=api_url, dry_run=dry_run)
 
@@ -1163,16 +1237,16 @@ def bootstrap_device(
     ssh_host = _strip_port(address)
 
     os_map = {
-        "nokia_sros": "iosxr",
-        "cisco_ios": "ios",
-        "cisco_iosxe": "iosxe",
-        "cisco_iosxr": "iosxr",
-        "cisco_nxos": "nxos",
-        "arista_eos": "eos",
-        "juniper_junos": "junos",
+        "nokia.sros": "iosxr",
+        "cisco.ios": "ios",
+        "cisco.iosxe": "iosxe",
+        "cisco.iosxr": "iosxr",
+        "cisco.nxos": "nxos",
+        "arista.eos": "eos",
+        "juniper.junos": "junos",
         "frr": "linux",
     }
-    genie_os = os_map.get(vendor_lower, "iosxe")
+    genie_os = os_map[canonical_vendor]
 
     testbed_dict = {
         "devices": {

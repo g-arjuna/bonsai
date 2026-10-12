@@ -1,0 +1,21 @@
+test_bootstrap_agent_handles_ipv6_and_neutral_hostname_endpoints (__main__.TestB07VendorRegistry.test_bootstrap_agent_handles_ipv6_and_neutral_hostname_endpoints) ... ok
+test_bootstrap_agent_rejects_unknown_vendor_without_cisco_fallback (__main__.TestB07VendorRegistry.test_bootstrap_agent_rejects_unknown_vendor_without_cisco_fallback) ... ok
+test_policy_fetcher_rejects_unknown_vendor_and_parses_ipv6_and_hostname (__main__.TestB07VendorRegistry.test_policy_fetcher_rejects_unknown_vendor_and_parses_ipv6_and_hostname) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.140s
+
+OK
+    Blocking waiting for file lock on artifact directory
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3m 23s
+     Running tests/b07_vendor_registry.rs (target/debug/deps/b07_vendor_registry-55f636c49535d329)
+
+running 4 tests
+test b07_canonical_platform_aliases_and_no_cisco_fallback_for_unknown ... ok
+test b07_edge_a_hostname_works_without_vendor_prefix_and_hostname_is_advisory_only ... ok
+test b07_ipv6_and_hostname_endpoints_parse_cleanly ... ok
+test b07_ui_and_api_vendor_identifiers_agree ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

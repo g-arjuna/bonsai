@@ -7513,6 +7513,17 @@ fn write_signal_state_change_event(
     Ok(())
 }
 
+fn bmp_session_id(bare_target: &str, event: &BmpEvent) -> String {
+    if event.peer_type == 0 && event.router_distinguisher == 0 {
+        format!("{}:{}", bare_target, event.peer_address)
+    } else {
+        format!(
+            "{}:pt{}:rd{}:{}",
+            bare_target, event.peer_type, event.router_distinguisher, event.peer_address
+        )
+    }
+}
+
 fn write_bmp_peer_state(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
@@ -7521,6 +7532,11 @@ fn write_bmp_peer_state(
 ) -> Result<()> {
     let event: BmpEvent =
         serde_json::from_value(update.value.clone()).context("parse BMP peer-state event")?;
+    let bare = crate::registry::strip_port(&update.target);
+    let id = bmp_session_id(bare, &event);
+    // Read previous session state BEFORE upsert_bmp_session overwrites it.
+    let old_state = get_bmp_session_state(conn, &id)?;
+
     upsert_device(
         conn,
         &update.target,
@@ -7535,8 +7551,8 @@ fn write_bmp_peer_state(
     // Mirror peer state into BgpNeighbor so the topology API shows BMP-only
     // devices (e.g. frr-rr which has no gNMI) alongside gNMI-sourced peers.
     if !event.peer_address.is_empty() {
-        let bmp_bare = crate::registry::strip_port(&update.target);
-        let bgp_id = format!("{}:{}", bmp_bare, event.peer_address);
+        let bmp_bare = bare;
+        let bgp_id = id.clone();
         let mut stmt = conn
             .prepare(
                 "MERGE (n:BgpNeighbor {id: $id}) \
@@ -7577,9 +7593,6 @@ fn write_bmp_peer_state(
         .context("execute PEERS_WITH merge (bmp)")?;
     }
 
-    let bare = crate::registry::strip_port(&update.target);
-    let id = format!("{}:{}", bare, event.peer_address);
-    let old_state = get_bmp_session_state(conn, &id)?;
     if old_state.as_deref() != Some(event.session_state.as_str()) {
         let detail = serde_json::to_string(&event).context("serialize BMP peer-state detail")?;
         let _ = write_state_change_event(
@@ -7618,10 +7631,11 @@ fn write_bmp_route_monitoring(
     let now = ts(update.timestamp_ns);
     let rib_type = event.rib_type.as_deref().unwrap_or("adj-rib-in-pre-policy");
     let rib_bare = crate::registry::strip_port(&update.target);
+    let peer_scope = bmp_session_id(rib_bare, &event);
     for route in &event.route_entries {
         let id = format!(
-            "{}:{}:{}:{}:{}/{}",
-            rib_bare, event.peer_address, rib_type, route.afi_safi, route.prefix, route.prefix_len
+            "{}:{}:{}:{}/{}",
+            peer_scope, rib_type, route.afi_safi, route.prefix, route.prefix_len
         );
         let mut stmt = conn.prepare(
             "MERGE (r:BgpRibEntry {id: $id}) \
@@ -7780,7 +7794,7 @@ fn write_bmp_statistics_report(
         }
     }
 
-    let session_id = format!("{}:{}", update.target, event.peer_address);
+    let session_id = bmp_session_id(crate::registry::strip_port(&update.target), &event);
     // D4-16 T3: Read previous adj_rib_in BEFORE we overwrite it (for policy filter spike detection).
     let prev_adj: i64 = if adj_rib_in > 0 {
         let mut q = conn
@@ -8314,7 +8328,7 @@ fn upsert_bmp_session(
     event: &BmpEvent,
 ) -> Result<()> {
     let bare = crate::registry::strip_port(&update.target);
-    let id = format!("{}:{}", bare, event.peer_address);
+    let id = bmp_session_id(bare, event);
     let mut stmt = conn.prepare(
         "MERGE (s:BmpSession {id: $id}) \
          ON CREATE SET \

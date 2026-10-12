@@ -1099,34 +1099,40 @@ impl JsonLineArchive {
 }
 
 #[derive(Clone, Default)]
-struct BmpTargetMap {
+pub struct BmpTargetMap {
     entries: Vec<TargetEntry>,
 }
 
 #[derive(Clone)]
 struct TargetEntry {
     address: String,
+    extra_ips: Vec<String>,
     hostname: String,
     vendor: String,
     role: String,
     site: String,
 }
 
-#[derive(Clone)]
-struct ResolvedTarget {
-    address: String,
-    hostname: String,
-    vendor: String,
-    role: String,
-    site: String,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedTarget {
+    pub address: String,
+    pub hostname: String,
+    pub vendor: String,
+    pub role: String,
+    pub site: String,
 }
 
 impl BmpTargetMap {
-    fn new(targets: &[TargetConfig]) -> Self {
+    pub fn new(targets: &[TargetConfig]) -> Self {
         let entries = targets
             .iter()
             .map(|target| TargetEntry {
                 address: crate::registry::strip_port(&target.address).to_string(),
+                extra_ips: target
+                    .extra_ips
+                    .iter()
+                    .map(|ip| crate::registry::strip_port(ip).to_string())
+                    .collect(),
                 hostname: target.hostname.clone().unwrap_or_default(),
                 vendor: target.vendor.clone().unwrap_or_default(),
                 role: target.role.clone().unwrap_or_default(),
@@ -1136,32 +1142,27 @@ impl BmpTargetMap {
         Self { entries }
     }
 
-    fn resolve(&self, event: &BmpEvent) -> ResolvedTarget {
-        let lookup = [
-            &event.collector_peer,
-            &event.router_address,
-            &event.peer_address,
-        ];
-        for key in lookup {
-            let ip = crate::registry::strip_port(key);
-            if let Some(entry) = self.entries.iter().find(|entry| entry.address == ip) {
-                return ResolvedTarget {
-                    address: entry.address.clone(),
-                    hostname: if entry.hostname.is_empty() {
-                        ip.to_string()
-                    } else {
-                        entry.hostname.clone()
-                    },
-                    vendor: entry.vendor.clone(),
-                    role: entry.role.clone(),
-                    site: entry.site.clone(),
-                };
-            }
+    pub fn resolve(&self, event: &BmpEvent) -> ResolvedTarget {
+        let ip = crate::registry::strip_port(&event.collector_peer);
+        if let Some(entry) = self.entries.iter().find(|entry| {
+            entry.address == ip || entry.extra_ips.iter().any(|extra| extra == ip)
+        }) {
+            return ResolvedTarget {
+                address: entry.address.clone(),
+                hostname: if entry.hostname.is_empty() {
+                    entry.address.clone()
+                } else {
+                    entry.hostname.clone()
+                },
+                vendor: entry.vendor.clone(),
+                role: entry.role.clone(),
+                site: entry.site.clone(),
+            };
         }
         // Unrecognised BMP speaker — use the bare TCP source IP as a fallback identity.
-        // The graph write path will register this as a DeviceAddress node so if the
-        // device is later onboarded via gNMI the graph can merge them.
-        let fallback = crate::registry::strip_port(&event.collector_peer).to_string();
+        // Never fall back to event.router_address (populated from remote peer BGP ID) or
+        // event.peer_address, which would misattribute the observation to the remote peer.
+        let fallback = ip.to_string();
         ResolvedTarget {
             address: fallback.clone(),
             hostname: fallback,

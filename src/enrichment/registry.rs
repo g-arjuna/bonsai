@@ -128,12 +128,8 @@ impl MultiSourceEnricherRegistry {
 /// Static vendor heuristic when no live GnmiReadinessReport is available.
 /// These vendors have historically poor gNMI coverage at lab scale without TLS.
 fn vendor_prefers_cli_fallback(target: &TargetConfig) -> bool {
-    use crate::enrichment::parser_chain_enricher::inferred_vendor;
-    let vendor = inferred_vendor(target);
-    matches!(
-        vendor.as_str(),
-        "cisco-iosxr" | "juniper-junos" | "arista-eos" | "frr"
-    ) && target.ca_cert.is_none()
+    let profile = crate::platform_registry::resolve_target_platform(target);
+    profile.prefers_cli_without_tls && target.ca_cert.is_none()
 }
 
 #[cfg(test)]

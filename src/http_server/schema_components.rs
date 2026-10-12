@@ -1,4 +1,5 @@
 pub(super) fn schema_components() -> serde_json::Value {
+    let vendor_enums = crate::platform_registry::all_schema_vendor_enums();
     serde_json::json!({
         "schemas": {
             "Device": {
@@ -6,7 +7,7 @@ pub(super) fn schema_components() -> serde_json::Value {
                 "properties": {
                     "address": { "type": "string", "description": "Management IP address (gNMI target)" },
                     "hostname": { "type": "string", "description": "Device hostname from gNMI telemetry" },
-                    "vendor": { "type": "string", "enum": ["nokia", "cisco", "juniper", "arista", "frr", "holo", "unknown"] },
+                    "vendor": { "type": "string", "enum": vendor_enums },
                     "role": { "type": "string", "description": "Topology role e.g. spine, leaf, pe, p, rr, super-spine" },
                     "site": { "type": "string", "description": "Site name from graph enrichment" },
                     "health": { "type": "string", "enum": ["healthy", "warn", "critical"] },

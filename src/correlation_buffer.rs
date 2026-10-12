@@ -109,6 +109,7 @@ pub struct CorrelationBuffer {
 
 struct CorrelationBufferInner {
     slots: HashMap<CorrelationKey, PendingCorrelation>,
+    expired: Vec<PendingCorrelation>,
 }
 
 impl CorrelationBuffer {
@@ -118,6 +119,7 @@ impl CorrelationBuffer {
         Self {
             inner: Arc::new(Mutex::new(CorrelationBufferInner {
                 slots: HashMap::new(),
+                expired: Vec::new(),
             })),
             window: Duration::from_secs(window_secs),
         }
@@ -128,12 +130,11 @@ impl CorrelationBuffer {
     ///
     /// Sub-key wildcard matching: when a signal arrives with an empty sub_key
     /// (e.g. an SNMP trap that had no varbinds to extract a peer address from),
-    /// we look for any open slot with the same device+semantic_type regardless
-    /// of sub_key. Similarly, if the incoming signal has a rich sub_key and
-    /// there is an open slot with an empty sub_key for the same device+semantic,
-    /// we absorb and upgrade the slot's key so later arrivals can also match.
-    /// This enables syslog+SNMP fusion even when the SNMP probe carries no peer
-    /// context.
+    /// we look for an open slot with the same device+semantic_type only when
+    /// that match is unambiguous (exactly one active slot). Similarly, if the
+    /// incoming signal has a rich sub_key and there is an open slot with an
+    /// empty sub_key for the same device+semantic, we absorb and upgrade the
+    /// slot's key so later arrivals can also match.
     pub fn record(
         &self,
         key: CorrelationKey,
@@ -156,18 +157,48 @@ impl CorrelationBuffer {
                 );
                 return RecordOutcome::Absorbed;
             }
-            inner.slots.remove(&key);
+            if let Some(expired_slot) = inner.slots.remove(&key) {
+                inner.expired.push(expired_slot);
+            }
         }
 
-        // Sub-key wildcard: find any open slot for same device+semantic when
+        // Sweep any other expired slots for this (device, semantic) into `inner.expired`
+        // so they are neither lost nor counted as active candidates.
+        let window = self.window;
+        let expired_for_device: Vec<CorrelationKey> = inner
+            .slots
+            .iter()
+            .filter(|(k, slot)| {
+                k.device_address == key.device_address
+                    && k.semantic_type == key.semantic_type
+                    && slot.opened_at.elapsed() >= window
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for exp_key in expired_for_device {
+            if let Some(expired_slot) = inner.slots.remove(&exp_key) {
+                inner.expired.push(expired_slot);
+            }
+        }
+
+        // Sub-key wildcard: find an unambiguous open slot for same device+semantic when
         // either the incoming key or the stored slot has an empty sub_key.
         let wildcard_match_key: Option<CorrelationKey> = if key.sub_key.is_empty() {
-            // Incoming has no sub_key — find any open slot for this device+semantic.
-            inner.slots.iter()
-                .find(|(k, slot)| k.device_address == key.device_address
-                    && k.semantic_type == key.semantic_type
-                    && slot.opened_at.elapsed() < self.window)
+            let candidates: Vec<CorrelationKey> = inner
+                .slots
+                .iter()
+                .filter(|(k, slot)| {
+                    k.device_address == key.device_address
+                        && k.semantic_type == key.semantic_type
+                        && slot.opened_at.elapsed() < window
+                })
                 .map(|(k, _)| k.clone())
+                .collect();
+            if candidates.len() == 1 {
+                candidates.into_iter().next()
+            } else {
+                None
+            }
         } else {
             // Incoming has a sub_key — find an open empty-sub_key slot to absorb into.
             let empty_key = CorrelationKey::new(
@@ -175,8 +206,10 @@ impl CorrelationBuffer {
                 key.semantic_type.clone(),
                 "",
             );
-            inner.slots.get(&empty_key)
-                .filter(|s| s.opened_at.elapsed() < self.window)
+            inner
+                .slots
+                .get(&empty_key)
+                .filter(|s| s.opened_at.elapsed() < window)
                 .map(|_| empty_key)
         };
 
@@ -202,7 +235,13 @@ impl CorrelationBuffer {
             }
         }
 
-        let slot = PendingCorrelation::new(key.clone(), state_change_event_id, source_type, signal_ns, detail_json);
+        let slot = PendingCorrelation::new(
+            key.clone(),
+            state_change_event_id,
+            source_type,
+            signal_ns,
+            detail_json,
+        );
         inner.slots.insert(key, slot);
         RecordOutcome::NewSlot
     }
@@ -212,13 +251,14 @@ impl CorrelationBuffer {
     pub fn drain_expired(&self) -> Vec<PendingCorrelation> {
         let mut inner = self.inner.lock().expect("correlation buffer lock poisoned");
         let window = self.window;
+        let mut flushed = std::mem::take(&mut inner.expired);
         let expired_keys: Vec<CorrelationKey> = inner
             .slots
             .iter()
             .filter(|(_, slot)| slot.opened_at.elapsed() >= window)
             .map(|(k, _)| k.clone())
             .collect();
-        let mut flushed = Vec::with_capacity(expired_keys.len());
+        flushed.reserve(expired_keys.len());
         for key in expired_keys {
             if let Some(slot) = inner.slots.remove(&key) {
                 flushed.push(slot);
@@ -237,11 +277,14 @@ impl CorrelationBuffer {
     /// Force-flush all slots regardless of window expiry. Used on shutdown.
     pub fn drain_all(&self) -> Vec<PendingCorrelation> {
         let mut inner = self.inner.lock().expect("correlation buffer lock poisoned");
-        inner.slots.drain().map(|(_, v)| v).collect()
+        let mut all = std::mem::take(&mut inner.expired);
+        all.extend(inner.slots.drain().map(|(_, v)| v));
+        all
     }
 
     pub fn len(&self) -> usize {
-        self.inner.lock().expect("correlation buffer lock poisoned").slots.len()
+        let inner = self.inner.lock().expect("correlation buffer lock poisoned");
+        inner.slots.len() + inner.expired.len()
     }
 }
 
@@ -330,7 +373,7 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
         "isis_adj_state_change" | "isis_adjacency_down" => {
             Some(("isis_adjacency_down".to_string(), peer()))
         }
-        // BMP peer state — top-level session_state + peer_address
+        // BMP peer state — top-level session_state + peer_address (+ peer_type/RD when non-zero)
         "bmp_session_change" => {
             let state = detail
                 .get("session_state")
@@ -342,10 +385,23 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            let peer_type = detail
+                .get("peer_type")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let rd = detail
+                .get("router_distinguisher")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sub_key = if peer_type == 0 && rd == 0 {
+                bmp_peer
+            } else {
+                format!("pt{peer_type}:rd{rd}:{bmp_peer}")
+            };
             if state == "established" {
-                Some(("bgp_neighbor_up".to_string(), bmp_peer))
+                Some(("bgp_neighbor_up".to_string(), sub_key))
             } else if state == "down" {
-                Some(("bgp_neighbor_down".to_string(), bmp_peer))
+                Some(("bgp_neighbor_down".to_string(), sub_key))
             } else {
                 None
             }

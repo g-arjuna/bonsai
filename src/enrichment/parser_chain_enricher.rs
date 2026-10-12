@@ -98,72 +98,23 @@ struct CliCaptureResult {
 }
 
 pub(crate) fn inferred_vendor(target: &TargetConfig) -> String {
-    if let Some(vendor) = target.vendor.as_deref().map(str::trim)
-        && !vendor.is_empty()
-    {
-        return vendor.to_ascii_lowercase();
-    }
-
-    let hostname = target
-        .hostname
-        .as_deref()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    if hostname.starts_with("xrd") || hostname.contains("iosxr") {
-        "cisco-iosxr".to_string()
-    } else if hostname.starts_with("srl") || hostname.contains("srlinux") {
-        "nokia-srlinux".to_string()
-    } else if hostname.starts_with("ceos")
-        || hostname.contains("arista")
-        || hostname.contains("eos")
-    {
-        "arista-eos".to_string()
-    } else if hostname.contains("crpd") || hostname.contains("vjunos") || hostname.contains("junos")
-    {
-        "juniper-junos".to_string()
-    } else if hostname.starts_with("frr") {
-        "frr".to_string()
-    } else {
-        "unknown".to_string()
-    }
+    crate::platform_registry::resolve_target_platform(target)
+        .platform_id
+        .to_string()
 }
 
-fn command_for_vendor(vendor: &str) -> Option<&'static str> {
-    match vendor {
-        "cisco-iosxr" => Some("show running-config"),
-        "arista-eos" => Some("show running-config"),
-        "juniper-junos" => Some("show configuration | display set"),
-        "nokia-srlinux" => Some("info from running"),
-        "frr" => Some("show running-config"),
-        _ => None,
-    }
+pub fn command_for_vendor(vendor: &str) -> Option<&'static str> {
+    crate::platform_registry::lookup_platform(vendor).cli_running_config_cmd
+}
+
+pub fn ssh_target_host(target: &TargetConfig) -> Result<String> {
+    crate::platform_registry::extract_endpoint_host(&target.address)
 }
 
 fn ssh_target(target: &TargetConfig) -> Result<SshTarget> {
-    let raw = target.address.trim();
-    if raw.is_empty() {
-        bail!("target address is empty");
-    }
-    if let Some(rest) = raw.strip_prefix('[') {
-        let end = rest
-            .find(']')
-            .ok_or_else(|| anyhow!("invalid bracketed target address '{}'", target.address))?;
-        return Ok(SshTarget {
-            host: rest[..end].to_string(),
-            port: DEFAULT_SSH_PORT,
-        });
-    }
-    if let Some((host, _port)) = raw.rsplit_once(':')
-        && host.contains('.')
-    {
-        return Ok(SshTarget {
-            host: host.to_string(),
-            port: DEFAULT_SSH_PORT,
-        });
-    }
+    let host = ssh_target_host(target)?;
     Ok(SshTarget {
-        host: raw.to_string(),
+        host,
         port: DEFAULT_SSH_PORT,
     })
 }
@@ -316,24 +267,8 @@ mod tests {
         let target = TargetConfig {
             address: "172.100.102.21:57400".to_string(),
             enabled: true,
-            tls_domain: None,
-            ca_cert: None,
             vendor: Some("cisco-iosxr".to_string()),
-            credential_alias: None,
-            username_env: None,
-            password_env: None,
-            username: None,
-            password: None,
-            hostname: None,
-            role: None,
-            site: None,
-            collector_id: None,
-            selected_paths: Vec::new(),
-            created_at_ns: 0,
-            updated_at_ns: 0,
-            created_by: String::new(),
-            updated_by: String::new(),
-            last_operator_action: String::new(),
+            ..Default::default()
         };
 
         let ssh_target = ssh_target(&target).expect("ssh target");
@@ -342,30 +277,19 @@ mod tests {
     }
 
     #[test]
-    fn vendor_inference_uses_hostname_when_vendor_is_missing() {
+    fn vendor_inference_requires_explicit_vendor_while_hostname_is_advisory_only() {
         let target = TargetConfig {
             address: "172.100.102.21:57400".to_string(),
             enabled: true,
-            tls_domain: None,
-            ca_cert: None,
             vendor: None,
-            credential_alias: None,
-            username_env: None,
-            password_env: None,
-            username: None,
-            password: None,
             hostname: Some("xrd-pe1".to_string()),
-            role: None,
-            site: None,
-            collector_id: None,
-            selected_paths: Vec::new(),
-            created_at_ns: 0,
-            updated_at_ns: 0,
-            created_by: String::new(),
-            updated_by: String::new(),
-            last_operator_action: String::new(),
+            ..Default::default()
         };
 
-        assert_eq!(inferred_vendor(&target), "cisco-iosxr");
+        assert_eq!(inferred_vendor(&target), "unknown");
+        assert_eq!(
+            crate::platform_registry::suggest_platform_from_hostname(target.hostname.as_deref()),
+            Some("cisco.iosxr")
+        );
     }
 }
