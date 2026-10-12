@@ -15,6 +15,12 @@ path                   = "runtime/archive"
 flush_interval_seconds = 10
 max_batch_rows         = 1000
 
+[bmp]
+enabled             = false
+authority           = "routing_service"
+listen_addr         = "0.0.0.0:11019"
+routing_service_url = "http://bonsai-routing:8081"
+
 # No [[target]] blocks — devices are added via the UI onboarding wizard or
 # POST /api/devices after the container starts.
 # To pre-seed devices, add [[target]] blocks here following bonsai.toml.example.

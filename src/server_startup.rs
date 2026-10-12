@@ -753,7 +753,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         spawn_or_register!(
             "bmp",
             cfg.streaming.bmp.tcp_addr.clone(),
-            cfg.streaming.bmp.enabled,
+            cfg.streaming.bmp.should_spawn_legacy_receiver(),
             run_collector,
             |shutdown| async move {
                 bonsai::streaming::bmp::run_bmp_receiver(

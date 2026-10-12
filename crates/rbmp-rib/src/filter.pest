@@ -1,0 +1,37 @@
+// RustyBMP filter expression grammar (pest PEG)
+//
+// Example expressions:
+//   rpki == 'invalid' AND prefix_len > 24
+//   NOT community == '65535:666'
+//   peer_as IN [701, 1299, 3356] OR as_path_len > 10
+//   action == 'announce' AND has_prepend
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+
+expr     =  { or_expr ~ EOI }
+or_expr  =  { and_expr ~ (or_kw ~ and_expr)* }
+and_expr =  { not_expr ~ (and_kw ~ not_expr)* }
+not_expr =  { not_kw ~ atom | atom }
+atom     =  { "(" ~ or_expr ~ ")" | membership | comparison | flag }
+
+or_kw  = _{ "OR" }
+and_kw = _{ "AND" }
+not_kw =  { "NOT" }
+
+comparison = { field ~ op ~ value }
+membership = { field ~ not_kw? ~ in_kw ~ "[" ~ int_list ~ "]" }
+
+in_kw  = _{ "IN" }
+
+field  = { "prefix_len" | "as_path_len" | "origin_as" | "peer_as"
+         | "rpki" | "action" | "community" | "local_pref" | "med" }
+
+op     = { ">=" | "<=" | "!=" | "==" | "=" | ">" | "<" }
+
+value  = { string | integer }
+string = { ("'" ~ (!"'" ~ ANY)* ~ "'") | ("\"" ~ (!("\"") ~ ANY)* ~ "\"") }
+integer = @{ ASCII_DIGIT+ }
+
+int_list = { integer ~ ("," ~ WHITESPACE* ~ integer)* }
+
+flag = { "has_prepend" | "true" | "false" }

@@ -28,7 +28,14 @@ services:
   #   open http://localhost:3000
   bonsai-standalone:
     <<: *bonsai-base
-    profiles: ["standalone"]
+    profiles: ["standalone", "routing"]
+    depends_on:
+      - bonsai-routing
+    environment:
+      - RUST_LOG=info,bonsai=debug
+      - BONSAI_VAULT_PASSPHRASE=${BONSAI_VAULT_PASSPHRASE:?BONSAI_VAULT_PASSPHRASE is required — see .env.example}
+      - BONSAI_ROUTING_SERVICE_URL=http://bonsai-routing:8081
+      - BONSAI_ROUTING_SERVICE_TOKEN=${BONSAI_ROUTING_SERVICE_TOKEN:-}
     volumes:
       - bonsai_graph_dev:/app/runtime
       - bonsai_creds_dev:/app/bonsai-credentials
@@ -44,6 +51,33 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 5
+
+  # ── Reduced Canonical Routing Service (B11/B15) ───────────────────────────
+  #
+  # Single BMP listener authority (TCP 11019) + private internal routing API
+  # (HTTP 8081 on bonsai-internal bridge). Public UI/API callers access routing
+  # exclusively through Bonsai (`http://localhost:3000/api/routing/v1/*`) using
+  # Bonsai's single authentication boundary.
+  bonsai-routing:
+    <<: *bonsai-base
+    profiles: ["standalone", "routing", "dev"]
+    entrypoint: ["/usr/local/bin/bonsai-routing"]
+    environment:
+      - RUST_LOG=info,bonsai=debug,rbmp_core=info,rbmp_rib=info
+      - BONSAI_VAULT_PASSPHRASE=${BONSAI_VAULT_PASSPHRASE:?BONSAI_VAULT_PASSPHRASE is required — see .env.example}
+      - BONSAI_ROUTING_BMP_ADDR=0.0.0.0:11019
+      - BONSAI_ROUTING_HTTP_ADDR=0.0.0.0:8081
+      - BONSAI_ROUTING_BMP_JOURNAL=/app/runtime/routing-bmp.journal
+      - BONSAI_ROUTING_EVENT_JOURNAL=/app/runtime/routing-events.jsonl
+      - BONSAI_ROUTING_SERVICE_TOKEN=${BONSAI_ROUTING_SERVICE_TOKEN:-}
+    volumes:
+      - bonsai_graph_dev:/app/runtime
+    ports:
+      - "11019:11019"
+    expose:
+      - "8081"
+    networks:
+      - bonsai-internal
 
   bonsai-all:
     <<: *bonsai-base

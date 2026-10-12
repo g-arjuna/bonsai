@@ -1,0 +1,31 @@
+[package]
+name        = "rbmp-rib"
+description = "In-memory RIB engine for BMP/BGP routes"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+rust-version.workspace = true
+
+[features]
+roto-jit = ["dep:roto"]
+
+[dependencies]
+rbmp-core   = { workspace = true }
+dashmap     = { workspace = true }
+parking_lot = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+serde_yaml  = { workspace = true }
+chrono      = { workspace = true }
+uuid        = { workspace = true }
+tracing     = { workspace = true }
+indexmap    = { workspace = true }
+ipnet       = { workspace = true }
+tokio       = { workspace = true }
+metrics     = { workspace = true }
+anyhow      = { workspace = true }
+pest        = { workspace = true }
+pest_derive = { workspace = true }
+# Roto JIT filter engine (RV7-F T1) — enabled via feature flag
+roto        = { version = "0.4", optional = true }

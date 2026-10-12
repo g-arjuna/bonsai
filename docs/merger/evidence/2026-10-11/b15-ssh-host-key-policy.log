@@ -1,0 +1,14 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.3, pluggy-1.6.0 -- /home/arjuna/Desktop/bonsai/.venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/arjuna/Desktop/bonsai
+plugins: anyio-4.13.0, cov-7.1.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 2 items
+
+tests/test_b15_ssh_host_key_policy.py::test_b15_ssh_default_policy_is_reject PASSED [ 50%]
+tests/test_b15_ssh_host_key_policy.py::test_b15_ssh_lab_tofu_policy_must_be_explicit PASSED [100%]
+
+============================== 2 passed in 0.24s ===============================
+bonsai-routing
+bonsai-standalone

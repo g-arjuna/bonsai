@@ -541,6 +541,29 @@ pub struct BmpConfig {
     pub archive_path: String,
     #[serde(default = "default_bmp_max_frame_bytes")]
     pub max_frame_bytes: usize,
+    /// B15: Single BMP authority (`"routing_service"` by default; `"legacy_bonsai"` only if explicitly requested).
+    #[serde(default = "default_bmp_authority")]
+    pub authority: String,
+    /// Internal URL of the private `bonsai-routing` process.
+    #[serde(default = "default_routing_service_url")]
+    pub routing_service_url: String,
+}
+
+impl BmpConfig {
+    /// Returns true only when legacy in-process BMP ingestion is explicitly selected.
+    /// When `authority == "routing_service"`, the legacy receiver is disabled so there are never two authorities.
+    pub fn should_spawn_legacy_receiver(&self) -> bool {
+        self.enabled && self.authority == "legacy_bonsai"
+    }
+}
+
+fn default_bmp_authority() -> String {
+    "routing_service".to_string()
+}
+
+fn default_routing_service_url() -> String {
+    std::env::var("BONSAI_ROUTING_SERVICE_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8081".to_string())
 }
 
 impl Default for BmpConfig {
@@ -550,6 +573,8 @@ impl Default for BmpConfig {
             tcp_addr: default_bmp_tcp_addr(),
             archive_path: default_bmp_archive_path(),
             max_frame_bytes: default_bmp_max_frame_bytes(),
+            authority: default_bmp_authority(),
+            routing_service_url: default_routing_service_url(),
         }
     }
 }

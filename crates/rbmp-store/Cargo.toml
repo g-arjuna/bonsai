@@ -1,0 +1,26 @@
+[package]
+name        = "rbmp-store"
+description = "DuckDB-backed persistent store for BMP/BGP route history"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+rust-version.workspace = true
+
+[features]
+default = []
+duckdb-store = ["dep:duckdb"]
+
+[dependencies]
+rbmp-core   = { workspace = true }
+rbmp-rib    = { workspace = true }
+duckdb      = { workspace = true, optional = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+chrono      = { workspace = true }
+uuid        = { workspace = true }
+tracing     = { workspace = true }
+tokio       = { workspace = true }
+anyhow      = { workspace = true }
+metrics     = { workspace = true }
+

@@ -22,6 +22,7 @@ ENV CMAKE=/usr/bin/cmake \
 # ── Planner: only manifest files so source changes do not bust the cook cache ──
 FROM chef AS rust-planner
 COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ── Builder: cook deps (cache-stable), then compile the binaries ──────────────
@@ -39,12 +40,14 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo build --release --bin bonsai --bin healthcheck \
+    cargo build --release --bin bonsai --bin bonsai-routing --bin healthcheck \
     && cp /app/target/release/bonsai /app/bonsai \
+    && cp /app/target/release/bonsai-routing /app/bonsai-routing \
     && cp /app/target/release/healthcheck /app/healthcheck \
     && find /app/target/release/build -name 'liblbug.so.0' -exec cp -L {} /app/liblbug.so.0 \; \
     && test -f /app/liblbug.so.0 \
     && strip /app/bonsai \
+    && strip /app/bonsai-routing \
     && strip /app/healthcheck \
     && strip --strip-debug /app/liblbug.so.0
 
@@ -82,9 +85,10 @@ RUN groupadd --gid 10001 bonsai \
     && mkdir -p /app/runtime /app/bonsai-credentials \
     && chown -R bonsai:bonsai /app
 
-COPY --from=rust-builder /app/bonsai        /usr/local/bin/bonsai
-COPY --from=rust-builder /app/healthcheck   /usr/local/bin/healthcheck
-COPY --from=rust-builder /app/liblbug.so.0  /usr/local/lib/liblbug.so.0
+COPY --from=rust-builder /app/bonsai         /usr/local/bin/bonsai
+COPY --from=rust-builder /app/bonsai-routing /usr/local/bin/bonsai-routing
+COPY --from=rust-builder /app/healthcheck    /usr/local/bin/healthcheck
+COPY --from=rust-builder /app/liblbug.so.0   /usr/local/lib/liblbug.so.0
 COPY --from=ui-builder   /ui/dist           /app/ui/dist
 COPY --from=bonpy-builder /ui-bonpy/dist    /app/ui-bonpy/dist
 

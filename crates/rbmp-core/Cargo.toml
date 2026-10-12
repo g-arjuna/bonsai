@@ -1,0 +1,42 @@
+[package]
+name        = "rbmp-core"
+description = "RFC-correct BMP/BGP protocol parsing library"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+rust-version.workspace = true
+
+[dependencies]
+bytes       = { workspace = true }
+byteorder   = { workspace = true }
+ipnet       = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+chrono      = { workspace = true }
+smallvec    = { workspace = true }
+indexmap    = { workspace = true }
+tracing     = { workspace = true }
+uuid        = { workspace = true }
+rmp-serde   = { workspace = true }
+tokio       = { workspace = true }
+
+[dev-dependencies]
+hex-literal = "0.4"
+criterion   = { workspace = true }
+
+[[bench]]
+name    = "bmp_parse"
+path    = "benches/bmp_parse.rs"
+harness = false
+
+[[test]]
+name = "integration"
+path = "tests/integration/mod.rs"
+
+# B02 independent RFC regressions.
+[[test]]
+name = "bmp_rfc_contract"
+path = "tests/regressions/bmp_rfc_contract.rs"
+

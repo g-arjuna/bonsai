@@ -91,9 +91,22 @@ def _guess_vendor(target: dict) -> str:
 
 # ── SSH helpers ───────────────────────────────────────────────────────────────
 
+def configure_ssh_host_key_policy(client: paramiko.SSHClient, policy: str | None = None, known_hosts_path: str | None = None) -> str:
+    client.load_system_host_keys()
+    kh = known_hosts_path or os.environ.get("BONSAI_SSH_KNOWN_HOSTS", "").strip()
+    if kh and os.path.exists(kh):
+        client.load_host_keys(kh)
+    mode = (policy or os.environ.get("BONSAI_SSH_HOST_KEY_POLICY", "strict")).strip().lower()
+    if mode in ("lab_tofu", "insecure_auto_add"):
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        return mode
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    return "strict"
+
+
 def _ssh_connect(address: str, username: str, password: str) -> paramiko.SSHClient:
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    configure_ssh_host_key_policy(client)
     client.connect(
         address, port=22, username=username, password=password,
         timeout=SSH_TIMEOUT, look_for_keys=False, allow_agent=False,

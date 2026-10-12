@@ -940,6 +940,32 @@ def _srl_extract_json(raw: str) -> Any:
     return None
 
 
+def configure_ssh_host_key_policy(
+    client,
+    policy: Optional[str] = None,
+    known_hosts_path: Optional[str] = None,
+) -> str:
+    """Configure SSH host-key verification policy (B12).
+
+    Defaults to strict verification (`RejectPolicy`) so unknown hosts require
+    explicit enrollment unless `BONSAI_SSH_HOST_KEY_POLICY` is explicitly set
+    to `lab_tofu` or `insecure_auto_add`.
+    """
+    import paramiko
+
+    client.load_system_host_keys()
+    kh = known_hosts_path or os.environ.get("BONSAI_SSH_KNOWN_HOSTS", "").strip()
+    if kh and os.path.exists(kh):
+        client.load_host_keys(kh)
+
+    mode = (policy or os.environ.get("BONSAI_SSH_HOST_KEY_POLICY", "strict")).strip().lower()
+    if mode in ("lab_tofu", "insecure_auto_add"):
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        return mode
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    return "strict"
+
+
 def _bootstrap_srl(
     address: str,
     username: str,
@@ -969,7 +995,7 @@ def _bootstrap_srl(
 
     try:
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        configure_ssh_host_key_policy(client)
         client.connect(
             ssh_host, port=22, username=username, password=password,
             timeout=15, look_for_keys=False, allow_agent=False,
@@ -1373,7 +1399,7 @@ def configure_srl_gnmi_tls(
 
     try:
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        configure_ssh_host_key_policy(client)
         client.connect(address, username=username, password=password, timeout=15)
         shell = client.invoke_shell()
         import time as _time
@@ -1434,7 +1460,7 @@ def configure_frr_bmp(
 
     try:
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        configure_ssh_host_key_policy(client)
         client.connect(address, username=username, password=password, timeout=15)
         stdin, stdout, stderr = client.exec_command("vtysh -c " + " -c ".join(f'"{c}"' for c in vtysh_cmds))
         out = stdout.read().decode(errors="replace")

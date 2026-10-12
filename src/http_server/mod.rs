@@ -897,6 +897,8 @@ pub fn router(
     // not_found_service preserves the 404 status, so we avoid it for SPA routes.
     let bonpy_app_assets = ServeDir::new("ui-bonpy/dist-bonpy/_app");
 
+    let auth_store = Arc::clone(&state.store);
+
     Router::new()
         .merge(observability_routes())
         .merge(device_routes())
@@ -910,6 +912,7 @@ pub fn router(
         .merge(signal_policy_routes())
         .merge(ml_routes())
         .merge(ev1_playbook_routes())
+        .merge(routing_v1_routes())
         .route("/mcp", post(crate::mcp_server::mcp_handler))
         // Static JS/CSS assets for BonPy (SvelteKit puts them under /_app/)
         .nest_service("/bonpy/_app", bonpy_app_assets)
@@ -918,8 +921,198 @@ pub fn router(
         .route("/bonpy/", any(bonpy_shell_handler))
         .route("/bonpy/{*path}", any(bonpy_shell_handler))
         .fallback_service(spa)
+        .layer(axum::middleware::from_fn_with_state(
+            auth_store,
+            auth::auth_middleware,
+        ))
         .with_state(state)
         .layer(CorsLayer::permissive())
+}
+
+impl axum::extract::FromRef<AppState> for Arc<GraphStore> {
+    fn from_ref(state: &AppState) -> Self {
+        Arc::clone(&state.store)
+    }
+}
+
+pub use auth::{mint_jwt, redact_secrets_in_json};
+
+/// Build a standalone Bonsai public router mounting `/health` and `/api/routing/v1/*`
+/// with full Bonsai JWT/API-key RBAC middleware (`auth::auth_middleware`) backed by `GraphStore`.
+pub fn build_public_routing_router(store: Arc<GraphStore>) -> Router {
+    let auth_store = Arc::clone(&store);
+    Router::new()
+        .route(
+            "/health",
+            get(|| async { axum::Json(serde_json::json!({"status": "ok", "service": "bonsai"})) }),
+        )
+        .merge(routing_v1_routes())
+        .layer(axum::middleware::from_fn_with_state(
+            auth_store,
+            auth::auth_middleware,
+        ))
+        .with_state(store)
+}
+
+fn routing_v1_routes<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+    Arc<GraphStore>: axum::extract::FromRef<S>,
+{
+    Router::new()
+        .route("/api/routing/v1/health", get(routing_v1_proxy_get_handler))
+        .route("/api/routing/v1/speakers", get(routing_v1_proxy_get_handler))
+        .route("/api/routing/v1/peers", get(routing_v1_proxy_get_handler))
+        .route("/api/routing/v1/routes", get(routing_v1_proxy_get_handler))
+        .route(
+            "/api/routing/v1/prefix-history",
+            get(routing_v1_proxy_get_handler),
+        )
+        .route("/api/routing/v1/coverage", get(routing_v1_proxy_get_handler))
+        .route("/api/routing/v1/events", get(routing_v1_proxy_get_handler))
+        .route(
+            "/api/routing/v1/ingest-bmp",
+            post(routing_v1_proxy_post_handler),
+        )
+}
+
+async fn resolve_routing_service_endpoint(store: &GraphStore) -> (String, Option<String>) {
+    let items = store
+        .list_config_items(Some("app_config".to_string()))
+        .await
+        .unwrap_or_default();
+    let url = items
+        .iter()
+        .find(|i| i.name == "routing_service_url" && i.enabled)
+        .map(|i| i.content_json.trim().trim_matches('"').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            std::env::var("BONSAI_ROUTING_SERVICE_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:8081".to_string())
+        });
+    let token = items
+        .iter()
+        .find(|i| i.name == "routing_service_token" && i.enabled)
+        .map(|i| i.content_json.trim().trim_matches('"').to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::var("BONSAI_ROUTING_SERVICE_TOKEN")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        });
+    (url.trim_end_matches('/').to_string(), token)
+}
+
+async fn routing_v1_proxy_get_handler(
+    axum::extract::State(store): axum::extract::State<Arc<GraphStore>>,
+    uri: axum::http::Uri,
+) -> Response<Body> {
+    let (base_url, token) = resolve_routing_service_endpoint(&store).await;
+    let internal_path = uri
+        .path()
+        .replacen("/api/routing/v1/", "/internal/routing/v1/", 1);
+    let target_url = match uri.query() {
+        Some(q) if !q.is_empty() => format!("{base_url}{internal_path}?{q}"),
+        _ => format!("{base_url}{internal_path}"),
+    };
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return routing_unavailable_response(&e.to_string()),
+    };
+
+    let mut req = client.get(&target_url);
+    if let Some(t) = token {
+        req = req.header("x-bonsai-routing-token", t);
+    }
+
+    match req.send().await {
+        Ok(resp) => {
+            let status = StatusCode::from_u16(resp.status().as_u16())
+                .unwrap_or(StatusCode::BAD_GATEWAY);
+            match resp.json::<serde_json::Value>().await {
+                Ok(mut json_val) => {
+                    auth::redact_secrets_in_json(&mut json_val);
+                    // Attach graph projection lag on /health and /coverage
+                    if uri.path().ends_with("/health") || uri.path().ends_with("/coverage") {
+                        let cp = crate::routing_service::load_projection_checkpoint(&store).await;
+                        let latest_seq = json_val
+                            .get("durable_sequence")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        if let Some(obj) = json_val.as_object_mut() {
+                            obj.insert(
+                                "graph_checkpoint_sequence".to_string(),
+                                serde_json::json!(cp.last_applied_sequence),
+                            );
+                            obj.insert(
+                                "graph_projection_lag".to_string(),
+                                serde_json::json!(latest_seq.saturating_sub(cp.last_applied_sequence)),
+                            );
+                        }
+                    }
+                    axum::response::IntoResponse::into_response((status, axum::Json(json_val)))
+                }
+                Err(e) => routing_unavailable_response(&format!("Invalid JSON from routing service: {e}")),
+            }
+        }
+        Err(e) => routing_unavailable_response(&e.to_string()),
+    }
+}
+
+async fn routing_v1_proxy_post_handler(
+    axum::extract::State(store): axum::extract::State<Arc<GraphStore>>,
+    uri: axum::http::Uri,
+    axum::Json(payload): axum::Json<serde_json::Value>,
+) -> Response<Body> {
+    let (base_url, token) = resolve_routing_service_endpoint(&store).await;
+    let internal_path = uri
+        .path()
+        .replacen("/api/routing/v1/", "/internal/routing/v1/", 1);
+    let target_url = format!("{base_url}{internal_path}");
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return routing_unavailable_response(&e.to_string()),
+    };
+
+    let mut req = client.post(&target_url).json(&payload);
+    if let Some(t) = token {
+        req = req.header("x-bonsai-routing-token", t);
+    }
+
+    match req.send().await {
+        Ok(resp) => {
+            let status = StatusCode::from_u16(resp.status().as_u16())
+                .unwrap_or(StatusCode::BAD_GATEWAY);
+            match resp.json::<serde_json::Value>().await {
+                Ok(mut json_val) => {
+                    auth::redact_secrets_in_json(&mut json_val);
+                    axum::response::IntoResponse::into_response((status, axum::Json(json_val)))
+                }
+                Err(e) => routing_unavailable_response(&format!("Invalid JSON from routing service: {e}")),
+            }
+        }
+        Err(e) => routing_unavailable_response(&e.to_string()),
+    }
+}
+
+fn routing_unavailable_response(reason: &str) -> Response<Body> {
+    axum::response::IntoResponse::into_response((
+        StatusCode::SERVICE_UNAVAILABLE,
+        axum::Json(serde_json::json!({
+            "api_version": crate::routing_service::ROUTING_API_VERSION,
+            "error": "routing_service_unavailable",
+            "completeness_state": "unavailable",
+            "message": format!("Private routing service is currently unavailable: {reason}"),
+        })),
+    ))
 }
 
 /// Serve the BonPy SPA shell for any /bonpy/* route that is not a static asset.

@@ -51,9 +51,21 @@ Portable patch: [rustybmp-m1-b04-b08.patch](evidence/2026-10-11/rustybmp-m1-b04-
    - Updated `BgpsecValidator` (`crates/rbmp-enrichment/src/bgpsec.rs`) to return `BgpsecVerdict::Unverified` when RFC 8205 signature input is absent and require real ECDSA P-256 verification when signature input is provided.
    - Removed split-brain HA leader fallbacks in RustyBMP (`crates/rbmp-server/src/ha.rs`) and Bonsai (`src/ha_coordinator.rs`) when Redis/etcd is unreachable or unconfigured, and added file-backed persistence to Bonsai's `RollbackRegistry` (`src/remediation/rollback.rs`).
 
-## Next slice: Milestone M2 (B07, B09–B15) — One usable Bonsai workflow
+## Milestone M2 (B07, B09–B15) — One usable Bonsai workflow (completed)
 
-1. **B07 — Canonical vendor/capability registry**: Eliminate silent Cisco fallback on unknown vendor strings; align CLI/API/UI vendor identifiers.
-2. **B09 — Bonsai peer-transition ordering and correlation fixes**: Read prior peer state before `upsert_bmp_session` in `src/graph/mod.rs::write_bmp_peer_state` and preserve raw correlation evidence on window expiry.
-3. **B10 — Routing crate import into Bonsai workspace**: Import `rbmp-core`, `rbmp-rib`, and `rbmp-store` into Bonsai with provenance manifest.
-4. **B11–B15**: Versioned internal routing API, shared auth/RBAC, graph summary projection, Svelte 5 routing views in Bonsai `ui/`, and unified Compose dev workflow.
+1. **B07 — Canonical vendor/capability registry (completed)**:
+   - Unified canonical vendor IDs (`nokia_srl`, `cisco_xrd`, `cisco_iosxe`, `cisco_nxos`, `arista_eos`, `juniper_junos`, `frrouting`) across `src/platform_registry.rs`, `python/bootstrap_agent.py`, and `ui/src/lib/Onboarding.svelte`, removing silent Cisco fallback on unknown vendor strings ([b07-python-vendor-registry.log](evidence/2026-10-11/b07-python-vendor-registry.log), [b07-rust-vendor-registry.log](evidence/2026-10-11/b07-rust-vendor-registry.log)).
+2. **B09 — Bonsai peer-transition ordering and correlation fixes (completed)**:
+   - Fixed `src/graph/mod.rs::write_bmp_peer_state` to read prior state before `upsert_bmp_session`, composite session key (`router_address|peer_type|rd|peer_address`), and `routing_session_epoch` provenance; preserved raw `StateChangeEvent` evidence on correlation window expiry in `src/correlation_buffer.rs` ([b09-peer-and-correlation.log](evidence/2026-10-11/b09-peer-and-correlation.log)).
+3. **B10 — Routing crate import into Bonsai workspace (completed)**:
+   - Imported `rbmp-core`, `rbmp-rib`, and `rbmp-store` from `/home/arjuna/rustybmp-b01` (`f330feb`) into `/home/arjuna/Desktop/bonsai/crates/` with [B10_IMPORT_MANIFEST.md](B10_IMPORT_MANIFEST.md) and `RibEventJournal` (`132 passed; 0 failed; 2 ignored` in [b10-workspace-import.log](evidence/2026-10-11/b10-workspace-import.log)).
+4. **B11 — Reduced routing service and versioned internal/public API (completed)**:
+   - Added `bonsai-routing` (`src/routing_service/mod.rs`, `src/bin/routing_service.rs`) serving `/internal/routing/v1/{health,speakers,peers,routes,prefix-history,coverage,events,ingest-bmp}` and Bonsai proxy `/api/routing/v1/*` with graceful `503` degradation and explicit transport-gap vs BGP-withdrawal distinction ([b11-b12-b13-routing-workflow.log](evidence/2026-10-11/b11-b12-b13-routing-workflow.log)).
+5. **B12 — Shared authentication boundary, RBAC & SSH host-key hardening (completed)**:
+   - Enforced Bonsai JWT/API-key RBAC (`routing:read` scope, viewer/operator roles) on `/api/routing/v1/*`, internal service token on `/internal/routing/v1/*`, recursive secret redaction (`redact_secrets_in_json`), and `RejectPolicy` default SSH host-key verification in `python/bootstrap_agent.py` and `python/inject_fault.py` ([b11-b12-b13-routing-workflow.log](evidence/2026-10-11/b11-b12-b13-routing-workflow.log), [b15-ssh-host-key-policy.log](evidence/2026-10-11/b15-ssh-host-key-policy.log)).
+6. **B13 — Checkpointed graph summary projection (completed)**:
+   - Implemented idempotent `project_routing_events_to_graph` with durable `RoutingProjectionCheckpoint` in `GraphStore` (`ConfigItem` `routing-projection-checkpoint-v1`), projecting speaker/peer session summaries and per-peer route counts without duplicating raw route churn into `BgpRoute` ([b11-b12-b13-routing-workflow.log](evidence/2026-10-11/b11-b12-b13-routing-workflow.log)).
+7. **B14 — Svelte 5 routing views in Bonsai `ui/` (completed)**:
+   - Created `ui/src/routes/Routing.svelte` and wired `/routing` in `ui/src/App.svelte` with speakers, peers, RIB explorer, prefix timeline (before/after attributes), and completeness/freshness/gap/unsupported badges ([b14-ui-build.log](evidence/2026-10-11/b14-ui-build.log)).
+8. **B15 — Unified Compose profile and single BMP listener authority (completed)**:
+   - Added `BmpConfig::authority = "routing_service"` (`should_spawn_legacy_receiver() == false`), built `bonsai-routing` in `docker/Dockerfile.bonsai`, and added `bonsai-routing` to `docker-compose.yml` under `standalone`/`routing` profiles ([b15-ssh-host-key-policy.log](evidence/2026-10-11/b15-ssh-host-key-policy.log)).

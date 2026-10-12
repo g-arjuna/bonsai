@@ -1,0 +1,11 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 14.49s
+     Running tests/b11_b12_b13_routing_workflow.rs (target/debug/deps/b11_b12_b13_routing_workflow-1165c31b5d0c6b58)
+
+running 3 tests
+test b12_security_rbac_scoped_reads_and_secret_redaction ... ok
+test b11_routing_api_contract_prefix_history_and_graceful_degradation ... ok
+test b13_b15_graph_routing_projector_idempotency_and_single_bmp_authority ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.86s
+

@@ -1,0 +1,239 @@
+
+> ui@0.0.0 build
+> vite build
+
+vite v8.0.14 building client environment for production...
+[2Ktransforming...10:16:21 AM [vite-plugin-svelte] src/routes/Incidents.svelte:104:8 noninteractive element cannot have nonnegative tabIndex value
+https://svelte.dev/e/a11y_no_noninteractive_tabindex
+102: 
+103:         <!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_no_noninteractive_tabindex -->
+104:         <article
+                     ^
+105:           class="inc-card sev-{sevClass(sev)}"
+106:           onclick={() => toggleExpand(key)}
+10:16:23 AM [vite-plugin-svelte] src/lib/Onboarding.svelte:1205:14 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+1203:             </div>
+1204:             <div class="form-row span-2">
+1205:               <label>Archetype</label>
+                                            ^
+1206:               <div class="archetype-grid">
+1207:                 {#each ARCHETYPES as arch}
+10:16:23 AM [vite-plugin-svelte] src/lib/CommandPalette.svelte:151:10 Avoid using autofocus
+https://svelte.dev/e/a11y_autofocus
+149:           class="palette-input"
+150:           aria-label="Search"
+151:           autofocus
+                        ^
+152:         />
+153:         <kbd class="esc-hint">ESC</kbd>
+10:16:23 AM [vite-plugin-svelte] src/routes/Profiles.svelte:145:12 Non-interactive element `<li>` cannot have interactive role 'button'
+https://svelte.dev/e/a11y_no_noninteractive_element_to_interactive_role
+143:         <ul class="profile-list">
+144:           {#each filtered as p}
+145:             <li
+                    ^
+146:               class="profile-row"
+147:               class:active={selected?.name === p.name}
+10:16:23 AM [vite-plugin-svelte] src/routes/Profiles.svelte:280:12 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+278:           <h3>Create Override</h3>
+279:           <div class="form-group">
+280:             <label>Scope Type</label>
+                                          ^
+281:             <select bind:value={newOverride.type} class="search-input">
+282:               <option value="site">Site</option>
+10:16:23 AM [vite-plugin-svelte] src/routes/Profiles.svelte:289:14 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+287:           {#if newOverride.type === "site"}
+288:             <div class="form-group">
+289:               <label>Site ID</label>
+                                         ^
+290:               <input bind:value={newOverride.site} class="search-input" placeholder="e.g. lab" />
+291:             </div>
+10:16:23 AM [vite-plugin-svelte] src/routes/Profiles.svelte:294:14 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+292:           {:else if newOverride.type === "role_env"}
+293:             <div class="form-group">
+294:               <label>Environment</label>
+                                             ^
+295:               <select bind:value={newOverride.environment} class="search-input">
+296:                 <option value="data_center">Data Center</option>
+10:16:23 AM [vite-plugin-svelte] src/routes/Profiles.svelte:304:14 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+302:             </div>
+303:             <div class="form-group">
+304:               <label>Role</label>
+                                      ^
+305:               <input bind:value={newOverride.role} class="search-input" placeholder="e.g. leaf" />
+306:             </div>
+10:16:23 AM [vite-plugin-svelte] src/routes/Profiles.svelte:309:14 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+307:           {:else}
+308:             <div class="form-group">
+309:               <label>Device Address</label>
+                                                ^
+310:               <input bind:value={newOverride.device} class="search-input" placeholder="e.g. 10.0.0.1:57400" />
+311:             </div>
+10:16:23 AM [vite-plugin-svelte] src/routes/Profiles.svelte:314:12 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+312:           {/if}
+313:           <div class="form-group">
+314:             <label>Action</label>
+                                      ^
+315:             <select bind:value={newOverride.action} class="search-input">
+316:               <option value="add">Add Path</option>
+10:16:23 AM [vite-plugin-svelte] src/routes/Profiles.svelte:322:12 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+320:           </div>
+321:           <div class="form-group">
+322:             <label>Path</label>
+                                    ^
+323:             <input bind:value={newOverride.path} class="search-input" placeholder="/interfaces/interface[name=*]/state/counters" />
+324:           </div>
+10:16:23 AM [vite-plugin-svelte] src/routes/Profiles.svelte:326:12 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+324:           </div>
+325:           <div class="form-group">
+326:             <label>Sample Interval (s)</label>
+                                                   ^
+327:             <input type="number" bind:value={newOverride.sample_interval_s} class="search-input" />
+328:           </div>
+10:16:24 AM [vite-plugin-svelte] src/routes/Integrations.svelte:957:14 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+955:               </label>
+956: 
+957:               <label>
+                          ^
+958:                 Severity mapping reference
+959:                 <div class="severity-map-table">
+10:16:24 AM [vite-plugin-svelte] src/routes/Explorer.svelte:537:6 Visible, non-interactive elements with a click event must be accompanied by a keyboard event handler. Consider whether an interactive element such as `<button type="button">` or `<a>` might be more appropriate
+https://svelte.dev/e/a11y_click_events_have_key_events
+535:     <!-- ── save modal ────────────────────────────────────────────────────── -->
+536:     {#if saveModalOpen}
+537:       <div class="modal-backdrop" onclick={() => { saveModalOpen = false; }}>
+                 ^
+538:         <div class="modal" onclick={(e) => e.stopPropagation()}>
+539:           <h2 class="modal-title">Save query</h2>
+10:16:24 AM [vite-plugin-svelte] src/routes/Explorer.svelte:537:6 `<div>` with a click handler must have an ARIA role
+https://svelte.dev/e/a11y_no_static_element_interactions
+535:     <!-- ── save modal ────────────────────────────────────────────────────── -->
+536:     {#if saveModalOpen}
+537:       <div class="modal-backdrop" onclick={() => { saveModalOpen = false; }}>
+                 ^
+538:         <div class="modal" onclick={(e) => e.stopPropagation()}>
+539:           <h2 class="modal-title">Save query</h2>
+10:16:24 AM [vite-plugin-svelte] src/routes/Explorer.svelte:538:8 Visible, non-interactive elements with a click event must be accompanied by a keyboard event handler. Consider whether an interactive element such as `<button type="button">` or `<a>` might be more appropriate
+https://svelte.dev/e/a11y_click_events_have_key_events
+536:     {#if saveModalOpen}
+537:       <div class="modal-backdrop" onclick={() => { saveModalOpen = false; }}>
+538:         <div class="modal" onclick={(e) => e.stopPropagation()}>
+                   ^
+539:           <h2 class="modal-title">Save query</h2>
+540:           <label class="field-label">Name
+10:16:24 AM [vite-plugin-svelte] src/routes/Explorer.svelte:538:8 `<div>` with a click handler must have an ARIA role
+https://svelte.dev/e/a11y_no_static_element_interactions
+536:     {#if saveModalOpen}
+537:       <div class="modal-backdrop" onclick={() => { saveModalOpen = false; }}>
+538:         <div class="modal" onclick={(e) => e.stopPropagation()}>
+                   ^
+539:           <h2 class="modal-title">Save query</h2>
+540:           <label class="field-label">Name
+10:16:24 AM [vite-plugin-svelte] src/routes/Settings.svelte:384:14 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+382:             <p class="card-hint">{r.hint}</p>
+383:             <div class="card-addr-row">
+384:               <label class="addr-label">
+                           ^
+385:                 {r.proto === 'udp' ? 'UDP' : r.proto === 'http' ? 'HTTP' : 'TCP'} address
+386:               </label>
+10:16:24 AM [vite-plugin-svelte] /home/arjuna/Desktop/bonsai/ui/src/routes/Syslog.svelte:304:8 `context="module"` is deprecated, use the `module` attribute instead
+https://svelte.dev/e/script_context_deprecated
+302: </div>
+303: 
+304: <script context="module">
+                             ^
+305:   const SEED_PATTERNS = [
+306:     { vendor: 'Nokia SRL', match_type: 'substring', match_value: 'LICC: License warning', scope_type: 'global', action: 'drop' },
+10:16:24 AM [vite-plugin-svelte] src/routes/HA.svelte:186:10 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+184:       <div class="settings-form">
+185:         <div class="form-group">
+186:           <label>HA Mode</label>
+                                     ^
+187:           <select bind:value={settings.mode} disabled={!editingSettings}>
+188:             <option value="standalone">Standalone</option>
+10:16:24 AM [vite-plugin-svelte] src/routes/HA.svelte:195:10 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+193: 
+194:         <div class="form-group">
+195:           <label>Node ID</label>
+                                     ^
+196:           <input type="text" bind:value={settings.node_id} disabled={!editingSettings} />
+197:           <small>Unique identifier for this node in the cluster</small>
+10:16:24 AM [vite-plugin-svelte] src/routes/HA.svelte:201:10 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+199: 
+200:         <div class="form-group">
+201:           <label>etcd Endpoints</label>
+                                            ^
+202:           <input type="text" bind:value={settings.etcd_endpoints} disabled={!editingSettings} />
+203:           <small>Comma-separated etcd endpoint URLs (e.g., http://etcd-1:2379,http://etcd-2:2379)</small>
+10:16:24 AM [vite-plugin-svelte] src/routes/HA.svelte:207:10 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+205: 
+206:         <div class="form-group">
+207:           <label>Election TTL (seconds)</label>
+                                                    ^
+208:           <input type="number" bind:value={settings.election_ttl_secs} disabled={!editingSettings} />
+209:           <small>Leader election lease TTL - lower values = faster failover but more etcd traffic</small>
+10:16:24 AM [vite-plugin-svelte] src/routes/HA.svelte:213:10 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+211: 
+212:         <div class="form-group">
+213:           <label>Config Prefix</label>
+                                           ^
+214:           <input type="text" bind:value={settings.config_prefix} disabled={!editingSettings} />
+215:           <small>etcd key prefix for config replication (e.g., /bonsai/config)</small>
+10:16:25 AM [vite-plugin-svelte] src/routes/SynthesizerRules.svelte:173:12 Non-interactive element `<li>` cannot have interactive role 'button'
+https://svelte.dev/e/a11y_no_noninteractive_element_to_interactive_role
+171:         <ul class="item-list">
+172:           {#each filtered as item}
+173:             <li
+                    ^
+174:               class="item-row"
+175:               class:active={selected?.id === item.id}
+10:16:25 AM [vite-plugin-svelte] src/routes/SynthesizerRules.svelte:223:14 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+221:           {#if editing}
+222:             <div class="edit-section">
+223:               <label class="edit-label">Content JSON</label>
+                                                                 ^
+224:               <textarea bind:value={editJson} class="json-editor" rows="20" spellcheck="false"></textarea>
+225:               <div class="edit-actions">
+10:16:26 AM [vite-plugin-svelte] src/routes/Certs.svelte:342:4 Visible, non-interactive elements with a click event must be accompanied by a keyboard event handler. Consider whether an interactive element such as `<button type="button">` or `<a>` might be more appropriate
+https://svelte.dev/e/a11y_click_events_have_key_events
+340: 
+341:   <div class="apply-panel">
+342:     <div class="apply-header" onclick={() => showApply = !showApply} role="button" tabindex="0">
+               ^
+343:       <h4>Apply to Service {showApply ? '▲' : '▼'}</h4>
+344:       <span class="muted apply-subtitle">Activate a cert bundle for HTTPS, mTLS, or gNMI — saves to DB, optionally restarts</span>
+✓ 4379 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.75 kB │ gzip:   0.41 kB
+dist/assets/index-DZRgfeSx.css  184.72 kB │ gzip:  30.17 kB
+dist/assets/index-B-28jYyr.js   622.66 kB │ gzip: 171.77 kB
+
+[33m[PLUGIN_TIMINGS] [0mYour build spent significant time in plugins. Here is a breakdown:
+  - vite-plugin-svelte:load-custom (57%)
+  - vite-plugin-svelte:compile (39%)
+See https://rolldown.rs/options/checks#plugintimings for more details.
+
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 13.25s

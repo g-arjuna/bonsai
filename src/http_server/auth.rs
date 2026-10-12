@@ -98,7 +98,7 @@ pub(super) async fn get_or_init_jwt_secret(store: &crate::graph::GraphStore) -> 
 }
 
 /// Mint a signed JWT for a user. `store` is needed to resolve the secret.
-pub(super) async fn mint_jwt(
+pub async fn mint_jwt(
     username: &str,
     role: &str,
     store: &crate::graph::GraphStore,
@@ -814,7 +814,6 @@ pub(super) async fn delete_user_handler(
 }
 
 /// Minimum role required for a given HTTP method + path combination.
-#[allow(dead_code)]
 fn required_role(method: &str, path: &str) -> Role {
     // Health: no auth needed (handled before this)
     // Admin-only: vault, user management, DB purge, restart
@@ -832,33 +831,71 @@ fn required_role(method: &str, path: &str) -> Role {
         || path.starts_with("/api/managed-devices") && method != "GET"
         || path.starts_with("/api/credentials") && method != "GET"
         || path.starts_with("/api/settings") && method == "PATCH"
+        || path.starts_with("/api/routing/") && method != "GET"
     {
         return Role::Operator;
     }
-    // Everything else: viewer for GET, operator for other methods
+    // Read-only routing and general GET endpoints allow Viewer or scoped ApiReadonly
     if method == "GET" || method == "HEAD" || method == "OPTIONS" {
+        if path.starts_with("/api/routing/") {
+            return Role::ApiReadonly;
+        }
         return Role::Viewer;
     }
     Role::Operator
 }
 
+/// Recursively redact secret/credential fields in a JSON value before returning or logging.
+pub fn redact_secrets_in_json(val: &mut serde_json::Value) {
+    const SENSITIVE_KEYS: &[&str] = &[
+        "password",
+        "password_hash",
+        "secret",
+        "jwt_secret",
+        "token",
+        "service_token",
+        "internal_service_token",
+        "private_key",
+        "api_key",
+        "key_hash",
+        "bind_password",
+    ];
+    match val {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                let lower = k.to_ascii_lowercase();
+                if SENSITIVE_KEYS.iter().any(|s| lower == *s || lower.ends_with(&format!("_{s}"))) {
+                    *v = serde_json::Value::String("[REDACTED]".to_string());
+                } else {
+                    redact_secrets_in_json(v);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                redact_secrets_in_json(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 // ── Auth middleware ──────────────────────────────────────────────────────────
 
-/// Axum middleware: if `BONSAI_REQUIRE_AUTH=1`, validate `Authorization: Bearer <token>`.
+/// Axum middleware: if `BONSAI_REQUIRE_AUTH=1` or DB `require_auth=true`, validate `Authorization: Bearer <token>`.
 /// Accepts:
 ///   - Signed JWT (HS256) issued by login_handler — for browser sessions
 ///   - `bsk_` API keys — for programmatic consumers (hash compared constant-time)
-/// Enforces RBAC role checks based on method + path.
+/// Enforces RBAC role checks based on method + path and scope checks for `/api/routing/v1/*`.
 /// /health, /healthz, /readyz, /api/auth/login are always unauthenticated.
-#[allow(dead_code)]
-pub(super) async fn auth_middleware(
-    State(state): State<AppState>,
+pub async fn auth_middleware(
+    State(store): State<std::sync::Arc<crate::graph::GraphStore>>,
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
     // D4-7 T5: Check DB for require_auth setting, fallback to env var.
     let require_auth = {
-        let db_val = state.store.list_config_items(Some("app_config".to_string())).await
+        let db_val = store.list_config_items(Some("app_config".to_string())).await
             .unwrap_or_default()
             .iter()
             .find(|i| i.name == "require_auth" && i.enabled)
@@ -898,13 +935,12 @@ pub(super) async fn auth_middleware(
     };
 
     let mut authenticated_role: Option<Role> = None;
+    let mut api_key_scope: Option<String> = None;
 
     // --- Path 1: JWT (bst_ prefix is legacy; JWTs are opaque base64url strings) ---
-    // Attempt JWT verification first for session tokens
     if !bearer.starts_with("bsk_") {
-        if let Ok(claims) = verify_jwt(&bearer, &state.store).await {
-            // Check revocation denylist (jti)
-            let revoked = state.store
+        if let Ok(claims) = verify_jwt(&bearer, &store).await {
+            let revoked = store
                 .list_config_items(Some("jwt_revoked".to_string()))
                 .await
                 .unwrap_or_default();
@@ -920,20 +956,21 @@ pub(super) async fn auth_middleware(
     // --- Path 2: API key (bsk_ prefix) — constant-time hash comparison ---
     if authenticated_role.is_none() && bearer.starts_with("bsk_") {
         let presented_hash = hex::encode(Sha256::digest(bearer.as_bytes()));
-        let items = state.store.list_config_items(Some("api_key".to_string())).await.unwrap_or_default();
+        let items = store.list_config_items(Some("api_key".to_string())).await.unwrap_or_default();
         for ci in &items {
             if !ci.enabled { continue; }
             let Ok(content) = serde_json::from_str::<ApiKeyContent>(&ci.content_json) else { continue; };
-            // Constant-time comparison to prevent timing oracle on key enumeration
             let hashes_match = bool::from(content.key_hash.as_bytes().ct_eq(presented_hash.as_bytes()));
             if !hashes_match { continue; }
             if content.expires_at_ns > 0 && super::now_ns() > content.expires_at_ns { continue; }
             let role = match content.scope.as_str() {
                 "admin" | "*" => Role::Admin,
                 "write" | "remediation" | "webhook" => Role::Operator,
+                "viewer" | "read" | "routing" | "routing:read" => Role::Viewer,
                 _ => Role::ApiReadonly,
             };
             authenticated_role = Some(role);
+            api_key_scope = Some(content.scope);
             break;
         }
     }
@@ -941,6 +978,19 @@ pub(super) async fn auth_middleware(
     let Some(user_role) = authenticated_role else {
         return Err(StatusCode::UNAUTHORIZED);
     };
+
+    // Enforce API key scope for /api/routing/* reads/writes
+    if path.starts_with("/api/routing/") {
+        if let Some(ref scope) = api_key_scope {
+            let allowed_routing_scope = matches!(
+                scope.as_str(),
+                "*" | "admin" | "write" | "read" | "viewer" | "routing" | "routing:read"
+            );
+            if !allowed_routing_scope {
+                return Err(StatusCode::FORBIDDEN);
+            }
+        }
+    }
 
     // RBAC enforcement
     let needed = required_role(&method, &path);

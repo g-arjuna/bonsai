@@ -31,6 +31,7 @@
   import Endpoints from './routes/Endpoints.svelte';
   import Certs from './routes/Certs.svelte';
   import StreamControl from './routes/StreamControl.svelte';
+  import Routing from './routes/Routing.svelte';
 
   // Cmd-1..9 workspace shortcuts mirror CommandPalette WORKSPACE_SHORTCUTS
   const NAV = [
@@ -39,6 +40,7 @@
     { href: '/devices',       label: 'Devices',       icon: '⊡', kbd: '3' },
     { href: '/operations',    label: 'Operations',    icon: '♡', kbd: '4' },
     { href: '/collectors',    label: 'Collectors',    icon: '⇄', kbd: '5' },
+    { href: '/routing',       label: 'Routing & RIB', icon: '🧭' },
     { href: '/integrations',  label: 'Integrations',  icon: '⇌', kbd: '6' },
     { href: '/approvals',     label: 'Approvals',     icon: '✓', kbd: '7' },
     { href: '/explorer',      label: 'Explorer',      icon: '⬡', kbd: '8' },
@@ -107,7 +109,7 @@
     <nav aria-label="Primary navigation">
       <div class="nav-group" role="group" aria-label="Monitoring">
         <span class="nav-group-label">Monitor</span>
-        {#each NAV.slice(0, 5) as item}
+        {#each NAV.slice(0, 6) as item}
           <a href={'#' + item.href}
              class:active={isActive(item.href)}
              aria-current={isActive(item.href) ? 'page' : undefined}
@@ -123,7 +125,7 @@
       <div class="nav-divider" role="separator"></div>
       <div class="nav-group" role="group" aria-label="Operations">
         <span class="nav-group-label">Operate</span>
-        {#each NAV.slice(5, 9) as item}
+        {#each NAV.slice(6, 10) as item}
           <a href={'#' + item.href}
              class:active={isActive(item.href)}
              aria-current={isActive(item.href) ? 'page' : undefined}
@@ -139,7 +141,7 @@
       <div class="nav-divider" role="separator"></div>
       <div class="nav-group" role="group" aria-label="Configuration">
         <span class="nav-group-label">Configure</span>
-        {#each NAV.slice(9) as item}
+        {#each NAV.slice(10) as item}
           <a href={'#' + item.href}
              class:active={isActive(item.href)}
              aria-current={isActive(item.href) ? 'page' : undefined}
@@ -192,6 +194,8 @@
       <Devices />
     {:else if path() === '/collectors'}
       <Collectors />
+    {:else if path() === '/routing'}
+      <Routing />
     {:else if path() === '/environments'}
       <Environments />
     {:else if path() === '/profiles'}
