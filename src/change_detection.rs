@@ -80,7 +80,11 @@ impl ChangeDetectionRuntime {
             tx,
             history_limit: layered.history_limit,
         });
-        let capture_registry = Arc::new(MultiSourceEnricherRegistry::from_layered_config_with_vault(&layered, Arc::clone(&credentials)));
+        let capture_registry =
+            Arc::new(MultiSourceEnricherRegistry::from_layered_config_with_vault(
+                &layered,
+                Arc::clone(&credentials),
+            ));
 
         tokio::spawn(run_worker(
             rx,
@@ -91,8 +95,7 @@ impl ChangeDetectionRuntime {
             capture_registry,
         ));
 
-        let (subscriber, mut subscriber_rx) =
-            BroadcastSubscriber::new("change-detection", 2048);
+        let (subscriber, mut subscriber_rx) = BroadcastSubscriber::new("change-detection", 2048);
         let trigger_runtime = Arc::clone(&runtime);
         let syslog_patterns_for_bus = Arc::clone(&syslog_patterns);
         tokio::spawn(async move {
@@ -832,7 +835,10 @@ fn resolve_target_credentials(
     }
     Ok(
         match (target.resolved_username(), target.resolved_password()) {
-            (Some(username), Some(password)) => Some(ResolvedCredential { username, password: zeroize::Zeroizing::new(password) }),
+            (Some(username), Some(password)) => Some(ResolvedCredential {
+                username,
+                password: zeroize::Zeroizing::new(password),
+            }),
             _ => None,
         },
     )

@@ -1,9 +1,9 @@
 //! EV1-7 T4/T5 — Playbook DB-backed CRUD + execution tracking.
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
 use lbug::{Connection, Value};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -38,8 +38,14 @@ pub struct PlaybookRecord {
 }
 
 fn playbook_from_row(r: &[Value]) -> PlaybookRecord {
-    let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
-    let n = |v: &Value| match v { Value::Int64(n) => *n, _ => 0 };
+    let s = |v: &Value| match v {
+        Value::String(s) => s.clone(),
+        _ => String::new(),
+    };
+    let n = |v: &Value| match v {
+        Value::Int64(n) => *n,
+        _ => 0,
+    };
     PlaybookRecord {
         id: s(&r[0]),
         name: s(&r[1]),
@@ -73,8 +79,14 @@ pub struct PlaybookExecutionRecord {
 }
 
 fn execution_from_row(r: &[Value]) -> PlaybookExecutionRecord {
-    let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
-    let n = |v: &Value| match v { Value::Int64(n) => *n, _ => 0 };
+    let s = |v: &Value| match v {
+        Value::String(s) => s.clone(),
+        _ => String::new(),
+    };
+    let n = |v: &Value| match v {
+        Value::Int64(n) => *n,
+        _ => 0,
+    };
     PlaybookExecutionRecord {
         id: s(&r[0]),
         playbook_id: s(&r[1]),
@@ -113,7 +125,9 @@ pub async fn list_playbooks_handler(State(state): State<AppState>) -> impl IntoR
     .await;
 
     match result {
-        Ok(Ok(rows)) => (StatusCode::OK, Json(serde_json::json!({"playbooks": rows}))).into_response(),
+        Ok(Ok(rows)) => {
+            (StatusCode::OK, Json(serde_json::json!({"playbooks": rows}))).into_response()
+        }
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -134,7 +148,8 @@ pub async fn get_playbook_handler(
                     p.created_at_ns, p.updated_at_ns, p.updated_by, \
                     p.execution_count, p.success_count",
         )?;
-        let pb = conn.execute(&mut stmt, vec![("id", Value::String(id))])?
+        let pb = conn
+            .execute(&mut stmt, vec![("id", Value::String(id))])?
             .next()
             .map(|r| playbook_from_row(&r));
         Ok::<_, anyhow::Error>(pb)
@@ -143,7 +158,11 @@ pub async fn get_playbook_handler(
 
     match result {
         Ok(Ok(Some(pb))) => (StatusCode::OK, Json(pb)).into_response(),
-        Ok(Ok(None)) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "not found"}))).into_response(),
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not found"})),
+        )
+            .into_response(),
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -172,7 +191,8 @@ pub async fn create_playbook_handler(
         let conn = Connection::new(&db)?;
         let id = Uuid::new_v4().to_string();
         let now = now_ns();
-        let rule_ids_json = req.rule_ids
+        let rule_ids_json = req
+            .rule_ids
             .map(|ids| serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string()))
             .unwrap_or_else(|| "[]".to_string());
         let enabled = if req.enabled.unwrap_or(true) { 1i64 } else { 0 };
@@ -183,17 +203,20 @@ pub async fn create_playbook_handler(
              created_at_ns: $now, updated_at_ns: $now, updated_by: 'api', \
              execution_count: 0, success_count: 0})",
         )?;
-        conn.execute(&mut stmt, vec![
-            ("id", Value::String(id.clone())),
-            ("name", Value::String(req.name)),
-            ("desc", Value::String(req.description.unwrap_or_default())),
-            ("rij", Value::String(rule_ids_json)),
-            ("vendor", Value::String(req.vendor.unwrap_or_default())),
-            ("steps", Value::String(req.steps_json)),
-            ("vg", Value::String(req.verify_graph.unwrap_or_default())),
-            ("en", Value::Int64(enabled)),
-            ("now", Value::Int64(now)),
-        ])?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("id", Value::String(id.clone())),
+                ("name", Value::String(req.name)),
+                ("desc", Value::String(req.description.unwrap_or_default())),
+                ("rij", Value::String(rule_ids_json)),
+                ("vendor", Value::String(req.vendor.unwrap_or_default())),
+                ("steps", Value::String(req.steps_json)),
+                ("vg", Value::String(req.verify_graph.unwrap_or_default())),
+                ("en", Value::Int64(enabled)),
+                ("now", Value::Int64(now)),
+            ],
+        )?;
         Ok::<_, anyhow::Error>(id)
     })
     .await;
@@ -233,27 +256,56 @@ pub async fn update_playbook_handler(
 
         macro_rules! set_str {
             ($field:literal, $val:expr) => {{
-                let mut stmt = conn.prepare(concat!("MATCH (p:Playbook {id: $id}) SET p.", $field, " = $v"))?;
-                conn.execute(&mut stmt, vec![("id", Value::String(id.clone())), ("v", Value::String($val))])?;
+                let mut stmt = conn.prepare(concat!(
+                    "MATCH (p:Playbook {id: $id}) SET p.",
+                    $field,
+                    " = $v"
+                ))?;
+                conn.execute(
+                    &mut stmt,
+                    vec![
+                        ("id", Value::String(id.clone())),
+                        ("v", Value::String($val)),
+                    ],
+                )?;
             }};
         }
         macro_rules! set_i64 {
             ($field:literal, $val:expr) => {{
-                let mut stmt = conn.prepare(concat!("MATCH (p:Playbook {id: $id}) SET p.", $field, " = $v"))?;
-                conn.execute(&mut stmt, vec![("id", Value::String(id.clone())), ("v", Value::Int64($val))])?;
+                let mut stmt = conn.prepare(concat!(
+                    "MATCH (p:Playbook {id: $id}) SET p.",
+                    $field,
+                    " = $v"
+                ))?;
+                conn.execute(
+                    &mut stmt,
+                    vec![("id", Value::String(id.clone())), ("v", Value::Int64($val))],
+                )?;
             }};
         }
 
-        if let Some(v) = req.name { set_str!("name", v); }
-        if let Some(v) = req.description { set_str!("description", v); }
+        if let Some(v) = req.name {
+            set_str!("name", v);
+        }
+        if let Some(v) = req.description {
+            set_str!("description", v);
+        }
         if let Some(ids) = req.rule_ids {
             let j = serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string());
             set_str!("rule_ids_json", j);
         }
-        if let Some(v) = req.vendor { set_str!("vendor", v); }
-        if let Some(v) = req.steps_json { set_str!("steps_json", v); }
-        if let Some(v) = req.verify_graph { set_str!("verify_graph", v); }
-        if let Some(v) = req.enabled { set_i64!("enabled", if v { 1 } else { 0 }); }
+        if let Some(v) = req.vendor {
+            set_str!("vendor", v);
+        }
+        if let Some(v) = req.steps_json {
+            set_str!("steps_json", v);
+        }
+        if let Some(v) = req.verify_graph {
+            set_str!("verify_graph", v);
+        }
+        if let Some(v) = req.enabled {
+            set_i64!("enabled", if v { 1 } else { 0 });
+        }
 
         // bump version + timestamps
         {
@@ -261,11 +313,14 @@ pub async fn update_playbook_handler(
                 "MATCH (p:Playbook {id: $id}) SET p.version = p.version + 1, \
                  p.updated_at_ns = $now, p.updated_by = $by",
             )?;
-            conn.execute(&mut stmt, vec![
-                ("id", Value::String(id.clone())),
-                ("now", Value::Int64(now)),
-                ("by", Value::String(updated_by)),
-            ])?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("now", Value::Int64(now)),
+                    ("by", Value::String(updated_by)),
+                ],
+            )?;
         }
         Ok::<_, anyhow::Error>(())
     })
@@ -381,29 +436,35 @@ pub async fn record_execution_handler(
              device_address: $da, outcome: $out, started_at_ns: $san, completed_at_ns: $can, \
              operator_id: $op, failure_step: $fs, failure_reason: $fr})",
         )?;
-        conn.execute(&mut stmt, vec![
-            ("id", Value::String(exec_id.clone())),
-            ("pid", Value::String(id.clone())),
-            ("did", Value::String(req.detection_id.unwrap_or_default())),
-            ("da", Value::String(req.device_address)),
-            ("out", Value::String(req.outcome)),
-            ("san", Value::Int64(req.started_at_ns)),
-            ("can", Value::Int64(completed_at)),
-            ("op", Value::String(req.operator_id.unwrap_or_default())),
-            ("fs", Value::String(req.failure_step.unwrap_or_default())),
-            ("fr", Value::String(req.failure_reason.unwrap_or_default())),
-        ])?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("id", Value::String(exec_id.clone())),
+                ("pid", Value::String(id.clone())),
+                ("did", Value::String(req.detection_id.unwrap_or_default())),
+                ("da", Value::String(req.device_address)),
+                ("out", Value::String(req.outcome)),
+                ("san", Value::Int64(req.started_at_ns)),
+                ("can", Value::Int64(completed_at)),
+                ("op", Value::String(req.operator_id.unwrap_or_default())),
+                ("fs", Value::String(req.failure_step.unwrap_or_default())),
+                ("fr", Value::String(req.failure_reason.unwrap_or_default())),
+            ],
+        )?;
 
         // Link Playbook -> PlaybookExecution
         let mut link_stmt = conn.prepare(
             "MATCH (p:Playbook {id: $pid}), (e:PlaybookExecution {id: $eid}) \
              MERGE (p)-[:HAS_PLAYBOOK_EXECUTION {executed_at_ns: $now}]->(e)",
         )?;
-        let _ = conn.execute(&mut link_stmt, vec![
-            ("pid", Value::String(id.clone())),
-            ("eid", Value::String(exec_id.clone())),
-            ("now", Value::Int64(now)),
-        ]);
+        let _ = conn.execute(
+            &mut link_stmt,
+            vec![
+                ("pid", Value::String(id.clone())),
+                ("eid", Value::String(exec_id.clone())),
+                ("now", Value::Int64(now)),
+            ],
+        );
 
         // Increment counters
         let mut cnt_stmt = conn.prepare(
@@ -423,7 +484,11 @@ pub async fn record_execution_handler(
     .await;
 
     match result {
-        Ok(Ok(exec_id)) => (StatusCode::CREATED, Json(serde_json::json!({"id": exec_id}))).into_response(),
+        Ok(Ok(exec_id)) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({"id": exec_id})),
+        )
+            .into_response(),
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -451,7 +516,11 @@ pub async fn list_executions_handler(
     .await;
 
     match result {
-        Ok(Ok(rows)) => (StatusCode::OK, Json(serde_json::json!({"executions": rows}))).into_response(),
+        Ok(Ok(rows)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"executions": rows})),
+        )
+            .into_response(),
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -462,31 +531,38 @@ pub async fn playbook_stats_handler(State(state): State<AppState>) -> impl IntoR
     let db = state.store.db();
     let result = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db)?;
-        let rows = conn.query(
-            "MATCH (p:Playbook) WHERE p.enabled = 1 \
+        let rows = conn
+            .query(
+                "MATCH (p:Playbook) WHERE p.enabled = 1 \
              RETURN p.id, p.name, p.execution_count, p.success_count \
              ORDER BY p.execution_count DESC",
-        )
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .map(|r| {
-            let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
-            let n = |v: &Value| match v { Value::Int64(n) => *n, _ => 0 };
-            let exec_count = n(&r[2]);
-            let succ_count = n(&r[3]);
-            let success_rate = if exec_count > 0 {
-                (succ_count as f64 / exec_count as f64) * 100.0
-            } else {
-                0.0
-            };
-            serde_json::json!({
-                "id": s(&r[0]),
-                "name": s(&r[1]),
-                "execution_count": exec_count,
-                "success_count": succ_count,
-                "success_rate_pct": success_rate,
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .map(|r| {
+                let s = |v: &Value| match v {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let n = |v: &Value| match v {
+                    Value::Int64(n) => *n,
+                    _ => 0,
+                };
+                let exec_count = n(&r[2]);
+                let succ_count = n(&r[3]);
+                let success_rate = if exec_count > 0 {
+                    (succ_count as f64 / exec_count as f64) * 100.0
+                } else {
+                    0.0
+                };
+                serde_json::json!({
+                    "id": s(&r[0]),
+                    "name": s(&r[1]),
+                    "execution_count": exec_count,
+                    "success_count": succ_count,
+                    "success_rate_pct": success_rate,
+                })
             })
-        })
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>();
         Ok::<_, anyhow::Error>(rows)
     })
     .await;
@@ -524,25 +600,31 @@ pub fn migrate_playbooks_from_yaml(conn: &Connection) -> anyhow::Result<usize> {
             Err(_) => continue,
         };
 
-        let stem = path.file_stem()
+        let stem = path
+            .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_string();
         let id = format!("pb-{stem}");
 
         // Check if already exists and was operator-edited
-        let mut check_stmt = conn.prepare(
-            "MATCH (p:Playbook {id: $id}) RETURN p.updated_by",
-        )?;
-        if let Some(row) = conn.execute(&mut check_stmt, vec![("id", Value::String(id.clone()))])?.next() {
-            let updated_by = match &row[0] { Value::String(s) => s.clone(), _ => String::new() };
+        let mut check_stmt = conn.prepare("MATCH (p:Playbook {id: $id}) RETURN p.updated_by")?;
+        if let Some(row) = conn
+            .execute(&mut check_stmt, vec![("id", Value::String(id.clone()))])?
+            .next()
+        {
+            let updated_by = match &row[0] {
+                Value::String(s) => s.clone(),
+                _ => String::new(),
+            };
             if updated_by != "boot_migration" && !updated_by.is_empty() {
                 continue; // operator-edited — don't overwrite
             }
         }
 
         // Parse YAML minimally — extract name, description, steps
-        let name = stem.replace('-', " ")
+        let name = stem
+            .replace('-', " ")
             .split_whitespace()
             .map(|w| {
                 let mut chars = w.chars();
@@ -568,13 +650,16 @@ pub fn migrate_playbooks_from_yaml(conn: &Connection) -> anyhow::Result<usize> {
         );
 
         if let Ok(ref mut stmt) = upsert_stmt {
-            let _ = conn.execute(stmt, vec![
-                ("id", Value::String(id)),
-                ("name", Value::String(name)),
-                ("desc", Value::String(format!("Migrated from {stem}.yaml"))),
-                ("steps", Value::String(content)),
-                ("now", Value::Int64(now)),
-            ]);
+            let _ = conn.execute(
+                stmt,
+                vec![
+                    ("id", Value::String(id)),
+                    ("name", Value::String(name)),
+                    ("desc", Value::String(format!("Migrated from {stem}.yaml"))),
+                    ("steps", Value::String(content)),
+                    ("now", Value::Int64(now)),
+                ],
+            );
             count += 1;
         }
     }

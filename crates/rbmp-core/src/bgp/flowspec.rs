@@ -1,58 +1,87 @@
-use serde::{Deserialize, Serialize};
 use crate::{Error, Result};
+use serde::{Deserialize, Serialize};
 
 /// A single Flowspec component (RFC 5575 for IPv4, RFC 8955 for IPv6)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlowspecComponent {
     /// Type 1: Destination prefix
-    DestPrefix  { prefix: String, prefix_len: u8 },
+    DestPrefix {
+        prefix: String,
+        prefix_len: u8,
+    },
     /// Type 2: Source prefix
-    SrcPrefix   { prefix: String, prefix_len: u8 },
+    SrcPrefix {
+        prefix: String,
+        prefix_len: u8,
+    },
     /// Type 3: IP Protocol
-    IpProtocol  { ops: Vec<NumericOp> },
+    IpProtocol {
+        ops: Vec<NumericOp>,
+    },
     /// Type 4: Port
-    Port        { ops: Vec<NumericOp> },
+    Port {
+        ops: Vec<NumericOp>,
+    },
     /// Type 5: Destination port
-    DstPort     { ops: Vec<NumericOp> },
+    DstPort {
+        ops: Vec<NumericOp>,
+    },
     /// Type 6: Source port
-    SrcPort     { ops: Vec<NumericOp> },
+    SrcPort {
+        ops: Vec<NumericOp>,
+    },
     /// Type 7: ICMP type
-    IcmpType    { ops: Vec<NumericOp> },
+    IcmpType {
+        ops: Vec<NumericOp>,
+    },
     /// Type 8: ICMP code
-    IcmpCode    { ops: Vec<NumericOp> },
+    IcmpCode {
+        ops: Vec<NumericOp>,
+    },
     /// Type 9: TCP flags (bitmask operator)
-    TcpFlags    { ops: Vec<BitmaskOp> },
+    TcpFlags {
+        ops: Vec<BitmaskOp>,
+    },
     /// Type 10: Packet length
-    PktLen      { ops: Vec<NumericOp> },
+    PktLen {
+        ops: Vec<NumericOp>,
+    },
     /// Type 11: DSCP
-    Dscp        { ops: Vec<NumericOp> },
+    Dscp {
+        ops: Vec<NumericOp>,
+    },
     /// Type 12: Fragment flags
-    Fragment    { ops: Vec<BitmaskOp> },
-    Unknown     { component_type: u8, data: Vec<u8> },
+    Fragment {
+        ops: Vec<BitmaskOp>,
+    },
+    Unknown {
+        component_type: u8,
+        data: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NumericOp {
-    pub lt:      bool,
-    pub gt:      bool,
-    pub eq:      bool,
+    pub lt: bool,
+    pub gt: bool,
+    pub eq: bool,
     pub and_bit: bool,
-    pub value:   u64,
+    pub value: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BitmaskOp {
-    pub not:       bool,
+    pub not: bool,
     pub match_bit: bool,
-    pub and_bit:   bool,
-    pub value:     u64,
+    pub and_bit: bool,
+    pub value: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowspecNlri {
     pub components: Vec<FlowspecComponent>,
     /// Human-readable summary: e.g. "dst=192.0.2.0/24 proto=6 dstport=80"
-    pub summary:    String,
+    pub summary: String,
 }
 
 /// Decode Flowspec NLRIs from a byte buffer.
@@ -67,7 +96,9 @@ pub fn decode_flowspec_nlri(mut buf: &[u8], afi_is_ipv6: bool) -> Result<Vec<Flo
         } else {
             break;
         };
-        if buf.len() < header_size + length { break; }
+        if buf.len() < header_size + length {
+            break;
+        }
         let nlri_bytes = &buf[header_size..header_size + length];
         buf = &buf[header_size + length..];
         result.push(parse_flowspec_nlri(nlri_bytes, afi_is_ipv6)?);
@@ -86,10 +117,17 @@ fn parse_flowspec_nlri(mut buf: &[u8], afi_is_ipv6: bool) -> Result<FlowspecNlri
         summary_parts.push(summary);
         components.push(comp);
     }
-    Ok(FlowspecNlri { components, summary: summary_parts.join(" ") })
+    Ok(FlowspecNlri {
+        components,
+        summary: summary_parts.join(" "),
+    })
 }
 
-fn parse_flowspec_component(t: u8, buf: &[u8], ipv6: bool) -> Result<(FlowspecComponent, String, usize)> {
+fn parse_flowspec_component(
+    t: u8,
+    buf: &[u8],
+    ipv6: bool,
+) -> Result<(FlowspecComponent, String, usize)> {
     match t {
         1 | 2 => {
             // Destination (1) or Source (2) prefix: prefix_len(1) + prefix_bytes
@@ -97,18 +135,21 @@ fn parse_flowspec_component(t: u8, buf: &[u8], ipv6: bool) -> Result<(FlowspecCo
                 return Err(Error::UnexpectedEof { needed: 1, have: 0 });
             }
             let prefix_len = buf[0];
-            let octets = (prefix_len as usize + 7) / 8;
+            let octets = (prefix_len as usize).div_ceil(8);
             if buf.len() < 1 + octets {
-                return Err(Error::UnexpectedEof { needed: 1 + octets, have: buf.len() });
+                return Err(Error::UnexpectedEof {
+                    needed: 1 + octets,
+                    have: buf.len(),
+                });
             }
             let prefix = if ipv6 {
                 let mut a = [0u8; 16];
-                a[..octets].copy_from_slice(&buf[1..1+octets]);
+                a[..octets].copy_from_slice(&buf[1..1 + octets]);
                 std::net::Ipv6Addr::from(a).to_string()
             } else {
                 let mut a = [0u8; 4];
                 let n = octets.min(4);
-                a[..n].copy_from_slice(&buf[1..1+n]);
+                a[..n].copy_from_slice(&buf[1..1 + n]);
                 std::net::Ipv4Addr::from(a).to_string()
             };
             let label = if t == 1 { "dst" } else { "src" };
@@ -123,28 +164,43 @@ fn parse_flowspec_component(t: u8, buf: &[u8], ipv6: bool) -> Result<(FlowspecCo
         3..=8 | 10 | 11 => {
             let (ops, consumed) = parse_numeric_ops(buf)?;
             let label = match t {
-                3 => "proto", 4 => "port", 5 => "dstport", 6 => "srcport",
-                7 => "icmptype", 8 => "icmpcode", 10 => "pktlen", _ => "dscp",
+                3 => "proto",
+                4 => "port",
+                5 => "dstport",
+                6 => "srcport",
+                7 => "icmptype",
+                8 => "icmpcode",
+                10 => "pktlen",
+                _ => "dscp",
             };
-            let summary = format!("{}={}", label,
-                ops.iter().map(|o| o.value.to_string()).collect::<Vec<_>>().join(","));
+            let summary = format!(
+                "{}={}",
+                label,
+                ops.iter()
+                    .map(|o| o.value.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
             let comp = match t {
-                3  => FlowspecComponent::IpProtocol { ops },
-                4  => FlowspecComponent::Port { ops },
-                5  => FlowspecComponent::DstPort { ops },
-                6  => FlowspecComponent::SrcPort { ops },
-                7  => FlowspecComponent::IcmpType { ops },
-                8  => FlowspecComponent::IcmpCode { ops },
+                3 => FlowspecComponent::IpProtocol { ops },
+                4 => FlowspecComponent::Port { ops },
+                5 => FlowspecComponent::DstPort { ops },
+                6 => FlowspecComponent::SrcPort { ops },
+                7 => FlowspecComponent::IcmpType { ops },
+                8 => FlowspecComponent::IcmpCode { ops },
                 10 => FlowspecComponent::PktLen { ops },
-                _  => FlowspecComponent::Dscp { ops },
+                _ => FlowspecComponent::Dscp { ops },
             };
             Ok((comp, summary, consumed))
         }
         9 | 12 => {
             let (ops, consumed) = parse_bitmask_ops(buf)?;
             let label = if t == 9 { "tcpflags" } else { "fragment" };
-            let summary = format!("{}=0x{:x}", label,
-                ops.first().map(|o| o.value).unwrap_or(0));
+            let summary = format!(
+                "{}=0x{:x}",
+                label,
+                ops.first().map(|o| o.value).unwrap_or(0)
+            );
             let comp = if t == 9 {
                 FlowspecComponent::TcpFlags { ops }
             } else {
@@ -152,10 +208,14 @@ fn parse_flowspec_component(t: u8, buf: &[u8], ipv6: bool) -> Result<(FlowspecCo
             };
             Ok((comp, summary, consumed))
         }
-        _ => {
-            Ok((FlowspecComponent::Unknown { component_type: t, data: buf.to_vec() },
-                format!("unknown-type-{t}"), buf.len()))
-        }
+        _ => Ok((
+            FlowspecComponent::Unknown {
+                component_type: t,
+                data: buf.to_vec(),
+            },
+            format!("unknown-type-{t}"),
+            buf.len(),
+        )),
     }
 }
 
@@ -163,26 +223,39 @@ fn parse_numeric_ops(buf: &[u8]) -> Result<(Vec<NumericOp>, usize)> {
     let mut ops = Vec::new();
     let mut pos = 0;
     loop {
-        if pos >= buf.len() { break; }
-        let op_byte  = buf[pos]; pos += 1;
-        let eol      = op_byte & 0x80 != 0;
-        let and_bit  = op_byte & 0x40 != 0;
+        if pos >= buf.len() {
+            break;
+        }
+        let op_byte = buf[pos];
+        pos += 1;
+        let eol = op_byte & 0x80 != 0;
+        let and_bit = op_byte & 0x40 != 0;
         let len_code = (op_byte >> 4) & 0x03;
-        let lt       = op_byte & 0x04 != 0;
-        let gt       = op_byte & 0x02 != 0;
-        let eq       = op_byte & 0x01 != 0;
-        let vlen     = 1usize << len_code;
-        if pos + vlen > buf.len() { break; }
+        let lt = op_byte & 0x04 != 0;
+        let gt = op_byte & 0x02 != 0;
+        let eq = op_byte & 0x01 != 0;
+        let vlen = 1usize << len_code;
+        if pos + vlen > buf.len() {
+            break;
+        }
         let value = match vlen {
             1 => buf[pos] as u64,
-            2 => u16::from_be_bytes([buf[pos], buf[pos+1]]) as u64,
-            4 => u32::from_be_bytes(buf[pos..pos+4].try_into().unwrap()) as u64,
-            8 => u64::from_be_bytes(buf[pos..pos+8].try_into().unwrap()),
+            2 => u16::from_be_bytes([buf[pos], buf[pos + 1]]) as u64,
+            4 => u32::from_be_bytes(buf[pos..pos + 4].try_into().unwrap()) as u64,
+            8 => u64::from_be_bytes(buf[pos..pos + 8].try_into().unwrap()),
             _ => 0,
         };
         pos += vlen;
-        ops.push(NumericOp { lt, gt, eq, and_bit, value });
-        if eol { break; }
+        ops.push(NumericOp {
+            lt,
+            gt,
+            eq,
+            and_bit,
+            value,
+        });
+        if eol {
+            break;
+        }
     }
     Ok((ops, pos))
 }
@@ -191,23 +264,35 @@ fn parse_bitmask_ops(buf: &[u8]) -> Result<(Vec<BitmaskOp>, usize)> {
     let mut ops = Vec::new();
     let mut pos = 0;
     loop {
-        if pos >= buf.len() { break; }
-        let op_byte   = buf[pos]; pos += 1;
-        let eol       = op_byte & 0x80 != 0;
-        let and_bit   = op_byte & 0x40 != 0;
-        let len_code  = (op_byte >> 4) & 0x03;
-        let not_bit   = op_byte & 0x02 != 0;
+        if pos >= buf.len() {
+            break;
+        }
+        let op_byte = buf[pos];
+        pos += 1;
+        let eol = op_byte & 0x80 != 0;
+        let and_bit = op_byte & 0x40 != 0;
+        let len_code = (op_byte >> 4) & 0x03;
+        let not_bit = op_byte & 0x02 != 0;
         let match_bit = op_byte & 0x01 != 0;
-        let vlen      = 1usize << len_code;
-        if pos + vlen > buf.len() { break; }
+        let vlen = 1usize << len_code;
+        if pos + vlen > buf.len() {
+            break;
+        }
         let value = match vlen {
             1 => buf[pos] as u64,
-            2 => u16::from_be_bytes([buf[pos], buf[pos+1]]) as u64,
+            2 => u16::from_be_bytes([buf[pos], buf[pos + 1]]) as u64,
             _ => 0,
         };
         pos += vlen;
-        ops.push(BitmaskOp { not: not_bit, match_bit, and_bit, value });
-        if eol { break; }
+        ops.push(BitmaskOp {
+            not: not_bit,
+            match_bit,
+            and_bit,
+            value,
+        });
+        if eol {
+            break;
+        }
     }
     Ok((ops, pos))
 }

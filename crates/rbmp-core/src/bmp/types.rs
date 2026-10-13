@@ -1,20 +1,20 @@
-use std::net::{IpAddr, Ipv4Addr};
+use crate::bgp::types::{AfiSafi, BgpCapability, BgpUpdate, Prefix};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use crate::bgp::types::{BgpCapability, BgpUpdate, AfiSafi, Prefix};
+use std::net::{IpAddr, Ipv4Addr};
 
 // ─── BMP message type (RFC 7854 §4) ──────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum BmpMsgType {
-    RouteMonitoring  = 0,
-    StatsReport      = 1,
-    PeerDown         = 2,
-    PeerUp           = 3,
-    Initiation       = 4,
-    Termination      = 5,
-    RouteMirroring   = 6,
+    RouteMonitoring = 0,
+    StatsReport = 1,
+    PeerDown = 2,
+    PeerUp = 3,
+    Initiation = 4,
+    Termination = 5,
+    RouteMirroring = 6,
 }
 
 impl TryFrom<u8> for BmpMsgType {
@@ -38,10 +38,10 @@ impl TryFrom<u8> for BmpMsgType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum PeerType {
-    GlobalInstance = 0,  // Default — global BGP instance
-    RdInstance     = 1,  // VRF-specific (RD identifies the instance)
-    LocalInstance  = 2,  // Local (collector-local) BGP instance
-    LocRib         = 3,  // Loc-RIB (RFC 9069)
+    GlobalInstance = 0, // Default — global BGP instance
+    RdInstance = 1,     // VRF-specific (RD identifies the instance)
+    LocalInstance = 2,  // Local (collector-local) BGP instance
+    LocRib = 3,         // Loc-RIB (RFC 9069)
 }
 
 impl TryFrom<u8> for PeerType {
@@ -59,16 +59,30 @@ impl TryFrom<u8> for PeerType {
 
 // ─── Peer flags (RFC 7854 §4.2 bits) ─────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
 pub struct PeerFlags(pub u8);
 
 impl PeerFlags {
-    pub fn ipv6(self)          -> bool { self.0 & 0x80 != 0 }
-    pub fn post_policy(self)   -> bool { self.0 & 0x40 != 0 }
-    pub fn as2(self)           -> bool { self.0 & 0x20 != 0 }
-    pub fn four_byte_asn(self) -> bool { !self.as2() }
-    pub fn adj_rib_out(self)   -> bool { self.0 & 0x10 != 0 }  // RFC 8671 §4
-    pub fn filtered(self)      -> bool { self.0 & 0x80 != 0 }  // RFC 9069 §4.2 Loc-RIB F flag
+    pub fn ipv6(self) -> bool {
+        self.0 & 0x80 != 0
+    }
+    pub fn post_policy(self) -> bool {
+        self.0 & 0x40 != 0
+    }
+    pub fn as2(self) -> bool {
+        self.0 & 0x20 != 0
+    }
+    pub fn four_byte_asn(self) -> bool {
+        !self.as2()
+    }
+    pub fn adj_rib_out(self) -> bool {
+        self.0 & 0x10 != 0
+    } // RFC 8671 §4
+    pub fn filtered(self) -> bool {
+        self.0 & 0x80 != 0
+    } // RFC 9069 §4.2 Loc-RIB F flag
 }
 
 // ─── RIB type derived from peer_type + peer_flags ────────────────────────────
@@ -87,13 +101,25 @@ impl RibType {
     pub fn from_peer(peer_type: PeerType, flags: PeerFlags) -> Self {
         match peer_type {
             PeerType::LocRib => {
-                if flags.filtered() { Self::LocRibFiltered } else { Self::LocRib }
+                if flags.filtered() {
+                    Self::LocRibFiltered
+                } else {
+                    Self::LocRib
+                }
             }
             PeerType::GlobalInstance | PeerType::RdInstance | PeerType::LocalInstance => {
                 if flags.adj_rib_out() {
-                    if flags.post_policy() { Self::AdjRibOutPostPolicy } else { Self::AdjRibOutPrePolicy }
+                    if flags.post_policy() {
+                        Self::AdjRibOutPostPolicy
+                    } else {
+                        Self::AdjRibOutPrePolicy
+                    }
                 } else {
-                    if flags.post_policy() { Self::AdjRibInPostPolicy } else { Self::AdjRibInPrePolicy }
+                    if flags.post_policy() {
+                        Self::AdjRibInPostPolicy
+                    } else {
+                        Self::AdjRibInPrePolicy
+                    }
                 }
             }
         }
@@ -104,16 +130,16 @@ impl RibType {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerHeader {
-    pub peer_type:          PeerType,
-    pub peer_flags:         PeerFlags,
+    pub peer_type: PeerType,
+    pub peer_flags: PeerFlags,
     /// 8-byte Route Distinguisher (zero for global instance)
     pub peer_distinguisher: [u8; 8],
     /// IPv4 or IPv6 peer address
-    pub peer_address:       IpAddr,
-    pub peer_as:            u32,
-    pub peer_bgp_id:        Ipv4Addr,
-    pub timestamp:          DateTime<Utc>,
-    pub rib_type:           RibType,
+    pub peer_address: IpAddr,
+    pub peer_as: u32,
+    pub peer_bgp_id: Ipv4Addr,
+    pub timestamp: DateTime<Utc>,
+    pub rib_type: RibType,
 }
 
 // ─── B04 Typed Routing Identities (ADR-001) ──────────────────────────────────
@@ -124,11 +150,11 @@ pub const EVENT_SCHEMA_VERSION: u16 = 2;
 /// TCP source IP is retained as an attribute while `session_epoch` fences stale disconnects.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ObservationSource {
-    pub collector_id:      String,
-    pub exporter_id:       String,
-    pub exporter_addr:     IpAddr,
+    pub collector_id: String,
+    pub exporter_id: String,
+    pub exporter_addr: IpAddr,
     pub exporter_instance: String,
-    pub session_epoch:     u64,
+    pub session_epoch: u64,
 }
 
 impl ObservationSource {
@@ -162,10 +188,10 @@ impl ObservationSource {
 /// Composite peer/instance identity preventing cross-exporter and cross-VRF collisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PeerKey {
-    pub speaker_addr:       IpAddr,
-    pub peer_type:          PeerType,
+    pub speaker_addr: IpAddr,
+    pub peer_type: PeerType,
     pub peer_distinguisher: [u8; 8],
-    pub peer_address:       IpAddr,
+    pub peer_address: IpAddr,
 }
 
 impl PeerKey {
@@ -221,16 +247,21 @@ pub enum ViewDirection {
 /// Typed BMP RIB view identity (peer/instance + AFI/SAFI + direction + policy stage + filtered).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ViewKey {
-    pub peer:           PeerKey,
-    pub afi_safi:       AfiSafi,
-    pub rib_type:       RibType,
-    pub direction:      ViewDirection,
+    pub peer: PeerKey,
+    pub afi_safi: AfiSafi,
+    pub rib_type: RibType,
+    pub direction: ViewDirection,
     pub is_post_policy: bool,
-    pub is_filtered:    bool,
+    pub is_filtered: bool,
 }
 
 impl ViewKey {
-    pub fn from_peer(peer: PeerKey, afi_safi: AfiSafi, rib_type: RibType, flags: PeerFlags) -> Self {
+    pub fn from_peer(
+        peer: PeerKey,
+        afi_safi: AfiSafi,
+        rib_type: RibType,
+        flags: PeerFlags,
+    ) -> Self {
         let (direction, is_post_policy, is_filtered) = match rib_type {
             RibType::AdjRibInPrePolicy => (ViewDirection::Inbound, false, false),
             RibType::AdjRibInPostPolicy => (ViewDirection::Inbound, true, false),
@@ -255,14 +286,23 @@ impl ViewKey {
 #[serde(tag = "family", rename_all = "snake_case")]
 pub enum CanonicalNlri {
     IpUnicast(Prefix),
-    L3Vpn { rd: [u8; 8], prefix: Prefix },
-    Evpn { rd: String, route_type: u8, key: String },
+    L3Vpn {
+        rd: [u8; 8],
+        prefix: Prefix,
+    },
+    Evpn {
+        rd: String,
+        route_type: u8,
+        key: String,
+    },
 }
 
 impl CanonicalNlri {
     pub fn from_prefix(prefix: &Prefix) -> Self {
         match prefix {
-            Prefix::Vpn { rd, prefix: inner, .. } => Self::L3Vpn {
+            Prefix::Vpn {
+                rd, prefix: inner, ..
+            } => Self::L3Vpn {
                 rd: rd.0,
                 prefix: (**inner).clone(),
             },
@@ -273,9 +313,14 @@ impl CanonicalNlri {
     pub fn matches_prefix(&self, target: &Prefix) -> bool {
         match (self, target) {
             (Self::IpUnicast(p), t) => p == t,
-            (Self::L3Vpn { rd, prefix }, Prefix::Vpn { rd: trd, prefix: tp, .. }) => {
-                *rd == trd.0 && prefix == &**tp
-            }
+            (
+                Self::L3Vpn { rd, prefix },
+                Prefix::Vpn {
+                    rd: trd,
+                    prefix: tp,
+                    ..
+                },
+            ) => *rd == trd.0 && prefix == &**tp,
             _ => false,
         }
     }
@@ -284,7 +329,7 @@ impl CanonicalNlri {
 /// Typed intra-table key (`CanonicalNlri` + optional RFC 7911 `path_id`) replacing string formatting.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct TableRouteKey {
-    pub nlri:    CanonicalNlri,
+    pub nlri: CanonicalNlri,
     pub path_id: Option<u32>,
 }
 
@@ -304,8 +349,8 @@ impl TableRouteKey {
 /// Full route identity across exporter, peer/instance, view, NLRI, and Add-Path ID.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct RouteKey {
-    pub view:    ViewKey,
-    pub nlri:    CanonicalNlri,
+    pub view: ViewKey,
+    pub nlri: CanonicalNlri,
     pub path_id: Option<u32>,
 }
 
@@ -313,8 +358,8 @@ pub struct RouteKey {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct EventKey {
     pub schema_version: u16,
-    pub source:         ObservationSource,
-    pub sequence:       u64,
+    pub source: ObservationSource,
+    pub sequence: u64,
 }
 
 impl EventKey {
@@ -327,13 +372,12 @@ impl EventKey {
     }
 }
 
-
 // ─── BMP initiation TLV (RFC 7854 §4.4) ──────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitiationTlv {
     pub tlv_type: u16,
-    pub value:    String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -350,9 +394,9 @@ pub enum InitiationInfo {
 #[repr(u16)]
 pub enum TermReason {
     AdministrativelyClosed = 0,
-    Unspecified            = 1,
-    OutOfResources         = 2,
-    RedundantConnection    = 3,
+    Unspecified = 1,
+    OutOfResources = 2,
+    RedundantConnection = 3,
     PermanentlyAdminClosed = 4,
 }
 
@@ -360,12 +404,12 @@ pub enum TermReason {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PeerDownReason {
-    LocalSystemClosed { notification: Option<Vec<u8>> },  // 1
-    LocalSystemClosed2,                                    // 2 (FSM event)
+    LocalSystemClosed { notification: Option<Vec<u8>> }, // 1
+    LocalSystemClosed2,                                  // 2 (FSM event)
     RemoteSystemClosed { notification: Option<Vec<u8>> }, // 3
-    RemoteSystemClosed2,                                   // 4 (BMP message data)
-    PeerDeConfigured,                                      // 5
-    VrfDown,                                               // 6
+    RemoteSystemClosed2,                                 // 4 (BMP message data)
+    PeerDeConfigured,                                    // 5
+    VrfDown,                                             // 6
     Unknown(u8),
 }
 
@@ -373,10 +417,10 @@ pub enum PeerDownReason {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BgpOpenInfo {
-    pub version:      u8,
-    pub asn:          u32,
-    pub hold_time:    u16,
-    pub bgp_id:       Ipv4Addr,
+    pub version: u8,
+    pub asn: u32,
+    pub hold_time: u16,
+    pub bgp_id: Ipv4Addr,
     pub capabilities: Vec<BgpCapability>,
 }
 
@@ -384,12 +428,12 @@ pub struct BgpOpenInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerUpMessage {
-    pub peer_header:  PeerHeader,
-    pub local_addr:   IpAddr,
-    pub local_port:   u16,
-    pub remote_port:  u16,
-    pub sent_open:    BgpOpenInfo,
-    pub recv_open:    BgpOpenInfo,
+    pub peer_header: PeerHeader,
+    pub local_addr: IpAddr,
+    pub local_port: u16,
+    pub remote_port: u16,
+    pub sent_open: BgpOpenInfo,
+    pub recv_open: BgpOpenInfo,
 }
 
 // ─── Statistics (RFC 7854 §4.8 + RFC 9972) ───────────────────────────────────
@@ -397,25 +441,25 @@ pub struct PeerUpMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatEntry {
     pub stat_type: u16,
-    pub name:      String,
-    pub value:     u64,
+    pub name: String,
+    pub value: u64,
     /// Present for per-AFI/SAFI stats (7-byte RFC 7854 or 11-byte RFC 9972 format)
-    pub afi_safi:  Option<AfiSafi>,
+    pub afi_safi: Option<AfiSafi>,
 }
 
 /// RFC 7854 §4.8 + RFC 9972 statistics counter type names
 pub fn stat_name(t: u16) -> &'static str {
     match t {
-        0  => "prefixes-rejected-by-inbound-policy",
-        1  => "duplicate-prefix-advertisements",
-        2  => "duplicate-withdrawals",
-        3  => "cluster-list-loop-detections",
-        4  => "as-path-loop-detections",
-        5  => "originator-id-loop-detections",
-        6  => "implicit-withdraw-count",
-        7  => "explicit-withdraw-count",
-        8  => "update-treatments-as-withdraw",
-        9  => "prefixes-treated-as-withdraw",
+        0 => "prefixes-rejected-by-inbound-policy",
+        1 => "duplicate-prefix-advertisements",
+        2 => "duplicate-withdrawals",
+        3 => "cluster-list-loop-detections",
+        4 => "as-path-loop-detections",
+        5 => "originator-id-loop-detections",
+        6 => "implicit-withdraw-count",
+        7 => "explicit-withdraw-count",
+        8 => "update-treatments-as-withdraw",
+        9 => "prefixes-treated-as-withdraw",
         10 => "duplicate-update-messages",
         11 => "adj-rib-in-routes",
         12 => "loc-rib-routes",
@@ -446,13 +490,16 @@ pub fn stat_name(t: u16) -> &'static str {
         36 => "per-afi-safi-rpki-not-valid-routes",
         37 => "adj-rib-out-post-policy-routes",
         38 => "per-afi-safi-adj-rib-out-post-policy-routes",
-        _  => "unknown",
+        _ => "unknown",
     }
 }
 
 /// RFC 9972 per-AFI/SAFI stat types use 11-byte encoding: AFI(2)+SAFI(1)+Gauge(8)
 pub fn stat_is_per_afi_safi_11byte(t: u16) -> bool {
-    matches!(t, 19 | 21 | 22 | 23 | 25 | 26 | 27 | 28 | 30 | 32 | 34 | 35 | 36 | 38)
+    matches!(
+        t,
+        19 | 21 | 22 | 23 | 25 | 26 | 27 | 28 | 30 | 32 | 34 | 35 | 36 | 38
+    )
 }
 
 /// RFC 7854 §4.8 per-AFI/SAFI stat types use 7-byte encoding: AFI(2)+SAFI(1)+Counter(4)
@@ -465,21 +512,22 @@ pub fn stat_is_per_afi_safi_7byte(t: u16) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BmpMessage {
     /// Unique ID for this message (assigned by receiver)
-    pub id:           uuid::Uuid,
+    pub id: uuid::Uuid,
     /// Wall-clock when received (UTC)
-    pub received_at:  DateTime<Utc>,
+    pub received_at: DateTime<Utc>,
     /// IP address of the BMP speaker (router) that sent this
     pub speaker_addr: IpAddr,
-    pub payload:      BmpPayload,
+    pub payload: BmpPayload,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum BmpPayload {
     Initiation {
-        sys_name:  Option<String>,
+        sys_name: Option<String>,
         sys_descr: Option<String>,
-        labels:    Vec<String>,
+        labels: Vec<String>,
     },
     Termination {
         reason_code: u16,
@@ -488,30 +536,30 @@ pub enum BmpPayload {
     PeerUp(PeerUpMessage),
     PeerDown {
         peer_header: PeerHeader,
-        reason:      PeerDownReason,
+        reason: PeerDownReason,
     },
     RouteMonitoring {
         peer_header: PeerHeader,
-        update:      BgpUpdate,
+        update: BgpUpdate,
     },
     StatsReport {
         peer_header: PeerHeader,
-        stats:       Vec<StatEntry>,
+        stats: Vec<StatEntry>,
     },
     RouteMirroring {
         peer_header: PeerHeader,
         /// Raw mirrored BGP PDU bytes
-        pdu:         Vec<u8>,
+        pdu: Vec<u8>,
     },
 }
 
 impl BmpMessage {
     pub fn msg_type(&self) -> &'static str {
         match &self.payload {
-            BmpPayload::Initiation { .. }  => "initiation",
+            BmpPayload::Initiation { .. } => "initiation",
             BmpPayload::Termination { .. } => "termination",
-            BmpPayload::PeerUp(_)          => "peer_up",
-            BmpPayload::PeerDown { .. }    => "peer_down",
+            BmpPayload::PeerUp(_) => "peer_up",
+            BmpPayload::PeerDown { .. } => "peer_down",
             BmpPayload::RouteMonitoring { .. } => "route_monitoring",
             BmpPayload::StatsReport { .. } => "stats_report",
             BmpPayload::RouteMirroring { .. } => "route_mirroring",

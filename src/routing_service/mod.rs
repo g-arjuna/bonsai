@@ -11,21 +11,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
+    Json, Router,
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
 use chrono::{DateTime, Utc};
 use rbmp_core::bgp::types::{AfiSafi, BgpDecodeContext, FamilySupportStatus};
 use rbmp_core::bmp::parser::{
-    parse_bmp_message_with_context, parse_peer_header, read_bmp_frame, DEFAULT_MAX_FRAME,
+    DEFAULT_MAX_FRAME, parse_bmp_message_with_context, parse_peer_header, read_bmp_frame,
 };
 use rbmp_core::bmp::types::{BmpMessage, BmpPayload, PeerKey, RibType};
+use rbmp_rib::RibManager;
 use rbmp_rib::event::{RibEventPayload, RouteAction};
 use rbmp_rib::session::PeerState;
-use rbmp_rib::RibManager;
 use rbmp_store::{BmpJournal, PrefixHistoryItem, RibEventJournal};
 use serde::{Deserialize, Serialize};
 use tokio::io::BufReader;
@@ -89,9 +89,11 @@ impl RoutingServiceConfig {
 }
 
 /// Transport loss metadata when a BMP TCP connection drops without an explicit BGP withdrawal.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TransportGapRecord {
     pub speaker_addr: IpAddr,
+    #[serde(default)]
+    pub session_epoch: Option<u64>,
     pub disconnected_at: DateTime<Utc>,
     pub reason: String,
 }
@@ -112,28 +114,61 @@ impl RoutingServiceState {
             .validate()
             .map_err(|e| anyhow::anyhow!("Invalid RoutingServiceConfig: {e}"))?;
 
+        let event_journal = RibEventJournal::open(config.event_journal_path.as_ref()).await?;
         let (mut rib_mgr, _rx) = RibManager::new(4096);
+        let mut recovered_contexts = HashMap::new();
+        let mut recovered_gaps = HashMap::new();
+
         if let Some(ref bmp_path) = config.bmp_journal_path {
             if bmp_path.exists() {
-                let _ = BmpJournal::replay_into(bmp_path, &mut rib_mgr)?;
+                let outcome = BmpJournal::replay_into_with_state(bmp_path, &mut rib_mgr)?;
+                recovered_contexts = outcome.decode_contexts;
+                recovered_gaps = outcome
+                    .transport_gaps
+                    .into_iter()
+                    .map(|(ip, g)| {
+                        (
+                            ip,
+                            TransportGapRecord {
+                                speaker_addr: g.speaker_addr,
+                                session_epoch: g.session_epoch,
+                                disconnected_at: g.disconnected_at,
+                                reason: g.reason,
+                            },
+                        )
+                    })
+                    .collect();
+
+                let existing_seqs = event_journal.existing_sequences().await;
+                let missing_events: Vec<_> = outcome
+                    .emitted_events
+                    .into_iter()
+                    .filter(|ev| !existing_seqs.contains(&ev.event_key.sequence))
+                    .collect();
+                if !missing_events.is_empty() {
+                    event_journal.append_batch(&missing_events).await?;
+                }
             }
         }
 
+        let latest_seq = event_journal.latest_seq().await;
+        rib_mgr.ensure_min_event_seq(latest_seq + 1);
+
         let bmp_journal = BmpJournal::open(config.bmp_journal_path.as_ref()).await?;
-        let event_journal = RibEventJournal::open(config.event_journal_path.as_ref()).await?;
 
         Ok(Arc::new(Self {
             config,
             rib: RwLock::new(rib_mgr),
             bmp_journal,
             event_journal,
-            decode_contexts: RwLock::new(HashMap::new()),
-            transport_gaps: RwLock::new(HashMap::new()),
+            decode_contexts: RwLock::new(recovered_contexts),
+            transport_gaps: RwLock::new(recovered_gaps),
         }))
     }
 
     /// Decode a raw BMP wire frame using session-aware capabilities when available,
-    /// journal the accepted observation, apply to `RibManager`, and journal emitted `RibEvent`s.
+    /// journal the accepted observation (including wire bytes and connection epoch),
+    /// apply to `RibManager`, and journal emitted `RibEvent`s.
     pub async fn ingest_bmp_bytes(
         &self,
         speaker_addr: IpAddr,
@@ -156,75 +191,140 @@ impl RoutingServiceState {
             BgpDecodeContext::default()
         };
 
-        let payload = parse_bmp_message_with_context(
-            frame,
-            speaker_addr,
-            self.config.max_frame_bytes,
-            &ctx,
-        )?;
+        let payload =
+            parse_bmp_message_with_context(frame, speaker_addr, self.config.max_frame_bytes, &ctx)?;
         let msg = BmpMessage {
             id: Uuid::new_v4(),
             received_at: Utc::now(),
             speaker_addr,
             payload,
         };
-        self.ingest_bmp_message(msg, session_epoch).await
+        self.ingest_bmp_message_internal(msg, session_epoch, Some(frame))
+            .await
     }
 
     /// Persist a parsed `BmpMessage` to the raw journal, process through `RibManager`,
-    /// and persist all emitted `RibEvent`s to `RibEventJournal`.
+    /// and persist all emitted `RibEvent`s directly to `RibEventJournal`.
     pub async fn ingest_bmp_message(
         &self,
         msg: BmpMessage,
         session_epoch: Option<u64>,
     ) -> anyhow::Result<BmpMessage> {
-        self.bmp_journal.append(&msg).await?;
+        self.ingest_bmp_message_internal(msg, session_epoch, None)
+            .await
+    }
 
-        // Clear any prior transport gap for this speaker upon receiving valid messages
-        self.transport_gaps.write().await.remove(&msg.speaker_addr);
+    async fn ingest_bmp_message_internal(
+        &self,
+        msg: BmpMessage,
+        session_epoch: Option<u64>,
+        raw_frame: Option<&[u8]>,
+    ) -> anyhow::Result<BmpMessage> {
+        self.bmp_journal
+            .append_observation(&msg, session_epoch, raw_frame)
+            .await?;
 
-        // Update session-aware decode context on PeerUp
+        // Update session-aware decode context on PeerUp per RFC 7911 Section 5
         if let BmpPayload::PeerUp(ref pu) = msg.payload {
             let peer_key = PeerKey::from_header(msg.speaker_addr, &pu.peer_header);
-            let mut caps = pu.recv_open.capabilities.clone();
-            for sc in &pu.sent_open.capabilities {
-                if !caps.contains(sc) {
-                    caps.push(sc.clone());
-                }
-            }
-            let ctx = BgpDecodeContext::from_capabilities(
+            let ctx = BgpDecodeContext::from_negotiated_open(
                 pu.peer_header.peer_flags.four_byte_asn(),
-                &caps,
+                &pu.sent_open.capabilities,
+                &pu.recv_open.capabilities,
             );
             self.decode_contexts.write().await.insert(peer_key, ctx);
         }
 
-        let emitted = {
+        let (emitted, effective_epoch) = {
             let mut rib = self.rib.write().await;
-            let mut rx = rib.subscribe();
-            rib.process_for_epoch(msg.clone(), session_epoch);
-            let mut events = Vec::new();
-            while let Ok(ev) = rx.try_recv() {
-                events.push(ev);
-            }
-            events
+            let current_ep = session_epoch.or_else(|| {
+                rib.speaker(msg.speaker_addr)
+                    .map(|s| s.source.session_epoch)
+            });
+            let events = rib.process_for_epoch(msg.clone(), session_epoch);
+            let post_ep = current_ep.or_else(|| {
+                rib.speaker(msg.speaker_addr)
+                    .map(|s| s.source.session_epoch)
+            });
+            (events, post_ep)
         };
 
-        for ev in &emitted {
-            self.event_journal.append(ev).await?;
+        // Epoch-aware transport gap clearing (R04): only clear a speaker's gap when a newer
+        // session epoch establishes synchronization (Initiation / PeerUp) or on EndOfRib / Termination.
+        {
+            let mut gaps = self.transport_gaps.write().await;
+            if let Some(existing_gap) = gaps.get(&msg.speaker_addr) {
+                if rbmp_store::should_clear_transport_gap(
+                    existing_gap.session_epoch,
+                    effective_epoch,
+                    &msg.payload,
+                ) {
+                    gaps.remove(&msg.speaker_addr);
+                }
+            }
         }
+
+        self.event_journal.append_batch(&emitted).await?;
 
         Ok(msg)
     }
 
     /// Record BMP transport loss without fabricating BGP route withdrawals.
     /// Last-known routes remain in the RIB marked under a transport gap.
-    pub async fn record_transport_disconnect(&self, speaker_addr: IpAddr, reason: impl Into<String>) {
+    pub async fn record_transport_disconnect(
+        &self,
+        speaker_addr: IpAddr,
+        reason: impl Into<String>,
+    ) {
+        self.record_transport_disconnect_for_epoch(speaker_addr, None, reason)
+            .await;
+    }
+
+    /// Epoch-fenced BMP transport disconnect recorder (R04).
+    /// Stale disconnects from an older TCP connection epoch (< active speaker epoch) are ignored,
+    /// while active disconnects clear EoR markers and are persisted durably to `BmpJournal`.
+    pub async fn record_transport_disconnect_for_epoch(
+        &self,
+        speaker_addr: IpAddr,
+        session_epoch: Option<u64>,
+        reason: impl Into<String>,
+    ) {
+        let reason_str = reason.into();
+        let effective_epoch = {
+            let mut rib = self.rib.write().await;
+            let active_epoch = rib.speaker(speaker_addr).map(|s| s.source.session_epoch);
+            if let (Some(disc_ep), Some(act_ep)) = (session_epoch, active_epoch) {
+                if disc_ep < act_ep {
+                    tracing::debug!(
+                        %speaker_addr,
+                        disc_ep,
+                        act_ep,
+                        "Ignoring stale transport disconnect from older session epoch"
+                    );
+                    return;
+                }
+            }
+            rib.clear_speaker_eor(speaker_addr);
+            session_epoch.or(active_epoch)
+        };
+
+        let disconnected_at = Utc::now();
         let gap = TransportGapRecord {
             speaker_addr,
-            disconnected_at: Utc::now(),
-            reason: reason.into(),
+            session_epoch: effective_epoch,
+            disconnected_at,
+            reason: reason_str.clone(),
         };
+        let journal_gap = rbmp_store::JournalTransportGap {
+            speaker_addr,
+            session_epoch: effective_epoch,
+            disconnected_at,
+            reason: reason_str,
+        };
+        let _ = self
+            .bmp_journal
+            .append_transport_disconnect(&journal_gap)
+            .await;
         self.transport_gaps.write().await.insert(speaker_addr, gap);
     }
 
@@ -301,11 +401,16 @@ pub async fn run_bmp_listener(
                             }
                             Ok(None) => {
                                 // TCP EOF without BMP Termination = observation gap, not BGP withdraw
-                                st.record_transport_disconnect(speaker_ip, "bmp_tcp_eof").await;
+                                st.record_transport_disconnect_for_epoch(speaker_ip, Some(epoch), "bmp_tcp_eof").await;
                                 break;
                             }
                             Err(e) => {
-                                st.record_transport_disconnect(speaker_ip, format!("bmp_transport_error: {e}")).await;
+                                st.record_transport_disconnect_for_epoch(
+                                    speaker_ip,
+                                    Some(epoch),
+                                    format!("bmp_transport_error: {e}"),
+                                )
+                                .await;
                                 break;
                             }
                         }
@@ -321,6 +426,7 @@ pub async fn run_bmp_listener(
 #[derive(Debug, Deserialize, Default)]
 pub struct PeersQuery {
     pub speaker: Option<String>,
+    pub vrf_rd: Option<String>,
     pub state: Option<String>,
     pub limit: Option<usize>,
 }
@@ -340,12 +446,16 @@ pub struct RoutesQuery {
 #[derive(Debug, Deserialize, Default)]
 pub struct PrefixHistoryQuery {
     pub prefix: Option<String>,
+    pub speaker: Option<String>,
+    pub vrf_rd: Option<String>,
     pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 pub struct EventsQuery {
     pub after_seq: Option<u64>,
+    pub speaker: Option<String>,
+    pub vrf_rd: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -357,12 +467,15 @@ pub struct IngestBmpRequest {
 }
 
 fn check_internal_token(headers: &HeaderMap, state: &RoutingServiceState) -> Result<(), Response> {
+    use subtle::ConstantTimeEq;
     if let Some(ref expected) = state.config.internal_service_token {
         let provided = headers
             .get("x-bonsai-routing-token")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        if provided != expected {
+        let matches = provided.len() == expected.len()
+            && bool::from(provided.as_bytes().ct_eq(expected.as_bytes()));
+        if !matches {
             return Err((
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({
@@ -379,14 +492,20 @@ fn check_internal_token(headers: &HeaderMap, state: &RoutingServiceState) -> Res
 pub fn build_internal_routing_router(state: Arc<RoutingServiceState>) -> Router {
     Router::new()
         .route("/internal/routing/v1/health", get(internal_health_handler))
-        .route("/internal/routing/v1/speakers", get(internal_speakers_handler))
+        .route(
+            "/internal/routing/v1/speakers",
+            get(internal_speakers_handler),
+        )
         .route("/internal/routing/v1/peers", get(internal_peers_handler))
         .route("/internal/routing/v1/routes", get(internal_routes_handler))
         .route(
             "/internal/routing/v1/prefix-history",
             get(internal_prefix_history_handler),
         )
-        .route("/internal/routing/v1/coverage", get(internal_coverage_handler))
+        .route(
+            "/internal/routing/v1/coverage",
+            get(internal_coverage_handler),
+        )
         .route(
             "/internal/routing/v1/evidence-coverage",
             get(internal_evidence_coverage_handler),
@@ -416,7 +535,10 @@ pub fn build_internal_routing_router(state: Arc<RoutingServiceState>) -> Router 
             get(internal_adjudications_handler),
         )
         .route("/internal/routing/v1/events", get(internal_events_handler))
-        .route("/internal/routing/v1/ingest-bmp", post(internal_ingest_bmp_handler))
+        .route(
+            "/internal/routing/v1/ingest-bmp",
+            post(internal_ingest_bmp_handler),
+        )
         .with_state(state)
 }
 
@@ -665,7 +787,11 @@ pub async fn build_speakers_json(state: &RoutingServiceState) -> serde_json::Val
         let gap = gaps.get(&spk.speaker_addr);
         let completeness = if gap.is_some() {
             "gap"
-        } else if spk.peers.values().any(|p| p.state == PeerState::Up && !p.eor_families.is_empty()) {
+        } else if spk
+            .peers
+            .values()
+            .any(|p| p.state == PeerState::Up && !p.eor_families.is_empty())
+        {
             "complete_for_observed_view"
         } else {
             "syncing"
@@ -693,10 +819,7 @@ pub async fn build_speakers_json(state: &RoutingServiceState) -> serde_json::Val
     })
 }
 
-pub async fn build_peers_json(
-    state: &RoutingServiceState,
-    q: &PeersQuery,
-) -> serde_json::Value {
+pub async fn build_peers_json(state: &RoutingServiceState, q: &PeersQuery) -> serde_json::Value {
     let rib = state.rib.read().await;
     let gaps = state.transport_gaps.read().await;
     let latest_seq = state.event_journal.latest_seq().await;
@@ -711,6 +834,11 @@ pub async fn build_peers_json(
         }
         let has_transport_gap = gaps.contains_key(&spk.speaker_addr);
         for (peer_key, peer) in &spk.peers {
+            if let Some(ref rd_filter) = q.vrf_rd {
+                if peer_key.distinguisher_string() != *rd_filter {
+                    continue;
+                }
+            }
             let state_str = match peer.state {
                 PeerState::Up => "up",
                 PeerState::Down => "down",
@@ -724,11 +852,7 @@ pub async fn build_peers_json(
             let completeness = if has_transport_gap {
                 "gap"
             } else if peer.state == PeerState::Down {
-                if peer.llgr_active {
-                    "stale"
-                } else {
-                    "gap"
-                }
+                if peer.llgr_active { "stale" } else { "gap" }
             } else if !peer.eor_families.is_empty() {
                 "complete_for_observed_view"
             } else {
@@ -928,7 +1052,10 @@ pub async fn build_prefix_history_json(
         );
     };
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
-    let history: Vec<PrefixHistoryItem> = state.event_journal.prefix_history(prefix, limit).await;
+    let history: Vec<PrefixHistoryItem> = state
+        .event_journal
+        .prefix_history_filtered(prefix, q.speaker.as_deref(), q.vrf_rd.as_deref(), limit)
+        .await;
     let latest_seq = state.event_journal.latest_seq().await;
     let completeness = state.overall_completeness().await;
 
@@ -937,6 +1064,8 @@ pub async fn build_prefix_history_json(
         serde_json::json!({
             "api_version": ROUTING_API_VERSION,
             "prefix": prefix,
+            "speaker": q.speaker,
+            "vrf_rd": q.vrf_rd,
             "support_status": "supported",
             "completeness_state": completeness,
             "durable_sequence": latest_seq,
@@ -976,15 +1105,50 @@ pub async fn build_coverage_json(state: &RoutingServiceState) -> serde_json::Val
     })
 }
 
-pub async fn build_events_json(
-    state: &RoutingServiceState,
-    q: &EventsQuery,
-) -> serde_json::Value {
+pub async fn build_events_json(state: &RoutingServiceState, q: &EventsQuery) -> serde_json::Value {
     let after_seq = q.after_seq.unwrap_or(0);
     let limit = q.limit.unwrap_or(100).clamp(1, 1000);
-    let events = state.event_journal.events_after_seq(after_seq, limit).await;
+    let fetch_cap = if q.speaker.is_some() || q.vrf_rd.is_some() {
+        10_000
+    } else {
+        limit
+    };
+    let raw_events = state
+        .event_journal
+        .events_after_seq(after_seq, fetch_cap)
+        .await;
+    let events: Vec<_> = raw_events
+        .into_iter()
+        .filter(|ev| {
+            if let Some(ref spk) = q.speaker {
+                if ev.speaker.to_string() != *spk {
+                    return false;
+                }
+            }
+            if let Some(ref rd) = q.vrf_rd {
+                let ev_rd = match &ev.payload {
+                    RibEventPayload::RouteChange(rc) => Some(rc.peer_key.distinguisher_string()),
+                    RibEventPayload::PeerUp { peer_header, .. }
+                    | RibEventPayload::PeerDown { peer_header, .. }
+                    | RibEventPayload::EndOfRib { peer_header, .. }
+                    | RibEventPayload::Stats { peer_header, .. } => {
+                        Some(PeerKey::from_header(ev.speaker, peer_header).distinguisher_string())
+                    }
+                    RibEventPayload::SpeakerUp { .. } | RibEventPayload::SpeakerDown { .. } => None,
+                };
+                if ev_rd.as_deref() != Some(rd.as_str()) {
+                    return false;
+                }
+            }
+            true
+        })
+        .take(limit)
+        .collect();
     let latest_seq = state.event_journal.latest_seq().await;
-    let next_after_seq = events.last().map(|e| e.event_key.sequence).unwrap_or(after_seq);
+    let next_after_seq = events
+        .last()
+        .map(|e| e.event_key.sequence)
+        .unwrap_or(after_seq);
 
     serde_json::json!({
         "api_version": ROUTING_API_VERSION,
@@ -1053,12 +1217,50 @@ pub async fn load_projection_checkpoint(
         .list_config_items(Some(ROUTING_CHECKPOINT_CONFIG_CLASS.to_string()))
         .await
         .unwrap_or_default();
-    if let Some(ci) = items.into_iter().find(|i| i.id == ROUTING_CHECKPOINT_ID && i.enabled) {
+    if let Some(ci) = items
+        .into_iter()
+        .find(|i| i.id == ROUTING_CHECKPOINT_ID && i.enabled)
+    {
         if let Ok(cp) = serde_json::from_str::<RoutingProjectionCheckpoint>(&ci.content_json) {
             return cp;
         }
     }
     RoutingProjectionCheckpoint::default()
+}
+
+/// Resolve the private routing service `(base_url, token, has_explicit_db_url)` from `GraphStore` (`app_config`) or environment (`R05`/`R06`).
+pub async fn resolve_routing_service_endpoint_config(
+    store: &crate::graph::GraphStore,
+) -> (String, Option<String>, bool) {
+    let items = store
+        .list_config_items(Some("app_config".to_string()))
+        .await
+        .unwrap_or_default();
+    let db_url = items
+        .iter()
+        .find(|i| i.name == "routing_service_url" && i.enabled)
+        .map(|i| i.content_json.trim().trim_matches('"').to_string())
+        .filter(|s| !s.is_empty());
+    let has_explicit_db_url = db_url.is_some();
+    let url = db_url.unwrap_or_else(|| {
+        std::env::var("BONSAI_ROUTING_SERVICE_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8081".to_string())
+    });
+    let token = items
+        .iter()
+        .find(|i| i.name == "routing_service_token" && i.enabled)
+        .map(|i| i.content_json.trim().trim_matches('"').to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::var("BONSAI_ROUTING_SERVICE_TOKEN")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        });
+    (
+        url.trim_end_matches('/').to_string(),
+        token,
+        has_explicit_db_url,
+    )
 }
 
 /// Project new durable `RibEvent`s after `checkpoint.last_applied_sequence` into `GraphStore`.
@@ -1071,10 +1273,70 @@ pub async fn project_routing_events_to_graph(
     store: &crate::graph::GraphStore,
     batch_limit: usize,
 ) -> anyhow::Result<ProjectionStepReport> {
-    let mut cp = load_projection_checkpoint(store).await;
+    let cp = load_projection_checkpoint(store).await;
     let pending = event_journal
         .events_after_seq(cp.last_applied_sequence, batch_limit.max(1))
         .await;
+    let latest_seq = event_journal.latest_seq().await;
+    apply_routing_events_to_graph(cp, pending, latest_seq, store).await
+}
+
+/// Project new durable `RibEvent`s from either a configured remote `bonsai-routing` HTTP service
+/// (`/internal/routing/v1/events`) or an in-process `RoutingServiceState` into `GraphStore` (`R05`).
+pub async fn project_remote_routing_events_to_graph(
+    store: &crate::graph::GraphStore,
+    batch_limit: usize,
+) -> anyhow::Result<ProjectionStepReport> {
+    let (base_url, token, has_explicit_db_url) =
+        resolve_routing_service_endpoint_config(store).await;
+    if !has_explicit_db_url {
+        if let Some(in_proc) = default_routing_service() {
+            return project_routing_events_to_graph(&in_proc.event_journal, store, batch_limit)
+                .await;
+        }
+    }
+
+    let cp = load_projection_checkpoint(store).await;
+    let limit = batch_limit.clamp(1, 1000);
+    let url = format!(
+        "{base_url}/internal/routing/v1/events?after_seq={}&limit={limit}",
+        cp.last_applied_sequence
+    );
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()?;
+    let mut req = client.get(&url);
+    if let Some(t) = token {
+        req = req.header("x-bonsai-routing-token", t);
+    }
+    let resp = req.send().await?;
+    if !resp.status().is_success() {
+        anyhow::bail!(
+            "remote routing events endpoint returned HTTP {}",
+            resp.status()
+        );
+    }
+    let body: serde_json::Value = resp.json().await?;
+    let latest_seq = body
+        .get("durable_sequence")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(cp.last_applied_sequence);
+    let pending: Vec<rbmp_rib::event::RibEvent> = body
+        .get("events")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()?
+        .unwrap_or_default();
+
+    apply_routing_events_to_graph(cp, pending, latest_seq, store).await
+}
+
+async fn apply_routing_events_to_graph(
+    mut cp: RoutingProjectionCheckpoint,
+    pending: Vec<rbmp_rib::event::RibEvent>,
+    latest_seq: u64,
+    store: &crate::graph::GraphStore,
+) -> anyhow::Result<ProjectionStepReport> {
     let mut newly_applied = 0usize;
 
     for ev in pending {
@@ -1085,7 +1347,10 @@ pub async fn project_routing_events_to_graph(
         let spk_str = ev.speaker.to_string();
 
         match &ev.payload {
-            RibEventPayload::SpeakerUp { sys_name, sys_descr } => {
+            RibEventPayload::SpeakerUp {
+                sys_name,
+                sys_descr,
+            } => {
                 let entry = cp.speaker_summaries.entry(spk_str.clone()).or_default();
                 entry.speaker_addr = spk_str;
                 entry.sys_name = sys_name.clone();
@@ -1270,12 +1535,7 @@ pub async fn project_routing_events_to_graph(
                 ps.peer_as = rc.peer_header.peer_as;
                 ps.peer_type = rc.peer_header.peer_type as u8;
                 ps.peer_distinguisher = rc.peer_key.distinguisher_string();
-                let route_id = format!(
-                    "{:?}|{}|{:?}",
-                    rc.rib_type,
-                    rc.prefix,
-                    rc.path_id
-                );
+                let route_id = format!("{:?}|{}|{:?}", rc.rib_type, rc.prefix, rc.path_id);
                 match rc.action {
                     RouteAction::Announce => {
                         ps.active_prefixes.insert(route_id);
@@ -1314,7 +1574,6 @@ pub async fn project_routing_events_to_graph(
         store.upsert_config_item(record).await?;
     }
 
-    let latest_seq = event_journal.latest_seq().await;
     let lag = latest_seq.saturating_sub(cp.last_applied_sequence);
 
     Ok(ProjectionStepReport {
@@ -1483,4 +1742,3 @@ pub async fn compute_rib_digest(state: &RoutingServiceState) -> (usize, String) 
     let digest = hex::encode(Sha256::digest(joined.as_bytes()));
     (count, digest)
 }
-

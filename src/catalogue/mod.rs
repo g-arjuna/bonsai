@@ -293,7 +293,10 @@ pub fn load_catalogue(base_dir: &Path) -> CatalogueState {
 /// Load catalogue profiles from in-memory YAML strings (typically from ConfigItem DB).
 /// Falls back to `load_catalogue(base_dir)` if items is empty.
 /// Plugins are always loaded from disk (they require MANIFEST.yaml + directory structure).
-pub fn load_catalogue_from_yaml_strings(items: &[(String, String)], base_dir: &Path) -> CatalogueState {
+pub fn load_catalogue_from_yaml_strings(
+    items: &[(String, String)],
+    base_dir: &Path,
+) -> CatalogueState {
     if items.is_empty() {
         return load_catalogue(base_dir);
     }

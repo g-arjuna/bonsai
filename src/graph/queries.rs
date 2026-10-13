@@ -369,19 +369,22 @@ pub fn blast_radius(
                         s.prefixes_rejected, s.session_state",
             )
             .unwrap_or_else(|_| conn.prepare("RETURN 0, '', 0, 0, 0, ''").unwrap());
-        conn.execute(&mut bmp_stmt, vec![("addr", Value::String(address.to_string()))])
-            .map(|qr| {
-                qr.map(|row| BmpSessionRef {
-                    session_id: read_str(&row[0]),
-                    peer_address: read_str(&row[1]),
-                    adj_rib_in_routes: read_i64(&row[2]),
-                    loc_rib_routes: read_i64(&row[3]),
-                    prefixes_rejected: read_i64(&row[4]),
-                    session_state: read_str(&row[5]),
-                })
-                .collect()
+        conn.execute(
+            &mut bmp_stmt,
+            vec![("addr", Value::String(address.to_string()))],
+        )
+        .map(|qr| {
+            qr.map(|row| BmpSessionRef {
+                session_id: read_str(&row[0]),
+                peer_address: read_str(&row[1]),
+                adj_rib_in_routes: read_i64(&row[2]),
+                loc_rib_routes: read_i64(&row[3]),
+                prefixes_rejected: read_i64(&row[4]),
+                session_state: read_str(&row[5]),
             })
-            .unwrap_or_default()
+            .collect()
+        })
+        .unwrap_or_default()
     };
 
     Ok(BlastRadiusResult {

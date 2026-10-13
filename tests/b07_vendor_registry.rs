@@ -41,7 +41,10 @@ fn b07_edge_a_hostname_works_without_vendor_prefix_and_hostname_is_advisory_only
     };
     let resolved = resolve_target_platform(&edge_a);
     assert_eq!(resolved.platform_id, "frr");
-    assert_eq!(command_for_vendor(&resolved.platform_id), Some("show running-config"));
+    assert_eq!(
+        command_for_vendor(&resolved.platform_id),
+        Some("show running-config")
+    );
     assert_eq!(ssh_target_host(&edge_a).unwrap(), "edge-a");
 
     let cfg = StreamingConfig {
@@ -72,7 +75,10 @@ fn b07_edge_a_hostname_works_without_vendor_prefix_and_hostname_is_advisory_only
         ..Default::default()
     };
     assert_eq!(resolve_target_platform(&unprobed).platform_id, "unknown");
-    assert_eq!(suggest_platform_from_hostname(unprobed.hostname.as_deref()), Some("cisco.iosxr"));
+    assert_eq!(
+        suggest_platform_from_hostname(unprobed.hostname.as_deref()),
+        Some("cisco.iosxr")
+    );
     let unknown_report = build_streaming_readiness_report(&unprobed, None, &cfg);
     assert_eq!(unknown_report.vendor, "unknown");
     let unknown_bmp = unknown_report
@@ -88,8 +94,14 @@ fn b07_edge_a_hostname_works_without_vendor_prefix_and_hostname_is_advisory_only
 fn b07_ipv6_and_hostname_endpoints_parse_cleanly() {
     assert_eq!(extract_endpoint_host("10.0.0.1:57400").unwrap(), "10.0.0.1");
     assert_eq!(extract_endpoint_host("10.0.0.1").unwrap(), "10.0.0.1");
-    assert_eq!(extract_endpoint_host("[2001:db8::1]:57400").unwrap(), "2001:db8::1");
-    assert_eq!(extract_endpoint_host("[2001:db8::1]").unwrap(), "2001:db8::1");
+    assert_eq!(
+        extract_endpoint_host("[2001:db8::1]:57400").unwrap(),
+        "2001:db8::1"
+    );
+    assert_eq!(
+        extract_endpoint_host("[2001:db8::1]").unwrap(),
+        "2001:db8::1"
+    );
     assert_eq!(extract_endpoint_host("2001:db8::1").unwrap(), "2001:db8::1");
     assert_eq!(extract_endpoint_host("edge-a:57400").unwrap(), "edge-a");
     assert_eq!(extract_endpoint_host("edge-a").unwrap(), "edge-a");
@@ -121,4 +133,3 @@ fn b07_ui_and_api_vendor_identifiers_agree() {
         );
     }
 }
-

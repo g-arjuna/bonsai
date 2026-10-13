@@ -10,11 +10,11 @@
 //! - Config replication between cores
 //! - Collector failover coordination
 
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 use tokio::time::Duration;
-use anyhow::{Context, Result};
-use serde::{Serialize, Deserialize};
 
 /// HA mode configuration
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,7 +102,7 @@ impl HACoordinator {
     pub async fn set_state(&self, new_state: LeaderState) {
         let old_state = self.state.read().await.clone();
         *self.state.write().await = new_state.clone();
-        
+
         // G3 Session 8: Invoke callback if leadership changed
         if old_state != new_state {
             if let Some(ref callback) = *self.leadership_change_callback.lock().unwrap() {
@@ -112,7 +112,10 @@ impl HACoordinator {
     }
 
     /// Register a callback to be invoked when leadership changes
-    pub fn register_leadership_change_callback(&self, callback: Box<dyn Fn(LeaderState) + Send + Sync>) {
+    pub fn register_leadership_change_callback(
+        &self,
+        callback: Box<dyn Fn(LeaderState) + Send + Sync>,
+    ) {
         *self.leadership_change_callback.lock().unwrap() = Some(callback);
     }
 
@@ -173,7 +176,7 @@ impl HACoordinator {
         use etcd_client::{
             Client, Compare, CompareOp, ConnectOptions, PutOptions, Txn, TxnOp, TxnOpResponse,
         };
-        use tokio::time::{interval, Duration};
+        use tokio::time::{Duration, interval};
 
         let endpoints: Vec<&str> = config.endpoints.iter().map(|s| s.as_str()).collect();
         let mut client = Client::connect(endpoints, Some(ConnectOptions::default()))
@@ -235,7 +238,9 @@ impl HACoordinator {
         }
 
         // Maintain lease (heartbeat)
-        let mut ticker = interval(Duration::from_secs((config.election_ttl_secs as u64 / 2).max(1)));
+        let mut ticker = interval(Duration::from_secs(
+            (config.election_ttl_secs as u64 / 2).max(1),
+        ));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
@@ -330,7 +335,10 @@ impl ConfigReplicator {
         self
     }
 
-    pub fn with_sqlite_store(mut self, store: std::sync::Arc<crate::sqlite_store::SqliteStore>) -> Self {
+    pub fn with_sqlite_store(
+        mut self,
+        store: std::sync::Arc<crate::sqlite_store::SqliteStore>,
+    ) -> Self {
         self.sqlite_store = Some(store);
         self
     }
@@ -346,14 +354,19 @@ impl ConfigReplicator {
                 .context("failed to connect to etcd for config publish")?;
 
             // Serialize config change to JSON
-            let change_json = serde_json::to_string(&change)
-                .context("failed to serialize config change")?;
+            let change_json =
+                serde_json::to_string(&change).context("failed to serialize config change")?;
 
             // Write to etcd with key: /bonsai/config/<table>/<key>
-            let etcd_key = format!("{}/{}/{}", etcd_config.config_prefix, change.table, change.key);
-            
+            let etcd_key = format!(
+                "{}/{}/{}",
+                etcd_config.config_prefix, change.table, change.key
+            );
+
             let mut kv_client = client.kv_client();
-            kv_client.put(etcd_key, change_json, None).await
+            kv_client
+                .put(etcd_key, change_json, None)
+                .await
                 .context("failed to publish config change to etcd")?;
 
             tracing::info!(
@@ -384,7 +397,7 @@ impl ConfigReplicator {
             timestamp_ns = change.timestamp_ns,
             "applying replicated config change"
         );
-        
+
         // Apply to local SQLite store if available
         if let Some(ref store) = self.sqlite_store {
             // Skip changes from self to avoid loops
@@ -392,12 +405,14 @@ impl ConfigReplicator {
                 tracing::debug!("skipping change from self");
                 return Ok(());
             }
-            
+
             match change.table.as_str() {
                 "devices" => {
                     if change.change_type == ConfigChangeType::Upsert {
                         if let Some(ref value) = change.value {
-                            if let Ok(device) = serde_json::from_str::<crate::config::TargetConfig>(value) {
+                            if let Ok(device) =
+                                serde_json::from_str::<crate::config::TargetConfig>(value)
+                            {
                                 store.upsert_device(&device, "replication", "apply_change")?;
                             }
                         }
@@ -408,7 +423,9 @@ impl ConfigReplicator {
                 "enrichers" => {
                     if change.change_type == ConfigChangeType::Upsert {
                         if let Some(ref value) = change.value {
-                            if let Ok(config) = serde_json::from_str::<crate::enrichment::EnricherConfig>(value) {
+                            if let Ok(config) =
+                                serde_json::from_str::<crate::enrichment::EnricherConfig>(value)
+                            {
                                 store.upsert_enricher(&config, "replication")?;
                             }
                         }
@@ -419,7 +436,9 @@ impl ConfigReplicator {
                 "adapters" => {
                     if change.change_type == ConfigChangeType::Upsert {
                         if let Some(ref value) = change.value {
-                            if let Ok(config) = serde_json::from_str::<crate::output::OutputAdapterConfig>(value) {
+                            if let Ok(config) =
+                                serde_json::from_str::<crate::output::OutputAdapterConfig>(value)
+                            {
                                 store.upsert_adapter(&config, "replication")?;
                             }
                         }
@@ -434,15 +453,18 @@ impl ConfigReplicator {
         } else {
             tracing::warn!("no SQLite store configured, cannot apply config change");
         }
-        
+
         Ok(())
     }
 
     /// Watch for config changes from etcd and apply them
-    pub async fn watch_and_apply_changes(&self, shutdown_signal: Arc<RwLock<bool>>) -> anyhow::Result<()> {
+    pub async fn watch_and_apply_changes(
+        &self,
+        shutdown_signal: Arc<RwLock<bool>>,
+    ) -> anyhow::Result<()> {
         if let Some(ref etcd_config) = self.etcd_config {
             use etcd_client::{Client, ConnectOptions};
-            use tokio::time::{interval, Duration};
+            use tokio::time::{Duration, interval};
 
             let endpoints: Vec<&str> = etcd_config.endpoints.iter().map(|s| s.as_str()).collect();
             let mut client = Client::connect(endpoints, Some(ConnectOptions::default()))
@@ -457,7 +479,9 @@ impl ConfigReplicator {
                 "starting config change watcher"
             );
 
-            let (mut watcher, mut watch_stream) = client.watch(watch_prefix.as_bytes(), None).await
+            let (mut watcher, mut watch_stream) = client
+                .watch(watch_prefix.as_bytes(), None)
+                .await
                 .context("failed to create etcd watcher")?;
 
             let mut ticker = interval(Duration::from_secs(5));

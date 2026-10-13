@@ -15,22 +15,26 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
 use bonsai::investigation_runtime::{
-    resolve_investigation_outcome, BudgetReservationLedger, InvestigationTerminalState,
-    LoopExitReason, ToolCallDeduplicator,
+    BudgetReservationLedger, InvestigationTerminalState, LoopExitReason, ToolCallDeduplicator,
+    resolve_investigation_outcome,
 };
-use bonsai::mcp_server::{
-     enforce_tool_output_bounds, tool_schemas, MAX_TOOL_OUTPUT_BYTES,
-};
+use bonsai::mcp_server::{MAX_TOOL_OUTPUT_BYTES, enforce_tool_output_bounds, tool_schemas};
 use bonsai::routing_service::{
-    build_compare_snapshots_json, build_coverage_json, build_evidence_coverage_json,
-    build_explain_prefix_json, build_peer_timeline_json, build_prefix_journey_json,
-    sample_bmp_session_frames, sample_bmp_withdraw_frame, CompareSnapshotsQuery,
-    EvidenceCoverageQuery, ExplainPrefixQuery, ObservationEnvelope, PeerTimelineQuery,
-    PrefixJourneyQuery, RoutingServiceConfig, RoutingServiceState, OBSERVATION_SCHEMA_VERSION,
+    CompareSnapshotsQuery, EvidenceCoverageQuery, ExplainPrefixQuery, OBSERVATION_SCHEMA_VERSION,
+    ObservationEnvelope, PeerTimelineQuery, PrefixJourneyQuery, RoutingServiceConfig,
+    RoutingServiceState, build_compare_snapshots_json, build_coverage_json,
+    build_evidence_coverage_json, build_explain_prefix_json, build_peer_timeline_json,
+    build_prefix_journey_json, sample_bmp_session_frames, sample_bmp_withdraw_frame,
 };
 use serde_json::json;
 
-fn build_eor_frame(peer_type: u8, peer_flags: u8, rd: [u8; 8], peer_ip: Ipv4Addr, peer_as: u32) -> Vec<u8> {
+fn build_eor_frame(
+    peer_type: u8,
+    peer_flags: u8,
+    rd: [u8; 8],
+    peer_ip: Ipv4Addr,
+    peer_as: u32,
+) -> Vec<u8> {
     let mut peer_hdr = Vec::with_capacity(42);
     peer_hdr.push(peer_type);
     peer_hdr.push(peer_flags);
@@ -174,7 +178,10 @@ async fn a05_canonical_observation_envelope_preserves_identity_and_lineage() {
     let speaker = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
     let (init, peer_up, rm) =
         sample_bmp_session_frames(Ipv4Addr::new(10, 0, 0, 1), 65001, [203, 0, 113], 150);
-    state.ingest_bmp_bytes(speaker, Some(7), &init).await.unwrap();
+    state
+        .ingest_bmp_bytes(speaker, Some(7), &init)
+        .await
+        .unwrap();
     state
         .ingest_bmp_bytes(speaker, Some(7), &peer_up)
         .await
@@ -199,9 +206,10 @@ async fn a05_canonical_observation_envelope_preserves_identity_and_lineage() {
     assert_eq!(env.quality.completeness, "complete_for_observed_view");
     assert!(env.entity_refs.contains(&"device:192.0.2.10".to_string()));
     assert!(env.entity_refs.contains(&"vrf:0:0".to_string()));
-    assert!(env
-        .entity_refs
-        .contains(&"prefix:203.0.113.0/24".to_string()));
+    assert!(
+        env.entity_refs
+            .contains(&"prefix:203.0.113.0/24".to_string())
+    );
 }
 
 #[tokio::test]
@@ -295,7 +303,10 @@ async fn a07_a09_b22_prefix_investigator_three_held_out_diagnostic_cases() {
     // Ingest Initiation + AdjRibInPrePolicy PeerUp + Announce 203.0.113.0/24 + EOR
     let (init, peer_up, rm_203) =
         sample_bmp_session_frames(Ipv4Addr::new(10, 0, 0, 1), 65001, [203, 0, 113], 100);
-    state.ingest_bmp_bytes(speaker, Some(1), &init).await.unwrap();
+    state
+        .ingest_bmp_bytes(speaker, Some(1), &init)
+        .await
+        .unwrap();
     state
         .ingest_bmp_bytes(speaker, Some(1), &peer_up)
         .await
@@ -336,10 +347,12 @@ async fn a07_a09_b22_prefix_investigator_three_held_out_diagnostic_cases() {
         .find(|h| h["category"] == "peer_session_down")
         .expect("peer_session_down hypothesis evaluated");
     assert_eq!(peer_down_hyp["status"], "contradicted");
-    assert!(!peer_down_hyp["counterevidence_ids"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        !peer_down_hyp["counterevidence_ids"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 
     // ── Case A: Now synchronize Loc-RIB (RFC 9069 peer_type=3) on 192.0.2.10 with 198.51.100.0/24
     //            and EOR, leaving 203.0.113.0/24 absent from Loc-RIB! ──
@@ -375,10 +388,12 @@ async fn a07_a09_b22_prefix_investigator_three_held_out_diagnostic_cases() {
         journey_a["views_with_active_prefix"],
         json!(["AdjRibInPrePolicy"])
     );
-    assert!(journey_a["observed_views_without_prefix"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("LocRib")));
+    assert!(
+        journey_a["observed_views_without_prefix"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("LocRib"))
+    );
 
     let (_, case_a) = build_explain_prefix_json(
         &state,
@@ -402,10 +417,12 @@ async fn a07_a09_b22_prefix_investigator_three_held_out_diagnostic_cases() {
         "import_policy_rejected_before_loc_rib"
     );
     assert_eq!(case_a["hypotheses"][0]["status"], "supported");
-    assert!(!case_a["supporting_evidence_ids"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        !case_a["supporting_evidence_ids"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 
     // ── Case B: Collector BMP transport disconnect -> must report collector_transport_gap,
     //            never fabricate a BGP withdrawal! ──
@@ -455,7 +472,10 @@ async fn a07_compare_snapshots_and_a08_budget_reservation_and_deduplicator() {
 
     let (init, peer_up, rm_lp100) =
         sample_bmp_session_frames(Ipv4Addr::new(10, 0, 0, 1), 65001, [203, 0, 113], 100);
-    state.ingest_bmp_bytes(speaker, Some(1), &init).await.unwrap();
+    state
+        .ingest_bmp_bytes(speaker, Some(1), &init)
+        .await
+        .unwrap();
     state
         .ingest_bmp_bytes(speaker, Some(1), &peer_up)
         .await
@@ -533,9 +553,7 @@ async fn a07_compare_snapshots_and_a08_budget_reservation_and_deduplicator() {
     // 4. Verify A08 pre-call BudgetReservationLedger
     let mut ledger = BudgetReservationLedger::new(0.80);
     // Reserve $0.15 for inv-1 (per-inv limit $0.50, daily limit $1.00) -> succeeds ($0.95 total)
-    assert!(ledger
-        .reserve("res-1", "inv-1", 0.15, 0.50, 1.00)
-        .is_ok());
+    assert!(ledger.reserve("res-1", "inv-1", 0.15, 0.50, 1.00).is_ok());
     // Concurrent reservation of $0.10 for inv-2 would push daily total to $1.05 > $1.00 -> blocked!
     let err = ledger
         .reserve("res-2", "inv-2", 0.10, 0.50, 1.00)

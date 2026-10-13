@@ -1,8 +1,8 @@
-use bytes::Buf;
-use crate::{Error, Result};
-use super::types::{Afi, AfiSafi, BgpDecodeContext, BgpUpdate};
-use super::nlri::decode_nlri_with_path_id;
 use super::attributes::parse_path_attributes_with_context;
+use super::nlri::decode_nlri_with_path_id;
+use super::types::{Afi, AfiSafi, BgpDecodeContext, BgpUpdate};
+use crate::{Error, Result};
+use bytes::Buf;
 
 const BGP_UPDATE_TYPE: u8 = 2;
 
@@ -14,7 +14,10 @@ pub fn parse_bgp_update(buf: impl Buf, add_path_ipv4: bool) -> Result<BgpUpdate>
 }
 
 /// Parse a BGP UPDATE message using session-derived decoding context (`BgpDecodeContext`).
-pub fn parse_bgp_update_with_context(mut buf: impl Buf, ctx: &BgpDecodeContext) -> Result<BgpUpdate> {
+pub fn parse_bgp_update_with_context(
+    mut buf: impl Buf,
+    ctx: &BgpDecodeContext,
+) -> Result<BgpUpdate> {
     if buf.remaining() < 19 {
         return Err(Error::UnexpectedEof {
             needed: 19,
@@ -23,10 +26,10 @@ pub fn parse_bgp_update_with_context(mut buf: impl Buf, ctx: &BgpDecodeContext) 
     }
     // Validate marker
     let marker = buf.copy_to_bytes(16);
-    if marker.as_ref() != &[0xFF_u8; 16] {
+    if marker.as_ref() != [0xFF_u8; 16] {
         return Err(Error::InvalidBgpMarker);
     }
-    let msg_len  = buf.get_u16() as usize;
+    let msg_len = buf.get_u16() as usize;
     let msg_type = buf.get_u8();
     if msg_type != BGP_UPDATE_TYPE {
         return Err(Error::InvalidBgpMessageType(msg_type));
@@ -56,25 +59,36 @@ pub fn parse_bgp_update_with_context(mut buf: impl Buf, ctx: &BgpDecodeContext) 
 
     // Withdrawn routes (IPv4 unicast NLRI)
     if body.remaining() < 2 {
-        return Err(Error::UnexpectedEof { needed: 2, have: body.remaining() });
+        return Err(Error::UnexpectedEof {
+            needed: 2,
+            have: body.remaining(),
+        });
     }
     let withdrawn_len = body.get_u16() as usize;
     if body.remaining() < withdrawn_len {
-        return Err(Error::UnexpectedEof { needed: withdrawn_len, have: body.remaining() });
+        return Err(Error::UnexpectedEof {
+            needed: withdrawn_len,
+            have: body.remaining(),
+        });
     }
     let withdrawn_bytes = body.copy_to_bytes(withdrawn_len);
-    let withdrawn_with_ids = decode_nlri_with_path_id(
-        &mut withdrawn_bytes.as_ref(), Afi::Ipv4, add_path_ipv4,
-    )?;
+    let withdrawn_with_ids =
+        decode_nlri_with_path_id(&mut withdrawn_bytes.as_ref(), Afi::Ipv4, add_path_ipv4)?;
     let (withdrawn, withdrawn_path_ids): (Vec<_>, Vec<_>) = withdrawn_with_ids.into_iter().unzip();
 
     // Path attributes
     if body.remaining() < 2 {
-        return Err(Error::UnexpectedEof { needed: 2, have: body.remaining() });
+        return Err(Error::UnexpectedEof {
+            needed: 2,
+            have: body.remaining(),
+        });
     }
     let attr_len = body.get_u16() as usize;
     if body.remaining() < attr_len {
-        return Err(Error::UnexpectedEof { needed: attr_len, have: body.remaining() });
+        return Err(Error::UnexpectedEof {
+            needed: attr_len,
+            have: body.remaining(),
+        });
     }
     let attr_bytes = body.copy_to_bytes(attr_len);
     let attributes = parse_path_attributes_with_context(attr_bytes.as_ref(), ctx)?;
@@ -83,5 +97,11 @@ pub fn parse_bgp_update_with_context(mut buf: impl Buf, ctx: &BgpDecodeContext) 
     let announced_with_ids = decode_nlri_with_path_id(&mut body, Afi::Ipv4, add_path_ipv4)?;
     let (announced, announced_path_ids): (Vec<_>, Vec<_>) = announced_with_ids.into_iter().unzip();
 
-    Ok(BgpUpdate { withdrawn, withdrawn_path_ids, attributes, announced, announced_path_ids })
+    Ok(BgpUpdate {
+        withdrawn,
+        withdrawn_path_ids,
+        attributes,
+        announced,
+        announced_path_ids,
+    })
 }

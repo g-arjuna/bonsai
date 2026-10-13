@@ -177,11 +177,7 @@ pub fn upsert_device_address(
 /// Link a DeviceAddress node to its owning Device via KNOWN_ADDRESS_OF.
 /// Called once the Device node is guaranteed to exist.
 /// Silent no-op if either node is missing.
-pub fn link_device_address(
-    conn: &Connection<'_>,
-    signal_ip: &str,
-    device_ip: &str,
-) -> Result<()> {
+pub fn link_device_address(conn: &Connection<'_>, signal_ip: &str, device_ip: &str) -> Result<()> {
     if signal_ip.is_empty() || device_ip.is_empty() {
         return Ok(());
     }
@@ -368,12 +364,12 @@ pub fn upsert_location(
     conn.execute(
         &mut stmt,
         vec![
-            ("id",      Value::String(loc_id.clone())),
-            ("name",    Value::String(location_name.to_string())),
-            ("kind",    Value::String(kind.to_string())),
+            ("id", Value::String(loc_id.clone())),
+            ("name", Value::String(location_name.to_string())),
+            ("kind", Value::String(kind.to_string())),
             ("site_id", Value::String(site_id.to_string())),
-            ("src",     Value::String(source.to_string())),
-            ("ts",      now.clone()),
+            ("src", Value::String(source.to_string())),
+            ("ts", now.clone()),
         ],
     )
     .context("execute Location upsert")?;
@@ -396,9 +392,7 @@ pub fn upsert_location(
 
     // IN_LOCATION: Device → Location (idempotent; clear old before re-linking)
     let mut clear = conn
-        .prepare(
-            "MATCH (d:Device {address: $addr})-[r:IN_LOCATION]->(:Location) DELETE r",
-        )
+        .prepare("MATCH (d:Device {address: $addr})-[r:IN_LOCATION]->(:Location) DELETE r")
         .context("prepare IN_LOCATION clear")?;
     conn.execute(
         &mut clear,
@@ -416,7 +410,7 @@ pub fn upsert_location(
         &mut in_loc,
         vec![
             ("addr", Value::String(device_address.to_string())),
-            ("lid",  Value::String(loc_id)),
+            ("lid", Value::String(loc_id)),
         ],
     )
     .context("execute IN_LOCATION merge")?;
@@ -557,22 +551,22 @@ pub fn upsert_app_flow_ext(
     conn.execute(
         &mut stmt,
         vec![
-            ("id",    Value::String(id.to_string())),
-            ("exp",   Value::String(exporter_address.to_string())),
-            ("src",   Value::String(src_address.to_string())),
-            ("dst",   Value::String(dst_address.to_string())),
-            ("port",  Value::Int64(dst_port)),
+            ("id", Value::String(id.to_string())),
+            ("exp", Value::String(exporter_address.to_string())),
+            ("src", Value::String(src_address.to_string())),
+            ("dst", Value::String(dst_address.to_string())),
+            ("port", Value::Int64(dst_port)),
             ("proto", Value::String(protocol.to_string())),
-            ("bps",   Value::Double(bytes_per_sec)),
-            ("pps",   Value::Double(packets_per_sec)),
-            ("ts",    now),
-            ("tcpf",  Value::Int64(ddos.tcp_flags as i64)),
+            ("bps", Value::Double(bytes_per_sec)),
+            ("pps", Value::Double(packets_per_sec)),
+            ("ts", now),
+            ("tcpf", Value::Int64(ddos.tcp_flags as i64)),
             ("tcpfp", Value::String(ddos.tcp_flags_pattern.clone())),
             ("srcas", Value::Int64(ddos.src_as as i64)),
             ("dstas", Value::Int64(ddos.dst_as as i64)),
             ("isnmp", Value::Int64(ddos.input_snmp as i64)),
-            ("fdir",  Value::Int64(ddos.flow_direction as i64)),
-            ("ampv",  Value::String(ddos.amplification_vector.clone())),
+            ("fdir", Value::Int64(ddos.flow_direction as i64)),
+            ("ampv", Value::String(ddos.amplification_vector.clone())),
             ("icmpt", Value::Int64(ddos.icmp_type as i64)),
             ("icmpc", Value::Int64(ddos.icmp_code as i64)),
         ],
@@ -624,16 +618,16 @@ pub fn upsert_host_endpoint(
     conn.execute(
         &mut stmt,
         vec![
-            ("id",       Value::String(ip.to_string())),
-            ("ip",       Value::String(ip.to_string())),
-            ("kind",     Value::String(effective_kind.to_string())),
+            ("id", Value::String(ip.to_string())),
+            ("ip", Value::String(ip.to_string())),
+            ("kind", Value::String(effective_kind.to_string())),
             ("hostname", Value::String(hostname.to_string())),
-            ("mac",      Value::String(mac.to_string())),
-            ("vendor",   Value::String(vendor.to_string())),
-            ("rack_id",  Value::String(rack_id.to_string())),
-            ("site_id",  Value::String(site_id.to_string())),
-            ("src",      Value::String(source.to_string())),
-            ("ts",       now),
+            ("mac", Value::String(mac.to_string())),
+            ("vendor", Value::String(vendor.to_string())),
+            ("rack_id", Value::String(rack_id.to_string())),
+            ("site_id", Value::String(site_id.to_string())),
+            ("src", Value::String(source.to_string())),
+            ("ts", now),
         ],
     )
     .context("execute HostEndpoint upsert")?;
@@ -685,7 +679,8 @@ pub fn resolve_peer_to_device(conn: &Connection<'_>, peer_ip: &str) -> Option<St
 
     // Tier 1: exact Device.address match
     if let Ok(mut stmt) = conn.prepare("MATCH (d:Device {address: $ip}) RETURN d.address LIMIT 1") {
-        if let Ok(mut rows) = conn.execute(&mut stmt, vec![("ip", Value::String(bare.to_string()))]) {
+        if let Ok(mut rows) = conn.execute(&mut stmt, vec![("ip", Value::String(bare.to_string()))])
+        {
             if let Some(row) = rows.next() {
                 if let Value::String(addr) = &row[0] {
                     if !addr.is_empty() {

@@ -1,19 +1,22 @@
-use std::collections::HashMap;
-use axum::{Json, extract::{Path, State}, http::StatusCode};
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+};
 use lbug::{Connection, Value};
+use std::collections::HashMap;
 
 use super::AppState;
 use super::{
-    ManagedDevicesResponse, ManagedDeviceJson, SubscriptionStatusJson,
-    ManagedDeviceRequest, RemoveManagedDeviceRequest, BulkManagedDeviceActionRequest,
-    BulkManagedDeviceActionResponse, BulkImportResult, BulkImportResponse, RemoveImpactResponse,
-    CredentialsResponse, CredentialJson, AddCredentialRequest,
-    RemoveCredentialRequest, TestCredentialRequest, CredentialMutationResponse,
-    SitesResponse, SiteJson, SiteSummaryResponse, SiteHealthJson,
-    SiteSubscriptionSummaryJson, SiteDeviceJson, SiteMutationResponse, RemoveSiteRequest,
-    MutationResponse, OnboardingDiscoveryRequest, BgpJson,
-    read_str, option_string, read_subscription_statuses, read_device_vendors,
-    read_trust_mark_impact, compute_health,
+    AddCredentialRequest, BgpJson, BulkImportResponse, BulkImportResult,
+    BulkManagedDeviceActionRequest, BulkManagedDeviceActionResponse, CredentialJson,
+    CredentialMutationResponse, CredentialsResponse, ManagedDeviceJson, ManagedDeviceRequest,
+    ManagedDevicesResponse, MutationResponse, OnboardingDiscoveryRequest, RemoveCredentialRequest,
+    RemoveImpactResponse, RemoveManagedDeviceRequest, RemoveSiteRequest, SiteDeviceJson,
+    SiteHealthJson, SiteJson, SiteMutationResponse, SiteSubscriptionSummaryJson,
+    SiteSummaryResponse, SitesResponse, SubscriptionStatusJson, TestCredentialRequest,
+    compute_health, option_string, read_device_vendors, read_str, read_subscription_statuses,
+    read_trust_mark_impact,
 };
 use crate::config::TargetConfig;
 use crate::credentials::{CredentialSummary, CredentialVault, ResolvePurpose, ResolvedCredential};
@@ -29,7 +32,9 @@ pub(super) async fn managed_devices_handler(
         .list_active()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let statuses = read_subscription_statuses(state.store.db()).await?;
-    let graph_vendors = read_device_vendors(state.store.db()).await.unwrap_or_default();
+    let graph_vendors = read_device_vendors(state.store.db())
+        .await
+        .unwrap_or_default();
 
     let overrides = state.registry.list_overrides().unwrap_or_default();
     let devices = targets
@@ -672,20 +677,36 @@ pub(super) async fn bulk_import_handler(
         match save_managed_device(state.clone(), req).await {
             Ok(Json(r)) if r.success => {
                 imported += 1;
-                results.push(BulkImportResult { address, success: true, error: String::new() });
+                results.push(BulkImportResult {
+                    address,
+                    success: true,
+                    error: String::new(),
+                });
             }
             Ok(Json(r)) => {
                 failed += 1;
-                results.push(BulkImportResult { address, success: false, error: r.error });
+                results.push(BulkImportResult {
+                    address,
+                    success: false,
+                    error: r.error,
+                });
             }
             Err((_, e)) => {
                 failed += 1;
-                results.push(BulkImportResult { address, success: false, error: e });
+                results.push(BulkImportResult {
+                    address,
+                    success: false,
+                    error: e,
+                });
             }
         }
     }
 
-    Ok(Json(BulkImportResponse { imported, failed, results }))
+    Ok(Json(BulkImportResponse {
+        imported,
+        failed,
+        results,
+    }))
 }
 
 pub(super) async fn remove_impact_handler(
@@ -741,7 +762,9 @@ pub(super) fn managed_device_json(
         resolution_audit: audit,
     }
 }
-pub(super) fn target_from_request(req: ManagedDeviceRequest) -> Result<TargetConfig, (StatusCode, String)> {
+pub(super) fn target_from_request(
+    req: ManagedDeviceRequest,
+) -> Result<TargetConfig, (StatusCode, String)> {
     if req.address.trim().is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -830,7 +853,9 @@ pub(super) fn credential_json(
         last_used_at_ns: credential.last_used_at_ns,
     }
 }
-pub(super) fn credential_device_counts(registry: &ApiRegistry) -> anyhow::Result<HashMap<String, usize>> {
+pub(super) fn credential_device_counts(
+    registry: &ApiRegistry,
+) -> anyhow::Result<HashMap<String, usize>> {
     let mut counts = HashMap::new();
     for target in registry.list_all_targets()? {
         if let Some(alias) = target.credential_alias {
@@ -858,7 +883,10 @@ pub(super) fn resolve_request_credentials(
         .as_deref()
         .and_then(|key| std::env::var(key).ok());
     Ok(match (username, password) {
-        (Some(username), Some(password)) => Some(ResolvedCredential { username, password: zeroize::Zeroizing::new(password) }),
+        (Some(username), Some(password)) => Some(ResolvedCredential {
+            username,
+            password: zeroize::Zeroizing::new(password),
+        }),
         _ => None,
     })
 }
@@ -881,17 +909,25 @@ pub(super) async fn bootstrap_device_handler(
         return Err((StatusCode::BAD_REQUEST, "address is required".into()));
     }
     if req.credential_alias.trim().is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "credential_alias is required".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "credential_alias is required".into(),
+        ));
     }
 
     // Resolve credentials from vault here in Rust — never ship them over HTTP.
-    let cred = state.credentials
+    let cred = state
+        .credentials
         .resolve(&req.credential_alias, ResolvePurpose::Discover)
-        .map_err(|e| (StatusCode::FAILED_DEPENDENCY, format!("credential resolve failed: {e}")))?
-;
+        .map_err(|e| {
+            (
+                StatusCode::FAILED_DEPENDENCY,
+                format!("credential resolve failed: {e}"),
+            )
+        })?;
 
-    let api_url = std::env::var("BONSAI_API_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
+    let api_url =
+        std::env::var("BONSAI_API_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
 
     // Prefer .venv/bin/python (where PyATS/Genie/paramiko are installed) over system python3
     let python_bin = if std::path::Path::new(".venv/bin/python").exists() {
@@ -902,8 +938,10 @@ pub(super) async fn bootstrap_device_handler(
     let mut cmd = tokio::process::Command::new(python_bin);
     cmd.arg("python/bootstrap_agent.py")
         .arg("device")
-        .arg("--address").arg(&req.address)
-        .arg("--api-url").arg(&api_url)
+        .arg("--address")
+        .arg(&req.address)
+        .arg("--api-url")
+        .arg(&api_url)
         // Inject credentials as env vars — never as CLI args (visible in ps) or over HTTP.
         .env("BONSAI_BOOTSTRAP_USERNAME", &cred.username)
         .env("BONSAI_BOOTSTRAP_PASSWORD", &*cred.password);
@@ -914,7 +952,10 @@ pub(super) async fn bootstrap_device_handler(
         .stderr(std::process::Stdio::piped());
 
     let output = cmd.output().await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to spawn bootstrap agent: {e}"))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to spawn bootstrap agent: {e}"),
+        )
     })?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -923,16 +964,21 @@ pub(super) async fn bootstrap_device_handler(
     if !output.status.success() {
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("bootstrap agent failed (exit {}): {}", output.status, stderr.trim()),
+            format!(
+                "bootstrap agent failed (exit {}): {}",
+                output.status,
+                stderr.trim()
+            ),
         ));
     }
 
-    let result: serde_json::Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|_| serde_json::json!({
+    let result: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|_| {
+        serde_json::json!({
             "status": "ok",
             "stdout": stdout.trim(),
             "stderr": stderr.trim(),
-        }));
+        })
+    });
 
     Ok(Json(result))
 }
@@ -1059,7 +1105,9 @@ struct SeedVrrpInstance {
     protocol: String,
 }
 
-fn default_vrrp_priority() -> i64 { 100 }
+fn default_vrrp_priority() -> i64 {
+    100
+}
 
 #[derive(serde::Deserialize)]
 struct SeedRoute {
@@ -1123,7 +1171,9 @@ struct SeedBfdSession {
     interval_ms: i64,
 }
 
-fn default_bfd_mult() -> i64 { 3 }
+fn default_bfd_mult() -> i64 {
+    3
+}
 
 #[derive(serde::Deserialize)]
 struct SeedStpInstance {
@@ -1145,7 +1195,9 @@ struct SeedStpInstance {
     protocol: String,
 }
 
-fn default_stp_priority() -> i64 { 32768 }
+fn default_stp_priority() -> i64 {
+    32768
+}
 
 #[derive(serde::Deserialize)]
 struct SeedVlan {
@@ -1194,7 +1246,9 @@ struct SeedNtpPeer {
     is_synchronized: bool,
 }
 
-fn default_ntp_stratum() -> i64 { 16 }
+fn default_ntp_stratum() -> i64 {
+    16
+}
 
 #[derive(serde::Deserialize)]
 struct SeedPlatformDetail {
@@ -1261,7 +1315,11 @@ pub(super) async fn device_seed_handler(
     }
     let db = state.store.db();
     let address = req.address.clone();
-    let source = if req.source.is_empty() { "bootstrap".to_string() } else { req.source.clone() };
+    let source = if req.source.is_empty() {
+        "bootstrap".to_string()
+    } else {
+        req.source.clone()
+    };
     let now = super::now_ns();
 
     let iface_count = req.interfaces.len();
@@ -1292,7 +1350,8 @@ pub(super) async fn device_seed_handler(
              SET d.hostname = '{}', d.vendor = '{}', d.os_version = '{}', \
                  d.bootstrap_source = '{}', d.bootstrap_at_ns = {}",
             address, req.hostname, req.vendor, req.os_version, source, now,
-        )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        ))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
 
         // Seed interfaces
         // IMPORTANT: we set i.id = 'address:name' to match the key used by
@@ -1311,18 +1370,31 @@ pub(super) async fn device_seed_handler(
                    i.oper_status = '{}', i.admin_status = '{}', i.speed = {}, \
                    i.mac = '{}', i.description = '{}', i.source = '{}', i.updated_at_ns = {}",
                 iface_id,
-                address, iface.name,
-                iface.oper_status, iface.admin_status,
-                iface.speed, iface.mac, iface.description, source, now,
-                iface.oper_status, iface.admin_status,
-                iface.speed, iface.mac, iface.description, source, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                address,
+                iface.name,
+                iface.oper_status,
+                iface.admin_status,
+                iface.speed,
+                iface.mac,
+                iface.description,
+                source,
+                now,
+                iface.oper_status,
+                iface.admin_status,
+                iface.speed,
+                iface.mac,
+                iface.description,
+                source,
+                now,
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
             // Ensure HAS_INTERFACE edge exists
             conn.query(&format!(
                 "MATCH (d:Device {{address: '{}'}}), (i:Interface {{id: '{}'}}) \
                  MERGE (d)-[:HAS_INTERFACE]->(i)",
                 address, iface_id,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
         // Seed BGP neighbors
@@ -1331,9 +1403,9 @@ pub(super) async fn device_seed_handler(
                 "MERGE (b:BgpSession {{device_address: '{}', peer_address: '{}'}}) \
                  SET b.peer_as = {}, b.state = '{}', b.vrf = '{}', \
                      b.source = '{}', b.updated_at_ns = {}",
-                address, bgp.peer_address, bgp.peer_as, bgp.state,
-                bgp.vrf, source, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                address, bgp.peer_address, bgp.peer_as, bgp.state, bgp.vrf, source, now,
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
         // Seed LLDP neighbors
@@ -1343,9 +1415,15 @@ pub(super) async fn device_seed_handler(
                  MERGE (i:Interface {{device_address: '{}', name: '{}'}}) \
                  SET i.lldp_remote_port = '{}', i.lldp_remote_device = '{}', \
                      i.source = '{}', i.updated_at_ns = {}",
-                address, address, lldp.local_interface, lldp.remote_port,
-                lldp.remote_device, source, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                address,
+                address,
+                lldp.local_interface,
+                lldp.remote_port,
+                lldp.remote_device,
+                source,
+                now,
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
         // Seed IS-IS adjacencies
@@ -1354,7 +1432,8 @@ pub(super) async fn device_seed_handler(
                 "MERGE (a:IsIsAdj {{device_address: '{}', system_id: '{}', interface: '{}'}}) \
                  SET a.state = '{}', a.source = '{}', a.updated_at_ns = {}",
                 address, isis.system_id, isis.interface, isis.state, source, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
         // D4-12 T2: Seed LAG groups → RedundancyGroup(type=lag) + MEMBER_OF edges
@@ -1367,9 +1446,18 @@ pub(super) async fn device_seed_handler(
                      rg.original_member_count = {}, rg.oper_status = '{}', \
                      rg.protocol = '{}', rg.min_links = {}, \
                      rg.protects_node_id = '{}', rg.source = '{}', rg.updated_at_ns = {}",
-                rg_id, lag.name, member_count, member_count,
-                lag.oper_status, lag.protocol, lag.min_links, address, source, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                rg_id,
+                lag.name,
+                member_count,
+                member_count,
+                lag.oper_status,
+                lag.protocol,
+                lag.min_links,
+                address,
+                source,
+                now,
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
             // Link each member interface
             for member_iface in &lag.members {
                 conn.query(&format!(
@@ -1377,40 +1465,62 @@ pub(super) async fn device_seed_handler(
                      MATCH (rg:RedundancyGroup {{id: '{}'}}) \
                      MERGE (i)-[:MEMBER_OF {{role: 'member', updated_at_ns: {}}}]->(rg)",
                     address, member_iface, rg_id, now,
-                )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                ))
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
             }
             // Link lag interface itself to device
             conn.query(&format!(
                 "MERGE (i:Interface {{device_address: '{}', name: '{}'}}) \
                  SET i.is_lag = true, i.lag_members = '{}', i.source = '{}', i.updated_at_ns = {}",
-                address, lag.name, lag.members.join(","), source, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                address,
+                lag.name,
+                lag.members.join(","),
+                source,
+                now,
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
         // D4-12 T2: Seed VRRP instances → RedundancyGroup(type=vrrp|hsrp)
         for vrrp in &req.vrrp_instances {
-            let rg_id = format!("{}-{}-{}-{}", vrrp.protocol, address, vrrp.interface, vrrp.group_id);
+            let rg_id = format!(
+                "{}-{}-{}-{}",
+                vrrp.protocol, address, vrrp.interface, vrrp.group_id
+            );
             conn.query(&format!(
                 "MERGE (rg:RedundancyGroup {{id: '{}'}}) \
                  SET rg.type = '{}', rg.name = '{} group {} on {}', \
                      rg.virtual_ip = '{}', rg.state = '{}', rg.priority = {}, \
                      rg.member_count = 1, rg.original_member_count = 1, \
                      rg.protects_node_id = '{}', rg.source = '{}', rg.updated_at_ns = {}",
-                rg_id, vrrp.protocol, vrrp.protocol, vrrp.group_id, vrrp.interface,
-                vrrp.virtual_ip, vrrp.state, vrrp.priority, address, source, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                rg_id,
+                vrrp.protocol,
+                vrrp.protocol,
+                vrrp.group_id,
+                vrrp.interface,
+                vrrp.virtual_ip,
+                vrrp.state,
+                vrrp.priority,
+                address,
+                source,
+                now,
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
             // Link device to this VRRP group
             conn.query(&format!(
                 "MATCH (d:Device {{address: '{}'}}) \
                  MATCH (rg:RedundancyGroup {{id: '{}'}}) \
                  MERGE (d)-[:MEMBER_OF {{role: '{}', interface: '{}', updated_at_ns: {}}}]->(rg)",
                 address, rg_id, vrrp.state, vrrp.interface, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
         // D4-12 T2: Seed ECMP routes → RedundancyGroup(type=ecmp) for multi-next-hop
         for route in &req.routes {
-            if !route.is_ecmp || route.next_hops.len() < 2 { continue; }
+            if !route.is_ecmp || route.next_hops.len() < 2 {
+                continue;
+            }
             let rg_id = format!("ecmp-{}-{}", address, route.prefix);
             let nh_count = route.next_hops.len() as i64;
             conn.query(&format!(
@@ -1419,9 +1529,18 @@ pub(super) async fn device_seed_handler(
                      rg.prefix = '{}', rg.protocol = '{}', rg.metric = {}, \
                      rg.member_count = {}, rg.original_member_count = {}, \
                      rg.protects_node_id = '{}', rg.source = '{}', rg.updated_at_ns = {}",
-                rg_id, route.prefix, route.prefix, route.protocol, route.metric,
-                nh_count, nh_count, address, source, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                rg_id,
+                route.prefix,
+                route.prefix,
+                route.protocol,
+                route.metric,
+                nh_count,
+                nh_count,
+                address,
+                source,
+                now,
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
             // Link each next-hop device (if it exists in graph)
             for nh in &route.next_hops {
                 conn.query(&format!(
@@ -1430,39 +1549,56 @@ pub(super) async fn device_seed_handler(
                      MATCH (rg:RedundancyGroup {{id: '{}'}}) \
                      MERGE (d)-[:MEMBER_OF {{role: 'next_hop', updated_at_ns: {}}}]->(rg)",
                     nh, rg_id, now,
-                )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                ))
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
             }
         }
 
         // D4-12 T2: Seed ARP entries (for dual-homed host detection)
         for arp in &req.arp_entries {
-            if arp.ip_address.is_empty() || arp.mac_address.is_empty() { continue; }
+            if arp.ip_address.is_empty() || arp.mac_address.is_empty() {
+                continue;
+            }
             conn.query(&format!(
                 "MERGE (ae:ArpEntry {{device_address: '{}', ip_address: '{}'}}) \
                  SET ae.mac_address = '{}', ae.interface = '{}', ae.state = '{}', \
                      ae.source = '{}', ae.updated_at_ns = {}",
-                address, arp.ip_address, arp.mac_address, arp.interface,
-                arp.state, source, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                address, arp.ip_address, arp.mac_address, arp.interface, arp.state, source, now,
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
         // Seed OSPF neighbors
         for ospf in &req.ospf_neighbors {
-            if ospf.neighbor_id.is_empty() { continue; }
+            if ospf.neighbor_id.is_empty() {
+                continue;
+            }
             let ospf_id = format!("ospf-{}-{}-{}", address, ospf.neighbor_id, ospf.interface);
             conn.query(&format!(
                 "MERGE (o:OspfNeighbor {{id: '{}'}}) \
                  SET o.device_address = '{}', o.neighbor_id = '{}', o.interface = '{}', \
                      o.state = '{}', o.area = '{}', o.dr = '{}', o.bdr = '{}', \
                      o.priority = {}, o.source = '{}', o.updated_at_ns = {}",
-                ospf_id, address, ospf.neighbor_id, ospf.interface, ospf.state,
-                ospf.area, ospf.dr, ospf.bdr, ospf.priority, source, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                ospf_id,
+                address,
+                ospf.neighbor_id,
+                ospf.interface,
+                ospf.state,
+                ospf.area,
+                ospf.dr,
+                ospf.bdr,
+                ospf.priority,
+                source,
+                now,
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
         // Seed BFD sessions → BfdSession node (already exists in schema)
         for bfd in &req.bfd_sessions {
-            if bfd.peer_address.is_empty() { continue; }
+            if bfd.peer_address.is_empty() {
+                continue;
+            }
             let bfd_id = format!("bfd-{}-{}", address, bfd.peer_address);
             conn.query(&format!(
                 "MERGE (b:BfdSession {{id: '{}'}}) \
@@ -1471,17 +1607,27 @@ pub(super) async fn device_seed_handler(
                      b.registered_protocols = '{}', b.local_diag = '{}', \
                      b.detect_multiplier = {}, b.interval_ms = {}, \
                      b.source = '{}', b.updated_at_ns = {}",
-                bfd_id, address, bfd.peer_address, bfd.interface,
-                bfd.state, bfd.protocol, bfd.local_diag,
-                bfd.detect_multiplier, bfd.interval_ms, source, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                bfd_id,
+                address,
+                bfd.peer_address,
+                bfd.interface,
+                bfd.state,
+                bfd.protocol,
+                bfd.local_diag,
+                bfd.detect_multiplier,
+                bfd.interval_ms,
+                source,
+                now,
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
             // HAS_BFD_SESSION edge
             conn.query(&format!(
                 "MATCH (d:Device {{address: '{}'}}) \
                  MATCH (b:BfdSession {{id: '{}'}}) \
                  MERGE (d)-[:HAS_BFD_SESSION]->(b)",
                 address, bfd_id,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
         // Seed STP instances
@@ -1494,21 +1640,34 @@ pub(super) async fn device_seed_handler(
                      s.bridge_priority = {}, s.is_root = {}, \
                      s.topology_changes = {}, s.protocol = '{}', \
                      s.source = '{}', s.updated_at_ns = {}",
-                stp_id, address, stp.vlan_id, stp.instance,
-                stp.root_bridge, stp.root_port, stp.bridge_priority,
-                stp.is_root, stp.topology_changes, stp.protocol, source, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                stp_id,
+                address,
+                stp.vlan_id,
+                stp.instance,
+                stp.root_bridge,
+                stp.root_port,
+                stp.bridge_priority,
+                stp.is_root,
+                stp.topology_changes,
+                stp.protocol,
+                source,
+                now,
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
         // Seed VLANs → VLAN node (already exists in schema) + ACCESS_VLAN edges
         for vlan in &req.vlans {
-            if vlan.vlan_id == 0 { continue; }
+            if vlan.vlan_id == 0 {
+                continue;
+            }
             let vlan_id_str = format!("vlan-{}", vlan.vlan_id);
             conn.query(&format!(
                 "MERGE (v:VLAN {{id: '{}'}}) \
                  SET v.vid = {}, v.name = '{}', v.source_name = '{}', v.updated_at_ns = {}",
                 vlan_id_str, vlan.vlan_id, vlan.name, source, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
             // Link member interfaces
             for iface_name in &vlan.interfaces {
                 conn.query(&format!(
@@ -1516,13 +1675,16 @@ pub(super) async fn device_seed_handler(
                      MATCH (v:VLAN {{id: '{}'}}) \
                      MERGE (i)-[:ACCESS_VLAN]->(v)",
                     address, iface_name, vlan_id_str,
-                )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                ))
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
             }
         }
 
         // Seed VRFs
         for vrf in &req.vrfs {
-            if vrf.name.is_empty() { continue; }
+            if vrf.name.is_empty() {
+                continue;
+            }
             let vrf_id = format!("vrf-{}-{}", address, vrf.name);
             let rt_import_json = serde_json::to_string(&vrf.rt_import).unwrap_or_default();
             let rt_export_json = serde_json::to_string(&vrf.rt_export).unwrap_or_default();
@@ -1534,18 +1696,25 @@ pub(super) async fn device_seed_handler(
                      v.rt_import_json = '{}', v.rt_export_json = '{}', \
                      v.interfaces_json = '{}', v.address_families_json = '{}', \
                      v.source = '{}', v.updated_at_ns = {}",
-                vrf_id, address, vrf.name, vrf.rd,
+                vrf_id,
+                address,
+                vrf.name,
+                vrf.rd,
                 rt_import_json.replace('\'', "\\'"),
                 rt_export_json.replace('\'', "\\'"),
                 ifaces_json.replace('\'', "\\'"),
                 afs_json.replace('\'', "\\'"),
-                source, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                source,
+                now,
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
         // Seed NTP peers
         for ntp in &req.ntp_peers {
-            if ntp.peer_address.is_empty() { continue; }
+            if ntp.peer_address.is_empty() {
+                continue;
+            }
             let ntp_id = format!("ntp-{}-{}", address, ntp.peer_address);
             conn.query(&format!(
                 "MERGE (n:NtpPeer {{id: '{}'}}) \
@@ -1553,10 +1722,19 @@ pub(super) async fn device_seed_handler(
                      n.stratum = {}, n.state = '{}', n.offset_ms = {}, \
                      n.reach = {}, n.ref_id = '{}', n.is_synchronized = {}, \
                      n.source = '{}', n.updated_at_ns = {}",
-                ntp_id, address, ntp.peer_address, ntp.stratum,
-                ntp.state, ntp.offset_ms, ntp.reach, ntp.ref_id,
-                ntp.is_synchronized, source, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                ntp_id,
+                address,
+                ntp.peer_address,
+                ntp.stratum,
+                ntp.state,
+                ntp.offset_ms,
+                ntp.reach,
+                ntp.ref_id,
+                ntp.is_synchronized,
+                source,
+                now,
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
         // Seed platform detail → enrich Device node
@@ -1568,16 +1746,25 @@ pub(super) async fn device_seed_handler(
                      d.cpu_util_pct = {}, d.memory_used_mb = {}, d.memory_total_mb = {}, \
                      d.uptime_seconds = {}, d.boot_image = '{}', \
                      d.hardware_rev = '{}', d.slot_inventory_json = '{}'",
-                address, plat.model, plat.serial,
-                plat.cpu_util_pct, plat.memory_used_mb, plat.memory_total_mb,
-                plat.uptime_seconds, plat.boot_image, plat.hardware_rev,
+                address,
+                plat.model,
+                plat.serial,
+                plat.cpu_util_pct,
+                plat.memory_used_mb,
+                plat.memory_total_mb,
+                plat.uptime_seconds,
+                plat.boot_image,
+                plat.hardware_rev,
                 slots_json.replace('\'', "\\'"),
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
         // Seed ACL summaries
         for acl in &req.acl_summaries {
-            if acl.name.is_empty() { continue; }
+            if acl.name.is_empty() {
+                continue;
+            }
             let acl_id = format!("acl-{}-{}", address, acl.name);
             let ifaces_json = serde_json::to_string(&acl.applied_interfaces).unwrap_or_default();
             conn.query(&format!(
@@ -1585,26 +1772,53 @@ pub(super) async fn device_seed_handler(
                  SET a.device_address = '{}', a.name = '{}', a.acl_type = '{}', \
                      a.ace_count = {}, a.applied_interfaces_json = '{}', \
                      a.total_matches = {}, a.source = '{}', a.updated_at_ns = {}",
-                acl_id, address, acl.name, acl.r#type,
-                acl.ace_count, ifaces_json.replace('\'', "\\'"),
-                acl.total_matches, source, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                acl_id,
+                address,
+                acl.name,
+                acl.r#type,
+                acl.ace_count,
+                ifaces_json.replace('\'', "\\'"),
+                acl.total_matches,
+                source,
+                now,
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
         // Seed MPLS LSPs
         for lsp in &req.mpls_lsps {
-            if lsp.name.is_empty() && lsp.destination.is_empty() { continue; }
-            let lsp_id = format!("mpls-{}-{}", address, if lsp.name.is_empty() { &lsp.destination } else { &lsp.name });
+            if lsp.name.is_empty() && lsp.destination.is_empty() {
+                continue;
+            }
+            let lsp_id = format!(
+                "mpls-{}-{}",
+                address,
+                if lsp.name.is_empty() {
+                    &lsp.destination
+                } else {
+                    &lsp.name
+                }
+            );
             conn.query(&format!(
                 "MERGE (m:MplsLsp {{id: '{}'}}) \
                  SET m.device_address = '{}', m.name = '{}', m.destination = '{}', \
                      m.state = '{}', m.in_label = {}, m.out_label = {}, \
                      m.out_interface = '{}', m.next_hop = '{}', m.protocol = '{}', \
                      m.source = '{}', m.updated_at_ns = {}",
-                lsp_id, address, lsp.name, lsp.destination,
-                lsp.state, lsp.in_label, lsp.out_label,
-                lsp.out_interface, lsp.next_hop, lsp.protocol, source, now,
-            )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+                lsp_id,
+                address,
+                lsp.name,
+                lsp.destination,
+                lsp.state,
+                lsp.in_label,
+                lsp.out_label,
+                lsp.out_interface,
+                lsp.next_hop,
+                lsp.protocol,
+                source,
+                now,
+            ))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
         Ok::<_, (StatusCode, String)>(())
@@ -1646,7 +1860,9 @@ pub(super) struct BulkBootstrapRequest {
     parallel: usize,
 }
 
-fn default_parallel() -> usize { 4 }
+fn default_parallel() -> usize {
+    4
+}
 
 pub(super) async fn bulk_bootstrap_handler(
     State(state): State<AppState>,
@@ -1656,20 +1872,28 @@ pub(super) async fn bulk_bootstrap_handler(
         return Err((StatusCode::BAD_REQUEST, "devices list is empty".into()));
     }
 
-    let api_url = std::env::var("BONSAI_API_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
+    let api_url =
+        std::env::var("BONSAI_API_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
 
     // Resolve all credentials from vault here in Rust before writing the seed file.
     // Python reads username/password directly from the file — no HTTP resolve call needed.
     let mut seed_entries: Vec<serde_json::Value> = Vec::with_capacity(req.devices.len());
     for d in &req.devices {
         let (username, password) = if !d.credential_alias.is_empty() {
-            match state.credentials.resolve(&d.credential_alias, ResolvePurpose::Discover) {
+            match state
+                .credentials
+                .resolve(&d.credential_alias, ResolvePurpose::Discover)
+            {
                 Ok(c) => (c.username.clone(), c.password.to_string()),
-                Err(e) => return Err((
-                    StatusCode::FAILED_DEPENDENCY,
-                    format!("credential resolve failed for '{}' (alias {}): {e}", d.address, d.credential_alias),
-                )),
+                Err(e) => {
+                    return Err((
+                        StatusCode::FAILED_DEPENDENCY,
+                        format!(
+                            "credential resolve failed for '{}' (alias {}): {e}",
+                            d.address, d.credential_alias
+                        ),
+                    ));
+                }
             }
         } else {
             (String::new(), String::new())
@@ -1684,10 +1908,20 @@ pub(super) async fn bulk_bootstrap_handler(
 
     let tmp_file = format!("/tmp/bonsai_bulk_bootstrap_{}.yaml", super::now_ns());
     let yaml_content = serde_yaml::to_string(&serde_json::json!({ "devices": seed_entries }))
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("yaml serialize: {e}")))?;
-    tokio::fs::write(&tmp_file, &yaml_content).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("write temp seed file: {e}"))
-    })?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("yaml serialize: {e}"),
+            )
+        })?;
+    tokio::fs::write(&tmp_file, &yaml_content)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("write temp seed file: {e}"),
+            )
+        })?;
 
     let python_bin = if std::path::Path::new(".venv/bin/python").exists() {
         ".venv/bin/python"
@@ -1697,14 +1931,20 @@ pub(super) async fn bulk_bootstrap_handler(
     let mut cmd = tokio::process::Command::new(python_bin);
     cmd.arg("python/bootstrap_agent.py")
         .arg("seed")
-        .arg("--seed-file").arg(&tmp_file)
-        .arg("--api-url").arg(&api_url)
-        .arg("--parallel").arg(req.parallel.min(8).to_string())
+        .arg("--seed-file")
+        .arg(&tmp_file)
+        .arg("--api-url")
+        .arg(&api_url)
+        .arg("--parallel")
+        .arg(req.parallel.min(8).to_string())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
     let output = cmd.output().await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to spawn bootstrap agent: {e}"))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to spawn bootstrap agent: {e}"),
+        )
     })?;
 
     // Cleanup temp file (best-effort)
@@ -1716,15 +1956,20 @@ pub(super) async fn bulk_bootstrap_handler(
     if !output.status.success() {
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("bulk bootstrap failed (exit {}): {}", output.status, stderr.trim()),
+            format!(
+                "bulk bootstrap failed (exit {}): {}",
+                output.status,
+                stderr.trim()
+            ),
         ));
     }
 
-    let result: serde_json::Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|_| serde_json::json!({
+    let result: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|_| {
+        serde_json::json!({
             "status": "ok",
             "stdout": stdout.trim(),
-        }));
+        })
+    });
 
     Ok(Json(result))
 }
@@ -1739,7 +1984,12 @@ pub(super) async fn resolve_credential_handler(
     let cred = state
         .credentials
         .resolve(&alias, ResolvePurpose::Discover)
-        .map_err(|e| (StatusCode::NOT_FOUND, format!("credential resolve failed: {e}")))?;
+        .map_err(|e| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("credential resolve failed: {e}"),
+            )
+        })?;
     Ok(Json(serde_json::json!({
         "alias": alias,
         "username": cred.username,
@@ -1747,7 +1997,10 @@ pub(super) async fn resolve_credential_handler(
     })))
 }
 
-pub(super) fn site_subtree_ids(sites: &[SiteRecord], root_id: &str) -> std::collections::HashSet<String> {
+pub(super) fn site_subtree_ids(
+    sites: &[SiteRecord],
+    root_id: &str,
+) -> std::collections::HashSet<String> {
     let mut ids = std::collections::HashSet::from([root_id.to_string()]);
     let mut changed = true;
     while changed {

@@ -1,0 +1,46 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2m 31s
+     Running tests/r01_r04_routing_history_recovery.rs (target/debug/deps/r01_r04_routing_history_recovery-fbc6567fb164f625)
+
+running 4 tests
+test accepted_raw_record_must_recover_event_history ... FAILED
+test recovered_truncated_event_tail_must_allow_future_restart ... FAILED
+test transport_gap_must_survive_restart ... FAILED
+test large_valid_update_must_preserve_all_route_events ... FAILED
+
+failures:
+
+---- accepted_raw_record_must_recover_event_history stdout ----
+
+thread 'accepted_raw_record_must_recover_event_history' (3755467) panicked at tests/r01_r04_routing_history_recovery.rs:46:5:
+Accepted raw observation rebuilt current state but lost event history
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- recovered_truncated_event_tail_must_allow_future_restart stdout ----
+
+thread 'recovered_truncated_event_tail_must_allow_future_restart' (3755469) panicked at tests/r01_r04_routing_history_recovery.rs:78:5:
+Skipped torn tail was left on disk and merged with the next record
+
+---- transport_gap_must_survive_restart stdout ----
+
+thread 'transport_gap_must_survive_restart' (3755470) panicked at tests/r01_r04_routing_history_recovery.rs:102:5:
+Monitoring gap disappeared across restart
+
+---- large_valid_update_must_preserve_all_route_events stdout ----
+
+thread 'large_valid_update_must_preserve_all_route_events' (3755468) panicked at tests/r01_r04_routing_history_recovery.rs:151:5:
+assertion `left == right` failed: Broadcast lag silently dropped emitted history events
+  left: 0
+ right: 5000
+
+
+failures:
+    accepted_raw_record_must_recover_event_history
+    large_valid_update_must_preserve_all_route_events
+    recovered_truncated_event_tail_must_allow_future_restart
+    transport_gap_must_survive_restart
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+error: test failed, to rerun pass `--test r01_r04_routing_history_recovery`

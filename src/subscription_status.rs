@@ -265,7 +265,9 @@ fn path_matches_update(
         | TelemetryEvent::EnvSensor { .. }
         | TelemetryEvent::OpticsDiagnostics { .. }
         | TelemetryEvent::OpticalChannel { .. }
-        | TelemetryEvent::PowerUnit { .. } => actual.contains(&expected) || expected.contains(&actual),
+        | TelemetryEvent::PowerUnit { .. } => {
+            actual.contains(&expected) || expected.contains(&actual)
+        }
         TelemetryEvent::InterfaceOperStatus { .. } => {
             expected.contains("oper-state")
                 || (expected.contains("interfaces")

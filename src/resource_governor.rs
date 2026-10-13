@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// T4-2/T4-3/T4-4 — Adaptive resource governance.
 ///
 /// Three concurrent feedback loops that observe system metrics and apply
@@ -14,7 +15,6 @@
 /// Every action emits a `bonsai_governance_action_total` counter so operators
 /// can observe when the governor fires.
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::{broadcast, watch};
@@ -268,7 +268,13 @@ fn govern_memory_soft(handle: &GovernorHandle, rss: u64, budget: u64) {
         action = "memory_soft",
         "governance: soft memory pressure action"
     );
-    if let Some(cb) = handle.inner.memory_pressure_callback.lock().unwrap().as_ref() {
+    if let Some(cb) = handle
+        .inner
+        .memory_pressure_callback
+        .lock()
+        .unwrap()
+        .as_ref()
+    {
         cb(50);
     }
 }
@@ -299,7 +305,13 @@ fn govern_memory_hard(handle: &GovernorHandle, rss: u64, budget: u64) {
     // The archive rotation is primarily driven by max_file_age_secs (T1-3) already set to
     // 3600s; under hard memory pressure we don't have a direct flush RPC today, so we
     // emit the metric and let the governor flag drive ingest shedding as relief.
-    if let Some(cb) = handle.inner.memory_pressure_callback.lock().unwrap().as_ref() {
+    if let Some(cb) = handle
+        .inner
+        .memory_pressure_callback
+        .lock()
+        .unwrap()
+        .as_ref()
+    {
         cb(25);
     }
 }

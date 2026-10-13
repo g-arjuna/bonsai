@@ -14,17 +14,17 @@
 //! - Auth middleware: opt-in via `BONSAI_REQUIRE_AUTH=1`, cached at startup.
 
 use argon2::{
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2, Params,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
 };
 use axum::{
+    Json,
     extract::State,
     http::{Request, StatusCode},
     middleware::Next,
     response::Response,
-    Json,
 };
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -63,8 +63,14 @@ pub(super) async fn get_or_init_jwt_secret(store: &crate::graph::GraphStore) -> 
     }
 
     // Try persisted auto-generated secret
-    let items = store.list_config_items(Some("jwt_secret".to_string())).await.unwrap_or_default();
-    if let Some(ci) = items.into_iter().find(|ci| ci.id == "jwt-secret-v1" && ci.enabled) {
+    let items = store
+        .list_config_items(Some("jwt_secret".to_string()))
+        .await
+        .unwrap_or_default();
+    if let Some(ci) = items
+        .into_iter()
+        .find(|ci| ci.id == "jwt-secret-v1" && ci.enabled)
+    {
         if ci.content_json.len() >= 32 {
             return ci.content_json;
         }
@@ -77,7 +83,8 @@ pub(super) async fn get_or_init_jwt_secret(store: &crate::graph::GraphStore) -> 
         let seed = format!("{}{}", uuid::Uuid::new_v4(), super::now_ns());
         Sha256::digest(seed.as_bytes()).to_vec()
     });
-    let secret2 = format!("{}{}",
+    let secret2 = format!(
+        "{}{}",
         hex::encode(Sha256::digest(format!("{}A", &secret).as_bytes())),
         hex::encode(Sha256::digest(format!("{}B", &secret).as_bytes()))
     );
@@ -93,7 +100,9 @@ pub(super) async fn get_or_init_jwt_secret(store: &crate::graph::GraphStore) -> 
         created_by: "auto".to_string(),
     };
     let _ = store.upsert_config_item(ci).await;
-    tracing::info!("JWT secret auto-generated and persisted. Set BONSAI_JWT_SECRET env var for explicit control.");
+    tracing::info!(
+        "JWT secret auto-generated and persisted. Set BONSAI_JWT_SECRET env var for explicit control."
+    );
     secret2
 }
 
@@ -221,12 +230,18 @@ fn check_password_policy(password: &str) -> Result<(), &'static str> {
     if !password.chars().any(|c| c.is_ascii_digit()) {
         return Err("password must contain at least one digit");
     }
-    if !password.chars().any(|c| "!@#$%^&*()_+-=[]{}|;:,.<>?".contains(c)) {
+    if !password
+        .chars()
+        .any(|c| "!@#$%^&*()_+-=[]{}|;:,.<>?".contains(c))
+    {
         return Err("password must contain at least one special character");
     }
     // Check for common patterns
     let password_lower = password.to_lowercase();
-    if password_lower.contains("password") || password_lower.contains("123456") || password_lower.contains("qwerty") {
+    if password_lower.contains("password")
+        || password_lower.contains("123456")
+        || password_lower.contains("qwerty")
+    {
         return Err("password cannot contain common patterns");
     }
     Ok(())
@@ -238,8 +253,7 @@ fn check_password_policy(password: &str) -> Result<(), &'static str> {
 /// Returns the full PHC string (includes salt + params).
 fn hash_password(password: &str) -> Result<String, String> {
     // OWASP minimum: m=19456 (19 MiB), t=2, p=1
-    let params = Params::new(19456, 2, 1, None)
-        .map_err(|e| format!("argon2 params: {e}"))?;
+    let params = Params::new(19456, 2, 1, None).map_err(|e| format!("argon2 params: {e}"))?;
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
     let salt = SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
     argon2
@@ -254,7 +268,9 @@ fn hash_password(password: &str) -> Result<String, String> {
 fn verify_password(password: &str, stored_hash: &str) -> bool {
     if stored_hash.starts_with("$argon2") {
         // Argon2 PHC format
-        let Ok(parsed) = PasswordHash::new(stored_hash) else { return false; };
+        let Ok(parsed) = PasswordHash::new(stored_hash) else {
+            return false;
+        };
         let params = Params::new(19456, 2, 1, None).unwrap_or_default();
         let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
         argon2.verify_password(password.as_bytes(), &parsed).is_ok()
@@ -365,7 +381,11 @@ pub(super) async fn create_api_key_handler(
     }
 
     // Generate a random key from two UUIDs (256 bits of entropy)
-    let raw_key = format!("bsk_{}_{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    let raw_key = format!(
+        "bsk_{}_{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
     // SHA-256 is appropriate for high-entropy random API keys (not passwords)
     let key_hash = hex::encode(Sha256::digest(raw_key.as_bytes()));
 
@@ -460,7 +480,11 @@ pub(super) async fn rotate_api_key_handler(
                     last_used_at_ns: 0,
                 });
 
-            let raw_key = format!("bsk_{}_{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+            let raw_key = format!(
+                "bsk_{}_{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            );
             let key_hash = hex::encode(Sha256::digest(raw_key.as_bytes()));
 
             let new_id = format!("apikey-{}", &key_hash[..16]);
@@ -610,29 +634,40 @@ pub(super) async fn login_handler(
     let username = req.username.trim().to_string();
     if username.is_empty() || req.password.is_empty() {
         return Ok(Json(LoginResponse {
-            success: false, token: String::new(), username,
-            role: String::new(), error: "username and password required".into(),
+            success: false,
+            token: String::new(),
+            username,
+            role: String::new(),
+            error: "username and password required".into(),
         }));
     }
 
     // Rate-limit check — must be before any DB access to prevent user enumeration
     if rate_limit_check(&username, false) {
         return Ok(Json(LoginResponse {
-            success: false, token: String::new(), username,
+            success: false,
+            token: String::new(),
+            username,
             role: String::new(),
             error: "too many failed attempts — account temporarily locked".into(),
         }));
     }
 
     // Look up user in ConfigItem DB
-    let users = state.store.list_config_items(Some("user".to_string())).await.unwrap_or_default();
+    let users = state
+        .store
+        .list_config_items(Some("user".to_string()))
+        .await
+        .unwrap_or_default();
     let user_item = users.iter().find(|ci| ci.name == username && ci.enabled);
 
     // Check bootstrap admin — vault-first, then env var fallback (D4-7 T5).
-    let admin_user = crate::config::resolve_secret(&state.credentials, "bonsai-admin", "BONSAI_ADMIN_USER")
-        .unwrap_or_default();
-    let admin_pass = crate::config::resolve_secret(&state.credentials, "bonsai-admin-pass", "BONSAI_ADMIN_PASS")
-        .unwrap_or_default();
+    let admin_user =
+        crate::config::resolve_secret(&state.credentials, "bonsai-admin", "BONSAI_ADMIN_USER")
+            .unwrap_or_default();
+    let admin_pass =
+        crate::config::resolve_secret(&state.credentials, "bonsai-admin-pass", "BONSAI_ADMIN_PASS")
+            .unwrap_or_default();
 
     let (role_str, is_env_admin) = if !admin_user.is_empty()
         && bool::from(username.as_bytes().ct_eq(admin_user.as_bytes()))
@@ -640,13 +675,19 @@ pub(super) async fn login_handler(
     {
         ("admin".to_string(), true)
     } else if let Some(ci) = user_item {
-        let content: UserContent = serde_json::from_str(&ci.content_json)
-            .unwrap_or(UserContent { password_hash: String::new(), role: "viewer".into(), last_login_ns: 0 });
+        let content: UserContent = serde_json::from_str(&ci.content_json).unwrap_or(UserContent {
+            password_hash: String::new(),
+            role: "viewer".into(),
+            last_login_ns: 0,
+        });
         if !verify_password(&req.password, &content.password_hash) {
             rate_limit_check(&username, false);
             return Ok(Json(LoginResponse {
-                success: false, token: String::new(), username,
-                role: String::new(), error: "invalid credentials".into(),
+                success: false,
+                token: String::new(),
+                username,
+                role: String::new(),
+                error: "invalid credentials".into(),
             }));
         }
         (content.role, false)
@@ -657,16 +698,22 @@ pub(super) async fn login_handler(
                 tracing::warn!(username = %username, error = %e, "LDAP authentication failed");
                 rate_limit_check(&username, false);
                 return Ok(Json(LoginResponse {
-                    success: false, token: String::new(), username,
-                    role: String::new(), error: "invalid credentials".into(),
+                    success: false,
+                    token: String::new(),
+                    username,
+                    role: String::new(),
+                    error: "invalid credentials".into(),
                 }));
             }
         }
     } else {
         rate_limit_check(&username, false);
         return Ok(Json(LoginResponse {
-            success: false, token: String::new(), username,
-            role: String::new(), error: "invalid credentials".into(),
+            success: false,
+            token: String::new(),
+            username,
+            role: String::new(),
+            error: "invalid credentials".into(),
         }));
     };
 
@@ -683,8 +730,12 @@ pub(super) async fn login_handler(
     if !is_env_admin {
         let now_ns = super::now_ns();
         if let Some(ci) = user_item {
-            let mut content: UserContent = serde_json::from_str(&ci.content_json)
-                .unwrap_or(UserContent { password_hash: String::new(), role: "viewer".into(), last_login_ns: 0 });
+            let mut content: UserContent =
+                serde_json::from_str(&ci.content_json).unwrap_or(UserContent {
+                    password_hash: String::new(),
+                    role: "viewer".into(),
+                    last_login_ns: 0,
+                });
             // Re-hash from legacy SHA-256 to Argon2id on next login
             if !content.password_hash.starts_with("$argon2") {
                 if let Ok(new_hash) = hash_password(&req.password) {
@@ -713,7 +764,9 @@ pub(super) async fn logout_handler(
     State(state): State<AppState>,
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    if let Some(bearer) = request.headers().get("authorization")
+    if let Some(bearer) = request
+        .headers()
+        .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "))
     {
@@ -739,17 +792,24 @@ pub(super) async fn logout_handler(
 pub(super) async fn list_users_handler(
     State(state): State<AppState>,
 ) -> Result<Json<UserListResponse>, (StatusCode, String)> {
-    let items = state.store.list_config_items(Some("user".to_string())).await.unwrap_or_default();
-    let users = items.iter().filter_map(|ci| {
-        let content: UserContent = serde_json::from_str(&ci.content_json).ok()?;
-        Some(UserSummary {
-            id: ci.id.clone(),
-            username: ci.name.clone(),
-            role: content.role,
-            enabled: ci.enabled,
-            last_login_ns: content.last_login_ns,
+    let items = state
+        .store
+        .list_config_items(Some("user".to_string()))
+        .await
+        .unwrap_or_default();
+    let users = items
+        .iter()
+        .filter_map(|ci| {
+            let content: UserContent = serde_json::from_str(&ci.content_json).ok()?;
+            Some(UserSummary {
+                id: ci.id.clone(),
+                username: ci.name.clone(),
+                role: content.role,
+                enabled: ci.enabled,
+                last_login_ns: content.last_login_ns,
+            })
         })
-    }).collect();
+        .collect();
     Ok(Json(UserListResponse { users }))
 }
 
@@ -760,7 +820,9 @@ pub(super) async fn create_user_handler(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let username = req.username.trim().to_string();
     if username.is_empty() || req.password.is_empty() {
-        return Ok(Json(serde_json::json!({"success": false, "error": "username and password required"})));
+        return Ok(Json(
+            serde_json::json!({"success": false, "error": "username and password required"}),
+        ));
     }
 
     // Enforce password policy
@@ -769,11 +831,15 @@ pub(super) async fn create_user_handler(
     }
 
     let valid_roles = ["admin", "operator", "viewer", "api_readonly"];
-    let role = if valid_roles.contains(&req.role.as_str()) { req.role.clone() } else { "viewer".to_string() };
+    let role = if valid_roles.contains(&req.role.as_str()) {
+        req.role.clone()
+    } else {
+        "viewer".to_string()
+    };
 
     // Hash with Argon2id
-    let pw_hash = hash_password(&req.password)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let pw_hash =
+        hash_password(&req.password).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let content = UserContent {
         password_hash: pw_hash,
         role: role.clone(),
@@ -790,10 +856,15 @@ pub(super) async fn create_user_handler(
         enabled: true,
         created_by: "admin".to_string(),
     };
-    state.store.upsert_config_item(item).await
+    state
+        .store
+        .upsert_config_item(item)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
 
-    Ok(Json(serde_json::json!({"success": true, "username": username, "role": role})))
+    Ok(Json(
+        serde_json::json!({"success": true, "username": username, "role": role}),
+    ))
 }
 
 /// DELETE /api/auth/users/{id} — disable a user.
@@ -801,11 +872,18 @@ pub(super) async fn delete_user_handler(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let items = state.store.list_config_items(Some("user".to_string())).await.unwrap_or_default();
+    let items = state
+        .store
+        .list_config_items(Some("user".to_string()))
+        .await
+        .unwrap_or_default();
     match items.into_iter().find(|ci| ci.id == id) {
         Some(mut item) => {
             item.enabled = false;
-            state.store.upsert_config_item(item).await
+            state
+                .store
+                .upsert_config_item(item)
+                .await
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
             Ok(StatusCode::NO_CONTENT)
         }
@@ -864,7 +942,10 @@ pub fn redact_secrets_in_json(val: &mut serde_json::Value) {
         serde_json::Value::Object(map) => {
             for (k, v) in map.iter_mut() {
                 let lower = k.to_ascii_lowercase();
-                if SENSITIVE_KEYS.iter().any(|s| lower == *s || lower.ends_with(&format!("_{s}"))) {
+                if SENSITIVE_KEYS
+                    .iter()
+                    .any(|s| lower == *s || lower.ends_with(&format!("_{s}")))
+                {
                     *v = serde_json::Value::String("[REDACTED]".to_string());
                 } else {
                     redact_secrets_in_json(v);
@@ -880,6 +961,40 @@ pub fn redact_secrets_in_json(val: &mut serde_json::Value) {
     }
 }
 
+/// Server-enforced routing access scope derived from an authenticated API key (`R06`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RoutingAccessScope {
+    pub speaker: Option<String>,
+    pub vrf_rd: Option<String>,
+    pub tenant_id: Option<String>,
+}
+
+/// Parse a scoped routing API key string such as `"routing:read:speaker=192.0.2.1,vrf_rd=65000:100,tenant_id=acme"`.
+pub fn parse_routing_access_scope(scope: &str) -> Option<RoutingAccessScope> {
+    let suffix = scope
+        .strip_prefix("routing:read:")
+        .or_else(|| scope.strip_prefix("routing:scope:"))?;
+    let mut out = RoutingAccessScope::default();
+    for part in suffix.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (k, v) = part.split_once('=')?;
+        let v = v.trim();
+        if v.is_empty() {
+            return None;
+        }
+        match k.trim() {
+            "speaker" => out.speaker = Some(v.to_string()),
+            "vrf_rd" | "rd" => out.vrf_rd = Some(v.to_string()),
+            "tenant_id" | "tenant" => out.tenant_id = Some(v.to_string()),
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
 // ── Auth middleware ──────────────────────────────────────────────────────────
 
 /// Axum middleware: if `BONSAI_REQUIRE_AUTH=1` or DB `require_auth=true`, validate `Authorization: Bearer <token>`.
@@ -890,12 +1005,14 @@ pub fn redact_secrets_in_json(val: &mut serde_json::Value) {
 /// /health, /healthz, /readyz, /api/auth/login are always unauthenticated.
 pub async fn auth_middleware(
     State(store): State<std::sync::Arc<crate::graph::GraphStore>>,
-    request: Request<axum::body::Body>,
+    mut request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
     // D4-7 T5: Check DB for require_auth setting, fallback to env var.
     let require_auth = {
-        let db_val = store.list_config_items(Some("app_config".to_string())).await
+        let db_val = store
+            .list_config_items(Some("app_config".to_string()))
+            .await
             .unwrap_or_default()
             .iter()
             .find(|i| i.name == "require_auth" && i.enabled)
@@ -903,7 +1020,12 @@ pub async fn auth_middleware(
         match db_val.as_deref() {
             Some("1") | Some("true") => true,
             Some("0") | Some("false") => false,
-            _ => std::env::var("BONSAI_REQUIRE_AUTH").unwrap_or_default().trim() == "1",
+            _ => {
+                std::env::var("BONSAI_REQUIRE_AUTH")
+                    .unwrap_or_default()
+                    .trim()
+                    == "1"
+            }
         }
     };
 
@@ -944,9 +1066,9 @@ pub async fn auth_middleware(
                 .list_config_items(Some("jwt_revoked".to_string()))
                 .await
                 .unwrap_or_default();
-            let is_revoked = revoked.iter().any(|ci| {
-                ci.id == format!("jwt-revoked-{}", claims.jti) && ci.enabled
-            });
+            let is_revoked = revoked
+                .iter()
+                .any(|ci| ci.id == format!("jwt-revoked-{}", claims.jti) && ci.enabled);
             if !is_revoked {
                 authenticated_role = Some(Role::from_str(&claims.role));
             }
@@ -956,13 +1078,25 @@ pub async fn auth_middleware(
     // --- Path 2: API key (bsk_ prefix) — constant-time hash comparison ---
     if authenticated_role.is_none() && bearer.starts_with("bsk_") {
         let presented_hash = hex::encode(Sha256::digest(bearer.as_bytes()));
-        let items = store.list_config_items(Some("api_key".to_string())).await.unwrap_or_default();
+        let items = store
+            .list_config_items(Some("api_key".to_string()))
+            .await
+            .unwrap_or_default();
         for ci in &items {
-            if !ci.enabled { continue; }
-            let Ok(content) = serde_json::from_str::<ApiKeyContent>(&ci.content_json) else { continue; };
-            let hashes_match = bool::from(content.key_hash.as_bytes().ct_eq(presented_hash.as_bytes()));
-            if !hashes_match { continue; }
-            if content.expires_at_ns > 0 && super::now_ns() > content.expires_at_ns { continue; }
+            if !ci.enabled {
+                continue;
+            }
+            let Ok(content) = serde_json::from_str::<ApiKeyContent>(&ci.content_json) else {
+                continue;
+            };
+            let hashes_match =
+                bool::from(content.key_hash.as_bytes().ct_eq(presented_hash.as_bytes()));
+            if !hashes_match {
+                continue;
+            }
+            if content.expires_at_ns > 0 && super::now_ns() > content.expires_at_ns {
+                continue;
+            }
             let role = match content.scope.as_str() {
                 "admin" | "*" => Role::Admin,
                 "write" | "remediation" | "webhook" => Role::Operator,
@@ -982,12 +1116,16 @@ pub async fn auth_middleware(
     // Enforce API key scope for /api/routing/* reads/writes
     if path.starts_with("/api/routing/") {
         if let Some(ref scope) = api_key_scope {
-            let allowed_routing_scope = matches!(
-                scope.as_str(),
-                "*" | "admin" | "write" | "read" | "viewer" | "routing" | "routing:read"
-            );
-            if !allowed_routing_scope {
-                return Err(StatusCode::FORBIDDEN);
+            if let Some(routing_scope) = parse_routing_access_scope(scope) {
+                request.extensions_mut().insert(routing_scope);
+            } else {
+                let allowed_routing_scope = matches!(
+                    scope.as_str(),
+                    "*" | "admin" | "write" | "read" | "viewer" | "routing" | "routing:read"
+                );
+                if !allowed_routing_scope {
+                    return Err(StatusCode::FORBIDDEN);
+                }
             }
         }
     }
@@ -1061,10 +1199,14 @@ async fn ldap_authenticate(
             .await
             .map_err(|e| format!("LDAP connect to {addr}: {e}"))?;
         let bind_request = build_ldap_simple_bind(&user_dn, password);
-        stream.write_all(&bind_request).await
+        stream
+            .write_all(&bind_request)
+            .await
             .map_err(|e| format!("LDAP write: {e}"))?;
         let mut buf = vec![0u8; 4096];
-        let n = stream.read(&mut buf).await
+        let n = stream
+            .read(&mut buf)
+            .await
             .map_err(|e| format!("LDAP read: {e}"))?;
         if n == 0 {
             return Err("LDAP connection closed without response".into());
@@ -1103,10 +1245,14 @@ async fn resolve_ldap_role(
     }
 
     // D4-7 T5: vault-first resolution for LDAP bind password.
-    let bind_password = std::env::var(&ldap.bind_password_env).ok()
+    let bind_password = std::env::var(&ldap.bind_password_env)
+        .ok()
         .unwrap_or_default();
     let bind_password = if bind_password.is_empty() {
-        return Err(format!("LDAP bind password not available (env '{}' not set, vault alias 'ldap-bind' not found)", ldap.bind_password_env));
+        return Err(format!(
+            "LDAP bind password not available (env '{}' not set, vault alias 'ldap-bind' not found)",
+            ldap.bind_password_env
+        ));
     } else {
         bind_password
     };
@@ -1132,20 +1278,28 @@ async fn resolve_ldap_role(
             .map_err(|e| format!("LDAP service bind connect: {e}"))?;
         // Bind as service account
         let svc_bind = build_ldap_simple_bind(&ldap.bind_dn, &bind_password);
-        stream.write_all(&svc_bind).await
+        stream
+            .write_all(&svc_bind)
+            .await
             .map_err(|e| format!("LDAP svc bind write: {e}"))?;
         let mut buf = vec![0u8; 4096];
-        let n = stream.read(&mut buf).await
+        let n = stream
+            .read(&mut buf)
+            .await
             .map_err(|e| format!("LDAP svc bind read: {e}"))?;
         if parse_ldap_bind_result(&buf[..n]) != 0 {
             return Err("LDAP service account bind failed".into());
         }
         // Build SearchRequest for user DN, requesting memberOf
         let search_req = build_ldap_search_request(&user_dn, "memberOf");
-        stream.write_all(&search_req).await
+        stream
+            .write_all(&search_req)
+            .await
             .map_err(|e| format!("LDAP search write: {e}"))?;
         let mut resp = vec![0u8; 16384];
-        let n = stream.read(&mut resp).await
+        let n = stream
+            .read(&mut resp)
+            .await
             .map_err(|e| format!("LDAP search read: {e}"))?;
         resp[..n].to_vec()
     };
@@ -1172,11 +1326,19 @@ async fn resolve_ldap_role(
         }
     }
 
-    Ok(best_role.map(|(_, r)| r).unwrap_or_else(|| ldap.default_role.clone()))
+    Ok(best_role
+        .map(|(_, r)| r)
+        .unwrap_or_else(|| ldap.default_role.clone()))
 }
 
 /// TLS (ldaps://) bind — uses rustls via tokio-rustls.
-async fn ldap_bind_tls(addr: &str, hostname: &str, dn: &str, password: &str, skip_verify: bool) -> Result<(), String> {
+async fn ldap_bind_tls(
+    addr: &str,
+    hostname: &str,
+    dn: &str,
+    password: &str,
+    skip_verify: bool,
+) -> Result<(), String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     if skip_verify {
@@ -1207,15 +1369,20 @@ async fn ldap_bind_tls(addr: &str, hostname: &str, dn: &str, password: &str, ski
     let tcp_stream = tokio::net::TcpStream::connect(addr)
         .await
         .map_err(|e| format!("ldaps:// connect to {addr}: {e}"))?;
-    let mut tls_stream = connector.connect(domain, tcp_stream)
+    let mut tls_stream = connector
+        .connect(domain, tcp_stream)
         .await
         .map_err(|e| format!("ldaps:// TLS handshake: {e}"))?;
 
     let bind_request = build_ldap_simple_bind(dn, password);
-    tls_stream.write_all(&bind_request).await
+    tls_stream
+        .write_all(&bind_request)
+        .await
         .map_err(|e| format!("ldaps:// write: {e}"))?;
     let mut buf = vec![0u8; 4096];
-    let n = tls_stream.read(&mut buf).await
+    let n = tls_stream
+        .read(&mut buf)
+        .await
         .map_err(|e| format!("ldaps:// read: {e}"))?;
     if n == 0 {
         return Err("ldaps:// connection closed without response".into());
@@ -1243,19 +1410,25 @@ impl rustls::client::danger::ServerCertVerifier for NoVerifier {
         Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
     fn verify_tls12_signature(
-        &self, _message: &[u8], _cert: &rustls::pki_types::CertificateDer<'_>,
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
         _dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
         Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
     }
     fn verify_tls13_signature(
-        &self, _message: &[u8], _cert: &rustls::pki_types::CertificateDer<'_>,
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
         _dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
         Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
     }
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        rustls::crypto::ring::default_provider().signature_verification_algorithms.supported_schemes()
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -1311,11 +1484,12 @@ fn parse_ldap_search_memberof(data: &[u8]) -> Vec<String> {
     let mut results = Vec::new();
     let mut i = 0;
     while i + 2 < data.len() {
-        if data[i] == 0x04 { // OCTET STRING
-            let (len, consumed) = ber_decode_length(&data[i+1..]);
+        if data[i] == 0x04 {
+            // OCTET STRING
+            let (len, consumed) = ber_decode_length(&data[i + 1..]);
             let start = i + 1 + consumed;
             if start + len <= data.len() {
-                if let Ok(s) = std::str::from_utf8(&data[start..start+len]) {
+                if let Ok(s) = std::str::from_utf8(&data[start..start + len]) {
                     if s.contains("CN=") || s.contains("cn=") {
                         results.push(s.to_string());
                     }
@@ -1328,7 +1502,9 @@ fn parse_ldap_search_memberof(data: &[u8]) -> Vec<String> {
 }
 
 fn ber_decode_length(data: &[u8]) -> (usize, usize) {
-    if data.is_empty() { return (0, 1); }
+    if data.is_empty() {
+        return (0, 1);
+    }
     if data[0] < 128 {
         (data[0] as usize, 1)
     } else {
@@ -1424,32 +1600,46 @@ fn parse_ldap_bind_result(data: &[u8]) -> u8 {
     // LDAPMessage { messageID, BindResponse [APPLICATION 1] { resultCode, ... } }
     // Walk past: SEQUENCE tag+len, INTEGER (messageID), APPLICATION 1 tag+len,
     // then read ENUMERATED (resultCode).
-    if data.len() < 10 { return 255; }
+    if data.len() < 10 {
+        return 255;
+    }
     let mut pos = 0;
     // Skip SEQUENCE tag + length
-    if data[pos] != 0x30 { return 254; }
+    if data[pos] != 0x30 {
+        return 254;
+    }
     pos += 1;
     pos += skip_ber_length(data, pos);
     // Skip messageID INTEGER
-    if pos >= data.len() || data[pos] != 0x02 { return 253; }
+    if pos >= data.len() || data[pos] != 0x02 {
+        return 253;
+    }
     pos += 1;
     let id_len = data.get(pos).copied().unwrap_or(0) as usize;
     pos += 1 + id_len;
     // BindResponse is APPLICATION 1 (tag = 0x61)
-    if pos >= data.len() || data[pos] != 0x61 { return 252; }
+    if pos >= data.len() || data[pos] != 0x61 {
+        return 252;
+    }
     pos += 1;
     pos += skip_ber_length(data, pos);
     // resultCode is ENUMERATED (tag 0x0A)
-    if pos >= data.len() || data[pos] != 0x0A { return 251; }
+    if pos >= data.len() || data[pos] != 0x0A {
+        return 251;
+    }
     pos += 1;
     let rc_len = data.get(pos).copied().unwrap_or(0) as usize;
     pos += 1;
-    if rc_len == 0 || pos >= data.len() { return 250; }
+    if rc_len == 0 || pos >= data.len() {
+        return 250;
+    }
     data[pos]
 }
 
 fn skip_ber_length(data: &[u8], pos: usize) -> usize {
-    if pos >= data.len() { return 1; }
+    if pos >= data.len() {
+        return 1;
+    }
     let first = data[pos];
     if first < 128 {
         1
@@ -1461,9 +1651,7 @@ fn skip_ber_length(data: &[u8], pos: usize) -> usize {
 
 /// GET /api/auth/ldap/config — return LDAP config (without passwords).
 /// Note: `bind_password_env` is returned (the env var name, not the value).
-pub(super) async fn ldap_config_handler(
-    State(state): State<AppState>,
-) -> Json<serde_json::Value> {
+pub(super) async fn ldap_config_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
     let ldap = &state.ldap_config;
     Json(serde_json::json!({
         "enabled": ldap.enabled,
@@ -1484,7 +1672,9 @@ pub(super) async fn ldap_test_handler(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let ldap = &state.ldap_config;
     if !ldap.enabled {
-        return Ok(Json(serde_json::json!({"success": false, "error": "LDAP not enabled"})));
+        return Ok(Json(
+            serde_json::json!({"success": false, "error": "LDAP not enabled"}),
+        ));
     }
     let bind_password = if ldap.bind_password_env.is_empty() {
         String::new()
@@ -1492,10 +1682,14 @@ pub(super) async fn ldap_test_handler(
         std::env::var(&ldap.bind_password_env).unwrap_or_default()
     };
     if bind_password.is_empty() {
-        return Ok(Json(serde_json::json!({"success": false, "error": "bind password env not set"})));
+        return Ok(Json(
+            serde_json::json!({"success": false, "error": "bind password env not set"}),
+        ));
     }
     match ldap_authenticate(ldap, &ldap.bind_dn, &bind_password).await {
-        Ok(_) => Ok(Json(serde_json::json!({"success": true, "message": "LDAP bind successful"}))),
+        Ok(_) => Ok(Json(
+            serde_json::json!({"success": true, "message": "LDAP bind successful"}),
+        )),
         Err(e) => Ok(Json(serde_json::json!({"success": false, "error": e}))),
     }
 }

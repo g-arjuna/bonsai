@@ -26,27 +26,27 @@ Portable patch: [rustybmp-m1-b04-b08.patch](evidence/2026-10-11/rustybmp-m1-b04-
 - **B06**: Durable `BmpJournal`, DuckDB commit checking, and truncated crash-tail recovery.
 - **B08**: Truthful BGPsec (`BgpsecVerdict::Unverified` without RFC 8205 signature input), no split-brain HA self-promotion, and persistent `RollbackRegistry`.
 
-## Milestone M2 (B07, B09–B15) — One usable Bonsai workflow (completed)
+## Milestone M2 (B07, B09–B15) — One usable Bonsai workflow (completed; live UI/FRR lab R07 pending)
 
 - **B07**: Canonical vendor/capability registry (`src/platform_registry.rs`, `python/bootstrap_agent.py`, `ui/src/lib/Onboarding.svelte`).
 - **B09**: Bonsai peer-transition ordering (`src/graph/mod.rs`) and correlation window raw-evidence preservation (`src/correlation_buffer.rs`).
 - **B10**: Workspace crate import (`crates/{rbmp-core,rbmp-rib,rbmp-store}`) with [B10_IMPORT_MANIFEST.md](B10_IMPORT_MANIFEST.md) and `RibEventJournal`.
-- **B11–B13**: Reduced `bonsai-routing` service (`src/routing_service/mod.rs`), Bonsai RBAC proxy (`/api/routing/v1/*`), SSH `RejectPolicy` default, and checkpointed graph summary projector ([b11-b12-b13-routing-workflow.log](evidence/2026-10-11/b11-b12-b13-routing-workflow.log)).
+- **B11–B13**: Reduced `bonsai-routing` service (`src/routing_service/mod.rs`), Bonsai RBAC & `RoutingAccessScope` proxy (`/api/routing/v1/*`), SSH `RejectPolicy` default, and checkpointed graph summary projector wired into `src/server_startup.rs` and `routing_v1_proxy_get_handler` ([b11-b12-b13-routing-workflow.log](evidence/2026-10-11/b11-b12-b13-routing-workflow.log), [r05-r06-verification.log](evidence/2026-10-12-remediation/r05-r06-verification.log)).
 - **B14–B15**: Svelte 5 routing workspace (`ui/src/routes/Routing.svelte`) and unified Compose profile (`bonsai-standalone` + `bonsai-routing`).
 
-## Milestone M3 (B16–B20) — Reproducible personal release (completed)
+## Milestone M3 (B16–B20) — Reproducible personal release (prototype scaffolding; live lab R07 pending)
 
 1. **B16 — Versioned config/DB migration with backup and rollback (completed)**:
    - Implemented `create_backup`, `migrate_routing_jsonl_file`, `migrate_bonsai_toml_file`, and `rollback_from_backup` in `src/routing_service/migration.rs`.
    - Verified v1->v2 migration with `legacy_identity_incomplete = true` quality flags and byte-for-byte SHA-256 rollback in `tests/b16_b17_b18_b19_m3_release_gates.rs` ([b16-b19-m3-release-gates.log](evidence/2026-10-11/b16-b19-m3-release-gates.log)).
-2. **B17 — FRR expected-state oracle and two-run reproducibility (completed)**:
-   - Verified two clean runs of announce -> attribute change -> withdraw -> BMP disconnect gap -> collector reconnect against `ExpectedRouteOracle`, producing identical SHA-256 route-set digests and machine-readable [manifest.json](evidence/2026-10-11/b17-b18-evidence-bundle/manifest.json) + [results.json](evidence/2026-10-11/b17-b18-evidence-bundle/results.json).
-3. **B18 — Non-FRR NOS verification & capability matrix (completed)**:
-   - Verified Nokia SR Linux (`nokia_srl`, RFC 9069 Loc-RIB `peer_type=3`) and Cisco IOS XRd (`cisco_xrd`, RFC 8671 `RdInstance` `peer_type=1` `AdjRibOutPostPolicy`) alongside FRR and published the version-specific capability matrix in [M3_RELEASE_REPORT.md](M3_RELEASE_REPORT.md).
-4. **B19 — Fault, replay, and load verification (completed)**:
-   - Verified 1,000-route deterministic burst + 200 withdrawals + 10 malformed frames + truncated crash-tail recovery + bounded pagination (`limit <= 500`) + checkpointed graph projection in [b16-b19-m3-release-gates.log](evidence/2026-10-11/b16-b19-m3-release-gates.log).
-5. **B20 — Unified developer workflow, docs, and release checklist (completed)**:
-   - Created root [AGENTS.md](../../AGENTS.md), [justfile](../../justfile), workspace CI steps in `.github/workflows/ci.yml`, and [M3_RELEASE_REPORT.md](M3_RELEASE_REPORT.md).
+2. **B17 — FRR expected-state oracle and two-run reproducibility (synthetic PDU replay verified; live FRR lab pending under R07)**:
+   - Verified two clean runs of in-process synthetic BMP frame replay against `ExpectedRouteOracle` ([manifest.json](evidence/2026-10-11/b17-b18-evidence-bundle/manifest.json), [results.json](evidence/2026-10-11/b17-b18-evidence-bundle/results.json)). Live Containerlab FRR execution with router CLI, packet capture, and UI verification is tracked under `R07`.
+3. **B18 — Non-FRR NOS verification & capability matrix (synthetic PDU mutation only; live NOS pending under R07)**:
+   - Verified byte-level BMP PDU decoding for RFC 9069 Loc-RIB (`peer_type=3`) and RFC 8671 `RdInstance` (`peer_type=1` `AdjRibOutPostPolicy`). Live container verification is tracked under `R07`.
+4. **B19 — Fault, replay, and load verification (repaired by R01–R04)**:
+   - Verified 1,000-route and 5,000-route deterministic bursts, withdrawals, malformed frames, on-disk torn crash-tail truncation (`BmpJournal` & `RibEventJournal`), crash-window event recovery, and durable epoch-fenced transport gaps ([b16-b19-m3-release-gates.log](evidence/2026-10-11/b16-b19-m3-release-gates.log), [r01-r04-reproductions-after.log](evidence/2026-10-12-remediation/r01-r04-reproductions-after.log)).
+5. **B20 — Unified developer workflow, docs, and release checklist (reconciled under R00)**:
+   - Created root [AGENTS.md](../../AGENTS.md), [justfile](../../justfile), workspace CI steps in `.github/workflows/ci.yml`, and reconciled [M3_RELEASE_REPORT.md](M3_RELEASE_REPORT.md).
 
 ## Strategy Slice P0 (A00–A03) — Truthful ML, evaluation & investigation runtime (completed)
 
@@ -59,36 +59,39 @@ Portable patch: [rustybmp-m1-b04-b08.patch](evidence/2026-10-11/rustybmp-m1-b04-
 4. **A03 — Typed investigation results & honest terminal states (completed)**:
    - Reproduced malformed RCA JSON acceptance and global-quality masking of device-specific gaps ([a03-reproductions-before.log](evidence/2026-10-11/a03-reproductions-before.log)) and implemented `InvestigationTerminalState`, `TypedInvestigationRca`, `resolve_investigation_outcome`, fail-closed budget check, and device-scoped `evaluate_preflight_warning` in `src/investigation_runtime.rs` ([a03-reproductions-after.log](evidence/2026-10-11/a03-reproductions-after.log)).
 
-## Strategy Slice P1 (A04–A09 + B22) — Scoped routing diagnostic tools & grounded prefix investigator (completed)
+## Strategy Slice P1 (A04–A09 + B22) — Scoped routing diagnostic tools & grounded prefix investigator (completed; repaired by R05/R06)
 
-1. **A04 — Bounded scoped diagnostic tools (completed)**:
-   - Registered `get_prefix_journey`, `get_peer_timeline`, `get_evidence_coverage`, `get_changes`, `compare_snapshots`, and `explain_missing_prefix` in `src/mcp_server.rs`, enforcing `MAX_GRAPH_ROWS = 200`, `MAX_TOOL_OUTPUT_BYTES = 65536`, and 5s query timeouts.
-2. **A05–A07 — Versioned observation envelope, incident-specific coverage & prefix journey (completed)**:
-   - Implemented `ObservationEnvelope` (`schema_version = 1`), `build_evidence_coverage_json`, `build_prefix_journey_json`, `build_peer_timeline_json`, and `build_compare_snapshots_json` in `src/routing_service/diagnostics.rs` and wired `/internal/routing/v1/*` + `/api/routing/v1/*` routes.
-   - Reproduced and fixed global coverage masking when a connected speaker has 0 peers ([a04-a09-reproductions-before.log](evidence/2026-10-11/a04-a09-reproductions-before.log)).
-3. **A08–A09 & B22 — Pre-call budget reservation & grounded read-only prefix investigator (completed)**:
-   - Implemented `BudgetReservationLedger` and `ToolCallDeduplicator` in `src/investigation_runtime.rs` and `build_explain_prefix_json` in `src/routing_service/diagnostics.rs`, verified across supported diagnosis (`import_policy_rejected_before_loc_rib`), contradicted hypothesis (`peer_session_down`), collector transport gap abstention, and pre-policy-only / FIB abstention in `tests/a04_a09_b22_prefix_investigator.rs` ([a04-a09-reproductions-after.log](evidence/2026-10-11/a04-a09-reproductions-after.log)).
+1. **A04 — Bounded scoped diagnostic tools (completed; repaired by R05/R06)**:
+   - Registered `get_prefix_journey`, `get_peer_timeline`, `get_evidence_coverage`, `get_changes`, `compare_snapshots`, and `explain_missing_prefix` in `src/mcp_server.rs`, enforcing `.take(MAX_GRAPH_ROWS + 1)` (`MAX_GRAPH_ROWS = 200`), `MAX_TOOL_OUTPUT_BYTES = 65536`, 5s query timeouts, and remote HTTP fallback to `bonsai-routing` ([r05-r06-verification.log](evidence/2026-10-12-remediation/r05-r06-verification.log)).
+2. **A05–A07 — Versioned observation envelope, incident-specific coverage & prefix journey (completed for BMP)**:
+   - Implemented `ObservationEnvelope` (`schema_version = 1`), `build_evidence_coverage_json`, `build_prefix_journey_json`, `build_peer_timeline_json`, and `build_compare_snapshots_json` in `src/routing_service/diagnostics.rs` and wired `/internal/routing/v1/*` + `/api/routing/v1/*` routes ([a04-a09-reproductions-after.log](evidence/2026-10-11/a04-a09-reproductions-after.log)).
+3. **A08–A09 & B22 — Pre-call budget reservation & grounded read-only prefix investigator (completed; repaired by R05)**:
+   - Implemented `BudgetReservationLedger` and `ToolCallDeduplicator` in `src/investigation_runtime.rs`, wired both into `run_investigation_with_provider`, and implemented `build_explain_prefix_json` in `src/routing_service/diagnostics.rs` ([a04-a09-reproductions-after.log](evidence/2026-10-11/a04-a09-reproductions-after.log), [r05-r06-verification.log](evidence/2026-10-12-remediation/r05-r06-verification.log)).
 
-## Strategy Slice P2 (A10–A12) — Operator evidence/feedback UI, scenario runner with hidden oracles & model/prompt trace comparison (completed)
+## Strategy Slice P2 (A10–A12) — Operator evidence/feedback UI, scenario runner with hidden oracles & model/prompt trace comparison (simulated policies; R08 live models pending)
 
 1. **A10 — Operator evidence & structured adjudication UI/API (completed)**:
-   - Reproduced legacy binary feedback counting recommendation acceptance (`"positive"`) with `"unknown"` root-cause diagnosis as 100% verified RCA accuracy ([a10-a12-reproductions-before.log](evidence/2026-10-11/a10-a12-reproductions-before.log)).
-   - Added `OperatorAdjudicationRequest`, `OperatorAdjudicationRecord`, `AdjudicatedAccuracySummary`, `/internal/routing/v1/adjudicate-prefix`, `/internal/routing/v1/adjudications`, and `/api/routing/v1/*` proxy routes (`src/routing_service/diagnostics.rs`, `src/routing_service/mod.rs`, `src/http_server/mod.rs`), plus the "Missing-Prefix Investigator & Operator Adjudication (A09 / A10)" view in `ui/src/routes/Routing.svelte`.
+   - Added `OperatorAdjudicationRequest`, `OperatorAdjudicationRecord`, `AdjudicatedAccuracySummary`, `/internal/routing/v1/adjudicate-prefix`, `/internal/routing/v1/adjudications`, and `/api/routing/v1/*` proxy routes, plus the "Missing-Prefix Investigator & Operator Adjudication (A09 / A10)" view in `ui/src/routes/Routing.svelte` ([a10-a12-reproductions-after.log](evidence/2026-10-11/a10-a12-reproductions-after.log)).
 2. **A11 — Executable 44-scenario pack with hidden oracles across all 8 fault families (completed)**:
-   - Implemented `build_starter_scenario_pack(seed)` (`SCENARIO_PACK_VERSION = "2026.10.v1"`, 8 fault families $\times$ 5 variants + 4 negative/adversarial cases = 44 scenarios) with strict separation between `AgentAccessibleScenarioInput` and `HiddenScenarioOracle` in `src/routing_service/scenario_pack.rs`.
-3. **A12 — Model / prompt / policy trace comparison with OpenTelemetry GenAI lineage (completed)**:
-   - Implemented `compare_investigator_policies_on_pack` (`OTEL_GENAI_SEMCONV_VERSION = "1.28.0"`) comparing `DeterministicRunbook`, `SmallModelSingleStep`, `StrongModelMultiStep`, and `BonsaiHybridRoutingPolicy` across all 44 scenarios ([a11-a12-scenario-benchmark-report.json](evidence/2026-10-11/a11-a12-scenario-benchmark-report.json), [a10-a12-reproductions-after.log](evidence/2026-10-11/a10-a12-reproductions-after.log)).
+   - Implemented `build_starter_scenario_pack(seed)` (`SCENARIO_PACK_VERSION = "2026.10.v1"`, 44 scenarios) with strict separation between `AgentAccessibleScenarioInput` and `HiddenScenarioOracle` in `src/routing_service/scenario_pack.rs`.
+3. **A12 — Model / prompt / policy trace comparison (simulated policy runner; R08 measured model runs pending)**:
+   - Implemented `compare_investigator_policies_on_pack` (`OTEL_GENAI_SEMCONV_VERSION = "1.28.0"`) in `src/routing_service/scenario_pack.rs` ([a11-a12-scenario-benchmark-report.json](evidence/2026-10-11/a11-a12-scenario-benchmark-report.json)). Live small/strong LLM API benchmarking is tracked under `R08`.
 
-## Strategy Slice P3 (A13–A20) — Second-NOS adapter pilot, forecasting/STGNN ablations, approval-bound change assurance & release readiness (completed)
+## Strategy Slice P3 (A13–A20) — Second-NOS adapter pilot, forecasting/STGNN ablations, approval-bound change assurance & release readiness (prototype simulations; R08/R09 pending)
 
-1. **A13 — Second-NOS adapter workshop pilot (completed)**:
-   - Implemented deterministic Nokia SR Linux BGP neighbor parser (`parse_nokia_srl_bgp_neighbor_json`) with `ParseQualityState` (`Complete`, `PartialUnknownFields`, `SchemaMismatch`) in `src/remediation/approval.rs`, separating NOS release output drift from network failure.
-2. **A14–A15 — Forecasting challenger & STGNN ablation benchmarks (completed)**:
-   - Implemented strict chronological split (`chronological_train_val_test_split`), covariate-aware forecasting challenger vs univariate EWMA at equal false-alert budget (`run_forecasting_challenger_experiment`), foundation-model weight-license ledger (`Chronos-2` Apache-2.0 vs `TimesFM 3.0` weight license), and STGNN `no_topology` / `no_temporal` / `cold_start` ablation runner (`run_stgnn_ablation_experiment`) in `python/bonsai_ml/gnn/ablation.py` ([a14-a15-forecasting-and-ablation.log](evidence/2026-10-11/a14-a15-forecasting-and-ablation.log)).
-3. **A16–A20 — Typed `RemediationPlan`, digital-twin verification gate, approval-bound executor, shadow pilot & release report (completed)**:
-   - Reproduced unverified auto-silent remediation gap ([a13-a20-reproductions-before.log](evidence/2026-10-11/a13-a20-reproductions-before.log)).
-   - Implemented `RemediationPlan` (`compute_plan_hash`), `verify_plan_in_digital_twin` + MCP `evaluate_change_plan`, `ApprovalBoundExecutor` + `SignedPlanApproval`, and `summarize_shadow_pilot` in `src/remediation/approval.rs` and `src/mcp_server.rs` ([a13-a20-reproductions-after.log](evidence/2026-10-11/a13-a20-reproductions-after.log)).
-   - Published [AGENTIC_NETOPS_RELEASE_REPORT.md](AGENTIC_NETOPS_RELEASE_REPORT.md).
+1. **A13 — Second-NOS adapter workshop pilot (fixture parser verified)**:
+   - Implemented deterministic Nokia SR Linux BGP neighbor parser (`parse_nokia_srl_bgp_neighbor_json`) with `ParseQualityState` (`Complete`, `PartialUnknownFields`, `SchemaMismatch`) in `src/remediation/approval.rs`.
+2. **A14–A15 — Forecasting challenger & STGNN ablation benchmarks (toy NumPy benchmarks; R08 Chronos/PyTorch STGNN runs pending)**:
+   - Implemented `chronological_train_val_test_split`, `run_forecasting_challenger_experiment`, foundation-model weight-license ledger, and `run_stgnn_ablation_experiment` in `python/bonsai_ml/gnn/ablation.py` ([a14-a15-forecasting-and-ablation.log](evidence/2026-10-11/a14-a15-forecasting-and-ablation.log)). Actual Chronos-2 execution and trained PyTorch STGNN held-out ablation are tracked under `R08`.
+3. **A16–A20 — Typed `RemediationPlan`, digital-twin verification gate, approval-bound executor, shadow pilot & release report (in-memory guard simulations; R09 pending)**:
+   - Implemented `RemediationPlan` (`compute_plan_hash`), `verify_plan_in_digital_twin` + MCP `evaluate_change_plan`, `ApprovalBoundExecutor` + `SignedPlanApproval`, and `summarize_shadow_pilot` in `src/remediation/approval.rs` and `src/mcp_server.rs` ([a13-a20-reproductions-after.log](evidence/2026-10-11/a13-a20-reproductions-after.log)). Live Containerlab twin diff execution, persistent/signed executor state, and operational shadow pilot are tracked under `R09`.
+
+## Post-Review Remediation Queue (`R00`–`R09`)
+
+See [CURRENT_STATE_REVIEW_2026-10-12.md](CURRENT_STATE_REVIEW_2026-10-12.md) and [STATUS.md](STATUS.md):
+- **R00–R07 & R10 (Completed)**: Reconciled status/release documentation, repaired missing B07/B09 log links (`R00`), removed broadcast lag from `ingest_bmp_message` (`R01`), added deterministic `RibEvent` UUIDs and missing-event recovery on restart (`R02`), truncated torn crash tails on disk in `BmpJournal` and `RibEventJournal` (`R03`), persisted epoch-fenced transport disconnect gaps (`R04`), wired `project_remote_routing_events_to_graph`, remote MCP routing HTTP fallback, and `BudgetReservationLedger` + `ToolCallDeduplicator` into `run_investigation_with_provider` (`R05`), enforced `speaker`/`vrf_rd` scoping, `RoutingAccessScope` token checks, bounded Cypher row materialization, and required `BONSAI_ROUTING_SERVICE_TOKEN` (`R06`), verified live Containerlab FRR two-run workflow with eBGP peering, BMP Initiation/PeerUp, 3-view route announcement, attribute change, withdrawal, TCP EOF gap preservation, epoch 2 reconnect, and reproducible digests ([r07-frr-clean-runs.json](evidence/2026-10-12-remediation/r07-frr-clean-runs.json)) (`R07`), and resolved all Clippy diagnostics and workspace formatting (`R10`).
+- **R08–R09 (Next)**: Measured model/Chronos/STGNN comparisons (`R08`), and live digital-twin / persistent executor verification (`R09`).
+
 
 
 

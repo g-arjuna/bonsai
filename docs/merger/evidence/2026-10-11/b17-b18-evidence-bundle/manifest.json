@@ -1,15 +1,20 @@
 {
-  "host_images_verified": [
-    "quay.io/frrouting/frr:9.1.0",
-    "ghcr.io/nokia/srlinux:24.10.1",
-    "ios-xr/xrd-control-plane:24.4.1",
-    "ceos:4.33.1F"
+  "live_host_images_verified": [
+    "quay.io/frrouting/frr:10.6.1"
   ],
+  "live_nos_verification_gate": "tests/r07_frr_containerlab_verification.rs",
   "results_file": "results.json",
   "results_sha256": "c83522505562ccc16af32959e5b5070ea575749d2a057d924dfca12add87ade4",
-  "schema_version": 1,
+  "schema_version": 2,
+  "synthetic_profiles_exercised": [
+    "frrouting",
+    "nokia_srl",
+    "cisco_xrd",
+    "arista_eos"
+  ],
   "tasks": [
     "B17",
     "B18"
-  ]
+  ],
+  "verification_mode": "synthetic_pdu_replay_oracle"
 }

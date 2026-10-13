@@ -153,7 +153,7 @@ pub(super) struct SubsystemHealth {
 
 #[derive(Serialize, Default)]
 pub(super) struct ComponentHealth {
-    status: &'static str,       // "ok", "degraded", "failed"
+    status: &'static str, // "ok", "degraded", "failed"
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
 }
@@ -164,7 +164,7 @@ pub(super) struct CollectorHealth {
     total: usize,
     connected: usize,
     disconnected: usize,
-    stale_heartbeat: usize,     // heartbeat older than 90s
+    stale_heartbeat: usize, // heartbeat older than 90s
     unassigned_devices: usize,
 }
 
@@ -223,7 +223,9 @@ pub(super) async fn readyz_handler(
 ) -> (StatusCode, Json<serde_json::Value>) {
     // Probe graph
     let graph_ok = probe_graph_db(&state).await;
-    let collectors_ok = state.collector_manager.as_ref()
+    let collectors_ok = state
+        .collector_manager
+        .as_ref()
         .map(|m| {
             let summary = m.collector_status_summary();
             summary.collectors.iter().any(|c| c.connected)
@@ -231,13 +233,26 @@ pub(super) async fn readyz_handler(
         .unwrap_or(true); // standalone mode: no collectors needed
 
     let ready = graph_ok && collectors_ok;
-    let code = if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
-    let reason = if ready { "ready" } else if !graph_ok { "graph_db_unavailable" } else { "no_collectors_connected" };
-    (code, Json(serde_json::json!({"ready": ready, "reason": reason})))
+    let code = if ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    let reason = if ready {
+        "ready"
+    } else if !graph_ok {
+        "graph_db_unavailable"
+    } else {
+        "no_collectors_connected"
+    };
+    (
+        code,
+        Json(serde_json::json!({"ready": ready, "reason": reason})),
+    )
 }
-use std::collections::HashMap;
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
-use axum::{Json, response::IntoResponse, extract::State, http::StatusCode};
+use std::collections::HashMap;
 
 use super::AppState;
 use super::{SubscriptionStatusJson, read_subscription_statuses};
@@ -339,14 +354,18 @@ pub(super) fn collector_status_json(s: CollectorStatus) -> CollectorStatusJson {
         memory_used_mb: s.memory_used_bytes / (1024 * 1024),
         recent_warn_count: s.recent_warn_count,
         recent_error_count: s.recent_error_count,
-        receiver_statuses: s.receiver_statuses.into_iter().map(|r| ReceiverStatusJson {
-            name: r.name,
-            state: r.state,
-            addr: r.addr,
-            packet_count: r.packet_count,
-            error_count: r.error_count,
-            last_error: r.last_error,
-        }).collect(),
+        receiver_statuses: s
+            .receiver_statuses
+            .into_iter()
+            .map(|r| ReceiverStatusJson {
+                name: r.name,
+                state: r.state,
+                addr: r.addr,
+                packet_count: r.packet_count,
+                error_count: r.error_count,
+                last_error: r.last_error,
+            })
+            .collect(),
     }
 }
 
@@ -355,11 +374,46 @@ pub(super) fn streaming_status_from_config(
     streaming: &crate::config::StreamingConfig,
 ) -> HashMap<String, StreamingReceiverBadge> {
     let mut m = HashMap::new();
-    m.insert("bmp".into(),     StreamingReceiverBadge { enabled: streaming.bmp.enabled,     addr: streaming.bmp.tcp_addr.clone(),    protocol: "tcp".into() });
-    m.insert("bgp_ls".into(),  StreamingReceiverBadge { enabled: streaming.bgp_ls.enabled,  addr: streaming.bgp_ls.tcp_addr.clone(), protocol: "tcp".into() });
-    m.insert("pcep".into(),    StreamingReceiverBadge { enabled: streaming.pcep.enabled,    addr: streaming.pcep.tcp_addr.clone(),   protocol: "tcp".into() });
-    m.insert("otlp".into(),    StreamingReceiverBadge { enabled: streaming.otlp.enabled,    addr: streaming.otlp.http_addr.clone(),  protocol: "http".into() });
-    m.insert("netflow".into(), StreamingReceiverBadge { enabled: streaming.netflow.enabled, addr: streaming.netflow.udp_addr.clone(), protocol: "udp".into() });
+    m.insert(
+        "bmp".into(),
+        StreamingReceiverBadge {
+            enabled: streaming.bmp.enabled,
+            addr: streaming.bmp.tcp_addr.clone(),
+            protocol: "tcp".into(),
+        },
+    );
+    m.insert(
+        "bgp_ls".into(),
+        StreamingReceiverBadge {
+            enabled: streaming.bgp_ls.enabled,
+            addr: streaming.bgp_ls.tcp_addr.clone(),
+            protocol: "tcp".into(),
+        },
+    );
+    m.insert(
+        "pcep".into(),
+        StreamingReceiverBadge {
+            enabled: streaming.pcep.enabled,
+            addr: streaming.pcep.tcp_addr.clone(),
+            protocol: "tcp".into(),
+        },
+    );
+    m.insert(
+        "otlp".into(),
+        StreamingReceiverBadge {
+            enabled: streaming.otlp.enabled,
+            addr: streaming.otlp.http_addr.clone(),
+            protocol: "http".into(),
+        },
+    );
+    m.insert(
+        "netflow".into(),
+        StreamingReceiverBadge {
+            enabled: streaming.netflow.enabled,
+            addr: streaming.netflow.udp_addr.clone(),
+            protocol: "udp".into(),
+        },
+    );
     m
 }
 pub(super) fn collector_status_with_subscription_json(
@@ -552,19 +606,25 @@ pub(super) async fn governance_state_handler(State(state): State<AppState>) -> i
 /// The sidecar polls this every 30s and pauses heavy ML jobs (training,
 /// clustering) when `should_shed` is true. Inference and embedding workers
 /// continue running (smaller footprint).
-pub(super) async fn governance_pressure_handler(State(state): State<AppState>) -> impl IntoResponse {
+pub(super) async fn governance_pressure_handler(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
     match &state.governor {
         Some(g) => {
             let write_pressure = g.write_pressure_active();
             let memory_pressure = g.memory_pressure_active();
             let rate_shedding = g.is_shedding();
             let should_shed = g.should_shed();
-            (StatusCode::OK, Json(serde_json::json!({
-                "write_pressure": write_pressure,
-                "memory_pressure": memory_pressure,
-                "rate_shedding": rate_shedding,
-                "should_shed": should_shed,
-            }))).into_response()
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "write_pressure": write_pressure,
+                    "memory_pressure": memory_pressure,
+                    "rate_shedding": rate_shedding,
+                    "should_shed": should_shed,
+                })),
+            )
+                .into_response()
         }
         None => (
             StatusCode::OK,
@@ -588,7 +648,9 @@ pub(super) async fn sidecars_handler(State(state): State<AppState>) -> Json<Side
         missing_required,
     })
 }
-pub(super) async fn health_handler(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
+pub(super) async fn health_handler(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<HealthResponse>) {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     let start = START.get_or_init(std::time::Instant::now);
     let uptime_secs = start.elapsed().as_secs();
@@ -597,7 +659,11 @@ pub(super) async fn health_handler(State(state): State<AppState>) -> (StatusCode
     let graph_ok = probe_graph_db(&state).await;
     let graph_db = ComponentHealth {
         status: if graph_ok { "ok" } else { "failed" },
-        detail: if graph_ok { None } else { Some("graph DB unreachable or read failed".into()) },
+        detail: if graph_ok {
+            None
+        } else {
+            Some("graph DB unreachable or read failed".into())
+        },
     };
 
     // ── Collectors ─────────────────────────────────────────────────────────
@@ -610,10 +676,15 @@ pub(super) async fn health_handler(State(state): State<AppState>) -> (StatusCode
         let summary = m.collector_status_summary();
         let connected = summary.collectors.iter().filter(|c| c.connected).count();
         let disconnected = summary.collectors.len() - connected;
-        let stale = summary.collectors.iter().filter(|c| {
-            c.connected && c.last_heartbeat_ns > 0
-                && (now_ns - c.last_heartbeat_ns) > stale_threshold_ns
-        }).count();
+        let stale = summary
+            .collectors
+            .iter()
+            .filter(|c| {
+                c.connected
+                    && c.last_heartbeat_ns > 0
+                    && (now_ns - c.last_heartbeat_ns) > stale_threshold_ns
+            })
+            .count();
         let status = if summary.collectors.is_empty() {
             "ok" // no collectors expected
         } else if connected == 0 {
@@ -632,19 +703,25 @@ pub(super) async fn health_handler(State(state): State<AppState>) -> (StatusCode
             unassigned_devices: summary.unassigned_devices.len(),
         }
     } else {
-        CollectorHealth { status: "ok", ..Default::default() }
+        CollectorHealth {
+            status: "ok",
+            ..Default::default()
+        }
     };
 
     // ── Sidecars ──────────────────────────────────────────────────────────
     let sidecar_snapshots = state.sidecar_registry.snapshot().await;
     let missing_req = state.sidecar_registry.missing_required().await;
-    let sc_healthy = sidecar_snapshots.iter()
+    let sc_healthy = sidecar_snapshots
+        .iter()
         .filter(|s| matches!(s.status, crate::sidecar_registry::SidecarStatus::Healthy))
         .count();
-    let sc_stale = sidecar_snapshots.iter()
+    let sc_stale = sidecar_snapshots
+        .iter()
         .filter(|s| matches!(s.status, crate::sidecar_registry::SidecarStatus::Stale))
         .count();
-    let sc_lost = sidecar_snapshots.iter()
+    let sc_lost = sidecar_snapshots
+        .iter()
         .filter(|s| matches!(s.status, crate::sidecar_registry::SidecarStatus::Lost))
         .count();
     let sidecar_status = match &missing_req {
@@ -688,14 +765,19 @@ pub(super) async fn health_handler(State(state): State<AppState>) -> (StatusCode
         let items = reg.list();
         let total = items.len();
         let enabled = items.iter().filter(|(c, _)| c.enabled).count();
-        let errored: Vec<String> = items.iter()
+        let errored: Vec<String> = items
+            .iter()
             .filter(|(c, s)| c.enabled && s.last_run_error.is_some())
             .map(|(c, _)| c.name.clone())
             .collect();
         (total, enabled, errored)
     };
     let enrichers = EnricherHealth {
-        status: if errored_names.is_empty() { "ok" } else { "degraded" },
+        status: if errored_names.is_empty() {
+            "ok"
+        } else {
+            "degraded"
+        },
         total: enricher_total,
         enabled: enricher_enabled,
         errored: errored_names.len(),
@@ -714,16 +796,25 @@ pub(super) async fn health_handler(State(state): State<AppState>) -> (StatusCode
                 status,
                 detail: if any_pressure {
                     let mut reasons = Vec::new();
-                    if snap.memory_pressure_active { reasons.push("memory_pressure"); }
-                    if snap.write_pressure_active { reasons.push("write_pressure"); }
-                    if snap.rate_shedding_active { reasons.push("rate_shedding"); }
+                    if snap.memory_pressure_active {
+                        reasons.push("memory_pressure");
+                    }
+                    if snap.write_pressure_active {
+                        reasons.push("write_pressure");
+                    }
+                    if snap.rate_shedding_active {
+                        reasons.push("rate_shedding");
+                    }
                     Some(format!("active: {}", reasons.join(", ")))
                 } else {
                     None
                 },
             }
         }
-        None => GovernorHealth { status: "ok", detail: None },
+        None => GovernorHealth {
+            status: "ok",
+            detail: None,
+        },
     };
 
     // ── Event bus ────────────────────────────────────────────────────────
@@ -766,14 +857,17 @@ pub(super) async fn health_handler(State(state): State<AppState>) -> (StatusCode
     };
     metrics::gauge!("bonsai_health_status").set(health_val);
 
-    (http_code, Json(HealthResponse {
-        status: worst,
-        version: env!("CARGO_PKG_VERSION"),
-        git_sha: env!("BONSAI_GIT_SHA"),
-        build_ts: env!("BONSAI_BUILD_TS"),
-        uptime_secs,
-        subsystems,
-    }))
+    (
+        http_code,
+        Json(HealthResponse {
+            status: worst,
+            version: env!("CARGO_PKG_VERSION"),
+            git_sha: env!("BONSAI_GIT_SHA"),
+            build_ts: env!("BONSAI_BUILD_TS"),
+            uptime_secs,
+            subsystems,
+        }),
+    )
 }
 
 /// Probe graph DB with a trivial read query.
@@ -784,7 +878,8 @@ async fn probe_graph_db(state: &AppState) -> bool {
             Ok(c) => c,
             Err(_) => return false,
         };
-        conn.query("MATCH (d:Device) RETURN count(d) LIMIT 1").is_ok()
+        conn.query("MATCH (d:Device) RETURN count(d) LIMIT 1")
+            .is_ok()
     })
     .await
     .unwrap_or(false)
@@ -802,34 +897,37 @@ fn worst_status(statuses: &[&str]) -> &'static str {
 
 // ── D4-21 T3: Governance history (RSS + rate sparkline data) ──────────────
 
-pub(super) async fn governance_history_handler(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+pub(super) async fn governance_history_handler(State(state): State<AppState>) -> impl IntoResponse {
     match &state.governor {
         Some(g) => {
             let snap = g.snapshot();
             let rss = crate::memory_profile::rss_bytes();
-            (StatusCode::OK, Json(serde_json::json!({
-                "current_rss_bytes": rss,
-                "current_rss_mb": rss / (1024 * 1024),
-                "memory_budget_mb": snap.memory_budget_mb,
-                "rate_budget_eps": snap.rate_budget_eps,
-                "profile": snap.profile,
-                "memory_pressure_active": snap.memory_pressure_active,
-                "write_pressure_active": snap.write_pressure_active,
-                "rate_shedding_active": snap.rate_shedding_active,
-                "counters": {
-                    "memory_shrink": snap.memory_shrink_count,
-                    "memory_flush": snap.memory_flush_count,
-                    "write_batch_expand": snap.write_batch_expand_count,
-                    "rate_shed": snap.rate_shed_count,
-                },
-            }))).into_response()
-        },
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "current_rss_bytes": rss,
+                    "current_rss_mb": rss / (1024 * 1024),
+                    "memory_budget_mb": snap.memory_budget_mb,
+                    "rate_budget_eps": snap.rate_budget_eps,
+                    "profile": snap.profile,
+                    "memory_pressure_active": snap.memory_pressure_active,
+                    "write_pressure_active": snap.write_pressure_active,
+                    "rate_shedding_active": snap.rate_shedding_active,
+                    "counters": {
+                        "memory_shrink": snap.memory_shrink_count,
+                        "memory_flush": snap.memory_flush_count,
+                        "write_batch_expand": snap.write_batch_expand_count,
+                        "rate_shed": snap.rate_shed_count,
+                    },
+                })),
+            )
+                .into_response()
+        }
         None => (
             StatusCode::OK,
             Json(serde_json::json!({"status": "governance_not_started"})),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
@@ -846,9 +944,13 @@ pub(super) async fn governance_profile_handler(
 ) -> impl IntoResponse {
     let valid = ["tiny", "small", "medium", "large", "xlarge"];
     if !valid.contains(&req.profile.to_lowercase().as_str()) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
-            "error": format!("Invalid profile '{}'. Valid: {:?}", req.profile, valid)
-        }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("Invalid profile '{}'. Valid: {:?}", req.profile, valid)
+            })),
+        )
+            .into_response();
     }
 
     // Profile switching at runtime requires restarting the governor loops.
@@ -1002,8 +1104,7 @@ pub(super) async fn patch_sidecar_rule_parameters_handler(
     axum::Json(body): axum::Json<PatchRuleParamsBody>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let item_id = format!("sidecar-rule-params:{}", rule_id);
-    let content_json = serde_json::to_string(&body.parameters)
-        .unwrap_or_else(|_| "{}".to_string());
+    let content_json = serde_json::to_string(&body.parameters).unwrap_or_else(|_| "{}".to_string());
     let item = crate::graph::ConfigItemRecord {
         id: item_id,
         config_class: "sidecar_rule_params".to_string(),
@@ -1061,27 +1162,33 @@ pub(super) async fn sidecar_rule_analytics_handler(
     let db = state.store.db();
     let rows = tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, String> {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
-        let result = conn.query(
-            "MATCH (d:DetectionEvent) \
+        let result = conn
+            .query(
+                "MATCH (d:DetectionEvent) \
              RETURN d.rule_id, d.severity, count(*) AS cnt, \
                     max(epoch_ns(d.fired_at)) AS last_fired_ns \
              ORDER BY cnt DESC LIMIT 100",
-        )
-        .map_err(|e| e.to_string())?;
-        let rows: Vec<serde_json::Value> = result.map(|r| {
-            let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
-            let n = |v: &Value| match v {
-                Value::Int64(n) => *n,
-                Value::Int32(n) => *n as i64,
-                _ => 0,
-            };
-            serde_json::json!({
-                "rule_id": s(&r[0]),
-                "severity": s(&r[1]),
-                "firing_count": n(&r[2]),
-                "last_fired_ns": n(&r[3]),
+            )
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<serde_json::Value> = result
+            .map(|r| {
+                let s = |v: &Value| match v {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let n = |v: &Value| match v {
+                    Value::Int64(n) => *n,
+                    Value::Int32(n) => *n as i64,
+                    _ => 0,
+                };
+                serde_json::json!({
+                    "rule_id": s(&r[0]),
+                    "severity": s(&r[1]),
+                    "firing_count": n(&r[2]),
+                    "last_fired_ns": n(&r[3]),
+                })
             })
-        }).collect();
+            .collect();
         Ok(rows)
     })
     .await
@@ -1097,7 +1204,10 @@ pub(super) async fn sidecar_rule_shadow_firings_handler(
     axum::extract::Path(rule_id): axum::extract::Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
-    let since_ns = params.get("since").and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+    let since_ns = params
+        .get("since")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
     let snapshots = state.sidecar_registry.snapshot().await;
     let first = snapshots.first();
     if first.is_none() {
@@ -1105,15 +1215,22 @@ pub(super) async fn sidecar_rule_shadow_firings_handler(
     }
     let snap = first.unwrap();
     let host = snap.entry.address.split(':').next().unwrap_or("127.0.0.1");
-    let health_port = std::env::var("BONSAI_SIDECAR_HEALTH_PORT").unwrap_or_else(|_| "9292".to_string());
-    let url = format!("http://{}:{}/shadow-firings/{}?since={}", host, health_port, rule_id, since_ns);
+    let health_port =
+        std::env::var("BONSAI_SIDECAR_HEALTH_PORT").unwrap_or_else(|_| "9292".to_string());
+    let url = format!(
+        "http://{}:{}/shadow-firings/{}?since={}",
+        host, health_port, rule_id, since_ns
+    );
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()
         .unwrap_or_default();
     match client.get(&url).send().await {
         Ok(resp) if resp.status().is_success() => {
-            let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::json!({"shadow_firings": []}));
+            let body: serde_json::Value = resp
+                .json()
+                .await
+                .unwrap_or(serde_json::json!({"shadow_firings": []}));
             Ok(axum::Json(body))
         }
         _ => Ok(axum::Json(serde_json::json!({ "shadow_firings": [] }))),
@@ -1140,7 +1257,10 @@ pub(super) async fn create_syslog_rule_handler(
     axum::Json(req): axum::Json<CreateSyslogRuleRequest>,
 ) -> Result<(StatusCode, axum::Json<serde_json::Value>), (StatusCode, String)> {
     if req.rule_id.is_empty() || req.pattern.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "rule_id and pattern are required".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "rule_id and pattern are required".into(),
+        ));
     }
     let content = serde_json::json!({
         "rule_id": req.rule_id,
@@ -1164,7 +1284,12 @@ pub(super) async fn create_syslog_rule_handler(
         .store
         .upsert_config_item(item)
         .await
-        .map(|_| (StatusCode::CREATED, axum::Json(serde_json::json!({"rule_id": req.rule_id, "ok": true}))))
+        .map(|_| {
+            (
+                StatusCode::CREATED,
+                axum::Json(serde_json::json!({"rule_id": req.rule_id, "ok": true})),
+            )
+        })
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
 }
 
@@ -1181,8 +1306,8 @@ pub(super) async fn list_syslog_rules_handler(
         .iter()
         .filter(|ci| ci.id.starts_with("syslog-rule:"))
         .map(|ci| {
-            let mut v: serde_json::Value = serde_json::from_str(&ci.content_json)
-                .unwrap_or(serde_json::json!({}));
+            let mut v: serde_json::Value =
+                serde_json::from_str(&ci.content_json).unwrap_or(serde_json::json!({}));
             if let serde_json::Value::Object(ref mut m) = v {
                 m.insert("enabled".to_string(), serde_json::json!(ci.enabled));
             }
@@ -1209,7 +1334,8 @@ pub(super) async fn sidecar_status_handler(
         // health URL from the registered gRPC address by using the same host
         // with the sidecar health port.
         let host = addr.split(':').next().unwrap_or("127.0.0.1");
-        let health_port = std::env::var("BONSAI_SIDECAR_HEALTH_PORT").unwrap_or_else(|_| "9292".to_string());
+        let health_port =
+            std::env::var("BONSAI_SIDECAR_HEALTH_PORT").unwrap_or_else(|_| "9292".to_string());
         let health_url = format!("http://{}:{}/health", host, health_port);
 
         let (health_reachable, rules_loaded, last_det, det_today, uptime, queue, sched_mode) =
@@ -1218,18 +1344,39 @@ pub(super) async fn sidecar_status_handler(
                     if let Ok(body) = resp.json::<serde_json::Value>().await {
                         (
                             true,
-                            body.get("rules_loaded").and_then(|v| v.as_i64()).unwrap_or(0),
-                            body.get("last_detection_at_ns").and_then(|v| v.as_u64()).unwrap_or(0),
-                            body.get("detections_today").and_then(|v| v.as_i64()).unwrap_or(0),
-                            body.get("uptime_secs").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                            body.get("queue_depth").and_then(|v| v.as_i64()).unwrap_or(0),
-                            body.get("scheduler_mode").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
+                            body.get("rules_loaded")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0),
+                            body.get("last_detection_at_ns")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0),
+                            body.get("detections_today")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0),
+                            body.get("uptime_secs")
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(0.0),
+                            body.get("queue_depth")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0),
+                            body.get("scheduler_mode")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown")
+                                .to_string(),
                         )
                     } else {
                         (true, 0, 0, 0, 0.0, 0, "unknown".to_string())
                     }
                 }
-                _ => (false, 0, snap.entry.last_heartbeat_ns, 0, 0.0, 0, "unavailable".to_string()),
+                _ => (
+                    false,
+                    0,
+                    snap.entry.last_heartbeat_ns,
+                    0,
+                    0.0,
+                    0,
+                    "unavailable".to_string(),
+                ),
             };
 
         entries.push(SidecarStatusEntry {
@@ -1273,9 +1420,9 @@ pub(super) async fn sidecar_start_handler(
 ) -> axum::response::Response {
     match &state.sidecar_manager {
         Some(mgr) => match mgr.start().await {
-            Ok(()) => axum::response::IntoResponse::into_response(
-                axum::Json(serde_json::json!({"ok": true})),
-            ),
+            Ok(()) => axum::response::IntoResponse::into_response(axum::Json(
+                serde_json::json!({"ok": true}),
+            )),
             Err(e) => axum::response::IntoResponse::into_response((
                 axum::http::StatusCode::CONFLICT,
                 axum::Json(serde_json::json!({"error": e.to_string()})),
@@ -1294,9 +1441,9 @@ pub(super) async fn sidecar_stop_handler(
 ) -> axum::response::Response {
     match &state.sidecar_manager {
         Some(mgr) => match mgr.stop().await {
-            Ok(()) => axum::response::IntoResponse::into_response(
-                axum::Json(serde_json::json!({"ok": true})),
-            ),
+            Ok(()) => axum::response::IntoResponse::into_response(axum::Json(
+                serde_json::json!({"ok": true}),
+            )),
             Err(e) => axum::response::IntoResponse::into_response((
                 axum::http::StatusCode::CONFLICT,
                 axum::Json(serde_json::json!({"error": e.to_string()})),
@@ -1315,9 +1462,9 @@ pub(super) async fn sidecar_restart_handler(
 ) -> axum::response::Response {
     match &state.sidecar_manager {
         Some(mgr) => match mgr.restart().await {
-            Ok(()) => axum::response::IntoResponse::into_response(
-                axum::Json(serde_json::json!({"ok": true})),
-            ),
+            Ok(()) => axum::response::IntoResponse::into_response(axum::Json(
+                serde_json::json!({"ok": true}),
+            )),
             Err(e) => axum::response::IntoResponse::into_response((
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(serde_json::json!({"error": e.to_string()})),

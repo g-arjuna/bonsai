@@ -1,0 +1,8 @@
+test_bootstrap_agent_handles_ipv6_and_neutral_hostname_endpoints (test_b07_vendor_registry.TestB07VendorRegistry.test_bootstrap_agent_handles_ipv6_and_neutral_hostname_endpoints) ... ok
+test_bootstrap_agent_rejects_unknown_vendor_without_cisco_fallback (test_b07_vendor_registry.TestB07VendorRegistry.test_bootstrap_agent_rejects_unknown_vendor_without_cisco_fallback) ... ok
+test_policy_fetcher_rejects_unknown_vendor_and_parses_ipv6_and_hostname (test_b07_vendor_registry.TestB07VendorRegistry.test_policy_fetcher_rejects_unknown_vendor_and_parses_ipv6_and_hostname) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.143s
+
+OK

@@ -36,7 +36,11 @@ pub struct CorrelationKey {
 }
 
 impl CorrelationKey {
-    pub fn new(device_address: impl Into<String>, semantic_type: impl Into<String>, sub_key: impl Into<String>) -> Self {
+    pub fn new(
+        device_address: impl Into<String>,
+        semantic_type: impl Into<String>,
+        sub_key: impl Into<String>,
+    ) -> Self {
         Self {
             device_address: device_address.into(),
             semantic_type: semantic_type.into(),
@@ -201,11 +205,8 @@ impl CorrelationBuffer {
             }
         } else {
             // Incoming has a sub_key — find an open empty-sub_key slot to absorb into.
-            let empty_key = CorrelationKey::new(
-                key.device_address.clone(),
-                key.semantic_type.clone(),
-                "",
-            );
+            let empty_key =
+                CorrelationKey::new(key.device_address.clone(), key.semantic_type.clone(), "");
             inner
                 .slots
                 .get(&empty_key)
@@ -300,7 +301,8 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
 
     // BGP/BFD detail uses "peer"; syslog/SNMP use "peer_address"/"peer_addr".
     let peer = || {
-        detail.get("peer")
+        detail
+            .get("peer")
             .or_else(|| detail.get("peer_address"))
             .or_else(|| detail.get("peer_addr"))
             .and_then(|v| v.as_str())
@@ -308,7 +310,8 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
             .to_string()
     };
     let if_name = || {
-        detail.get("interface_name")
+        detail
+            .get("interface_name")
             .or_else(|| detail.get("if_name"))
             .or_else(|| detail.get("interface"))
             .and_then(|v| v.as_str())
@@ -316,7 +319,8 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
             .to_string()
     };
     let new_state = || {
-        detail.get("new_state")
+        detail
+            .get("new_state")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_lowercase()
@@ -335,10 +339,11 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
             }
         }
         // BMP / syslog BGP legacy names
-        "bgp_session_down" | "bgp_neighbor_down" | "bgp_peer_state"
-        | "bgp_peer_backward_transition" | "peer_down" => {
-            Some(("bgp_neighbor_down".to_string(), peer()))
-        }
+        "bgp_session_down"
+        | "bgp_neighbor_down"
+        | "bgp_peer_state"
+        | "bgp_peer_backward_transition"
+        | "peer_down" => Some(("bgp_neighbor_down".to_string(), peer())),
         "bgp_session_up" | "bgp_neighbor_up" | "peer_up" => {
             Some(("bgp_neighbor_up".to_string(), peer()))
         }
@@ -358,7 +363,8 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
         // gNMI IS-IS: direction from new_state, sub-keyed by system_id
         "isis_adjacency_change" => {
             let state = new_state();
-            let sid = detail.get("system_id")
+            let sid = detail
+                .get("system_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -408,10 +414,17 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
         }
         // SNMP fact events: direction from fact_type, interface from fields.interface_name
         "snmp_fact_joined" | "snmp_fact_orphan" => {
-            let fact_type = detail.get("fact_type").and_then(|v| v.as_str()).unwrap_or("");
+            let fact_type = detail
+                .get("fact_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let fields = detail.get("fields").cloned().unwrap_or_default();
             let field_str = |k: &str| {
-                fields.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
+                fields
+                    .get(k)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
             };
             match fact_type {
                 "link_down" => Some(("interface_down".to_string(), field_str("interface_name"))),
@@ -435,10 +448,17 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
         }
         // Syslog structured fact events (same event_type pattern as SNMP facts)
         "syslog_fact_joined" | "syslog_fact_orphan" => {
-            let fact_type = detail.get("fact_type").and_then(|v| v.as_str()).unwrap_or("");
+            let fact_type = detail
+                .get("fact_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let fields = detail.get("fields").cloned().unwrap_or_default();
             let field_str = |k: &str| {
-                fields.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
+                fields
+                    .get(k)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
             };
             let new_state = || field_str("new_state").to_lowercase();
             match fact_type {
@@ -498,14 +518,16 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
         }
         // Flow anomaly events — sub-keyed by exporter_address
         "app_flow_high_utilization" => {
-            let exp = detail.get("exporter_address")
+            let exp = detail
+                .get("exporter_address")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
             Some(("app_flow_high_utilization".to_string(), exp))
         }
         "flow_exporter_silent" => {
-            let exp = detail.get("exporter_address")
+            let exp = detail
+                .get("exporter_address")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -513,7 +535,8 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
         }
         // D4-20 T4: Thermal sensor events — sub-keyed by component_name
         "thermal_sensor_critical" | "thermal_sensor_warning" => {
-            let comp = detail.get("component_name")
+            let comp = detail
+                .get("component_name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -521,7 +544,8 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
         }
         // D4-12 T4: Redundancy group events — sub-keyed by group_id
         "redundancy_lost" | "redundancy_degraded" => {
-            let group = detail.get("group_id")
+            let group = detail
+                .get("group_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -529,7 +553,8 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
         }
         // D4-16 T3: BMP policy filter spike + prefix spike — sub-keyed by session_id
         "bgp_policy_filter_spike" | "bgp_rib_prefix_spike" => {
-            let sid = detail.get("session_id")
+            let sid = detail
+                .get("session_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();

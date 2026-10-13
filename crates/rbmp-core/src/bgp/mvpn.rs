@@ -1,3 +1,5 @@
+use crate::{Error, Result};
+use serde::{Deserialize, Serialize};
 /// RV6-2: MCAST-VPN NLRI full decode (RFC 6514).
 ///
 /// MCAST-VPN uses AFI=1/2 + SAFI=5 (MplsVpnMulticast) and AFI=1/2 + SAFI=129.
@@ -12,62 +14,51 @@
 ///   Type 6 — Shared Tree Join Route
 ///   Type 7 — Source Tree Join Route
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use serde::{Deserialize, Serialize};
-use crate::{Error, Result};
 
 // ─── MCAST-VPN NLRI types ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MvpnNlri {
     /// Type 1: Intra-AS I-PMSI A-D Route
-    IntraAsIPmsi {
-        rd:         [u8; 8],
-        origin_asn: u32,
-    },
+    IntraAsIPmsi { rd: [u8; 8], origin_asn: u32 },
     /// Type 2: Inter-AS I-PMSI A-D Route
-    InterAsIPmsi {
-        rd:           [u8; 8],
-        source_as:    u32,
-    },
+    InterAsIPmsi { rd: [u8; 8], source_as: u32 },
     /// Type 3: S-PMSI A-D Route
     SPmsi {
-        rd:           [u8; 8],
+        rd: [u8; 8],
         multicast_source: IpAddr,
-        multicast_group:  IpAddr,
-        origin_asn:   u32,
+        multicast_group: IpAddr,
+        origin_asn: u32,
     },
     /// Type 4: Leaf A-D Route
     LeafAd {
-        rd:           [u8; 8],
-        source_addr:  IpAddr,
+        rd: [u8; 8],
+        source_addr: IpAddr,
         multicast_group: IpAddr,
         originating_router: IpAddr,
     },
     /// Type 5: Source Active A-D Route
     SourceActive {
-        rd:           [u8; 8],
+        rd: [u8; 8],
         multicast_source: IpAddr,
-        multicast_group:  IpAddr,
+        multicast_group: IpAddr,
     },
     /// Type 6: Shared Tree Join Route
     SharedTreeJoin {
-        rd:           [u8; 8],
-        source_as:    u32,
-        rp_addr:      IpAddr,
+        rd: [u8; 8],
+        source_as: u32,
+        rp_addr: IpAddr,
         multicast_group: IpAddr,
     },
     /// Type 7: Source Tree Join Route
     SourceTreeJoin {
-        rd:           [u8; 8],
-        source_as:    u32,
+        rd: [u8; 8],
+        source_as: u32,
         multicast_source: IpAddr,
-        multicast_group:  IpAddr,
+        multicast_group: IpAddr,
     },
     /// Unknown / future route type — raw bytes preserved
-    Unknown {
-        route_type: u8,
-        data:       Vec<u8>,
-    },
+    Unknown { route_type: u8, data: Vec<u8> },
 }
 
 impl MvpnNlri {
@@ -76,8 +67,8 @@ impl MvpnNlri {
         match self {
             Self::IntraAsIPmsi { .. } => 1,
             Self::InterAsIPmsi { .. } => 2,
-            Self::SPmsi { .. }        => 3,
-            Self::LeafAd { .. }       => 4,
+            Self::SPmsi { .. } => 3,
+            Self::LeafAd { .. } => 4,
             Self::SourceActive { .. } => 5,
             Self::SharedTreeJoin { .. } => 6,
             Self::SourceTreeJoin { .. } => 7,
@@ -88,14 +79,14 @@ impl MvpnNlri {
     /// Human-readable route type name.
     pub fn type_name(&self) -> &'static str {
         match self {
-            Self::IntraAsIPmsi { .. }  => "Intra-AS I-PMSI A-D",
-            Self::InterAsIPmsi { .. }  => "Inter-AS I-PMSI A-D",
-            Self::SPmsi { .. }         => "S-PMSI A-D",
-            Self::LeafAd { .. }        => "Leaf A-D",
-            Self::SourceActive { .. }  => "Source Active A-D",
+            Self::IntraAsIPmsi { .. } => "Intra-AS I-PMSI A-D",
+            Self::InterAsIPmsi { .. } => "Inter-AS I-PMSI A-D",
+            Self::SPmsi { .. } => "S-PMSI A-D",
+            Self::LeafAd { .. } => "Leaf A-D",
+            Self::SourceActive { .. } => "Source Active A-D",
             Self::SharedTreeJoin { .. } => "Shared Tree Join",
             Self::SourceTreeJoin { .. } => "Source Tree Join",
-            Self::Unknown { .. }       => "Unknown",
+            Self::Unknown { .. } => "Unknown",
         }
     }
 }
@@ -109,7 +100,7 @@ pub fn parse_mvpn_nlri(buf: &[u8]) -> Result<(MvpnNlri, usize)> {
         return Err(Error::BgpParse("MVPN NLRI too short".into()));
     }
     let nlri_type = buf[0];
-    let nlri_len  = buf[1] as usize;
+    let nlri_len = buf[1] as usize;
     if buf.len() < 2 + nlri_len {
         return Err(Error::BgpParse(format!(
             "MVPN NLRI type={nlri_type} claims {nlri_len} bytes but only {} remain",
@@ -166,14 +157,24 @@ fn read_asn(buf: &[u8], pos: usize) -> Result<u32> {
     if buf.len() < pos + 4 {
         return Err(Error::BgpParse("MVPN: truncated ASN".into()));
     }
-    Ok(u32::from_be_bytes([buf[pos], buf[pos+1], buf[pos+2], buf[pos+3]]))
+    Ok(u32::from_be_bytes([
+        buf[pos],
+        buf[pos + 1],
+        buf[pos + 2],
+        buf[pos + 3],
+    ]))
 }
 
 fn read_ipv4(buf: &[u8], pos: usize) -> Result<IpAddr> {
     if buf.len() < pos + 4 {
         return Err(Error::BgpParse("MVPN: truncated IPv4".into()));
     }
-    Ok(IpAddr::V4(Ipv4Addr::new(buf[pos], buf[pos+1], buf[pos+2], buf[pos+3])))
+    Ok(IpAddr::V4(Ipv4Addr::new(
+        buf[pos],
+        buf[pos + 1],
+        buf[pos + 2],
+        buf[pos + 3],
+    )))
 }
 
 fn read_ipv6(buf: &[u8], pos: usize) -> Result<IpAddr> {
@@ -181,14 +182,18 @@ fn read_ipv6(buf: &[u8], pos: usize) -> Result<IpAddr> {
         return Err(Error::BgpParse("MVPN: truncated IPv6".into()));
     }
     let mut bytes = [0u8; 16];
-    bytes.copy_from_slice(&buf[pos..pos+16]);
+    bytes.copy_from_slice(&buf[pos..pos + 16]);
     Ok(IpAddr::V6(Ipv6Addr::from(bytes)))
 }
 
 /// Read an IP address that may be either IPv4 (4 bytes) or IPv6 (16 bytes)
 /// based on remaining buffer. We check the address-family from the length field.
 fn read_ip(buf: &[u8], pos: usize, is_v6: bool) -> Result<IpAddr> {
-    if is_v6 { read_ipv6(buf, pos) } else { read_ipv4(buf, pos) }
+    if is_v6 {
+        read_ipv6(buf, pos)
+    } else {
+        read_ipv4(buf, pos)
+    }
 }
 
 #[allow(dead_code)]
@@ -209,7 +214,11 @@ fn parse_intra_as_ipmsi(data: &[u8]) -> Result<MvpnNlri> {
     let rd = read_rd(data, 0)?;
     // Originating-Router IP is in the last 4 or 16 bytes
     let ip_len = data.len() - 8;
-    let router_ip = if ip_len == 16 { read_ipv6(data, 8)? } else { read_ipv4(data, 8)? };
+    let router_ip = if ip_len == 16 {
+        read_ipv6(data, 8)?
+    } else {
+        read_ipv4(data, 8)?
+    };
     let origin_asn = match router_ip {
         IpAddr::V4(a) => u32::from(a),
         IpAddr::V6(_) => 0, // not directly an ASN for v6
@@ -223,7 +232,7 @@ fn parse_inter_as_ipmsi(data: &[u8]) -> Result<MvpnNlri> {
     if data.len() < 12 {
         return Err(Error::BgpParse("MVPN type-2: too short".into()));
     }
-    let rd        = read_rd(data, 0)?;
+    let rd = read_rd(data, 0)?;
     let source_as = read_asn(data, 8)?;
     Ok(MvpnNlri::InterAsIPmsi { rd, source_as })
 }
@@ -235,22 +244,30 @@ fn parse_spmsi(data: &[u8]) -> Result<MvpnNlri> {
     if data.len() < 10 {
         return Err(Error::BgpParse("MVPN type-3: too short".into()));
     }
-    let rd  = read_rd(data, 0)?;
+    let rd = read_rd(data, 0)?;
     let mut pos = 8;
 
-    let src_len = data[pos] as usize / 8; pos += 1;
-    let src     = read_ip(data, pos, src_len == 16)?; pos += src_len;
+    let src_len = data[pos] as usize / 8;
+    pos += 1;
+    let src = read_ip(data, pos, src_len == 16)?;
+    pos += src_len;
 
-    let grp_len = data[pos] as usize / 8; pos += 1;
-    let grp     = read_ip(data, pos, grp_len == 16)?; pos += grp_len;
+    let grp_len = data[pos] as usize / 8;
+    pos += 1;
+    let grp = read_ip(data, pos, grp_len == 16)?;
+    pos += grp_len;
 
-    let _router = if pos + 4 <= data.len() { read_ipv4(data, pos).ok() } else { None };
+    let _router = if pos + 4 <= data.len() {
+        read_ipv4(data, pos).ok()
+    } else {
+        None
+    };
     let origin_asn = 0; // not directly in type-3
 
     Ok(MvpnNlri::SPmsi {
         rd,
         multicast_source: src,
-        multicast_group:  grp,
+        multicast_group: grp,
         origin_asn,
     })
 }
@@ -261,14 +278,26 @@ fn parse_leaf_ad(data: &[u8]) -> Result<MvpnNlri> {
     if data.len() < 8 {
         return Err(Error::BgpParse("MVPN type-4: too short".into()));
     }
-    let rd      = read_rd(data, 0)?;
-    let src     = if data.len() >= 24 { read_ipv4(data, 8)? } else { IpAddr::V4(Ipv4Addr::UNSPECIFIED) };
-    let grp     = if data.len() >= 28 { read_ipv4(data, 12)? } else { IpAddr::V4(Ipv4Addr::UNSPECIFIED) };
-    let router  = if data.len() >= 32 { read_ipv4(data, 28)? } else { IpAddr::V4(Ipv4Addr::UNSPECIFIED) };
+    let rd = read_rd(data, 0)?;
+    let src = if data.len() >= 24 {
+        read_ipv4(data, 8)?
+    } else {
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+    };
+    let grp = if data.len() >= 28 {
+        read_ipv4(data, 12)?
+    } else {
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+    };
+    let router = if data.len() >= 32 {
+        read_ipv4(data, 28)?
+    } else {
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+    };
     Ok(MvpnNlri::LeafAd {
         rd,
-        source_addr:        src,
-        multicast_group:    grp,
+        source_addr: src,
+        multicast_group: grp,
         originating_router: router,
     })
 }
@@ -278,16 +307,23 @@ fn parse_source_active(data: &[u8]) -> Result<MvpnNlri> {
     if data.len() < 10 {
         return Err(Error::BgpParse("MVPN type-5: too short".into()));
     }
-    let rd  = read_rd(data, 0)?;
+    let rd = read_rd(data, 0)?;
     let mut pos = 8;
-    let src_len = data[pos] as usize / 8; pos += 1;
-    let src     = read_ip(data, pos, src_len == 16)?; pos += src_len;
-    let grp_len = if pos < data.len() { data[pos] as usize / 8 } else { 4 }; pos += 1;
-    let grp     = read_ip(data, pos, grp_len == 16)?;
+    let src_len = data[pos] as usize / 8;
+    pos += 1;
+    let src = read_ip(data, pos, src_len == 16)?;
+    pos += src_len;
+    let grp_len = if pos < data.len() {
+        data[pos] as usize / 8
+    } else {
+        4
+    };
+    pos += 1;
+    let grp = read_ip(data, pos, grp_len == 16)?;
     Ok(MvpnNlri::SourceActive {
         rd,
         multicast_source: src,
-        multicast_group:  grp,
+        multicast_group: grp,
     })
 }
 
@@ -296,14 +332,14 @@ fn parse_shared_tree_join(data: &[u8]) -> Result<MvpnNlri> {
     if data.len() < 17 {
         return Err(Error::BgpParse("MVPN type-6: too short".into()));
     }
-    let rd        = read_rd(data, 0)?;
+    let rd = read_rd(data, 0)?;
     let source_as = read_asn(data, 8)?;
-    let rp        = read_ipv4(data, 12)?;
-    let grp       = read_ipv4(data, 16)?;
+    let rp = read_ipv4(data, 12)?;
+    let grp = read_ipv4(data, 16)?;
     Ok(MvpnNlri::SharedTreeJoin {
         rd,
         source_as,
-        rp_addr:         rp,
+        rp_addr: rp,
         multicast_group: grp,
     })
 }
@@ -313,15 +349,15 @@ fn parse_source_tree_join(data: &[u8]) -> Result<MvpnNlri> {
     if data.len() < 20 {
         return Err(Error::BgpParse("MVPN type-7: too short".into()));
     }
-    let rd        = read_rd(data, 0)?;
+    let rd = read_rd(data, 0)?;
     let source_as = read_asn(data, 8)?;
-    let src       = read_ipv4(data, 12)?;
-    let grp       = read_ipv4(data, 16)?;
+    let src = read_ipv4(data, 12)?;
+    let grp = read_ipv4(data, 16)?;
     Ok(MvpnNlri::SourceTreeJoin {
         rd,
         source_as,
         multicast_source: src,
-        multicast_group:  grp,
+        multicast_group: grp,
     })
 }
 
@@ -362,7 +398,8 @@ mod tests {
         // Two type-2 NLRIs in sequence
         let mut buf = Vec::new();
         for _ in 0..2 {
-            buf.push(2); buf.push(12);
+            buf.push(2);
+            buf.push(12);
             buf.extend_from_slice(&[0u8; 8]);
             buf.extend_from_slice(&65000u32.to_be_bytes());
         }

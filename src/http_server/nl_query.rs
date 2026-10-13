@@ -5,8 +5,8 @@
 //! validates it, executes against LadybugDB, and returns both the generated
 //! Cypher and the result rows.
 
-use axum::{Json, extract::State, http::StatusCode};
 use crate::ai_provider::{AiMessage, build_provider_with_key};
+use axum::{Json, extract::State, http::StatusCode};
 use lbug::Connection;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,7 +33,10 @@ fn roll_day_if_needed() {
     let today = today_epoch();
     let stored = BUDGET_DAY_EPOCH.load(Ordering::Relaxed);
     if today != stored {
-        if BUDGET_DAY_EPOCH.compare_exchange(stored, today, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
+        if BUDGET_DAY_EPOCH
+            .compare_exchange(stored, today, Ordering::SeqCst, Ordering::Relaxed)
+            .is_ok()
+        {
             DAILY_INPUT_TOKENS.store(0, Ordering::Relaxed);
             DAILY_OUTPUT_TOKENS.store(0, Ordering::Relaxed);
         }
@@ -46,7 +49,9 @@ fn charge_tokens(input: u64, output: u64) -> Result<(), String> {
     let prev_out = DAILY_OUTPUT_TOKENS.fetch_add(output, Ordering::Relaxed);
     let total = prev_in + input + prev_out + output;
     if total > DAILY_TOKEN_LIMIT {
-        Err(format!("Daily NL query token budget exceeded ({total} / {DAILY_TOKEN_LIMIT})"))
+        Err(format!(
+            "Daily NL query token budget exceeded ({total} / {DAILY_TOKEN_LIMIT})"
+        ))
     } else {
         Ok(())
     }
@@ -253,7 +258,6 @@ User: Show detections that fired during a planned change
 Cypher: MATCH (de:DetectionEvent)-[:CHANGE_CAUSED_DETECTION]->(c:ChangeRequest) RETURN de.device_address, de.rule_id, de.severity, de.fired_at, c.number, c.short_description ORDER BY de.fired_at DESC LIMIT 30
 ";
 
-
 // ── Request / Response types ─────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -341,9 +345,15 @@ fn build_graph_context(db: &std::sync::Arc<lbug::Database>) -> String {
 
     // Sites
     if let Ok(rows) = conn.query("MATCH (s:Site) RETURN s.name, s.location LIMIT 50") {
-        let sites: Vec<String> = rows.map(|r| format!("  {} ({})", val_str(&r[0]), val_str(&r[1]))).collect();
+        let sites: Vec<String> = rows
+            .map(|r| format!("  {} ({})", val_str(&r[0]), val_str(&r[1])))
+            .collect();
         if !sites.is_empty() {
-            ctx.push_str(&format!("\nSites ({}):\n{}\n", sites.len(), sites.join("\n")));
+            ctx.push_str(&format!(
+                "\nSites ({}):\n{}\n",
+                sites.len(),
+                sites.join("\n")
+            ));
         }
     }
 
@@ -353,7 +363,10 @@ fn build_graph_context(db: &std::sync::Arc<lbug::Database>) -> String {
         ("Interfaces", "MATCH (i:Interface) RETURN count(i)"),
         ("Detections", "MATCH (d:DetectionEvent) RETURN count(d)"),
         ("BMP sessions", "MATCH (b:BmpSession) RETURN count(b)"),
-        ("State change events", "MATCH (e:StateChangeEvent) RETURN count(e)"),
+        (
+            "State change events",
+            "MATCH (e:StateChangeEvent) RETURN count(e)",
+        ),
     ] {
         if let Ok(mut rows) = conn.query(q) {
             if let Some(row) = rows.next() {
@@ -367,7 +380,13 @@ fn build_graph_context(db: &std::sync::Arc<lbug::Database>) -> String {
 
 fn val_str(v: &lbug::Value) -> String {
     match v {
-        lbug::Value::String(s) => if s.is_empty() { "—".to_string() } else { s.clone() },
+        lbug::Value::String(s) => {
+            if s.is_empty() {
+                "—".to_string()
+            } else {
+                s.clone()
+            }
+        }
         lbug::Value::Int64(n) => n.to_string(),
         lbug::Value::Int32(n) => n.to_string(),
         lbug::Value::Double(f) => format!("{f:.2}"),
@@ -390,7 +409,11 @@ fn execute_tool(
                 return ("Error: empty cypher query".to_string(), None);
             }
             if !crate::mcp_server::is_readonly_cypher(cypher) {
-                return ("Error: mutation queries are not allowed. Use read-only MATCH...RETURN only.".to_string(), None);
+                return (
+                    "Error: mutation queries are not allowed. Use read-only MATCH...RETURN only."
+                        .to_string(),
+                    None,
+                );
             }
             let conn = match Connection::new(db) {
                 Ok(c) => c,
@@ -399,22 +422,34 @@ fn execute_tool(
             match crate::graph::explorer::execute_query(&conn, cypher) {
                 Ok(result) => {
                     let summary = if result.row_count == 0 {
-                        format!("Query returned 0 rows. Columns: [{}]. The query executed successfully but found no matching data. Consider: (1) searching for similar hostnames with search_devices, (2) using case-insensitive CONTAINS instead of exact match, (3) checking if the node/relationship type has any data.",
-                            result.columns.join(", "))
+                        format!(
+                            "Query returned 0 rows. Columns: [{}]. The query executed successfully but found no matching data. Consider: (1) searching for similar hostnames with search_devices, (2) using case-insensitive CONTAINS instead of exact match, (3) checking if the node/relationship type has any data.",
+                            result.columns.join(", ")
+                        )
                     } else {
                         // Return first 15 rows as compact JSON for LLM context
-                        let preview_rows: Vec<&Vec<serde_json::Value>> = result.rows.iter().take(15).collect();
+                        let preview_rows: Vec<&Vec<serde_json::Value>> =
+                            result.rows.iter().take(15).collect();
                         let table = serde_json::json!({
                             "columns": result.columns,
                             "rows": preview_rows,
                             "total_rows": result.row_count,
                             "truncated": result.truncated,
                         });
-                        format!("Success: {} row(s). Data:\n{}", result.row_count, serde_json::to_string_pretty(&table).unwrap_or_default())
+                        format!(
+                            "Success: {} row(s). Data:\n{}",
+                            result.row_count,
+                            serde_json::to_string_pretty(&table).unwrap_or_default()
+                        )
                     };
                     (summary, Some(result))
                 }
-                Err(e) => (format!("Query error: {e:#}. Check your Cypher syntax and that all node labels and relationship types exist in the schema."), None),
+                Err(e) => (
+                    format!(
+                        "Query error: {e:#}. Check your Cypher syntax and that all node labels and relationship types exist in the schema."
+                    ),
+                    None,
+                ),
             }
         }
         "search_devices" => {
@@ -429,16 +464,39 @@ fn execute_tool(
             let query = "MATCH (d:Device) WHERE toLower(d.hostname) CONTAINS $pat OR toLower(d.address) CONTAINS $pat RETURN d.address, d.hostname, d.vendor, d.role, d.site LIMIT 20";
             match conn.prepare(query) {
                 Ok(mut stmt) => {
-                    match conn.execute(&mut stmt, vec![("pat", lbug::Value::String(pattern.clone()))]) {
+                    match conn.execute(
+                        &mut stmt,
+                        vec![("pat", lbug::Value::String(pattern.clone()))],
+                    ) {
                         Ok(rows) => {
-                            let matches: Vec<String> = rows.map(|r| {
-                                format!("  {} (address={}, vendor={}, role={}, site={})",
-                                    val_str(&r[1]), val_str(&r[0]), val_str(&r[2]), val_str(&r[3]), val_str(&r[4]))
-                            }).collect();
+                            let matches: Vec<String> = rows
+                                .map(|r| {
+                                    format!(
+                                        "  {} (address={}, vendor={}, role={}, site={})",
+                                        val_str(&r[1]),
+                                        val_str(&r[0]),
+                                        val_str(&r[2]),
+                                        val_str(&r[3]),
+                                        val_str(&r[4])
+                                    )
+                                })
+                                .collect();
                             if matches.is_empty() {
-                                (format!("No devices found matching '{pattern}'. Try a shorter or different search term."), None)
+                                (
+                                    format!(
+                                        "No devices found matching '{pattern}'. Try a shorter or different search term."
+                                    ),
+                                    None,
+                                )
                             } else {
-                                (format!("Found {} device(s) matching '{pattern}':\n{}", matches.len(), matches.join("\n")), None)
+                                (
+                                    format!(
+                                        "Found {} device(s) matching '{pattern}':\n{}",
+                                        matches.len(),
+                                        matches.join("\n")
+                                    ),
+                                    None,
+                                )
                             }
                         }
                         Err(e) => (format!("Search error: {e}"), None),
@@ -511,9 +569,8 @@ pub(super) async fn explorer_ask_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // 3. Build initial messages with full context
-    let system_msg = format!(
-        "{AGENT_SYSTEM_PROMPT}\n\n{GRAPH_SCHEMA}\n\n{FEW_SHOT_EXAMPLES}\n\n{graph_ctx}"
-    );
+    let system_msg =
+        format!("{AGENT_SYSTEM_PROMPT}\n\n{GRAPH_SCHEMA}\n\n{FEW_SHOT_EXAMPLES}\n\n{graph_ctx}");
     let tools = agent_tools();
     let mut messages = vec![
         AiMessage::system(system_msg),
@@ -531,8 +588,7 @@ pub(super) async fn explorer_ask_handler(
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("AI error: {e}")))?;
 
-        charge_tokens(0, resp.tokens_used)
-            .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e))?;
+        charge_tokens(0, resp.tokens_used).map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e))?;
         total_tokens += resp.tokens_used;
 
         // If the model produced a text response with no tool calls, it's the final answer
@@ -578,11 +634,10 @@ pub(super) async fn explorer_ask_handler(
             let db_ref = db.clone();
             let tool_name = tc.name.clone();
             let args_clone = args.clone();
-            let (output, exec_result) = tokio::task::spawn_blocking(move || {
-                execute_tool(&db_ref, &tool_name, &args_clone)
-            })
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            let (output, exec_result) =
+                tokio::task::spawn_blocking(move || execute_tool(&db_ref, &tool_name, &args_clone))
+                    .await
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
             let row_count = exec_result.as_ref().map(|r| r.row_count);
             if exec_result.is_some() {
@@ -591,7 +646,11 @@ pub(super) async fn explorer_ask_handler(
 
             steps.push(AgentStep {
                 tool: tc.name.clone(),
-                input: if reason.is_empty() { input_display } else { format!("{reason}: {input_display}") },
+                input: if reason.is_empty() {
+                    input_display
+                } else {
+                    format!("{reason}: {input_display}")
+                },
                 output_summary: if output.len() > 200 {
                     format!("{}… [truncated]", &output[..200])
                 } else {
@@ -613,8 +672,7 @@ pub(super) async fn explorer_ask_handler(
         .complete(messages, vec![])
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("AI error: {e}")))?;
-    charge_tokens(0, final_resp.tokens_used)
-        .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e))?;
+    charge_tokens(0, final_resp.tokens_used).map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e))?;
     total_tokens += final_resp.tokens_used;
 
     let answer = final_resp.content.unwrap_or_default();

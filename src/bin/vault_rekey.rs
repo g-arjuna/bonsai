@@ -10,20 +10,15 @@
 ///
 /// After success, restart bonsai with `BONSAI_VAULT_PASSPHRASE=<new>`.
 fn main() {
-    let vault_root = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| ".".to_string());
+    let vault_root = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
 
     println!("bonsai vault-rekey: vault root = {vault_root}");
 
-    let vault = bonsai::credentials::CredentialVault::open(
-        &vault_root,
-        "BONSAI_VAULT_PASSPHRASE",
-    )
-    .unwrap_or_else(|e| {
-        eprintln!("ERROR: failed to open vault: {e:#}");
-        std::process::exit(1);
-    });
+    let vault = bonsai::credentials::CredentialVault::open(&vault_root, "BONSAI_VAULT_PASSPHRASE")
+        .unwrap_or_else(|e| {
+            eprintln!("ERROR: failed to open vault: {e:#}");
+            std::process::exit(1);
+        });
 
     vault
         .rekey("BONSAI_VAULT_NEW_PASSPHRASE")

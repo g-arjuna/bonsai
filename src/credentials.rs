@@ -452,9 +452,8 @@ fn decrypt_entries(
         let mut mac = HmacSha256::new_from_slice(passphrase.expose_secret().as_bytes())
             .context("HMAC key init failed")?;
         mac.update(ciphertext);
-        mac.verify_slice(stored_tag).context(
-            "vault integrity check failed — file may be corrupt, restore from backup",
-        )?;
+        mac.verify_slice(stored_tag)
+            .context("vault integrity check failed — file may be corrupt, restore from backup")?;
         ciphertext
     } else {
         // Legacy vault without HMAC — accept but will gain HMAC on next write.
@@ -536,8 +535,12 @@ fn write_metadata(root: &Path, metadata: &BTreeMap<String, CredentialMetadata>) 
     let tmp_path = final_path.with_extension("json.tmp");
     std::fs::write(&tmp_path, &serialized)
         .with_context(|| format!("failed to write metadata tmp file '{}'", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, &final_path)
-        .with_context(|| format!("failed to rename metadata tmp to '{}'", final_path.display()))?;
+    std::fs::rename(&tmp_path, &final_path).with_context(|| {
+        format!(
+            "failed to rename metadata tmp to '{}'",
+            final_path.display()
+        )
+    })?;
     Ok(())
 }
 

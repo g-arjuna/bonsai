@@ -39,10 +39,18 @@ pub(super) struct CreateShunRuleRequest {
     pub created_by: String,
 }
 
-fn default_scope_type() -> String { "global".to_string() }
-fn default_match_type() -> String { "substring".to_string() }
-fn default_action() -> String { "drop".to_string() }
-fn default_created_by() -> String { "api".to_string() }
+fn default_scope_type() -> String {
+    "global".to_string()
+}
+fn default_match_type() -> String {
+    "substring".to_string()
+}
+fn default_action() -> String {
+    "drop".to_string()
+}
+fn default_created_by() -> String {
+    "api".to_string()
+}
 
 #[derive(Serialize)]
 pub(super) struct ShunRulesResponse {
@@ -121,7 +129,10 @@ pub(super) async fn disable_shun_rule_handler(
     let rules = match state.store.list_shun_rules().await {
         Ok(r) => r,
         Err(e) => {
-            return Json(ShunActionResponse { success: false, error: e.to_string() });
+            return Json(ShunActionResponse {
+                success: false,
+                error: e.to_string(),
+            });
         }
     };
     let Some(mut rule) = rules.into_iter().find(|r| r.id == id) else {
@@ -132,7 +143,10 @@ pub(super) async fn disable_shun_rule_handler(
     };
     rule.enabled = false;
     if let Err(e) = state.store.upsert_shun_rule(rule).await {
-        return Json(ShunActionResponse { success: false, error: e.to_string() });
+        return Json(ShunActionResponse {
+            success: false,
+            error: e.to_string(),
+        });
     }
     if let Some(engine) = &state.shun_engine {
         match state.store.list_shun_rules().await {
@@ -140,7 +154,10 @@ pub(super) async fn disable_shun_rule_handler(
             Err(e) => tracing::warn!(error = %e, "shun engine reload after disable failed"),
         }
     }
-    Json(ShunActionResponse { success: true, error: String::new() })
+    Json(ShunActionResponse {
+        success: true,
+        error: String::new(),
+    })
 }
 
 pub(super) async fn delete_shun_rule_handler(
@@ -161,15 +178,19 @@ pub(super) async fn delete_shun_rule_handler(
                     Err(e) => tracing::warn!(error = %e, "shun engine reload after delete failed"),
                 }
             }
-            Json(ShunActionResponse { success: true, error: String::new() })
+            Json(ShunActionResponse {
+                success: true,
+                error: String::new(),
+            })
         }
-        Err(e) => Json(ShunActionResponse { success: false, error: e.to_string() }),
+        Err(e) => Json(ShunActionResponse {
+            success: false,
+            error: e.to_string(),
+        }),
     }
 }
 
-pub(super) async fn shun_stats_handler(
-    State(state): State<AppState>,
-) -> Json<ShunStatsResponse> {
+pub(super) async fn shun_stats_handler(State(state): State<AppState>) -> Json<ShunStatsResponse> {
     let stats = state
         .shun_engine
         .as_ref()

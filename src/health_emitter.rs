@@ -8,10 +8,10 @@
 //! - Resource governor violations
 //! - Enricher failures
 
-use std::sync::Arc;
-use serde::{Serialize, Deserialize};
 use crate::event_bus::InProcessBus;
 use crate::telemetry::TelemetryUpdate;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HealthEvent {

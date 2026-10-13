@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::ai_provider::{AiMessage, AiProvider, build_provider_with_key};
@@ -96,28 +96,54 @@ pub struct InvestigationOutcome {
 async fn build_context(
     device_address: &str,
     detection_id: Option<&str>,
-    state: &AppState,
+    store: &Arc<GraphStore>,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     // 1. Incident details if we have a detection ID
     if let Some(did) = detection_id {
         let args = serde_json::json!({ "id": did });
-        if let Ok(v) = crate::mcp_server::call_tool(state, "get_incident", &args).await {
-            parts.push(format!("## Incident\n```json\n{}\n```", serde_json::to_string_pretty(&v).unwrap_or_default()));
+        if let Ok(v) =
+            crate::mcp_server::call_tool_with_store_and_routing(store, None, "get_incident", &args)
+                .await
+        {
+            parts.push(format!(
+                "## Incident\n```json\n{}\n```",
+                serde_json::to_string_pretty(&v).unwrap_or_default()
+            ));
         }
     }
 
     // 2. Blast radius (2 hops)
     let args = serde_json::json!({ "address": device_address, "max_hops": 2 });
-    if let Ok(v) = crate::mcp_server::call_tool(state, "get_device_blast_radius", &args).await {
-        parts.push(format!("## Blast Radius\n```json\n{}\n```", serde_json::to_string_pretty(&v).unwrap_or_default()));
+    if let Ok(v) = crate::mcp_server::call_tool_with_store_and_routing(
+        store,
+        None,
+        "get_device_blast_radius",
+        &args,
+    )
+    .await
+    {
+        parts.push(format!(
+            "## Blast Radius\n```json\n{}\n```",
+            serde_json::to_string_pretty(&v).unwrap_or_default()
+        ));
     }
 
     // 3. Recent detections on this device (last 10)
     let args = serde_json::json!({ "device_address": device_address, "limit": 10 });
-    if let Ok(v) = crate::mcp_server::call_tool(state, "list_active_detections", &args).await {
-        parts.push(format!("## Recent Detections on Device\n```json\n{}\n```", serde_json::to_string_pretty(&v).unwrap_or_default()));
+    if let Ok(v) = crate::mcp_server::call_tool_with_store_and_routing(
+        store,
+        None,
+        "list_active_detections",
+        &args,
+    )
+    .await
+    {
+        parts.push(format!(
+            "## Recent Detections on Device\n```json\n{}\n```",
+            serde_json::to_string_pretty(&v).unwrap_or_default()
+        ));
     }
 
     if parts.is_empty() {
@@ -133,12 +159,20 @@ pub fn spawn_investigation(
     device_address: String,
     detection_id: Option<String>,
     store: Arc<GraphStore>,
-    state: AppState,
+    _state: AppState,
     ai_cfg: AiConfig,
     api_key: String,
 ) {
     tokio::spawn(async move {
-        run_investigation(investigation_id, device_address, detection_id, store, state, ai_cfg, api_key).await;
+        run_investigation(
+            investigation_id,
+            device_address,
+            detection_id,
+            store,
+            ai_cfg,
+            api_key,
+        )
+        .await;
     });
 }
 
@@ -147,57 +181,69 @@ async fn run_investigation(
     device_address: String,
     detection_id: Option<String>,
     store: Arc<GraphStore>,
-    state: AppState,
     ai_cfg: AiConfig,
     api_key: String,
 ) {
     // Daily budget gate — fail closed if spend query fails or budget is exceeded (A03).
     let daily_budget = ai_cfg.daily_budget_usd;
-    if daily_budget > 0.0 {
-        match store.query_daily_investigation_cost().await {
-            Ok(spent) if spent >= daily_budget => {
+    match store.query_daily_investigation_cost().await {
+        Ok(spent) => {
+            let ledger = sync_durable_budget_ledger(&store, spent).await;
+            if daily_budget > 0.0
+                && (ledger.daily_committed_usd() + ledger.total_reserved_usd()) >= daily_budget
+            {
                 warn!(
                     id = %investigation_id,
-                    spent,
+                    spent = ledger.daily_committed_usd(),
+                    reserved = ledger.total_reserved_usd(),
                     daily_budget,
                     "daily AI budget exceeded — investigation halted"
                 );
                 let outcome = resolve_investigation_outcome(
-                    LoopExitReason::DailyBudgetExceeded { spent, daily_budget },
+                    LoopExitReason::DailyBudgetExceeded {
+                        spent: ledger.daily_committed_usd() + ledger.total_reserved_usd(),
+                        daily_budget,
+                    },
                     "",
                 );
-                let _ = store.complete_investigation(
-                    investigation_id,
-                    outcome.state.as_str().to_string(),
-                    outcome.summary,
-                    outcome.proposal_json,
-                    0,
-                    0.0,
-                ).await;
+                let _ = store
+                    .complete_investigation(
+                        investigation_id,
+                        outcome.state.as_str().to_string(),
+                        outcome.summary,
+                        outcome.proposal_json,
+                        0,
+                        0.0,
+                    )
+                    .await;
                 return;
             }
-            Err(e) => {
-                warn!(
-                    id = %investigation_id,
-                    error = %e,
-                    "daily cost query failed — failing closed to prevent unbudgeted spend"
-                );
-                let outcome = resolve_investigation_outcome(
-                    LoopExitReason::DailyBudgetCheckFailed { error: e.to_string() },
-                    "",
-                );
-                let _ = store.complete_investigation(
-                    investigation_id,
-                    outcome.state.as_str().to_string(),
-                    outcome.summary,
-                    outcome.proposal_json,
-                    0,
-                    0.0,
-                ).await;
-                return;
-            }
-            _ => {}
         }
+        Err(e) if daily_budget > 0.0 => {
+            warn!(
+                id = %investigation_id,
+                error = %e,
+                "daily cost query failed — failing closed to prevent unbudgeted spend"
+            );
+            let outcome = resolve_investigation_outcome(
+                LoopExitReason::DailyBudgetCheckFailed {
+                    error: e.to_string(),
+                },
+                "",
+            );
+            let _ = store
+                .complete_investigation(
+                    investigation_id,
+                    outcome.state.as_str().to_string(),
+                    outcome.summary,
+                    outcome.proposal_json,
+                    0,
+                    0.0,
+                )
+                .await;
+            return;
+        }
+        Err(_) => {}
     }
 
     let provider: Box<dyn AiProvider> = match build_provider_with_key(&ai_cfg, api_key) {
@@ -205,23 +251,98 @@ async fn run_investigation(
         Err(e) => {
             warn!(id = %investigation_id, error = %e, "AI provider unavailable");
             let outcome = resolve_investigation_outcome(
-                LoopExitReason::ProviderUnavailable { error: e.to_string() },
+                LoopExitReason::ProviderUnavailable {
+                    error: e.to_string(),
+                },
                 "",
             );
-            let _ = store.complete_investigation(
-                investigation_id,
-                outcome.state.as_str().to_string(),
-                outcome.summary,
-                outcome.proposal_json,
-                0,
-                0.0,
-            ).await;
+            let _ = store
+                .complete_investigation(
+                    investigation_id,
+                    outcome.state.as_str().to_string(),
+                    outcome.summary,
+                    outcome.proposal_json,
+                    0,
+                    0.0,
+                )
+                .await;
             return;
         }
     };
 
-    let tools = crate::mcp_server::ai_tool_definitions();
+    let _ = run_investigation_with_provider(
+        investigation_id,
+        device_address,
+        detection_id,
+        store,
+        ai_cfg,
+        provider,
+    )
+    .await;
+}
+
+/// Execute the full investigation runtime loop with pre-call durable `BudgetReservationLedger`
+/// reservations and `ToolCallDeduplicator` enforcement (`A03`, `A08`, `R05`).
+pub async fn run_investigation_with_provider(
+    investigation_id: String,
+    device_address: String,
+    detection_id: Option<String>,
+    store: Arc<GraphStore>,
+    ai_cfg: AiConfig,
+    provider: Box<dyn AiProvider>,
+) -> InvestigationOutcome {
+    let daily_budget = ai_cfg.daily_budget_usd;
     let per_budget = ai_cfg.per_investigation_budget_usd;
+
+    match store.query_daily_investigation_cost().await {
+        Ok(spent) => {
+            let ledger = sync_durable_budget_ledger(&store, spent).await;
+            if daily_budget > 0.0
+                && (ledger.daily_committed_usd() + ledger.total_reserved_usd()) >= daily_budget
+            {
+                let outcome = resolve_investigation_outcome(
+                    LoopExitReason::DailyBudgetExceeded {
+                        spent: ledger.daily_committed_usd() + ledger.total_reserved_usd(),
+                        daily_budget,
+                    },
+                    "",
+                );
+                let _ = store
+                    .complete_investigation(
+                        investigation_id,
+                        outcome.state.as_str().to_string(),
+                        outcome.summary.clone(),
+                        outcome.proposal_json.clone(),
+                        0,
+                        0.0,
+                    )
+                    .await;
+                return outcome;
+            }
+        }
+        Err(e) if daily_budget > 0.0 => {
+            let outcome = resolve_investigation_outcome(
+                LoopExitReason::DailyBudgetCheckFailed {
+                    error: e.to_string(),
+                },
+                "",
+            );
+            let _ = store
+                .complete_investigation(
+                    investigation_id,
+                    outcome.state.as_str().to_string(),
+                    outcome.summary.clone(),
+                    outcome.proposal_json.clone(),
+                    0,
+                    0.0,
+                )
+                .await;
+            return outcome;
+        }
+        Err(_) => {}
+    }
+
+    let tools = crate::mcp_server::ai_tool_definitions();
 
     // D4-6 T4 & A03: Pre-flight quality check — warn if target device has missing signals or graph is sparse.
     let quality = preflight_quality(&store, &device_address).await;
@@ -236,34 +357,54 @@ async fn run_investigation(
         );
     }
 
-    let context = build_context(&device_address, detection_id.as_deref(), &state).await;
+    let context = build_context(&device_address, detection_id.as_deref(), &store).await;
     let mut messages = vec![
         AiMessage::system(system_prompt(&device_address, detection_id.as_deref())),
-        AiMessage::user(format!("{}{context}", user_prompt(&device_address, detection_id.as_deref()))),
+        AiMessage::user(format!(
+            "{}{context}",
+            user_prompt(&device_address, detection_id.as_deref())
+        )),
     ];
 
     let mut total_cost = 0.0f64;
     let mut total_tokens = 0i64;
     let mut queried_paths: Vec<String> = Vec::new();
+    let mut deduplicator = ToolCallDeduplicator::new();
     let mut exit_reason = LoopExitReason::IterationLimitReached {
         max_iterations: MAX_ITERATIONS,
     };
 
     info!(id = %investigation_id, "investigation started");
 
+    let estimated_call_usd = if per_budget > 0.0 {
+        per_budget.min(0.005)
+    } else if daily_budget > 0.0 {
+        daily_budget.min(0.005)
+    } else {
+        0.0
+    };
+
     for iteration in 0..MAX_ITERATIONS {
-        if per_budget > 0.0 && total_cost >= per_budget {
-            warn!(id = %investigation_id, cost = total_cost, per_budget, "investigation budget exceeded");
-            exit_reason = LoopExitReason::PerInvestigationBudgetExceeded {
-                cost: total_cost,
-                budget: per_budget,
-            };
+        let reservation_id = format!("{investigation_id}:iter:{iteration}");
+        if let Err(budget_reason) = reserve_durable_budget(
+            &store,
+            &reservation_id,
+            &investigation_id,
+            estimated_call_usd,
+            per_budget,
+            daily_budget,
+        )
+        .await
+        {
+            warn!(id = %investigation_id, ?budget_reason, "pre-call budget reservation rejected");
+            exit_reason = budget_reason;
             break;
         }
 
         let resp = match provider.complete(messages.clone(), tools.clone()).await {
             Ok(r) => r,
             Err(e) => {
+                release_durable_budget(&store, &reservation_id).await;
                 warn!(id = %investigation_id, error = %e, iteration, "LLM call failed");
                 exit_reason = LoopExitReason::ProviderCallFailed {
                     error: e.to_string(),
@@ -275,6 +416,8 @@ async fn run_investigation(
 
         total_tokens += resp.tokens_used as i64;
         total_cost += resp.cost_usd;
+        let (inv_committed, daily_committed) =
+            commit_durable_budget(&store, &reservation_id, resp.cost_usd).await;
 
         messages.push(AiMessage {
             role: "assistant".into(),
@@ -284,29 +427,72 @@ async fn run_investigation(
             raw_parts: resp.raw_parts.clone(),
         });
 
+        if per_budget > 0.0 && inv_committed > per_budget {
+            warn!(id = %investigation_id, cost = inv_committed, per_budget, "investigation budget exceeded after commit");
+            exit_reason = LoopExitReason::PerInvestigationBudgetExceeded {
+                cost: inv_committed,
+                budget: per_budget,
+            };
+            break;
+        }
+        if daily_budget > 0.0 && daily_committed > daily_budget {
+            warn!(id = %investigation_id, spent = daily_committed, daily_budget, "daily budget exceeded after commit");
+            exit_reason = LoopExitReason::DailyBudgetExceeded {
+                spent: daily_committed,
+                daily_budget,
+            };
+            break;
+        }
+
         if resp.tool_calls.is_empty() || resp.stop_reason == "end_turn" {
             exit_reason = LoopExitReason::ModelEndTurn;
             break;
         }
 
+        let mut duplicate_tool_halt = false;
         for tc in &resp.tool_calls {
+            if deduplicator.record_or_detect_repeat(&tc.name, &tc.arguments) {
+                warn!(
+                    id = %investigation_id,
+                    tool = %tc.name,
+                    "duplicate tool call detected in investigation loop — halting"
+                );
+                exit_reason = LoopExitReason::RepeatedToolCallDetected {
+                    tool_name: tc.name.clone(),
+                };
+                duplicate_tool_halt = true;
+                break;
+            }
+
             queried_paths.push(tc.name.clone());
 
             let input_json = serde_json::to_string(&tc.arguments).unwrap_or_default();
-            let tool_result = crate::mcp_server::call_tool(&state, &tc.name, &tc.arguments).await;
+            let tool_result = crate::mcp_server::call_tool_with_store_and_routing(
+                &store,
+                None,
+                &tc.name,
+                &tc.arguments,
+            )
+            .await;
             let output_json = match &tool_result {
                 Ok(v) => serde_json::to_string(v).unwrap_or_default(),
                 Err(e) => serde_json::json!({ "error": e }).to_string(),
             };
 
-            let _ = store.add_tool_call(
-                investigation_id.clone(),
-                tc.name.clone(),
-                input_json,
-                output_json.clone(),
-            ).await;
+            let _ = store
+                .add_tool_call(
+                    investigation_id.clone(),
+                    tc.name.clone(),
+                    input_json,
+                    output_json.clone(),
+                )
+                .await;
 
             messages.push(AiMessage::tool_result(tc.id.clone(), output_json));
+        }
+
+        if duplicate_tool_halt {
+            break;
         }
     }
 
@@ -327,14 +513,16 @@ async fn run_investigation(
         outcome.summary.push_str(&gap_report);
     }
 
-    let _ = store.complete_investigation(
-        investigation_id.clone(),
-        outcome.state.as_str().to_string(),
-        outcome.summary,
-        outcome.proposal_json,
-        total_tokens,
-        total_cost,
-    ).await;
+    let _ = store
+        .complete_investigation(
+            investigation_id.clone(),
+            outcome.state.as_str().to_string(),
+            outcome.summary.clone(),
+            outcome.proposal_json.clone(),
+            total_tokens,
+            total_cost,
+        )
+        .await;
     info!(
         id = %investigation_id,
         status = outcome.state.as_str(),
@@ -343,6 +531,7 @@ async fn run_investigation(
         quality_score,
         "investigation finished"
     );
+    outcome
 }
 
 /// Resolve the honest terminal state, stop reason, summary, and validated RCA JSON (A03).
@@ -351,7 +540,10 @@ pub fn resolve_investigation_outcome(
     raw_summary: &str,
 ) -> InvestigationOutcome {
     match exit_reason {
-        LoopExitReason::DailyBudgetExceeded { spent, daily_budget } => InvestigationOutcome {
+        LoopExitReason::DailyBudgetExceeded {
+            spent,
+            daily_budget,
+        } => InvestigationOutcome {
             state: InvestigationTerminalState::BudgetExhausted,
             stop_reason: "daily_budget_exceeded".to_string(),
             summary: format!(
@@ -383,7 +575,9 @@ pub fn resolve_investigation_outcome(
                 .and_then(|r| serde_json::to_string(r).ok())
                 .unwrap_or_else(|| "{}".to_string());
             let body = if raw_summary.trim().is_empty() {
-                format!("Investigation halted: per-investigation budget ({budget:.4} USD) exhausted at {cost:.4} USD.")
+                format!(
+                    "Investigation halted: per-investigation budget ({budget:.4} USD) exhausted at {cost:.4} USD."
+                )
             } else {
                 format!(
                     "STOP_REASON=investigation_budget_exceeded (spent {cost:.4}/{budget:.4} USD)\n\n{raw_summary}"
@@ -403,7 +597,9 @@ pub fn resolve_investigation_outcome(
             summary: if raw_summary.trim().is_empty() {
                 format!("STOP_REASON=provider_call_failed at iteration {iteration}: {error}")
             } else {
-                format!("STOP_REASON=provider_call_failed at iteration {iteration}: {error}\n\n{raw_summary}")
+                format!(
+                    "STOP_REASON=provider_call_failed at iteration {iteration}: {error}\n\n{raw_summary}"
+                )
             },
             proposal_json: "{}".to_string(),
             validated_rca: None,
@@ -415,9 +611,13 @@ pub fn resolve_investigation_outcome(
                 .and_then(|r| serde_json::to_string(r).ok())
                 .unwrap_or_else(|| "{}".to_string());
             let body = if raw_summary.trim().is_empty() {
-                format!("STOP_REASON=iteration_limit_reached: Exhausted {max_iterations} iterations without final RCA.")
+                format!(
+                    "STOP_REASON=iteration_limit_reached: Exhausted {max_iterations} iterations without final RCA."
+                )
             } else {
-                format!("STOP_REASON=iteration_limit_reached ({max_iterations} iterations)\n\n{raw_summary}")
+                format!(
+                    "STOP_REASON=iteration_limit_reached ({max_iterations} iterations)\n\n{raw_summary}"
+                )
             };
             InvestigationOutcome {
                 state: InvestigationTerminalState::Partial,
@@ -447,7 +647,8 @@ pub fn resolve_investigation_outcome(
         },
         LoopExitReason::ModelEndTurn => match parse_and_validate_rca(raw_summary) {
             Ok(rca) => {
-                let proposal_json = serde_json::to_string(&rca).unwrap_or_else(|_| "{}".to_string());
+                let proposal_json =
+                    serde_json::to_string(&rca).unwrap_or_else(|_| "{}".to_string());
                 let (state, stop_reason) = match rca.epistemic_state.as_str() {
                     "awaiting_human" => (
                         InvestigationTerminalState::AwaitingHuman,
@@ -535,7 +736,10 @@ fn compute_coverage_gaps(
             ));
         }
         if q.netbox_enrichment_coverage.pct < 20.0 {
-            gaps.push("NetBox enrichment is absent — site, rack, and role context unavailable.".to_string());
+            gaps.push(
+                "NetBox enrichment is absent — site, rack, and role context unavailable."
+                    .to_string(),
+            );
         }
 
         // Check if this device is in the weak devices list.
@@ -567,7 +771,9 @@ fn compute_coverage_gaps(
         return String::new();
     }
 
-    let mut report = String::from("---\n## Coverage Gaps (auto-generated)\nThe following data gaps may affect investigation accuracy:\n");
+    let mut report = String::from(
+        "---\n## Coverage Gaps (auto-generated)\nThe following data gaps may affect investigation accuracy:\n",
+    );
     for gap in &gaps {
         report.push_str(&format!("- {gap}\n"));
     }
@@ -608,9 +814,7 @@ fn system_prompt(device_address: &str, detection_id: Option<&str>) -> String {
 
 fn user_prompt(device_address: &str, detection_id: Option<&str>) -> String {
     if let Some(id) = detection_id {
-        format!(
-            "Investigate detection {id} on device {device_address}. Start with get_incident."
-        )
+        format!("Investigate detection {id} on device {device_address}. Start with get_incident.")
     } else {
         format!(
             "Investigate device {device_address}. List active detections and analyze blast radius."
@@ -707,8 +911,8 @@ fn extract_json_candidate(summary: &str) -> Option<&str> {
 pub fn parse_and_validate_rca(summary: &str) -> Result<TypedInvestigationRca, String> {
     let candidate = extract_json_candidate(summary)
         .ok_or_else(|| "no JSON block found in summary".to_string())?;
-    let mut rca: TypedInvestigationRca = serde_json::from_str(candidate)
-        .map_err(|e| format!("invalid RCA JSON structure: {e}"))?;
+    let mut rca: TypedInvestigationRca =
+        serde_json::from_str(candidate).map_err(|e| format!("invalid RCA JSON structure: {e}"))?;
 
     rca.root_cause_type = rca.root_cause_type.trim().to_string();
     if rca.root_cause_type.is_empty() {
@@ -750,17 +954,123 @@ pub fn extract_rca_json(summary: &str) -> String {
 
 // ── A08: Pre-Call Budget Reservation Ledger & Tool-Call Deduplicator ──────────
 
+const AI_BUDGET_LEDGER_CONFIG_CLASS: &str = "ai_budget_ledger";
+const AI_BUDGET_LEDGER_CONFIG_ID: &str = "ai-budget-ledger-v1";
+
+static BUDGET_LEDGER_MUTEX: std::sync::OnceLock<tokio::sync::Mutex<()>> =
+    std::sync::OnceLock::new();
+
+fn budget_ledger_lock() -> &'static tokio::sync::Mutex<()> {
+    BUDGET_LEDGER_MUTEX.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 /// Pre-call budget reservation ledger (Strategy §10, A08).
 ///
 /// Reserves estimated model spend BEFORE invoking the provider so concurrent or
 /// sequential iterations cannot overshoot `per_investigation_budget_usd` or
 /// `daily_budget_usd`. Reconciles actual spend on completion or releases on error/cancel.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BudgetReservationLedger {
     daily_committed_usd: f64,
     committed_by_investigation: std::collections::HashMap<String, f64>,
     /// Maps `reservation_id -> (investigation_id, reserved_usd)`.
     active_reservations: std::collections::HashMap<String, (String, f64)>,
+}
+
+/// Load the durable `BudgetReservationLedger` from `GraphStore` (`ConfigItemRecord`).
+pub async fn load_durable_budget_ledger(store: &GraphStore) -> BudgetReservationLedger {
+    let items = store
+        .list_config_items(Some(AI_BUDGET_LEDGER_CONFIG_CLASS.to_string()))
+        .await
+        .unwrap_or_default();
+    if let Some(ci) = items
+        .into_iter()
+        .find(|i| i.id == AI_BUDGET_LEDGER_CONFIG_ID && i.enabled)
+    {
+        if let Ok(ledger) = serde_json::from_str::<BudgetReservationLedger>(&ci.content_json) {
+            return ledger;
+        }
+    }
+    BudgetReservationLedger::default()
+}
+
+async fn save_durable_budget_ledger(store: &GraphStore, ledger: &BudgetReservationLedger) {
+    if let Ok(content_json) = serde_json::to_string(ledger) {
+        let _ = store
+            .upsert_config_item(crate::graph::ConfigItemRecord {
+                id: AI_BUDGET_LEDGER_CONFIG_ID.to_string(),
+                config_class: AI_BUDGET_LEDGER_CONFIG_CLASS.to_string(),
+                vendor: String::new(),
+                name: "ai_budget_reservation_ledger".to_string(),
+                version: "1".to_string(),
+                content_json,
+                enabled: true,
+                created_by: "investigation_runtime".to_string(),
+            })
+            .await;
+    }
+}
+
+async fn sync_durable_budget_ledger(
+    store: &GraphStore,
+    db_daily_spent_usd: f64,
+) -> BudgetReservationLedger {
+    let _guard = budget_ledger_lock().lock().await;
+    let mut ledger = load_durable_budget_ledger(store).await;
+    if db_daily_spent_usd > ledger.daily_committed_usd {
+        ledger.daily_committed_usd = db_daily_spent_usd;
+        save_durable_budget_ledger(store, &ledger).await;
+    }
+    ledger
+}
+
+async fn reserve_durable_budget(
+    store: &GraphStore,
+    reservation_id: &str,
+    investigation_id: &str,
+    estimated_usd: f64,
+    per_investigation_limit_usd: f64,
+    daily_limit_usd: f64,
+) -> Result<(), LoopExitReason> {
+    let _guard = budget_ledger_lock().lock().await;
+    let mut ledger = load_durable_budget_ledger(store).await;
+    ledger.reserve(
+        reservation_id,
+        investigation_id,
+        estimated_usd,
+        per_investigation_limit_usd,
+        daily_limit_usd,
+    )?;
+    save_durable_budget_ledger(store, &ledger).await;
+    Ok(())
+}
+
+async fn commit_durable_budget(
+    store: &GraphStore,
+    reservation_id: &str,
+    actual_usd: f64,
+) -> (f64, f64) {
+    let _guard = budget_ledger_lock().lock().await;
+    let mut ledger = load_durable_budget_ledger(store).await;
+    let inv_id = ledger
+        .active_reservations
+        .get(reservation_id)
+        .map(|(id, _)| id.clone())
+        .unwrap_or_default();
+    let _ = ledger.commit(reservation_id, actual_usd);
+    save_durable_budget_ledger(store, &ledger).await;
+    (
+        ledger.investigation_committed_usd(&inv_id),
+        ledger.daily_committed_usd(),
+    )
+}
+
+async fn release_durable_budget(store: &GraphStore, reservation_id: &str) {
+    let _guard = budget_ledger_lock().lock().await;
+    let mut ledger = load_durable_budget_ledger(store).await;
+    if ledger.release(reservation_id).is_some() {
+        save_durable_budget_ledger(store, &ledger).await;
+    }
 }
 
 impl BudgetReservationLedger {
@@ -866,14 +1176,8 @@ impl ToolCallDeduplicator {
     }
 
     /// Returns `true` if this exact `(tool_name, args)` call was already executed in this investigation.
-    pub fn record_or_detect_repeat(
-        &mut self,
-        tool_name: &str,
-        args: &serde_json::Value,
-    ) -> bool {
+    pub fn record_or_detect_repeat(&mut self, tool_name: &str, args: &serde_json::Value) -> bool {
         let key = format!("{}::{}", tool_name.trim(), args);
         !self.seen_calls.insert(key)
     }
 }
-
-

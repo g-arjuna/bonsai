@@ -4,7 +4,7 @@
 //! without Kafka, NATS, or ML sidecars.
 
 use bonsai::routing_service::{
-    build_internal_routing_router, run_bmp_listener, RoutingServiceConfig, RoutingServiceState,
+    RoutingServiceConfig, RoutingServiceState, build_internal_routing_router, run_bmp_listener,
 };
 use tokio::net::TcpListener;
 use tracing::info;
@@ -49,4 +49,3 @@ async fn main() -> anyhow::Result<()> {
     let _ = bmp_handle.await;
     Ok(())
 }
-

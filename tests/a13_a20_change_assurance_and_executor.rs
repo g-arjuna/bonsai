@@ -10,11 +10,11 @@ use std::sync::Arc;
 use bonsai::graph::GraphStore;
 use bonsai::mcp_server::call_tool_with_store_and_routing;
 use bonsai::remediation::{
-    parse_nokia_srl_bgp_neighbor_json, summarize_shadow_pilot, verify_plan_in_digital_twin,
     ApprovalBoundExecutor, AssuranceCheckSpec, AssuranceVerdict, BlastRadiusSummary,
     DigitalTwinSnapshot, DisruptionLevel, ExecutionOutcome, ExecutionRejectionReason,
-    NetworkInvariant, ParseQualityState, RecoveryPolicy, RemediationPlan,
-    ShadowPilotObservation, SignedPlanApproval,
+    NetworkInvariant, ParseQualityState, RecoveryPolicy, RemediationPlan, ShadowPilotObservation,
+    SignedPlanApproval, parse_nokia_srl_bgp_neighbor_json, summarize_shadow_pilot,
+    verify_plan_in_digital_twin,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -141,7 +141,10 @@ fn a13_nokia_srl_adapter_separates_nos_schema_drift_from_network_failure() {
     // 3. Incompatible schema missing network-instance -> SchemaMismatch
     let raw_mismatch = r#"{"unexpected-root": true}"#;
     let obs_mismatch = parse_nokia_srl_bgp_neighbor_json(raw_mismatch).unwrap();
-    assert_eq!(obs_mismatch.parse_quality, ParseQualityState::SchemaMismatch);
+    assert_eq!(
+        obs_mismatch.parse_quality,
+        ParseQualityState::SchemaMismatch
+    );
 }
 
 #[tokio::test]
@@ -188,7 +191,8 @@ async fn a16_a17_digital_twin_assurance_gate_and_mcp_evaluate_change_plan() {
 }
 
 #[test]
-fn a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idempotency_and_recovery() {
+fn a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idempotency_and_recovery()
+ {
     let plan = sample_remediation_plan();
     let twin = sample_healthy_twin();
     let assurance = verify_plan_in_digital_twin(&plan, &twin);
@@ -202,7 +206,8 @@ fn a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idem
         approved_scope_vrf: plan.vrf_rd.clone(),
         assurance_report_id: assurance.report_id.clone(),
         approved_by: "netops-lead".to_string(),
-        operator_rationale: "Verified in Containerlab FRR twin; restores 203.0.113.0/24".to_string(),
+        operator_rationale: "Verified in Containerlab FRR twin; restores 203.0.113.0/24"
+            .to_string(),
         approved_at_epoch_secs: 1_760_000_100,
         expires_at_epoch_secs: 1_760_001_800,
     };
@@ -211,7 +216,9 @@ fn a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idem
 
     // 1. Mutated plan after approval -> rejected with PlanHashMismatch
     let mut mutated_plan = plan.clone();
-    mutated_plan.candidate_diff.push_str("\n+ neighbor 198.51.100.1 shutdown");
+    mutated_plan
+        .candidate_diff
+        .push_str("\n+ neighbor 198.51.100.1 shutdown");
     let err_mutated = executor
         .execute_approved_plan(
             "idem-1",
@@ -224,7 +231,10 @@ fn a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idem
             true,
         )
         .unwrap_err();
-    assert_eq!(err_mutated, ExecutionRejectionReason::UnverifiedInDigitalTwin);
+    assert_eq!(
+        err_mutated,
+        ExecutionRejectionReason::UnverifiedInDigitalTwin
+    );
 
     // Even if assurance hash matched mutated plan, approval.approved_plan_hash still rejects it:
     let mutated_assurance = verify_plan_in_digital_twin(&mutated_plan, &twin);
@@ -293,7 +303,10 @@ fn a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idem
             true,
         )
         .unwrap_err();
-    assert_eq!(err_lock, ExecutionRejectionReason::ConflictingChangeLockHeld);
+    assert_eq!(
+        err_lock,
+        ExecutionRejectionReason::ConflictingChangeLockHeld
+    );
     executor.release_scope_lock("192.0.2.10", "0:0", "other-change-owner");
 
     // 5. Valid execution -> CommittedAndPostchecksPassed, and duplicate idempotency_key is deduplicated
@@ -309,7 +322,10 @@ fn a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idem
             true,
         )
         .unwrap();
-    assert_eq!(ok_entry.outcome, ExecutionOutcome::CommittedAndPostchecksPassed);
+    assert_eq!(
+        ok_entry.outcome,
+        ExecutionOutcome::CommittedAndPostchecksPassed
+    );
     assert!(!ok_entry.deduplicated_replay);
     assert_eq!(executor.journal_entries().len(), 1);
 
@@ -393,4 +409,3 @@ fn a19_shadow_operational_pilot_records_utility_and_enforces_zero_writes() {
     assert_eq!(summary.operator_utility_rate_pct, 100.0);
     assert_eq!(summary.total_write_operations_attempted, 0);
 }
-

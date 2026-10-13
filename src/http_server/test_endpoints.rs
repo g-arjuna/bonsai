@@ -25,12 +25,13 @@ pub(super) struct ParseSyslogFixtureResponse {
     facts: Vec<SyslogFact>,
     config_change_trigger: bool,
 }
-use serde::{Deserialize, Serialize};
-use axum::{Json, extract::State, http::StatusCode};
 use crate::signals::syslog::{SyslogEvent, SyslogFact};
+use axum::{Json, extract::State, http::StatusCode};
+use serde::{Deserialize, Serialize};
 
-use super::{AppState, default_inject_severity, default_syslog_transport, default_syslog_peer_addr};
-
+use super::{
+    AppState, default_inject_severity, default_syslog_peer_addr, default_syslog_transport,
+};
 
 pub(super) async fn inject_detection_handler(
     State(state): State<AppState>,

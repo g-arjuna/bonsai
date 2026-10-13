@@ -16,14 +16,14 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::time::Instant;
 
 use bonsai::graph::GraphStore;
-use bonsai::platform_registry::{lookup_platform, PLATFORM_PROFILES};
+use bonsai::platform_registry::{PLATFORM_PROFILES, lookup_platform};
 use bonsai::routing_service::migration::{
     migrate_bonsai_toml_file, migrate_routing_jsonl_file, rollback_from_backup, sha256_file,
 };
 use bonsai::routing_service::{
-    build_routes_json, compute_rib_digest, project_routing_events_to_graph,
-    sample_bmp_session_frames, sample_bmp_withdraw_frame, PrefixHistoryQuery, RoutesQuery,
-    RoutingServiceConfig, RoutingServiceState,
+    PrefixHistoryQuery, RoutesQuery, RoutingServiceConfig, RoutingServiceState, build_routes_json,
+    compute_rib_digest, project_routing_events_to_graph, sample_bmp_session_frames,
+    sample_bmp_withdraw_frame,
 };
 use sha2::{Digest, Sha256};
 
@@ -173,9 +173,7 @@ impl ExpectedRouteOracle {
             .routes
             .iter()
             .map(|((spk, peer, rd, view, pfx), (asn, nh, lp))| {
-                format!(
-                    "{spk}|{peer}|{rd}|{view}|{pfx}|None|Some({nh})|Some({lp})|Some(\"{asn}\")"
-                )
+                format!("{spk}|{peer}|{rd}|{view}|{pfx}|None|Some({nh})|Some({lp})|Some(\"{asn}\")")
             })
             .collect();
         rows.sort();
@@ -207,10 +205,22 @@ async fn execute_clean_frr_scenario_run(run_number: u32) -> serde_json::Value {
     let (init, peer_up, rm_p1_100) = sample_bmp_session_frames(peer_ip, peer_as, [10, 10, 1], 100);
     let (_, _, rm_p2_100) = sample_bmp_session_frames(peer_ip, peer_as, [10, 10, 2], 100);
 
-    state.ingest_bmp_bytes(speaker, Some(1), &init).await.unwrap();
-    state.ingest_bmp_bytes(speaker, Some(1), &peer_up).await.unwrap();
-    state.ingest_bmp_bytes(speaker, Some(1), &rm_p1_100).await.unwrap();
-    state.ingest_bmp_bytes(speaker, Some(1), &rm_p2_100).await.unwrap();
+    state
+        .ingest_bmp_bytes(speaker, Some(1), &init)
+        .await
+        .unwrap();
+    state
+        .ingest_bmp_bytes(speaker, Some(1), &peer_up)
+        .await
+        .unwrap();
+    state
+        .ingest_bmp_bytes(speaker, Some(1), &rm_p1_100)
+        .await
+        .unwrap();
+    state
+        .ingest_bmp_bytes(speaker, Some(1), &rm_p2_100)
+        .await
+        .unwrap();
 
     oracle.announce(
         "172.20.0.11",
@@ -241,8 +251,14 @@ async fn execute_clean_frr_scenario_run(run_number: u32) -> serde_json::Value {
     // Step 2: Attribute change on 10.10.1.0/24 (LP=250) and Withdraw 10.10.2.0/24
     let (_, _, rm_p1_250) = sample_bmp_session_frames(peer_ip, peer_as, [10, 10, 1], 250);
     let withdraw_p2 = sample_bmp_withdraw_frame(peer_ip, peer_as, [10, 10, 2]);
-    state.ingest_bmp_bytes(speaker, Some(1), &rm_p1_250).await.unwrap();
-    state.ingest_bmp_bytes(speaker, Some(1), &withdraw_p2).await.unwrap();
+    state
+        .ingest_bmp_bytes(speaker, Some(1), &rm_p1_250)
+        .await
+        .unwrap();
+    state
+        .ingest_bmp_bytes(speaker, Some(1), &withdraw_p2)
+        .await
+        .unwrap();
 
     oracle.announce(
         "172.20.0.11",
@@ -277,9 +293,18 @@ async fn execute_clean_frr_scenario_run(run_number: u32) -> serde_json::Value {
     assert_eq!(gap_digest, oracle_digest_2);
 
     // Step 4: Collector reconnect (epoch 2) clears transport gap and re-converges
-    state.ingest_bmp_bytes(speaker, Some(2), &init).await.unwrap();
-    state.ingest_bmp_bytes(speaker, Some(2), &peer_up).await.unwrap();
-    state.ingest_bmp_bytes(speaker, Some(2), &rm_p1_250).await.unwrap();
+    state
+        .ingest_bmp_bytes(speaker, Some(2), &init)
+        .await
+        .unwrap();
+    state
+        .ingest_bmp_bytes(speaker, Some(2), &peer_up)
+        .await
+        .unwrap();
+    state
+        .ingest_bmp_bytes(speaker, Some(2), &rm_p1_250)
+        .await
+        .unwrap();
 
     let (final_count, final_digest) = compute_rib_digest(&state).await;
     assert_eq!(final_count, 1);
@@ -290,6 +315,7 @@ async fn execute_clean_frr_scenario_run(run_number: u32) -> serde_json::Value {
         &PrefixHistoryQuery {
             prefix: Some("10.10.1.0/24".to_string()),
             limit: Some(20),
+            ..Default::default()
         },
     )
     .await;
@@ -417,15 +443,20 @@ async fn b17_b18_frr_two_clean_runs_and_multivendor_capability_matrix() {
     fs::write(&results_path, &results_bytes).unwrap();
 
     let manifest_json = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "tasks": ["B17", "B18"],
+        "verification_mode": "synthetic_pdu_replay_oracle",
+        "live_nos_verification_gate": "tests/r07_frr_containerlab_verification.rs",
+        "live_host_images_verified": [
+            "quay.io/frrouting/frr:10.6.1"
+        ],
         "results_file": "results.json",
         "results_sha256": hex::encode(Sha256::digest(&results_bytes)),
-        "host_images_verified": [
-            "quay.io/frrouting/frr:9.1.0",
-            "ghcr.io/nokia/srlinux:24.10.1",
-            "ios-xr/xrd-control-plane:24.4.1",
-            "ceos:4.33.1F"
+        "synthetic_profiles_exercised": [
+            "frrouting",
+            "nokia_srl",
+            "cisco_xrd",
+            "arista_eos"
         ]
     });
     fs::write(
@@ -459,8 +490,14 @@ async fn b19_deterministic_load_fault_injection_and_crash_replay_equivalence() {
     let peer_as = 65500u32;
 
     let (init, peer_up, _) = sample_bmp_session_frames(peer_ip, peer_as, [10, 0, 0], 100);
-    state.ingest_bmp_bytes(speaker, Some(1), &init).await.unwrap();
-    state.ingest_bmp_bytes(speaker, Some(1), &peer_up).await.unwrap();
+    state
+        .ingest_bmp_bytes(speaker, Some(1), &init)
+        .await
+        .unwrap();
+    state
+        .ingest_bmp_bytes(speaker, Some(1), &peer_up)
+        .await
+        .unwrap();
 
     // 1. Deterministic 1,000-route load burst + fault injection every 100 frames
     let start = Instant::now();
@@ -485,7 +522,12 @@ async fn b19_deterministic_load_fault_injection_and_crash_replay_equivalence() {
         // Inject malformed / truncated BMP frame every 100 routes
         if i % 100 == 0 {
             let bad_frame = b"\x03\x00\x00\x00\x05\x00"; // invalid BMP length 5 < 6
-            assert!(state.ingest_bmp_bytes(speaker, Some(1), bad_frame).await.is_err());
+            assert!(
+                state
+                    .ingest_bmp_bytes(speaker, Some(1), bad_frame)
+                    .await
+                    .is_err()
+            );
             rejected_fault_frames += 1;
         }
     }
@@ -522,7 +564,8 @@ async fn b19_deterministic_load_fault_injection_and_crash_replay_equivalence() {
             .open(&bmp_journal_path)
             .unwrap();
         // Append truncated JSONL crash-tail line that must be safely ignored by BmpJournal::replay_into
-        f.write_all(b"{\"id\":\"00000000-truncated-crash-tail").unwrap();
+        f.write_all(b"{\"id\":\"00000000-truncated-crash-tail")
+            .unwrap();
         f.sync_data().unwrap();
     }
 

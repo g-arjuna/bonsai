@@ -174,11 +174,8 @@ impl ReceiverSupervisor {
 
     /// Snapshot all receiver statuses for the API.
     pub fn status_snapshot(&self) -> Vec<ReceiverStatusSnapshot> {
-        let mut out: Vec<ReceiverStatusSnapshot> = self
-            .entries
-            .values()
-            .map(|e| e.status.clone())
-            .collect();
+        let mut out: Vec<ReceiverStatusSnapshot> =
+            self.entries.values().map(|e| e.status.clone()).collect();
         out.sort_by(|a, b| a.name.cmp(&b.name));
         out
     }
@@ -206,9 +203,7 @@ pub fn new_shared() -> SharedReceiverSupervisor {
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 fn is_port_conflict(msg: &str) -> bool {
-    msg.contains("in use")
-        || msg.contains("AddrInUse")
-        || msg.contains("address already in use")
+    msg.contains("in use") || msg.contains("AddrInUse") || msg.contains("address already in use")
 }
 
 fn now_ns() -> i64 {

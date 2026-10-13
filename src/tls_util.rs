@@ -7,8 +7,8 @@
 //! Call `read_cert_pem(path, vault)` instead of `tokio::fs::read(path)` wherever cert bytes
 //! are loaded. This is the single integration point between the Certs UI and runtime TLS.
 
-use anyhow::{Context, Result};
 use crate::credentials::{CredentialVault, ResolvePurpose};
+use anyhow::{Context, Result};
 
 const VAULT_PREFIX: &str = "vault:";
 
@@ -59,8 +59,7 @@ pub fn read_cert_pem_sync(path: &str, vault: &CredentialVault) -> Result<Vec<u8>
         }
         Ok(pem.into_bytes())
     } else {
-        std::fs::read(path)
-            .with_context(|| format!("could not read cert from '{path}'"))
+        std::fs::read(path).with_context(|| format!("could not read cert from '{path}'"))
     }
 }
 

@@ -1,10 +1,14 @@
-use std::collections::HashSet;
+use anyhow::{Context, Result, anyhow};
+use rbmp_core::bgp::types::BgpDecodeContext;
+use rbmp_core::bmp::parser::{
+    DEFAULT_MAX_FRAME, parse_bmp_message_with_context, parse_peer_header,
+};
+use rbmp_core::bmp::types::{BmpMessage, BmpPayload, PeerKey};
+use rbmp_rib::RibManager;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use anyhow::{Context, Result, anyhow};
-use rbmp_core::bmp::types::{BmpMessage, BmpPayload};
-use rbmp_rib::RibManager;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
@@ -15,7 +19,147 @@ pub struct ReplayReport {
     pub skipped_truncated_tail: usize,
 }
 
-/// Durable append-only JSONL journal of raw `BmpMessage` records for crash recovery.
+/// Durable transport-disconnect record persisted in `BmpJournal` across restarts (R04).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct JournalTransportGap {
+    pub speaker_addr: IpAddr,
+    #[serde(default)]
+    pub session_epoch: Option<u64>,
+    pub disconnected_at: chrono::DateTime<chrono::Utc>,
+    pub reason: String,
+}
+
+/// Rich replay outcome returning the report, all deterministically emitted `RibEvent`s,
+/// active `JournalTransportGap`s, and reconstructed `BgpDecodeContext`s (R02, R04).
+#[derive(Debug)]
+pub struct ReplayOutcome {
+    pub report: ReplayReport,
+    pub emitted_events: Vec<rbmp_rib::event::RibEvent>,
+    pub transport_gaps: HashMap<IpAddr, JournalTransportGap>,
+    pub decode_contexts: HashMap<PeerKey, BgpDecodeContext>,
+}
+
+/// Observation entry serialized to `BmpJournal` preserving `session_epoch` and optional raw wire bytes (R02).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BmpJournalObservation {
+    #[serde(flatten)]
+    pub message: BmpMessage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_epoch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_frame_hex: Option<String>,
+}
+
+/// Control / lifecycle record serialized to `BmpJournal` for transport disconnects (R04).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "record_kind", rename_all = "snake_case")]
+pub enum BmpJournalControlRecord {
+    TransportDisconnect {
+        speaker_addr: IpAddr,
+        #[serde(default)]
+        session_epoch: Option<u64>,
+        disconnected_at: chrono::DateTime<chrono::Utc>,
+        reason: String,
+    },
+}
+
+enum ParsedBmpJournalLine {
+    Observation(BmpJournalObservation),
+    Control(BmpJournalControlRecord),
+}
+
+fn parse_bmp_journal_line(
+    line: &str,
+) -> std::result::Result<ParsedBmpJournalLine, serde_json::Error> {
+    if line.contains("\"record_kind\"") {
+        if let Ok(ctrl) = serde_json::from_str::<BmpJournalControlRecord>(line) {
+            return Ok(ParsedBmpJournalLine::Control(ctrl));
+        }
+    }
+    serde_json::from_str::<BmpJournalObservation>(line).map(ParsedBmpJournalLine::Observation)
+}
+
+/// Determine whether an incoming BMP message for a speaker clears an active transport gap (R04).
+///
+/// A transport gap is cleared only when:
+/// 1. The speaker session is explicitly terminated (`BmpPayload::Termination`) in an epoch >= `gap_epoch`, or
+/// 2. An explicit `EndOfRib` marker is received in an epoch >= `gap_epoch`, or
+/// 3. A new session synchronization (`Initiation` or `PeerUp`) arrives on a newer session epoch (`incoming_epoch > gap_epoch`).
+pub fn should_clear_transport_gap(
+    gap_epoch: Option<u64>,
+    incoming_epoch: Option<u64>,
+    payload: &BmpPayload,
+) -> bool {
+    let is_not_stale_epoch = match (gap_epoch, incoming_epoch) {
+        (Some(g), Some(inc)) => inc >= g,
+        _ => true,
+    };
+    if !is_not_stale_epoch {
+        return false;
+    }
+    match payload {
+        BmpPayload::Termination { .. } => true,
+        BmpPayload::RouteMonitoring { update, .. } if update.eor_afi_safi().is_some() => true,
+        BmpPayload::Initiation { .. } | BmpPayload::PeerUp(_) => {
+            match (gap_epoch, incoming_epoch) {
+                (Some(g), Some(inc)) => inc > g,
+                (None, Some(_)) => true,
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        use std::fmt::Write;
+        let _ = write!(&mut out, "{b:02x}");
+    }
+    out
+}
+
+fn hex_to_bytes(hex_str: &str) -> Option<Vec<u8>> {
+    let s = hex_str.trim();
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let bytes = s.as_bytes();
+    for chunk in bytes.chunks_exact(2) {
+        let hi = (chunk[0] as char).to_digit(16)?;
+        let lo = (chunk[1] as char).to_digit(16)?;
+        out.push(((hi << 4) | lo) as u8);
+    }
+    Some(out)
+}
+
+fn truncate_file_to_len(path: &Path, valid_len: usize) -> Result<()> {
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .with_context(|| format!("failed to open {} for tail truncation", path.display()))?;
+    f.set_len(valid_len as u64)
+        .with_context(|| format!("failed to truncate torn tail on {}", path.display()))?;
+    f.sync_all()
+        .with_context(|| format!("failed to sync truncated journal {}", path.display()))?;
+    Ok(())
+}
+
+fn append_newline_and_sync(path: &Path) -> Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open {} to terminate final line", path.display()))?;
+    f.write_all(b"\n")?;
+    f.flush()?;
+    f.sync_all()?;
+    Ok(())
+}
+
+/// Durable append-only JSONL journal of raw `BmpMessage` records and transport lifecycle events for crash recovery.
 pub struct BmpJournal {
     path: Option<PathBuf>,
     file: Option<Arc<Mutex<tokio::fs::File>>>,
@@ -34,6 +178,10 @@ impl BmpJournal {
                     if !parent.as_os_str().is_empty() {
                         tokio::fs::create_dir_all(parent).await?;
                     }
+                }
+                if pb.exists() {
+                    let (mut dummy_rib, _rx) = RibManager::new(16);
+                    let _ = Self::replay_into_with_state(&pb, &mut dummy_rib)?;
                 }
                 let f = tokio::fs::OpenOptions::new()
                     .create(true)
@@ -54,8 +202,42 @@ impl BmpJournal {
 
     /// Serialize `msg` as a single JSONL record, flush, and fsync data before returning.
     pub async fn append(&self, msg: &BmpMessage) -> Result<()> {
+        self.append_observation(msg, None, None).await
+    }
+
+    /// Serialize `msg` together with optional `session_epoch` and raw wire frame bytes, flush, and fsync.
+    pub async fn append_observation(
+        &self,
+        msg: &BmpMessage,
+        session_epoch: Option<u64>,
+        raw_frame: Option<&[u8]>,
+    ) -> Result<()> {
         if let Some(file) = &self.file {
-            let mut line = serde_json::to_vec(msg)?;
+            let record = BmpJournalObservation {
+                message: msg.clone(),
+                session_epoch,
+                raw_frame_hex: raw_frame.map(bytes_to_hex),
+            };
+            let mut line = serde_json::to_vec(&record)?;
+            line.push(b'\n');
+            let mut guard = file.lock().await;
+            guard.write_all(&line).await?;
+            guard.flush().await?;
+            guard.sync_data().await?;
+        }
+        Ok(())
+    }
+
+    /// Durably record a BMP transport disconnect so monitoring gaps survive restarts (R04).
+    pub async fn append_transport_disconnect(&self, gap: &JournalTransportGap) -> Result<()> {
+        if let Some(file) = &self.file {
+            let record = BmpJournalControlRecord::TransportDisconnect {
+                speaker_addr: gap.speaker_addr,
+                session_epoch: gap.session_epoch,
+                disconnected_at: gap.disconnected_at,
+                reason: gap.reason.clone(),
+            };
+            let mut line = serde_json::to_vec(&record)?;
             line.push(b'\n');
             let mut guard = file.lock().await;
             guard.write_all(&line).await?;
@@ -67,68 +249,211 @@ impl BmpJournal {
 
     /// Replay a journal file deterministically into `rib`.
     /// If the final line is truncated (no trailing newline or partial JSON from an unclean crash),
-    /// it is skipped and counted in `ReplayReport::skipped_truncated_tail`.
+    /// it is skipped, truncated on disk (`set_len`), and counted in `ReplayReport::skipped_truncated_tail`.
     /// Any corruption in a non-final line returns an `Err`.
     pub fn replay_into(path: impl AsRef<Path>, rib: &mut RibManager) -> Result<ReplayReport> {
-        let raw = std::fs::read_to_string(path.as_ref())
-            .with_context(|| format!("failed to read BMP journal {}", path.as_ref().display()))?;
-        if raw.is_empty() {
-            return Ok(ReplayReport {
-                applied_messages: 0,
-                skipped_truncated_tail: 0,
+        Ok(Self::replay_into_with_state(path, rib)?.report)
+    }
+
+    /// Replay a journal file into `rib`, returning all emitted `RibEvent`s, active `JournalTransportGap`s,
+    /// and `BgpDecodeContext`s while repairing any torn trailing bytes on disk (R02, R03, R04).
+    pub fn replay_into_with_state(
+        path: impl AsRef<Path>,
+        rib: &mut RibManager,
+    ) -> Result<ReplayOutcome> {
+        let path_ref = path.as_ref();
+        let raw_bytes = std::fs::read(path_ref)
+            .with_context(|| format!("failed to read BMP journal {}", path_ref.display()))?;
+        if raw_bytes.is_empty() {
+            return Ok(ReplayOutcome {
+                report: ReplayReport {
+                    applied_messages: 0,
+                    skipped_truncated_tail: 0,
+                },
+                emitted_events: Vec::new(),
+                transport_gaps: HashMap::new(),
+                decode_contexts: HashMap::new(),
             });
         }
 
-        let ends_with_newline = raw.ends_with('\n');
-        let lines: Vec<&str> = raw.split('\n').collect();
-        // If `raw` ended with '\n', the last element of `split('\n')` is an empty string "".
-        let non_empty_count = if ends_with_newline {
-            lines.len().saturating_sub(1)
-        } else {
-            lines.len()
-        };
-
-        let mut active_speakers: HashSet<IpAddr> = HashSet::new();
         let mut applied_messages = 0usize;
         let mut skipped_truncated_tail = 0usize;
+        let mut emitted_events = Vec::new();
+        let mut transport_gaps: HashMap<IpAddr, JournalTransportGap> = HashMap::new();
+        let mut decode_contexts: HashMap<PeerKey, BgpDecodeContext> = HashMap::new();
 
-        for (idx, line) in lines.into_iter().take(non_empty_count).enumerate() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let is_last = idx + 1 == non_empty_count;
-            match serde_json::from_str::<BmpMessage>(trimmed) {
-                Ok(msg) => {
-                    let speaker = msg.speaker_addr;
-                    let is_term = matches!(msg.payload, BmpPayload::Termination { .. });
-                    if active_speakers.insert(speaker) {
-                        let _ = rib.open_speaker_session(speaker, msg.received_at);
+        let mut cursor = 0usize;
+        let mut valid_len = 0usize;
+        let mut line_idx = 0usize;
+
+        while cursor < raw_bytes.len() {
+            let next_nl = raw_bytes[cursor..].iter().position(|&b| b == b'\n');
+            match next_nl {
+                Some(rel_end) => {
+                    let line_end = cursor + rel_end;
+                    let line_bytes = &raw_bytes[cursor..line_end];
+                    let line_str = std::str::from_utf8(line_bytes).map_err(|e| {
+                        anyhow!(
+                            "corrupted UTF-8 in BMP journal at line {}: {}",
+                            line_idx + 1,
+                            e
+                        )
+                    })?;
+                    let trimmed = line_str.trim();
+                    if !trimmed.is_empty() {
+                        let parsed = parse_bmp_journal_line(trimmed).map_err(|e| {
+                            anyhow!(
+                                "corrupted BMP journal record at line {}: {}",
+                                line_idx + 1,
+                                e
+                            )
+                        })?;
+                        Self::apply_parsed_line(
+                            parsed,
+                            rib,
+                            &mut applied_messages,
+                            &mut emitted_events,
+                            &mut transport_gaps,
+                            &mut decode_contexts,
+                        );
                     }
-                    rib.process(msg);
-                    if is_term {
-                        active_speakers.remove(&speaker);
+                    valid_len = line_end + 1;
+                    cursor = line_end + 1;
+                    line_idx += 1;
+                }
+                None => {
+                    let tail_bytes = &raw_bytes[cursor..];
+                    match std::str::from_utf8(tail_bytes) {
+                        Ok(tail_str) if tail_str.trim().is_empty() => {
+                            truncate_file_to_len(path_ref, valid_len)?;
+                        }
+                        Ok(tail_str) => match parse_bmp_journal_line(tail_str.trim()) {
+                            Ok(parsed) => {
+                                append_newline_and_sync(path_ref)?;
+                                Self::apply_parsed_line(
+                                    parsed,
+                                    rib,
+                                    &mut applied_messages,
+                                    &mut emitted_events,
+                                    &mut transport_gaps,
+                                    &mut decode_contexts,
+                                );
+                            }
+                            Err(_) => {
+                                skipped_truncated_tail += 1;
+                                truncate_file_to_len(path_ref, valid_len)?;
+                            }
+                        },
+                        Err(_) => {
+                            skipped_truncated_tail += 1;
+                            truncate_file_to_len(path_ref, valid_len)?;
+                        }
                     }
-                    applied_messages += 1;
-                }
-                Err(e) if is_last && !ends_with_newline => {
-                    skipped_truncated_tail += 1;
-                    let _ = e;
-                }
-                Err(e) => {
-                    return Err(anyhow!(
-                        "corrupted BMP journal record at line {}: {}",
-                        idx + 1,
-                        e
-                    ));
+                    break;
                 }
             }
         }
 
-        Ok(ReplayReport {
-            applied_messages,
-            skipped_truncated_tail,
+        Ok(ReplayOutcome {
+            report: ReplayReport {
+                applied_messages,
+                skipped_truncated_tail,
+            },
+            emitted_events,
+            transport_gaps,
+            decode_contexts,
         })
+    }
+
+    fn apply_parsed_line(
+        parsed: ParsedBmpJournalLine,
+        rib: &mut RibManager,
+        applied_messages: &mut usize,
+        emitted_events: &mut Vec<rbmp_rib::event::RibEvent>,
+        transport_gaps: &mut HashMap<IpAddr, JournalTransportGap>,
+        decode_contexts: &mut HashMap<PeerKey, BgpDecodeContext>,
+    ) {
+        match parsed {
+            ParsedBmpJournalLine::Observation(obs) => {
+                let speaker = obs.message.speaker_addr;
+                let mut msg = obs.message;
+
+                // If raw wire bytes were captured, re-verify/decode with session-aware context when possible
+                if let Some(ref hex_str) = obs.raw_frame_hex {
+                    if let Some(frame) = hex_to_bytes(hex_str) {
+                        let ctx = if frame.len() >= 48 && frame[0] == 3 && frame[5] == 0 {
+                            if let Ok((peer_hdr, _)) = parse_peer_header(&frame[6..]) {
+                                let pk = PeerKey::from_header(speaker, &peer_hdr);
+                                decode_contexts.get(&pk).cloned().unwrap_or_else(|| {
+                                    BgpDecodeContext::new(peer_hdr.peer_flags.four_byte_asn())
+                                })
+                            } else {
+                                BgpDecodeContext::default()
+                            }
+                        } else {
+                            BgpDecodeContext::default()
+                        };
+                        if let Ok(redecoded_payload) =
+                            parse_bmp_message_with_context(&frame, speaker, DEFAULT_MAX_FRAME, &ctx)
+                        {
+                            msg.payload = redecoded_payload;
+                        }
+                    }
+                }
+
+                if let BmpPayload::PeerUp(ref pu) = msg.payload {
+                    let peer_key = PeerKey::from_header(speaker, &pu.peer_header);
+                    let ctx = BgpDecodeContext::from_negotiated_open(
+                        pu.peer_header.peer_flags.four_byte_asn(),
+                        &pu.sent_open.capabilities,
+                        &pu.recv_open.capabilities,
+                    );
+                    decode_contexts.insert(peer_key, ctx);
+                }
+
+                let effective_epoch = obs
+                    .session_epoch
+                    .or_else(|| rib.speaker(speaker).map(|s| s.source.session_epoch));
+
+                if let Some(existing_gap) = transport_gaps.get(&speaker) {
+                    if should_clear_transport_gap(
+                        existing_gap.session_epoch,
+                        effective_epoch,
+                        &msg.payload,
+                    ) {
+                        transport_gaps.remove(&speaker);
+                    }
+                }
+
+                let events = rib.process_for_epoch(msg, obs.session_epoch);
+                emitted_events.extend(events);
+                *applied_messages += 1;
+            }
+            ParsedBmpJournalLine::Control(BmpJournalControlRecord::TransportDisconnect {
+                speaker_addr,
+                session_epoch,
+                disconnected_at,
+                reason,
+            }) => {
+                let active_epoch = rib.speaker(speaker_addr).map(|s| s.source.session_epoch);
+                if let (Some(disc_ep), Some(act_ep)) = (session_epoch, active_epoch) {
+                    if disc_ep < act_ep {
+                        return;
+                    }
+                }
+                let effective_epoch = session_epoch.or(active_epoch);
+                rib.clear_speaker_eor(speaker_addr);
+                transport_gaps.insert(
+                    speaker_addr,
+                    JournalTransportGap {
+                        speaker_addr,
+                        session_epoch: effective_epoch,
+                        disconnected_at,
+                        reason,
+                    },
+                );
+            }
+        }
     }
 }
 
@@ -141,6 +466,8 @@ pub struct PrefixHistoryItem {
     pub speaker_addr: IpAddr,
     pub peer_addr: IpAddr,
     pub peer_as: u32,
+    #[serde(default)]
+    pub peer_distinguisher: String,
     pub rib_type: String,
     pub action: String,
     pub prefix: String,
@@ -170,31 +497,67 @@ impl RibEventJournal {
                     }
                 }
                 if pb.exists() {
-                    let raw = tokio::fs::read_to_string(&pb).await.unwrap_or_default();
-                    let ends_with_newline = raw.ends_with('\n');
-                    let lines: Vec<&str> = raw.split('\n').collect();
-                    let non_empty_count = if ends_with_newline {
-                        lines.len().saturating_sub(1)
-                    } else {
-                        lines.len()
-                    };
-                    for (idx, line) in lines.into_iter().take(non_empty_count).enumerate() {
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() {
-                            continue;
-                        }
-                        let is_last = idx + 1 == non_empty_count;
-                        match serde_json::from_str::<rbmp_rib::event::RibEvent>(trimmed) {
-                            Ok(ev) => initial_events.push(ev),
-                            Err(_) if is_last && !ends_with_newline => {
-                                // Ignore truncated crash tail
+                    let raw_bytes = tokio::fs::read(&pb).await.unwrap_or_default();
+                    let mut cursor = 0usize;
+                    let mut valid_len = 0usize;
+                    let mut line_idx = 0usize;
+
+                    while cursor < raw_bytes.len() {
+                        let next_nl = raw_bytes[cursor..].iter().position(|&b| b == b'\n');
+                        match next_nl {
+                            Some(rel_end) => {
+                                let line_end = cursor + rel_end;
+                                let line_bytes = &raw_bytes[cursor..line_end];
+                                let line_str = std::str::from_utf8(line_bytes).map_err(|e| {
+                                    anyhow!(
+                                        "corrupted UTF-8 in RibEventJournal at line {}: {}",
+                                        line_idx + 1,
+                                        e
+                                    )
+                                })?;
+                                let trimmed = line_str.trim();
+                                if !trimmed.is_empty() {
+                                    let ev = serde_json::from_str::<rbmp_rib::event::RibEvent>(
+                                        trimmed,
+                                    )
+                                    .map_err(|e| {
+                                        anyhow!(
+                                            "corrupted RibEventJournal record at line {}: {}",
+                                            line_idx + 1,
+                                            e
+                                        )
+                                    })?;
+                                    initial_events.push(ev);
+                                }
+                                valid_len = line_end + 1;
+                                cursor = line_end + 1;
+                                line_idx += 1;
                             }
-                            Err(e) => {
-                                return Err(anyhow!(
-                                    "corrupted RibEventJournal record at line {}: {}",
-                                    idx + 1,
-                                    e
-                                ));
+                            None => {
+                                let tail_bytes = &raw_bytes[cursor..];
+                                match std::str::from_utf8(tail_bytes) {
+                                    Ok(tail_str) if tail_str.trim().is_empty() => {
+                                        truncate_file_to_len(&pb, valid_len)?;
+                                    }
+                                    Ok(tail_str) => {
+                                        match serde_json::from_str::<rbmp_rib::event::RibEvent>(
+                                            tail_str.trim(),
+                                        ) {
+                                            Ok(ev) => {
+                                                append_newline_and_sync(&pb)?;
+                                                initial_events.push(ev);
+                                            }
+                                            Err(_) => {
+                                                // Truncate incomplete torn crash tail on disk before opening in append mode (R03)
+                                                truncate_file_to_len(&pb, valid_len)?;
+                                            }
+                                        }
+                                    }
+                                    Err(_) => {
+                                        truncate_file_to_len(&pb, valid_len)?;
+                                    }
+                                }
+                                break;
                             }
                         }
                     }
@@ -215,18 +578,34 @@ impl RibEventJournal {
     }
 
     pub async fn append(&self, ev: &rbmp_rib::event::RibEvent) -> Result<()> {
+        self.append_batch(std::slice::from_ref(ev)).await
+    }
+
+    /// Persist a batch of `RibEvent`s in a single atomic buffered write + `sync_data()` (R01).
+    pub async fn append_batch(&self, events: &[rbmp_rib::event::RibEvent]) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
         if let Some(file) = &self.file {
-            let mut line = serde_json::to_vec(ev)?;
-            line.push(b'\n');
+            let mut buf = Vec::with_capacity(events.len() * 256);
+            for ev in events {
+                serde_json::to_writer(&mut buf, ev)?;
+                buf.push(b'\n');
+            }
             let mut guard = file.lock().await;
-            guard.write_all(&line).await?;
+            guard.write_all(&buf).await?;
             guard.flush().await?;
             guard.sync_data().await?;
         }
         let mut guard = self.events.lock().await;
-        guard.push(ev.clone());
-        metrics::counter!("rib_events_written_total").increment(1);
+        guard.extend_from_slice(events);
+        metrics::counter!("rib_events_written_total").increment(events.len() as u64);
         Ok(())
+    }
+
+    pub async fn existing_sequences(&self) -> HashSet<u64> {
+        let guard = self.events.lock().await;
+        guard.iter().map(|e| e.event_key.sequence).collect()
     }
 
     pub async fn latest_seq(&self) -> u64 {
@@ -254,8 +633,18 @@ impl RibEventJournal {
     }
 
     pub async fn prefix_history(&self, prefix: &str, limit: usize) -> Vec<PrefixHistoryItem> {
+        self.prefix_history_filtered(prefix, None, None, limit)
+            .await
+    }
+
+    pub async fn prefix_history_filtered(
+        &self,
+        prefix: &str,
+        speaker_filter: Option<&str>,
+        vrf_rd_filter: Option<&str>,
+        limit: usize,
+    ) -> Vec<PrefixHistoryItem> {
         use rbmp_rib::event::{RibEventPayload, RouteAction};
-        use std::collections::HashMap;
 
         let guard = self.events.lock().await;
         let mut last_attrs_by_route: HashMap<
@@ -267,35 +656,46 @@ impl RibEventJournal {
         for ev in guard.iter() {
             if let RibEventPayload::RouteChange(rc) = &ev.payload {
                 let pfx_str = rc.prefix.to_string();
-                let prev = last_attrs_by_route
-                    .get(&rc.route_key)
-                    .cloned()
-                    .flatten();
+                let prev = last_attrs_by_route.get(&rc.route_key).cloned().flatten();
                 let next = match rc.action {
                     RouteAction::Announce => rc.attributes.clone(),
                     RouteAction::Withdraw => None,
                 };
                 last_attrs_by_route.insert(rc.route_key.clone(), next.clone());
 
-                if pfx_str == prefix {
-                    items.push(PrefixHistoryItem {
-                        sequence: ev.event_key.sequence,
-                        event_id: ev.id,
-                        occurred_at: ev.occurred_at,
-                        speaker_addr: ev.speaker,
-                        peer_addr: rc.peer_header.peer_address,
-                        peer_as: rc.peer_header.peer_as,
-                        rib_type: format!("{:?}", rc.rib_type),
-                        action: match rc.action {
-                            RouteAction::Announce => "announce".to_string(),
-                            RouteAction::Withdraw => "withdraw".to_string(),
-                        },
-                        prefix: pfx_str,
-                        path_id: rc.path_id,
-                        before_attributes: prev,
-                        after_attributes: next,
-                    });
+                if pfx_str != prefix {
+                    continue;
                 }
+                if let Some(spk) = speaker_filter {
+                    if !spk.trim().is_empty() && ev.speaker.to_string() != spk.trim() {
+                        continue;
+                    }
+                }
+                let rd_str = rc.peer_key.distinguisher_string();
+                if let Some(rd) = vrf_rd_filter {
+                    if !rd.trim().is_empty() && rd_str != rd.trim() {
+                        continue;
+                    }
+                }
+
+                items.push(PrefixHistoryItem {
+                    sequence: ev.event_key.sequence,
+                    event_id: ev.id,
+                    occurred_at: ev.occurred_at,
+                    speaker_addr: ev.speaker,
+                    peer_addr: rc.peer_header.peer_address,
+                    peer_as: rc.peer_header.peer_as,
+                    peer_distinguisher: rd_str,
+                    rib_type: format!("{:?}", rc.rib_type),
+                    action: match rc.action {
+                        RouteAction::Announce => "announce".to_string(),
+                        RouteAction::Withdraw => "withdraw".to_string(),
+                    },
+                    prefix: pfx_str,
+                    path_id: rc.path_id,
+                    before_attributes: prev,
+                    after_attributes: next,
+                });
             }
         }
         items.reverse();
@@ -312,7 +712,9 @@ impl RibEventJournal {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use rbmp_core::bgp::types::{AfiSafi, AsPath, AsPathSegment, BgpUpdate, Origin, PathAttributes, Prefix};
+    use rbmp_core::bgp::types::{
+        AfiSafi, AsPath, AsPathSegment, BgpUpdate, Origin, PathAttributes, Prefix,
+    };
     use rbmp_core::bmp::types::{
         BgpOpenInfo, BmpMessage, BmpPayload, PeerFlags, PeerHeader, PeerKey, PeerType,
         PeerUpMessage, RibType,
@@ -335,8 +737,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn b06_durable_journal_replay_reconstructs_identical_rib_state_after_truncated_crash_tail() {
-        let tmp_path = std::env::temp_dir().join(format!("rbmp-b06-journal-{}.jsonl", Uuid::new_v4()));
+    async fn b06_durable_journal_replay_reconstructs_identical_rib_state_after_truncated_crash_tail()
+     {
+        let tmp_path =
+            std::env::temp_dir().join(format!("rbmp-b06-journal-{}.jsonl", Uuid::new_v4()));
         let journal = BmpJournal::open(Some(&tmp_path)).await.unwrap();
 
         let speaker = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
@@ -444,7 +848,10 @@ mod tests {
         drop(journal);
 
         {
-            let mut f = std::fs::OpenOptions::new().append(true).open(&tmp_path).unwrap();
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&tmp_path)
+                .unwrap();
             f.write_all(b"{\"id\":\"truncated-crash-record").unwrap();
             f.flush().unwrap();
         }
@@ -458,12 +865,25 @@ mod tests {
         assert_eq!(rib_replayed.total_routes(), rib_live.total_routes());
         assert_eq!(rib_replayed.total_routes(), 1);
 
-        let replayed_rib = rib_replayed.rib_for_peer_key(&peer_key).expect("peer RIB present");
-        assert!(replayed_rib.get(RibType::AdjRibInPrePolicy, &pfx1).is_none());
-        assert!(replayed_rib.get(RibType::AdjRibInPrePolicy, &pfx2).is_some());
+        let replayed_rib = rib_replayed
+            .rib_for_peer_key(&peer_key)
+            .expect("peer RIB present");
+        assert!(
+            replayed_rib
+                .get(RibType::AdjRibInPrePolicy, &pfx1)
+                .is_none()
+        );
+        assert!(
+            replayed_rib
+                .get(RibType::AdjRibInPrePolicy, &pfx2)
+                .is_some()
+        );
 
-        let replayed_sess = rib_replayed.speaker(speaker).unwrap().peer_by_key(&peer_key).unwrap();
+        let replayed_sess = rib_replayed
+            .speaker(speaker)
+            .unwrap()
+            .peer_by_key(&peer_key)
+            .unwrap();
         assert!(replayed_sess.has_eor(RibType::AdjRibInPrePolicy, AfiSafi::ipv4_unicast()));
     }
 }
-

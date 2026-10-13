@@ -283,7 +283,18 @@ async fn snow_get<T: for<'de> Deserialize<'de>>(
     username: &str,
     password: &str,
 ) -> Result<Vec<T>> {
-    snow_get_page(client, instance_url, table, query, fields, username, password, 0, PAGE_SIZE).await
+    snow_get_page(
+        client,
+        instance_url,
+        table,
+        query,
+        fields,
+        username,
+        password,
+        0,
+        PAGE_SIZE,
+    )
+    .await
 }
 
 /// Paginated fetch — loops with sysparm_offset until an empty page or MAX_PAGES.
@@ -300,7 +311,15 @@ async fn snow_get_all<T: for<'de> Deserialize<'de>>(
     for page in 0..MAX_PAGES {
         let offset = page * PAGE_SIZE;
         let batch = snow_get_page(
-            client, instance_url, table, query, fields, username, password, offset, PAGE_SIZE,
+            client,
+            instance_url,
+            table,
+            query,
+            fields,
+            username,
+            password,
+            offset,
+            PAGE_SIZE,
         )
         .await?;
         let count = batch.len();
@@ -544,8 +563,17 @@ impl GraphEnricher for ServiceNowEnricher {
             tokio::task::spawn_blocking(move || {
                 let _guard = write_lock.lock().expect("write lock poisoned");
                 write_to_graph(
-                    &db, &services, &cis, &servers, &rels, &incidents,
-                    &locations, &subnets, &ip_addresses, &adapters, &source,
+                    &db,
+                    &services,
+                    &cis,
+                    &servers,
+                    &rels,
+                    &incidents,
+                    &locations,
+                    &subnets,
+                    &ip_addresses,
+                    &adapters,
+                    &source,
                 )
             })
             .await
@@ -679,7 +707,9 @@ fn write_to_graph(
             ("snow_assigned_to", assigned_to.as_str()),
         ];
         for (key, val) in props {
-            if val.is_empty() { continue; }
+            if val.is_empty() {
+                continue;
+            }
             let prop_id = format!("{}:{key}", ci.name);
             if let Err(e) = upsert_enrichment_property_by_hostname(
                 &conn, &prop_id, &ci.name, key, val, source, now_ns,
@@ -694,16 +724,28 @@ fn write_to_graph(
 
     // ── 3. Server CI enrichment properties (OS, serial, RAM, CPU, etc.) ───────
     for srv in servers {
-        let mut props: Vec<(&str, &str)> = vec![
-            ("snow_ci_id", &srv.sys_id),
-        ];
-        if !srv.serial_number.is_empty() { props.push(("snow_serial", &srv.serial_number)); }
-        if !srv.os.is_empty() { props.push(("snow_os", &srv.os)); }
-        if !srv.os_version.is_empty() { props.push(("snow_os_version", &srv.os_version)); }
-        if !srv.ram.is_empty() { props.push(("snow_ram", &srv.ram)); }
-        if !srv.cpu_count.is_empty() { props.push(("snow_cpu_count", &srv.cpu_count)); }
-        if !srv.cpu_type.is_empty() { props.push(("snow_cpu_type", &srv.cpu_type)); }
-        if !srv.ip_address.is_empty() { props.push(("snow_ip_address", &srv.ip_address)); }
+        let mut props: Vec<(&str, &str)> = vec![("snow_ci_id", &srv.sys_id)];
+        if !srv.serial_number.is_empty() {
+            props.push(("snow_serial", &srv.serial_number));
+        }
+        if !srv.os.is_empty() {
+            props.push(("snow_os", &srv.os));
+        }
+        if !srv.os_version.is_empty() {
+            props.push(("snow_os_version", &srv.os_version));
+        }
+        if !srv.ram.is_empty() {
+            props.push(("snow_ram", &srv.ram));
+        }
+        if !srv.cpu_count.is_empty() {
+            props.push(("snow_cpu_count", &srv.cpu_count));
+        }
+        if !srv.cpu_type.is_empty() {
+            props.push(("snow_cpu_type", &srv.cpu_type));
+        }
+        if !srv.ip_address.is_empty() {
+            props.push(("snow_ip_address", &srv.ip_address));
+        }
         if let Some(m) = &srv.model_id {
             if !m.display_value.is_empty() {
                 props.push(("snow_model", &m.display_value));
@@ -730,7 +772,9 @@ fn write_to_graph(
             }
         }
         for (key, val) in &props {
-            if val.is_empty() { continue; }
+            if val.is_empty() {
+                continue;
+            }
             let prop_id = format!("{}:{key}", srv.name);
             if let Err(e) = upsert_enrichment_property_by_hostname(
                 &conn, &prop_id, &srv.name, key, val, source, now_ns,
@@ -766,7 +810,10 @@ fn write_to_graph(
                 let child_id = format!("snow_loc_{}", loc.sys_id);
                 let parent_id = format!("snow_loc_{}", parent_ref.value);
                 if let Err(e) = link_location_parent(&conn, &parent_id, &child_id) {
-                    warnings.push(format!("LOC_PARENT {} → {}: {e:#}", parent_ref.value, loc.sys_id));
+                    warnings.push(format!(
+                        "LOC_PARENT {} → {}: {e:#}",
+                        parent_ref.value, loc.sys_id
+                    ));
                 } else {
                     edges += 1;
                 }
@@ -776,10 +823,18 @@ fn write_to_graph(
 
     // ── 5. Subnet → Prefix nodes ─────────────────────────────────────────────
     for subnet in subnets {
-        if subnet.cidr.is_empty() { continue; }
+        if subnet.cidr.is_empty() {
+            continue;
+        }
         let id = format!("snow_prefix_{}", subnet.cidr.replace('/', "_"));
         if let Err(e) = upsert_prefix(
-            &conn, &id, &subnet.cidr, &subnet.name, &subnet.short_description, source, now_ns,
+            &conn,
+            &id,
+            &subnet.cidr,
+            &subnet.name,
+            &subnet.short_description,
+            source,
+            now_ns,
         ) {
             warnings.push(format!("Subnet {}: {e:#}", subnet.cidr));
         } else {
@@ -789,7 +844,9 @@ fn write_to_graph(
 
     // ── 6. IP Address enrichment ─────────────────────────────────────────────
     for ip in ip_addresses {
-        if ip.ip_address.is_empty() { continue; }
+        if ip.ip_address.is_empty() {
+            continue;
+        }
         let prop_id = format!("snow_ip_{}", ip.sys_id);
         let val = if ip.netmask.is_empty() {
             ip.ip_address.clone()
@@ -801,9 +858,18 @@ fn write_to_graph(
             if !nic.display_value.is_empty() {
                 // nic.display_value is usually the adapter name — link to parent device via adapter
                 if let Err(e) = upsert_enrichment_property_by_hostname(
-                    &conn, &prop_id, &nic.display_value, "snow_ip_address", &val, source, now_ns,
+                    &conn,
+                    &prop_id,
+                    &nic.display_value,
+                    "snow_ip_address",
+                    &val,
+                    source,
+                    now_ns,
                 ) {
-                    warnings.push(format!("IP {} adapter {}: {e:#}", ip.ip_address, nic.display_value));
+                    warnings.push(format!(
+                        "IP {} adapter {}: {e:#}",
+                        ip.ip_address, nic.display_value
+                    ));
                 } else {
                     nodes += 1;
                     edges += 1;
@@ -815,7 +881,9 @@ fn write_to_graph(
     // ── 7. Network adapter enrichment ────────────────────────────────────────
     for adapter in adapters {
         if let Some(ci_ref) = &adapter.cmdb_ci {
-            if ci_ref.display_value.is_empty() { continue; }
+            if ci_ref.display_value.is_empty() {
+                continue;
+            }
             // Write adapter properties on the parent CI hostname
             let hostname = &ci_ref.display_value;
             let mut props: Vec<(&str, &str)> = Vec::new();
@@ -857,7 +925,9 @@ fn write_to_graph(
                 };
                 match link_device_application(&conn, device_hostname, app_id, rel_label) {
                     Ok(()) => edges += 1,
-                    Err(e) => warnings.push(format!("{rel_label} {device_hostname} → {app_id}: {e:#}")),
+                    Err(e) => {
+                        warnings.push(format!("{rel_label} {device_hostname} → {app_id}: {e:#}"))
+                    }
                 }
             }
         } else {
@@ -1066,9 +1136,18 @@ fn reconcile_and_write_provenance(
         )
         .context("execute reconcile lookup")?
         .map(|row| {
-            let pid = match &row[0] { Value::String(s) => s.clone(), _ => String::new() };
-            let val = match &row[1] { Value::String(s) => s.clone(), _ => String::new() };
-            let src = match &row[2] { Value::String(s) => s.clone(), _ => String::new() };
+            let pid = match &row[0] {
+                Value::String(s) => s.clone(),
+                _ => String::new(),
+            };
+            let val = match &row[1] {
+                Value::String(s) => s.clone(),
+                _ => String::new(),
+            };
+            let src = match &row[2] {
+                Value::String(s) => s.clone(),
+                _ => String::new(),
+            };
             (pid, val, src)
         })
         .collect();
@@ -1077,37 +1156,67 @@ fn reconcile_and_write_provenance(
 
     if rows.is_empty() {
         // No conflict — write a simple provenance entry
-        write_provenance(conn, prop_id, "enrichment_property", prop_id, new_source, "enricher", "high", now_ns, None)?;
+        write_provenance(
+            conn,
+            prop_id,
+            "enrichment_property",
+            prop_id,
+            new_source,
+            "enricher",
+            "high",
+            now_ns,
+            None,
+        )?;
     } else {
         // Conflict detected — determine winner
         for (existing_id, existing_val, existing_src) in &rows {
             let existing_priority = source_priority_rank(existing_src);
             let (new_is_winner, conflict_detail) = if new_priority <= existing_priority {
                 // Lower rank = higher priority (cli=0 beats netbox=1 beats servicenow=2)
-                (true, format!(
-                    "{{\"conflict\":true,\"winner\":\"{new_source}\",\"loser\":\"{existing_src}\",\
+                (
+                    true,
+                    format!(
+                        "{{\"conflict\":true,\"winner\":\"{new_source}\",\"loser\":\"{existing_src}\",\
                      \"winner_value\":\"{new_value}\",\"loser_value\":\"{existing_val}\"}}"
-                ))
+                    ),
+                )
             } else {
-                (false, format!(
-                    "{{\"conflict\":true,\"winner\":\"{existing_src}\",\"loser\":\"{new_source}\",\
+                (
+                    false,
+                    format!(
+                        "{{\"conflict\":true,\"winner\":\"{existing_src}\",\"loser\":\"{new_source}\",\
                      \"winner_value\":\"{existing_val}\",\"loser_value\":\"{new_value}\"}}"
-                ))
+                    ),
+                )
             };
 
             // Provenance for the new value
             let confidence = if new_is_winner { "high" } else { "low" };
             write_provenance(
-                conn, prop_id, "enrichment_property", prop_id, new_source,
-                "enricher", confidence, now_ns, Some(&conflict_detail),
+                conn,
+                prop_id,
+                "enrichment_property",
+                prop_id,
+                new_source,
+                "enricher",
+                confidence,
+                now_ns,
+                Some(&conflict_detail),
             )?;
 
             // Provenance for the existing conflicting value
             let existing_confidence = if new_is_winner { "low" } else { "high" };
             let existing_prov_id = format!("{existing_id}:prov:{new_source}");
             write_provenance(
-                conn, &existing_prov_id, "enrichment_property", existing_id, existing_src,
-                "enricher", existing_confidence, now_ns, Some(&conflict_detail),
+                conn,
+                &existing_prov_id,
+                "enrichment_property",
+                existing_id,
+                existing_src,
+                "enricher",
+                existing_confidence,
+                now_ns,
+                Some(&conflict_detail),
             )?;
         }
     }
@@ -1205,11 +1314,7 @@ fn upsert_location(
     Ok(())
 }
 
-fn link_location_parent(
-    conn: &Connection<'_>,
-    parent_id: &str,
-    child_id: &str,
-) -> Result<()> {
+fn link_location_parent(conn: &Connection<'_>, parent_id: &str, child_id: &str) -> Result<()> {
     let mut stmt = conn
         .prepare(
             "MATCH (p:Location {id: $pid}), (c:Location {id: $cid}) \
@@ -1549,7 +1654,17 @@ mod tests {
         ];
 
         let (nodes, edges, warnings) = write_to_graph(
-            &db, &[], &[], &[], &[], &[], &locations, &[], &[], &[], "snow-test",
+            &db,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &locations,
+            &[],
+            &[],
+            &[],
+            "snow-test",
         )
         .unwrap();
         assert_eq!(nodes, 2, "two Location nodes");
@@ -1582,11 +1697,24 @@ mod tests {
         }];
 
         let (nodes, _edges, warnings) = write_to_graph(
-            &db, &[], &[], &servers, &[], &[], &[], &[], &[], &[], "snow-test",
+            &db,
+            &[],
+            &[],
+            &servers,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            "snow-test",
         )
         .unwrap();
         // snow_ci_id + serial + os + os_version + ram + cpu_count + cpu_type + ip = 8 props
-        assert!(nodes >= 8, "expected at least 8 server properties, got {nodes}");
+        assert!(
+            nodes >= 8,
+            "expected at least 8 server properties, got {nodes}"
+        );
         assert!(warnings.is_empty());
     }
 

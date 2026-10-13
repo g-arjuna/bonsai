@@ -32,7 +32,8 @@ pub async fn read_bmp_frame<R: tokio::io::AsyncRead + Unpin>(
     body_timeout: std::time::Duration,
 ) -> Result<Option<(u8, Vec<u8>)>> {
     let mut header = [0_u8; BMP_HEADER_LEN];
-    let first_byte = match tokio::time::timeout(header_timeout, reader.read(&mut header[..1])).await {
+    let first_byte = match tokio::time::timeout(header_timeout, reader.read(&mut header[..1])).await
+    {
         Ok(Ok(0)) => return Ok(None),
         Ok(Ok(n)) => n,
         Ok(Err(error)) => return Err(anyhow!(error).context("BMP read header failed")),
@@ -70,7 +71,6 @@ pub async fn read_bmp_frame<R: tokio::io::AsyncRead + Unpin>(
 
     Ok(Some((header[5], payload)))
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BmpEvent {
@@ -259,7 +259,11 @@ fn publish_event(
     });
 }
 
-pub fn parse_bmp_message(message_type: u8, payload: &[u8], collector_peer: String) -> Result<BmpEvent> {
+pub fn parse_bmp_message(
+    message_type: u8,
+    payload: &[u8],
+    collector_peer: String,
+) -> Result<BmpEvent> {
     let timestamp_ns = now_ns();
 
     // Initiation (4) and Termination (5) carry TLVs only — no per-peer header (RFC 7854 §4.3, §4.5)
@@ -417,7 +421,11 @@ fn parse_peer_down_reason(body: &[u8]) -> (u8, String) {
     (reason, name.to_string())
 }
 
-pub fn parse_initiation(payload: &[u8], collector_peer: String, timestamp_ns: i64) -> Result<BmpEvent> {
+pub fn parse_initiation(
+    payload: &[u8],
+    collector_peer: String,
+    timestamp_ns: i64,
+) -> Result<BmpEvent> {
     let mut sys_name = None;
     let mut sys_descr = None;
     let mut init_admin_string = None;
@@ -628,7 +636,10 @@ fn parse_peer_up(body: &[u8], peer_flags: u8) -> Option<BmpPeerUpInfo> {
     }
     let is_ipv6 = peer_flags & 0x80 != 0;
     let local_address = if is_ipv6 {
-        IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&body[0..16]).unwrap_or([0; 16]))).to_string()
+        IpAddr::V6(Ipv6Addr::from(
+            <[u8; 16]>::try_from(&body[0..16]).unwrap_or([0; 16]),
+        ))
+        .to_string()
     } else {
         IpAddr::V4(Ipv4Addr::new(body[12], body[13], body[14], body[15])).to_string()
     };
@@ -951,8 +962,14 @@ fn parse_extended_communities(value: &[u8]) -> Vec<String> {
                 }
                 // Four-octet AS specific (0x02) handled above; opaque otherwise
                 _ => {
-                    format!("ext:{:#04x}:{}", type_byte,
-                        c[1..].iter().map(|b| format!("{b:02x}")).collect::<String>())
+                    format!(
+                        "ext:{:#04x}:{}",
+                        type_byte,
+                        c[1..]
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>()
+                    )
                 }
             }
         })
@@ -965,8 +982,8 @@ fn parse_large_communities(value: &[u8]) -> Vec<String> {
         .chunks_exact(12)
         .map(|c| {
             let global = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
-            let local1  = u32::from_be_bytes([c[4], c[5], c[6], c[7]]);
-            let local2  = u32::from_be_bytes([c[8], c[9], c[10], c[11]]);
+            let local1 = u32::from_be_bytes([c[4], c[5], c[6], c[7]]);
+            let local2 = u32::from_be_bytes([c[8], c[9], c[10], c[11]]);
             format!("large:{global}:{local1}:{local2}")
         })
         .collect()
@@ -1144,9 +1161,11 @@ impl BmpTargetMap {
 
     pub fn resolve(&self, event: &BmpEvent) -> ResolvedTarget {
         let ip = crate::registry::strip_port(&event.collector_peer);
-        if let Some(entry) = self.entries.iter().find(|entry| {
-            entry.address == ip || entry.extra_ips.iter().any(|extra| extra == ip)
-        }) {
+        if let Some(entry) = self
+            .entries
+            .iter()
+            .find(|entry| entry.address == ip || entry.extra_ips.iter().any(|extra| extra == ip))
+        {
             return ResolvedTarget {
                 address: entry.address.clone(),
                 hostname: if entry.hostname.is_empty() {
@@ -1316,9 +1335,15 @@ mod tests {
 
         let event =
             parse_termination(&payload, "10.0.0.1".to_string(), 0).expect("parse termination");
-        assert_eq!(event.termination_message.as_deref(), Some("shutting down BMP"));
+        assert_eq!(
+            event.termination_message.as_deref(),
+            Some("shutting down BMP")
+        );
         assert_eq!(event.termination_reason, Some(1));
-        assert_eq!(event.termination_reason_name.as_deref(), Some("unspecified"));
+        assert_eq!(
+            event.termination_reason_name.as_deref(),
+            Some("unspecified")
+        );
     }
 
     #[test]
@@ -1370,7 +1395,10 @@ mod tests {
         assert_eq!(info.sent_bgp_id, "10.9.0.8");
         assert_eq!(info.received_bgp_id, "10.9.0.1");
         assert!(info.sent_capabilities.contains(&"4-byte-as".to_string()));
-        assert!(info.received_capabilities.contains(&"4-byte-as".to_string()));
+        assert!(
+            info.received_capabilities
+                .contains(&"4-byte-as".to_string())
+        );
     }
 
     #[test]
@@ -1405,8 +1433,10 @@ mod rfc_contract_reproductions {
     fn outbound_view_follows_o_flag_for_all_adj_rib_peer_types() {
         for peer_type in 0..=2 {
             assert_eq!(classify_rib_type(peer_type, 0x10), "adj-rib-out-pre-policy");
-            assert_eq!(classify_rib_type(peer_type, 0x50), "adj-rib-out-post-policy");
+            assert_eq!(
+                classify_rib_type(peer_type, 0x50),
+                "adj-rib-out-post-policy"
+            );
         }
     }
 }
-

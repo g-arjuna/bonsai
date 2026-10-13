@@ -203,7 +203,9 @@ impl OutputAdapterRegistry {
     /// Load configs from SQLite config store (preferred) or fall back to JSON.
     pub fn load(runtime_dir: &Path) -> Self {
         let configs_path = runtime_dir.join(CONFIGS_FILE);
-        let sqlite_store = crate::sqlite_store::SqliteStore::open(runtime_dir).ok().map(Arc::new);
+        let sqlite_store = crate::sqlite_store::SqliteStore::open(runtime_dir)
+            .ok()
+            .map(Arc::new);
 
         let configs = if let Some(ref store) = sqlite_store {
             store.list_adapters().unwrap_or_default()
@@ -214,7 +216,15 @@ impl OutputAdapterRegistry {
                 .unwrap_or_default()
         };
 
-        info!(count = configs.len(), source = if sqlite_store.is_some() { "sqlite" } else { "json" }, "output adapter configs loaded");
+        info!(
+            count = configs.len(),
+            source = if sqlite_store.is_some() {
+                "sqlite"
+            } else {
+                "json"
+            },
+            "output adapter configs loaded"
+        );
         Self {
             configs,
             states: std::collections::HashMap::new(),
@@ -228,7 +238,10 @@ impl OutputAdapterRegistry {
         if let Some(ref store) = self.sqlite_store {
             for config in &self.configs {
                 if let Err(e) = store.upsert_adapter(config, "system") {
-                    warn!("failed to persist adapter config '{}' to SQLite: {e}", config.name);
+                    warn!(
+                        "failed to persist adapter config '{}' to SQLite: {e}",
+                        config.name
+                    );
                 }
             }
         } else {
@@ -253,7 +266,10 @@ impl OutputAdapterRegistry {
     pub fn upsert(&mut self, config: OutputAdapterConfig) {
         if let Some(ref store) = self.sqlite_store {
             if let Err(e) = store.upsert_adapter(&config, "adapter_upsert") {
-                warn!("failed to upsert adapter config '{}' to SQLite: {e}", config.name);
+                warn!(
+                    "failed to upsert adapter config '{}' to SQLite: {e}",
+                    config.name
+                );
             }
         }
         if let Some(existing) = self.configs.iter_mut().find(|c| c.name == config.name) {
@@ -269,7 +285,10 @@ impl OutputAdapterRegistry {
     pub fn remove(&mut self, name: &str) -> bool {
         if let Some(ref store) = self.sqlite_store {
             if let Err(e) = store.delete_adapter(name, "adapter_remove") {
-                warn!("failed to delete adapter config '{}' from SQLite: {e}", name);
+                warn!(
+                    "failed to delete adapter config '{}' from SQLite: {e}",
+                    name
+                );
             }
         }
         let before = self.configs.len();

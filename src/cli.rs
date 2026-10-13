@@ -1087,9 +1087,7 @@ pub(super) async fn run_self_test() -> Result<()> {
     check!("crypto provider (rustls/ring)", {
         rustls::crypto::ring::default_provider()
             .install_default()
-            .or_else(|_| {
-                Ok::<(), rustls::Error>(())
-            })?;
+            .or_else(|_| Ok::<(), rustls::Error>(()))?;
     });
 
     check!("tokio runtime", {

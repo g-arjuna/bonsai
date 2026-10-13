@@ -1,0 +1,37 @@
+exit: 101
+
+running 4 tests
+test accepted_raw_record_must_recover_event_history ... FAILED
+test recovered_truncated_event_tail_must_allow_future_restart ... FAILED
+test transport_gap_must_survive_restart ... FAILED
+test large_valid_update_must_preserve_all_route_events ... FAILED
+
+failures:
+
+failures:
+    accepted_raw_record_must_recover_event_history
+    large_valid_update_must_preserve_all_route_events
+    recovered_truncated_event_tail_must_allow_future_restart
+    transport_gap_must_survive_restart
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1m 55s
+     Running tests/review_20261012_probe.rs (target/debug/deps/review_20261012_probe-d1195d8b07729822)
+
+thread 'accepted_raw_record_must_recover_event_history' (3711894) panicked at tests/review_20261012_probe.rs:19:2:
+Accepted raw observation rebuilt current state but lost event history
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'recovered_truncated_event_tail_must_allow_future_restart' (3711896) panicked at tests/review_20261012_probe.rs:27:2:
+Skipped torn tail was left on disk and merged with the next record
+
+thread 'transport_gap_must_survive_restart' (3711897) panicked at tests/review_20261012_probe.rs:35:2:
+Monitoring gap disappeared across restart
+
+thread 'large_valid_update_must_preserve_all_route_events' (3711895) panicked at tests/review_20261012_probe.rs:49:2:
+assertion `left == right` failed: Broadcast lag silently dropped emitted history events
+  left: 0
+ right: 5000
+error: test failed, to rerun pass `-p bonsai --test review_20261012_probe`

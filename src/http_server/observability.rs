@@ -1,39 +1,40 @@
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::{
+        IntoResponse,
+        sse::{Event, KeepAlive, Sse},
+    },
+};
+use futures::stream::{Stream, StreamExt};
+use lbug::{Connection, Value};
+use rusqlite;
+use serde::Deserialize;
+use serde_json;
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::time::{SystemTime, UNIX_EPOCH};
-use rusqlite;
-use axum::{
-    Json, extract::{Path, Query, State}, http::StatusCode,
-    response::{IntoResponse, sse::{Event, KeepAlive, Sse}},
-};
-use serde::Deserialize;
-use futures::stream::{Stream, StreamExt};
-use lbug::{Connection, Value};
-use serde_json;
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 
 use super::AppState;
 use super::{
-    TopologyResponse, DeviceJson, BgpJson, IsisAdjJson, LinkJson, HostEndpointJson, PathResponse, PathParams,
-    BlastRadiusParams, DetectionsResponse, DetectionsParams, TraceResponse,
-    ReadinessResponse, OperationsResponse, BudgetBreach, TestStatusResponse, DiskStatusJson,
-    DailyCheckResponse, DailyCheckCounts, DailyCheckItem,
-    WeeklyTrendDay, WeeklyTrendResponse,
-    IncidentJson, IncidentsResponse, IncidentsParams,
-    CorrelationStep, BlastRadiusSummary, AffectedDeviceDetail,
-    SsePayload, EmbeddingsResponse, UpsertEmbeddingsBody,
-    ExplorerQueryBody,
-    read_str, read_i64, read_ts_ns, read_subscription_statuses,
-    now_ns, build_site_path_by_id, resolve_site_metadata, compute_health,
-    CreateSavedQueryBody,
-    EventsHistoryParams, EventsHistoryResponse, EventHistoryItem,
-    API_SCHEMA_VERSION, RSS_BUDGET_BYTES, COORDINATOR_QUEUE_BUDGET_PCT,
+    API_SCHEMA_VERSION, AffectedDeviceDetail, BgpJson, BlastRadiusParams, BlastRadiusSummary,
+    BudgetBreach, COORDINATOR_QUEUE_BUDGET_PCT, CorrelationStep, CreateSavedQueryBody,
+    DailyCheckCounts, DailyCheckItem, DailyCheckResponse, DetectionsParams, DetectionsResponse,
+    DeviceJson, DiskStatusJson, EmbeddingsResponse, EventHistoryItem, EventsHistoryParams,
+    EventsHistoryResponse, ExplorerQueryBody, HostEndpointJson, IncidentJson, IncidentsParams,
+    IncidentsResponse, IsisAdjJson, LinkJson, OperationsResponse, PathParams, PathResponse,
+    RSS_BUDGET_BYTES, ReadinessResponse, SsePayload, TestStatusResponse, TopologyResponse,
+    TraceResponse, UpsertEmbeddingsBody, WeeklyTrendDay, WeeklyTrendResponse,
+    build_site_path_by_id, compute_health, now_ns, read_i64, read_str, read_subscription_statuses,
+    read_ts_ns, resolve_site_metadata,
 };
-use crate::http_server::device::InterfaceDetailJson;
-use crate::graph::{DetectionRow, REMEDIATION_TRUST_CUTOFF_ISO};
-use crate::registry::{DeviceRegistry, RegistryChange};
 use crate::config::TargetConfig;
-use crate::{event_bus, disk_guard, memory_profile, archive};
+use crate::graph::{DetectionRow, REMEDIATION_TRUST_CUTOFF_ISO};
+use crate::http_server::device::InterfaceDetailJson;
+use crate::registry::{DeviceRegistry, RegistryChange};
+use crate::{archive, disk_guard, event_bus, memory_profile};
 
 pub(super) async fn topology_handler(
     State(state): State<AppState>,
@@ -258,7 +259,8 @@ pub(super) async fn topology_handler(
         // peer_device: look for any D2D edge from this device where the resolved peer
         // matches a known device address (peer may equal resolved address, or peer IP
         // is a loopback that resolves to the device).
-        let peer_device = bgp_d2d_raw.iter()
+        let peer_device = bgp_d2d_raw
+            .iter()
             .find(|(src, dst, _)| src == &dev && (dst == &peer || allowed_devices.contains(dst)))
             .map(|(_, dst, _)| dst.clone())
             .unwrap_or_default();
@@ -329,17 +331,20 @@ pub(super) async fn topology_handler(
 
     let host_endpoints: Vec<HostEndpointJson> = host_endpoints_raw
         .into_iter()
-        .map(|(id, ip, mac, hostname, kind, connected_to_device, connected_to_iface)| {
-            HostEndpointJson {
-                id,
-                ip,
-                mac,
-                hostname,
-                kind,
-                connected_to_device: crate::registry::strip_port(&connected_to_device).to_string(),
-                connected_to_iface,
-            }
-        })
+        .map(
+            |(id, ip, mac, hostname, kind, connected_to_device, connected_to_iface)| {
+                HostEndpointJson {
+                    id,
+                    ip,
+                    mac,
+                    hostname,
+                    kind,
+                    connected_to_device: crate::registry::strip_port(&connected_to_device)
+                        .to_string(),
+                    connected_to_iface,
+                }
+            },
+        )
         .collect();
 
     // BFD Device-to-Device links (L3 layer)
@@ -792,7 +797,9 @@ pub(super) async fn daily_check_handler(
         checks,
     }))
 }
-pub(super) async fn weekly_trend_handler(State(state): State<AppState>) -> Json<WeeklyTrendResponse> {
+pub(super) async fn weekly_trend_handler(
+    State(state): State<AppState>,
+) -> Json<WeeklyTrendResponse> {
     let driver_dir = std::path::Path::new(&state.runtime_dir).join("driver_results");
     let mut days: Vec<WeeklyTrendDay> = Vec::new();
 
@@ -949,7 +956,10 @@ pub(super) async fn incidents_handler(
     // Single spawn_blocking: degree map + correlation chains + blast radius summaries.
     let db = state.store.db();
     let detection_ids: Vec<String> = detections.iter().map(|d| d.id.clone()).collect();
-    let root_devices: Vec<String> = detections.iter().map(|d| d.device_address.clone()).collect();
+    let root_devices: Vec<String> = detections
+        .iter()
+        .map(|d| d.device_address.clone())
+        .collect();
 
     type ChainMap = HashMap<String, Vec<CorrelationStep>>;
     type BrMap = HashMap<String, BlastRadiusSummary>;
@@ -989,12 +999,14 @@ pub(super) async fn incidents_handler(
 
             // Blast radius summary per unique root device (2-hop, capped)
             let mut br_map: BrMap = HashMap::new();
-            let mut seen_devices: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut seen_devices: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
             for addr in &root_devices {
                 if seen_devices.insert(addr.clone()) {
                     if let Ok(br) = crate::graph::queries::blast_radius(&conn, addr, 2) {
                         let app_count = br.direct_apps.len()
-                            + br.neighbor_apps.iter()
+                            + br.neighbor_apps
+                                .iter()
                                 .filter(|a| !br.direct_apps.contains(a))
                                 .count();
                         br_map.insert(
@@ -1014,7 +1026,13 @@ pub(super) async fn incidents_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .unwrap_or_default();
 
-    let incidents = group_into_incidents(detections, params.window_secs, &degree_map, &chain_map, &br_map);
+    let incidents = group_into_incidents(
+        detections,
+        params.window_secs,
+        &degree_map,
+        &chain_map,
+        &br_map,
+    );
     Ok(Json(IncidentsResponse {
         schema_version: API_SCHEMA_VERSION.to_string(),
         incidents,
@@ -1358,13 +1376,19 @@ pub(super) async fn flows_live_handler(
             std::collections::HashMap::new();
 
         for row in rows {
-            let exp  = read_str(&row[0]);
-            let src  = read_str(&row[1]);
-            let dst  = read_str(&row[2]);
+            let exp = read_str(&row[0]);
+            let src = read_str(&row[1]);
+            let dst = read_str(&row[2]);
             let port = read_i64(&row[3]);
             let proto = read_str(&row[4]);
-            let bps  = match &row[5] { lbug::Value::Double(v) => *v, _ => 0.0 };
-            let pps  = match &row[6] { lbug::Value::Double(v) => *v, _ => 0.0 };
+            let bps = match &row[5] {
+                lbug::Value::Double(v) => *v,
+                _ => 0.0,
+            };
+            let pps = match &row[6] {
+                lbug::Value::Double(v) => *v,
+                _ => 0.0,
+            };
 
             let e = exporter_map.entry(exp.clone()).or_insert((0, 0.0, 0.0));
             e.0 += 1;
@@ -1689,24 +1713,58 @@ pub(super) async fn db_stats_handler(
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
 
         let node_tables = vec![
-            "Device", "Interface", "BgpSession", "IsIsAdj", "BfdSession",
-            "DetectionEvent", "Incident", "AppFlow", "Application",
-            "RemediationProposal", "Investigation", "AgentToolCall",
-            "InvestigationFeedback", "ConfigChange", "PlaybookCatalog",
-            "Location", "Prefix", "HostEndpoint", "DeviceEmbedding",
-            "GnnScore", "ShunRule", "ChangeRequest", "SubscriptionStatus",
-            "DeviceAddress", "EntityIdentity",
+            "Device",
+            "Interface",
+            "BgpSession",
+            "IsIsAdj",
+            "BfdSession",
+            "DetectionEvent",
+            "Incident",
+            "AppFlow",
+            "Application",
+            "RemediationProposal",
+            "Investigation",
+            "AgentToolCall",
+            "InvestigationFeedback",
+            "ConfigChange",
+            "PlaybookCatalog",
+            "Location",
+            "Prefix",
+            "HostEndpoint",
+            "DeviceEmbedding",
+            "GnnScore",
+            "ShunRule",
+            "ChangeRequest",
+            "SubscriptionStatus",
+            "DeviceAddress",
+            "EntityIdentity",
         ];
         let rel_tables = vec![
-            "CONNECTED_TO", "HAS_SESSION", "HAS_INTERFACE", "HAS_ISIS_ADJ",
-            "HAS_BFD", "DETECTED_ON", "HAS_DETECTION", "HAS_PROPOSAL",
-            "HAS_INCIDENT", "HAS_TOOL_CALL", "HAS_FEEDBACK",
-            "CARRIES_FLOW", "RUNS_SERVICE", "HOST_RUNS_SERVICE",
-            "SRC_HOST", "DST_HOST", "TRUST_MARKS",
-            "AFFECTED_BY_CHANGE", "CHANGE_CAUSED_CONFIG",
-            "CHANGE_CAUSED_DETECTION", "RELATED_TO_CHANGE",
-            "CMDB_PARENT_OF", "LOC_PARENT_OF",
-            "KNOWN_ADDRESS_OF", "HAS_IDENTITY",
+            "CONNECTED_TO",
+            "HAS_SESSION",
+            "HAS_INTERFACE",
+            "HAS_ISIS_ADJ",
+            "HAS_BFD",
+            "DETECTED_ON",
+            "HAS_DETECTION",
+            "HAS_PROPOSAL",
+            "HAS_INCIDENT",
+            "HAS_TOOL_CALL",
+            "HAS_FEEDBACK",
+            "CARRIES_FLOW",
+            "RUNS_SERVICE",
+            "HOST_RUNS_SERVICE",
+            "SRC_HOST",
+            "DST_HOST",
+            "TRUST_MARKS",
+            "AFFECTED_BY_CHANGE",
+            "CHANGE_CAUSED_CONFIG",
+            "CHANGE_CAUSED_DETECTION",
+            "RELATED_TO_CHANGE",
+            "CMDB_PARENT_OF",
+            "LOC_PARENT_OF",
+            "KNOWN_ADDRESS_OF",
+            "HAS_IDENTITY",
         ];
 
         let mut node_counts = serde_json::Map::new();
@@ -1791,9 +1849,7 @@ pub(super) async fn db_schema_handler(
         let mut rel_tables = Vec::new();
 
         // Query node table info
-        if let Ok(mut result) = conn.query(
-            "CALL show_tables() RETURN * ORDER BY name"
-        ) {
+        if let Ok(mut result) = conn.query("CALL show_tables() RETURN * ORDER BY name") {
             while let Some(row) = result.next() {
                 let name = read_str(&row[0]);
                 let ttype = read_str(&row[1]);
@@ -1837,13 +1893,20 @@ pub(super) async fn db_purge_handler(
     Query(params): Query<PurgeParams>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let allowed = [
-        "DetectionEvent", "AppFlow", "AgentToolCall", "InvestigationFeedback",
-        "GnnScore", "StateChangeEvent",
+        "DetectionEvent",
+        "AppFlow",
+        "AgentToolCall",
+        "InvestigationFeedback",
+        "GnnScore",
+        "StateChangeEvent",
     ];
     if !allowed.contains(&params.node_type.as_str()) {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("Purge not allowed for '{}'. Allowed: {:?}", params.node_type, allowed),
+            format!(
+                "Purge not allowed for '{}'. Allowed: {:?}",
+                params.node_type, allowed
+            ),
         ));
     }
 
@@ -1946,15 +2009,31 @@ pub(super) async fn db_export_handler(
     Query(params): Query<ExportParams>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let allowed = [
-        "Device", "Interface", "BgpSession", "IsIsAdj", "BfdSession",
-        "DetectionEvent", "Incident", "AppFlow", "Application",
-        "Investigation", "AgentToolCall", "ConfigChange", "ChangeRequest",
-        "Location", "Prefix", "HostEndpoint", "ShunRule",
+        "Device",
+        "Interface",
+        "BgpSession",
+        "IsIsAdj",
+        "BfdSession",
+        "DetectionEvent",
+        "Incident",
+        "AppFlow",
+        "Application",
+        "Investigation",
+        "AgentToolCall",
+        "ConfigChange",
+        "ChangeRequest",
+        "Location",
+        "Prefix",
+        "HostEndpoint",
+        "ShunRule",
     ];
     if !allowed.contains(&params.node_type.as_str()) {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("Export not allowed for '{}'. Allowed: {:?}", params.node_type, allowed),
+            format!(
+                "Export not allowed for '{}'. Allowed: {:?}",
+                params.node_type, allowed
+            ),
         ));
     }
 
@@ -1966,7 +2045,8 @@ pub(super) async fn db_export_handler(
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
 
         let q = format!("MATCH (n:{node_type}) RETURN n LIMIT {limit}");
-        let mut result = conn.query(&q)
+        let mut result = conn
+            .query(&q)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
 
         let mut lines = Vec::new();
@@ -1987,9 +2067,10 @@ pub(super) async fn db_export_handler(
     );
     headers.insert(
         axum::http::header::CONTENT_DISPOSITION,
-        axum::http::HeaderValue::from_str(
-            &format!("attachment; filename=\"{}.jsonl\"", params.node_type),
-        )
+        axum::http::HeaderValue::from_str(&format!(
+            "attachment; filename=\"{}.jsonl\"",
+            params.node_type
+        ))
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
     );
     Ok((StatusCode::OK, headers, body))
@@ -2000,12 +2081,19 @@ pub(super) async fn db_export_handler(
 pub(super) async fn db_backup_handler() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let runtime_path = std::path::Path::new("runtime");
     if !runtime_path.exists() {
-        return Err((StatusCode::BAD_REQUEST, "runtime/ directory not found".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "runtime/ directory not found".into(),
+        ));
     }
 
     let backups_dir = std::path::Path::new("backups");
-    std::fs::create_dir_all(backups_dir)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("create backups dir: {e}")))?;
+    std::fs::create_dir_all(backups_dir).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("create backups dir: {e}"),
+        )
+    })?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2016,14 +2104,26 @@ pub(super) async fn db_backup_handler() -> Result<Json<serde_json::Value>, (Stat
     let backup_path = backups_dir.join(&filename);
 
     tokio::task::spawn_blocking(move || {
-        let file = std::fs::File::create(&backup_path)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("create backup: {e}")))?;
+        let file = std::fs::File::create(&backup_path).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create backup: {e}"),
+            )
+        })?;
         let enc = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
         let mut tar = tar::Builder::new(enc);
-        tar.append_dir_all("runtime", "runtime")
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("tar runtime: {e}")))?;
-        tar.finish()
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("finish tar: {e}")))?;
+        tar.append_dir_all("runtime", "runtime").map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("tar runtime: {e}"),
+            )
+        })?;
+        tar.finish().map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("finish tar: {e}"),
+            )
+        })?;
         Ok::<_, (StatusCode, String)>(())
     })
     .await
@@ -2036,7 +2136,8 @@ pub(super) async fn db_backup_handler() -> Result<Json<serde_json::Value>, (Stat
     })))
 }
 
-pub(super) async fn db_list_backups_handler() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+pub(super) async fn db_list_backups_handler()
+-> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let backups_dir = std::path::Path::new("backups");
     if !backups_dir.exists() {
         return Ok(Json(serde_json::json!({"backups": []})));
@@ -2072,8 +2173,12 @@ pub(super) async fn db_config_stats_handler(
             }));
         }
 
-        let conn = rusqlite::Connection::open(&db_path)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("sqlite open: {e}")))?;
+        let conn = rusqlite::Connection::open(&db_path).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("sqlite open: {e}"),
+            )
+        })?;
 
         // Schema version
         let schema_version: i64 = conn
@@ -2081,8 +2186,14 @@ pub(super) async fn db_config_stats_handler(
             .unwrap_or(0);
 
         // Row counts per table
-        let tables = ["devices", "enrichers", "adapters", "settings",
-                      "audit_log", "collector_registrations"];
+        let tables = [
+            "devices",
+            "enrichers",
+            "adapters",
+            "settings",
+            "audit_log",
+            "collector_registrations",
+        ];
         let mut table_counts = serde_json::Map::new();
         for t in &tables {
             let count: i64 = conn
@@ -2097,7 +2208,12 @@ pub(super) async fn db_config_stats_handler(
                 "SELECT table_name, operation, record_key, actor, action, timestamp_ns \
                  FROM audit_log ORDER BY timestamp_ns DESC LIMIT 50",
             )
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("audit prepare: {e}")))?;
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("audit prepare: {e}"),
+                )
+            })?;
         let audit_rows: Vec<serde_json::Value> = stmt
             .query_map([], |row| {
                 Ok(serde_json::json!({
@@ -2109,7 +2225,12 @@ pub(super) async fn db_config_stats_handler(
                     "timestamp_ns": row.get::<_, i64>(5).unwrap_or(0),
                 }))
             })
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("audit query: {e}")))?
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("audit query: {e}"),
+                )
+            })?
             .flatten()
             .collect();
 
@@ -2119,7 +2240,12 @@ pub(super) async fn db_config_stats_handler(
                 "SELECT collector_id, hostname, peer_ip, success, rejection_reason, timestamp_ns \
                  FROM collector_registrations ORDER BY timestamp_ns DESC LIMIT 20",
             )
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("reg prepare: {e}")))?;
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("reg prepare: {e}"),
+                )
+            })?;
         let reg_rows: Vec<serde_json::Value> = reg_stmt
             .query_map([], |row| {
                 Ok(serde_json::json!({
@@ -2154,7 +2280,8 @@ pub(super) async fn db_config_stats_handler(
 pub(super) async fn list_redundancy_groups_handler(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let groups = state.store
+    let groups = state
+        .store
         .list_redundancy_groups()
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -2200,10 +2327,7 @@ pub(super) async fn device_flows_handler(
             .map_err(|e| e.to_string())?;
 
         let rows = conn
-            .execute(&mut stmt, vec![
-                ("addr", addr_val),
-                ("cutoff", cutoff_val),
-            ])
+            .execute(&mut stmt, vec![("addr", addr_val), ("cutoff", cutoff_val)])
             .map_err(|e| e.to_string())?;
 
         let mut flows: Vec<LiveFlowEntry> = Vec::new();
@@ -2211,13 +2335,19 @@ pub(super) async fn device_flows_handler(
         let mut total_pps = 0.0f64;
 
         for row in rows {
-            let exp   = read_str(&row[0]);
-            let src   = read_str(&row[1]);
-            let dst   = read_str(&row[2]);
-            let port  = read_i64(&row[3]);
+            let exp = read_str(&row[0]);
+            let src = read_str(&row[1]);
+            let dst = read_str(&row[2]);
+            let port = read_i64(&row[3]);
             let proto = read_str(&row[4]);
-            let bps   = match &row[5] { lbug::Value::Double(v) => *v, _ => 0.0 };
-            let pps   = match &row[6] { lbug::Value::Double(v) => *v, _ => 0.0 };
+            let bps = match &row[5] {
+                lbug::Value::Double(v) => *v,
+                _ => 0.0,
+            };
+            let pps = match &row[6] {
+                lbug::Value::Double(v) => *v,
+                _ => 0.0,
+            };
             total_bps += bps;
             total_pps += pps;
             flows.push(LiveFlowEntry {
@@ -2279,14 +2409,16 @@ pub(super) async fn endpoints_handler(
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
 
         // Fetch host endpoints with optional connected device/iface from CONNECTED_TO edge
-        let mut stmt = conn.prepare(
-            "MATCH (h:HostEndpoint) \
+        let mut stmt = conn
+            .prepare(
+                "MATCH (h:HostEndpoint) \
              OPTIONAL MATCH (h)-[:CONNECTED_TO]->(i:Interface)<-[:HAS_INTERFACE]-(d:Device) \
              RETURN h.id, h.ip, h.kind, h.hostname, h.mac, h.vendor, h.source, \
                     h.site_id, h.rack_id, \
                     coalesce(d.address, ''), coalesce(i.name, '') \
              ORDER BY h.ip",
-        ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
 
         let rows = conn.execute(&mut stmt, vec![]).map_err(|e| e.to_string())?;
 
@@ -2500,9 +2632,7 @@ pub(super) async fn graph_snapshot_handler(
 
 fn get_table_columns(conn: &Connection<'_>, table_name: &str) -> Vec<serde_json::Value> {
     let mut columns = Vec::new();
-    if let Ok(mut result) = conn.query(&format!(
-        "CALL table_info('{}') RETURN *", table_name
-    )) {
+    if let Ok(mut result) = conn.query(&format!("CALL table_info('{}') RETURN *", table_name)) {
         while let Some(row) = result.next() {
             let col_name = read_str(&row[1]);
             let col_type = read_str(&row[2]);

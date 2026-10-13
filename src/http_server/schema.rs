@@ -1190,7 +1190,9 @@ fn load_openapi_example(name: &str) -> serde_json::Value {
         "operations" => include_str!("../../docs/openapi/examples/operations.json"),
         "grounded_incident" => include_str!("../../docs/openapi/examples/grounded_incident.json"),
         "managed_devices" => include_str!("../../docs/openapi/examples/managed_devices.json"),
-        "onboarding_discover" => include_str!("../../docs/openapi/examples/onboarding_discover.json"),
+        "onboarding_discover" => {
+            include_str!("../../docs/openapi/examples/onboarding_discover.json")
+        }
         "device_detail" => include_str!("../../docs/openapi/examples/device_detail.json"),
         "device_gnmi_readiness" => {
             include_str!("../../docs/openapi/examples/device_gnmi_readiness.json")
@@ -1208,7 +1210,9 @@ fn load_openapi_example(name: &str) -> serde_json::Value {
         "yang_modules" => include_str!("../../docs/openapi/examples/yang_modules.json"),
         "yang_search" => include_str!("../../docs/openapi/examples/yang_search.json"),
         "profiles" => include_str!("../../docs/openapi/examples/profiles.json"),
-        "save_custom_profile" => include_str!("../../docs/openapi/examples/save_custom_profile.json"),
+        "save_custom_profile" => {
+            include_str!("../../docs/openapi/examples/save_custom_profile.json")
+        }
         "servicenow_test" => include_str!("../../docs/openapi/examples/servicenow_test.json"),
         "servicenow_aiops_sync" => {
             include_str!("../../docs/openapi/examples/servicenow_aiops_sync.json")

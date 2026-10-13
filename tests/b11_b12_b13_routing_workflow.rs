@@ -17,8 +17,8 @@ use bonsai::config::BmpConfig;
 use bonsai::graph::{ConfigItemRecord, GraphStore};
 use bonsai::http_server::{build_public_routing_router, mint_jwt, redact_secrets_in_json};
 use bonsai::routing_service::{
-    build_internal_routing_router, project_routing_events_to_graph, sample_bmp_session_frames,
-    RoutingServiceConfig, RoutingServiceState,
+    RoutingServiceConfig, RoutingServiceState, build_internal_routing_router,
+    project_routing_events_to_graph, sample_bmp_session_frames,
 };
 use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
@@ -218,7 +218,10 @@ async fn b11_routing_api_contract_prefix_history_and_graceful_degradation() {
         .send()
         .await
         .unwrap();
-    assert_eq!(unavail_resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        unavail_resp.status(),
+        reqwest::StatusCode::SERVICE_UNAVAILABLE
+    );
     let unavail_json: serde_json::Value = unavail_resp.json().await.unwrap();
     assert_eq!(unavail_json["error"], "routing_service_unavailable");
     assert_eq!(unavail_json["completeness_state"], "unavailable");
@@ -288,7 +291,8 @@ async fn b12_security_rbac_scoped_reads_and_secret_redaction() {
         .unwrap();
     assert_eq!(viewer_get.status(), reqwest::StatusCode::OK);
 
-    let (init, _, _) = sample_bmp_session_frames(Ipv4Addr::new(10, 0, 0, 2), 65001, [10, 0, 1], 100);
+    let (init, _, _) =
+        sample_bmp_session_frames(Ipv4Addr::new(10, 0, 0, 2), 65001, [10, 0, 1], 100);
     let viewer_post = client
         .post(format!("{base}/api/routing/v1/ingest-bmp"))
         .bearer_auth(&viewer_jwt)
@@ -455,4 +459,3 @@ async fn b13_b15_graph_routing_projector_idempotency_and_single_bmp_authority() 
         Some(peer_summary)
     );
 }
-

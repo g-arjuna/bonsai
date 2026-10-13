@@ -48,7 +48,10 @@ pub fn sha256_file(path: &Path) -> anyhow::Result<String> {
 /// Create a verified `.pre-m3.bak` backup of `source_path` before any migration mutates it.
 pub fn create_backup(source_path: &Path) -> anyhow::Result<BackupManifest> {
     if !source_path.exists() {
-        anyhow::bail!("Cannot back up non-existent file: {}", source_path.display());
+        anyhow::bail!(
+            "Cannot back up non-existent file: {}",
+            source_path.display()
+        );
     }
     let source_sha256 = sha256_file(source_path)?;
     let file_name = source_path

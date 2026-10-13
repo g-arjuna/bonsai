@@ -10,16 +10,16 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
-use tracing::{info, warn};
-use axum::http::StatusCode;
-use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::IntoResponse;
 use axum::Json;
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use lbug::{Connection, Value};
 use serde::{Deserialize, Serialize};
-use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
+use tokio_stream::wrappers::BroadcastStream;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::ml_event_bus::MlEvent;
@@ -40,14 +40,12 @@ pub async fn ml_events_stream_handler(
     State(state): State<AppState>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, std::convert::Infallible>>> {
     let rx = state.ml_event_bus.subscribe();
-    let stream = BroadcastStream::new(rx).map(|result| {
-        match result {
-            Ok(event) => {
-                let data = serde_json::to_string(&event).unwrap_or_default();
-                Ok(Event::default().data(data))
-            }
-            Err(_) => Ok(Event::default().comment("lag")),
+    let stream = BroadcastStream::new(rx).map(|result| match result {
+        Ok(event) => {
+            let data = serde_json::to_string(&event).unwrap_or_default();
+            Ok(Event::default().data(data))
         }
+        Err(_) => Ok(Event::default().comment("lag")),
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
@@ -109,9 +107,7 @@ fn parquet_from_row(r: &[Value]) -> ParquetExportRecord {
 }
 
 /// GET /api/ml/exports
-pub async fn list_ml_exports_handler(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+pub async fn list_ml_exports_handler(State(state): State<AppState>) -> impl IntoResponse {
     let db = state.store.db();
     let result = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db)?;
@@ -132,7 +128,9 @@ pub async fn list_ml_exports_handler(
     .await;
 
     match result {
-        Ok(Ok(rows)) => (StatusCode::OK, Json(serde_json::json!({"exports": rows}))).into_response(),
+        Ok(Ok(rows)) => {
+            (StatusCode::OK, Json(serde_json::json!({"exports": rows}))).into_response()
+        }
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -209,39 +207,89 @@ pub async fn patch_ml_export_handler(
         let conn = Connection::new(&db)?;
         if let Some(s) = &req.status {
             let mut stmt = conn.prepare("MATCH (e:ParquetExport {id: $id}) SET e.status = $v")?;
-            conn.execute(&mut stmt, vec![("id", Value::String(id.clone())), ("v", Value::String(s.clone()))])?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("v", Value::String(s.clone())),
+                ],
+            )?;
         }
         if let Some(v) = req.row_count {
-            let mut stmt = conn.prepare("MATCH (e:ParquetExport {id: $id}) SET e.row_count = $v")?;
-            conn.execute(&mut stmt, vec![("id", Value::String(id.clone())), ("v", Value::Int64(v))])?;
+            let mut stmt =
+                conn.prepare("MATCH (e:ParquetExport {id: $id}) SET e.row_count = $v")?;
+            conn.execute(
+                &mut stmt,
+                vec![("id", Value::String(id.clone())), ("v", Value::Int64(v))],
+            )?;
         }
         if let Some(v) = req.anomaly_rows {
-            let mut stmt = conn.prepare("MATCH (e:ParquetExport {id: $id}) SET e.anomaly_rows = $v")?;
-            conn.execute(&mut stmt, vec![("id", Value::String(id.clone())), ("v", Value::Int64(v))])?;
+            let mut stmt =
+                conn.prepare("MATCH (e:ParquetExport {id: $id}) SET e.anomaly_rows = $v")?;
+            conn.execute(
+                &mut stmt,
+                vec![("id", Value::String(id.clone())), ("v", Value::Int64(v))],
+            )?;
         }
         if let Some(v) = req.normal_rows {
-            let mut stmt = conn.prepare("MATCH (e:ParquetExport {id: $id}) SET e.normal_rows = $v")?;
-            conn.execute(&mut stmt, vec![("id", Value::String(id.clone())), ("v", Value::Int64(v))])?;
+            let mut stmt =
+                conn.prepare("MATCH (e:ParquetExport {id: $id}) SET e.normal_rows = $v")?;
+            conn.execute(
+                &mut stmt,
+                vec![("id", Value::String(id.clone())), ("v", Value::Int64(v))],
+            )?;
         }
         if let Some(v) = &req.schema_hash {
-            let mut stmt = conn.prepare("MATCH (e:ParquetExport {id: $id}) SET e.schema_hash = $v")?;
-            conn.execute(&mut stmt, vec![("id", Value::String(id.clone())), ("v", Value::String(v.clone()))])?;
+            let mut stmt =
+                conn.prepare("MATCH (e:ParquetExport {id: $id}) SET e.schema_hash = $v")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("v", Value::String(v.clone())),
+                ],
+            )?;
         }
         if let Some(v) = &req.output_path {
-            let mut stmt = conn.prepare("MATCH (e:ParquetExport {id: $id}) SET e.output_path = $v")?;
-            conn.execute(&mut stmt, vec![("id", Value::String(id.clone())), ("v", Value::String(v.clone()))])?;
+            let mut stmt =
+                conn.prepare("MATCH (e:ParquetExport {id: $id}) SET e.output_path = $v")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("v", Value::String(v.clone())),
+                ],
+            )?;
         }
         if let Some(v) = &req.error_message {
-            let mut stmt = conn.prepare("MATCH (e:ParquetExport {id: $id}) SET e.error_message = $v")?;
-            conn.execute(&mut stmt, vec![("id", Value::String(id.clone())), ("v", Value::String(v.clone()))])?;
+            let mut stmt =
+                conn.prepare("MATCH (e:ParquetExport {id: $id}) SET e.error_message = $v")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("v", Value::String(v.clone())),
+                ],
+            )?;
         }
         if let Some(v) = &req.quality_json {
-            let mut stmt = conn.prepare("MATCH (e:ParquetExport {id: $id}) SET e.quality_json = $v")?;
-            conn.execute(&mut stmt, vec![("id", Value::String(id.clone())), ("v", Value::String(v.clone()))])?;
+            let mut stmt =
+                conn.prepare("MATCH (e:ParquetExport {id: $id}) SET e.quality_json = $v")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("v", Value::String(v.clone())),
+                ],
+            )?;
         }
         if let Some(v) = req.completed_at_ns {
-            let mut stmt = conn.prepare("MATCH (e:ParquetExport {id: $id}) SET e.completed_at_ns = $v")?;
-            conn.execute(&mut stmt, vec![("id", Value::String(id.clone())), ("v", Value::Int64(v))])?;
+            let mut stmt =
+                conn.prepare("MATCH (e:ParquetExport {id: $id}) SET e.completed_at_ns = $v")?;
+            conn.execute(
+                &mut stmt,
+                vec![("id", Value::String(id.clone())), ("v", Value::Int64(v))],
+            )?;
         }
         Ok::<_, anyhow::Error>(())
     })
@@ -275,9 +323,20 @@ pub struct ModelArtifactRecord {
 }
 
 fn model_from_row(r: &[Value]) -> ModelArtifactRecord {
-    let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
-    let n = |v: &Value| match v { Value::Int64(n) => *n, _ => 0 };
-    let f = |v: &Value| match v { Value::Double(f) => *f, Value::Float(f) => *f as f64, Value::Int64(n) => *n as f64, _ => 0.0 };
+    let s = |v: &Value| match v {
+        Value::String(s) => s.clone(),
+        _ => String::new(),
+    };
+    let n = |v: &Value| match v {
+        Value::Int64(n) => *n,
+        _ => 0,
+    };
+    let f = |v: &Value| match v {
+        Value::Double(f) => *f,
+        Value::Float(f) => *f as f64,
+        Value::Int64(n) => *n as f64,
+        _ => 0.0,
+    };
     ModelArtifactRecord {
         id: s(&r[0]),
         model_type: s(&r[1]),
@@ -297,9 +356,7 @@ fn model_from_row(r: &[Value]) -> ModelArtifactRecord {
 }
 
 /// GET /api/ml/models
-pub async fn list_ml_models_handler(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+pub async fn list_ml_models_handler(State(state): State<AppState>) -> impl IntoResponse {
     let db = state.store.db();
     let result = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db)?;
@@ -345,7 +402,8 @@ pub async fn active_ml_model_handler(
              RETURN m.id, m.model_type, m.version, m.path, m.feature_schema_hash, \
                     m.trained_at_ns, m.val_auc, m.val_f1, m.val_precision, m.val_recall, \
                     m.threshold, m.is_active, m.retired_at_ns, m.model_card_path \
-             LIMIT 1".to_string()
+             LIMIT 1"
+                .to_string()
         } else {
             format!(
                 "MATCH (m:ModelArtifact) WHERE m.is_active = 1 AND m.model_type = '{}' \
@@ -356,7 +414,8 @@ pub async fn active_ml_model_handler(
                 model_type.replace('\'', "")
             )
         };
-        let model = conn.query(&cypher)
+        let model = conn
+            .query(&cypher)
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .next()
             .map(|r| model_from_row(&r));
@@ -366,7 +425,11 @@ pub async fn active_ml_model_handler(
 
     match result {
         Ok(Ok(Some(m))) => (StatusCode::OK, Json(m)).into_response(),
-        Ok(Ok(None)) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "no active model"}))).into_response(),
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "no active model"})),
+        )
+            .into_response(),
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -407,20 +470,26 @@ pub async fn create_ml_model_handler(
              val_precision: $prec, val_recall: $rec, threshold: $thr, is_active: 0, \
              retired_at_ns: 0, model_card_path: $mcp})",
         )?;
-        conn.execute(&mut stmt, vec![
-            ("id", Value::String(id.clone())),
-            ("mt", Value::String(req.model_type.clone())),
-            ("ver", Value::String(req.version)),
-            ("path", Value::String(req.path)),
-            ("fsh", Value::String(req.feature_schema_hash)),
-            ("tan", Value::Int64(req.trained_at_ns.unwrap_or(now))),
-            ("auc", Value::Double(req.val_auc.unwrap_or(0.0))),
-            ("f1", Value::Double(req.val_f1.unwrap_or(0.0))),
-            ("prec", Value::Double(req.val_precision.unwrap_or(0.0))),
-            ("rec", Value::Double(req.val_recall.unwrap_or(0.0))),
-            ("thr", Value::Double(req.threshold.unwrap_or(0.5))),
-            ("mcp", Value::String(req.model_card_path.unwrap_or_default())),
-        ])?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("id", Value::String(id.clone())),
+                ("mt", Value::String(req.model_type.clone())),
+                ("ver", Value::String(req.version)),
+                ("path", Value::String(req.path)),
+                ("fsh", Value::String(req.feature_schema_hash)),
+                ("tan", Value::Int64(req.trained_at_ns.unwrap_or(now))),
+                ("auc", Value::Double(req.val_auc.unwrap_or(0.0))),
+                ("f1", Value::Double(req.val_f1.unwrap_or(0.0))),
+                ("prec", Value::Double(req.val_precision.unwrap_or(0.0))),
+                ("rec", Value::Double(req.val_recall.unwrap_or(0.0))),
+                ("thr", Value::Double(req.threshold.unwrap_or(0.5))),
+                (
+                    "mcp",
+                    Value::String(req.model_card_path.unwrap_or_default()),
+                ),
+            ],
+        )?;
         Ok::<_, anyhow::Error>((id, req.model_type))
     })
     .await;
@@ -512,16 +581,32 @@ pub struct MlJobRunRecord {
 }
 
 fn job_from_row(r: &[Value]) -> MlJobRunRecord {
-    let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
-    let n = |v: &Value| match v { Value::Int64(n) => *n, _ => 0 };
-    let f = |v: &Value| match v { Value::Double(f) => *f, Value::Float(f) => *f as f64, _ => 0.0 };
+    let s = |v: &Value| match v {
+        Value::String(s) => s.clone(),
+        _ => String::new(),
+    };
+    let n = |v: &Value| match v {
+        Value::Int64(n) => *n,
+        _ => 0,
+    };
+    let f = |v: &Value| match v {
+        Value::Double(f) => *f,
+        Value::Float(f) => *f as f64,
+        _ => 0.0,
+    };
     MlJobRunRecord {
-        id: s(&r[0]), job_type: s(&r[1]),
-        started_at_ns: n(&r[2]), completed_at_ns: n(&r[3]),
-        status: s(&r[4]), trigger: s(&r[5]),
-        input_parquet_id: s(&r[6]), output_model_path: s(&r[7]),
-        val_auc: f(&r[8]), val_f1: f(&r[9]),
-        error_message: s(&r[10]), config_json: s(&r[11]),
+        id: s(&r[0]),
+        job_type: s(&r[1]),
+        started_at_ns: n(&r[2]),
+        completed_at_ns: n(&r[3]),
+        status: s(&r[4]),
+        trigger: s(&r[5]),
+        input_parquet_id: s(&r[6]),
+        output_model_path: s(&r[7]),
+        val_auc: f(&r[8]),
+        val_f1: f(&r[9]),
+        error_message: s(&r[10]),
+        config_json: s(&r[11]),
         cancel_requested: n(&r[12]) != 0,
     }
 }
@@ -531,16 +616,17 @@ pub async fn list_ml_jobs_handler(State(state): State<AppState>) -> impl IntoRes
     let db = state.store.db();
     let result = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db)?;
-        let rows = conn.query(
-            "MATCH (j:MlJobRun) \
+        let rows = conn
+            .query(
+                "MATCH (j:MlJobRun) \
              RETURN j.id, j.job_type, j.started_at_ns, j.completed_at_ns, j.status, \
                     j.trigger, j.input_parquet_id, j.output_model_path, \
                     j.val_auc, j.val_f1, j.error_message, j.config_json, j.cancel_requested \
              ORDER BY j.started_at_ns DESC LIMIT 500",
-        )
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .map(|r| job_from_row(&r))
-        .collect::<Vec<_>>();
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .map(|r| job_from_row(&r))
+            .collect::<Vec<_>>();
         Ok::<_, anyhow::Error>(rows)
     })
     .await;
@@ -567,7 +653,11 @@ pub struct CreateJobRequest {
 impl CreateJobRequest {
     /// Return whichever of job_type / job_id is non-empty, preferring job_type.
     pub fn effective_job_type(&self) -> &str {
-        if !self.job_type.is_empty() { &self.job_type } else { &self.job_id }
+        if !self.job_type.is_empty() {
+            &self.job_type
+        } else {
+            &self.job_id
+        }
     }
 }
 
@@ -594,14 +684,23 @@ pub async fn create_ml_job_handler(
              input_parquet_id: $ipid, output_model_path: '', val_auc: 0.0, val_f1: 0.0, \
              error_message: '', config_json: $cfg, cancel_requested: 0})",
         )?;
-        conn.execute(&mut stmt, vec![
-            ("id", Value::String(id.clone())),
-            ("jt", Value::String(effective_type.clone())),
-            ("now", Value::Int64(now)),
-            ("trig", Value::String(req.trigger)),
-            ("ipid", Value::String(req.input_parquet_id.unwrap_or_default())),
-            ("cfg", Value::String(req.config_json.unwrap_or_else(|| "{}".to_string()))),
-        ])?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("id", Value::String(id.clone())),
+                ("jt", Value::String(effective_type.clone())),
+                ("now", Value::Int64(now)),
+                ("trig", Value::String(req.trigger)),
+                (
+                    "ipid",
+                    Value::String(req.input_parquet_id.unwrap_or_default()),
+                ),
+                (
+                    "cfg",
+                    Value::String(req.config_json.unwrap_or_else(|| "{}".to_string())),
+                ),
+            ],
+        )?;
         Ok::<_, anyhow::Error>((id, effective_type))
     })
     .await;
@@ -646,24 +745,49 @@ pub async fn patch_ml_job_handler(
         let conn = Connection::new(&db)?;
         // Fetch job type for events
         let mut info_stmt = conn.prepare("MATCH (j:MlJobRun {id: $id}) RETURN j.job_type")?;
-        let job_type = conn.execute(&mut info_stmt, vec![("id", Value::String(id.clone()))])?
+        let job_type = conn
+            .execute(&mut info_stmt, vec![("id", Value::String(id.clone()))])?
             .next()
-            .map(|r| match &r[0] { Value::String(s) => s.clone(), _ => String::new() })
+            .map(|r| match &r[0] {
+                Value::String(s) => s.clone(),
+                _ => String::new(),
+            })
             .unwrap_or_default();
 
         macro_rules! set_field {
             ($field:literal, $val:expr) => {{
-                let mut stmt = conn.prepare(concat!("MATCH (j:MlJobRun {id: $id}) SET j.", $field, " = $v"))?;
-                conn.execute(&mut stmt, vec![("id", Value::String(id.clone())), ("v", $val)])?;
+                let mut stmt = conn.prepare(concat!(
+                    "MATCH (j:MlJobRun {id: $id}) SET j.",
+                    $field,
+                    " = $v"
+                ))?;
+                conn.execute(
+                    &mut stmt,
+                    vec![("id", Value::String(id.clone())), ("v", $val)],
+                )?;
             }};
         }
-        if let Some(v) = &req.status { set_field!("status", Value::String(v.clone())); }
-        if let Some(v) = req.completed_at_ns { set_field!("completed_at_ns", Value::Int64(v)); }
-        if let Some(v) = req.val_auc { set_field!("val_auc", Value::Double(v)); }
-        if let Some(v) = req.val_f1 { set_field!("val_f1", Value::Double(v)); }
-        if let Some(v) = &req.output_model_path { set_field!("output_model_path", Value::String(v.clone())); }
-        if let Some(v) = &req.error_message { set_field!("error_message", Value::String(v.clone())); }
-        if let Some(v) = req.cancel_requested { set_field!("cancel_requested", Value::Int64(if v { 1 } else { 0 })); }
+        if let Some(v) = &req.status {
+            set_field!("status", Value::String(v.clone()));
+        }
+        if let Some(v) = req.completed_at_ns {
+            set_field!("completed_at_ns", Value::Int64(v));
+        }
+        if let Some(v) = req.val_auc {
+            set_field!("val_auc", Value::Double(v));
+        }
+        if let Some(v) = req.val_f1 {
+            set_field!("val_f1", Value::Double(v));
+        }
+        if let Some(v) = &req.output_model_path {
+            set_field!("output_model_path", Value::String(v.clone()));
+        }
+        if let Some(v) = &req.error_message {
+            set_field!("error_message", Value::String(v.clone()));
+        }
+        if let Some(v) = req.cancel_requested {
+            set_field!("cancel_requested", Value::Int64(if v { 1 } else { 0 }));
+        }
         Ok::<_, anyhow::Error>((job_type, req.status.unwrap_or_default()))
     })
     .await;
@@ -672,11 +796,17 @@ pub async fn patch_ml_job_handler(
         Ok(Ok((job_type, status))) => {
             match status.as_str() {
                 "succeeded" => ml_bus.publish(MlEvent::JobCompleted {
-                    job_id: event_job_id.clone(), job_type, outcome: "succeeded".to_string(),
-                    val_auc: 0.0, val_f1: 0.0, model_path: String::new(),
+                    job_id: event_job_id.clone(),
+                    job_type,
+                    outcome: "succeeded".to_string(),
+                    val_auc: 0.0,
+                    val_f1: 0.0,
+                    model_path: String::new(),
                 }),
                 "failed" => ml_bus.publish(MlEvent::JobFailed {
-                    job_id: event_job_id, job_type, error: "see error_message".to_string(),
+                    job_id: event_job_id,
+                    job_type,
+                    error: "see error_message".to_string(),
                 }),
                 _ => {}
             }
@@ -723,20 +853,27 @@ pub async fn retry_ml_job_handler(
         let conn = Connection::new(&db)?;
         let now = now_ns();
         let mut check = conn.prepare("MATCH (j:MlJobRun {id: $id}) RETURN j.job_type")?;
-        let row = conn.execute(&mut check, vec![("id", Value::String(id.clone()))])?
+        let row = conn
+            .execute(&mut check, vec![("id", Value::String(id.clone()))])?
             .next();
         let job_type = match row {
-            Some(r) => match &r[0] { Value::String(s) => s.clone(), _ => String::new() },
+            Some(r) => match &r[0] {
+                Value::String(s) => s.clone(),
+                _ => String::new(),
+            },
             None => return Err(anyhow::anyhow!("job run {id} not found")),
         };
         let mut stmt = conn.prepare(
             "MATCH (j:MlJobRun {id: $id}) SET j.status = 'pending', j.completed_at_ns = 0, \
              j.error_message = '', j.started_at_ns = $now",
         )?;
-        conn.execute(&mut stmt, vec![
-            ("id", Value::String(id.clone())),
-            ("now", Value::Int64(now)),
-        ])?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("id", Value::String(id.clone())),
+                ("now", Value::Int64(now)),
+            ],
+        )?;
         Ok::<_, anyhow::Error>((id, job_type))
     })
     .await;
@@ -747,7 +884,11 @@ pub async fn retry_ml_job_handler(
                 run_id: id.clone(),
                 job_type,
             });
-            (StatusCode::OK, Json(serde_json::json!({"ok": true, "id": id}))).into_response()
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"ok": true, "id": id})),
+            )
+                .into_response()
         }
         Ok(Err(e)) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -759,30 +900,41 @@ pub async fn list_dead_letter_handler(State(state): State<AppState>) -> impl Int
     let db = state.store.db();
     let result = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db)?;
-        let rows = conn.query(
-            "MATCH (j:MlJobRun) WHERE j.status = 'dead_letter' \
+        let rows = conn
+            .query(
+                "MATCH (j:MlJobRun) WHERE j.status = 'dead_letter' \
              RETURN j.id, j.job_type, j.started_at_ns, j.error_message, j.config_json \
              ORDER BY j.started_at_ns DESC LIMIT 100",
-        )
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .map(|r| {
-            let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
-            let n = |v: &Value| match v { Value::Int64(n) => *n, _ => 0 };
-            serde_json::json!({
-                "id": s(&r[0]),
-                "job_type": s(&r[1]),
-                "failed_at_ns": n(&r[2]),
-                "error_message": s(&r[3]),
-                "config_json": s(&r[4]),
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .map(|r| {
+                let s = |v: &Value| match v {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let n = |v: &Value| match v {
+                    Value::Int64(n) => *n,
+                    _ => 0,
+                };
+                serde_json::json!({
+                    "id": s(&r[0]),
+                    "job_type": s(&r[1]),
+                    "failed_at_ns": n(&r[2]),
+                    "error_message": s(&r[3]),
+                    "config_json": s(&r[4]),
+                })
             })
-        })
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>();
         Ok::<_, anyhow::Error>(rows)
     })
     .await;
 
     match result {
-        Ok(Ok(rows)) => (StatusCode::OK, Json(serde_json::json!({"dead_letter": rows}))).into_response(),
+        Ok(Ok(rows)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"dead_letter": rows})),
+        )
+            .into_response(),
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -801,11 +953,20 @@ pub struct MlJobScheduleRecord {
 }
 
 fn schedule_from_row(r: &[Value]) -> MlJobScheduleRecord {
-    let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
-    let n = |v: &Value| match v { Value::Int64(n) => *n, _ => 0 };
+    let s = |v: &Value| match v {
+        Value::String(s) => s.clone(),
+        _ => String::new(),
+    };
+    let n = |v: &Value| match v {
+        Value::Int64(n) => *n,
+        _ => 0,
+    };
     MlJobScheduleRecord {
-        id: s(&r[0]), job_id: s(&r[1]), cron_expr: s(&r[2]),
-        enabled: n(&r[3]) != 0, last_modified_by: s(&r[4]),
+        id: s(&r[0]),
+        job_id: s(&r[1]),
+        cron_expr: s(&r[2]),
+        enabled: n(&r[3]) != 0,
+        last_modified_by: s(&r[4]),
         last_modified_at_ns: n(&r[5]),
     }
 }
@@ -828,7 +989,9 @@ pub async fn list_ml_schedules_handler(State(state): State<AppState>) -> impl In
     .await;
 
     match result {
-        Ok(Ok(rows)) => (StatusCode::OK, Json(serde_json::json!({"schedules": rows}))).into_response(),
+        Ok(Ok(rows)) => {
+            (StatusCode::OK, Json(serde_json::json!({"schedules": rows}))).into_response()
+        }
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -855,7 +1018,8 @@ pub async fn upsert_ml_schedule_handler(
         let now = now_ns();
         // Try merge
         let mut check_stmt = conn.prepare("MATCH (s:MlJobSchedule {id: $id}) RETURN s.id")?;
-        let exists = conn.execute(&mut check_stmt, vec![("id", Value::String(id.clone()))])?
+        let exists = conn
+            .execute(&mut check_stmt, vec![("id", Value::String(id.clone()))])?
             .next()
             .is_some();
         if exists {
@@ -863,24 +1027,30 @@ pub async fn upsert_ml_schedule_handler(
                 "MATCH (s:MlJobSchedule {id: $id}) SET s.cron_expr = $ce, s.enabled = $en, \
                  s.last_modified_by = 'api', s.last_modified_at_ns = $now",
             )?;
-            conn.execute(&mut stmt, vec![
-                ("id", Value::String(id.clone())),
-                ("ce", Value::String(req.cron_expr)),
-                ("en", Value::Int64(if req.enabled { 1 } else { 0 })),
-                ("now", Value::Int64(now)),
-            ])?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("ce", Value::String(req.cron_expr)),
+                    ("en", Value::Int64(if req.enabled { 1 } else { 0 })),
+                    ("now", Value::Int64(now)),
+                ],
+            )?;
         } else {
             let mut stmt = conn.prepare(
                 "CREATE (:MlJobSchedule {id: $id, job_id: $jid, cron_expr: $ce, enabled: $en, \
                  last_modified_by: 'api', last_modified_at_ns: $now})",
             )?;
-            conn.execute(&mut stmt, vec![
-                ("id", Value::String(id.clone())),
-                ("jid", Value::String(req.job_id)),
-                ("ce", Value::String(req.cron_expr)),
-                ("en", Value::Int64(if req.enabled { 1 } else { 0 })),
-                ("now", Value::Int64(now)),
-            ])?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("jid", Value::String(req.job_id)),
+                    ("ce", Value::String(req.cron_expr)),
+                    ("en", Value::Int64(if req.enabled { 1 } else { 0 })),
+                    ("now", Value::Int64(now)),
+                ],
+            )?;
         }
         Ok::<_, anyhow::Error>(id)
     })
@@ -923,14 +1093,18 @@ pub async fn delete_ml_schedule_handler(
 /// cron_expr is a simplified "H H * * *" / "H H * * 0" string — the tick
 /// loop interprets only the hour field for daily/weekly/N-hourly schedules.
 const DEFAULT_SCHEDULES: &[(&str, &str, &str)] = &[
-    ("sched-anomaly_export",     "anomaly_export",     "0 2 * * *"),   // daily 02:00 UTC
-    ("sched-remediation_export", "remediation_export", "0 2 * * 0"),   // weekly Sun 02:00 UTC
-    ("sched-gnn_snapshot",       "gnn_snapshot",       "0 */4 * * *"), // every 4h
+    ("sched-anomaly_export", "anomaly_export", "0 2 * * *"), // daily 02:00 UTC
+    (
+        "sched-remediation_export",
+        "remediation_export",
+        "0 2 * * 0",
+    ), // weekly Sun 02:00 UTC
+    ("sched-gnn_snapshot", "gnn_snapshot", "0 */4 * * *"),   // every 4h
     // EV1 ML pipeline schedules — expected by Python sidecar + EV1 guide
-    ("sched-graph_snapshot",     "graph_snapshot",     "0 */1 * * *"), // every 1h
-    ("sched-gnn_inference",      "gnn_inference",      "0 */4 * * *"), // every 4h
-    ("sched-syslog_embedding",   "syslog_embedding",   "0 */1 * * *"), // every 1h from Rust tick; Python APScheduler runs it every 60s
-    ("sched-config_embedding",   "config_embedding",   "0 */6 * * *"), // every 6h
+    ("sched-graph_snapshot", "graph_snapshot", "0 */1 * * *"), // every 1h
+    ("sched-gnn_inference", "gnn_inference", "0 */4 * * *"),   // every 4h
+    ("sched-syslog_embedding", "syslog_embedding", "0 */1 * * *"), // every 1h from Rust tick; Python APScheduler runs it every 60s
+    ("sched-config_embedding", "config_embedding", "0 */6 * * *"), // every 6h
 ];
 
 /// Seed the three default export schedules (idempotent — skips existing rows).
@@ -942,7 +1116,10 @@ pub fn seed_default_ml_schedules(db: Arc<lbug::Database>, write_lock: Arc<std::s
         let _g = wl.lock().expect("write lock poisoned");
         let conn = match Connection::new(&db) {
             Ok(c) => c,
-            Err(e) => { warn!("seed_default_ml_schedules: cannot open connection: {e}"); return; }
+            Err(e) => {
+                warn!("seed_default_ml_schedules: cannot open connection: {e}");
+                return;
+            }
         };
         let now = now_ns();
 
@@ -955,12 +1132,10 @@ pub fn seed_default_ml_schedules(db: Arc<lbug::Database>, write_lock: Arc<std::s
                  j.error_message = 'server restarted before job completed'",
         );
         match cleanup {
-            Ok(mut stmt) => {
-                match conn.execute(&mut stmt, vec![("now", Value::Int64(now))]) {
-                    Ok(_) => info!("seed_default_ml_schedules: cleaned up stale running/pending jobs"),
-                    Err(e) => warn!("seed_default_ml_schedules: stale-job cleanup failed: {e}"),
-                }
-            }
+            Ok(mut stmt) => match conn.execute(&mut stmt, vec![("now", Value::Int64(now))]) {
+                Ok(_) => info!("seed_default_ml_schedules: cleaned up stale running/pending jobs"),
+                Err(e) => warn!("seed_default_ml_schedules: stale-job cleanup failed: {e}"),
+            },
             Err(e) => warn!("seed_default_ml_schedules: could not prepare stale-job cleanup: {e}"),
         }
         for (id, job_id, cron_expr) in DEFAULT_SCHEDULES {
@@ -968,7 +1143,8 @@ pub fn seed_default_ml_schedules(db: Arc<lbug::Database>, write_lock: Arc<std::s
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            let exists = conn.execute(&mut check, vec![("id", Value::String(id.to_string()))])
+            let exists = conn
+                .execute(&mut check, vec![("id", Value::String(id.to_string()))])
                 .map(|mut r| r.next().is_some())
                 .unwrap_or(false);
             if exists {
@@ -979,14 +1155,20 @@ pub fn seed_default_ml_schedules(db: Arc<lbug::Database>, write_lock: Arc<std::s
                  last_modified_by: 'system', last_modified_at_ns: $now})",
             ) {
                 Ok(s) => s,
-                Err(e) => { warn!("seed_default_ml_schedules: prepare failed: {e}"); continue; }
+                Err(e) => {
+                    warn!("seed_default_ml_schedules: prepare failed: {e}");
+                    continue;
+                }
             };
-            if let Err(e) = conn.execute(&mut stmt, vec![
-                ("id", Value::String(id.to_string())),
-                ("jid", Value::String(job_id.to_string())),
-                ("ce", Value::String(cron_expr.to_string())),
-                ("now", Value::Int64(now)),
-            ]) {
+            if let Err(e) = conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.to_string())),
+                    ("jid", Value::String(job_id.to_string())),
+                    ("ce", Value::String(cron_expr.to_string())),
+                    ("now", Value::Int64(now)),
+                ],
+            ) {
                 warn!("seed_default_ml_schedules: insert {id} failed: {e}");
             } else {
                 info!("seeded default ML schedule: id={id} cron={cron_expr}");
@@ -1159,34 +1341,50 @@ pub async fn gnn_inference_results_handler(
                  top_contributing_device_1: $tc1, top_contributing_device_2: $tc2, \
                  attention_weight_1: $aw1, attention_weight_2: $aw2, inferred_at_ns: $now})",
             )?;
-            conn.execute(&mut stmt, vec![
-                ("id", Value::String(id.clone())),
-                ("sns", Value::Int64(snapshot_ns)),
-                ("mid", Value::String(model_id.clone())),
-                ("da", Value::String(item.device_address.clone())),
-                ("as_", Value::Double(item.anomaly_score)),
-                ("um", Value::Double(item.uncertainty_margin.unwrap_or(0.0))),
-                ("thr", Value::Double(item.threshold)),
-                ("ia", Value::Int64(is_ano)),
-                ("tc1", Value::String(item.top_contributing_device_1.clone().unwrap_or_default())),
-                ("tc2", Value::String(item.top_contributing_device_2.clone().unwrap_or_default())),
-                ("aw1", Value::Double(item.attention_weight_1.unwrap_or(0.0))),
-                ("aw2", Value::Double(item.attention_weight_2.unwrap_or(0.0))),
-                ("now", Value::Int64(now)),
-            ])?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("sns", Value::Int64(snapshot_ns)),
+                    ("mid", Value::String(model_id.clone())),
+                    ("da", Value::String(item.device_address.clone())),
+                    ("as_", Value::Double(item.anomaly_score)),
+                    ("um", Value::Double(item.uncertainty_margin.unwrap_or(0.0))),
+                    ("thr", Value::Double(item.threshold)),
+                    ("ia", Value::Int64(is_ano)),
+                    (
+                        "tc1",
+                        Value::String(item.top_contributing_device_1.clone().unwrap_or_default()),
+                    ),
+                    (
+                        "tc2",
+                        Value::String(item.top_contributing_device_2.clone().unwrap_or_default()),
+                    ),
+                    ("aw1", Value::Double(item.attention_weight_1.unwrap_or(0.0))),
+                    ("aw2", Value::Double(item.attention_weight_2.unwrap_or(0.0))),
+                    ("now", Value::Int64(now)),
+                ],
+            )?;
             // Link Device -> GnnInferenceResult
             let mut link_stmt = conn.prepare(
                 "MATCH (d:Device {address: $da}), (r:GnnInferenceResult {id: $rid}) \
                  MERGE (d)-[:GNN_SCORED {inferred_at_ns: $now}]->(r)",
             )?;
-            let _ = conn.execute(&mut link_stmt, vec![
-                ("da", Value::String(item.device_address.clone())),
-                ("rid", Value::String(id)),
-                ("now", Value::Int64(now)),
-            ]);
+            let _ = conn.execute(
+                &mut link_stmt,
+                vec![
+                    ("da", Value::String(item.device_address.clone())),
+                    ("rid", Value::String(id)),
+                    ("now", Value::Int64(now)),
+                ],
+            );
             count += 1;
-            if item.anomaly_score > top_score { top_score = item.anomaly_score; }
-            if item.is_anomalous { anomalous += 1; }
+            if item.anomaly_score > top_score {
+                top_score = item.anomaly_score;
+            }
+            if item.is_anomalous {
+                anomalous += 1;
+            }
         }
         Ok::<_, anyhow::Error>((count, anomalous, top_score))
     })
@@ -1200,7 +1398,11 @@ pub async fn gnn_inference_results_handler(
                 top_score,
                 model_id: event_model_id,
             });
-            (StatusCode::OK, Json(serde_json::json!({"written": count, "anomalous": anomalous}))).into_response()
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"written": count, "anomalous": anomalous})),
+            )
+                .into_response()
         }
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -1240,24 +1442,30 @@ pub async fn gnn_attention_handler(
                  source_device_address: $src, neighbour_device_address: $nbr, \
                  edge_type: $et, attention_weight: $aw, snapshot_ns: $sns})",
             )?;
-            conn.execute(&mut stmt, vec![
-                ("id", Value::String(id.clone())),
-                ("irid", Value::String(item.inference_result_id.clone())),
-                ("src", Value::String(item.source_device_address.clone())),
-                ("nbr", Value::String(item.neighbour_device_address.clone())),
-                ("et", Value::String(item.edge_type.clone())),
-                ("aw", Value::Double(item.attention_weight)),
-                ("sns", Value::Int64(item.snapshot_ns)),
-            ])?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("irid", Value::String(item.inference_result_id.clone())),
+                    ("src", Value::String(item.source_device_address.clone())),
+                    ("nbr", Value::String(item.neighbour_device_address.clone())),
+                    ("et", Value::String(item.edge_type.clone())),
+                    ("aw", Value::Double(item.attention_weight)),
+                    ("sns", Value::Int64(item.snapshot_ns)),
+                ],
+            )?;
             // Link GnnInferenceResult -> GnnAttentionSnapshot
             let mut link_stmt = conn.prepare(
                 "MATCH (r:GnnInferenceResult {id: $irid}), (a:GnnAttentionSnapshot {id: $aid}) \
                  MERGE (r)-[:HAS_ATTENTION]->(a)",
             )?;
-            let _ = conn.execute(&mut link_stmt, vec![
-                ("irid", Value::String(item.inference_result_id.clone())),
-                ("aid", Value::String(id)),
-            ]);
+            let _ = conn.execute(
+                &mut link_stmt,
+                vec![
+                    ("irid", Value::String(item.inference_result_id.clone())),
+                    ("aid", Value::String(id)),
+                ],
+            );
             count += 1;
         }
         Ok::<_, anyhow::Error>(count)
@@ -1265,7 +1473,9 @@ pub async fn gnn_attention_handler(
     .await;
 
     match result {
-        Ok(Ok(count)) => (StatusCode::OK, Json(serde_json::json!({"written": count}))).into_response(),
+        Ok(Ok(count)) => {
+            (StatusCode::OK, Json(serde_json::json!({"written": count}))).into_response()
+        }
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -1351,7 +1561,11 @@ pub async fn events_embeddings_handler(
     let write_lock = state.store.write_lock();
     let ml_bus = state.ml_event_bus.clone();
     let count = req.embeddings.len() as i64;
-    let model_name = req.embeddings.first().map(|e| e.model_name.clone()).unwrap_or_default();
+    let model_name = req
+        .embeddings
+        .first()
+        .map(|e| e.model_name.clone())
+        .unwrap_or_default();
     let result = tokio::task::spawn_blocking(move || {
         let _g = write_lock.lock().expect("write lock poisoned");
         let conn = Connection::new(&db)?;
@@ -1364,31 +1578,45 @@ pub async fn events_embeddings_handler(
                  model_name: $mn, dim: $dim, vector_json: $vj, \
                  computed_at_ns: $can, schema_hash: $sh})",
             )?;
-            conn.execute(&mut stmt, vec![
-                ("id", Value::String(id.clone())),
-                ("eid", Value::String(item.event_id.clone())),
-                ("et", Value::String(item.event_type.clone().unwrap_or_default())),
-                ("mn", Value::String(item.model_name.clone())),
-                ("dim", Value::Int64(dim)),
-                ("vj", Value::String(vector_json)),
-                ("can", Value::Int64(item.computed_at_ns)),
-                ("sh", Value::String(item.schema_hash.clone().unwrap_or_default())),
-            ])?;
-            // Mark source event as embedded
-            let mut mark_stmt = conn.prepare(
-                "MATCH (e:StateChangeEvent {id: $eid}) SET e.needs_embedding = 0",
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("eid", Value::String(item.event_id.clone())),
+                    (
+                        "et",
+                        Value::String(item.event_type.clone().unwrap_or_default()),
+                    ),
+                    ("mn", Value::String(item.model_name.clone())),
+                    ("dim", Value::Int64(dim)),
+                    ("vj", Value::String(vector_json)),
+                    ("can", Value::Int64(item.computed_at_ns)),
+                    (
+                        "sh",
+                        Value::String(item.schema_hash.clone().unwrap_or_default()),
+                    ),
+                ],
             )?;
-            let _ = conn.execute(&mut mark_stmt, vec![("eid", Value::String(item.event_id.clone()))]);
+            // Mark source event as embedded
+            let mut mark_stmt =
+                conn.prepare("MATCH (e:StateChangeEvent {id: $eid}) SET e.needs_embedding = 0")?;
+            let _ = conn.execute(
+                &mut mark_stmt,
+                vec![("eid", Value::String(item.event_id.clone()))],
+            );
             // Link StateChangeEvent -> EventEmbedding
             let mut link_stmt = conn.prepare(
                 "MATCH (e:StateChangeEvent {id: $eid}), (emb:EventEmbedding {id: $embid}) \
                  MERGE (e)-[:EMBEDDED_AS {computed_at_ns: $can}]->(emb)",
             )?;
-            let _ = conn.execute(&mut link_stmt, vec![
-                ("eid", Value::String(item.event_id.clone())),
-                ("embid", Value::String(id)),
-                ("can", Value::Int64(item.computed_at_ns)),
-            ]);
+            let _ = conn.execute(
+                &mut link_stmt,
+                vec![
+                    ("eid", Value::String(item.event_id.clone())),
+                    ("embid", Value::String(id)),
+                    ("can", Value::Int64(item.computed_at_ns)),
+                ],
+            );
         }
         Ok::<_, anyhow::Error>(())
     })
@@ -1415,9 +1643,10 @@ pub async fn devices_unembedded_config_handler(
 ) -> impl IntoResponse {
     let db = state.store.db();
     let limit = q.limit.unwrap_or(50).min(200);
-    let result = tokio::task::spawn_blocking(move || {
-        let conn = Connection::new(&db)?;
-        let rows = conn.query(&format!(
+    let result =
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db)?;
+            let rows = conn.query(&format!(
             "MATCH (d:Device) WHERE d.needs_config_embedding = 1 \
              RETURN d.address, d.hostname, d.vendor \
              LIMIT {limit}",
@@ -1428,12 +1657,14 @@ pub async fn devices_unembedded_config_handler(
             serde_json::json!({"address": s(&r[0]), "hostname": s(&r[1]), "vendor": s(&r[2])})
         })
         .collect::<Vec<_>>();
-        Ok::<_, anyhow::Error>(rows)
-    })
-    .await;
+            Ok::<_, anyhow::Error>(rows)
+        })
+        .await;
 
     match result {
-        Ok(Ok(rows)) => (StatusCode::OK, Json(serde_json::json!({"devices": rows}))).into_response(),
+        Ok(Ok(rows)) => {
+            (StatusCode::OK, Json(serde_json::json!({"devices": rows}))).into_response()
+        }
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -1462,50 +1693,61 @@ pub async fn device_config_embedding_handler(
         let dim = req.vector.len() as i64;
         let vector_json = serde_json::to_string(&req.vector).unwrap_or_default();
         // Upsert config embedding
-        let mut check_stmt = conn.prepare("MATCH (e:DeviceConfigEmbedding {id: $id}) RETURN e.id")?;
-        let exists = conn.execute(&mut check_stmt, vec![("id", Value::String(id.clone()))])?
-            .next().is_some();
+        let mut check_stmt =
+            conn.prepare("MATCH (e:DeviceConfigEmbedding {id: $id}) RETURN e.id")?;
+        let exists = conn
+            .execute(&mut check_stmt, vec![("id", Value::String(id.clone()))])?
+            .next()
+            .is_some();
         if exists {
             let mut stmt = conn.prepare(
                 "MATCH (e:DeviceConfigEmbedding {id: $id}) SET e.model_name = $mn, e.dim = $dim, \
                  e.vector_json = $vj, e.computed_at_ns = $can, e.schema_hash = $sh",
             )?;
-            conn.execute(&mut stmt, vec![
-                ("id", Value::String(id.clone())),
-                ("mn", Value::String(req.model_name)),
-                ("dim", Value::Int64(dim)),
-                ("vj", Value::String(vector_json)),
-                ("can", Value::Int64(req.computed_at_ns)),
-                ("sh", Value::String(req.schema_hash.unwrap_or_default())),
-            ])?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("mn", Value::String(req.model_name)),
+                    ("dim", Value::Int64(dim)),
+                    ("vj", Value::String(vector_json)),
+                    ("can", Value::Int64(req.computed_at_ns)),
+                    ("sh", Value::String(req.schema_hash.unwrap_or_default())),
+                ],
+            )?;
         } else {
             let mut stmt = conn.prepare(
                 "CREATE (:DeviceConfigEmbedding {id: $id, device_address: $da, model_name: $mn, \
                  dim: $dim, vector_json: $vj, computed_at_ns: $can, schema_hash: $sh})",
             )?;
-            conn.execute(&mut stmt, vec![
-                ("id", Value::String(id.clone())),
-                ("da", Value::String(address.clone())),
-                ("mn", Value::String(req.model_name)),
-                ("dim", Value::Int64(dim)),
-                ("vj", Value::String(vector_json)),
-                ("can", Value::Int64(req.computed_at_ns)),
-                ("sh", Value::String(req.schema_hash.unwrap_or_default())),
-            ])?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("id", Value::String(id.clone())),
+                    ("da", Value::String(address.clone())),
+                    ("mn", Value::String(req.model_name)),
+                    ("dim", Value::Int64(dim)),
+                    ("vj", Value::String(vector_json)),
+                    ("can", Value::Int64(req.computed_at_ns)),
+                    ("sh", Value::String(req.schema_hash.unwrap_or_default())),
+                ],
+            )?;
             let mut link_stmt = conn.prepare(
                 "MATCH (d:Device {address: $da}), (e:DeviceConfigEmbedding {id: $id}) \
                  MERGE (d)-[:CONFIG_EMBEDDED_AS {computed_at_ns: $can}]->(e)",
             )?;
-            let _ = conn.execute(&mut link_stmt, vec![
-                ("da", Value::String(address.clone())),
-                ("id", Value::String(id)),
-                ("can", Value::Int64(req.computed_at_ns)),
-            ]);
+            let _ = conn.execute(
+                &mut link_stmt,
+                vec![
+                    ("da", Value::String(address.clone())),
+                    ("id", Value::String(id)),
+                    ("can", Value::Int64(req.computed_at_ns)),
+                ],
+            );
         }
         // Mark device as embedded
-        let mut mark_stmt = conn.prepare(
-            "MATCH (d:Device {address: $da}) SET d.needs_config_embedding = 0",
-        )?;
+        let mut mark_stmt =
+            conn.prepare("MATCH (d:Device {address: $da}) SET d.needs_config_embedding = 0")?;
         let _ = conn.execute(&mut mark_stmt, vec![("da", Value::String(address))]);
         Ok::<_, anyhow::Error>(())
     })
@@ -1523,18 +1765,42 @@ pub async fn ml_embedding_stats_handler(State(state): State<AppState>) -> impl I
     let db = state.store.db();
     let result = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db)?;
-        let syslog_embedded = conn.query("MATCH (e:EventEmbedding) RETURN count(e)")
+        let syslog_embedded = conn
+            .query("MATCH (e:EventEmbedding) RETURN count(e)")
             .map_err(|e| anyhow::anyhow!("{e}"))?
-            .next().map(|r| match &r[0] { Value::Int64(n) => *n, _ => 0 }).unwrap_or(0);
-        let syslog_pending = conn.query("MATCH (e:StateChangeEvent) WHERE e.needs_embedding = 1 RETURN count(e)")
+            .next()
+            .map(|r| match &r[0] {
+                Value::Int64(n) => *n,
+                _ => 0,
+            })
+            .unwrap_or(0);
+        let syslog_pending = conn
+            .query("MATCH (e:StateChangeEvent) WHERE e.needs_embedding = 1 RETURN count(e)")
             .map_err(|e| anyhow::anyhow!("{e}"))?
-            .next().map(|r| match &r[0] { Value::Int64(n) => *n, _ => 0 }).unwrap_or(0);
-        let config_embedded = conn.query("MATCH (e:DeviceConfigEmbedding) RETURN count(e)")
+            .next()
+            .map(|r| match &r[0] {
+                Value::Int64(n) => *n,
+                _ => 0,
+            })
+            .unwrap_or(0);
+        let config_embedded = conn
+            .query("MATCH (e:DeviceConfigEmbedding) RETURN count(e)")
             .map_err(|e| anyhow::anyhow!("{e}"))?
-            .next().map(|r| match &r[0] { Value::Int64(n) => *n, _ => 0 }).unwrap_or(0);
-        let config_pending = conn.query("MATCH (d:Device) WHERE d.needs_config_embedding = 1 RETURN count(d)")
+            .next()
+            .map(|r| match &r[0] {
+                Value::Int64(n) => *n,
+                _ => 0,
+            })
+            .unwrap_or(0);
+        let config_pending = conn
+            .query("MATCH (d:Device) WHERE d.needs_config_embedding = 1 RETURN count(d)")
             .map_err(|e| anyhow::anyhow!("{e}"))?
-            .next().map(|r| match &r[0] { Value::Int64(n) => *n, _ => 0 }).unwrap_or(0);
+            .next()
+            .map(|r| match &r[0] {
+                Value::Int64(n) => *n,
+                _ => 0,
+            })
+            .unwrap_or(0);
         Ok::<_, anyhow::Error>(serde_json::json!({
             "syslog_embedded": syslog_embedded,
             "syslog_pending": syslog_pending,
@@ -1584,8 +1850,12 @@ pub async fn ml_syslog_clusters_handler(State(state): State<AppState>) -> impl I
     .await;
 
     match result {
-        Ok(Ok(rows)) => (StatusCode::OK, Json(serde_json::json!({"clusters": rows}))).into_response(),
-        Ok(Err(_)) | Err(_) => (StatusCode::OK, Json(serde_json::json!({"clusters": []}))).into_response(),
+        Ok(Ok(rows)) => {
+            (StatusCode::OK, Json(serde_json::json!({"clusters": rows}))).into_response()
+        }
+        Ok(Err(_)) | Err(_) => {
+            (StatusCode::OK, Json(serde_json::json!({"clusters": []}))).into_response()
+        }
     }
 }
 
@@ -1594,33 +1864,42 @@ pub async fn ml_export_quality_handler(State(state): State<AppState>) -> impl In
     let db = state.store.db();
     let result = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db)?;
-        let rows = conn.query(
-            "MATCH (e:ParquetExport) \
+        let rows = conn
+            .query(
+                "MATCH (e:ParquetExport) \
              RETURN e.export_type, e.started_at_ns, e.row_count, e.anomaly_rows, \
                     e.normal_rows, e.status, e.quality_json \
              ORDER BY e.started_at_ns DESC LIMIT 20",
-        )
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .map(|r| {
-            let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
-            let n = |v: &Value| match v { Value::Int64(n) => *n, _ => 0 };
-            serde_json::json!({
-                "export_type": s(&r[0]),
-                "last_export_at": n(&r[1]),
-                "row_count": n(&r[2]),
-                "anomaly_rows": n(&r[3]),
-                "normal_rows": n(&r[4]),
-                "status": s(&r[5]),
-                "quality_json": s(&r[6]),
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .map(|r| {
+                let s = |v: &Value| match v {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let n = |v: &Value| match v {
+                    Value::Int64(n) => *n,
+                    _ => 0,
+                };
+                serde_json::json!({
+                    "export_type": s(&r[0]),
+                    "last_export_at": n(&r[1]),
+                    "row_count": n(&r[2]),
+                    "anomaly_rows": n(&r[3]),
+                    "normal_rows": n(&r[4]),
+                    "status": s(&r[5]),
+                    "quality_json": s(&r[6]),
+                })
             })
-        })
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>();
         Ok::<_, anyhow::Error>(rows)
     })
     .await;
 
     match result {
-        Ok(Ok(rows)) => (StatusCode::OK, Json(serde_json::json!({"quality": rows}))).into_response(),
+        Ok(Ok(rows)) => {
+            (StatusCode::OK, Json(serde_json::json!({"quality": rows}))).into_response()
+        }
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -1639,12 +1918,22 @@ pub async fn ml_lineage_handler(
             "MATCH (m:ModelArtifact {id: $id}) \
              RETURN m.id, m.model_type, m.version, m.trained_at_ns, m.val_auc, m.is_active",
         )?;
-        let model = conn.execute(&mut mstmt, vec![("id", Value::String(model_id.clone()))])?
+        let model = conn
+            .execute(&mut mstmt, vec![("id", Value::String(model_id.clone()))])?
             .next()
             .map(|r| {
-                let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
-                let n = |v: &Value| match v { Value::Int64(n) => *n, _ => 0 };
-                let f = |v: &Value| match v { Value::Double(f) => *f, _ => 0.0 };
+                let s = |v: &Value| match v {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let n = |v: &Value| match v {
+                    Value::Int64(n) => *n,
+                    _ => 0,
+                };
+                let f = |v: &Value| match v {
+                    Value::Double(f) => *f,
+                    _ => 0.0,
+                };
                 serde_json::json!({
                     "id": s(&r[0]), "model_type": s(&r[1]), "version": s(&r[2]),
                     "trained_at_ns": n(&r[3]), "val_auc": f(&r[4]), "is_active": n(&r[5]) != 0,
@@ -1655,10 +1944,17 @@ pub async fn ml_lineage_handler(
             "MATCH (m:ModelArtifact {id: $id})-[:TRAINED_ON]->(e:ParquetExport) \
              RETURN e.id, e.export_type, e.row_count, e.since_ns, e.until_ns, e.status",
         )?;
-        let exports = conn.execute(&mut tstmt, vec![("id", Value::String(model_id))])?
+        let exports = conn
+            .execute(&mut tstmt, vec![("id", Value::String(model_id))])?
             .map(|r| {
-                let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
-                let n = |v: &Value| match v { Value::Int64(n) => *n, _ => 0 };
+                let s = |v: &Value| match v {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let n = |v: &Value| match v {
+                    Value::Int64(n) => *n,
+                    _ => 0,
+                };
                 serde_json::json!({
                     "id": s(&r[0]), "export_type": s(&r[1]),
                     "row_count": n(&r[2]), "since_ns": n(&r[3]),
@@ -1709,18 +2005,24 @@ pub async fn ml_similar_events_handler(
              RETURN emb.vector_json, emb.dim, emb.model_name \
              LIMIT 1",
         )?;
-        let query_row = conn.execute(&mut qstmt, vec![("eid", Value::String(event_id.clone()))])?
+        let query_row = conn
+            .execute(&mut qstmt, vec![("eid", Value::String(event_id.clone()))])?
             .next();
 
         let query_row = match query_row {
             Some(r) => r,
-            None => return Ok::<_, anyhow::Error>(serde_json::json!({
-                "error": "event not found or not embedded",
-                "similar": []
-            })),
+            None => {
+                return Ok::<_, anyhow::Error>(serde_json::json!({
+                    "error": "event not found or not embedded",
+                    "similar": []
+                }));
+            }
         };
 
-        let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
+        let s = |v: &Value| match v {
+            Value::String(s) => s.clone(),
+            _ => String::new(),
+        };
         let query_vec_json = s(&query_row[0]);
         let model_name = s(&query_row[2]);
 
@@ -1733,18 +2035,25 @@ pub async fn ml_similar_events_handler(
         }
 
         // 2. Fetch all embeddings from the same model (excluding self)
-        let all_rows = conn.query(&format!(
-            "MATCH (emb:EventEmbedding) \
+        let all_rows = conn
+            .query(&format!(
+                "MATCH (emb:EventEmbedding) \
              WHERE emb.event_id <> '{}' AND emb.model_name = '{}' \
              RETURN emb.event_id, emb.vector_json, emb.event_type, emb.computed_at_ns \
              LIMIT 5000",
-            event_id.replace('\'', ""),
-            model_name.replace('\'', ""),
-        ))
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                event_id.replace('\'', ""),
+                model_name.replace('\'', ""),
+            ))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-        let s2 = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
-        let n2 = |v: &Value| match v { Value::Int64(n) => *n, _ => 0 };
+        let s2 = |v: &Value| match v {
+            Value::String(s) => s.clone(),
+            _ => String::new(),
+        };
+        let n2 = |v: &Value| match v {
+            Value::Int64(n) => *n,
+            _ => 0,
+        };
 
         let mut scored: Vec<(f64, String, String, i64)> = Vec::new();
         for row in all_rows {
@@ -1764,14 +2073,17 @@ pub async fn ml_similar_events_handler(
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(limit);
 
-        let similar: Vec<_> = scored.into_iter().map(|(sim, eid, etype, cat)| {
-            serde_json::json!({
-                "event_id": eid,
-                "event_type": etype,
-                "similarity": (sim * 10000.0).round() / 10000.0,
-                "computed_at_ns": cat,
+        let similar: Vec<_> = scored
+            .into_iter()
+            .map(|(sim, eid, etype, cat)| {
+                serde_json::json!({
+                    "event_id": eid,
+                    "event_type": etype,
+                    "similarity": (sim * 10000.0).round() / 10000.0,
+                    "computed_at_ns": cat,
+                })
             })
-        }).collect();
+            .collect();
 
         Ok(serde_json::json!({
             "query_event_id": event_id,
@@ -1839,12 +2151,23 @@ pub async fn gnn_results_query_handler(
                     r.top_contributing_device_1, r.attention_weight_1, r.inferred_at_ns \
              ORDER BY r.inferred_at_ns DESC LIMIT {limit}"
         );
-        let rows = conn.query(&cypher)
+        let rows = conn
+            .query(&cypher)
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .map(|r| {
-                let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
-                let n = |v: &Value| match v { Value::Int64(n) => *n, _ => 0 };
-                let f = |v: &Value| match v { Value::Double(f) => *f, Value::Float(f) => *f as f64, _ => 0.0 };
+                let s = |v: &Value| match v {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let n = |v: &Value| match v {
+                    Value::Int64(n) => *n,
+                    _ => 0,
+                };
+                let f = |v: &Value| match v {
+                    Value::Double(f) => *f,
+                    Value::Float(f) => *f as f64,
+                    _ => 0.0,
+                };
                 serde_json::json!({
                     "id": s(&r[0]), "snapshot_ns": n(&r[1]), "model_id": s(&r[2]),
                     "device_address": s(&r[3]), "anomaly_score": f(&r[4]),
@@ -1860,7 +2183,9 @@ pub async fn gnn_results_query_handler(
     .await;
 
     match result {
-        Ok(Ok(rows)) => (StatusCode::OK, Json(serde_json::json!({"results": rows}))).into_response(),
+        Ok(Ok(rows)) => {
+            (StatusCode::OK, Json(serde_json::json!({"results": rows}))).into_response()
+        }
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }

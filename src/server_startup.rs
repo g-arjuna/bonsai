@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use tracing::{error, info, warn};
 
 use bonsai::{
@@ -28,7 +28,6 @@ use super::{GRAPH_PATH_DEFAULT, registry_path_for_graph_path};
 fn config_path() -> String {
     super::config_path()
 }
-
 
 pub(super) async fn run_server() -> anyhow::Result<()> {
     // ── Logging setup (T2-1/T2-2) ─────────────────────────────────────────────
@@ -395,11 +394,10 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     // D3-6 T6: channel for auto-investigate on unmatched detections.
     // Created unconditionally so the receiver can be moved into router() regardless;
     // the coordinator only sends when auto_investigate_unmatched=true AND the API key exists.
-    let (investigation_tx, investigation_rx) = tokio::sync::mpsc::channel::<
-        bonsai::write_coordinator::AutoInvestigateRequest,
-    >(64);
-    let auto_investigate = cfg.ai.auto_investigate_unmatched
-        && std::env::var(&cfg.ai.api_key_env).is_ok();
+    let (investigation_tx, investigation_rx) =
+        tokio::sync::mpsc::channel::<bonsai::write_coordinator::AutoInvestigateRequest>(64);
+    let auto_investigate =
+        cfg.ai.auto_investigate_unmatched && std::env::var(&cfg.ai.api_key_env).is_ok();
 
     // D4-7 T5: Run YAML→ConfigItem migration synchronously BEFORE loading patterns,
     // so DB-first loaders see the migrated data on first boot.
@@ -407,13 +405,17 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         match core_store.migrate_yaml_config("config").await {
             Ok(n) if n > 0 => info!(count = n, "config YAML migration complete"),
             Ok(_) => {}
-            Err(e) => warn!(error = %e, "config YAML migration failed (non-fatal, will use disk fallback)"),
+            Err(e) => {
+                warn!(error = %e, "config YAML migration failed (non-fatal, will use disk fallback)")
+            }
         }
     }
 
     // D4-7 T5: Restore all runtime config overrides from DB (streaming, retention, ai, etc.).
     if let Some(Store::Core(ref core_store)) = store {
-        let n = bonsai::http_server::settings::apply_runtime_overrides_from_db(core_store, &mut cfg).await;
+        let n =
+            bonsai::http_server::settings::apply_runtime_overrides_from_db(core_store, &mut cfg)
+                .await;
         if n > 0 {
             info!(count = n, "applied runtime config overrides from DB");
         }
@@ -421,15 +423,24 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
 
     // D4-7 T5: Load syslog/SNMP patterns from ConfigItem DB with disk fallback.
     let syslog_pattern_dir = cfg.layered_ingestion.syslog_patterns_path.clone();
-    let snmp_oid_dir = cfg.signals.snmp.oid_pattern_dir
+    let snmp_oid_dir = cfg
+        .signals
+        .snmp
+        .oid_pattern_dir
         .clone()
         .unwrap_or_else(|| "config/snmp_oid_patterns".to_string());
 
     let init_syslog_extractor = if let Some(Store::Core(ref core_store)) = store {
-        let items = core_store.load_config_yaml_by_class("syslog_pattern").await.unwrap_or_default();
-        std::sync::Arc::new(bonsai::signals::syslog::SyslogFactExtractor::load_from_yaml_strings(
-            &items, &syslog_pattern_dir,
-        ))
+        let items = core_store
+            .load_config_yaml_by_class("syslog_pattern")
+            .await
+            .unwrap_or_default();
+        std::sync::Arc::new(
+            bonsai::signals::syslog::SyslogFactExtractor::load_from_yaml_strings(
+                &items,
+                &syslog_pattern_dir,
+            ),
+        )
     } else {
         std::sync::Arc::new(bonsai::signals::syslog::SyslogFactExtractor::load_from_dir(
             &syslog_pattern_dir,
@@ -440,12 +451,17 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     let syslog_pattern_tx = std::sync::Arc::new(syslog_pattern_tx);
 
     let init_snmp_extractor = if let Some(Store::Core(ref core_store)) = store {
-        let items = core_store.load_config_yaml_by_class("snmp_oid_pattern").await.unwrap_or_default();
-        std::sync::Arc::new(bonsai::signals::snmp::SnmpFactExtractor::load_from_yaml_strings(
-            &items, &snmp_oid_dir,
-        ))
+        let items = core_store
+            .load_config_yaml_by_class("snmp_oid_pattern")
+            .await
+            .unwrap_or_default();
+        std::sync::Arc::new(
+            bonsai::signals::snmp::SnmpFactExtractor::load_from_yaml_strings(&items, &snmp_oid_dir),
+        )
     } else {
-        std::sync::Arc::new(bonsai::signals::snmp::SnmpFactExtractor::load_from_dir(&snmp_oid_dir))
+        std::sync::Arc::new(bonsai::signals::snmp::SnmpFactExtractor::load_from_dir(
+            &snmp_oid_dir,
+        ))
     };
     let (snmp_pattern_tx, snmp_pattern_rx) =
         tokio::sync::watch::channel(std::sync::Arc::clone(&init_snmp_extractor));
@@ -510,10 +526,15 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 let flushed = corr_buf.drain_expired();
                 for slot in &flushed {
                     let severity = match slot.key.semantic_type.as_str() {
-                        "bgp_neighbor_down" | "interface_down" | "bfd_session_down"
-                        | "isis_adjacency_down" | "ospf_neighbor_down" => "critical",
-                        "app_flow_high_utilization" | "flow_exporter_silent"
-                        | "bgp_rib_prefix_spike" | "bgp_policy_filter_spike" => "medium",
+                        "bgp_neighbor_down"
+                        | "interface_down"
+                        | "bfd_session_down"
+                        | "isis_adjacency_down"
+                        | "ospf_neighbor_down" => "critical",
+                        "app_flow_high_utilization"
+                        | "flow_exporter_silent"
+                        | "bgp_rib_prefix_spike"
+                        | "bgp_policy_filter_spike" => "medium",
                         "thermal_sensor_critical" => "critical",
                         "thermal_sensor_warning" => "warning",
                         "redundancy_lost" => "critical",
@@ -523,28 +544,35 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                     };
                     let source_types_json =
                         serde_json::to_string(&slot.source_types).unwrap_or_default();
-                    let first_sce_id =
-                        slot.state_change_event_ids.first().cloned().unwrap_or_default();
+                    let first_sce_id = slot
+                        .state_change_event_ids
+                        .first()
+                        .cloned()
+                        .unwrap_or_default();
                     let res = if let Some(ref coordinator) = detection_coordinator {
                         let (reply_to, reply_rx) = tokio::sync::oneshot::channel();
                         let submit = coordinator
-                            .submit_priority(bonsai::write_coordinator::PriorityWriteRequest::Detection {
-                                device_address: slot.key.device_address.clone(),
-                                rule_id: slot.key.semantic_type.clone(),
-                                severity: severity.to_string(),
-                                features_json: slot.detail_json.clone(),
-                                source_types_json,
-                                latency_ns: 0,
-                                fired_at_ns: slot.first_signal_ns,
-                                state_change_event_id: first_sce_id,
-                                source_event_ids: slot.state_change_event_ids.clone(),
-                                reply_to,
-                            })
+                            .submit_priority(
+                                bonsai::write_coordinator::PriorityWriteRequest::Detection {
+                                    device_address: slot.key.device_address.clone(),
+                                    rule_id: slot.key.semantic_type.clone(),
+                                    severity: severity.to_string(),
+                                    features_json: slot.detail_json.clone(),
+                                    source_types_json,
+                                    latency_ns: 0,
+                                    fired_at_ns: slot.first_signal_ns,
+                                    state_change_event_id: first_sce_id,
+                                    source_event_ids: slot.state_change_event_ids.clone(),
+                                    reply_to,
+                                },
+                            )
                             .await;
                         match submit {
                             Ok(()) => match reply_rx.await {
                                 Ok(res) => res,
-                                Err(e) => Err(anyhow::anyhow!("write coordinator reply dropped: {e}")),
+                                Err(e) => {
+                                    Err(anyhow::anyhow!("write coordinator reply dropped: {e}"))
+                                }
                             },
                             Err(e) => Err(e),
                         }
@@ -609,36 +637,43 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             loop {
                 interval.tick().await;
                 let result = tokio::task::spawn_blocking({
-                        let db = db_for_silent.clone();
-                        move || -> anyhow::Result<Vec<(String, String, i64)>> {
-                            use bonsai::graph::common::{now_ns, ts};
-                            use lbug::Connection;
-                            let conn = Connection::new(&db)?;
-                            let cutoff_ns = now_ns() - 300_000_000_000_i64;
-                            let cutoff_val = ts(cutoff_ns);
-                            let mut stmt = conn.prepare(
-                                "MATCH (f:AppFlow) \
+                    let db = db_for_silent.clone();
+                    move || -> anyhow::Result<Vec<(String, String, i64)>> {
+                        use bonsai::graph::common::{now_ns, ts};
+                        use lbug::Connection;
+                        let conn = Connection::new(&db)?;
+                        let cutoff_ns = now_ns() - 300_000_000_000_i64;
+                        let cutoff_val = ts(cutoff_ns);
+                        let mut stmt = conn.prepare(
+                            "MATCH (f:AppFlow) \
                                  WHERE f.updated_at < $cutoff \
                                  RETURN f.exporter_address, f.id, f.updated_at",
-                            )?;
-                            let rows = conn.execute(&mut stmt, vec![("cutoff", cutoff_val)])?;
-                            let mut out = Vec::new();
-                            for row in rows {
-                                let exp = match &row[0] { lbug::Value::String(s) => s.clone(), _ => continue };
-                                let fid = match &row[1] { lbug::Value::String(s) => s.clone(), _ => continue };
-                                let last_ns = match &row[2] {
-                                    lbug::Value::TimestampNs(dt) => dt.unix_timestamp_nanos() as i64,
-                                    _ => 0,
-                                };
-                                out.push((exp, fid, last_ns));
-                            }
-                            Ok(out)
+                        )?;
+                        let rows = conn.execute(&mut stmt, vec![("cutoff", cutoff_val)])?;
+                        let mut out = Vec::new();
+                        for row in rows {
+                            let exp = match &row[0] {
+                                lbug::Value::String(s) => s.clone(),
+                                _ => continue,
+                            };
+                            let fid = match &row[1] {
+                                lbug::Value::String(s) => s.clone(),
+                                _ => continue,
+                            };
+                            let last_ns = match &row[2] {
+                                lbug::Value::TimestampNs(dt) => dt.unix_timestamp_nanos() as i64,
+                                _ => 0,
+                            };
+                            out.push((exp, fid, last_ns));
                         }
-                    })
-                    .await;
+                        Ok(out)
+                    }
+                })
+                .await;
                 if let Ok(Ok(silent)) = result {
                     // Deduplicate by exporter — fire one detection per silent exporter
-                    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                    let mut seen: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
                     for (exp, _fid, last_ns) in silent {
                         if seen.insert(exp.clone()) {
                             let detail = serde_json::json!({
@@ -690,18 +725,21 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             } else {
                 sup.register_disabled($name, $addr.to_string());
                 if $enabled && !$run_collector {
-                    info!(receiver = $name, "receiver enabled but no collector role; skipping");
+                    info!(
+                        receiver = $name,
+                        "receiver enabled but no collector role; skipping"
+                    );
                 }
             }
         }};
     }
 
     {
-        let syslog_cfg  = cfg.signals.syslog.clone();
+        let syslog_cfg = cfg.signals.syslog.clone();
         let pattern_dir = cfg.layered_ingestion.syslog_patterns_path.clone();
-        let targets     = cfg.target.clone();
-        let syslog_bus  = std::sync::Arc::clone(&bus);
-        let governor    = shared_governor.clone();
+        let targets = cfg.target.clone();
+        let syslog_bus = std::sync::Arc::clone(&bus);
+        let governor = shared_governor.clone();
         let shun_engine_for_syslog = if run_core {
             Some(std::sync::Arc::clone(&shun_engine))
         } else {
@@ -715,20 +753,26 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             run_collector,
             |shutdown| async move {
                 bonsai::signals::syslog::run_syslog_receiver(
-                    syslog_cfg, pattern_dir, targets, syslog_bus, shutdown, governor,
+                    syslog_cfg,
+                    pattern_dir,
+                    targets,
+                    syslog_bus,
+                    shutdown,
+                    governor,
                     shun_engine_for_syslog,
                     Some(syslog_pattern_rx),
                     Some(syslog_supervisor),
-                ).await
+                )
+                .await
             }
         );
     }
 
     {
-        let snmp_cfg  = cfg.signals.snmp.clone();
-        let targets   = cfg.target.clone();
-        let snmp_bus  = std::sync::Arc::clone(&bus);
-        let snmp_gov  = shared_governor.clone().map(std::sync::Arc::new);
+        let snmp_cfg = cfg.signals.snmp.clone();
+        let targets = cfg.target.clone();
+        let snmp_bus = std::sync::Arc::clone(&bus);
+        let snmp_gov = shared_governor.clone().map(std::sync::Arc::new);
         let snmp_supervisor = std::sync::Arc::clone(&supervisor);
         spawn_or_register!(
             "snmp",
@@ -737,18 +781,23 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             run_collector,
             |shutdown| async move {
                 bonsai::signals::snmp::run_snmp_receiver(
-                    snmp_cfg, targets, snmp_bus, shutdown, snmp_gov,
+                    snmp_cfg,
+                    targets,
+                    snmp_bus,
+                    shutdown,
+                    snmp_gov,
                     Some(snmp_pattern_rx),
                     Some(snmp_supervisor),
-                ).await
+                )
+                .await
             }
         );
     }
 
     {
-        let bmp_cfg  = cfg.streaming.bmp.clone();
-        let targets  = cfg.target.clone();
-        let bmp_bus  = std::sync::Arc::clone(&bus);
+        let bmp_cfg = cfg.streaming.bmp.clone();
+        let targets = cfg.target.clone();
+        let bmp_bus = std::sync::Arc::clone(&bus);
         let governor = shared_governor.clone();
         spawn_or_register!(
             "bmp",
@@ -758,14 +807,15 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             |shutdown| async move {
                 bonsai::streaming::bmp::run_bmp_receiver(
                     bmp_cfg, targets, bmp_bus, shutdown, governor,
-                ).await
+                )
+                .await
             }
         );
     }
 
     {
         let bgp_ls_cfg = cfg.streaming.bgp_ls.clone();
-        let targets    = cfg.target.clone();
+        let targets = cfg.target.clone();
         let bgp_ls_bus = std::sync::Arc::clone(&bus);
         spawn_or_register!(
             "bgp_ls",
@@ -775,7 +825,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             |shutdown| async move {
                 bonsai::streaming::bgp_ls::run_bgp_ls_receiver(
                     bgp_ls_cfg, targets, bgp_ls_bus, shutdown,
-                ).await
+                )
+                .await
             }
         );
     }
@@ -795,9 +846,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             cfg.streaming.otlp.enabled,
             run_collector,
             |shutdown| async move {
-                bonsai::streaming::otlp::run_otlp_receiver(
-                    otlp_cfg, otlp_bus, shutdown,
-                ).await
+                bonsai::streaming::otlp::run_otlp_receiver(otlp_cfg, otlp_bus, shutdown).await
             }
         );
     }
@@ -811,9 +860,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             cfg.streaming.netflow.enabled,
             run_collector,
             |shutdown| async move {
-                bonsai::streaming::netflow::run_netflow_receiver(
-                    netflow_cfg, netflow_bus, shutdown,
-                ).await
+                bonsai::streaming::netflow::run_netflow_receiver(netflow_cfg, netflow_bus, shutdown)
+                    .await
             }
         );
     }
@@ -827,9 +875,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             cfg.streaming.sflow.enabled,
             run_collector,
             |shutdown| async move {
-                bonsai::streaming::sflow::run_sflow_receiver(
-                    sflow_cfg, sflow_bus, shutdown,
-                ).await
+                bonsai::streaming::sflow::run_sflow_receiver(sflow_cfg, sflow_bus, shutdown).await
             }
         );
     }
@@ -878,7 +924,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
 
     // Disk guard
     let storage_config_for_http = cfg.storage.clone();
-    let health_emitter_for_disk = std::sync::Arc::new(bonsai::health_emitter::HealthEmitter::new(bus.clone()));
+    let health_emitter_for_disk =
+        std::sync::Arc::new(bonsai::health_emitter::HealthEmitter::new(bus.clone()));
     if run_core && (cfg.storage.max_archive_bytes > 0 || cfg.storage.max_graph_bytes > 0) {
         let archive_path = std::path::PathBuf::from(&cfg.archive.path);
         let graph_path = std::path::PathBuf::from(&cfg.graph_path);
@@ -903,8 +950,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         "opening credential vault"
     );
     let credentials = std::sync::Arc::new(
-        CredentialVault::open(&cfg.credentials.path, &cfg.credentials.passphrase_env)
-            .map_err(|e| {
+        CredentialVault::open(&cfg.credentials.path, &cfg.credentials.passphrase_env).map_err(
+            |e| {
                 // D4-14 T4: emit a structured log before propagating so the error
                 // appears in the journal even if the process exits immediately.
                 error!(
@@ -914,26 +961,26 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                     "FATAL: credential vault failed to open — bonsai cannot start"
                 );
                 e
-            })?,
+            },
+        )?,
     );
     info!(path = %cfg.credentials.path, "credential vault open complete");
 
     // CV7 T4-2: sidecar registry. Tracks Python (and future) sidecar processes
     // that bond to bonsai over gRPC. BONSAI_REQUIRE_SIDECAR=<comma-list> turns
     // missing required kinds into a /health degraded status (T4-6).
-    let required_sidecar_kinds =
-        bonsai::sidecar_registry::SidecarRegistry::parse_required_kinds(
-            &std::env::var("BONSAI_REQUIRE_SIDECAR").unwrap_or_default(),
-        );
+    let required_sidecar_kinds = bonsai::sidecar_registry::SidecarRegistry::parse_required_kinds(
+        &std::env::var("BONSAI_REQUIRE_SIDECAR").unwrap_or_default(),
+    );
     if !required_sidecar_kinds.is_empty() {
         info!(
             required = ?required_sidecar_kinds,
             "BONSAI_REQUIRE_SIDECAR set — /health will be degraded until these sidecars register"
         );
     }
-    let sidecar_registry = std::sync::Arc::new(
-        bonsai::sidecar_registry::SidecarRegistry::new(required_sidecar_kinds),
-    );
+    let sidecar_registry = std::sync::Arc::new(bonsai::sidecar_registry::SidecarRegistry::new(
+        required_sidecar_kinds,
+    ));
 
     let collector_manager = if run_core {
         Some(std::sync::Arc::new(
@@ -980,6 +1027,31 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             Ok(_) => {}
             Err(error) => warn!(%error, "environment migration failed (non-fatal)"),
         }
+
+        // B13 / R05: Spawn background checkpointed routing-to-graph summary projector
+        let projector_store = std::sync::Arc::clone(core_store);
+        let mut projector_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        if let Ok(report) = bonsai::routing_service::project_remote_routing_events_to_graph(&projector_store, 250).await {
+                            if report.newly_applied_events > 0 {
+                                info!(
+                                    newly_applied = report.newly_applied_events,
+                                    checkpoint_seq = report.graph_checkpoint_sequence,
+                                    lag = report.sequence_lag,
+                                    "projected routing events into graph store"
+                                );
+                            }
+                        }
+                    }
+                    _ = projector_shutdown.changed() => break,
+                }
+            }
+        });
     }
 
     // (D4-7 T2 migration now runs synchronously before pattern loading — see above.)
@@ -1368,8 +1440,14 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             let collector_manager_for_http = collector_manager.clone();
             let catalogue_dir = "config/path_profiles".to_string();
             let catalogue_state = if let Store::Core(cs) = &store {
-                let items = cs.load_config_yaml_by_class("gnmi_path_profile").await.unwrap_or_default();
-                catalogue::load_catalogue_from_yaml_strings(&items, std::path::Path::new(&catalogue_dir))
+                let items = cs
+                    .load_config_yaml_by_class("gnmi_path_profile")
+                    .await
+                    .unwrap_or_default();
+                catalogue::load_catalogue_from_yaml_strings(
+                    &items,
+                    std::path::Path::new(&catalogue_dir),
+                )
             } else {
                 catalogue::load_catalogue(std::path::Path::new(&catalogue_dir))
             };
@@ -1407,22 +1485,26 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
 
             // G3 Session 1: HA coordinator with etcd configuration
             let ha_mode = if std::env::var("BONSAI_HA_MODE").as_deref() == Ok("cluster") {
-                let node_id = std::env::var("BONSAI_NODE_ID").unwrap_or_else(|_| "node-1".to_string());
+                let node_id =
+                    std::env::var("BONSAI_NODE_ID").unwrap_or_else(|_| "node-1".to_string());
                 bonsai::ha_coordinator::HAMode::Cluster { node_id }
             } else {
                 bonsai::ha_coordinator::HAMode::Standalone
             };
 
             // G3 Session 6: ConfigReplicator for config replication
-            let cluster_node_id = if let bonsai::ha_coordinator::HAMode::Cluster { ref node_id } = ha_mode {
-                node_id.clone()
-            } else {
-                "standalone".to_string()
-            };
+            let cluster_node_id =
+                if let bonsai::ha_coordinator::HAMode::Cluster { ref node_id } = ha_mode {
+                    node_id.clone()
+                } else {
+                    "standalone".to_string()
+                };
 
             // Build HACoordinator and ConfigReplicator, applying etcd config before Arc wrapping
-            let mut ha_coordinator_val = bonsai::ha_coordinator::HACoordinator::new(ha_mode.clone());
-            let mut config_replicator = bonsai::ha_coordinator::ConfigReplicator::new(cluster_node_id);
+            let mut ha_coordinator_val =
+                bonsai::ha_coordinator::HACoordinator::new(ha_mode.clone());
+            let mut config_replicator =
+                bonsai::ha_coordinator::ConfigReplicator::new(cluster_node_id);
 
             // Add etcd configuration if in cluster mode and env vars are set
             if matches!(ha_mode, bonsai::ha_coordinator::HAMode::Cluster { .. }) {
@@ -1461,7 +1543,10 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 let config_replicator = std::sync::Arc::new(config_replicator);
                 let shutdown_signal = ha_coordinator.shutdown_signal();
                 tokio::spawn(async move {
-                    if let Err(e) = config_replicator.watch_and_apply_changes(shutdown_signal).await {
+                    if let Err(e) = config_replicator
+                        .watch_and_apply_changes(shutdown_signal)
+                        .await
+                    {
                         error!(error = %e, "config watcher failed");
                     }
                 });
@@ -1473,10 +1558,14 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             if std::env::var("BONSAI_SYSLOG_ENABLED").as_deref() == Ok("true") {
                 let syslog_config = bonsai::output::syslog_adapter::SyslogConfig {
                     enabled: true,
-                    endpoint: std::env::var("BONSAI_SYSLOG_ENDPOINT").unwrap_or_else(|_| "127.0.0.1:514".to_string()),
-                    facility: std::env::var("BONSAI_SYSLOG_FACILITY").unwrap_or_else(|_| "local0".to_string()),
+                    endpoint: std::env::var("BONSAI_SYSLOG_ENDPOINT")
+                        .unwrap_or_else(|_| "127.0.0.1:514".to_string()),
+                    facility: std::env::var("BONSAI_SYSLOG_FACILITY")
+                        .unwrap_or_else(|_| "local0".to_string()),
                 };
-                let syslog_adapter = std::sync::Arc::new(bonsai::output::syslog_adapter::SyslogAdapter::new(syslog_config, bus.clone()));
+                let syslog_adapter = std::sync::Arc::new(
+                    bonsai::output::syslog_adapter::SyslogAdapter::new(syslog_config, bus.clone()),
+                );
                 syslog_adapter.start().await;
                 info!("Syslog adapter started for health events");
             }
@@ -1485,14 +1574,18 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             if std::env::var("BONSAI_SNMP_ENABLED").as_deref() == Ok("true") {
                 let snmp_config = bonsai::output::snmp_adapter::SnmpConfig {
                     enabled: true,
-                    target: std::env::var("BONSAI_SNMP_TARGET").unwrap_or_else(|_| "127.0.0.1".to_string()),
-                    community: std::env::var("BONSAI_SNMP_COMMUNITY").unwrap_or_else(|_| "public".to_string()),
+                    target: std::env::var("BONSAI_SNMP_TARGET")
+                        .unwrap_or_else(|_| "127.0.0.1".to_string()),
+                    community: std::env::var("BONSAI_SNMP_COMMUNITY")
+                        .unwrap_or_else(|_| "public".to_string()),
                     port: std::env::var("BONSAI_SNMP_PORT")
                         .unwrap_or_else(|_| "162".to_string())
                         .parse()
                         .unwrap_or(162),
                 };
-                let snmp_adapter = std::sync::Arc::new(bonsai::output::snmp_adapter::SnmpAdapter::new(snmp_config, bus.clone()));
+                let snmp_adapter = std::sync::Arc::new(
+                    bonsai::output::snmp_adapter::SnmpAdapter::new(snmp_config, bus.clone()),
+                );
                 snmp_adapter.start().await;
                 info!("SNMP adapter started for health events");
             }
@@ -1527,11 +1620,22 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             let http_tls_acceptor: Option<tokio_rustls::TlsAcceptor> = {
                 // Check DB for vault cert refs applied via UI.
                 let db_cert = if let Store::Core(s) = &store {
-                    let items = s.list_config_items(Some("cert_config".to_string())).await.unwrap_or_default();
-                    let cert_ref = items.iter().find(|i| i.name == "cert_config:http_tls:cert" && i.enabled).map(|i| i.content_json.clone());
-                    let key_ref  = items.iter().find(|i| i.name == "cert_config:http_tls:key"  && i.enabled).map(|i| i.content_json.clone());
+                    let items = s
+                        .list_config_items(Some("cert_config".to_string()))
+                        .await
+                        .unwrap_or_default();
+                    let cert_ref = items
+                        .iter()
+                        .find(|i| i.name == "cert_config:http_tls:cert" && i.enabled)
+                        .map(|i| i.content_json.clone());
+                    let key_ref = items
+                        .iter()
+                        .find(|i| i.name == "cert_config:http_tls:key" && i.enabled)
+                        .map(|i| i.content_json.clone());
                     cert_ref.zip(key_ref)
-                } else { None };
+                } else {
+                    None
+                };
 
                 if let Some((cert_ref, key_ref)) = db_cert {
                     // Vault-managed cert path: resolve PEM from vault or filesystem.
@@ -1539,13 +1643,20 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                     // to bonsai.toml [tls] config (or plain HTTP) so startup never fails
                     // due to a stale cert_config DB entry.
                     let vault_result = async {
-                        let cert_pem = bonsai::tls_util::read_cert_pem(&cert_ref, &credentials).await
-                            .with_context(|| format!("cert_config:http_tls:cert '{cert_ref}' unreadable"))?;
-                        let key_pem = bonsai::tls_util::read_cert_pem(&key_ref, &credentials).await
-                            .with_context(|| format!("cert_config:http_tls:key '{key_ref}' unreadable"))?;
+                        let cert_pem = bonsai::tls_util::read_cert_pem(&cert_ref, &credentials)
+                            .await
+                            .with_context(|| {
+                                format!("cert_config:http_tls:cert '{cert_ref}' unreadable")
+                            })?;
+                        let key_pem = bonsai::tls_util::read_cert_pem(&key_ref, &credentials)
+                            .await
+                            .with_context(|| {
+                                format!("cert_config:http_tls:key '{key_ref}' unreadable")
+                            })?;
                         build_http_tls_acceptor_from_pem(&cert_pem, &key_pem)
                             .context("failed to configure HTTP TLS from vault cert")
-                    }.await;
+                    }
+                    .await;
                     match vault_result {
                         Ok(acceptor) => {
                             info!(addr = %http_addr, cert = %cert_ref, "HTTPS listener bound (TLS via vault)");
@@ -1585,68 +1696,67 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             // Managed sidecar process lifecycle — spawn Python sidecar as a supervised
             // child process when auto_start is enabled, otherwise leave as None so the
             // GUI start/stop/restart buttons still work on demand.
-            let sidecar_mgr: Option<bonsai::sidecar_manager::SharedSidecarManager> =
-                if run_core {
-                    let mgr = bonsai::sidecar_manager::SidecarProcessManager::new(
-                        cfg.managed_sidecar.clone(),
-                    );
-                    if cfg.managed_sidecar.auto_start {
-                        info!("managed_sidecar.auto_start=true — spawning sidecar process");
-                        if let Err(e) = mgr.start().await {
-                            warn!(error = %e, "auto-start sidecar failed — will be startable from UI");
-                        }
+            let sidecar_mgr: Option<bonsai::sidecar_manager::SharedSidecarManager> = if run_core {
+                let mgr = bonsai::sidecar_manager::SidecarProcessManager::new(
+                    cfg.managed_sidecar.clone(),
+                );
+                if cfg.managed_sidecar.auto_start {
+                    info!("managed_sidecar.auto_start=true — spawning sidecar process");
+                    if let Err(e) = mgr.start().await {
+                        warn!(error = %e, "auto-start sidecar failed — will be startable from UI");
                     }
-                    Some(mgr)
-                } else {
-                    None
-                };
+                }
+                Some(mgr)
+            } else {
+                None
+            };
 
             http_task = Some(tokio::spawn(async move {
                 let router = bonsai::http_server::router(
-                        http_store,
-                        registry_for_http,
-                        credentials_for_http,
-                        change_detection_for_http,
-                        collector_manager_for_http,
-                        catalogue,
-                        catalogue_dir,
-                        enricher_registry,
-                        adapter_registry,
-                        trust_store,
-                        rollback_registry,
-                        remediation_config,
-                        servicenow_config,
-                        runtime_dir,
-                        cfg.archive.path.clone(),
-                        cfg.graph_path.clone(),
-                        storage_config_for_http,
-                        cfg.layered_ingestion.clone(),
-                        cfg.streaming.clone(),
-                        cfg.signals.clone(),
-                        cfg.yang.library_root.clone(),
-                        cfg.yang.cache_root.clone(),
-                        cfg.yang.bundle_key_env.clone(),
-                        cfg.collector.filter.counter_forward_mode.clone(),
-                        cfg.collector.filter.counter_window_secs,
-                        cfg.collector.filter.counter_debounce_secs,
-                        governor_for_http,
-                        std::sync::Arc::clone(&sidecar_registry),
-                        std::sync::Arc::clone(&supervisor),
-                        bus_for_http,
-                        Some(ha_coordinator),
-                        cfg.target.clone(),
-                        cfg.ai.clone(),
-                        cfg.gnn.clone(),
-                        auto_investigate.then_some(investigation_rx),
-                        Some(std::sync::Arc::clone(&shun_engine)),
-                        Some(std::sync::Arc::clone(&syslog_pattern_tx)),
-                        Some(std::sync::Arc::clone(&snmp_pattern_tx)),
-                        cfg.layered_ingestion.syslog_patterns_path.clone(),
-                        snmp_oid_dir.clone(),
-                        cfg.auth.ldap.clone(),
-                        cfg.integrations.tsdb.clone(),
-                        std::sync::Arc::clone(&ml_event_bus),
-                        sidecar_mgr,
+                    http_store,
+                    registry_for_http,
+                    credentials_for_http,
+                    change_detection_for_http,
+                    collector_manager_for_http,
+                    catalogue,
+                    catalogue_dir,
+                    enricher_registry,
+                    adapter_registry,
+                    trust_store,
+                    rollback_registry,
+                    remediation_config,
+                    servicenow_config,
+                    runtime_dir,
+                    cfg.archive.path.clone(),
+                    cfg.graph_path.clone(),
+                    storage_config_for_http,
+                    cfg.layered_ingestion.clone(),
+                    cfg.streaming.clone(),
+                    cfg.signals.clone(),
+                    cfg.yang.library_root.clone(),
+                    cfg.yang.cache_root.clone(),
+                    cfg.yang.bundle_key_env.clone(),
+                    cfg.collector.filter.counter_forward_mode.clone(),
+                    cfg.collector.filter.counter_window_secs,
+                    cfg.collector.filter.counter_debounce_secs,
+                    governor_for_http,
+                    std::sync::Arc::clone(&sidecar_registry),
+                    std::sync::Arc::clone(&supervisor),
+                    bus_for_http,
+                    Some(ha_coordinator),
+                    cfg.target.clone(),
+                    cfg.ai.clone(),
+                    cfg.gnn.clone(),
+                    auto_investigate.then_some(investigation_rx),
+                    Some(std::sync::Arc::clone(&shun_engine)),
+                    Some(std::sync::Arc::clone(&syslog_pattern_tx)),
+                    Some(std::sync::Arc::clone(&snmp_pattern_tx)),
+                    cfg.layered_ingestion.syslog_patterns_path.clone(),
+                    snmp_oid_dir.clone(),
+                    cfg.auth.ldap.clone(),
+                    cfg.integrations.tsdb.clone(),
+                    std::sync::Arc::clone(&ml_event_bus),
+                    sidecar_mgr,
                 );
                 let serve_result = if let Some(tls) = http_tls_acceptor {
                     // HTTPS: accept each TCP connection, upgrade to TLS, then serve.
@@ -1654,7 +1764,10 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                     loop {
                         let (tcp, _peer) = match http_listener.accept().await {
                             Ok(p) => p,
-                            Err(e) => { warn!(%e, "HTTPS accept error"); continue; }
+                            Err(e) => {
+                                warn!(%e, "HTTPS accept error");
+                                continue;
+                            }
                         };
                         let tls_clone = tls.clone();
                         let svc = router.clone();
@@ -1665,10 +1778,13 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                                     let _ = hyper_util::server::conn::auto::Builder::new(
                                         hyper_util::rt::TokioExecutor::new(),
                                     )
-                                    .serve_connection(io, hyper::service::service_fn(move |req| {
-                                        let mut svc = svc.clone();
-                                        async move { tower::Service::call(&mut svc, req).await }
-                                    }))
+                                    .serve_connection(
+                                        io,
+                                        hyper::service::service_fn(move |req| {
+                                            let mut svc = svc.clone();
+                                            async move { tower::Service::call(&mut svc, req).await }
+                                        }),
+                                    )
                                     .await;
                                 }
                                 Err(e) => warn!(%e, "TLS handshake failed"),
@@ -1678,9 +1794,12 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                     #[allow(unreachable_code)]
                     Ok::<_, std::convert::Infallible>(())
                 } else {
-                    axum::serve(http_listener, router).await.map_err(|e| {
-                        warn!(%e, "HTTP server exited with error");
-                    }).ok();
+                    axum::serve(http_listener, router)
+                        .await
+                        .map_err(|e| {
+                            warn!(%e, "HTTP server exited with error");
+                        })
+                        .ok();
                     Ok(())
                 };
                 if let Err(e) = serve_result {
@@ -1857,7 +1976,10 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             };
             let sched_db = sched_store.db();
             let sched_wl = sched_store.write_lock();
-            bonsai::http_server::ml_jobs::seed_default_ml_schedules(sched_db.clone(), sched_wl.clone());
+            bonsai::http_server::ml_jobs::seed_default_ml_schedules(
+                sched_db.clone(),
+                sched_wl.clone(),
+            );
             let sched_shutdown = shutdown_rx.clone();
             tokio::spawn(bonsai::http_server::ml_jobs::run_ml_schedule_tick(
                 sched_db,
@@ -1923,8 +2045,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
-        let mut sigterm = signal(SignalKind::terminate())
-            .context("install SIGTERM handler")?;
+        let mut sigterm = signal(SignalKind::terminate()).context("install SIGTERM handler")?;
         if let Some(http) = http_task {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => info!("SIGINT received — shutting down"),
@@ -2005,17 +2126,20 @@ fn build_http_tls_acceptor_from_pem(
 
     let server_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(certs, PrivateKeyDer::try_from(key).context("invalid private key")?)
+        .with_single_cert(
+            certs,
+            PrivateKeyDer::try_from(key).context("invalid private key")?,
+        )
         .context("failed to build rustls ServerConfig for HTTP TLS (vault)")?;
 
-    Ok(tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(server_config)))
+    Ok(tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(
+        server_config,
+    )))
 }
 
 /// Build a `tokio_rustls::TlsAcceptor` from `[tls]` cert/key in bonsai.toml.
 /// Called only when `tls.enabled = true` for the HTTP API server.
-fn build_http_tls_acceptor(
-    tls: &config::HttpTlsConfig,
-) -> Result<tokio_rustls::TlsAcceptor> {
+fn build_http_tls_acceptor(tls: &config::HttpTlsConfig) -> Result<tokio_rustls::TlsAcceptor> {
     use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
     let cert_path = if tls.cert_path.trim().is_empty() {
@@ -2031,8 +2155,8 @@ fn build_http_tls_acceptor(
 
     let cert_pem = fs::read(cert_path)
         .with_context(|| format!("failed to read tls.cert_path '{cert_path}'"))?;
-    let key_pem = fs::read(key_path)
-        .with_context(|| format!("failed to read tls.key_path '{key_path}'"))?;
+    let key_pem =
+        fs::read(key_path).with_context(|| format!("failed to read tls.key_path '{key_path}'"))?;
 
     let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_pem.as_slice())
         .collect::<std::result::Result<Vec<_>, _>>()
@@ -2047,12 +2171,15 @@ fn build_http_tls_acceptor(
 
     let server_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(certs, PrivateKeyDer::try_from(key).context("invalid private key")?)
+        .with_single_cert(
+            certs,
+            PrivateKeyDer::try_from(key).context("invalid private key")?,
+        )
         .context("failed to build rustls ServerConfig for HTTP TLS")?;
 
-    Ok(tokio_rustls::TlsAcceptor::from(
-        std::sync::Arc::new(server_config),
-    ))
+    Ok(tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(
+        server_config,
+    )))
 }
 
 // ── Subscriber lifecycle ──────────────────────────────────────────────────────
@@ -2132,7 +2259,6 @@ pub(super) async fn restart_subscriber(
     .await
 }
 
-
 pub(super) async fn seed_subscription_plan(
     target: TargetConfig,
     tx: &tokio::sync::mpsc::Sender<SubscriptionPlan>,
@@ -2161,7 +2287,10 @@ pub(super) fn resolve_target_credentials(
 
     Ok(
         match (target.resolved_username(), target.resolved_password()) {
-            (Some(username), Some(password)) => Some(ResolvedCredential { username, password: zeroize::Zeroizing::new(password) }),
+            (Some(username), Some(password)) => Some(ResolvedCredential {
+                username,
+                password: zeroize::Zeroizing::new(password),
+            }),
             _ => None,
         },
     )

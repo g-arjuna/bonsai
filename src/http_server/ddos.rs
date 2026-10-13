@@ -35,7 +35,9 @@ pub(super) struct AddScopeRequest {
     pub added_by: String,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Deserialize)]
 pub(super) struct PatchScopeRequest {
@@ -102,19 +104,33 @@ fn now_ns() -> i64 {
 }
 
 fn read_f64(v: &Value) -> f64 {
-    match v { Value::Double(x) => *x, Value::Int64(x) => *x as f64, _ => 0.0 }
+    match v {
+        Value::Double(x) => *x,
+        Value::Int64(x) => *x as f64,
+        _ => 0.0,
+    }
 }
 
 fn read_i64(v: &Value) -> i64 {
-    match v { Value::Int64(x) => *x, Value::Double(x) => *x as i64, _ => 0 }
+    match v {
+        Value::Int64(x) => *x,
+        Value::Double(x) => *x as i64,
+        _ => 0,
+    }
 }
 
 fn read_str(v: &Value) -> String {
-    match v { Value::String(s) => s.clone(), _ => String::new() }
+    match v {
+        Value::String(s) => s.clone(),
+        _ => String::new(),
+    }
 }
 
 fn read_bool(v: &Value) -> bool {
-    match v { Value::Bool(b) => *b, _ => false }
+    match v {
+        Value::Bool(b) => *b,
+        _ => false,
+    }
 }
 
 // ── Scope: GET /api/ddos/scope ────────────────────────────────────────────────
@@ -141,11 +157,11 @@ pub(super) async fn ddos_scope_list_handler(
         while let Some(row) = rows.next() {
             entries.push(DdosScopeEntry {
                 device_address: read_str(&row[0]),
-                enabled:        read_bool(&row[1]),
-                reason:         read_str(&row[2]),
-                added_by:       read_str(&row[3]),
-                added_at_ns:    read_i64(&row[4]),
-                updated_at_ns:  read_i64(&row[5]),
+                enabled: read_bool(&row[1]),
+                reason: read_str(&row[2]),
+                added_by: read_str(&row[3]),
+                added_at_ns: read_i64(&row[4]),
+                updated_at_ns: read_i64(&row[5]),
             });
         }
         Ok(Json(DdosScopeListResponse { entries }))
@@ -178,11 +194,11 @@ pub(super) async fn ddos_scope_add_handler(
         conn.execute(
             &mut stmt,
             vec![
-                ("addr",   Value::String(req.device_address.clone())),
-                ("en",     Value::Bool(req.enabled)),
+                ("addr", Value::String(req.device_address.clone())),
+                ("en", Value::Bool(req.enabled)),
                 ("reason", Value::String(req.reason.clone())),
-                ("by",     Value::String(req.added_by.clone())),
-                ("now",    Value::Int64(now)),
+                ("by", Value::String(req.added_by.clone())),
+                ("now", Value::Int64(now)),
             ],
         )
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -236,10 +252,10 @@ pub(super) async fn ddos_scope_patch_handler(
         conn.execute(
             &mut stmt,
             vec![
-                ("addr",   Value::String(address)),
-                ("en",     Value::Bool(req.enabled)),
+                ("addr", Value::String(address)),
+                ("en", Value::Bool(req.enabled)),
                 ("reason", Value::String(req.reason)),
-                ("now",    Value::Int64(now)),
+                ("now", Value::Int64(now)),
             ],
         )
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -251,9 +267,7 @@ pub(super) async fn ddos_scope_patch_handler(
 
 // ── Config: GET /api/ddos/config ─────────────────────────────────────────────
 
-pub(super) async fn ddos_config_handler(
-    State(state): State<AppState>,
-) -> Json<DdosConfig> {
+pub(super) async fn ddos_config_handler(State(state): State<AppState>) -> Json<DdosConfig> {
     Json((*state.store.ddos_config).clone())
 }
 
@@ -280,13 +294,13 @@ pub(super) async fn ddos_events_handler(
         let mut events = Vec::new();
         while let Some(row) = rows.next() {
             events.push(DdosEventRow {
-                id:               read_str(&row[0]),
-                state:            read_str(&row[1]),
-                primary_vector:   read_str(&row[2]),
-                confidence:       read_f64(&row[3]),
+                id: read_str(&row[0]),
+                state: read_str(&row[1]),
+                primary_vector: read_str(&row[2]),
+                confidence: read_f64(&row[3]),
                 max_observed_pps: read_f64(&row[4]),
-                started_at_ns:    read_i64(&row[5]),
-                updated_at_ns:    read_i64(&row[6]),
+                started_at_ns: read_i64(&row[5]),
+                updated_at_ns: read_i64(&row[6]),
             });
         }
         Ok(Json(DdosEventsResponse { events }))
@@ -319,13 +333,13 @@ pub(super) async fn ddos_baselines_handler(
         let mut baselines = Vec::new();
         while let Some(row) = rows.next() {
             baselines.push(BaselineRow {
-                id:              read_str(&row[0]),
-                device_address:  read_str(&row[1]),
-                protocol:        read_str(&row[2]),
-                p50_pps:         read_f64(&row[3]),
-                p95_pps:         read_f64(&row[4]),
-                p99_pps:         read_f64(&row[5]),
-                sample_count:    read_i64(&row[6]),
+                id: read_str(&row[0]),
+                device_address: read_str(&row[1]),
+                protocol: read_str(&row[2]),
+                p50_pps: read_f64(&row[3]),
+                p95_pps: read_f64(&row[4]),
+                p99_pps: read_f64(&row[5]),
+                sample_count: read_i64(&row[6]),
                 last_updated_ns: read_i64(&row[7]),
             });
         }

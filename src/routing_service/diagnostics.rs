@@ -13,9 +13,9 @@ use rbmp_core::bmp::types::{PeerKey, RibType};
 use rbmp_rib::event::{RibEvent, RibEventPayload, RouteAction};
 use rbmp_rib::session::PeerState;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 
-use super::{RoutingServiceState, TransportGapRecord, ROUTING_API_VERSION};
+use super::{ROUTING_API_VERSION, RoutingServiceState, TransportGapRecord};
 
 pub const OBSERVATION_SCHEMA_VERSION: u32 = 1;
 
@@ -1021,7 +1021,9 @@ pub async fn build_compare_snapshots_json(
                     let peer_str = peer_header.peer_address.to_string();
                     let spk_str = ev.speaker.to_string();
                     table.retain(|_, v| {
-                        !(v.speaker_addr == spk_str && v.vrf_rd == vrf_rd && v.peer_addr == peer_str)
+                        !(v.speaker_addr == spk_str
+                            && v.vrf_rd == vrf_rd
+                            && v.peer_addr == peer_str)
                     });
                 }
                 RibEventPayload::RouteChange(rc) => {
@@ -1997,5 +1999,3 @@ pub fn build_adjudications_json() -> JsonValue {
         "adjudications": records,
     })
 }
-
-

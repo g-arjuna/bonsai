@@ -3,8 +3,8 @@
 
 use bonsai::graph::algorithms::{GraphQuality, QualityCoverage, WeakDevice};
 use bonsai::investigation_runtime::{
-    evaluate_preflight_warning, extract_rca_json, parse_and_validate_rca,
-    resolve_investigation_outcome, InvestigationTerminalState, LoopExitReason,
+    InvestigationTerminalState, LoopExitReason, evaluate_preflight_warning, extract_rca_json,
+    parse_and_validate_rca, resolve_investigation_outcome,
 };
 
 fn sample_healthy_global_quality_with_weak_target(target: &str) -> GraphQuality {
@@ -25,11 +25,7 @@ fn sample_healthy_global_quality_with_weak_target(target: &str) -> GraphQuality 
         weak_devices: vec![WeakDevice {
             address: target.to_string(),
             hostname: "edge-rtr-99".to_string(),
-            missing: vec![
-                "gnmi".to_string(),
-                "bmp".to_string(),
-                "syslog".to_string(),
-            ],
+            missing: vec!["gnmi".to_string(), "bmp".to_string(), "syslog".to_string()],
         }],
         computed_at_ns: 1_700_000_000_000_000_000,
     }

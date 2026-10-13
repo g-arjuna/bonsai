@@ -41,7 +41,9 @@ impl PlaybookLibrary {
             if ext != "yaml" && ext != "yml" {
                 continue;
             }
-            let Ok(raw) = std::fs::read_to_string(&path) else { continue };
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                continue;
+            };
             match serde_yaml::from_str::<PlaybookFile>(&raw) {
                 Ok(pf) if !pf.playbooks.is_empty() => {
                     entries

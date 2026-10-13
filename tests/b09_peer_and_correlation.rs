@@ -6,7 +6,12 @@ use bonsai::graph::GraphStore;
 use bonsai::streaming::bmp::{BmpEvent, BmpTargetMap};
 use bonsai::telemetry::TelemetryUpdate;
 
-fn sample_bmp_event(session_state: &str, message_type: &str, peer_address: &str, rd: u64) -> BmpEvent {
+fn sample_bmp_event(
+    session_state: &str,
+    message_type: &str,
+    peer_address: &str,
+    rd: u64,
+) -> BmpEvent {
     BmpEvent {
         timestamp_ns: 1_700_000_000_000_000_000,
         collector_peer: "172.20.0.99:41234".to_string(),
@@ -39,8 +44,7 @@ fn sample_bmp_event(session_state: &str, message_type: &str, peer_address: &str,
 async fn b09_bmp_peer_state_transition_emits_state_change_event() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("graph.db");
-    let store =
-        GraphStore::open(db_path.to_str().unwrap(), 256 * 1024 * 1024).expect("open graph");
+    let store = GraphStore::open(db_path.to_str().unwrap(), 256 * 1024 * 1024).expect("open graph");
 
     let up_event = sample_bmp_event("Established", "peer_up", "10.0.0.2", 0);
     store

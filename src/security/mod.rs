@@ -2,19 +2,21 @@
 //! Comprehensive security features including authentication, authorization, database security,
 //! threat detection, and incident response
 
+pub mod anomaly_detection;
 pub mod database;
+pub mod incident_response;
 pub mod mfa;
 pub mod session;
 pub mod threat_intel;
-pub mod incident_response;
-pub mod anomaly_detection;
 
-pub use database::{DatabaseSecurityManager, DatabaseSecurityConfig, DatabaseSecurityEvent};
-pub use mfa::{MfaManager, MfaConfig, MfaMethod, MfaChallenge};
-pub use session::{SessionManager, SessionConfig, SessionInfo};
-pub use threat_intel::{ThreatIntelManager, ThreatIntelConfig, ThreatIndicator};
-pub use incident_response::{IncidentResponseManager, IncidentResponseConfig, IncidentWorkflow};
-pub use anomaly_detection::{AnomalyDetectionManager, AnomalyDetectionConfig, SecurityEvent, AnomalyResult};
+pub use anomaly_detection::{
+    AnomalyDetectionConfig, AnomalyDetectionManager, AnomalyResult, SecurityEvent,
+};
+pub use database::{DatabaseSecurityConfig, DatabaseSecurityEvent, DatabaseSecurityManager};
+pub use incident_response::{IncidentResponseConfig, IncidentResponseManager, IncidentWorkflow};
+pub use mfa::{MfaChallenge, MfaConfig, MfaManager, MfaMethod};
+pub use session::{SessionConfig, SessionInfo, SessionManager};
+pub use threat_intel::{ThreatIndicator, ThreatIntelConfig, ThreatIntelManager};
 
 /// Security module configuration
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -43,7 +45,7 @@ impl Default for SecurityConfig {
 /// Initialize all security components
 pub async fn initialize_security(config: SecurityConfig) -> anyhow::Result<()> {
     tracing::info!("Initializing security module with selective feature enablement");
-    
+
     // Initialize database security
     if config.database.enabled {
         database::initialize_database_security(config.database)?;
@@ -51,7 +53,7 @@ pub async fn initialize_security(config: SecurityConfig) -> anyhow::Result<()> {
     } else {
         tracing::info!("Database security disabled");
     }
-    
+
     // Initialize MFA
     if config.mfa.enabled {
         mfa::initialize_mfa(config.mfa).await?;
@@ -59,7 +61,7 @@ pub async fn initialize_security(config: SecurityConfig) -> anyhow::Result<()> {
     } else {
         tracing::info!("MFA disabled");
     }
-    
+
     // Initialize session management
     if config.session.enabled {
         session::initialize_session_manager(config.session).await?;
@@ -67,7 +69,7 @@ pub async fn initialize_security(config: SecurityConfig) -> anyhow::Result<()> {
     } else {
         tracing::info!("Session management disabled");
     }
-    
+
     // Initialize threat intelligence
     if config.threat_intel.enabled {
         threat_intel::initialize_threat_intel(config.threat_intel).await?;
@@ -75,7 +77,7 @@ pub async fn initialize_security(config: SecurityConfig) -> anyhow::Result<()> {
     } else {
         tracing::info!("Threat intelligence disabled");
     }
-    
+
     // Initialize incident response
     if config.incident_response.enabled {
         incident_response::initialize_incident_response(config.incident_response).await?;
@@ -83,7 +85,7 @@ pub async fn initialize_security(config: SecurityConfig) -> anyhow::Result<()> {
     } else {
         tracing::info!("Incident response disabled");
     }
-    
+
     // Initialize anomaly detection
     if config.anomaly_detection.enabled {
         anomaly_detection::initialize_anomaly_detection(config.anomaly_detection)?;
@@ -91,7 +93,7 @@ pub async fn initialize_security(config: SecurityConfig) -> anyhow::Result<()> {
     } else {
         tracing::info!("Anomaly detection disabled");
     }
-    
+
     tracing::info!("Security module initialization completed");
     Ok(())
 }

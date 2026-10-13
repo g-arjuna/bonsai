@@ -74,7 +74,10 @@ impl CollectorManager {
         manager
     }
 
-    pub fn with_health_emitter(mut self, emitter: Arc<crate::health_emitter::HealthEmitter>) -> Self {
+    pub fn with_health_emitter(
+        mut self,
+        emitter: Arc<crate::health_emitter::HealthEmitter>,
+    ) -> Self {
         self.health_emitter = Some(emitter);
         self
     }

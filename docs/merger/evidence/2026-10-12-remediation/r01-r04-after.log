@@ -1,0 +1,15 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.67s
+     Running tests/r01_r04_routing_history_recovery.rs (target/debug/deps/r01_r04_routing_history_recovery-fbc6567fb164f625)
+
+running 7 tests
+test accepted_raw_record_must_recover_event_history ... ok
+test recovered_truncated_event_tail_must_allow_future_restart ... ok
+test r02_second_restart_after_raw_recovery_is_idempotent_and_preserves_epoch ... ok
+test transport_gap_must_survive_restart ... ok
+test r03_truncated_bmp_journal_tail_is_repaired_on_disk_for_future_appends ... ok
+test r04_epoch_fenced_disconnect_and_resync_completeness_rules ... ok
+test large_valid_update_must_preserve_all_route_events ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+

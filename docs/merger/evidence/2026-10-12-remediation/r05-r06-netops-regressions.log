@@ -1,0 +1,31 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 18.96s
+     Running tests/a03_investigation_terminal_states.rs (target/debug/deps/a03_investigation_terminal_states-9b3e9c27530e8290)
+
+running 4 tests
+test a03_device_specific_weak_coverage_warns_even_when_global_graph_healthy ... ok
+test a03_invalid_or_empty_rca_json_must_be_rejected ... ok
+test a03_valid_typed_rca_resolves_epistemic_and_awaiting_human_states_honestly ... ok
+test a03_unsuccessful_loop_exits_never_become_completed_rca ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/a10_a11_a12_operator_and_scenario_pack.rs (target/debug/deps/a10_a11_a12_operator_and_scenario_pack-3a7052484c01c5ac)
+
+running 3 tests
+test a10_operator_adjudication_separates_recommendation_acceptance_from_verified_rca ... ok
+test a11_scenario_pack_covers_all_eight_fault_families_with_hidden_oracles_and_adversarial_cases ... ok
+test a12_policy_trace_comparison_evaluates_four_policies_and_writes_benchmark_report ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/a13_a20_change_assurance_and_executor.rs (target/debug/deps/a13_a20_change_assurance_and_executor-eb77708be006b6f5)
+
+running 4 tests
+test a13_nokia_srl_adapter_separates_nos_schema_drift_from_network_failure ... ok
+test a19_shadow_operational_pilot_records_utility_and_enforces_zero_writes ... ok
+test a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idempotency_and_recovery ... ok
+test a16_a17_digital_twin_assurance_gate_and_mcp_evaluate_change_plan ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.86s
+

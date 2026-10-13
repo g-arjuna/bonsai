@@ -37,8 +37,14 @@ pub enum Error {
     #[error("Invalid prefix length {prefix_len} for AFI {afi}")]
     InvalidPrefixLen { prefix_len: u8, afi: u16 },
 
-    #[error("Truncated path attribute (type {attr_type}, declared {declared}, available {available})")]
-    TruncatedAttribute { attr_type: u8, declared: usize, available: usize },
+    #[error(
+        "Truncated path attribute (type {attr_type}, declared {declared}, available {available})"
+    )]
+    TruncatedAttribute {
+        attr_type: u8,
+        declared: usize,
+        available: usize,
+    },
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

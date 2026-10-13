@@ -8,6 +8,7 @@
 ///   GET    /api/signal-policy/summary      — matrix of (scope → signal → enabled) for UI
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::signal_filter::SIGNAL_TYPES;
 use axum::{
     Json,
     extract::{Path, State},
@@ -15,7 +16,6 @@ use axum::{
 };
 use lbug::{Connection, Value};
 use serde::{Deserialize, Serialize};
-use crate::signal_filter::SIGNAL_TYPES;
 
 use super::AppState;
 
@@ -133,13 +133,13 @@ pub(super) async fn list_signal_policies_handler(
         let mut entries = Vec::new();
         while let Some(row) = rows.next() {
             entries.push(PolicyEntry {
-                id:            read_str(&row[0]),
-                scope_type:    read_str(&row[1]),
-                scope_value:   read_str(&row[2]),
-                signal_type:   read_str(&row[3]),
-                enabled:       read_bool(&row[4]),
-                reason:        read_str(&row[5]),
-                updated_by:    read_str(&row[6]),
+                id: read_str(&row[0]),
+                scope_type: read_str(&row[1]),
+                scope_value: read_str(&row[2]),
+                signal_type: read_str(&row[3]),
+                enabled: read_bool(&row[4]),
+                reason: read_str(&row[5]),
+                updated_by: read_str(&row[6]),
                 updated_at_ns: read_i64(&row[7]),
             });
         }
@@ -253,14 +253,16 @@ pub(super) async fn signal_policy_summary_handler(
             .execute(&mut stmt, vec![])
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        let mut scope_map: std::collections::HashMap<(String, String), std::collections::HashMap<String, bool>> =
-            std::collections::HashMap::new();
+        let mut scope_map: std::collections::HashMap<
+            (String, String),
+            std::collections::HashMap<String, bool>,
+        > = std::collections::HashMap::new();
 
         while let Some(row) = rows.next() {
-            let scope_type  = read_str(&row[0]);
+            let scope_type = read_str(&row[0]);
             let scope_value = read_str(&row[1]);
             let signal_type = read_str(&row[2]);
-            let enabled     = read_bool(&row[3]);
+            let enabled = read_bool(&row[3]);
             scope_map
                 .entry((scope_type, scope_value))
                 .or_default()

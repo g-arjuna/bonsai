@@ -31,7 +31,6 @@ async fn main() -> Result<()> {
         return cli::run_yang_cli(command).await;
     }
 
-
     server_startup::run_server().await
 }
 

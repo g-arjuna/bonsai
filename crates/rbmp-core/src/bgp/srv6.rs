@@ -1,21 +1,23 @@
-use crate::Result;
 use super::types::{PrefixSid, Srv6L3Service, Srv6SubSubTlv};
+use crate::Result;
 
 /// Parse a BGP Prefix-SID attribute (RFC 8669, type 40).
 /// TLV-encoded: TLV-type(1) + TLV-length(2) + TLV-value
 pub fn parse_prefix_sid(buf: &[u8]) -> Result<PrefixSid> {
-    let mut label_index   = None;
+    let mut label_index = None;
     let mut originator_srgb = None;
     let mut srv6_l3_service = None;
-    let mut raw_tlvs      = Vec::new();
+    let mut raw_tlvs = Vec::new();
 
     let mut pos = 0;
     while pos + 3 <= buf.len() {
         let tlv_type = buf[pos];
-        let tlv_len  = u16::from_be_bytes([buf[pos+1], buf[pos+2]]) as usize;
+        let tlv_len = u16::from_be_bytes([buf[pos + 1], buf[pos + 2]]) as usize;
         pos += 3;
-        if pos + tlv_len > buf.len() { break; }
-        let tlv_data = &buf[pos..pos+tlv_len];
+        if pos + tlv_len > buf.len() {
+            break;
+        }
+        let tlv_data = &buf[pos..pos + tlv_len];
         pos += tlv_len;
 
         match tlv_type {
@@ -23,7 +25,10 @@ pub fn parse_prefix_sid(buf: &[u8]) -> Result<PrefixSid> {
                 // Label Index TLV (RFC 8669 §3.1): flags(1) + reserved(1) + label_index(4)
                 if tlv_data.len() >= 6 {
                     label_index = Some(u32::from_be_bytes([
-                        tlv_data[2], tlv_data[3], tlv_data[4], tlv_data[5]
+                        tlv_data[2],
+                        tlv_data[3],
+                        tlv_data[4],
+                        tlv_data[5],
                     ]));
                 }
             }
@@ -34,8 +39,14 @@ pub fn parse_prefix_sid(buf: &[u8]) -> Result<PrefixSid> {
                     let mut srgbs = Vec::new();
                     let mut i = 2;
                     while i + 6 <= tlv_data.len() {
-                        let base  = u32::from_be_bytes([0, tlv_data[i], tlv_data[i+1], tlv_data[i+2]]);
-                        let range = u32::from_be_bytes([0, tlv_data[i+3], tlv_data[i+4], tlv_data[i+5]]);
+                        let base =
+                            u32::from_be_bytes([0, tlv_data[i], tlv_data[i + 1], tlv_data[i + 2]]);
+                        let range = u32::from_be_bytes([
+                            0,
+                            tlv_data[i + 3],
+                            tlv_data[i + 4],
+                            tlv_data[i + 5],
+                        ]);
                         srgbs.push((base, range));
                         i += 6;
                     }
@@ -52,7 +63,12 @@ pub fn parse_prefix_sid(buf: &[u8]) -> Result<PrefixSid> {
         }
     }
 
-    Ok(PrefixSid { label_index, originator_srgb, srv6_l3_service, raw_tlvs })
+    Ok(PrefixSid {
+        label_index,
+        originator_srgb,
+        srv6_l3_service,
+        raw_tlvs,
+    })
 }
 
 /// Parse the SRv6 L3 Service TLV (RFC 9252 §3.2).
@@ -62,10 +78,12 @@ pub fn parse_srv6_l3_service(buf: &[u8]) -> Result<Srv6L3Service> {
     let mut pos = 1; // skip reserved byte
     while pos + 3 <= buf.len() {
         let sub_type = buf[pos];
-        let sub_len  = u16::from_be_bytes([buf[pos+1], buf[pos+2]]) as usize;
+        let sub_len = u16::from_be_bytes([buf[pos + 1], buf[pos + 2]]) as usize;
         pos += 3;
-        if pos + sub_len > buf.len() { break; }
-        let sub_data = &buf[pos..pos+sub_len];
+        if pos + sub_len > buf.len() {
+            break;
+        }
+        let sub_data = &buf[pos..pos + sub_len];
         pos += sub_len;
 
         if sub_type == 1 {
@@ -73,9 +91,13 @@ pub fn parse_srv6_l3_service(buf: &[u8]) -> Result<Srv6L3Service> {
             if sub_data.len() >= 19 {
                 let mut sid = [0u8; 16];
                 sid.copy_from_slice(&sub_data[0..16]);
-                let sid_flags          = sub_data[16];
-                let endpoint_behavior  = u16::from_be_bytes([sub_data[17], sub_data[18]]);
-                sub_sub_tlvs.push(Srv6SubSubTlv { sid, sid_flags, endpoint_behavior });
+                let sid_flags = sub_data[16];
+                let endpoint_behavior = u16::from_be_bytes([sub_data[17], sub_data[18]]);
+                sub_sub_tlvs.push(Srv6SubSubTlv {
+                    sid,
+                    sid_flags,
+                    endpoint_behavior,
+                });
             }
         }
     }

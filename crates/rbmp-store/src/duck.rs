@@ -1,8 +1,8 @@
-use std::path::Path;
-use duckdb::Connection;
-use anyhow::Result;
-use tracing::info;
 use crate::schema::CREATE_TABLES;
+use anyhow::Result;
+use duckdb::Connection;
+use std::path::Path;
+use tracing::info;
 
 /// Persistent DuckDB-backed route store
 pub struct RouteStore {
@@ -33,7 +33,9 @@ impl RouteStore {
         Ok(())
     }
 
-    pub fn conn(&self) -> &Connection { &self.conn }
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
 
     /// Flush DuckDB WAL to disk
     pub fn checkpoint(&self) -> Result<()> {
@@ -45,14 +47,21 @@ impl RouteStore {
     /// Used for Prometheus gauge metrics (RV4-2 T3).
     pub fn table_row_counts(&self) -> Vec<(String, i64)> {
         const TABLES: &[&str] = &[
-            "route_events", "peer_events", "speaker_events",
-            "stats_events",  "evpn_events",
+            "route_events",
+            "peer_events",
+            "speaker_events",
+            "stats_events",
+            "evpn_events",
         ];
-        TABLES.iter().filter_map(|t| {
-            let sql = format!("SELECT COUNT(*) FROM {t}");
-            self.conn.query_row(&sql, [], |r| r.get::<_, i64>(0))
-                .ok()
-                .map(|n| (t.to_string(), n))
-        }).collect()
+        TABLES
+            .iter()
+            .filter_map(|t| {
+                let sql = format!("SELECT COUNT(*) FROM {t}");
+                self.conn
+                    .query_row(&sql, [], |r| r.get::<_, i64>(0))
+                    .ok()
+                    .map(|n| (t.to_string(), n))
+            })
+            .collect()
     }
 }

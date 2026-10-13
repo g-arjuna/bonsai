@@ -2,12 +2,12 @@
 //! Provides JWT session creation, validation, and revocation
 
 use anyhow::{Context, Result};
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, Instant};
-use tracing::{info, error};
+use tracing::{error, info};
 
 use crate::audit::append_security_event;
 
@@ -106,7 +106,7 @@ impl SessionManager {
     pub fn new(config: SessionConfig) -> Result<Self> {
         let encoding_key = EncodingKey::from_secret(config.jwt_secret.as_ref());
         let decoding_key = DecodingKey::from_secret(config.jwt_secret.as_ref());
-        
+
         Ok(Self {
             config,
             active_sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -127,7 +127,7 @@ impl SessionManager {
         let session_id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now();
         let expires_at = now + chrono::Duration::hours(self.config.token_expiry_hours as i64);
-        
+
         // Create access token
         let access_claims = SessionClaims {
             sub: user_id.to_string(),
@@ -142,12 +142,13 @@ impl SessionManager {
             ip: client_ip.clone(),
             typ: "access".to_string(),
         };
-        
+
         let access_token = encode(&Header::default(), &access_claims, &self.encoding_key)
             .context("Failed to encode access token")?;
-        
+
         // Create refresh token
-        let refresh_expires_at = now + chrono::Duration::hours(self.config.refresh_token_expiry_hours as i64);
+        let refresh_expires_at =
+            now + chrono::Duration::hours(self.config.refresh_token_expiry_hours as i64);
         let refresh_claims = SessionClaims {
             sub: user_id.to_string(),
             role: role.to_string(),
@@ -161,10 +162,10 @@ impl SessionManager {
             ip: client_ip.clone(),
             typ: "refresh".to_string(),
         };
-        
+
         let refresh_token = encode(&Header::default(), &refresh_claims, &self.encoding_key)
             .context("Failed to encode refresh token")?;
-        
+
         // Store session info
         let session_info = SessionInfo {
             session_id: session_id.clone(),
@@ -177,14 +178,15 @@ impl SessionManager {
             client_ip,
             is_active: true,
         };
-        
+
         let mut sessions = self.active_sessions.lock().unwrap();
-        
+
         // Check session limit per user
-        let user_sessions: Vec<_> = sessions.values()
+        let user_sessions: Vec<_> = sessions
+            .values()
             .filter(|s| s.user_id == user_id && s.is_active)
             .collect();
-        
+
         if user_sessions.len() >= self.config.max_sessions_per_user {
             // Remove oldest session
             if let Some(oldest_session) = user_sessions.iter().min_by_key(|s| s.created_at) {
@@ -193,9 +195,9 @@ impl SessionManager {
                 info!("Removed oldest session for user: {}", user_id);
             }
         }
-        
+
         sessions.insert(session_id.clone(), session_info);
-        
+
         // Log security event
         append_security_event(
             std::path::Path::new("/tmp"),
@@ -205,7 +207,7 @@ impl SessionManager {
             "success",
             Some(&format!("user: {}, session_id: {}", user_id, session_id)),
         )?;
-        
+
         info!("Created new session for user: {}", user_id);
         Ok((access_token, refresh_token))
     }
@@ -215,23 +217,23 @@ impl SessionManager {
         let validation = Validation::new(Algorithm::HS256);
         let token_data = decode::<SessionClaims>(refresh_token, &self.decoding_key, &validation)
             .context("Invalid refresh token")?;
-        
+
         let claims = token_data.claims;
-        
+
         // Check if it's a refresh token
         if claims.typ != "refresh" {
             return Err(anyhow::anyhow!("Not a refresh token"));
         }
-        
+
         // Check if token is revoked
         if self.is_token_revoked(&claims.jti)? {
             return Err(anyhow::anyhow!("Refresh token has been revoked"));
         }
-        
+
         // Create new access token
         let now = chrono::Utc::now();
         let expires_at = now + chrono::Duration::hours(self.config.token_expiry_hours as i64);
-        
+
         let new_access_claims = SessionClaims {
             sub: claims.sub.clone(),
             role: claims.role.clone(),
@@ -245,13 +247,13 @@ impl SessionManager {
             ip: claims.ip.clone(),
             typ: "access".to_string(),
         };
-        
+
         let new_access_token = encode(&Header::default(), &new_access_claims, &self.encoding_key)
             .context("Failed to encode new access token")?;
-        
+
         // Update session activity
         self.update_session_activity(&claims.sub)?;
-        
+
         info!("Refreshed session for user: {}", claims.sub);
         Ok(new_access_token)
     }
@@ -261,24 +263,24 @@ impl SessionManager {
         let validation = Validation::new(Algorithm::HS256);
         let token_data = decode::<SessionClaims>(token, &self.decoding_key, &validation)
             .context("Invalid session token")?;
-        
+
         let claims = token_data.claims;
-        
+
         // Check if token is revoked
         if self.is_token_revoked(&claims.jti)? {
             return Err(anyhow::anyhow!("Token has been revoked"));
         }
-        
+
         // Check if session is still active
         if let Some(session_info) = self.get_session_info(&claims.jti)? {
             if !session_info.is_active {
                 return Err(anyhow::anyhow!("Session is inactive"));
             }
-            
+
             // Update last activity
             self.update_session_activity(&claims.sub)?;
         }
-        
+
         Ok(claims)
     }
 
@@ -287,7 +289,7 @@ impl SessionManager {
         let mut sessions = self.active_sessions.lock().unwrap();
         if let Some(session) = sessions.get_mut(session_id) {
             session.is_active = false;
-            
+
             // Add to revoked tokens
             let revoked_token = RevokedToken {
                 jti: session_id.to_string(),
@@ -296,10 +298,10 @@ impl SessionManager {
                 expires_at: session.expires_at,
                 reason: reason.to_string(),
             };
-            
+
             let mut revoked = self.revoked_tokens.lock().unwrap();
             revoked.insert(session_id.to_string(), revoked_token);
-            
+
             // Log security event
             append_security_event(
                 std::path::Path::new("/tmp"),
@@ -307,12 +309,18 @@ impl SessionManager {
                 "session_revoked",
                 "session",
                 "success",
-                Some(&format!("user: {}, session_id: {}, reason: {}", user_id, session_id, reason)),
+                Some(&format!(
+                    "user: {}, session_id: {}, reason: {}",
+                    user_id, session_id, reason
+                )),
             )?;
-            
-            info!("Revoked session: {} for user: {} (reason: {})", session_id, user_id, reason);
+
+            info!(
+                "Revoked session: {} for user: {} (reason: {})",
+                session_id, user_id, reason
+            );
         }
-        
+
         Ok(())
     }
 
@@ -320,16 +328,17 @@ impl SessionManager {
     pub fn revoke_all_user_sessions(&self, user_id: &str, reason: &str) -> Result<usize> {
         let mut sessions = self.active_sessions.lock().unwrap();
         let mut revoked_count = 0;
-        
-        let user_sessions: Vec<String> = sessions.values()
+
+        let user_sessions: Vec<String> = sessions
+            .values()
             .filter(|s| s.user_id == user_id && s.is_active)
             .map(|s| s.session_id.clone())
             .collect();
-        
+
         for session_id in user_sessions {
             if let Some(session) = sessions.get_mut(&session_id) {
                 session.is_active = false;
-                
+
                 // Add to revoked tokens
                 let revoked_token = RevokedToken {
                     jti: session_id.clone(),
@@ -338,13 +347,13 @@ impl SessionManager {
                     expires_at: session.expires_at,
                     reason: reason.to_string(),
                 };
-                
+
                 let mut revoked = self.revoked_tokens.lock().unwrap();
                 revoked.insert(session_id.clone(), revoked_token);
                 revoked_count += 1;
             }
         }
-        
+
         // Log security event
         append_security_event(
             std::path::Path::new("/tmp"),
@@ -352,10 +361,16 @@ impl SessionManager {
             "all_sessions_revoked",
             "session",
             "success",
-            Some(&format!("user: {}, count: {}, reason: {}", user_id, revoked_count, reason)),
+            Some(&format!(
+                "user: {}, count: {}, reason: {}",
+                user_id, revoked_count, reason
+            )),
         )?;
-        
-        info!("Revoked {} sessions for user: {} (reason: {})", revoked_count, user_id, reason);
+
+        info!(
+            "Revoked {} sessions for user: {} (reason: {})",
+            revoked_count, user_id, reason
+        );
         Ok(revoked_count)
     }
 
@@ -385,7 +400,8 @@ impl SessionManager {
     /// Get active sessions for user
     pub fn get_user_sessions(&self, user_id: &str) -> Vec<SessionInfo> {
         let sessions = self.active_sessions.lock().unwrap();
-        sessions.values()
+        sessions
+            .values()
             .filter(|s| s.user_id == user_id && s.is_active)
             .cloned()
             .collect()
@@ -394,10 +410,7 @@ impl SessionManager {
     /// Get all active sessions
     pub fn get_all_active_sessions(&self) -> Vec<SessionInfo> {
         let sessions = self.active_sessions.lock().unwrap();
-        sessions.values()
-            .filter(|s| s.is_active)
-            .cloned()
-            .collect()
+        sessions.values().filter(|s| s.is_active).cloned().collect()
     }
 
     /// Get active session count
@@ -409,28 +422,28 @@ impl SessionManager {
     /// Cleanup expired sessions and revoked tokens
     pub fn cleanup_expired(&self) -> Result<()> {
         let now = Instant::now();
-        
+
         // Cleanup expired sessions
         {
             let mut sessions = self.active_sessions.lock().unwrap();
             sessions.retain(|_, session| session.expires_at > now);
         }
-        
+
         // Cleanup expired revoked tokens
         {
             let mut revoked = self.revoked_tokens.lock().unwrap();
             revoked.retain(|_, token| token.expires_at > now);
         }
-        
+
         // Cleanup idle sessions
         {
             let idle_timeout = Duration::from_secs(self.config.idle_timeout_hours * 3600);
             let mut sessions = self.active_sessions.lock().unwrap();
-            
+
             for session in sessions.values_mut() {
                 if session.is_active && (now - session.last_activity) > idle_timeout {
                     session.is_active = false;
-                    
+
                     // Add to revoked tokens
                     let revoked_token = RevokedToken {
                         jti: session.session_id.clone(),
@@ -439,13 +452,13 @@ impl SessionManager {
                         expires_at: session.expires_at,
                         reason: "idle_timeout".to_string(),
                     };
-                    
+
                     let mut revoked = self.revoked_tokens.lock().unwrap();
                     revoked.insert(session.session_id.clone(), revoked_token);
                 }
             }
         }
-        
+
         info!("Session cleanup completed");
         Ok(())
     }
@@ -454,12 +467,17 @@ impl SessionManager {
     pub fn get_session_stats(&self) -> serde_json::Value {
         let sessions = self.active_sessions.lock().unwrap();
         let revoked = self.revoked_tokens.lock().unwrap();
-        
+
         let active_count = sessions.values().filter(|s| s.is_active).count();
-        let idle_count = sessions.values()
-            .filter(|s| s.is_active && (Instant::now() - s.last_activity) > Duration::from_secs(self.config.idle_timeout_hours * 3600))
+        let idle_count = sessions
+            .values()
+            .filter(|s| {
+                s.is_active
+                    && (Instant::now() - s.last_activity)
+                        > Duration::from_secs(self.config.idle_timeout_hours * 3600)
+            })
             .count();
-        
+
         serde_json::json!({
             "active_sessions": active_count,
             "idle_sessions": idle_count,
@@ -472,12 +490,14 @@ impl SessionManager {
 }
 
 /// Global session manager instance
-static SESSION_MANAGER: std::sync::OnceLock<std::sync::Arc<SessionManager>> = std::sync::OnceLock::new();
+static SESSION_MANAGER: std::sync::OnceLock<std::sync::Arc<SessionManager>> =
+    std::sync::OnceLock::new();
 
 /// Initialize global session manager
 pub async fn initialize_session_manager(config: SessionConfig) -> Result<()> {
     let manager = Arc::new(SessionManager::new(config)?);
-    SESSION_MANAGER.set(manager.clone())
+    SESSION_MANAGER
+        .set(manager.clone())
         .map_err(|_| anyhow::anyhow!("Session manager already initialized"))?;
     Ok(())
 }

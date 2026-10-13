@@ -10,7 +10,10 @@ use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 
 use super::AppState;
-use crate::config::{BgpLsConfig, BmpConfig, NetflowConfig, OtlpConfig, PcepConfig, SflowConfig, SnmpConfig, SyslogConfig};
+use crate::config::{
+    BgpLsConfig, BmpConfig, NetflowConfig, OtlpConfig, PcepConfig, SflowConfig, SnmpConfig,
+    SyslogConfig,
+};
 
 // ── Response / request shapes ─────────────────────────────────────────────────
 
@@ -36,7 +39,8 @@ pub struct StreamingSettingsResponse {
     pub snmp: ReceiverDetail,
     pub requires_restart: bool,
     /// K5: Live per-receiver status from ReceiverSupervisor, keyed by receiver name.
-    pub receiver_statuses: std::collections::HashMap<String, crate::receiver_supervisor::ReceiverStatusSnapshot>,
+    pub receiver_statuses:
+        std::collections::HashMap<String, crate::receiver_supervisor::ReceiverStatusSnapshot>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -81,31 +85,67 @@ pub struct ReceiverStatusResponse {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn bmp_detail(c: &BmpConfig) -> ReceiverDetail {
-    ReceiverDetail { enabled: c.enabled, addr: c.tcp_addr.clone(), protocol: "tcp".into() }
+    ReceiverDetail {
+        enabled: c.enabled,
+        addr: c.tcp_addr.clone(),
+        protocol: "tcp".into(),
+    }
 }
 fn bgp_ls_detail(c: &BgpLsConfig) -> ReceiverDetail {
-    ReceiverDetail { enabled: c.enabled, addr: c.tcp_addr.clone(), protocol: "tcp".into() }
+    ReceiverDetail {
+        enabled: c.enabled,
+        addr: c.tcp_addr.clone(),
+        protocol: "tcp".into(),
+    }
 }
 fn pcep_detail(c: &PcepConfig) -> ReceiverDetail {
-    ReceiverDetail { enabled: c.enabled, addr: c.tcp_addr.clone(), protocol: "tcp".into() }
+    ReceiverDetail {
+        enabled: c.enabled,
+        addr: c.tcp_addr.clone(),
+        protocol: "tcp".into(),
+    }
 }
 fn otlp_detail(c: &OtlpConfig) -> ReceiverDetail {
-    ReceiverDetail { enabled: c.enabled, addr: c.http_addr.clone(), protocol: "http".into() }
+    ReceiverDetail {
+        enabled: c.enabled,
+        addr: c.http_addr.clone(),
+        protocol: "http".into(),
+    }
 }
 fn netflow_detail(c: &NetflowConfig) -> ReceiverDetail {
-    ReceiverDetail { enabled: c.enabled, addr: c.udp_addr.clone(), protocol: "udp".into() }
+    ReceiverDetail {
+        enabled: c.enabled,
+        addr: c.udp_addr.clone(),
+        protocol: "udp".into(),
+    }
 }
 fn sflow_detail(c: &SflowConfig) -> ReceiverDetail {
-    ReceiverDetail { enabled: c.enabled, addr: c.udp_addr.clone(), protocol: "udp".into() }
+    ReceiverDetail {
+        enabled: c.enabled,
+        addr: c.udp_addr.clone(),
+        protocol: "udp".into(),
+    }
 }
 fn syslog_udp_detail(c: &SyslogConfig) -> ReceiverDetail {
-    ReceiverDetail { enabled: c.enabled, addr: c.udp_addr.clone(), protocol: "udp".into() }
+    ReceiverDetail {
+        enabled: c.enabled,
+        addr: c.udp_addr.clone(),
+        protocol: "udp".into(),
+    }
 }
 fn syslog_tcp_detail(c: &SyslogConfig) -> ReceiverDetail {
-    ReceiverDetail { enabled: c.enabled, addr: c.tcp_addr.clone(), protocol: "tcp".into() }
+    ReceiverDetail {
+        enabled: c.enabled,
+        addr: c.tcp_addr.clone(),
+        protocol: "tcp".into(),
+    }
 }
 fn snmp_detail(c: &SnmpConfig) -> ReceiverDetail {
-    ReceiverDetail { enabled: c.enabled, addr: c.udp_addr.clone(), protocol: "udp".into() }
+    ReceiverDetail {
+        enabled: c.enabled,
+        addr: c.udp_addr.clone(),
+        protocol: "udp".into(),
+    }
 }
 
 // ── GET /api/receivers/status ────────────────────────────────────────────────
@@ -125,29 +165,50 @@ pub async fn get_receiver_status_handler(
 /// Restored on boot to override TOML defaults.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct StreamingSnapshot {
-    #[serde(default)] pub bmp_enabled: bool,
-    #[serde(default)] pub bmp_addr: String,
-    #[serde(default)] pub bgpls_enabled: bool,
-    #[serde(default)] pub bgpls_addr: String,
-    #[serde(default)] pub pcep_enabled: bool,
-    #[serde(default)] pub pcep_addr: String,
-    #[serde(default)] pub otlp_enabled: bool,
-    #[serde(default)] pub otlp_addr: String,
-    #[serde(default)] pub netflow_enabled: bool,
-    #[serde(default)] pub netflow_addr: String,
-    #[serde(default)] pub sflow_enabled: bool,
-    #[serde(default)] pub sflow_addr: String,
-    #[serde(default)] pub syslog_enabled: bool,
-    #[serde(default)] pub syslog_udp_addr: String,
-    #[serde(default)] pub syslog_tcp_addr: String,
-    #[serde(default)] pub snmp_enabled: bool,
-    #[serde(default)] pub snmp_udp_addr: String,
+    #[serde(default)]
+    pub bmp_enabled: bool,
+    #[serde(default)]
+    pub bmp_addr: String,
+    #[serde(default)]
+    pub bgpls_enabled: bool,
+    #[serde(default)]
+    pub bgpls_addr: String,
+    #[serde(default)]
+    pub pcep_enabled: bool,
+    #[serde(default)]
+    pub pcep_addr: String,
+    #[serde(default)]
+    pub otlp_enabled: bool,
+    #[serde(default)]
+    pub otlp_addr: String,
+    #[serde(default)]
+    pub netflow_enabled: bool,
+    #[serde(default)]
+    pub netflow_addr: String,
+    #[serde(default)]
+    pub sflow_enabled: bool,
+    #[serde(default)]
+    pub sflow_addr: String,
+    #[serde(default)]
+    pub syslog_enabled: bool,
+    #[serde(default)]
+    pub syslog_udp_addr: String,
+    #[serde(default)]
+    pub syslog_tcp_addr: String,
+    #[serde(default)]
+    pub snmp_enabled: bool,
+    #[serde(default)]
+    pub snmp_udp_addr: String,
 }
 
 impl StreamingSnapshot {
     /// Apply this DB snapshot onto the TOML-based streaming/signals configs.
     /// DB values override TOML defaults.
-    pub fn apply_to_config(&self, streaming: &mut crate::config::StreamingConfig, signals: &mut crate::config::SignalsConfig) {
+    pub fn apply_to_config(
+        &self,
+        streaming: &mut crate::config::StreamingConfig,
+        signals: &mut crate::config::SignalsConfig,
+    ) {
         if !self.bmp_addr.is_empty() {
             streaming.bmp.enabled = self.bmp_enabled;
             streaming.bmp.tcp_addr = self.bmp_addr.clone();
@@ -198,9 +259,21 @@ impl StreamingSnapshot {
 /// Sections: retention, ingest, archive, storage, event_bus, remediation, gnn,
 ///           logging, ai, lab, integrations_servicenow, integrations_tsdb, assignment
 pub const RUNTIME_CONFIG_SECTIONS: &[&str] = &[
-    "retention", "ingest", "archive", "storage", "event_bus", "remediation",
-    "gnn", "logging", "ai", "lab", "integrations_servicenow", "integrations_tsdb",
-    "assignment", "streaming", "security",
+    "retention",
+    "ingest",
+    "archive",
+    "storage",
+    "event_bus",
+    "remediation",
+    "gnn",
+    "logging",
+    "ai",
+    "lab",
+    "integrations_servicenow",
+    "integrations_tsdb",
+    "assignment",
+    "streaming",
+    "security",
 ];
 
 /// Boot-time: load all `runtime_config:*` items from DB and apply overrides to `cfg`.
@@ -209,7 +282,10 @@ pub async fn apply_runtime_overrides_from_db(
     store: &crate::graph::GraphStore,
     cfg: &mut crate::config::Config,
 ) -> usize {
-    let items = match store.list_config_items(Some("runtime_config".to_string())).await {
+    let items = match store
+        .list_config_items(Some("runtime_config".to_string()))
+        .await
+    {
         Ok(items) => items,
         Err(e) => {
             tracing::warn!(error = %e, "failed to load runtime config from DB");
@@ -218,27 +294,44 @@ pub async fn apply_runtime_overrides_from_db(
     };
     let mut count = 0;
     for item in &items {
-        if !item.enabled { continue; }
+        if !item.enabled {
+            continue;
+        }
         let section = item.name.as_str();
         let json = &item.content_json;
         let ok = match section {
-            "retention" => serde_json::from_str(json).map(|v| cfg.retention = v).is_ok(),
+            "retention" => serde_json::from_str(json)
+                .map(|v| cfg.retention = v)
+                .is_ok(),
             "ingest" => serde_json::from_str(json).map(|v| cfg.ingest = v).is_ok(),
             "archive" => serde_json::from_str(json).map(|v| cfg.archive = v).is_ok(),
             "storage" => serde_json::from_str(json).map(|v| cfg.storage = v).is_ok(),
-            "event_bus" => serde_json::from_str(json).map(|v| cfg.event_bus = v).is_ok(),
-            "remediation" => serde_json::from_str(json).map(|v| cfg.remediation = v).is_ok(),
+            "event_bus" => serde_json::from_str(json)
+                .map(|v| cfg.event_bus = v)
+                .is_ok(),
+            "remediation" => serde_json::from_str(json)
+                .map(|v| cfg.remediation = v)
+                .is_ok(),
             "gnn" => serde_json::from_str(json).map(|v| cfg.gnn = v).is_ok(),
             "logging" => serde_json::from_str(json).map(|v| cfg.logging = v).is_ok(),
             "ai" => serde_json::from_str(json).map(|v| cfg.ai = v).is_ok(),
             "lab" => serde_json::from_str(json).map(|v| cfg.lab = v).is_ok(),
-            "assignment" => serde_json::from_str(json).map(|v| cfg.assignment = v).is_ok(),
-            "integrations_servicenow" => serde_json::from_str(json).map(|v| cfg.integrations.servicenow = v).is_ok(),
-            "integrations_tsdb" => serde_json::from_str(json).map(|v| cfg.integrations.tsdb = v).is_ok(),
+            "assignment" => serde_json::from_str(json)
+                .map(|v| cfg.assignment = v)
+                .is_ok(),
+            "integrations_servicenow" => serde_json::from_str(json)
+                .map(|v| cfg.integrations.servicenow = v)
+                .is_ok(),
+            "integrations_tsdb" => serde_json::from_str(json)
+                .map(|v| cfg.integrations.tsdb = v)
+                .is_ok(),
             "streaming" => {
                 // Streaming uses StreamingSnapshot which has its own apply logic.
                 match serde_json::from_str::<StreamingSnapshot>(json) {
-                    Ok(snap) => { snap.apply_to_config(&mut cfg.streaming, &mut cfg.signals); true }
+                    Ok(snap) => {
+                        snap.apply_to_config(&mut cfg.streaming, &mut cfg.signals);
+                        true
+                    }
                     Err(_) => false,
                 }
             }
@@ -249,7 +342,10 @@ pub async fn apply_runtime_overrides_from_db(
             count += 1;
             tracing::info!(section, "applied runtime config override from DB");
         } else {
-            tracing::warn!(section, "failed to parse runtime config from DB, using TOML default");
+            tracing::warn!(
+                section,
+                "failed to parse runtime config from DB, using TOML default"
+            );
         }
     }
     count
@@ -289,15 +385,15 @@ pub async fn get_streaming_settings_handler(
             .collect()
     };
     Json(StreamingSettingsResponse {
-        bmp:        bmp_detail(&s.bmp),
-        bgp_ls:     bgp_ls_detail(&s.bgp_ls),
-        pcep:       pcep_detail(&s.pcep),
-        otlp:       otlp_detail(&s.otlp),
-        netflow:    netflow_detail(&s.netflow),
-        sflow:      sflow_detail(&s.sflow),
+        bmp: bmp_detail(&s.bmp),
+        bgp_ls: bgp_ls_detail(&s.bgp_ls),
+        pcep: pcep_detail(&s.pcep),
+        otlp: otlp_detail(&s.otlp),
+        netflow: netflow_detail(&s.netflow),
+        sflow: sflow_detail(&s.sflow),
         syslog_udp: syslog_udp_detail(&sig.syslog),
         syslog_tcp: syslog_tcp_detail(&sig.syslog),
-        snmp:       snmp_detail(&sig.snmp),
+        snmp: snmp_detail(&sig.snmp),
         requires_restart: false,
         receiver_statuses,
     })
@@ -312,44 +408,119 @@ pub async fn patch_streaming_settings_handler(
     // Build the updated streaming config by merging the patch on top of live values.
     let s = &state.streaming;
 
-    let new_bmp_enabled = patch.bmp.as_ref().and_then(|p| p.enabled).unwrap_or(s.bmp.enabled);
-    let new_bmp_addr    = patch.bmp.as_ref().and_then(|p| p.addr.clone()).unwrap_or_else(|| s.bmp.tcp_addr.clone());
+    let new_bmp_enabled = patch
+        .bmp
+        .as_ref()
+        .and_then(|p| p.enabled)
+        .unwrap_or(s.bmp.enabled);
+    let new_bmp_addr = patch
+        .bmp
+        .as_ref()
+        .and_then(|p| p.addr.clone())
+        .unwrap_or_else(|| s.bmp.tcp_addr.clone());
 
-    let new_bgpls_enabled = patch.bgp_ls.as_ref().and_then(|p| p.enabled).unwrap_or(s.bgp_ls.enabled);
-    let new_bgpls_addr    = patch.bgp_ls.as_ref().and_then(|p| p.addr.clone()).unwrap_or_else(|| s.bgp_ls.tcp_addr.clone());
+    let new_bgpls_enabled = patch
+        .bgp_ls
+        .as_ref()
+        .and_then(|p| p.enabled)
+        .unwrap_or(s.bgp_ls.enabled);
+    let new_bgpls_addr = patch
+        .bgp_ls
+        .as_ref()
+        .and_then(|p| p.addr.clone())
+        .unwrap_or_else(|| s.bgp_ls.tcp_addr.clone());
 
-    let new_pcep_enabled = patch.pcep.as_ref().and_then(|p| p.enabled).unwrap_or(s.pcep.enabled);
-    let new_pcep_addr    = patch.pcep.as_ref().and_then(|p| p.addr.clone()).unwrap_or_else(|| s.pcep.tcp_addr.clone());
+    let new_pcep_enabled = patch
+        .pcep
+        .as_ref()
+        .and_then(|p| p.enabled)
+        .unwrap_or(s.pcep.enabled);
+    let new_pcep_addr = patch
+        .pcep
+        .as_ref()
+        .and_then(|p| p.addr.clone())
+        .unwrap_or_else(|| s.pcep.tcp_addr.clone());
 
-    let new_otlp_enabled = patch.otlp.as_ref().and_then(|p| p.enabled).unwrap_or(s.otlp.enabled);
-    let new_otlp_addr    = patch.otlp.as_ref().and_then(|p| p.addr.clone()).unwrap_or_else(|| s.otlp.http_addr.clone());
+    let new_otlp_enabled = patch
+        .otlp
+        .as_ref()
+        .and_then(|p| p.enabled)
+        .unwrap_or(s.otlp.enabled);
+    let new_otlp_addr = patch
+        .otlp
+        .as_ref()
+        .and_then(|p| p.addr.clone())
+        .unwrap_or_else(|| s.otlp.http_addr.clone());
 
-    let new_nf_enabled = patch.netflow.as_ref().and_then(|p| p.enabled).unwrap_or(s.netflow.enabled);
-    let new_nf_addr    = patch.netflow.as_ref().and_then(|p| p.addr.clone()).unwrap_or_else(|| s.netflow.udp_addr.clone());
+    let new_nf_enabled = patch
+        .netflow
+        .as_ref()
+        .and_then(|p| p.enabled)
+        .unwrap_or(s.netflow.enabled);
+    let new_nf_addr = patch
+        .netflow
+        .as_ref()
+        .and_then(|p| p.addr.clone())
+        .unwrap_or_else(|| s.netflow.udp_addr.clone());
 
-    let new_sf_enabled = patch.sflow.as_ref().and_then(|p| p.enabled).unwrap_or(s.sflow.enabled);
-    let new_sf_addr    = patch.sflow.as_ref().and_then(|p| p.addr.clone()).unwrap_or_else(|| s.sflow.udp_addr.clone());
+    let new_sf_enabled = patch
+        .sflow
+        .as_ref()
+        .and_then(|p| p.enabled)
+        .unwrap_or(s.sflow.enabled);
+    let new_sf_addr = patch
+        .sflow
+        .as_ref()
+        .and_then(|p| p.addr.clone())
+        .unwrap_or_else(|| s.sflow.udp_addr.clone());
 
     let sig = &state.signals;
-    let new_syslog_enabled  = patch.syslog_udp.as_ref().and_then(|p| p.enabled)
+    let new_syslog_enabled = patch
+        .syslog_udp
+        .as_ref()
+        .and_then(|p| p.enabled)
         .or_else(|| patch.syslog_tcp.as_ref().and_then(|p| p.enabled))
         .unwrap_or(sig.syslog.enabled);
-    let new_syslog_udp_addr = patch.syslog_udp.as_ref().and_then(|p| p.addr.clone()).unwrap_or_else(|| sig.syslog.udp_addr.clone());
-    let new_syslog_tcp_addr = patch.syslog_tcp.as_ref().and_then(|p| p.addr.clone()).unwrap_or_else(|| sig.syslog.tcp_addr.clone());
-    let new_snmp_enabled    = patch.snmp.as_ref().and_then(|p| p.enabled).unwrap_or(sig.snmp.enabled);
-    let new_snmp_udp_addr   = patch.snmp.as_ref().and_then(|p| p.addr.clone()).unwrap_or_else(|| sig.snmp.udp_addr.clone());
+    let new_syslog_udp_addr = patch
+        .syslog_udp
+        .as_ref()
+        .and_then(|p| p.addr.clone())
+        .unwrap_or_else(|| sig.syslog.udp_addr.clone());
+    let new_syslog_tcp_addr = patch
+        .syslog_tcp
+        .as_ref()
+        .and_then(|p| p.addr.clone())
+        .unwrap_or_else(|| sig.syslog.tcp_addr.clone());
+    let new_snmp_enabled = patch
+        .snmp
+        .as_ref()
+        .and_then(|p| p.enabled)
+        .unwrap_or(sig.snmp.enabled);
+    let new_snmp_udp_addr = patch
+        .snmp
+        .as_ref()
+        .and_then(|p| p.addr.clone())
+        .unwrap_or_else(|| sig.snmp.udp_addr.clone());
 
     // D4-7 T5: Persist streaming/signals settings to ConfigItem DB instead of TOML file.
     let snapshot = StreamingSnapshot {
-        bmp_enabled: new_bmp_enabled, bmp_addr: new_bmp_addr.clone(),
-        bgpls_enabled: new_bgpls_enabled, bgpls_addr: new_bgpls_addr.clone(),
-        pcep_enabled: new_pcep_enabled, pcep_addr: new_pcep_addr.clone(),
-        otlp_enabled: new_otlp_enabled, otlp_addr: new_otlp_addr.clone(),
-        netflow_enabled: new_nf_enabled, netflow_addr: new_nf_addr.clone(),
-        sflow_enabled: new_sf_enabled, sflow_addr: new_sf_addr.clone(),
-        syslog_enabled: new_syslog_enabled, syslog_udp_addr: new_syslog_udp_addr.clone(),
+        bmp_enabled: new_bmp_enabled,
+        bmp_addr: new_bmp_addr.clone(),
+        bgpls_enabled: new_bgpls_enabled,
+        bgpls_addr: new_bgpls_addr.clone(),
+        pcep_enabled: new_pcep_enabled,
+        pcep_addr: new_pcep_addr.clone(),
+        otlp_enabled: new_otlp_enabled,
+        otlp_addr: new_otlp_addr.clone(),
+        netflow_enabled: new_nf_enabled,
+        netflow_addr: new_nf_addr.clone(),
+        sflow_enabled: new_sf_enabled,
+        sflow_addr: new_sf_addr.clone(),
+        syslog_enabled: new_syslog_enabled,
+        syslog_udp_addr: new_syslog_udp_addr.clone(),
         syslog_tcp_addr: new_syslog_tcp_addr.clone(),
-        snmp_enabled: new_snmp_enabled, snmp_udp_addr: new_snmp_udp_addr.clone(),
+        snmp_enabled: new_snmp_enabled,
+        snmp_udp_addr: new_snmp_udp_addr.clone(),
     };
     let content_json = serde_json::to_string(&snapshot).unwrap_or_default();
     let item = crate::graph::ConfigItemRecord {
@@ -362,8 +533,12 @@ pub async fn patch_streaming_settings_handler(
         enabled: true,
         created_by: "settings_api".to_string(),
     };
-    state.store.upsert_config_item(item).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("persist streaming config: {e}")))?;
+    state.store.upsert_config_item(item).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("persist streaming config: {e}"),
+        )
+    })?;
 
     // K3: Live restart of changed receivers via ReceiverSupervisor.
     // All receivers — including syslog/snmp — are now supervised, so no
@@ -388,10 +563,13 @@ pub async fn patch_streaming_settings_handler(
         enabled: new_otlp_enabled,
         http_addr: new_otlp_addr.clone(),
     });
-    let netflow_to_restart = patch.netflow.is_some().then(|| crate::config::NetflowConfig {
-        enabled: new_nf_enabled,
-        udp_addr: new_nf_addr.clone(),
-    });
+    let netflow_to_restart = patch
+        .netflow
+        .is_some()
+        .then(|| crate::config::NetflowConfig {
+            enabled: new_nf_enabled,
+            udp_addr: new_nf_addr.clone(),
+        });
     let sflow_to_restart = patch.sflow.is_some().then(|| crate::config::SflowConfig {
         enabled: new_sf_enabled,
         udp_addr: new_sf_addr.clone(),
@@ -451,7 +629,10 @@ pub async fn patch_streaming_settings_handler(
             let pdir = pattern_dir.clone();
             let addr = format!("{}/{}", new_syslog_udp_addr, new_syslog_tcp_addr);
             sup.spawn("syslog", addr, move |sd| async move {
-                crate::signals::syslog::run_syslog_receiver(c, pdir, tgts, bus2, sd, gov2, None, None, None).await
+                crate::signals::syslog::run_syslog_receiver(
+                    c, pdir, tgts, bus2, sd, gov2, None, None, None,
+                )
+                .await
             });
         }
         if let Some(c) = snmp_to_restart {
@@ -517,9 +698,7 @@ pub struct AiConfigResponse {
     pub auto_investigate_unmatched: bool,
 }
 
-pub async fn get_ai_config_handler(
-    State(state): State<AppState>,
-) -> Json<AiConfigResponse> {
+pub async fn get_ai_config_handler(State(state): State<AppState>) -> Json<AiConfigResponse> {
     let cfg = &state.ai_config;
     let has_api_key = std::env::var(&cfg.api_key_env).is_ok();
     Json(AiConfigResponse {
@@ -546,9 +725,7 @@ pub struct AiTestResponse {
     pub latency_ms: Option<u64>,
 }
 
-pub async fn post_ai_test_handler(
-    State(state): State<AppState>,
-) -> Json<AiTestResponse> {
+pub async fn post_ai_test_handler(State(state): State<AppState>) -> Json<AiTestResponse> {
     let cfg = &state.ai_config;
     let provider_name = cfg.provider.clone();
     let model_name = cfg.model.clone();
@@ -567,11 +744,17 @@ pub async fn post_ai_test_handler(
             let start = std::time::Instant::now();
             match provider.complete(msgs, vec![]).await {
                 Ok(_) => Json(AiTestResponse {
-                    ok: true, error: None, provider: provider_name, model: model_name,
+                    ok: true,
+                    error: None,
+                    provider: provider_name,
+                    model: model_name,
                     latency_ms: Some(start.elapsed().as_millis() as u64),
                 }),
                 Err(e) => Json(AiTestResponse {
-                    ok: false, error: Some(e.to_string()), provider: provider_name, model: model_name,
+                    ok: false,
+                    error: Some(e.to_string()),
+                    provider: provider_name,
+                    model: model_name,
                     latency_ms: Some(start.elapsed().as_millis() as u64),
                 }),
             }
@@ -597,7 +780,9 @@ pub struct LlmProviderEntry {
     pub has_api_key: bool,
 }
 
-fn default_provider_active() -> bool { true }
+fn default_provider_active() -> bool {
+    true
+}
 
 fn llm_alias(name: &str) -> String {
     format!("llm-{}", name.trim().to_lowercase().replace(' ', "-"))
@@ -612,9 +797,14 @@ pub async fn list_ai_providers_handler(
         if !s.alias.starts_with("llm-") {
             continue;
         }
-        let username = state.credentials.username_for_alias(&s.alias).unwrap_or_default();
+        let username = state
+            .credentials
+            .username_for_alias(&s.alias)
+            .unwrap_or_default();
         if let Ok(mut entry) = serde_json::from_str::<LlmProviderEntry>(&username) {
-            let has_key = state.credentials.resolve(&s.alias, crate::credentials::ResolvePurpose::Test)
+            let has_key = state
+                .credentials
+                .resolve(&s.alias, crate::credentials::ResolvePurpose::Test)
                 .map(|r| !r.password.is_empty())
                 .unwrap_or(false);
             entry.has_api_key = has_key;
@@ -650,11 +840,12 @@ pub async fn upsert_ai_provider_handler(
         active: body.active,
         has_api_key: false,
     };
-    let username_json = serde_json::to_string(&meta)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let username_json =
+        serde_json::to_string(&meta).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let api_key = if body.api_key.is_empty() {
-        state.credentials
+        state
+            .credentials
             .resolve(&alias, crate::credentials::ResolvePurpose::Test)
             .map(|r| r.password.to_string())
             .unwrap_or_default()
@@ -662,7 +853,12 @@ pub async fn upsert_ai_provider_handler(
         body.api_key.clone()
     };
 
-    let exists = state.credentials.list().unwrap_or_default().iter().any(|s| s.alias == alias);
+    let exists = state
+        .credentials
+        .list()
+        .unwrap_or_default()
+        .iter()
+        .any(|s| s.alias == alias);
     let result = if exists {
         state.credentials.update(&alias, &username_json, &api_key)
     } else {
@@ -686,7 +882,9 @@ pub async fn remove_ai_provider_handler(
     Json(body): Json<RemoveAiProviderRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let alias = llm_alias(&body.name);
-    state.credentials.remove(&alias)
+    state
+        .credentials
+        .remove(&alias)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(serde_json::json!({"ok": true})))
 }
@@ -703,19 +901,30 @@ pub async fn test_ai_provider_handler(
     let alias = llm_alias(&body.name);
     let username = match state.credentials.username_for_alias(&alias) {
         Ok(u) => u,
-        Err(e) => return Json(AiTestResponse {
-            ok: false, error: Some(e.to_string()),
-            provider: String::new(), model: String::new(), latency_ms: None,
-        }),
+        Err(e) => {
+            return Json(AiTestResponse {
+                ok: false,
+                error: Some(e.to_string()),
+                provider: String::new(),
+                model: String::new(),
+                latency_ms: None,
+            });
+        }
     };
     let meta: LlmProviderEntry = match serde_json::from_str(&username) {
         Ok(m) => m,
-        Err(e) => return Json(AiTestResponse {
-            ok: false, error: Some(e.to_string()),
-            provider: String::new(), model: String::new(), latency_ms: None,
-        }),
+        Err(e) => {
+            return Json(AiTestResponse {
+                ok: false,
+                error: Some(e.to_string()),
+                provider: String::new(),
+                model: String::new(),
+                latency_ms: None,
+            });
+        }
     };
-    let api_key = state.credentials
+    let api_key = state
+        .credentials
         .resolve(&alias, crate::credentials::ResolvePurpose::Test)
         .map(|r| r.password.to_string())
         .unwrap_or_default();
@@ -733,21 +942,30 @@ pub async fn test_ai_provider_handler(
     };
     let result = match crate::ai_provider::build_provider(&cfg) {
         Err(e) => AiTestResponse {
-            ok: false, error: Some(e.to_string()),
-            provider: meta.provider.clone(), model: meta.model.clone(), latency_ms: None,
+            ok: false,
+            error: Some(e.to_string()),
+            provider: meta.provider.clone(),
+            model: meta.model.clone(),
+            latency_ms: None,
         },
         Ok(prov) => {
-            let msgs = vec![crate::ai_provider::AiMessage::user("Reply with exactly the word: pong")];
+            let msgs = vec![crate::ai_provider::AiMessage::user(
+                "Reply with exactly the word: pong",
+            )];
             let start = std::time::Instant::now();
             match prov.complete(msgs, vec![]).await {
                 Ok(_) => AiTestResponse {
-                    ok: true, error: None,
-                    provider: meta.provider.clone(), model: meta.model.clone(),
+                    ok: true,
+                    error: None,
+                    provider: meta.provider.clone(),
+                    model: meta.model.clone(),
                     latency_ms: Some(start.elapsed().as_millis() as u64),
                 },
                 Err(e) => AiTestResponse {
-                    ok: false, error: Some(e.to_string()),
-                    provider: meta.provider.clone(), model: meta.model.clone(),
+                    ok: false,
+                    error: Some(e.to_string()),
+                    provider: meta.provider.clone(),
+                    model: meta.model.clone(),
                     latency_ms: Some(start.elapsed().as_millis() as u64),
                 },
             }
@@ -775,10 +993,13 @@ pub async fn resolve_active_ai_provider(
     state: &super::AppState,
 ) -> Option<(crate::config::AiConfig, String)> {
     // Try vault-backed active provider first
-    let config_items = state.store
-        .list_config_items(Some("app_config".to_string())).await
+    let config_items = state
+        .store
+        .list_config_items(Some("app_config".to_string()))
+        .await
         .unwrap_or_default();
-    let active_name = config_items.iter()
+    let active_name = config_items
+        .iter()
         .find(|i| i.id == ACTIVE_AI_PROVIDER_KEY && i.enabled)
         .and_then(|i| serde_json::from_str::<String>(&i.content_json).ok());
 
@@ -786,7 +1007,8 @@ pub async fn resolve_active_ai_provider(
         let alias = llm_alias(&active_name);
         if let Ok(username) = state.credentials.username_for_alias(&alias) {
             if let Ok(meta) = serde_json::from_str::<LlmProviderEntry>(&username) {
-                let api_key = state.credentials
+                let api_key = state
+                    .credentials
                     .resolve(&alias, crate::credentials::ResolvePurpose::Test)
                     .map(|r| r.password.to_string())
                     .unwrap_or_default();
@@ -840,9 +1062,17 @@ pub async fn activate_ai_provider_handler(
 ) -> Result<Json<ActivateAiProviderResponse>, (StatusCode, String)> {
     let alias = llm_alias(&body.name);
     // Verify the provider exists in vault
-    let exists = state.credentials.list().unwrap_or_default().iter().any(|s| s.alias == alias);
+    let exists = state
+        .credentials
+        .list()
+        .unwrap_or_default()
+        .iter()
+        .any(|s| s.alias == alias);
     if !exists {
-        return Err((StatusCode::NOT_FOUND, format!("provider '{}' not found in vault", body.name)));
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("provider '{}' not found in vault", body.name),
+        ));
     }
     let content_json = serde_json::to_string(&body.name)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -856,7 +1086,8 @@ pub async fn activate_ai_provider_handler(
         enabled: true,
         created_by: "ui".to_string(),
     };
-    state.store
+    state
+        .store
         .upsert_config_item(item)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -871,8 +1102,10 @@ pub async fn activate_ai_provider_handler(
 pub async fn get_active_ai_provider_handler(
     State(state): State<AppState>,
 ) -> Json<serde_json::Value> {
-    let active_name = state.store
-        .list_config_items(Some("app_config".to_string())).await
+    let active_name = state
+        .store
+        .list_config_items(Some("app_config".to_string()))
+        .await
         .unwrap_or_default()
         .into_iter()
         .find(|i| i.id == ACTIVE_AI_PROVIDER_KEY && i.enabled)
@@ -894,8 +1127,8 @@ pub struct PatternReloadResponse {
 pub async fn reload_patterns_handler(
     State(state): State<super::AppState>,
 ) -> Result<Json<PatternReloadResponse>, (StatusCode, String)> {
-    use crate::signals::syslog::SyslogFactExtractor;
     use crate::signals::snmp::SnmpFactExtractor;
+    use crate::signals::syslog::SyslogFactExtractor;
     use std::sync::Arc;
 
     let mut syslog_reloaded = false;
@@ -905,8 +1138,16 @@ pub async fn reload_patterns_handler(
     let mut errors: Vec<String> = Vec::new();
 
     // D4-7 T5: Reload from ConfigItem DB with disk fallback.
-    let syslog_items = state.store.load_config_yaml_by_class("syslog_pattern").await.unwrap_or_default();
-    let snmp_items = state.store.load_config_yaml_by_class("snmp_oid_pattern").await.unwrap_or_default();
+    let syslog_items = state
+        .store
+        .load_config_yaml_by_class("syslog_pattern")
+        .await
+        .unwrap_or_default();
+    let snmp_items = state
+        .store
+        .load_config_yaml_by_class("snmp_oid_pattern")
+        .await
+        .unwrap_or_default();
 
     if let Some(tx) = &state.syslog_pattern_tx {
         let dir = &state.syslog_pattern_dir;
@@ -915,8 +1156,15 @@ pub async fn reload_patterns_handler(
         match tx.send(Arc::new(extractor)) {
             Ok(_) => {
                 syslog_reloaded = true;
-                tracing::info!(source = if syslog_items.is_empty() { "disk" } else { "db" },
-                    patterns = syslog_count, "syslog patterns hot-reloaded");
+                tracing::info!(
+                    source = if syslog_items.is_empty() {
+                        "disk"
+                    } else {
+                        "db"
+                    },
+                    patterns = syslog_count,
+                    "syslog patterns hot-reloaded"
+                );
             }
             Err(e) => errors.push(format!("syslog: {e}")),
         }
@@ -929,8 +1177,11 @@ pub async fn reload_patterns_handler(
         match tx.send(Arc::new(extractor)) {
             Ok(_) => {
                 snmp_reloaded = true;
-                tracing::info!(source = if snmp_items.is_empty() { "disk" } else { "db" },
-                    patterns = snmp_count, "snmp OID patterns hot-reloaded");
+                tracing::info!(
+                    source = if snmp_items.is_empty() { "disk" } else { "db" },
+                    patterns = snmp_count,
+                    "snmp OID patterns hot-reloaded"
+                );
             }
             Err(e) => errors.push(format!("snmp: {e}")),
         }
@@ -941,7 +1192,11 @@ pub async fn reload_patterns_handler(
         snmp_reloaded,
         syslog_pattern_count: syslog_count,
         snmp_pattern_count: snmp_count,
-        error: if errors.is_empty() { None } else { Some(errors.join("; ")) },
+        error: if errors.is_empty() {
+            None
+        } else {
+            Some(errors.join("; "))
+        },
     }))
 }
 
@@ -979,19 +1234,32 @@ pub(super) async fn mib_upload_handler(
 
     // Write MIB to runtime/mibs/
     let mibs_dir = std::path::Path::new("runtime").join("mibs");
-    std::fs::create_dir_all(&mibs_dir)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to create mibs dir: {e}")))?;
+    std::fs::create_dir_all(&mibs_dir).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to create mibs dir: {e}"),
+        )
+    })?;
 
     let mib_path = mibs_dir.join(&filename);
-    std::fs::write(&mib_path, &req.content)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to write MIB file: {e}")))?;
+    std::fs::write(&mib_path, &req.content).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to write MIB file: {e}"),
+        )
+    })?;
 
     // Run compile_mib.py
     let output = tokio::process::Command::new("python3")
         .args(["scripts/compile_mib.py", &mib_path.to_string_lossy()])
         .output()
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to run compile_mib.py: {e}")))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to run compile_mib.py: {e}"),
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1005,19 +1273,31 @@ pub(super) async fn mib_upload_handler(
 
     // Parse the JSON output
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let oid_entries: Vec<serde_json::Value> = serde_json::from_str(&stdout)
-        .unwrap_or_default();
+    let oid_entries: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap_or_default();
 
     let oid_count = oid_entries.len();
 
     // Store each OID pattern as a ConfigItem
     for entry in &oid_entries {
-        let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let _oid_prefix = entry.get("oid_prefix").and_then(|v| v.as_str()).unwrap_or("");
-        let mib_module = entry.get("mib_module").and_then(|v| v.as_str()).unwrap_or("");
+        let name = entry
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let _oid_prefix = entry
+            .get("oid_prefix")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let mib_module = entry
+            .get("mib_module")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
         let item = crate::graph::ConfigItemRecord {
-            id: format!("mib-oid-{}-{}", mib_module.to_lowercase(), name.to_lowercase()),
+            id: format!(
+                "mib-oid-{}-{}",
+                mib_module.to_lowercase(),
+                name.to_lowercase()
+            ),
             config_class: "snmp_oid_pattern".to_string(),
             vendor: mib_module.to_string(),
             name: name.to_string(),
@@ -1058,9 +1338,7 @@ pub struct TsdbQueryParams {
 }
 
 /// GET /api/tsdb/config — return TSDB integration status (no secrets).
-pub(super) async fn tsdb_config_handler(
-    State(state): State<AppState>,
-) -> Json<serde_json::Value> {
+pub(super) async fn tsdb_config_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
     let cfg = &state.tsdb_config;
     Json(serde_json::json!({
         "enabled": cfg.enabled,
@@ -1080,24 +1358,33 @@ pub(super) async fn tsdb_query_handler(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let cfg = &state.tsdb_config;
     if !cfg.enabled || cfg.query_url.is_empty() {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, "TSDB integration not enabled".into()));
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "TSDB integration not enabled".into(),
+        ));
     }
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("HTTP client: {e}")))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("HTTP client: {e}"),
+            )
+        })?;
 
     // Build query based on TSDB type
     let response = match cfg.tsdb_type.as_str() {
         "prometheus" | "victoria_metrics" | "thanos" => {
             tsdb_prometheus_query(&client, cfg, &state, &params).await?
         }
-        "influxdb" => {
-            tsdb_influxdb_query(&client, cfg, &state, &params).await?
-        }
+        "influxdb" => tsdb_influxdb_query(&client, cfg, &state, &params).await?,
         other => {
-            return Err((StatusCode::BAD_REQUEST, format!("unsupported TSDB type: {other}")));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("unsupported TSDB type: {other}"),
+            ));
         }
     };
 
@@ -1129,26 +1416,39 @@ async fn tsdb_prometheus_query(
     }
 
     let url = format!("{base}/api/v1/query_range");
-    let mut req = client.get(&url)
-        .query(&[("query", &expr), ("start", &start.to_string()), ("end", &end.to_string()), ("step", &step.to_string())]);
+    let mut req = client.get(&url).query(&[
+        ("query", &expr),
+        ("start", &start.to_string()),
+        ("end", &end.to_string()),
+        ("step", &step.to_string()),
+    ]);
 
     // Add auth if credential configured
     if !cfg.credential_alias.is_empty() {
-        if let Ok(cred) = state.credentials.resolve(&cfg.credential_alias, crate::credentials::ResolvePurpose::Enrich) {
+        if let Ok(cred) = state.credentials.resolve(
+            &cfg.credential_alias,
+            crate::credentials::ResolvePurpose::Enrich,
+        ) {
             req = req.basic_auth(&cred.username, Some(&*cred.password));
         }
     }
 
-    let resp = req.send().await
+    let resp = req
+        .send()
+        .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("TSDB request failed: {e}")))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err((StatusCode::BAD_GATEWAY, format!("TSDB returned {status}: {body}")));
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            format!("TSDB returned {status}: {body}"),
+        ));
     }
 
-    resp.json::<serde_json::Value>().await
+    resp.json::<serde_json::Value>()
+        .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("TSDB response parse: {e}")))
 }
 
@@ -1170,30 +1470,46 @@ async fn tsdb_influxdb_query(
         flux.push_str(&format!(" |> filter(fn: (r) => r.device == \"{}\")", dev));
     }
     if let Some(ref iface) = params.interface {
-        flux.push_str(&format!(" |> filter(fn: (r) => r.interface == \"{}\")", iface));
+        flux.push_str(&format!(
+            " |> filter(fn: (r) => r.interface == \"{}\")",
+            iface
+        ));
     }
 
     let url = format!("{base}/api/v2/query");
-    let mut req = client.post(&url)
+    let mut req = client
+        .post(&url)
         .header("Content-Type", "application/vnd.flux")
         .body(flux);
 
     if !cfg.credential_alias.is_empty() {
-        if let Ok(cred) = state.credentials.resolve(&cfg.credential_alias, crate::credentials::ResolvePurpose::Enrich) {
+        if let Ok(cred) = state.credentials.resolve(
+            &cfg.credential_alias,
+            crate::credentials::ResolvePurpose::Enrich,
+        ) {
             req = req.bearer_auth(&*cred.password);
         }
     }
 
-    let resp = req.send().await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("InfluxDB request failed: {e}")))?;
+    let resp = req.send().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("InfluxDB request failed: {e}"),
+        )
+    })?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err((StatusCode::BAD_GATEWAY, format!("InfluxDB returned {status}: {body}")));
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            format!("InfluxDB returned {status}: {body}"),
+        ));
     }
 
-    let body = resp.text().await
+    let body = resp
+        .text()
+        .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("InfluxDB response: {e}")))?;
 
     // Wrap CSV/annotated response in JSON
@@ -1210,11 +1526,18 @@ async fn tsdb_influxdb_query(
 pub async fn list_settings_handler(
     State(state): State<super::AppState>,
 ) -> Json<serde_json::Value> {
-    let items = state.store.list_config_items(Some("runtime_config".to_string())).await.unwrap_or_default();
-    let sections: Vec<serde_json::Value> = RUNTIME_CONFIG_SECTIONS.iter().map(|s| {
-        let in_db = items.iter().any(|i| i.name == *s && i.enabled);
-        serde_json::json!({ "section": s, "in_db": in_db })
-    }).collect();
+    let items = state
+        .store
+        .list_config_items(Some("runtime_config".to_string()))
+        .await
+        .unwrap_or_default();
+    let sections: Vec<serde_json::Value> = RUNTIME_CONFIG_SECTIONS
+        .iter()
+        .map(|s| {
+            let in_db = items.iter().any(|i| i.name == *s && i.enabled);
+            serde_json::json!({ "section": s, "in_db": in_db })
+        })
+        .collect();
     Json(serde_json::json!({ "sections": sections }))
 }
 
@@ -1225,15 +1548,26 @@ pub async fn get_settings_section_handler(
     axum::extract::Path(section): axum::extract::Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     if !RUNTIME_CONFIG_SECTIONS.contains(&section.as_str()) {
-        return Err((StatusCode::NOT_FOUND, format!("unknown config section: {section}")));
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("unknown config section: {section}"),
+        ));
     }
-    let items = state.store.list_config_items(Some("runtime_config".to_string())).await.unwrap_or_default();
+    let items = state
+        .store
+        .list_config_items(Some("runtime_config".to_string()))
+        .await
+        .unwrap_or_default();
     if let Some(item) = items.iter().find(|i| i.name == section && i.enabled) {
         let val: serde_json::Value = serde_json::from_str(&item.content_json)
             .unwrap_or(serde_json::Value::String(item.content_json.clone()));
-        Ok(Json(serde_json::json!({ "section": section, "source": "db", "value": val })))
+        Ok(Json(
+            serde_json::json!({ "section": section, "source": "db", "value": val }),
+        ))
     } else {
-        Ok(Json(serde_json::json!({ "section": section, "source": "toml_default", "value": null })))
+        Ok(Json(
+            serde_json::json!({ "section": section, "source": "toml_default", "value": null }),
+        ))
     }
 }
 
@@ -1245,15 +1579,27 @@ pub async fn patch_settings_section_handler(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     if !RUNTIME_CONFIG_SECTIONS.contains(&section.as_str()) {
-        return Err((StatusCode::NOT_FOUND, format!("unknown config section: {section}")));
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("unknown config section: {section}"),
+        ));
     }
     let json = serde_json::to_string(&body)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid JSON: {e}")))?;
     if json.len() > 512 * 1024 {
-        return Err((StatusCode::PAYLOAD_TOO_LARGE, "config section exceeds 512 KB limit".into()));
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "config section exceeds 512 KB limit".into(),
+        ));
     }
-    persist_runtime_section(&state.store, &section, &json).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("persist failed: {e}")))?;
+    persist_runtime_section(&state.store, &section, &json)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("persist failed: {e}"),
+            )
+        })?;
     Ok(Json(serde_json::json!({ "ok": true, "section": section })))
 }
 
@@ -1261,10 +1607,16 @@ pub async fn patch_settings_section_handler(
 pub async fn export_settings_handler(
     State(state): State<super::AppState>,
 ) -> Json<serde_json::Value> {
-    let items = state.store.list_config_items(Some("runtime_config".to_string())).await.unwrap_or_default();
+    let items = state
+        .store
+        .list_config_items(Some("runtime_config".to_string()))
+        .await
+        .unwrap_or_default();
     let mut map = serde_json::Map::new();
     for item in &items {
-        if !item.enabled { continue; }
+        if !item.enabled {
+            continue;
+        }
         let val: serde_json::Value = serde_json::from_str(&item.content_json)
             .unwrap_or(serde_json::Value::String(item.content_json.clone()));
         map.insert(item.name.clone(), val);
@@ -1289,7 +1641,7 @@ fn cert_alias(name: &str) -> String {
 }
 
 fn pem_fingerprint(pem: &str) -> String {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(pem.as_bytes());
     hex::encode(hasher.finalize())
@@ -1298,12 +1650,10 @@ fn pem_fingerprint(pem: &str) -> String {
 /// Parse the Not-After Unix timestamp from the first certificate block in a PEM.
 /// Returns None if the PEM contains no certificates or the date cannot be parsed.
 fn pem_expires_at(pem: &str) -> Option<i64> {
-    use rustls_pemfile::certs;
     use rustls::pki_types::CertificateDer;
+    use rustls_pemfile::certs;
 
-    let der_blocks: Vec<CertificateDer<'static>> = certs(&mut pem.as_bytes())
-        .flatten()
-        .collect();
+    let der_blocks: Vec<CertificateDer<'static>> = certs(&mut pem.as_bytes()).flatten().collect();
     let der = der_blocks.into_iter().next()?;
 
     // Walk the ASN.1 DER manually — TBSCertificate.validity.notAfter
@@ -1372,7 +1722,11 @@ fn parse_asn1_time(s: &str) -> Option<i64> {
     // GeneralizedTime: YYYYMMDDHHMMSS
     let dt = if s.len() == 12 {
         let year_2: i32 = s[0..2].parse().ok()?;
-        let year = if year_2 >= 50 { 1900 + year_2 } else { 2000 + year_2 };
+        let year = if year_2 >= 50 {
+            1900 + year_2
+        } else {
+            2000 + year_2
+        };
         let rest = format!("{:04}{}", year, &s[2..]);
         NaiveDateTime::parse_from_str(&rest, "%Y%m%d%H%M%S").ok()?
     } else if s.len() >= 14 {
@@ -1410,14 +1764,17 @@ pub struct UpsertCertRequest {
 }
 
 /// GET /api/certs — list all vault-stored certificates (without PEM content).
-pub async fn list_certs_handler(
-    State(state): State<AppState>,
-) -> Json<serde_json::Value> {
+pub async fn list_certs_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
     let summaries = state.credentials.list().unwrap_or_default();
     let mut certs: Vec<CertMeta> = Vec::new();
     for s in &summaries {
-        if !s.alias.starts_with("cert-") { continue; }
-        let username = state.credentials.username_for_alias(&s.alias).unwrap_or_default();
+        if !s.alias.starts_with("cert-") {
+            continue;
+        }
+        let username = state
+            .credentials
+            .username_for_alias(&s.alias)
+            .unwrap_or_default();
         if let Ok(meta) = serde_json::from_str::<CertMeta>(&username) {
             certs.push(meta);
         }
@@ -1438,7 +1795,10 @@ pub async fn upsert_cert_handler(
         return Err((StatusCode::BAD_REQUEST, "pem is required".into()));
     }
     if !body.pem.contains("-----BEGIN") {
-        return Err((StatusCode::UNPROCESSABLE_ENTITY, "pem does not look like a valid PEM block".into()));
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "pem does not look like a valid PEM block".into(),
+        ));
     }
 
     let alias = cert_alias(&body.name);
@@ -1450,7 +1810,11 @@ pub async fn upsert_cert_handler(
     let expires_at = pem_expires_at(&body.pem);
     let meta = CertMeta {
         name: body.name.clone(),
-        label: if body.label.is_empty() { body.name.clone() } else { body.label.clone() },
+        label: if body.label.is_empty() {
+            body.name.clone()
+        } else {
+            body.label.clone()
+        },
         fingerprint_sha256: pem_fingerprint(&body.pem),
         added_at_ns: now_ns,
         pem_size: body.pem.len(),
@@ -1460,7 +1824,12 @@ pub async fn upsert_cert_handler(
     let username_json = serde_json::to_string(&meta)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let exists = state.credentials.list().unwrap_or_default().iter().any(|s| s.alias == alias);
+    let exists = state
+        .credentials
+        .list()
+        .unwrap_or_default()
+        .iter()
+        .any(|s| s.alias == alias);
     let result = if exists {
         state.credentials.update(&alias, &username_json, &body.pem)
     } else {
@@ -1478,7 +1847,8 @@ pub async fn get_cert_pem_handler(
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Result<axum::response::Response, (StatusCode, String)> {
     let alias = cert_alias(&name);
-    let cred = state.credentials
+    let cred = state
+        .credentials
         .resolve(&alias, crate::credentials::ResolvePurpose::Internal)
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
     Ok(axum::response::Response::builder()
@@ -1494,7 +1864,9 @@ pub async fn delete_cert_handler(
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let alias = cert_alias(&name);
-    state.credentials.remove(&alias)
+    state
+        .credentials
+        .remove(&alias)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     tracing::info!(name = %name, "cert removed from vault");
     Ok(StatusCode::NO_CONTENT)
@@ -1548,9 +1920,14 @@ pub async fn apply_cert_handler(
 ) -> Result<Json<ApplyCertResponse>, (StatusCode, String)> {
     let valid_targets = ["http_tls", "runtime_mtls", "gnmi_ca"];
     if !valid_targets.contains(&body.target.as_str()) {
-        return Err((StatusCode::BAD_REQUEST, format!(
-            "unknown target '{}'; valid: {}", body.target, valid_targets.join(", ")
-        )));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "unknown target '{}'; valid: {}",
+                body.target,
+                valid_targets.join(", ")
+            ),
+        ));
     }
 
     let mut applied: Vec<String> = Vec::new();
@@ -1560,7 +1937,10 @@ pub async fn apply_cert_handler(
     // can be re-enabled later and the change is auditable.
     if body.clear {
         let prefix = format!("cert_config:{}:", body.target);
-        let items = state.store.list_config_items(Some("cert_config".to_string())).await
+        let items = state
+            .store
+            .list_config_items(Some("cert_config".to_string()))
+            .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         let mut cleared = Vec::new();
         for item in items.into_iter().filter(|i| i.name.starts_with(&prefix)) {
@@ -1568,7 +1948,10 @@ pub async fn apply_cert_handler(
                 enabled: false,
                 ..item.clone()
             };
-            state.store.upsert_config_item(disabled).await
+            state
+                .store
+                .upsert_config_item(disabled)
+                .await
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
             cleared.push(item.name.clone());
         }
@@ -1582,10 +1965,14 @@ pub async fn apply_cert_handler(
         }
         return Ok(Json(ApplyCertResponse {
             target: body.target,
-            applied: cleared.into_iter().map(|k| format!("{k} disabled")).collect(),
+            applied: cleared
+                .into_iter()
+                .map(|k| format!("{k} disabled"))
+                .collect(),
             restart_scheduled,
             message: if restart_scheduled {
-                "cert config cleared — restart scheduled (reverts to bonsai.toml on next boot)".into()
+                "cert config cleared — restart scheduled (reverts to bonsai.toml on next boot)"
+                    .into()
             } else {
                 "cert config cleared — restart required to take effect".into()
             },
@@ -1596,29 +1983,50 @@ pub async fn apply_cert_handler(
     let mut writes: Vec<(String, String)> = Vec::new();
     match body.target.as_str() {
         "http_tls" => {
-            if let Some(ref cert) = body.cert { writes.push(("cert_config:http_tls:cert".into(), cert.clone())); }
-            if let Some(ref key) = body.key { writes.push(("cert_config:http_tls:key".into(), key.clone())); }
+            if let Some(ref cert) = body.cert {
+                writes.push(("cert_config:http_tls:cert".into(), cert.clone()));
+            }
+            if let Some(ref key) = body.key {
+                writes.push(("cert_config:http_tls:key".into(), key.clone()));
+            }
         }
         "runtime_mtls" => {
-            if let Some(ref ca) = body.ca_cert { writes.push(("cert_config:runtime_mtls:ca_cert".into(), ca.clone())); }
-            if let Some(ref cert) = body.cert { writes.push(("cert_config:runtime_mtls:cert".into(), cert.clone())); }
-            if let Some(ref key) = body.key { writes.push(("cert_config:runtime_mtls:key".into(), key.clone())); }
+            if let Some(ref ca) = body.ca_cert {
+                writes.push(("cert_config:runtime_mtls:ca_cert".into(), ca.clone()));
+            }
+            if let Some(ref cert) = body.cert {
+                writes.push(("cert_config:runtime_mtls:cert".into(), cert.clone()));
+            }
+            if let Some(ref key) = body.key {
+                writes.push(("cert_config:runtime_mtls:key".into(), key.clone()));
+            }
         }
         "gnmi_ca" => {
-            if let Some(ref ca) = body.ca_cert { writes.push(("cert_config:gnmi_ca:ca_cert".into(), ca.clone())); }
+            if let Some(ref ca) = body.ca_cert {
+                writes.push(("cert_config:gnmi_ca:ca_cert".into(), ca.clone()));
+            }
         }
         _ => {}
     }
     if writes.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "no cert fields provided (use clear=true to disable)".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "no cert fields provided (use clear=true to disable)".into(),
+        ));
     }
     for (key, cert_name) in &writes {
         let alias = cert_alias(cert_name);
-        let exists = state.credentials.list().unwrap_or_default().iter().any(|s| s.alias == alias);
+        let exists = state
+            .credentials
+            .list()
+            .unwrap_or_default()
+            .iter()
+            .any(|s| s.alias == alias);
         if !exists {
-            return Err((StatusCode::UNPROCESSABLE_ENTITY, format!(
-                "cert '{}' not found in vault (alias: {})", cert_name, alias
-            )));
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("cert '{}' not found in vault (alias: {})", cert_name, alias),
+            ));
         }
         let vault_ref = format!("vault:{}", cert_name);
         let item = crate::graph::ConfigItemRecord {
@@ -1631,7 +2039,10 @@ pub async fn apply_cert_handler(
             enabled: true,
             created_by: "certs_api".to_string(),
         };
-        state.store.upsert_config_item(item).await
+        state
+            .store
+            .upsert_config_item(item)
+            .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         applied.push(format!("{} = {}", key, vault_ref));
     }
@@ -1659,19 +2070,24 @@ pub async fn apply_cert_handler(
 }
 
 /// GET /api/certs/applied — show currently applied cert config from DB.
-pub async fn list_applied_certs_handler(
-    State(state): State<AppState>,
-) -> Json<serde_json::Value> {
-    let items = state.store.list_config_items(Some("cert_config".to_string())).await.unwrap_or_default();
+pub async fn list_applied_certs_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let items = state
+        .store
+        .list_config_items(Some("cert_config".to_string()))
+        .await
+        .unwrap_or_default();
     let mut result = serde_json::Map::new();
     for item in &items {
-        if !item.enabled { continue; }
+        if !item.enabled {
+            continue;
+        }
         // Key format: cert_config:{target}:{field}  e.g. cert_config:http_tls:cert
         let parts: Vec<&str> = item.name.splitn(3, ':').collect();
         if parts.len() == 3 {
             let target_section = parts[1].to_string();
             let field = parts[2].to_string();
-            let section = result.entry(target_section)
+            let section = result
+                .entry(target_section)
                 .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
             if let serde_json::Value::Object(map) = section {
                 map.insert(field, serde_json::Value::String(item.content_json.clone()));
@@ -1687,7 +2103,12 @@ pub async fn verify_cert_path_handler(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let path = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if path.is_empty() {
         return Json(serde_json::json!({ "ok": false, "error": "path is required" }));
     }

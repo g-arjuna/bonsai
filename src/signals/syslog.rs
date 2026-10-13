@@ -177,8 +177,11 @@ async fn run_udp(
     loop {
         let pattern_changed = async {
             match pattern_rx.as_mut() {
-                Some(rx) => { rx.changed().await.ok(); true }
-                None => { std::future::pending::<bool>().await }
+                Some(rx) => {
+                    rx.changed().await.ok();
+                    true
+                }
+                None => std::future::pending::<bool>().await,
             }
         };
         tokio::select! {
@@ -326,9 +329,17 @@ async fn run_tcp_newline<R: tokio::io::AsyncBufRead + Unpin>(
             }
             Ok(_) => {
                 handle_frame(
-                    line.trim_end().to_string(), "tcp", peer_str.to_string(),
-                    bus, archive, fact_extractor, target_map, governor, shun_engine,
-                ).await;
+                    line.trim_end().to_string(),
+                    "tcp",
+                    peer_str.to_string(),
+                    bus,
+                    archive,
+                    fact_extractor,
+                    target_map,
+                    governor,
+                    shun_engine,
+                )
+                .await;
             }
             Err(error) => {
                 warn!(%error, peer = %peer_str, "syslog TCP read failed");
@@ -409,9 +420,17 @@ async fn run_tcp_octet_counting<R: tokio::io::AsyncBufRead + Unpin>(
 
         let raw = String::from_utf8_lossy(&msg_buf).trim_end().to_string();
         handle_frame(
-            raw, "tcp", peer_str.to_string(),
-            bus, archive, fact_extractor, target_map, governor, shun_engine,
-        ).await;
+            raw,
+            "tcp",
+            peer_str.to_string(),
+            bus,
+            archive,
+            fact_extractor,
+            target_map,
+            governor,
+            shun_engine,
+        )
+        .await;
     }
 }
 
@@ -472,7 +491,8 @@ async fn handle_frame(
                 return;
             }
             ShunOutcome::RateLimited { rule_id } => {
-                metrics::counter!("bonsai_syslog_shunned_total", "action" => "rate_limit").increment(1);
+                metrics::counter!("bonsai_syslog_shunned_total", "action" => "rate_limit")
+                    .increment(1);
                 tracing::debug!(rule_id, "syslog event rate-limited by shun rule");
                 return;
             }
@@ -763,7 +783,11 @@ impl SyslogFactExtractor {
                 });
             }
         }
-        info!(source = "db", count = patterns.len(), "loaded syslog fact patterns");
+        info!(
+            source = "db",
+            count = patterns.len(),
+            "loaded syslog fact patterns"
+        );
         Self { patterns }
     }
 
@@ -771,7 +795,9 @@ impl SyslogFactExtractor {
         let vendor = vendor.to_ascii_lowercase();
         self.patterns
             .iter()
-            .filter(|pattern| vendor.is_empty() || pattern.vendor.is_empty() || vendor.contains(&pattern.vendor))
+            .filter(|pattern| {
+                vendor.is_empty() || pattern.vendor.is_empty() || vendor.contains(&pattern.vendor)
+            })
             .filter(|pattern| {
                 pattern
                     .category
@@ -1228,8 +1254,7 @@ facts: []
                 fixture.fixture_id
             );
             assert_eq!(
-                config_change_trigger,
-                fixture.expected_signal_trigger,
+                config_change_trigger, fixture.expected_signal_trigger,
                 "fixture {} config trigger mismatch",
                 fixture.fixture_id
             );
@@ -1254,17 +1279,13 @@ facts: []
                 let actual_value = fact.fields.get(key).unwrap_or_else(|| {
                     panic!(
                         "fixture {} missing field {} in {:?}",
-                        fixture.fixture_id,
-                        key,
-                        fact.fields
+                        fixture.fixture_id, key, fact.fields
                     )
                 });
                 assert_eq!(
-                    actual_value,
-                    expected_value,
+                    actual_value, expected_value,
                     "fixture {} field {} mismatch",
-                    fixture.fixture_id,
-                    key
+                    fixture.fixture_id, key
                 );
             }
         }

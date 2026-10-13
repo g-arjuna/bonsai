@@ -265,7 +265,9 @@ pub fn read_recent(root: &Path, limit: usize) -> Vec<serde_json::Value> {
 
     let mut entries: Vec<serde_json::Value> = Vec::new();
     'outer: for path in &files {
-        let Ok(file) = fs::File::open(path) else { continue };
+        let Ok(file) = fs::File::open(path) else {
+            continue;
+        };
         let lines: Vec<String> = BufReader::new(file).lines().flatten().collect();
         for line in lines.into_iter().rev() {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {

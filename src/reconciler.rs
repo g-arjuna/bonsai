@@ -15,14 +15,11 @@ use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
 use crate::graph::GraphStore;
-use crate::graph::common::{read_str, now_ns, ts};
+use crate::graph::common::{now_ns, read_str, ts};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(60);
 
-pub async fn run_reconciler(
-    store: Arc<GraphStore>,
-    mut shutdown: watch::Receiver<bool>,
-) {
+pub async fn run_reconciler(store: Arc<GraphStore>, mut shutdown: watch::Receiver<bool>) {
     info!("entity reconciler started (60s poll interval)");
     loop {
         tokio::select! {
@@ -48,7 +45,10 @@ fn reconcile_once(db: &lbug::Database) -> Result<()> {
     let n = reconcile_host_device_pairs(&conn)?;
     let m = reconcile_duplicate_host_endpoints(&conn)?;
     if n + m > 0 {
-        info!(identities_written = n + m, "reconciler: EntityIdentity nodes updated");
+        info!(
+            identities_written = n + m,
+            "reconciler: EntityIdentity nodes updated"
+        );
     }
     Ok(())
 }
@@ -76,8 +76,7 @@ fn reconcile_host_device_pairs(conn: &Connection<'_>) -> Result<usize> {
         let d_hostname = read_str(&row[3]);
 
         // Require ≥2 matching identifiers before binding.
-        let matches =
-            (!h_addr.is_empty() && h_addr == d_addr) as usize
+        let matches = (!h_addr.is_empty() && h_addr == d_addr) as usize
             + (!h_hostname.is_empty() && h_hostname == d_hostname) as usize;
         if matches < 1 {
             // Single field match (likely coincidence); need address OR hostname to overlap

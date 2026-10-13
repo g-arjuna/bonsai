@@ -1,0 +1,14 @@
+[
+  {
+    "document": "docs/merger/STATUS.md",
+    "target": "evidence/2026-10-11/b07-python-vendor-registry.log"
+  },
+  {
+    "document": "docs/merger/STATUS.md",
+    "target": "evidence/2026-10-11/b07-rust-vendor-registry.log"
+  },
+  {
+    "document": "docs/merger/STATUS.md",
+    "target": "evidence/2026-10-11/b09-peer-and-correlation.log"
+  }
+]

@@ -3,9 +3,9 @@
 //! Consumes health events from the event bus and sends them to syslog.
 //! Supports standard syslog format with severity mapping.
 
-use std::sync::Arc;
 use crate::event_bus::InProcessBus;
 use crate::health_emitter::{HealthEvent, HealthEventType, HealthSeverity};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Syslog configuration
@@ -45,8 +45,8 @@ impl SyslogAdapter {
     /// Convert HealthSeverity to syslog severity (0-7)
     fn to_syslog_severity(severity: &HealthSeverity) -> u8 {
         match severity {
-            HealthSeverity::Info => 6, // informational
-            HealthSeverity::Warning => 4, // warning
+            HealthSeverity::Info => 6,     // informational
+            HealthSeverity::Warning => 4,  // warning
             HealthSeverity::Critical => 2, // critical
         }
     }
@@ -80,7 +80,9 @@ impl SyslogAdapter {
             tag,
             event.component,
             event.message,
-            event.metadata.iter()
+            event
+                .metadata
+                .iter()
                 .map(|(k, v)| format!("{}={}", k, v))
                 .collect::<Vec<_>>()
                 .join(" ")
@@ -90,7 +92,7 @@ impl SyslogAdapter {
     /// Start the syslog adapter
     pub async fn start(&self) {
         *self.running.write().await = true;
-        
+
         if !self.config.enabled {
             tracing::info!("Syslog adapter disabled");
             return;

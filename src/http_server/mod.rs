@@ -19,7 +19,7 @@ use axum::{
     Router,
     body::Body,
     http::{Response, StatusCode},
-    routing::{delete, get, patch, post, any},
+    routing::{any, delete, get, patch, post},
 };
 
 use lbug::{Connection, Value};
@@ -29,80 +29,151 @@ use tower_http::{cors::CorsLayer, services::ServeDir};
 use crate::assignment::CollectorManager;
 use crate::catalogue::CatalogueState;
 use crate::enrichment::SharedEnricherRegistry;
-use crate::graph::{
-    DetectionRow, GraphStore, SiteRecord, TraceStep,
-};
+use crate::graph::{DetectionRow, GraphStore, SiteRecord, TraceStep};
 use crate::output::traits::SharedAdapterRegistry;
 use crate::resource_governor::GovernorHandle;
 use crate::{
     change_detection::ChangeDetectionRuntime,
     config::{
-        LayeredIngestionConfig, RemediationConfig, SelectedSubscriptionPath,
-        ServiceNowConfig, StorageConfig, StreamingConfig,
+        LayeredIngestionConfig, RemediationConfig, SelectedSubscriptionPath, ServiceNowConfig,
+        StorageConfig, StreamingConfig,
     },
-    credentials::CredentialVault, memory_profile,
+    credentials::CredentialVault,
+    memory_profile,
     registry::ApiRegistry,
-    remediation::{
-        SharedRollbackRegistry, SharedTrustStore,
-    },
+    remediation::{SharedRollbackRegistry, SharedTrustStore},
 };
 
-mod mcp_routes;
+pub mod auth;
+mod ddos;
 mod device;
-mod managed_devices;
 mod governance;
+mod ha;
+mod managed_devices;
+mod mcp_routes;
+pub mod ml_jobs;
+pub(crate) mod nl_query;
 mod observability;
-mod remediation;
 mod outputs;
-mod test_endpoints;
+pub mod playbooks;
+mod remediation;
 mod schema;
 mod schema_components;
 pub mod settings;
-pub(crate) mod nl_query;
-mod ddos;
-mod signal_policy;
-mod ha;
 mod shun;
-mod auth;
-pub mod ml_jobs;
-pub mod playbooks;
+mod signal_policy;
+mod test_endpoints;
 
-use mcp_routes::{openapi_json_handler, resolve_handler, schema_handler, swagger_ui_handler};
-use remediation::{approvals_approve_handler, approvals_create_handler, approvals_list_handler, approvals_reject_handler, approvals_rollback_handler, trust_list_handler, trust_graduate_handler, snow_integration_test_handler, servicenow_aiops_sync_handler, list_overrides, add_override, remove_override, list_investigations_handler, create_investigation_handler, get_investigation_handler, list_tool_calls_handler, complete_investigation_handler, grounded_incident_handler, webhook_change_event_handler, change_context_handler, servicenow_change_sync_handler, list_changes_handler, playbooks_catalog_handler, audit_log_handler, investigation_feedback_handler, investigation_accuracy_handler, vault_rekey_handler, remediation_verify_handler, list_config_items_handler, upsert_config_item_handler};
-use observability::{topology_handler, path_handler, blast_radius_handler, detections_handler, trace_handler, readiness_handler, operations_handler, test_status_handler, daily_check_handler, weekly_trend_handler, gnn_calibration_handler, gnn_score_handler, events_handler, events_history_handler, incidents_handler, graph_insights_handler, graph_quality_handler, flows_live_handler, device_flows_handler, endpoints_handler, explorer_query_handler, list_saved_queries_handler, create_saved_query_handler, delete_saved_query_handler, upsert_embeddings_handler, list_embeddings_handler, events_inject_handler, db_stats_handler, db_schema_handler, db_purge_handler, db_checkpoint_handler, db_export_handler, db_backup_handler, db_list_backups_handler, db_config_stats_handler, list_redundancy_groups_handler};
-use device::{device_detail_handler, device_enrichment_handler, device_enrichment_conflicts_handler, device_cmdb_handler, device_sensors_handler, device_optics_handler, device_config_history_handler, device_gnmi_readiness_handler, device_streaming_readiness_handler, device_recommendations_handler, yang_modules_handler, yang_search_handler, apply_device_selected_paths_handler, device_reparse_handler, profiles_handler, save_custom_profile_handler, enrichment_list_handler, enrichment_upsert_handler, enrichment_remove_handler, enrichment_test_handler, enrichment_run_handler, enrichment_audit_handler, netbox_import_handler};
+use auth::{
+    create_api_key_handler, create_user_handler, delete_api_key_handler, delete_user_handler,
+    ldap_config_handler, ldap_test_handler, list_api_keys_handler, list_users_handler,
+    login_handler, logout_handler, rotate_api_key_handler,
+};
+use ddos::{
+    ddos_baselines_handler, ddos_config_handler, ddos_events_handler, ddos_scope_add_handler,
+    ddos_scope_list_handler, ddos_scope_patch_handler, ddos_scope_remove_handler,
+};
 use device::InterfaceDetailJson;
-use managed_devices::{managed_devices_handler, discover_handler, credentials_handler, add_credential_handler, update_credential_handler, remove_credential_handler, test_credential_handler, add_managed_device_handler, add_managed_device_with_paths_handler, sites_handler, upsert_site_handler, site_summary_handler, remove_site_handler, remove_managed_device_handler, bulk_managed_device_action_handler, remove_impact_handler, bulk_import_handler, bootstrap_device_handler, device_seed_handler, bulk_bootstrap_handler, resolve_credential_handler};
-use governance::{assignment_override_handler, assignment_rules_handler, assignment_status_handler, collectors_handler, create_environment_handler, environments_handler, governance_state_handler, governance_history_handler, governance_pressure_handler, governance_profile_handler, health_handler, healthz_handler, readyz_handler, remove_environment_handler, assign_site_environment_handler, update_environment_handler, set_assignment_rules_handler, setup_status_handler, sidecars_handler, sidecar_status_handler, sidecar_process_status_handler, sidecar_start_handler, sidecar_stop_handler, sidecar_restart_handler, sidecar_rules_handler, sidecar_rule_toggle_handler, sidecar_rule_parameters_handler, patch_sidecar_rule_parameters_handler, sidecar_rule_shadow_mode_handler, sidecar_rule_analytics_handler, sidecar_rule_shadow_firings_handler, create_syslog_rule_handler, list_syslog_rules_handler};
-use outputs::{adapter_audit_handler, adapter_list_handler, adapter_remove_handler, adapter_test_handler, adapter_upsert_handler};
-use test_endpoints::{inject_detection_handler, parse_syslog_fixture_handler};
-use settings::{get_streaming_settings_handler, patch_streaming_settings_handler, get_receiver_status_handler, get_ai_config_handler, post_ai_test_handler, list_ai_providers_handler, upsert_ai_provider_handler, remove_ai_provider_handler, test_ai_provider_handler, activate_ai_provider_handler, get_active_ai_provider_handler, reload_patterns_handler, mib_upload_handler, tsdb_config_handler, tsdb_query_handler, list_settings_handler, get_settings_section_handler, patch_settings_section_handler, export_settings_handler, list_certs_handler, upsert_cert_handler, get_cert_pem_handler, delete_cert_handler, verify_cert_path_handler, apply_cert_handler, list_applied_certs_handler};
-use ha::{ha_status_handler, ha_settings_handler, ha_patch_settings_handler, restart_handler};
-use nl_query::{explorer_ask_handler, nl_budget_handler};
-use shun::{create_shun_rule_handler, delete_shun_rule_handler, disable_shun_rule_handler, list_shun_rules_handler, shun_stats_handler};
-use ddos::{ddos_scope_list_handler, ddos_scope_add_handler, ddos_scope_remove_handler, ddos_scope_patch_handler, ddos_config_handler, ddos_events_handler, ddos_baselines_handler};
-use signal_policy::{list_signal_policies_handler, upsert_signal_policy_handler, delete_signal_policy_handler, signal_types_handler, signal_policy_summary_handler};
-use auth::{list_api_keys_handler, create_api_key_handler, delete_api_key_handler, rotate_api_key_handler, login_handler, logout_handler, list_users_handler, create_user_handler, delete_user_handler, ldap_config_handler, ldap_test_handler};
+use device::{
+    apply_device_selected_paths_handler, device_cmdb_handler, device_config_history_handler,
+    device_detail_handler, device_enrichment_conflicts_handler, device_enrichment_handler,
+    device_gnmi_readiness_handler, device_optics_handler, device_recommendations_handler,
+    device_reparse_handler, device_sensors_handler, device_streaming_readiness_handler,
+    enrichment_audit_handler, enrichment_list_handler, enrichment_remove_handler,
+    enrichment_run_handler, enrichment_test_handler, enrichment_upsert_handler,
+    netbox_import_handler, profiles_handler, save_custom_profile_handler, yang_modules_handler,
+    yang_search_handler,
+};
+use governance::{
+    assign_site_environment_handler, assignment_override_handler, assignment_rules_handler,
+    assignment_status_handler, collectors_handler, create_environment_handler,
+    create_syslog_rule_handler, environments_handler, governance_history_handler,
+    governance_pressure_handler, governance_profile_handler, governance_state_handler,
+    health_handler, healthz_handler, list_syslog_rules_handler,
+    patch_sidecar_rule_parameters_handler, readyz_handler, remove_environment_handler,
+    set_assignment_rules_handler, setup_status_handler, sidecar_process_status_handler,
+    sidecar_restart_handler, sidecar_rule_analytics_handler, sidecar_rule_parameters_handler,
+    sidecar_rule_shadow_firings_handler, sidecar_rule_shadow_mode_handler,
+    sidecar_rule_toggle_handler, sidecar_rules_handler, sidecar_start_handler,
+    sidecar_status_handler, sidecar_stop_handler, sidecars_handler, update_environment_handler,
+};
+use ha::{ha_patch_settings_handler, ha_settings_handler, ha_status_handler, restart_handler};
+use managed_devices::{
+    add_credential_handler, add_managed_device_handler, add_managed_device_with_paths_handler,
+    bootstrap_device_handler, bulk_bootstrap_handler, bulk_import_handler,
+    bulk_managed_device_action_handler, credentials_handler, device_seed_handler, discover_handler,
+    managed_devices_handler, remove_credential_handler, remove_impact_handler,
+    remove_managed_device_handler, remove_site_handler, resolve_credential_handler,
+    site_summary_handler, sites_handler, test_credential_handler, update_credential_handler,
+    upsert_site_handler,
+};
+use mcp_routes::{openapi_json_handler, resolve_handler, schema_handler, swagger_ui_handler};
 use ml_jobs::{
-    ml_events_stream_handler, ml_events_publish_handler,
-    list_ml_exports_handler, create_ml_export_handler, patch_ml_export_handler,
-    ml_export_quality_handler,
-    list_ml_models_handler, create_ml_model_handler, activate_ml_model_handler,
-    active_ml_model_handler,
-    list_ml_jobs_handler, create_ml_job_handler, patch_ml_job_handler, cancel_ml_job_handler,
-    list_ml_schedules_handler, upsert_ml_schedule_handler, delete_ml_schedule_handler,
-    gnn_inference_results_handler, gnn_attention_handler, gnn_results_query_handler,
-    events_unembedded_handler, events_embeddings_handler,
-    devices_unembedded_config_handler, device_config_embedding_handler,
-    ml_embedding_stats_handler, ml_lineage_handler, ml_similar_events_handler,
-    retry_ml_job_handler, list_dead_letter_handler, ml_syslog_clusters_handler,
+    activate_ml_model_handler, active_ml_model_handler, cancel_ml_job_handler,
+    create_ml_export_handler, create_ml_job_handler, create_ml_model_handler,
+    delete_ml_schedule_handler, device_config_embedding_handler, devices_unembedded_config_handler,
+    events_embeddings_handler, events_unembedded_handler, gnn_attention_handler,
+    gnn_inference_results_handler, gnn_results_query_handler, list_dead_letter_handler,
+    list_ml_exports_handler, list_ml_jobs_handler, list_ml_models_handler,
+    list_ml_schedules_handler, ml_embedding_stats_handler, ml_events_publish_handler,
+    ml_events_stream_handler, ml_export_quality_handler, ml_lineage_handler,
+    ml_similar_events_handler, ml_syslog_clusters_handler, patch_ml_export_handler,
+    patch_ml_job_handler, retry_ml_job_handler, upsert_ml_schedule_handler,
+};
+use nl_query::{explorer_ask_handler, nl_budget_handler};
+use observability::graph_snapshot_handler;
+use observability::{
+    blast_radius_handler, create_saved_query_handler, daily_check_handler, db_backup_handler,
+    db_checkpoint_handler, db_config_stats_handler, db_export_handler, db_list_backups_handler,
+    db_purge_handler, db_schema_handler, db_stats_handler, delete_saved_query_handler,
+    detections_handler, device_flows_handler, endpoints_handler, events_handler,
+    events_history_handler, events_inject_handler, explorer_query_handler, flows_live_handler,
+    gnn_calibration_handler, gnn_score_handler, graph_insights_handler, graph_quality_handler,
+    incidents_handler, list_embeddings_handler, list_redundancy_groups_handler,
+    list_saved_queries_handler, operations_handler, path_handler, readiness_handler,
+    test_status_handler, topology_handler, trace_handler, upsert_embeddings_handler,
+    weekly_trend_handler,
+};
+use outputs::{
+    adapter_audit_handler, adapter_list_handler, adapter_remove_handler, adapter_test_handler,
+    adapter_upsert_handler,
 };
 use playbooks::{
-    list_playbooks_handler, get_playbook_handler, create_playbook_handler,
-    update_playbook_handler, delete_playbook_handler, test_playbook_handler,
-    record_execution_handler, list_executions_handler, playbook_stats_handler,
+    create_playbook_handler, delete_playbook_handler, get_playbook_handler,
+    list_executions_handler, list_playbooks_handler, playbook_stats_handler,
+    record_execution_handler, test_playbook_handler, update_playbook_handler,
 };
-use observability::graph_snapshot_handler;
+use remediation::{
+    add_override, approvals_approve_handler, approvals_create_handler, approvals_list_handler,
+    approvals_reject_handler, approvals_rollback_handler, audit_log_handler,
+    change_context_handler, complete_investigation_handler, create_investigation_handler,
+    get_investigation_handler, grounded_incident_handler, investigation_accuracy_handler,
+    investigation_feedback_handler, list_changes_handler, list_config_items_handler,
+    list_investigations_handler, list_overrides, list_tool_calls_handler,
+    playbooks_catalog_handler, remediation_verify_handler, remove_override,
+    servicenow_aiops_sync_handler, servicenow_change_sync_handler, snow_integration_test_handler,
+    trust_graduate_handler, trust_list_handler, upsert_config_item_handler, vault_rekey_handler,
+    webhook_change_event_handler,
+};
+use settings::{
+    activate_ai_provider_handler, apply_cert_handler, delete_cert_handler, export_settings_handler,
+    get_active_ai_provider_handler, get_ai_config_handler, get_cert_pem_handler,
+    get_receiver_status_handler, get_settings_section_handler, get_streaming_settings_handler,
+    list_ai_providers_handler, list_applied_certs_handler, list_certs_handler,
+    list_settings_handler, mib_upload_handler, patch_settings_section_handler,
+    patch_streaming_settings_handler, post_ai_test_handler, reload_patterns_handler,
+    remove_ai_provider_handler, test_ai_provider_handler, tsdb_config_handler, tsdb_query_handler,
+    upsert_ai_provider_handler, upsert_cert_handler, verify_cert_path_handler,
+};
+use shun::{
+    create_shun_rule_handler, delete_shun_rule_handler, disable_shun_rule_handler,
+    list_shun_rules_handler, shun_stats_handler,
+};
+use signal_policy::{
+    delete_signal_policy_handler, list_signal_policies_handler, signal_policy_summary_handler,
+    signal_types_handler, upsert_signal_policy_handler,
+};
+use test_endpoints::{inject_detection_handler, parse_syslog_fixture_handler};
 
 // ── JSON response types ───────────────────────────────────────────────────────
 
@@ -519,14 +590,6 @@ pub(super) struct SiteJson {
     environment_id: String,
 }
 
-
-
-
-
-
-
-
-
 #[derive(Serialize)]
 pub(super) struct SiteMutationResponse {
     success: bool,
@@ -726,8 +789,10 @@ pub struct AppState {
     /// D4-2: Syslog shunning engine. None if not enabled.
     pub shun_engine: Option<Arc<crate::shun::ShunEngine>>,
     /// D4-7 T3: Hot-reload senders for syslog and SNMP pattern extractors.
-    pub syslog_pattern_tx: Option<Arc<tokio::sync::watch::Sender<Arc<crate::signals::syslog::SyslogFactExtractor>>>>,
-    pub snmp_pattern_tx: Option<Arc<tokio::sync::watch::Sender<Arc<crate::signals::snmp::SnmpFactExtractor>>>>,
+    pub syslog_pattern_tx:
+        Option<Arc<tokio::sync::watch::Sender<Arc<crate::signals::syslog::SyslogFactExtractor>>>>,
+    pub snmp_pattern_tx:
+        Option<Arc<tokio::sync::watch::Sender<Arc<crate::signals::snmp::SnmpFactExtractor>>>>,
     /// D4-7 T3: Pattern directories for reload.
     pub syslog_pattern_dir: String,
     pub snmp_oid_pattern_dir: String,
@@ -785,10 +850,16 @@ pub fn router(
     targets: Vec<crate::config::TargetConfig>,
     ai_config: crate::config::AiConfig,
     gnn_config: crate::config::GnnConfig,
-    investigation_rx: Option<tokio::sync::mpsc::Receiver<crate::write_coordinator::AutoInvestigateRequest>>,
+    investigation_rx: Option<
+        tokio::sync::mpsc::Receiver<crate::write_coordinator::AutoInvestigateRequest>,
+    >,
     shun_engine: Option<Arc<crate::shun::ShunEngine>>,
-    syslog_pattern_tx: Option<Arc<tokio::sync::watch::Sender<Arc<crate::signals::syslog::SyslogFactExtractor>>>>,
-    snmp_pattern_tx: Option<Arc<tokio::sync::watch::Sender<Arc<crate::signals::snmp::SnmpFactExtractor>>>>,
+    syslog_pattern_tx: Option<
+        Arc<tokio::sync::watch::Sender<Arc<crate::signals::syslog::SyslogFactExtractor>>>,
+    >,
+    snmp_pattern_tx: Option<
+        Arc<tokio::sync::watch::Sender<Arc<crate::signals::snmp::SnmpFactExtractor>>>,
+    >,
     syslog_pattern_dir: String,
     snmp_oid_pattern_dir: String,
     ldap_config: crate::config::LdapConfig,
@@ -849,14 +920,18 @@ pub fn router(
         tokio::spawn(async move {
             while let Some(req) = rx.recv().await {
                 let store = Arc::clone(&inv_state.store);
-                match store.create_investigation(
-                    req.detection_id.clone(),
-                    req.device_address.clone(),
-                    "auto".to_string(),
-                ).await {
+                match store
+                    .create_investigation(
+                        req.detection_id.clone(),
+                        req.device_address.clone(),
+                        "auto".to_string(),
+                    )
+                    .await
+                {
                     Ok(inv) => {
                         if let Some((ai_cfg, api_key)) =
-                            crate::http_server::settings::resolve_active_ai_provider(&inv_state).await
+                            crate::http_server::settings::resolve_active_ai_provider(&inv_state)
+                                .await
                         {
                             crate::investigation_runtime::spawn_investigation(
                                 inv.id,
@@ -961,14 +1036,20 @@ where
 {
     Router::new()
         .route("/api/routing/v1/health", get(routing_v1_proxy_get_handler))
-        .route("/api/routing/v1/speakers", get(routing_v1_proxy_get_handler))
+        .route(
+            "/api/routing/v1/speakers",
+            get(routing_v1_proxy_get_handler),
+        )
         .route("/api/routing/v1/peers", get(routing_v1_proxy_get_handler))
         .route("/api/routing/v1/routes", get(routing_v1_proxy_get_handler))
         .route(
             "/api/routing/v1/prefix-history",
             get(routing_v1_proxy_get_handler),
         )
-        .route("/api/routing/v1/coverage", get(routing_v1_proxy_get_handler))
+        .route(
+            "/api/routing/v1/coverage",
+            get(routing_v1_proxy_get_handler),
+        )
         .route(
             "/api/routing/v1/evidence-coverage",
             get(routing_v1_proxy_get_handler),
@@ -1005,41 +1086,87 @@ where
 }
 
 async fn resolve_routing_service_endpoint(store: &GraphStore) -> (String, Option<String>) {
-    let items = store
-        .list_config_items(Some("app_config".to_string()))
-        .await
-        .unwrap_or_default();
-    let url = items
-        .iter()
-        .find(|i| i.name == "routing_service_url" && i.enabled)
-        .map(|i| i.content_json.trim().trim_matches('"').to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            std::env::var("BONSAI_ROUTING_SERVICE_URL")
-                .unwrap_or_else(|_| "http://127.0.0.1:8081".to_string())
-        });
-    let token = items
-        .iter()
-        .find(|i| i.name == "routing_service_token" && i.enabled)
-        .map(|i| i.content_json.trim().trim_matches('"').to_string())
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            std::env::var("BONSAI_ROUTING_SERVICE_TOKEN")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-        });
-    (url.trim_end_matches('/').to_string(), token)
+    let (url, token, _) =
+        crate::routing_service::resolve_routing_service_endpoint_config(store).await;
+    (url, token)
+}
+
+fn apply_routing_access_scope_to_query(
+    raw_query: Option<&str>,
+    scope: Option<&auth::RoutingAccessScope>,
+) -> Result<Option<String>, String> {
+    let Some(scope) = scope else {
+        return Ok(raw_query.filter(|q| !q.is_empty()).map(String::from));
+    };
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    if let Some(q) = raw_query {
+        for part in q.split('&') {
+            if part.is_empty() {
+                continue;
+            }
+            if let Some((k, v)) = part.split_once('=') {
+                pairs.push((k.to_string(), v.to_string()));
+            } else {
+                pairs.push((part.to_string(), String::new()));
+            }
+        }
+    }
+
+    for (key, scoped_val) in [
+        ("speaker", scope.speaker.as_deref()),
+        ("vrf_rd", scope.vrf_rd.as_deref()),
+        ("tenant_id", scope.tenant_id.as_deref()),
+    ] {
+        if let Some(enforced) = scoped_val {
+            for (k, v) in &pairs {
+                if k == key && !v.is_empty() && v != enforced {
+                    return Err(format!(
+                        "Requested {key} '{v}' violates token scope '{enforced}'"
+                    ));
+                }
+            }
+            pairs.retain(|(k, _)| k != key);
+            pairs.push((key.to_string(), enforced.to_string()));
+        }
+    }
+
+    if pairs.is_empty() {
+        Ok(None)
+    } else {
+        let joined = pairs
+            .into_iter()
+            .map(|(k, v)| if v.is_empty() { k } else { format!("{k}={v}") })
+            .collect::<Vec<_>>()
+            .join("&");
+        Ok(Some(joined))
+    }
 }
 
 async fn routing_v1_proxy_get_handler(
     axum::extract::State(store): axum::extract::State<Arc<GraphStore>>,
+    extensions: axum::http::Extensions,
     uri: axum::http::Uri,
 ) -> Response<Body> {
+    let ext_scope = extensions.get::<auth::RoutingAccessScope>();
+    let effective_query = match apply_routing_access_scope_to_query(uri.query(), ext_scope) {
+        Ok(q) => q,
+        Err(msg) => {
+            return axum::response::IntoResponse::into_response((
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({
+                    "api_version": crate::routing_service::ROUTING_API_VERSION,
+                    "error": "routing_scope_violation",
+                    "message": msg,
+                })),
+            ));
+        }
+    };
+
     let (base_url, token) = resolve_routing_service_endpoint(&store).await;
     let internal_path = uri
         .path()
         .replacen("/api/routing/v1/", "/internal/routing/v1/", 1);
-    let target_url = match uri.query() {
+    let target_url = match effective_query.as_deref() {
         Some(q) if !q.is_empty() => format!("{base_url}{internal_path}?{q}"),
         _ => format!("{base_url}{internal_path}"),
     };
@@ -1059,13 +1186,17 @@ async fn routing_v1_proxy_get_handler(
 
     match req.send().await {
         Ok(resp) => {
-            let status = StatusCode::from_u16(resp.status().as_u16())
-                .unwrap_or(StatusCode::BAD_GATEWAY);
+            let status =
+                StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
             match resp.json::<serde_json::Value>().await {
                 Ok(mut json_val) => {
                     auth::redact_secrets_in_json(&mut json_val);
-                    // Attach graph projection lag on /health and /coverage
+                    // Run graph projection step and attach lag on /health and /coverage (R05)
                     if uri.path().ends_with("/health") || uri.path().ends_with("/coverage") {
+                        let _ = crate::routing_service::project_remote_routing_events_to_graph(
+                            &store, 250,
+                        )
+                        .await;
                         let cp = crate::routing_service::load_projection_checkpoint(&store).await;
                         let latest_seq = json_val
                             .get("durable_sequence")
@@ -1078,13 +1209,17 @@ async fn routing_v1_proxy_get_handler(
                             );
                             obj.insert(
                                 "graph_projection_lag".to_string(),
-                                serde_json::json!(latest_seq.saturating_sub(cp.last_applied_sequence)),
+                                serde_json::json!(
+                                    latest_seq.saturating_sub(cp.last_applied_sequence)
+                                ),
                             );
                         }
                     }
                     axum::response::IntoResponse::into_response((status, axum::Json(json_val)))
                 }
-                Err(e) => routing_unavailable_response(&format!("Invalid JSON from routing service: {e}")),
+                Err(e) => {
+                    routing_unavailable_response(&format!("Invalid JSON from routing service: {e}"))
+                }
             }
         }
         Err(e) => routing_unavailable_response(&e.to_string()),
@@ -1117,14 +1252,16 @@ async fn routing_v1_proxy_post_handler(
 
     match req.send().await {
         Ok(resp) => {
-            let status = StatusCode::from_u16(resp.status().as_u16())
-                .unwrap_or(StatusCode::BAD_GATEWAY);
+            let status =
+                StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
             match resp.json::<serde_json::Value>().await {
                 Ok(mut json_val) => {
                     auth::redact_secrets_in_json(&mut json_val);
                     axum::response::IntoResponse::into_response((status, axum::Json(json_val)))
                 }
-                Err(e) => routing_unavailable_response(&format!("Invalid JSON from routing service: {e}")),
+                Err(e) => {
+                    routing_unavailable_response(&format!("Invalid JSON from routing service: {e}"))
+                }
             }
         }
         Err(e) => routing_unavailable_response(&e.to_string()),
@@ -1170,13 +1307,19 @@ fn observability_routes() -> Router<AppState> {
         .route("/api/blast-radius/{address}", get(blast_radius_handler))
         .route("/api/incidents/grouped", get(incidents_handler))
         .route("/api/incidents", get(incidents_handler))
-        .route("/api/incidents/{id}/grounded", get(grounded_incident_handler))
+        .route(
+            "/api/incidents/{id}/grounded",
+            get(grounded_incident_handler),
+        )
         .route("/api/detections", get(detections_handler))
         .route("/api/readiness", get(readiness_handler))
         .route("/api/operations", get(operations_handler))
         .route("/api/operations/daily-check", get(daily_check_handler))
         .route("/api/operations/weekly-trend", get(weekly_trend_handler))
-        .route("/api/operations/gnn-calibration", get(gnn_calibration_handler))
+        .route(
+            "/api/operations/gnn-calibration",
+            get(gnn_calibration_handler),
+        )
         .route("/api/gnn/score", post(gnn_score_handler))
         .route("/api/trace/{id}", get(trace_handler))
         .route("/api/events", get(events_handler))
@@ -1188,12 +1331,27 @@ fn observability_routes() -> Router<AppState> {
         .route("/api/flows/live", get(flows_live_handler))
         .route("/api/devices/{address}/flows", get(device_flows_handler))
         .route("/api/endpoints", get(endpoints_handler))
-        .route("/api/redundancy/groups", get(list_redundancy_groups_handler))
+        .route(
+            "/api/redundancy/groups",
+            get(list_redundancy_groups_handler),
+        )
         .route("/api/explorer/query", post(explorer_query_handler))
-        .route("/api/explorer/saved-queries", get(list_saved_queries_handler).post(create_saved_query_handler))
-        .route("/api/explorer/saved-queries/{id}/delete", post(delete_saved_query_handler))
-        .route("/api/graph/embeddings/upsert", post(upsert_embeddings_handler))
-        .route("/api/graph/embeddings/{address}", get(list_embeddings_handler))
+        .route(
+            "/api/explorer/saved-queries",
+            get(list_saved_queries_handler).post(create_saved_query_handler),
+        )
+        .route(
+            "/api/explorer/saved-queries/{id}/delete",
+            post(delete_saved_query_handler),
+        )
+        .route(
+            "/api/graph/embeddings/upsert",
+            post(upsert_embeddings_handler),
+        )
+        .route(
+            "/api/graph/embeddings/{address}",
+            get(list_embeddings_handler),
+        )
         .route("/api/db/stats", get(db_stats_handler))
         .route("/api/db/schema", get(db_schema_handler))
         .route("/api/db/purge", delete(db_purge_handler))
@@ -1208,39 +1366,77 @@ fn ml_routes() -> Router<AppState> {
     Router::new()
         .route("/api/ml/events/stream", get(ml_events_stream_handler))
         .route("/api/ml/events/publish", post(ml_events_publish_handler))
-        .route("/api/ml/exports", get(list_ml_exports_handler).post(create_ml_export_handler))
+        .route(
+            "/api/ml/exports",
+            get(list_ml_exports_handler).post(create_ml_export_handler),
+        )
         .route("/api/ml/exports/quality", get(ml_export_quality_handler))
         .route("/api/ml/exports/{id}", patch(patch_ml_export_handler))
-        .route("/api/ml/models", get(list_ml_models_handler).post(create_ml_model_handler))
+        .route(
+            "/api/ml/models",
+            get(list_ml_models_handler).post(create_ml_model_handler),
+        )
         .route("/api/ml/models/active", get(active_ml_model_handler))
-        .route("/api/ml/models/{id}/activate", post(activate_ml_model_handler))
+        .route(
+            "/api/ml/models/{id}/activate",
+            post(activate_ml_model_handler),
+        )
         .route("/api/ml/lineage/{model_id}", get(ml_lineage_handler))
-        .route("/api/ml/jobs", get(list_ml_jobs_handler).post(create_ml_job_handler))
+        .route(
+            "/api/ml/jobs",
+            get(list_ml_jobs_handler).post(create_ml_job_handler),
+        )
         .route("/api/ml/jobs/{id}", patch(patch_ml_job_handler))
         .route("/api/ml/jobs/{id}/cancel", post(cancel_ml_job_handler))
         .route("/api/ml/jobs/{id}/retry", post(retry_ml_job_handler))
         .route("/api/ml/jobs/dead-letter", get(list_dead_letter_handler))
-        .route("/api/ml/schedules", get(list_ml_schedules_handler).post(upsert_ml_schedule_handler))
-        .route("/api/ml/schedules/{id}", axum::routing::delete(delete_ml_schedule_handler))
+        .route(
+            "/api/ml/schedules",
+            get(list_ml_schedules_handler).post(upsert_ml_schedule_handler),
+        )
+        .route(
+            "/api/ml/schedules/{id}",
+            axum::routing::delete(delete_ml_schedule_handler),
+        )
         .route("/api/ml/embeddings/stats", get(ml_embedding_stats_handler))
         .route("/api/ml/syslog-clusters", get(ml_syslog_clusters_handler))
-        .route("/api/gnn/inference-results", post(gnn_inference_results_handler))
+        .route(
+            "/api/gnn/inference-results",
+            post(gnn_inference_results_handler),
+        )
         .route("/api/gnn/attention", post(gnn_attention_handler))
         .route("/api/gnn/results", get(gnn_results_query_handler))
         .route("/api/events/unembedded", get(events_unembedded_handler))
         .route("/api/events/embeddings", post(events_embeddings_handler))
-        .route("/api/devices/unembedded-config", get(devices_unembedded_config_handler))
-        .route("/api/devices/{address}/config-embedding", post(device_config_embedding_handler))
+        .route(
+            "/api/devices/unembedded-config",
+            get(devices_unembedded_config_handler),
+        )
+        .route(
+            "/api/devices/{address}/config-embedding",
+            post(device_config_embedding_handler),
+        )
         .route("/api/ml/similar-events", get(ml_similar_events_handler))
 }
 
 fn ev1_playbook_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/playbooks-v2", get(list_playbooks_handler).post(create_playbook_handler))
+        .route(
+            "/api/playbooks-v2",
+            get(list_playbooks_handler).post(create_playbook_handler),
+        )
         .route("/api/playbooks-v2/stats", get(playbook_stats_handler))
-        .route("/api/playbooks-v2/{id}", get(get_playbook_handler).put(update_playbook_handler).delete(delete_playbook_handler))
+        .route(
+            "/api/playbooks-v2/{id}",
+            get(get_playbook_handler)
+                .put(update_playbook_handler)
+                .delete(delete_playbook_handler),
+        )
         .route("/api/playbooks-v2/{id}/test", post(test_playbook_handler))
-        .route("/api/playbooks-v2/{id}/executions", get(list_executions_handler).post(record_execution_handler))
+        .route(
+            "/api/playbooks-v2/{id}/executions",
+            get(list_executions_handler).post(record_execution_handler),
+        )
 }
 
 fn device_routes() -> Router<AppState> {
@@ -1250,21 +1446,57 @@ fn device_routes() -> Router<AppState> {
         .route("/api/overrides", get(list_overrides).post(add_override))
         .route("/api/overrides/remove", post(remove_override))
         .route("/api/devices/{address}", get(device_detail_handler))
-        .route("/api/devices/{address}/enrichment", get(device_enrichment_handler))
-        .route("/api/devices/{address}/enrichment/conflicts", get(device_enrichment_conflicts_handler))
+        .route(
+            "/api/devices/{address}/enrichment",
+            get(device_enrichment_handler),
+        )
+        .route(
+            "/api/devices/{address}/enrichment/conflicts",
+            get(device_enrichment_conflicts_handler),
+        )
         .route("/api/devices/{address}/cmdb", get(device_cmdb_handler))
-        .route("/api/devices/{address}/sensors", get(device_sensors_handler))
+        .route(
+            "/api/devices/{address}/sensors",
+            get(device_sensors_handler),
+        )
         .route("/api/devices/{address}/optics", get(device_optics_handler))
-        .route("/api/devices/{address}/gnmi-readiness", get(device_gnmi_readiness_handler))
-        .route("/api/devices/{address}/streaming-readiness", get(device_streaming_readiness_handler))
-        .route("/api/devices/{address}/recommendations", get(device_recommendations_handler))
-        .route("/api/devices/{address}/selected-paths", post(apply_device_selected_paths_handler))
-        .route("/api/devices/{address}/profile", patch(apply_device_selected_paths_handler))
-        .route("/api/devices/{address}/config-history", get(device_config_history_handler))
-        .route("/api/devices/{address}/reparse", post(device_reparse_handler))
+        .route(
+            "/api/devices/{address}/gnmi-readiness",
+            get(device_gnmi_readiness_handler),
+        )
+        .route(
+            "/api/devices/{address}/streaming-readiness",
+            get(device_streaming_readiness_handler),
+        )
+        .route(
+            "/api/devices/{address}/recommendations",
+            get(device_recommendations_handler),
+        )
+        .route(
+            "/api/devices/{address}/selected-paths",
+            post(apply_device_selected_paths_handler),
+        )
+        .route(
+            "/api/devices/{address}/profile",
+            patch(apply_device_selected_paths_handler),
+        )
+        .route(
+            "/api/devices/{address}/config-history",
+            get(device_config_history_handler),
+        )
+        .route(
+            "/api/devices/{address}/reparse",
+            post(device_reparse_handler),
+        )
         .route("/api/profiles", get(profiles_handler))
-        .route("/api/profiles/save-custom", post(save_custom_profile_handler))
-        .route("/api/enrichment", get(enrichment_list_handler).post(enrichment_upsert_handler))
+        .route(
+            "/api/profiles/save-custom",
+            post(save_custom_profile_handler),
+        )
+        .route(
+            "/api/enrichment",
+            get(enrichment_list_handler).post(enrichment_upsert_handler),
+        )
         .route("/api/enrichment/remove", post(enrichment_remove_handler))
         .route("/api/enrichment/test", post(enrichment_test_handler))
         .route("/api/enrichment/run", post(enrichment_run_handler))
@@ -1276,11 +1508,26 @@ fn device_routes() -> Router<AppState> {
 
 fn managed_device_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/onboarding/devices", get(managed_devices_handler).post(add_managed_device_handler))
-        .route("/api/onboarding/devices/with_paths", post(add_managed_device_with_paths_handler))
-        .route("/api/onboarding/devices/remove", post(remove_managed_device_handler))
-        .route("/api/onboarding/devices/remove-impact", post(remove_impact_handler))
-        .route("/api/onboarding/devices/bulk", post(bulk_managed_device_action_handler))
+        .route(
+            "/api/onboarding/devices",
+            get(managed_devices_handler).post(add_managed_device_handler),
+        )
+        .route(
+            "/api/onboarding/devices/with_paths",
+            post(add_managed_device_with_paths_handler),
+        )
+        .route(
+            "/api/onboarding/devices/remove",
+            post(remove_managed_device_handler),
+        )
+        .route(
+            "/api/onboarding/devices/remove-impact",
+            post(remove_impact_handler),
+        )
+        .route(
+            "/api/onboarding/devices/bulk",
+            post(bulk_managed_device_action_handler),
+        )
         .route("/api/onboarding/import", post(bulk_import_handler))
         .route("/api/onboarding/discover", post(discover_handler))
         .route("/api/devices/bootstrap", post(bootstrap_device_handler))
@@ -1289,25 +1536,43 @@ fn managed_device_routes() -> Router<AppState> {
         .route("/api/sites", get(sites_handler).post(upsert_site_handler))
         .route("/api/sites/{id}", get(site_summary_handler))
         .route("/api/sites/remove", post(remove_site_handler))
-        .route("/api/credentials", get(credentials_handler).post(add_credential_handler))
+        .route(
+            "/api/credentials",
+            get(credentials_handler).post(add_credential_handler),
+        )
         .route("/api/credentials/update", post(update_credential_handler))
         .route("/api/credentials/remove", post(remove_credential_handler))
         .route("/api/credentials/test", post(test_credential_handler))
-        .route("/api/credentials/{alias}/resolve", get(resolve_credential_handler))
+        .route(
+            "/api/credentials/{alias}/resolve",
+            get(resolve_credential_handler),
+        )
         .route("/api/vault/rekey", post(vault_rekey_handler))
 }
 
 fn governance_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/environments", get(environments_handler).post(create_environment_handler))
+        .route(
+            "/api/environments",
+            get(environments_handler).post(create_environment_handler),
+        )
         .route("/api/environments/update", post(update_environment_handler))
         .route("/api/environments/remove", post(remove_environment_handler))
-        .route("/api/environments/assign-site", post(assign_site_environment_handler))
+        .route(
+            "/api/environments/assign-site",
+            post(assign_site_environment_handler),
+        )
         .route("/api/setup/status", get(setup_status_handler))
         .route("/api/collectors", get(collectors_handler))
-        .route("/api/assignment/rules", get(assignment_rules_handler).post(set_assignment_rules_handler))
+        .route(
+            "/api/assignment/rules",
+            get(assignment_rules_handler).post(set_assignment_rules_handler),
+        )
         .route("/api/assignment/status", get(assignment_status_handler))
-        .route("/api/assignment/override", post(assignment_override_handler))
+        .route(
+            "/api/assignment/override",
+            post(assignment_override_handler),
+        )
         .route("/api/governance/state", get(governance_state_handler))
         .route("/api/governance/history", get(governance_history_handler))
         .route("/api/governance/profile", post(governance_profile_handler))
@@ -1318,33 +1583,81 @@ fn remediation_routes() -> Router<AppState> {
     Router::new()
         .route("/api/playbooks", get(playbooks_catalog_handler))
         .route("/api/audit", get(audit_log_handler))
-        .route("/api/approvals", get(approvals_list_handler).post(approvals_create_handler))
-        .route("/api/approvals/{id}/approve", post(approvals_approve_handler))
+        .route(
+            "/api/approvals",
+            get(approvals_list_handler).post(approvals_create_handler),
+        )
+        .route(
+            "/api/approvals/{id}/approve",
+            post(approvals_approve_handler),
+        )
         .route("/api/approvals/{id}/reject", post(approvals_reject_handler))
-        .route("/api/approvals/{id}/rollback", post(approvals_rollback_handler))
+        .route(
+            "/api/approvals/{id}/rollback",
+            post(approvals_rollback_handler),
+        )
         .route("/api/trust", get(trust_list_handler))
         .route("/api/trust/graduate", post(trust_graduate_handler))
-        .route("/api/integrations/servicenow/test", post(snow_integration_test_handler))
-        .route("/api/integrations/servicenow/aiops/sync", post(servicenow_aiops_sync_handler))
-        .route("/api/investigations", get(list_investigations_handler).post(create_investigation_handler))
+        .route(
+            "/api/integrations/servicenow/test",
+            post(snow_integration_test_handler),
+        )
+        .route(
+            "/api/integrations/servicenow/aiops/sync",
+            post(servicenow_aiops_sync_handler),
+        )
+        .route(
+            "/api/investigations",
+            get(list_investigations_handler).post(create_investigation_handler),
+        )
         .route("/api/investigations/{id}", get(get_investigation_handler))
-        .route("/api/investigations/{id}/tool-calls", get(list_tool_calls_handler))
-        .route("/api/investigations/{id}/complete", post(complete_investigation_handler))
-        .route("/api/investigations/{id}/feedback", post(investigation_feedback_handler))
-        .route("/api/investigations/accuracy", get(investigation_accuracy_handler))
-        .route("/api/webhooks/change-event", post(webhook_change_event_handler))
+        .route(
+            "/api/investigations/{id}/tool-calls",
+            get(list_tool_calls_handler),
+        )
+        .route(
+            "/api/investigations/{id}/complete",
+            post(complete_investigation_handler),
+        )
+        .route(
+            "/api/investigations/{id}/feedback",
+            post(investigation_feedback_handler),
+        )
+        .route(
+            "/api/investigations/accuracy",
+            get(investigation_accuracy_handler),
+        )
+        .route(
+            "/api/webhooks/change-event",
+            post(webhook_change_event_handler),
+        )
         .route("/api/changes", get(list_changes_handler))
-        .route("/api/changes/context/{device_address}", get(change_context_handler))
-        .route("/api/integrations/servicenow/changes/sync", post(servicenow_change_sync_handler))
+        .route(
+            "/api/changes/context/{device_address}",
+            get(change_context_handler),
+        )
+        .route(
+            "/api/integrations/servicenow/changes/sync",
+            post(servicenow_change_sync_handler),
+        )
         // D4-15 T3: Remediation outcome verification
-        .route("/api/remediations/{id}/verify", post(remediation_verify_handler))
+        .route(
+            "/api/remediations/{id}/verify",
+            post(remediation_verify_handler),
+        )
         // D4-7 T1: Config item CRUD
-        .route("/api/config-items", get(list_config_items_handler).post(upsert_config_item_handler))
+        .route(
+            "/api/config-items",
+            get(list_config_items_handler).post(upsert_config_item_handler),
+        )
 }
 
 fn adapter_and_schema_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/adapters", get(adapter_list_handler).post(adapter_upsert_handler))
+        .route(
+            "/api/adapters",
+            get(adapter_list_handler).post(adapter_upsert_handler),
+        )
         .route("/api/adapters/remove", post(adapter_remove_handler))
         .route("/api/adapters/test", post(adapter_test_handler))
         .route("/api/adapters/audit", get(adapter_audit_handler))
@@ -1354,27 +1667,57 @@ fn adapter_and_schema_routes() -> Router<AppState> {
         .route("/api/openapi.json", get(openapi_json_handler))
         .route("/api/sidecars", get(sidecars_handler))
         .route("/api/sidecar/status", get(sidecar_status_handler))
-        .route("/api/sidecar/process-status", get(sidecar_process_status_handler))
+        .route(
+            "/api/sidecar/process-status",
+            get(sidecar_process_status_handler),
+        )
         .route("/api/sidecar/start", post(sidecar_start_handler))
         .route("/api/sidecar/stop", post(sidecar_stop_handler))
         .route("/api/sidecar/restart", post(sidecar_restart_handler))
         // D4-9 T4: Sidecar rules visibility
         .route("/api/sidecar/rules", get(sidecar_rules_handler))
-        .route("/api/sidecar/rules/analytics", get(sidecar_rule_analytics_handler))
-        .route("/api/sidecar/rules/{rule_id}/toggle", post(sidecar_rule_toggle_handler))
+        .route(
+            "/api/sidecar/rules/analytics",
+            get(sidecar_rule_analytics_handler),
+        )
+        .route(
+            "/api/sidecar/rules/{rule_id}/toggle",
+            post(sidecar_rule_toggle_handler),
+        )
         // EV1-7 T2/T3/T6/T7: rule parameters, shadow mode, shadow firings, syslog rules
-        .route("/api/sidecar/rules/{rule_id}/parameters", get(sidecar_rule_parameters_handler).patch(patch_sidecar_rule_parameters_handler))
-        .route("/api/sidecar/rules/{rule_id}/shadow-mode", post(sidecar_rule_shadow_mode_handler))
-        .route("/api/sidecar/rules/{rule_id}/shadow-firings", get(sidecar_rule_shadow_firings_handler))
-        .route("/api/syslog-rules", get(list_syslog_rules_handler).post(create_syslog_rule_handler))
+        .route(
+            "/api/sidecar/rules/{rule_id}/parameters",
+            get(sidecar_rule_parameters_handler).patch(patch_sidecar_rule_parameters_handler),
+        )
+        .route(
+            "/api/sidecar/rules/{rule_id}/shadow-mode",
+            post(sidecar_rule_shadow_mode_handler),
+        )
+        .route(
+            "/api/sidecar/rules/{rule_id}/shadow-firings",
+            get(sidecar_rule_shadow_firings_handler),
+        )
+        .route(
+            "/api/syslog-rules",
+            get(list_syslog_rules_handler).post(create_syslog_rule_handler),
+        )
         // D4-3 T6: Scoped API keys
-        .route("/api/auth/apikeys", get(list_api_keys_handler).post(create_api_key_handler))
+        .route(
+            "/api/auth/apikeys",
+            get(list_api_keys_handler).post(create_api_key_handler),
+        )
         .route("/api/auth/apikeys/{id}", delete(delete_api_key_handler))
-        .route("/api/auth/apikeys/{id}/rotate", post(rotate_api_key_handler))
+        .route(
+            "/api/auth/apikeys/{id}/rotate",
+            post(rotate_api_key_handler),
+        )
         // D4-3 T2: RBAC — login/logout, user management
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/logout", post(logout_handler))
-        .route("/api/auth/users", get(list_users_handler).post(create_user_handler))
+        .route(
+            "/api/auth/users",
+            get(list_users_handler).post(create_user_handler),
+        )
         .route("/api/auth/users/{id}", delete(delete_user_handler))
         // D4-3 T3: LDAP/AD integration
         .route("/api/auth/ldap/config", get(ldap_config_handler))
@@ -1383,8 +1726,14 @@ fn adapter_and_schema_routes() -> Router<AppState> {
         .route("/healthz", get(healthz_handler))
         .route("/readyz", get(readyz_handler))
         .route("/api/_test/status", get(test_status_handler))
-        .route("/api/_test/inject_detection", post(inject_detection_handler))
-        .route("/api/_test/syslog/parse", post(parse_syslog_fixture_handler))
+        .route(
+            "/api/_test/inject_detection",
+            post(inject_detection_handler),
+        )
+        .route(
+            "/api/_test/syslog/parse",
+            post(parse_syslog_fixture_handler),
+        )
 }
 
 fn settings_routes() -> Router<AppState> {
@@ -1394,16 +1743,31 @@ fn settings_routes() -> Router<AppState> {
             get(get_streaming_settings_handler).patch(patch_streaming_settings_handler),
         )
         .route("/api/receivers/status", get(get_receiver_status_handler))
-        .route("/api/settings/receiver-status", get(get_receiver_status_handler))
+        .route(
+            "/api/settings/receiver-status",
+            get(get_receiver_status_handler),
+        )
         .route("/api/ai/config", get(get_ai_config_handler))
         .route("/api/ai/test", post(post_ai_test_handler))
-        .route("/api/ai/providers", get(list_ai_providers_handler).post(upsert_ai_provider_handler))
+        .route(
+            "/api/ai/providers",
+            get(list_ai_providers_handler).post(upsert_ai_provider_handler),
+        )
         .route("/api/ai/providers/remove", post(remove_ai_provider_handler))
         .route("/api/ai/providers/test", post(test_ai_provider_handler))
-        .route("/api/ai/providers/activate", post(activate_ai_provider_handler))
-        .route("/api/ai/providers/active", get(get_active_ai_provider_handler))
+        .route(
+            "/api/ai/providers/activate",
+            post(activate_ai_provider_handler),
+        )
+        .route(
+            "/api/ai/providers/active",
+            get(get_active_ai_provider_handler),
+        )
         .route("/api/ha/status", get(ha_status_handler))
-        .route("/api/ha/settings", get(ha_settings_handler).patch(ha_patch_settings_handler))
+        .route(
+            "/api/ha/settings",
+            get(ha_settings_handler).patch(ha_patch_settings_handler),
+        )
         .route("/api/restart", post(restart_handler))
         .route("/api/config/reload-patterns", post(reload_patterns_handler))
         // D4-1 T4: MIB upload + compile pipeline
@@ -1414,27 +1778,51 @@ fn settings_routes() -> Router<AppState> {
         // D4-7 T5: Unified config settings API
         .route("/api/settings", get(list_settings_handler))
         .route("/api/settings/export", post(export_settings_handler))
-        .route("/api/settings/{section}", get(get_settings_section_handler).patch(patch_settings_section_handler))
+        .route(
+            "/api/settings/{section}",
+            get(get_settings_section_handler).patch(patch_settings_section_handler),
+        )
         // TLS Certificate management
-        .route("/api/certs", get(list_certs_handler).post(upsert_cert_handler))
+        .route(
+            "/api/certs",
+            get(list_certs_handler).post(upsert_cert_handler),
+        )
         .route("/api/certs/applied", get(list_applied_certs_handler))
         .route("/api/certs/apply", post(apply_cert_handler))
         .route("/api/certs/verify", post(verify_cert_path_handler))
-        .route("/api/certs/{name}", get(get_cert_pem_handler).delete(delete_cert_handler))
+        .route(
+            "/api/certs/{name}",
+            get(get_cert_pem_handler).delete(delete_cert_handler),
+        )
 }
 
 fn shun_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/shun/rules", get(list_shun_rules_handler).post(create_shun_rule_handler))
-        .route("/api/shun/rules/{id}/disable", post(disable_shun_rule_handler))
-        .route("/api/shun/rules/{id}/delete", post(delete_shun_rule_handler))
+        .route(
+            "/api/shun/rules",
+            get(list_shun_rules_handler).post(create_shun_rule_handler),
+        )
+        .route(
+            "/api/shun/rules/{id}/disable",
+            post(disable_shun_rule_handler),
+        )
+        .route(
+            "/api/shun/rules/{id}/delete",
+            post(delete_shun_rule_handler),
+        )
         .route("/api/shun/stats", get(shun_stats_handler))
 }
 
 fn ddos_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/ddos/scope", get(ddos_scope_list_handler).post(ddos_scope_add_handler))
-        .route("/api/ddos/scope/{address}", delete(ddos_scope_remove_handler).patch(ddos_scope_patch_handler))
+        .route(
+            "/api/ddos/scope",
+            get(ddos_scope_list_handler).post(ddos_scope_add_handler),
+        )
+        .route(
+            "/api/ddos/scope/{address}",
+            delete(ddos_scope_remove_handler).patch(ddos_scope_patch_handler),
+        )
         .route("/api/ddos/config", get(ddos_config_handler))
         .route("/api/ddos/events", get(ddos_events_handler))
         .route("/api/ddos/baselines", get(ddos_baselines_handler))
@@ -1442,10 +1830,19 @@ fn ddos_routes() -> Router<AppState> {
 
 fn signal_policy_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/signal-policy", get(list_signal_policies_handler).post(upsert_signal_policy_handler))
+        .route(
+            "/api/signal-policy",
+            get(list_signal_policies_handler).post(upsert_signal_policy_handler),
+        )
         .route("/api/signal-policy/signals", get(signal_types_handler))
-        .route("/api/signal-policy/summary", get(signal_policy_summary_handler))
-        .route("/api/signal-policy/{id}", delete(delete_signal_policy_handler))
+        .route(
+            "/api/signal-policy/summary",
+            get(signal_policy_summary_handler),
+        )
+        .route(
+            "/api/signal-policy/{id}",
+            delete(delete_signal_policy_handler),
+        )
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -1493,12 +1890,9 @@ pub(super) struct DailyCheckItem {
 
 // ── /api/_test/inject_detection ───────────────────────────────────────────────
 
-
 pub(super) fn default_inject_severity() -> String {
     "info".to_string()
 }
-
-
 
 pub(super) fn default_syslog_transport() -> String {
     "udp".to_string()
@@ -1507,7 +1901,6 @@ pub(super) fn default_syslog_transport() -> String {
 pub(super) fn default_syslog_peer_addr() -> String {
     "127.0.0.1:5514".to_string()
 }
-
 
 // ── /api/operations/weekly-trend ─────────────────────────────────────────────
 
@@ -1729,94 +2122,33 @@ pub(super) fn read_ts_ns(v: &Value) -> i64 {
 
 // ── Device enrichment endpoint ────────────────────────────────────────────────
 
-
-
-
-
-
-
-
 // ── Incidents endpoint ────────────────────────────────────────────────────────
 
 // ── Assignment rule endpoints ─────────────────────────────────────────────────
 
 // ── Device detail types ───────────────────────────────────────────────────────
 
-
-
-
-
-
-
-
-
-
-
 // ── Assignment types ──────────────────────────────────────────────────────────
-
-
-
-
-
-
-
 
 // ── Environment handlers ──────────────────────────────────────────────────────
 
 // ── Profiles ──────────────────────────────────────────────────────────────────
 
-
-
-
-
-
 // ── Enrichment handlers ───────────────────────────────────────────────────────
 
-
-
-
-
-
-
-
-
 // ── Human-in-the-loop remediation approvals (Sprint 4) ───────────────────────
-
 
 pub(super) fn default_proposal_status() -> String {
     "pending".to_string()
 }
 
-
-
-
-
-
-
-
-
-
 pub(super) fn default_verify_wait_secs() -> u64 {
     30
 }
 
-
-
-
 // ── ServiceNow integration test endpoint (T2-1) ───────────────────────────────
 
-
-
-
-
 // ── Output adapter management API (T6-6) ─────────────────────────────────────
-
-
-
-
-
-
-
 
 // ─── graph insights (T1-4) ───────────────────────────────────────────────────
 
@@ -1857,8 +2189,6 @@ pub(super) fn default_trigger() -> String {
     "operator".into()
 }
 
-
-
 // ── T4-5 — Governance state endpoint ─────────────────────────────────────────
 
 // ── T5-2 — Grounded incident response ────────────────────────────────────────
@@ -1869,13 +2199,11 @@ pub(super) fn default_trigger() -> String {
 // Surfaces the in-memory sidecar registry as JSON. Consumed by the bonpy UI
 // and ops scripts. See `src/sidecar_registry.rs` and `docs/architecture/sidecars.md`.
 
-
 // ── CV7 T4-6: GET /health ─────────────────────────────────────────────────────
 // Returns 200 + JSON `{ "status": "ok" }` by default. When a required sidecar
 // is missing past the startup grace window, returns 503 + `{ "status":
 // "degraded", "missing_required_sidecars": [...] }`. This is the operational
 // "loud" surface that prevents the CV6-era "Detections: 0" silent gap.
-
 
 #[cfg(test)]
 mod tests {

@@ -38,7 +38,10 @@ fn local_instance_is_inbound_without_o_flag() {
 fn outbound_view_follows_o_flag_for_all_adj_rib_peer_types() {
     for peer_type in 0..=2 {
         assert_eq!(classify_rib_type(peer_type, 0x10), "adj-rib-out-pre-policy");
-        assert_eq!(classify_rib_type(peer_type, 0x50), "adj-rib-out-post-policy");
+        assert_eq!(
+            classify_rib_type(peer_type, 0x50),
+            "adj-rib-out-post-policy"
+        );
     }
 }
 

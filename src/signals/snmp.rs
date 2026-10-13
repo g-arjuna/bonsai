@@ -140,9 +140,13 @@ impl SnmpFactExtractor {
                         info!(file = %path.display(), count = file.patterns.len(), "loaded snmp OID patterns");
                         patterns.extend(file.patterns);
                     }
-                    Err(e) => warn!(file = %path.display(), error = %e, "failed to parse snmp OID pattern file"),
+                    Err(e) => {
+                        warn!(file = %path.display(), error = %e, "failed to parse snmp OID pattern file")
+                    }
                 },
-                Err(e) => warn!(file = %path.display(), error = %e, "failed to read snmp OID pattern file"),
+                Err(e) => {
+                    warn!(file = %path.display(), error = %e, "failed to read snmp OID pattern file")
+                }
             }
         }
         Self { patterns }
@@ -161,7 +165,9 @@ impl SnmpFactExtractor {
                     info!(name = %name, count = file.patterns.len(), "loaded snmp OID patterns from DB");
                     patterns.extend(file.patterns);
                 }
-                Err(e) => warn!(name = %name, error = %e, "failed to parse snmp OID pattern from DB"),
+                Err(e) => {
+                    warn!(name = %name, error = %e, "failed to parse snmp OID pattern from DB")
+                }
             }
         }
         Self { patterns }
@@ -190,7 +196,8 @@ impl SnmpFactExtractor {
         // Nokia TIMETRA-BGP-MIB encodes peer IPv4 as last 4 OID components.
         if !pattern.index_suffix_fields.is_empty() {
             let pat_trimmed = pattern.trap_oid.trim_end_matches(".0");
-            let suffix = trap_oid.strip_prefix(pat_trimmed)
+            let suffix = trap_oid
+                .strip_prefix(pat_trimmed)
                 .and_then(|s| s.strip_prefix('.'))
                 .unwrap_or("");
             if !suffix.is_empty() {
@@ -248,18 +255,19 @@ fn parse_index_suffix(components: &[&str], isf: &IndexSuffixField) -> Option<Str
             if slice.len() != 4 {
                 return None;
             }
-            let octets: Vec<u8> = slice
-                .iter()
-                .filter_map(|s| s.parse::<u8>().ok())
-                .collect();
+            let octets: Vec<u8> = slice.iter().filter_map(|s| s.parse::<u8>().ok()).collect();
             if octets.len() != 4 {
                 return None;
             }
-            Some(format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3]))
+            Some(format!(
+                "{}.{}.{}.{}",
+                octets[0], octets[1], octets[2], octets[3]
+            ))
         }
-        "integer" => {
-            slice.first().and_then(|s| s.parse::<i64>().ok()).map(|v| v.to_string())
-        }
+        "integer" => slice
+            .first()
+            .and_then(|s| s.parse::<i64>().ok())
+            .map(|v| v.to_string()),
         _ => {
             // "string" — join components with dots.
             Some(slice.join("."))
@@ -279,7 +287,9 @@ pub async fn run_snmp_receiver(
     let archive = SnmpArchive::open(&cfg.archive_path).await?;
     let target_map = SnmpTargetMap::new(&targets);
     let mut fact_extractor = Arc::new(SnmpFactExtractor::load_from_dir(
-        cfg.oid_pattern_dir.as_deref().unwrap_or("config/snmp_oid_patterns"),
+        cfg.oid_pattern_dir
+            .as_deref()
+            .unwrap_or("config/snmp_oid_patterns"),
     ));
     let community_allowlist: Vec<String> = cfg.community_allowlist.clone();
     let v3_users: Vec<crate::config::SnmpV3User> = cfg.v3_users.clone();
@@ -303,8 +313,11 @@ pub async fn run_snmp_receiver(
     loop {
         let pattern_changed = async {
             match pattern_rx.as_mut() {
-                Some(rx) => { rx.changed().await.ok(); true }
-                None => { std::future::pending::<bool>().await }
+                Some(rx) => {
+                    rx.changed().await.ok();
+                    true
+                }
+                None => std::future::pending::<bool>().await,
             }
         };
         tokio::select! {
@@ -539,9 +552,11 @@ impl SnmpTargetMap {
 
     fn resolve(&self, peer_ip: &str, _event: &SnmpTrapEvent) -> ResolvedTarget {
         let peer_base = crate::registry::strip_port(peer_ip);
-        if let Some(entry) = self.entries.iter().find(|entry| {
-            crate::registry::strip_port(&entry.address) == peer_base
-        }) {
+        if let Some(entry) = self
+            .entries
+            .iter()
+            .find(|entry| crate::registry::strip_port(&entry.address) == peer_base)
+        {
             return ResolvedTarget {
                 // Return bare IP as canonical Device identity — strips gNMI port.
                 address: crate::registry::strip_port(&entry.address).to_string(),
@@ -645,8 +660,8 @@ fn parse_usm_security_name(params: &[u8]) -> String {
     if let Ok(seq) = r.read_expected(0x30) {
         let mut sr = BerReader::new(seq);
         let _ = sr.read_octet_string(); // engine id
-        let _ = sr.read_tlv();          // engine boots (INTEGER)
-        let _ = sr.read_tlv();          // engine time (INTEGER)
+        let _ = sr.read_tlv(); // engine boots (INTEGER)
+        let _ = sr.read_tlv(); // engine time (INTEGER)
         if let Ok(name_bytes) = sr.read_octet_string() {
             return String::from_utf8_lossy(name_bytes).to_string();
         }

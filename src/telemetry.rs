@@ -251,7 +251,8 @@ impl TelemetryUpdate {
 
         // Enhanced interface counters for baseline computation
         if self.path.contains("interfaces/interface[name=")
-            && (self.path.ends_with("/state/counters/in-octets") || self.path.ends_with("/state/counters/out-octets"))
+            && (self.path.ends_with("/state/counters/in-octets")
+                || self.path.ends_with("/state/counters/out-octets"))
             && let Some(name) = extract_bracketed(&self.path, "interfaces/interface[name=")
         {
             return TelemetryEvent::InterfaceStats { if_name: name };
@@ -389,7 +390,10 @@ impl TelemetryUpdate {
                 .or_else(|| extract_bracketed(&self.path, "neighbor-system-id="));
             let if_name = extract_bracketed(&self.path, "interface[interface-name=");
             if let (Some(sid), Some(iface)) = (system_id, if_name) {
-                return TelemetryEvent::IsisAdjacencyState { system_id: sid, if_name: iface };
+                return TelemetryEvent::IsisAdjacencyState {
+                    system_id: sid,
+                    if_name: iface,
+                };
             }
         }
 
@@ -437,7 +441,11 @@ impl TelemetryUpdate {
         if matches!(
             leaf,
             "admin-state" | "ingress-vni" | "config" | "as-number" | "action"
-        ) && !self.value.as_object().map(|o| o.is_empty()).unwrap_or(false)
+        ) && !self
+            .value
+            .as_object()
+            .map(|o| o.is_empty())
+            .unwrap_or(false)
         {
             return TelemetryEvent::ConfigChange {
                 yang_path: self.path.clone(),
@@ -581,16 +589,32 @@ impl TelemetryUpdate {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let dst_port = self.value.get("dst_port").and_then(|v| v.as_i64()).unwrap_or(0);
+            let dst_port = self
+                .value
+                .get("dst_port")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             let protocol = self
                 .value
                 .get("protocol")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let bytes_per_sec = self.value.get("bytes_per_sec").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let packets_per_sec = self.value.get("packets_per_sec").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let sampling_rate = self.value.get("sampling_rate").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+            let bytes_per_sec = self
+                .value
+                .get("bytes_per_sec")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let packets_per_sec = self
+                .value
+                .get("packets_per_sec")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let sampling_rate = self
+                .value
+                .get("sampling_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1) as u32;
             return TelemetryEvent::SflowRecord {
                 exporter_address,
                 src_address,
@@ -610,14 +634,46 @@ impl TelemetryUpdate {
                 .and_then(|v| v.as_str())
                 .unwrap_or(&self.target)
                 .to_string();
-            let if_index = self.value.get("if_index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let if_speed = self.value.get("if_speed").and_then(|v| v.as_u64()).unwrap_or(0);
-            let in_octets = self.value.get("in_octets").and_then(|v| v.as_u64()).unwrap_or(0);
-            let out_octets = self.value.get("out_octets").and_then(|v| v.as_u64()).unwrap_or(0);
-            let in_errors = self.value.get("in_errors").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let out_errors = self.value.get("out_errors").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let in_discards = self.value.get("in_discards").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let out_discards = self.value.get("out_discards").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let if_index = self
+                .value
+                .get("if_index")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let if_speed = self
+                .value
+                .get("if_speed")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let in_octets = self
+                .value
+                .get("in_octets")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let out_octets = self
+                .value
+                .get("out_octets")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let in_errors = self
+                .value
+                .get("in_errors")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let out_errors = self
+                .value
+                .get("out_errors")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let in_discards = self
+                .value
+                .get("in_discards")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let out_discards = self
+                .value
+                .get("out_discards")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
             return TelemetryEvent::SflowCounters {
                 exporter_address,
                 if_index,
@@ -674,8 +730,7 @@ impl TelemetryUpdate {
         // SRL: interface[name=X]/transceiver
         // XR:  optics-oper/optics-ports/optics-port[name=X]
         // OC:  components/component/transceiver
-        if (self.path.contains("/transceiver")
-            || self.path.contains("optics-ports/optics-port"))
+        if (self.path.contains("/transceiver") || self.path.contains("optics-ports/optics-port"))
             && (json_find(&self.value, "rx-power").is_some()
                 || json_find(&self.value, "rx-optical-power").is_some()
                 || json_find(&self.value, "receive-power").is_some()

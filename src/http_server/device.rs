@@ -193,26 +193,32 @@ pub(super) struct EnrichmentRunResponse {
 pub(super) struct EnrichmentAuditResponse {
     entries: Vec<serde_json::Value>,
 }
-use std::sync::Arc;
-use serde::{Deserialize, Serialize};
-use axum::{Json, extract::{Path, Query, State}, http::StatusCode};
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    http::StatusCode,
+};
 use lbug::{Connection, Value};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use super::AppState;
 use super::{
-    read_str, read_i64, read_ts_ns,
-    compute_health,
-    BgpJson, read_subscription_statuses, SubscriptionStatusJson,
+    BgpJson, SubscriptionStatusJson, compute_health, read_i64, read_str,
+    read_subscription_statuses, read_ts_ns,
 };
 use crate::config::{SelectedSubscriptionPath, TargetConfig};
 use crate::credentials::{CredentialVault, ResolvePurpose, ResolvedCredential};
 use crate::discovery::{self, DiscoveryInput};
 use crate::enrichment::EnricherConfig;
+use crate::graph::DetectionRow;
 use crate::graph::GraphStore;
 use crate::streaming::{self, StreamingReadinessReport};
 use crate::yang::YangLibrary;
-use crate::graph::DetectionRow;
-use crate::{change_detection::{self}, synthesizer};
+use crate::{
+    change_detection::{self},
+    synthesizer,
+};
 
 pub(super) async fn device_detail_handler(
     State(state): State<AppState>,
@@ -652,10 +658,7 @@ pub(super) async fn device_cmdb_handler(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    Ok(Json(DeviceCmdbResponse {
-        address,
-        ..result
-    }))
+    Ok(Json(DeviceCmdbResponse { address, ..result }))
 }
 
 pub(super) async fn device_config_history_handler(
@@ -1073,7 +1076,10 @@ pub(super) fn resolve_target_credentials_for_discovery(
     }
     Ok(
         match (target.resolved_username(), target.resolved_password()) {
-            (Some(username), Some(password)) => Some(ResolvedCredential { username, password: zeroize::Zeroizing::new(password) }),
+            (Some(username), Some(password)) => Some(ResolvedCredential {
+                username,
+                password: zeroize::Zeroizing::new(password),
+            }),
             _ => None,
         },
     )
@@ -1243,7 +1249,9 @@ pub(super) async fn save_custom_profile_handler(
         error: None,
     })
 }
-pub(super) async fn enrichment_list_handler(State(state): State<AppState>) -> Json<EnrichmentListResponse> {
+pub(super) async fn enrichment_list_handler(
+    State(state): State<AppState>,
+) -> Json<EnrichmentListResponse> {
     let reg = state.enricher_registry.read().await;
     let enrichers = reg
         .list()
@@ -1372,7 +1380,9 @@ pub(super) async fn enrichment_run_handler(
         message: format!("enricher '{}' run started", req.name),
     })
 }
-pub(super) async fn enrichment_audit_handler(State(state): State<AppState>) -> Json<EnrichmentAuditResponse> {
+pub(super) async fn enrichment_audit_handler(
+    State(state): State<AppState>,
+) -> Json<EnrichmentAuditResponse> {
     // Read audit log files and return the last 100 enrichment_run entries.
     let audit_dir = std::path::Path::new(&state.runtime_dir).join("audit");
     let entries = read_recent_enrichment_audit(&audit_dir, 100);
@@ -1432,17 +1442,16 @@ pub(super) async fn netbox_import_handler(
         .send()
         .await
     {
-        Ok(resp) if resp.status().is_success() => {
-            resp.json::<serde_json::Value>()
-                .await
-                .ok()
-                .and_then(|v| {
-                    v.get("netbox-version")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                })
-                .unwrap_or_else(|| "unknown".to_string())
-        }
+        Ok(resp) if resp.status().is_success() => resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| {
+                v.get("netbox-version")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| "unknown".to_string()),
         Ok(resp) => {
             return Err((
                 axum::http::StatusCode::BAD_GATEWAY,
@@ -1519,10 +1528,12 @@ pub(super) async fn netbox_import_handler(
             value: String,
         }
 
-        let page: NbPage = resp
-            .json()
-            .await
-            .map_err(|e| (axum::http::StatusCode::BAD_GATEWAY, format!("parse error: {e}")))?;
+        let page: NbPage = resp.json().await.map_err(|e| {
+            (
+                axum::http::StatusCode::BAD_GATEWAY,
+                format!("parse error: {e}"),
+            )
+        })?;
 
         let fetched = page.results.len();
 
@@ -1661,14 +1672,71 @@ pub(super) async fn device_sensors_handler(
         let mut out = Vec::new();
         for vals in rows_iter {
             out.push(SensorReadingJson {
-                id: vals.get(0).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).unwrap_or_default(),
-                component_name: vals.get(1).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).unwrap_or_default(),
-                sensor_type: vals.get(2).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).unwrap_or_default(),
-                temperature_c: vals.get(3).and_then(|v| if let Value::Double(f) = v { Some(*f) } else { None }),
-                power_w: vals.get(4).and_then(|v| if let Value::Double(f) = v { Some(*f) } else { None }),
-                fan_rpm: vals.get(5).and_then(|v| if let Value::Int64(i) = v { Some(*i) } else { None }),
-                humidity_pct: vals.get(6).and_then(|v| if let Value::Double(f) = v { Some(*f) } else { None }),
-                updated_at: vals.get(7).and_then(|v| if let Value::Int64(i) = v { Some(*i) } else { None }),
+                id: vals
+                    .get(0)
+                    .and_then(|v| {
+                        if let Value::String(s) = v {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default(),
+                component_name: vals
+                    .get(1)
+                    .and_then(|v| {
+                        if let Value::String(s) = v {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default(),
+                sensor_type: vals
+                    .get(2)
+                    .and_then(|v| {
+                        if let Value::String(s) = v {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default(),
+                temperature_c: vals.get(3).and_then(|v| {
+                    if let Value::Double(f) = v {
+                        Some(*f)
+                    } else {
+                        None
+                    }
+                }),
+                power_w: vals.get(4).and_then(|v| {
+                    if let Value::Double(f) = v {
+                        Some(*f)
+                    } else {
+                        None
+                    }
+                }),
+                fan_rpm: vals.get(5).and_then(|v| {
+                    if let Value::Int64(i) = v {
+                        Some(*i)
+                    } else {
+                        None
+                    }
+                }),
+                humidity_pct: vals.get(6).and_then(|v| {
+                    if let Value::Double(f) = v {
+                        Some(*f)
+                    } else {
+                        None
+                    }
+                }),
+                updated_at: vals.get(7).and_then(|v| {
+                    if let Value::Int64(i) = v {
+                        Some(*i)
+                    } else {
+                        None
+                    }
+                }),
             });
         }
         Ok::<_, String>(out)
@@ -1712,14 +1780,68 @@ pub(super) async fn device_optics_handler(
         let mut out = Vec::new();
         for vals in rows_iter {
             out.push(OpticsTelemetryJson {
-                id: vals.get(0).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).unwrap_or_default(),
-                if_name: vals.get(1).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).unwrap_or_default(),
-                rx_power_dbm: vals.get(2).and_then(|v| if let Value::Double(f) = v { Some(*f) } else { None }),
-                tx_power_dbm: vals.get(3).and_then(|v| if let Value::Double(f) = v { Some(*f) } else { None }),
-                laser_bias_ma: vals.get(4).and_then(|v| if let Value::Double(f) = v { Some(*f) } else { None }),
-                temperature_c: vals.get(5).and_then(|v| if let Value::Double(f) = v { Some(*f) } else { None }),
-                voltage_v: vals.get(6).and_then(|v| if let Value::Double(f) = v { Some(*f) } else { None }),
-                updated_at: vals.get(7).and_then(|v| if let Value::Int64(i) = v { Some(*i) } else { None }),
+                id: vals
+                    .get(0)
+                    .and_then(|v| {
+                        if let Value::String(s) = v {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default(),
+                if_name: vals
+                    .get(1)
+                    .and_then(|v| {
+                        if let Value::String(s) = v {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default(),
+                rx_power_dbm: vals.get(2).and_then(|v| {
+                    if let Value::Double(f) = v {
+                        Some(*f)
+                    } else {
+                        None
+                    }
+                }),
+                tx_power_dbm: vals.get(3).and_then(|v| {
+                    if let Value::Double(f) = v {
+                        Some(*f)
+                    } else {
+                        None
+                    }
+                }),
+                laser_bias_ma: vals.get(4).and_then(|v| {
+                    if let Value::Double(f) = v {
+                        Some(*f)
+                    } else {
+                        None
+                    }
+                }),
+                temperature_c: vals.get(5).and_then(|v| {
+                    if let Value::Double(f) = v {
+                        Some(*f)
+                    } else {
+                        None
+                    }
+                }),
+                voltage_v: vals.get(6).and_then(|v| {
+                    if let Value::Double(f) = v {
+                        Some(*f)
+                    } else {
+                        None
+                    }
+                }),
+                updated_at: vals.get(7).and_then(|v| {
+                    if let Value::Int64(i) = v {
+                        Some(*i)
+                    } else {
+                        None
+                    }
+                }),
             });
         }
         Ok::<_, String>(out)

@@ -1,9 +1,9 @@
+use crate::filter_expr::{Expr, RouteCtx, parse_expr};
+use ipnet::IpNet;
+use rbmp_core::bgp::types::{PathAttributes, Prefix};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::net::IpAddr;
-use ipnet::IpNet;
-use serde::{Deserialize, Serialize};
-use rbmp_core::bgp::types::{PathAttributes, Prefix};
-use crate::filter_expr::{Expr, RouteCtx, parse_expr};
 
 // ─── YAML DSL types ──────────────────────────────────────────────────────────
 
@@ -23,15 +23,15 @@ use crate::filter_expr::{Expr, RouteCtx, parse_expr};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteFilter {
     /// Human-readable label for logging
-    pub name:           String,
+    pub name: String,
     /// What to do when the route matches
-    pub action:         FilterAction,
+    pub action: FilterAction,
     /// Match if route prefix falls within any of these networks (CIDR)
     #[serde(default)]
-    pub prefix_list:    Vec<String>,
+    pub prefix_list: Vec<String>,
     /// Match if announcing peer AS is in this list
     #[serde(default)]
-    pub peer_as_list:   Vec<u32>,
+    pub peer_as_list: Vec<u32>,
     /// Match if any standard community string (e.g. "65000:100") is present
     #[serde(default)]
     pub community_list: Vec<String>,
@@ -46,12 +46,12 @@ pub struct RouteFilter {
     /// Match if LOCAL_PREF <= this value
     pub local_pref_max: Option<u32>,
     /// Match if MED <= this value
-    pub med_max:        Option<u32>,
+    pub med_max: Option<u32>,
     /// Optional predicate expression (PEG-parsed). When present, this
     /// expression is evaluated IN ADDITION TO the field-level criteria above.
     /// Example: `"rpki == 'invalid' AND prefix_len > 24"`
     #[serde(default)]
-    pub expr:           Option<String>,
+    pub expr: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,8 +78,8 @@ pub enum FilterVerdict {
 
 /// Pre-parsed version of a `RouteFilter` with compiled prefix networks.
 struct CompiledFilter {
-    raw:       RouteFilter,
-    nets:      Vec<IpNet>,
+    raw: RouteFilter,
+    nets: Vec<IpNet>,
     peer_nets: Vec<IpAddr>,
     /// Compiled expression AST (from `raw.expr`, if present)
     compiled_expr: Option<Expr>,
@@ -87,26 +87,40 @@ struct CompiledFilter {
 
 impl CompiledFilter {
     fn compile(raw: RouteFilter) -> Self {
-        let nets = raw.prefix_list.iter()
+        let nets = raw
+            .prefix_list
+            .iter()
             .filter_map(|s| s.parse::<IpNet>().ok())
             .collect();
-        let peer_nets = raw.peer_addr_list.iter()
+        let peer_nets = raw
+            .peer_addr_list
+            .iter()
             .filter_map(|s| s.parse::<IpAddr>().ok())
             .collect();
-        let compiled_expr = raw.expr.as_deref().and_then(|e| {
-            match parse_expr(e) {
-                Ok(expr) => Some(expr),
-                Err(err) => {
-                    tracing::warn!(filter = %raw.name, %err, "invalid filter expr — ignored");
-                    None
-                }
+        let compiled_expr = raw.expr.as_deref().and_then(|e| match parse_expr(e) {
+            Ok(expr) => Some(expr),
+            Err(err) => {
+                tracing::warn!(filter = %raw.name, %err, "invalid filter expr — ignored");
+                None
             }
         });
-        Self { raw, nets, peer_nets, compiled_expr }
+        Self {
+            raw,
+            nets,
+            peer_nets,
+            compiled_expr,
+        }
     }
 
     /// Returns true if every populated criterion on this filter matches the route.
-    fn matches(&self, prefix: &Prefix, peer_as: u32, peer_addr: IpAddr, attrs: &PathAttributes, ctx: Option<&RouteCtx>) -> bool {
+    fn matches(
+        &self,
+        prefix: &Prefix,
+        peer_as: u32,
+        peer_addr: IpAddr,
+        attrs: &PathAttributes,
+        ctx: Option<&RouteCtx>,
+    ) -> bool {
         // ── Prefix list ───────────────────────────────────────────────────────
         if !self.nets.is_empty() {
             // Extract the innermost V4/V6 address regardless of label/VPN wrapping
@@ -114,10 +128,14 @@ impl CompiledFilter {
                 match p {
                     Prefix::V4(n) => Some(n.addr().into()),
                     Prefix::V6(n) => Some(n.addr().into()),
-                    Prefix::Labeled { prefix, .. } | Prefix::Vpn { prefix, .. } => inner_addr(prefix),
+                    Prefix::Labeled { prefix, .. } | Prefix::Vpn { prefix, .. } => {
+                        inner_addr(prefix)
+                    }
                 }
             }
-            let Some(addr) = inner_addr(prefix) else { return false; };
+            let Some(addr) = inner_addr(prefix) else {
+                return false;
+            };
             if !self.nets.iter().any(|net| net.contains(&addr)) {
                 return false;
             }
@@ -135,35 +153,59 @@ impl CompiledFilter {
 
         // ── Community list ────────────────────────────────────────────────────
         if !self.raw.community_list.is_empty() {
-            let route_comms: Vec<String> = attrs.communities.iter()
+            let route_comms: Vec<String> = attrs
+                .communities
+                .iter()
                 .map(|c| format!("{}:{}", c.asn(), c.value()))
                 .collect();
-            if !self.raw.community_list.iter().any(|want| route_comms.contains(want)) {
+            if !self
+                .raw
+                .community_list
+                .iter()
+                .any(|want| route_comms.contains(want))
+            {
                 return false;
             }
         }
 
         // ── AS_PATH contains ─────────────────────────────────────────────────
         if !self.raw.as_path_contains.is_empty() {
-            let path_asns: Vec<u32> = attrs.as_path.as_ref()
-                .map(|p| p.0.iter().flat_map(|seg| seg.asns().iter().copied()).collect())
+            let path_asns: Vec<u32> = attrs
+                .as_path
+                .as_ref()
+                .map(|p| {
+                    p.0.iter()
+                        .flat_map(|seg| seg.asns().iter().copied())
+                        .collect()
+                })
                 .unwrap_or_default();
-            if !self.raw.as_path_contains.iter().all(|want| path_asns.contains(want)) {
+            if !self
+                .raw
+                .as_path_contains
+                .iter()
+                .all(|want| path_asns.contains(want))
+            {
                 return false;
             }
         }
 
         // ── LOCAL_PREF bounds ─────────────────────────────────────────────────
         if let Some(min) = self.raw.local_pref_min {
-            if attrs.local_pref.unwrap_or(0) < min { return false; }
+            if attrs.local_pref.unwrap_or(0) < min {
+                return false;
+            }
         }
         if let Some(max) = self.raw.local_pref_max {
-            if attrs.local_pref.unwrap_or(0) > max { return false; }
+            if attrs.local_pref.unwrap_or(0) > max {
+                return false;
+            }
         }
 
         // ── MED max ───────────────────────────────────────────────────────────
         if let Some(max_med) = self.raw.med_max {
-            if attrs.multi_exit_disc.unwrap_or(0) > max_med { return false; }
+            if attrs.multi_exit_disc.unwrap_or(0) > max_med {
+                return false;
+            }
         }
 
         // ── Expression predicate ────────────────────────────────────────────────
@@ -181,41 +223,53 @@ impl CompiledFilter {
 
 /// Build a `RouteCtx` from BMP route data for expression evaluation.
 pub fn build_route_ctx(
-    prefix:    &Prefix,
-    peer_as:   u32,
-    action:    &str,
-    attrs:     &PathAttributes,
-    rpki:      Option<&str>,
+    prefix: &Prefix,
+    peer_as: u32,
+    action: &str,
+    attrs: &PathAttributes,
+    rpki: Option<&str>,
 ) -> RouteCtx {
     let prefix_len = match prefix {
-        Prefix::V4(n)                    => n.prefix_len(),
-        Prefix::V6(n)                    => n.prefix_len(),
-        Prefix::Labeled { prefix, .. }   => build_route_ctx(prefix, peer_as, action, attrs, rpki).prefix_len,
-        Prefix::Vpn     { prefix, .. }   => build_route_ctx(prefix, peer_as, action, attrs, rpki).prefix_len,
+        Prefix::V4(n) => n.prefix_len(),
+        Prefix::V6(n) => n.prefix_len(),
+        Prefix::Labeled { prefix, .. } => {
+            build_route_ctx(prefix, peer_as, action, attrs, rpki).prefix_len
+        }
+        Prefix::Vpn { prefix, .. } => {
+            build_route_ctx(prefix, peer_as, action, attrs, rpki).prefix_len
+        }
     };
 
-    let as_path_asns: Vec<u32> = attrs.as_path.as_ref()
-        .map(|p| p.0.iter().flat_map(|seg| seg.asns().iter().copied()).collect())
+    let as_path_asns: Vec<u32> = attrs
+        .as_path
+        .as_ref()
+        .map(|p| {
+            p.0.iter()
+                .flat_map(|seg| seg.asns().iter().copied())
+                .collect()
+        })
         .unwrap_or_default();
 
     let origin_asn = as_path_asns.last().copied().unwrap_or(0);
 
     let has_prepend = as_path_asns.windows(2).any(|w| w[0] == w[1]);
 
-    let community_set: HashSet<String> = attrs.communities.iter()
+    let community_set: HashSet<String> = attrs
+        .communities
+        .iter()
         .map(|c| format!("{}:{}", c.asn(), c.value()))
         .collect();
 
     RouteCtx {
         prefix_len,
-        as_path_len:   as_path_asns.len(),
+        as_path_len: as_path_asns.len(),
         origin_asn,
         has_prepend,
-        rpki:          rpki.unwrap_or("unknown").to_string(),
-        action:        action.to_string(),
+        rpki: rpki.unwrap_or("unknown").to_string(),
+        action: action.to_string(),
         peer_as,
-        local_pref:    attrs.local_pref,
-        med:           attrs.multi_exit_disc,
+        local_pref: attrs.local_pref,
+        med: attrs.multi_exit_disc,
         community_set,
     }
 }
@@ -230,7 +284,9 @@ pub struct FilterEngine {
 }
 
 impl FilterEngine {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Load filters from a YAML string (sequence of RouteFilter objects).
     pub fn load_yaml(yaml: &str) -> Result<Self, serde_yaml::Error> {
@@ -247,17 +303,21 @@ impl FilterEngine {
     }
 
     /// Return the number of loaded filters.
-    pub fn len(&self) -> usize { self.filters.len() }
-    pub fn is_empty(&self) -> bool { self.filters.is_empty() }
+    pub fn len(&self) -> usize {
+        self.filters.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.filters.is_empty()
+    }
 
     /// Apply the filter chain to a route.  Returns the verdict and the name of
     /// the matching filter (if any).
     pub fn apply(
         &self,
-        prefix:    &Prefix,
-        peer_as:   u32,
+        prefix: &Prefix,
+        peer_as: u32,
         peer_addr: IpAddr,
-        attrs:     &PathAttributes,
+        attrs: &PathAttributes,
     ) -> (FilterVerdict, Option<&str>) {
         // Build RouteCtx once — only if at least one filter has an expr
         let needs_ctx = self.filters.iter().any(|f| f.compiled_expr.is_some());
@@ -270,7 +330,7 @@ impl FilterEngine {
             if cf.matches(prefix, peer_as, peer_addr, attrs, ctx.as_ref()) {
                 let verdict = match cf.raw.action {
                     FilterAction::Accept | FilterAction::Tag => FilterVerdict::Accept,
-                    FilterAction::Deny                       => FilterVerdict::Deny,
+                    FilterAction::Deny => FilterVerdict::Deny,
                 };
                 return (verdict, Some(&cf.raw.name));
             }
@@ -283,17 +343,17 @@ impl FilterEngine {
     /// lookup) so expressions can reference `rpki == 'invalid'` accurately.
     pub fn apply_with_ctx(
         &self,
-        prefix:    &Prefix,
-        peer_as:   u32,
+        prefix: &Prefix,
+        peer_as: u32,
         peer_addr: IpAddr,
-        attrs:     &PathAttributes,
+        attrs: &PathAttributes,
         route_ctx: Option<&RouteCtx>,
     ) -> (FilterVerdict, Option<&str>) {
         for cf in &self.filters {
             if cf.matches(prefix, peer_as, peer_addr, attrs, route_ctx) {
                 let verdict = match cf.raw.action {
                     FilterAction::Accept | FilterAction::Tag => FilterVerdict::Accept,
-                    FilterAction::Deny                       => FilterVerdict::Deny,
+                    FilterAction::Deny => FilterVerdict::Deny,
                 };
                 return (verdict, Some(&cf.raw.name));
             }
@@ -307,8 +367,8 @@ impl FilterEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rbmp_core::bgp::types::{PathAttributes, StandardCommunity};
     use ipnet::Ipv4Net;
+    use rbmp_core::bgp::types::{PathAttributes, StandardCommunity};
     use std::str::FromStr;
 
     fn make_attrs(lp: Option<u32>, community: Option<(u16, u16)>) -> PathAttributes {
@@ -324,7 +384,9 @@ mod tests {
         Prefix::V4(Ipv4Net::from_str(s).unwrap())
     }
 
-    fn peer() -> IpAddr { "10.0.0.1".parse().unwrap() }
+    fn peer() -> IpAddr {
+        "10.0.0.1".parse().unwrap()
+    }
 
     #[test]
     fn test_deny_bogon_prefix() {
@@ -394,10 +456,20 @@ mod tests {
 "#;
         let engine = FilterEngine::load_yaml(yaml).unwrap();
 
-        let (v, _) = engine.apply(&v4("1.0.0.0/24"), 65001, peer(), &make_attrs(Some(250), None));
+        let (v, _) = engine.apply(
+            &v4("1.0.0.0/24"),
+            65001,
+            peer(),
+            &make_attrs(Some(250), None),
+        );
         assert_eq!(v, FilterVerdict::Accept);
 
-        let (v2, _) = engine.apply(&v4("1.0.0.0/24"), 65001, peer(), &make_attrs(Some(100), None));
+        let (v2, _) = engine.apply(
+            &v4("1.0.0.0/24"),
+            65001,
+            peer(),
+            &make_attrs(Some(100), None),
+        );
         assert_eq!(v2, FilterVerdict::Default);
     }
 
@@ -496,7 +568,11 @@ mod tests {
         let engine = FilterEngine::load_yaml(yaml).unwrap();
         let attrs = make_attrs(None, None);
         let (_, name) = engine.apply(&v4("203.0.113.0/24"), 65001, peer(), &attrs);
-        assert_eq!(name, Some("my-special-filter"), "matched filter name must be returned");
+        assert_eq!(
+            name,
+            Some("my-special-filter"),
+            "matched filter name must be returned"
+        );
     }
 
     #[test]
@@ -511,13 +587,23 @@ mod tests {
 
         let mut attrs_with_asn = make_attrs(None, None);
         use rbmp_core::bgp::types::{AsPath, AsPathSegment};
-        attrs_with_asn.as_path = Some(AsPath(vec![AsPathSegment::Sequence(vec![65001, 64512, 65100])]));
+        attrs_with_asn.as_path = Some(AsPath(vec![AsPathSegment::Sequence(vec![
+            65001, 64512, 65100,
+        ])]));
 
         let (v, _) = engine.apply(&v4("1.2.3.0/24"), 65001, peer(), &attrs_with_asn);
-        assert_eq!(v, FilterVerdict::Deny, "route with AS 64512 in path must be denied");
+        assert_eq!(
+            v,
+            FilterVerdict::Deny,
+            "route with AS 64512 in path must be denied"
+        );
 
         let attrs_clean = make_attrs(None, None);
         let (v2, _) = engine.apply(&v4("1.2.3.0/24"), 65001, peer(), &attrs_clean);
-        assert_eq!(v2, FilterVerdict::Default, "route without AS 64512 must be default-accept");
+        assert_eq!(
+            v2,
+            FilterVerdict::Default,
+            "route without AS 64512 must be default-accept"
+        );
     }
 }

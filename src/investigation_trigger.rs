@@ -73,7 +73,9 @@ pub async fn run_investigation_trigger(
         }
     };
 
-    info!("investigation auto-trigger started (max_concurrent={MAX_CONCURRENT}, cooldown={DEVICE_COOLDOWN_SECS}s)");
+    info!(
+        "investigation auto-trigger started (max_concurrent={MAX_CONCURRENT}, cooldown={DEVICE_COOLDOWN_SECS}s)"
+    );
 
     loop {
         tokio::select! {
@@ -238,9 +240,7 @@ async fn run_single_investigation(
 
     info!(
         investigation_id,
-        detection_id,
-        device_address,
-        "investigation created, agent will run asynchronously"
+        detection_id, device_address, "investigation created, agent will run asynchronously"
     );
 
     // The Python agent is expected to be triggered externally (e.g. via a

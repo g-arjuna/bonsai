@@ -34,8 +34,8 @@ use tracing::{debug, info, warn};
 
 use crate::config::{ServiceNowChangeManagementConfig, ServiceNowConfig};
 use crate::credentials::{CredentialVault, ResolvePurpose};
-use crate::graph::common::{now_ns, read_str, ts};
 use crate::graph::GraphStore;
+use crate::graph::common::{now_ns, read_str, ts};
 
 // ── Data types ───────────────────────────────────────────────────────────────
 
@@ -178,7 +178,8 @@ pub async fn run_change_sync(
     let chg_cfg = &config.change_management;
 
     // Fetch change_request records scheduled within the lookback window.
-    let changes = fetch_change_requests(&http, instance_url, chg_cfg, &cred.username, &cred.password).await?;
+    let changes =
+        fetch_change_requests(&http, instance_url, chg_cfg, &cred.username, &cred.password).await?;
     let mut stats = ChangeSyncStats {
         changes_fetched: changes.len(),
         ..Default::default()
@@ -226,9 +227,8 @@ async fn fetch_change_requests(
     let cutoff_dt = format_snow_datetime(cutoff_ns);
 
     let url = format!("{instance_url}/api/now/table/{}", cfg.change_table);
-    let query = format!(
-        "start_date>={cutoff_dt}^ORwork_start>={cutoff_dt}^stateIN-5,-4,-3,-2,-1,1,2,3",
-    );
+    let query =
+        format!("start_date>={cutoff_dt}^ORwork_start>={cutoff_dt}^stateIN-5,-4,-3,-2,-1,1,2,3",);
 
     let resp: SnowChangeList = http
         .get(&url)
@@ -257,7 +257,8 @@ async fn fetch_change_requests(
 /// Format nanosecond timestamp to ServiceNow datetime (UTC).
 fn format_snow_datetime(ns: i64) -> String {
     let secs = ns / 1_000_000_000;
-    let dt = time::OffsetDateTime::from_unix_timestamp(secs).unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+    let dt =
+        time::OffsetDateTime::from_unix_timestamp(secs).unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
         dt.year(),
@@ -332,7 +333,8 @@ fn parse_snow_datetime(s: &str) -> Option<i64> {
         return None;
     }
     // ServiceNow format: "YYYY-MM-DD HH:MM:SS"
-    let format = time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]").ok()?;
+    let format =
+        time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]").ok()?;
     let dt = time::PrimitiveDateTime::parse(s, &format).ok()?;
     let odt = dt.assume_utc();
     Some(odt.unix_timestamp_nanos() as i64)
@@ -340,12 +342,17 @@ fn parse_snow_datetime(s: &str) -> Option<i64> {
 
 // ── Graph operations ─────────────────────────────────────────────────────────
 
-async fn upsert_change_request(store: &Arc<GraphStore>, record: &ChangeRequestRecord) -> Result<()> {
+async fn upsert_change_request(
+    store: &Arc<GraphStore>,
+    record: &ChangeRequestRecord,
+) -> Result<()> {
     let db = store.db();
     let write_lock = store.write_lock();
     let r = record.clone();
     tokio::task::spawn_blocking(move || {
-        let _guard = write_lock.lock().map_err(|_| anyhow::anyhow!("write lock poisoned"))?;
+        let _guard = write_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("write lock poisoned"))?;
         let conn = Connection::new(&db).context("change request upsert connection")?;
         let mut stmt = conn
             .prepare(
@@ -373,7 +380,10 @@ async fn upsert_change_request(store: &Arc<GraphStore>, record: &ChangeRequestRe
                 ("risk", Value::String(r.risk)),
                 ("assigned_to", Value::String(r.assigned_to)),
                 ("ag", Value::String(r.assignment_group)),
-                ("cis", Value::String(serde_json::to_string(&r.affected_cis).unwrap_or_default())),
+                (
+                    "cis",
+                    Value::String(serde_json::to_string(&r.affected_cis).unwrap_or_default()),
+                ),
                 ("pstart", Value::Int64(r.planned_start_ns)),
                 ("pend", Value::Int64(r.planned_end_ns)),
                 ("astart", Value::Int64(r.actual_start_ns)),
@@ -402,7 +412,9 @@ async fn link_device_to_change(
     let cid = change_id.to_string();
     let role = role.to_string();
     tokio::task::spawn_blocking(move || {
-        let _guard = write_lock.lock().map_err(|_| anyhow::anyhow!("write lock poisoned"))?;
+        let _guard = write_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("write lock poisoned"))?;
         let conn = Connection::new(&db).context("device-change link connection")?;
         let mut stmt = conn
             .prepare(
@@ -433,9 +445,7 @@ async fn load_device_ci_map(store: &Arc<GraphStore>) -> Result<HashMap<String, S
     tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).context("device CI map connection")?;
         let rows = conn
-            .query(
-                "MATCH (d:Device) RETURN d.address, d.hostname, d.snow_sys_id",
-            )
+            .query("MATCH (d:Device) RETURN d.address, d.hostname, d.snow_sys_id")
             .context("query device CI map")?;
         let mut map = HashMap::new();
         for row in rows {
@@ -497,10 +507,7 @@ pub async fn active_change_context(
         let rows = conn
             .execute(
                 &mut stmt,
-                vec![
-                    ("addr", Value::String(addr)),
-                    ("now", Value::Int64(now)),
-                ],
+                vec![("addr", Value::String(addr)), ("now", Value::Int64(now))],
             )
             .context("execute active change context query")?;
 
@@ -545,7 +552,9 @@ pub async fn link_event_to_change(
     let eid = event_id.to_string();
     let cid = change_id.to_string();
     tokio::task::spawn_blocking(move || {
-        let _guard = write_lock.lock().map_err(|_| anyhow::anyhow!("write lock poisoned"))?;
+        let _guard = write_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("write lock poisoned"))?;
         let conn = Connection::new(&db).context("event-change link connection")?;
         let query = match kind.as_str() {
             "ConfigChange" => {
@@ -561,10 +570,7 @@ pub async fn link_event_to_change(
         let mut stmt = conn.prepare(query).context("prepare DURING_CHANGE merge")?;
         conn.execute(
             &mut stmt,
-            vec![
-                ("eid", Value::String(eid)),
-                ("cid", Value::String(cid)),
-            ],
+            vec![("eid", Value::String(eid)), ("cid", Value::String(cid))],
         )
         .context("execute DURING_CHANGE merge")?;
         Ok(())
@@ -584,7 +590,9 @@ pub async fn link_incident_to_change(
     let iid = incident_id.to_string();
     let cid = change_id.to_string();
     tokio::task::spawn_blocking(move || {
-        let _guard = write_lock.lock().map_err(|_| anyhow::anyhow!("write lock poisoned"))?;
+        let _guard = write_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("write lock poisoned"))?;
         let conn = Connection::new(&db).context("incident-change link connection")?;
         let mut stmt = conn
             .prepare(
@@ -594,10 +602,7 @@ pub async fn link_incident_to_change(
             .context("prepare RELATED_TO_CHANGE merge")?;
         conn.execute(
             &mut stmt,
-            vec![
-                ("iid", Value::String(iid)),
-                ("cid", Value::String(cid)),
-            ],
+            vec![("iid", Value::String(iid)), ("cid", Value::String(cid))],
         )
         .context("execute RELATED_TO_CHANGE merge")?;
         Ok(())

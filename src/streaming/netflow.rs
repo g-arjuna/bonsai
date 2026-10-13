@@ -128,7 +128,13 @@ fn parse_v9(
                 // Data FlowSet
                 if let Some(fields) = source_cache.get(&template_id).cloned() {
                     emit_flows_v9(
-                        flowset_data, &fields, sys_uptime_ms, unix_secs, source_id, bus, exporter_ip,
+                        flowset_data,
+                        &fields,
+                        sys_uptime_ms,
+                        unix_secs,
+                        source_id,
+                        bus,
+                        exporter_ip,
                     );
                 }
             }
@@ -220,7 +226,15 @@ fn parse_ipfix(
             template_id if template_id >= 256 => {
                 if let Some(fields) = source_cache.get(&template_id).cloned() {
                     // IPFIX uses export_time as unix seconds (no uptime offset needed)
-                    emit_flows_v9(set_data, &fields, 0, export_time, domain_id, bus, exporter_ip);
+                    emit_flows_v9(
+                        set_data,
+                        &fields,
+                        0,
+                        export_time,
+                        domain_id,
+                        bus,
+                        exporter_ip,
+                    );
                 }
             }
             _ => {}
@@ -327,10 +341,20 @@ fn decode_record(
             FIELD_OUTPUT_SNMP => {}
             FIELD_DIRECTION if flen >= 1 => flow_direction = field_data[flen - 1],
             FIELD_FIRST_SWITCHED if flen == 4 => {
-                first_ms = u32::from_be_bytes([field_data[0], field_data[1], field_data[2], field_data[3]]) as u64;
+                first_ms = u32::from_be_bytes([
+                    field_data[0],
+                    field_data[1],
+                    field_data[2],
+                    field_data[3],
+                ]) as u64;
             }
             FIELD_LAST_SWITCHED if flen == 4 => {
-                last_ms = u32::from_be_bytes([field_data[0], field_data[1], field_data[2], field_data[3]]) as u64;
+                last_ms = u32::from_be_bytes([
+                    field_data[0],
+                    field_data[1],
+                    field_data[2],
+                    field_data[3],
+                ]) as u64;
             }
             _ => {}
         }
@@ -377,7 +401,11 @@ fn decode_record(
 fn publish_flow(flow: FlowRecord, bus: &Arc<InProcessBus>, exporter_ip: &str) {
     let duration_secs = {
         let dur = flow.flow_end_ns - flow.flow_start_ns;
-        if dur <= 0 { 1.0 } else { dur as f64 / 1_000_000_000.0 }
+        if dur <= 0 {
+            1.0
+        } else {
+            dur as f64 / 1_000_000_000.0
+        }
     };
     let bytes_per_sec = flow.bytes as f64 / duration_secs;
     let packets_per_sec = flow.packets as f64 / duration_secs;
@@ -468,8 +496,7 @@ fn read_variable_u64(data: &[u8]) -> u64 {
         2 => u16::from_be_bytes([data[0], data[1]]) as u64,
         4 => u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as u64,
         8 => u64::from_be_bytes([
-            data[0], data[1], data[2], data[3],
-            data[4], data[5], data[6], data[7],
+            data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
         ]),
         _ => 0,
     }

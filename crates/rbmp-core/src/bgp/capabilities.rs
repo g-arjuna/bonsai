@@ -1,6 +1,6 @@
-use bytes::Buf;
-use crate::{Error, Result};
 use super::types::{Afi, AfiSafi, BgpCapability, Safi};
+use crate::{Error, Result};
+use bytes::Buf;
 
 /// Parse BGP capabilities from the Optional Parameters section of a BGP OPEN.
 /// buf should contain the raw optional parameters bytes (after the opt_params_len field).
@@ -14,9 +14,12 @@ pub fn parse_capabilities(mut buf: impl Buf) -> Result<Vec<BgpCapability>> {
             });
         }
         let param_type = buf.get_u8();
-        let param_len  = buf.get_u8() as usize;
+        let param_len = buf.get_u8() as usize;
         if buf.remaining() < param_len {
-            return Err(Error::UnexpectedEof { needed: param_len, have: buf.remaining() });
+            return Err(Error::UnexpectedEof {
+                needed: param_len,
+                have: buf.remaining(),
+            });
         }
         let mut param_buf = buf.copy_to_bytes(param_len);
         if param_type != 2 {
@@ -32,9 +35,12 @@ pub fn parse_capabilities(mut buf: impl Buf) -> Result<Vec<BgpCapability>> {
                 });
             }
             let cap_code = param_buf.get_u8();
-            let cap_len  = param_buf.get_u8() as usize;
+            let cap_len = param_buf.get_u8() as usize;
             if param_buf.remaining() < cap_len {
-                return Err(Error::UnexpectedEof { needed: cap_len, have: param_buf.remaining() });
+                return Err(Error::UnexpectedEof {
+                    needed: cap_len,
+                    have: param_buf.remaining(),
+                });
             }
             let cap_data = param_buf.copy_to_bytes(cap_len);
             let cap = parse_one_capability(cap_code, &cap_data)?;
@@ -54,7 +60,7 @@ fn parse_one_capability(code: u8, data: &[u8]) -> Result<BgpCapability> {
                     have: data.len(),
                 });
             }
-            let afi  = u16::from_be_bytes([data[0], data[1]]);
+            let afi = u16::from_be_bytes([data[0], data[1]]);
             let safi = data[3];
             Ok(BgpCapability::Multiprotocol(AfiSafi::new(afi, safi)))
         }
@@ -68,10 +74,14 @@ fn parse_one_capability(code: u8, data: &[u8]) -> Result<BgpCapability> {
                     have: data.len(),
                 });
             }
-            let afi          = Afi::from(u16::from_be_bytes([data[0], data[1]]));
-            let safi         = Safi::from(data[3]);
+            let afi = Afi::from(u16::from_be_bytes([data[0], data[1]]));
+            let safi = Safi::from(data[3]);
             let next_hop_afi = Afi::from(u16::from_be_bytes([data[4], data[5]]));
-            Ok(BgpCapability::ExtendedNextHop { afi, safi, next_hop_afi })
+            Ok(BgpCapability::ExtendedNextHop {
+                afi,
+                safi,
+                next_hop_afi,
+            })
         }
         // Extended Message (RFC 8654)
         6 => Ok(BgpCapability::ExtendedMessage),
@@ -87,13 +97,16 @@ fn parse_one_capability(code: u8, data: &[u8]) -> Result<BgpCapability> {
             let mut afi_safis = Vec::new();
             let mut i = 2;
             while i + 3 <= data.len() {
-                let afi  = u16::from_be_bytes([data[i], data[i + 1]]);
+                let afi = u16::from_be_bytes([data[i], data[i + 1]]);
                 let safi = data[i + 2];
                 let flags = if i + 3 < data.len() { data[i + 3] } else { 0 };
                 afi_safis.push((AfiSafi::new(afi, safi), flags));
                 i += 4;
             }
-            Ok(BgpCapability::GracefulRestart { restart_time, afi_safis })
+            Ok(BgpCapability::GracefulRestart {
+                restart_time,
+                afi_safis,
+            })
         }
         // 4-byte ASN (RFC 6793)
         65 => {
@@ -108,7 +121,7 @@ fn parse_one_capability(code: u8, data: &[u8]) -> Result<BgpCapability> {
         }
         // Add-Path (RFC 7911)
         69 => {
-            if data.len() % 4 != 0 {
+            if !data.len().is_multiple_of(4) {
                 return Err(Error::BgpParse(format!(
                     "invalid Add-Path capability length {} (must be multiple of 4)",
                     data.len()
@@ -117,7 +130,7 @@ fn parse_one_capability(code: u8, data: &[u8]) -> Result<BgpCapability> {
             let mut entries = Vec::new();
             let mut i = 0;
             while i + 4 <= data.len() {
-                let afi  = u16::from_be_bytes([data[i], data[i + 1]]);
+                let afi = u16::from_be_bytes([data[i], data[i + 1]]);
                 let safi = data[i + 2];
                 let mode = data[i + 3];
                 entries.push((AfiSafi::new(afi, safi), mode));
@@ -128,7 +141,9 @@ fn parse_one_capability(code: u8, data: &[u8]) -> Result<BgpCapability> {
         // Enhanced Route Refresh (RFC 7313)
         70 => Ok(BgpCapability::EnhancedRouteRefresh),
         // Long-Lived Graceful Restart (RFC 9494)
-        71 => Ok(BgpCapability::LongLivedGracefulRestart { entries: data.to_vec() }),
+        71 => Ok(BgpCapability::LongLivedGracefulRestart {
+            entries: data.to_vec(),
+        }),
         // BGP Role (RFC 9234): role byte 0=Provider, 1=RS, 2=RS-Client, 3=Customer, 4=Peer
         9 => {
             if data.is_empty() {
@@ -163,6 +178,9 @@ fn parse_one_capability(code: u8, data: &[u8]) -> Result<BgpCapability> {
             }
             Ok(BgpCapability::Fqdn { hostname, domain })
         }
-        _ => Ok(BgpCapability::Unknown { code, data: data.to_vec() }),
+        _ => Ok(BgpCapability::Unknown {
+            code,
+            data: data.to_vec(),
+        }),
     }
 }

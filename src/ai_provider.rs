@@ -19,10 +19,22 @@ pub struct AiMessage {
 
 impl AiMessage {
     pub fn user(text: impl Into<String>) -> Self {
-        Self { role: "user".into(), content: Some(text.into()), tool_calls: vec![], tool_call_id: None, raw_parts: None }
+        Self {
+            role: "user".into(),
+            content: Some(text.into()),
+            tool_calls: vec![],
+            tool_call_id: None,
+            raw_parts: None,
+        }
     }
     pub fn system(text: impl Into<String>) -> Self {
-        Self { role: "system".into(), content: Some(text.into()), tool_calls: vec![], tool_call_id: None, raw_parts: None }
+        Self {
+            role: "system".into(),
+            content: Some(text.into()),
+            tool_calls: vec![],
+            tool_call_id: None,
+            raw_parts: None,
+        }
     }
     pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
@@ -64,7 +76,8 @@ pub struct AiResponse {
 
 #[async_trait]
 pub trait AiProvider: Send + Sync {
-    async fn complete(&self, messages: Vec<AiMessage>, tools: Vec<AiToolDef>) -> Result<AiResponse>;
+    async fn complete(&self, messages: Vec<AiMessage>, tools: Vec<AiToolDef>)
+    -> Result<AiResponse>;
     fn name(&self) -> &str;
 }
 
@@ -72,7 +85,10 @@ pub trait AiProvider: Send + Sync {
 
 /// Build a provider using the API key supplied directly (vault-backed path).
 /// No environment variable lookup is performed.
-pub fn build_provider_with_key(cfg: &crate::config::AiConfig, api_key: String) -> Result<Box<dyn AiProvider>> {
+pub fn build_provider_with_key(
+    cfg: &crate::config::AiConfig,
+    api_key: String,
+) -> Result<Box<dyn AiProvider>> {
     match cfg.provider.as_str() {
         "gemini" => Ok(Box::new(GeminiProvider::new(cfg.model.clone(), api_key))),
         "moonshot" => Ok(Box::new(MoonshotProvider::new(cfg.model.clone(), api_key))),
@@ -82,7 +98,11 @@ pub fn build_provider_with_key(cfg: &crate::config::AiConfig, api_key: String) -
             } else {
                 cfg.base_url.trim_end_matches('/').to_string()
             };
-            Ok(Box::new(OpenAiProvider::new(cfg.model.clone(), api_key, base)))
+            Ok(Box::new(OpenAiProvider::new(
+                cfg.model.clone(),
+                api_key,
+                base,
+            )))
         }
         "anthropic" => Ok(Box::new(AnthropicProvider::new(cfg.model.clone(), api_key))),
         "ollama" => {
@@ -93,7 +113,10 @@ pub fn build_provider_with_key(cfg: &crate::config::AiConfig, api_key: String) -
             };
             Ok(Box::new(OllamaProvider::new(cfg.model.clone(), base)))
         }
-        other => bail!("unsupported AI provider '{}'. Supported: gemini, moonshot, openai, anthropic, ollama", other),
+        other => bail!(
+            "unsupported AI provider '{}'. Supported: gemini, moonshot, openai, anthropic, ollama",
+            other
+        ),
     }
 }
 
@@ -104,8 +127,12 @@ pub fn build_provider(cfg: &crate::config::AiConfig) -> Result<Box<dyn AiProvide
     let api_key = if cfg.provider == "ollama" {
         std::env::var(&cfg.api_key_env).unwrap_or_default()
     } else {
-        std::env::var(&cfg.api_key_env)
-            .with_context(|| format!("AI API key not set — expected env var '{}'", cfg.api_key_env))?
+        std::env::var(&cfg.api_key_env).with_context(|| {
+            format!(
+                "AI API key not set — expected env var '{}'",
+                cfg.api_key_env
+            )
+        })?
     };
     build_provider_with_key(cfg, api_key)
 }
@@ -120,15 +147,25 @@ pub struct GeminiProvider {
 
 impl GeminiProvider {
     pub fn new(model: String, api_key: String) -> Self {
-        Self { model, api_key, client: reqwest::Client::new() }
+        Self {
+            model,
+            api_key,
+            client: reqwest::Client::new(),
+        }
     }
 }
 
 #[async_trait]
 impl AiProvider for GeminiProvider {
-    fn name(&self) -> &str { "gemini" }
+    fn name(&self) -> &str {
+        "gemini"
+    }
 
-    async fn complete(&self, messages: Vec<AiMessage>, tools: Vec<AiToolDef>) -> Result<AiResponse> {
+    async fn complete(
+        &self,
+        messages: Vec<AiMessage>,
+        tools: Vec<AiToolDef>,
+    ) -> Result<AiResponse> {
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
             self.model, self.api_key
@@ -145,14 +182,23 @@ impl AiProvider for GeminiProvider {
                 }));
                 continue;
             }
-            let role = if msg.role == "assistant" { "model" } else { "user" };
+            let role = if msg.role == "assistant" {
+                "model"
+            } else {
+                "user"
+            };
             let parts = if let Some(ref rp) = msg.raw_parts {
                 // Replay raw parts verbatim — preserves Gemini thought signatures
                 rp.clone()
             } else if !msg.tool_calls.is_empty() {
-                msg.tool_calls.iter().map(|tc| serde_json::json!({
-                    "functionCall": { "name": tc.name, "args": tc.arguments }
-                })).collect::<Vec<_>>()
+                msg.tool_calls
+                    .iter()
+                    .map(|tc| {
+                        serde_json::json!({
+                            "functionCall": { "name": tc.name, "args": tc.arguments }
+                        })
+                    })
+                    .collect::<Vec<_>>()
             } else if msg.role == "tool" {
                 // Tool result — wrap as functionResponse part in a "user" role content.
                 vec![serde_json::json!({
@@ -174,26 +220,37 @@ impl AiProvider for GeminiProvider {
         }
 
         if !tools.is_empty() {
-            let fn_decls: Vec<serde_json::Value> = tools.iter().map(|t| serde_json::json!({
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.parameters,
-            })).collect();
+            let fn_decls: Vec<serde_json::Value> = tools
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    })
+                })
+                .collect();
             body["tools"] = serde_json::json!([{ "function_declarations": fn_decls }]);
         }
 
-        let resp = self.client.post(&url).json(&body).send().await
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
             .context("Gemini HTTP request failed")?;
         let status = resp.status();
         let text = resp.text().await.context("Gemini response read failed")?;
         if !status.is_success() {
             bail!("Gemini API error {}: {}", status, text);
         }
-        let json: serde_json::Value = serde_json::from_str(&text)
-            .context("Gemini response JSON parse failed")?;
+        let json: serde_json::Value =
+            serde_json::from_str(&text).context("Gemini response JSON parse failed")?;
 
         let tokens_used = json["usageMetadata"]["totalTokenCount"]
-            .as_u64().unwrap_or(0);
+            .as_u64()
+            .unwrap_or(0);
         let cost_usd = gemini_cost_usd(&self.model, tokens_used);
 
         let candidate = json["candidates"][0]["content"]["parts"]
@@ -218,7 +275,9 @@ impl AiProvider for GeminiProvider {
         }
 
         let finish_reason = json["candidates"][0]["finishReason"]
-            .as_str().unwrap_or("STOP").to_uppercase();
+            .as_str()
+            .unwrap_or("STOP")
+            .to_uppercase();
         let stop_reason = if !tool_calls.is_empty() {
             "tool_use".to_string()
         } else if finish_reason == "STOP" {
@@ -228,7 +287,11 @@ impl AiProvider for GeminiProvider {
         };
 
         Ok(AiResponse {
-            content: if text_parts.is_empty() { None } else { Some(text_parts.join("\n")) },
+            content: if text_parts.is_empty() {
+                None
+            } else {
+                Some(text_parts.join("\n"))
+            },
             tool_calls,
             stop_reason,
             tokens_used,
@@ -263,25 +326,38 @@ impl MoonshotProvider {
         } else {
             model
         };
-        Self { model, api_key, client: reqwest::Client::new() }
+        Self {
+            model,
+            api_key,
+            client: reqwest::Client::new(),
+        }
     }
 }
 
 #[async_trait]
 impl AiProvider for MoonshotProvider {
-    fn name(&self) -> &str { "moonshot" }
+    fn name(&self) -> &str {
+        "moonshot"
+    }
 
-    async fn complete(&self, messages: Vec<AiMessage>, tools: Vec<AiToolDef>) -> Result<AiResponse> {
+    async fn complete(
+        &self,
+        messages: Vec<AiMessage>,
+        tools: Vec<AiToolDef>,
+    ) -> Result<AiResponse> {
         let url = "https://api.moonshot.cn/v1/chat/completions";
 
-        let oai_msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
-            let mut obj = serde_json::json!({ "role": m.role });
-            obj["content"] = match &m.content {
-                Some(c) => serde_json::Value::String(c.clone()),
-                None => serde_json::Value::Null,
-            };
-            if !m.tool_calls.is_empty() {
-                obj["tool_calls"] = serde_json::json!(m.tool_calls.iter().map(|tc| serde_json::json!({
+        let oai_msgs: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| {
+                let mut obj = serde_json::json!({ "role": m.role });
+                obj["content"] = match &m.content {
+                    Some(c) => serde_json::Value::String(c.clone()),
+                    None => serde_json::Value::Null,
+                };
+                if !m.tool_calls.is_empty() {
+                    obj["tool_calls"] =
+                        serde_json::json!(m.tool_calls.iter().map(|tc| serde_json::json!({
                     "id": tc.id,
                     "type": "function",
                     "function": {
@@ -289,40 +365,49 @@ impl AiProvider for MoonshotProvider {
                         "arguments": serde_json::to_string(&tc.arguments).unwrap_or_default()
                     }
                 })).collect::<Vec<_>>());
-            }
-            if let Some(ref id) = m.tool_call_id {
-                obj["tool_call_id"] = serde_json::Value::String(id.clone());
-            }
-            obj
-        }).collect();
+                }
+                if let Some(ref id) = m.tool_call_id {
+                    obj["tool_call_id"] = serde_json::Value::String(id.clone());
+                }
+                obj
+            })
+            .collect();
 
         let mut body = serde_json::json!({
             "model": self.model,
             "messages": oai_msgs,
         });
         if !tools.is_empty() {
-            body["tools"] = serde_json::json!(tools.iter().map(|t| serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.parameters,
-                }
-            })).collect::<Vec<_>>());
+            body["tools"] = serde_json::json!(
+                tools
+                    .iter()
+                    .map(|t| serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": t.name,
+                            "description": t.description,
+                            "parameters": t.parameters,
+                        }
+                    }))
+                    .collect::<Vec<_>>()
+            );
         }
 
-        let resp = self.client.post(url)
+        let resp = self
+            .client
+            .post(url)
             .bearer_auth(&self.api_key)
             .json(&body)
-            .send().await
+            .send()
+            .await
             .context("Moonshot HTTP request failed")?;
         let status = resp.status();
         let text = resp.text().await.context("Moonshot response read failed")?;
         if !status.is_success() {
             bail!("Moonshot API error {}: {}", status, text);
         }
-        let json: serde_json::Value = serde_json::from_str(&text)
-            .context("Moonshot response JSON parse failed")?;
+        let json: serde_json::Value =
+            serde_json::from_str(&text).context("Moonshot response JSON parse failed")?;
 
         let tokens_used = json["usage"]["total_tokens"].as_u64().unwrap_or(0);
         let cost_usd = tokens_used as f64 * 0.000_012;
@@ -334,16 +419,21 @@ impl AiProvider for MoonshotProvider {
         let content = msg["content"].as_str().map(|s| s.to_string());
         let tool_calls: Vec<AiToolCall> = msg["tool_calls"]
             .as_array()
-            .map(|tcs| tcs.iter().filter_map(|tc| {
-                let fn_obj = tc.get("function")?;
-                let args_str = fn_obj["arguments"].as_str().unwrap_or("{}");
-                let args: serde_json::Value = serde_json::from_str(args_str).unwrap_or(serde_json::Value::Object(Default::default()));
-                Some(AiToolCall {
-                    id: tc["id"].as_str().unwrap_or("").to_string(),
-                    name: fn_obj["name"].as_str().unwrap_or("").to_string(),
-                    arguments: args,
-                })
-            }).collect())
+            .map(|tcs| {
+                tcs.iter()
+                    .filter_map(|tc| {
+                        let fn_obj = tc.get("function")?;
+                        let args_str = fn_obj["arguments"].as_str().unwrap_or("{}");
+                        let args: serde_json::Value = serde_json::from_str(args_str)
+                            .unwrap_or(serde_json::Value::Object(Default::default()));
+                        Some(AiToolCall {
+                            id: tc["id"].as_str().unwrap_or("").to_string(),
+                            name: fn_obj["name"].as_str().unwrap_or("").to_string(),
+                            arguments: args,
+                        })
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
 
         let stop_reason = if finish_reason == "tool_calls" {
@@ -352,7 +442,14 @@ impl AiProvider for MoonshotProvider {
             "end_turn".to_string()
         };
 
-        Ok(AiResponse { content, tool_calls, stop_reason, tokens_used, cost_usd, raw_parts: None })
+        Ok(AiResponse {
+            content,
+            tool_calls,
+            stop_reason,
+            tokens_used,
+            cost_usd,
+            raw_parts: None,
+        })
     }
 }
 
@@ -367,25 +464,39 @@ pub struct OpenAiProvider {
 
 impl OpenAiProvider {
     pub fn new(model: String, api_key: String, base_url: String) -> Self {
-        Self { model, api_key, base_url, client: reqwest::Client::new() }
+        Self {
+            model,
+            api_key,
+            base_url,
+            client: reqwest::Client::new(),
+        }
     }
 }
 
 #[async_trait]
 impl AiProvider for OpenAiProvider {
-    fn name(&self) -> &str { "openai" }
+    fn name(&self) -> &str {
+        "openai"
+    }
 
-    async fn complete(&self, messages: Vec<AiMessage>, tools: Vec<AiToolDef>) -> Result<AiResponse> {
+    async fn complete(
+        &self,
+        messages: Vec<AiMessage>,
+        tools: Vec<AiToolDef>,
+    ) -> Result<AiResponse> {
         let url = format!("{}/v1/chat/completions", self.base_url);
 
-        let oai_msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
-            let mut obj = serde_json::json!({ "role": m.role });
-            obj["content"] = match &m.content {
-                Some(c) => serde_json::Value::String(c.clone()),
-                None => serde_json::Value::Null,
-            };
-            if !m.tool_calls.is_empty() {
-                obj["tool_calls"] = serde_json::json!(m.tool_calls.iter().map(|tc| serde_json::json!({
+        let oai_msgs: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| {
+                let mut obj = serde_json::json!({ "role": m.role });
+                obj["content"] = match &m.content {
+                    Some(c) => serde_json::Value::String(c.clone()),
+                    None => serde_json::Value::Null,
+                };
+                if !m.tool_calls.is_empty() {
+                    obj["tool_calls"] =
+                        serde_json::json!(m.tool_calls.iter().map(|tc| serde_json::json!({
                     "id": tc.id,
                     "type": "function",
                     "function": {
@@ -393,12 +504,13 @@ impl AiProvider for OpenAiProvider {
                         "arguments": serde_json::to_string(&tc.arguments).unwrap_or_default()
                     }
                 })).collect::<Vec<_>>());
-            }
-            if let Some(ref id) = m.tool_call_id {
-                obj["tool_call_id"] = serde_json::Value::String(id.clone());
-            }
-            obj
-        }).collect();
+                }
+                if let Some(ref id) = m.tool_call_id {
+                    obj["tool_call_id"] = serde_json::Value::String(id.clone());
+                }
+                obj
+            })
+            .collect();
 
         let mut body = serde_json::json!({
             "model": self.model,
@@ -411,18 +523,21 @@ impl AiProvider for OpenAiProvider {
             })).collect::<Vec<_>>());
         }
 
-        let resp = self.client.post(&url)
+        let resp = self
+            .client
+            .post(&url)
             .bearer_auth(&self.api_key)
             .json(&body)
-            .send().await
+            .send()
+            .await
             .context("OpenAI HTTP request failed")?;
         let status = resp.status();
         let text = resp.text().await.context("OpenAI response read failed")?;
         if !status.is_success() {
             bail!("OpenAI API error {}: {}", status, text);
         }
-        let json: serde_json::Value = serde_json::from_str(&text)
-            .context("OpenAI response JSON parse failed")?;
+        let json: serde_json::Value =
+            serde_json::from_str(&text).context("OpenAI response JSON parse failed")?;
 
         let tokens_used = json["usage"]["total_tokens"].as_u64().unwrap_or(0);
         let cost_usd = openai_cost_usd(&self.model, tokens_used);
@@ -434,17 +549,21 @@ impl AiProvider for OpenAiProvider {
         let content = msg["content"].as_str().map(|s| s.to_string());
         let tool_calls: Vec<AiToolCall> = msg["tool_calls"]
             .as_array()
-            .map(|tcs| tcs.iter().filter_map(|tc| {
-                let fn_obj = tc.get("function")?;
-                let args_str = fn_obj["arguments"].as_str().unwrap_or("{}");
-                let args: serde_json::Value = serde_json::from_str(args_str)
-                    .unwrap_or(serde_json::Value::Object(Default::default()));
-                Some(AiToolCall {
-                    id: tc["id"].as_str().unwrap_or("").to_string(),
-                    name: fn_obj["name"].as_str().unwrap_or("").to_string(),
-                    arguments: args,
-                })
-            }).collect())
+            .map(|tcs| {
+                tcs.iter()
+                    .filter_map(|tc| {
+                        let fn_obj = tc.get("function")?;
+                        let args_str = fn_obj["arguments"].as_str().unwrap_or("{}");
+                        let args: serde_json::Value = serde_json::from_str(args_str)
+                            .unwrap_or(serde_json::Value::Object(Default::default()));
+                        Some(AiToolCall {
+                            id: tc["id"].as_str().unwrap_or("").to_string(),
+                            name: fn_obj["name"].as_str().unwrap_or("").to_string(),
+                            arguments: args,
+                        })
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
 
         let stop_reason = if finish_reason == "tool_calls" {
@@ -453,7 +572,14 @@ impl AiProvider for OpenAiProvider {
             "end_turn".to_string()
         };
 
-        Ok(AiResponse { content, tool_calls, stop_reason, tokens_used, cost_usd, raw_parts: None })
+        Ok(AiResponse {
+            content,
+            tool_calls,
+            stop_reason,
+            tokens_used,
+            cost_usd,
+            raw_parts: None,
+        })
     }
 }
 
@@ -486,33 +612,51 @@ impl AnthropicProvider {
         } else {
             model
         };
-        Self { model, api_key, client: reqwest::Client::new() }
+        Self {
+            model,
+            api_key,
+            client: reqwest::Client::new(),
+        }
     }
 }
 
 #[async_trait]
 impl AiProvider for AnthropicProvider {
-    fn name(&self) -> &str { "anthropic" }
+    fn name(&self) -> &str {
+        "anthropic"
+    }
 
-    async fn complete(&self, messages: Vec<AiMessage>, tools: Vec<AiToolDef>) -> Result<AiResponse> {
+    async fn complete(
+        &self,
+        messages: Vec<AiMessage>,
+        tools: Vec<AiToolDef>,
+    ) -> Result<AiResponse> {
         let url = "https://api.anthropic.com/v1/messages";
 
         // Anthropic separates the system message from user/assistant turns
-        let system_text: Option<String> = messages.iter()
+        let system_text: Option<String> = messages
+            .iter()
             .find(|m| m.role == "system")
             .and_then(|m| m.content.clone());
 
-        let anthropic_msgs: Vec<serde_json::Value> = messages.iter()
+        let anthropic_msgs: Vec<serde_json::Value> = messages
+            .iter()
             .filter(|m| m.role != "system")
             .map(|m| {
                 if !m.tool_calls.is_empty() {
                     // assistant tool-use turn
-                    let content: Vec<serde_json::Value> = m.tool_calls.iter().map(|tc| serde_json::json!({
-                        "type": "tool_use",
-                        "id": tc.id,
-                        "name": tc.name,
-                        "input": tc.arguments,
-                    })).collect();
+                    let content: Vec<serde_json::Value> = m
+                        .tool_calls
+                        .iter()
+                        .map(|tc| {
+                            serde_json::json!({
+                                "type": "tool_use",
+                                "id": tc.id,
+                                "name": tc.name,
+                                "input": tc.arguments,
+                            })
+                        })
+                        .collect();
                     serde_json::json!({ "role": "assistant", "content": content })
                 } else if m.role == "tool" {
                     // tool result (user role in Anthropic)
@@ -542,26 +686,37 @@ impl AiProvider for AnthropicProvider {
             body["system"] = serde_json::Value::String(sys);
         }
         if !tools.is_empty() {
-            body["tools"] = serde_json::json!(tools.iter().map(|t| serde_json::json!({
-                "name": t.name,
-                "description": t.description,
-                "input_schema": t.parameters,
-            })).collect::<Vec<_>>());
+            body["tools"] = serde_json::json!(
+                tools
+                    .iter()
+                    .map(|t| serde_json::json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "input_schema": t.parameters,
+                    }))
+                    .collect::<Vec<_>>()
+            );
         }
 
-        let resp = self.client.post(url)
+        let resp = self
+            .client
+            .post(url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .json(&body)
-            .send().await
+            .send()
+            .await
             .context("Anthropic HTTP request failed")?;
         let status = resp.status();
-        let text = resp.text().await.context("Anthropic response read failed")?;
+        let text = resp
+            .text()
+            .await
+            .context("Anthropic response read failed")?;
         if !status.is_success() {
             bail!("Anthropic API error {}: {}", status, text);
         }
-        let json: serde_json::Value = serde_json::from_str(&text)
-            .context("Anthropic response JSON parse failed")?;
+        let json: serde_json::Value =
+            serde_json::from_str(&text).context("Anthropic response JSON parse failed")?;
 
         let input_tokens = json["usage"]["input_tokens"].as_u64().unwrap_or(0);
         let output_tokens = json["usage"]["output_tokens"].as_u64().unwrap_or(0);
@@ -599,7 +754,11 @@ impl AiProvider for AnthropicProvider {
         };
 
         Ok(AiResponse {
-            content: if text_parts.is_empty() { None } else { Some(text_parts.join("\n")) },
+            content: if text_parts.is_empty() {
+                None
+            } else {
+                Some(text_parts.join("\n"))
+            },
             tool_calls,
             stop_reason,
             tokens_used,
@@ -632,26 +791,39 @@ pub struct OllamaProvider {
 
 impl OllamaProvider {
     pub fn new(model: String, base_url: String) -> Self {
-        Self { model, base_url, client: reqwest::Client::new() }
+        Self {
+            model,
+            base_url,
+            client: reqwest::Client::new(),
+        }
     }
 }
 
 #[async_trait]
 impl AiProvider for OllamaProvider {
-    fn name(&self) -> &str { "ollama" }
+    fn name(&self) -> &str {
+        "ollama"
+    }
 
-    async fn complete(&self, messages: Vec<AiMessage>, tools: Vec<AiToolDef>) -> Result<AiResponse> {
+    async fn complete(
+        &self,
+        messages: Vec<AiMessage>,
+        tools: Vec<AiToolDef>,
+    ) -> Result<AiResponse> {
         // Use OpenAI-compatible endpoint that newer Ollama versions support
         let url = format!("{}/v1/chat/completions", self.base_url);
 
-        let oai_msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
-            let mut obj = serde_json::json!({ "role": m.role });
-            obj["content"] = match &m.content {
-                Some(c) => serde_json::Value::String(c.clone()),
-                None => serde_json::Value::Null,
-            };
-            if !m.tool_calls.is_empty() {
-                obj["tool_calls"] = serde_json::json!(m.tool_calls.iter().map(|tc| serde_json::json!({
+        let oai_msgs: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| {
+                let mut obj = serde_json::json!({ "role": m.role });
+                obj["content"] = match &m.content {
+                    Some(c) => serde_json::Value::String(c.clone()),
+                    None => serde_json::Value::Null,
+                };
+                if !m.tool_calls.is_empty() {
+                    obj["tool_calls"] =
+                        serde_json::json!(m.tool_calls.iter().map(|tc| serde_json::json!({
                     "id": tc.id,
                     "type": "function",
                     "function": {
@@ -659,12 +831,13 @@ impl AiProvider for OllamaProvider {
                         "arguments": serde_json::to_string(&tc.arguments).unwrap_or_default()
                     }
                 })).collect::<Vec<_>>());
-            }
-            if let Some(ref id) = m.tool_call_id {
-                obj["tool_call_id"] = serde_json::Value::String(id.clone());
-            }
-            obj
-        }).collect();
+                }
+                if let Some(ref id) = m.tool_call_id {
+                    obj["tool_call_id"] = serde_json::Value::String(id.clone());
+                }
+                obj
+            })
+            .collect();
 
         let mut body = serde_json::json!({
             "model": self.model,
@@ -678,17 +851,20 @@ impl AiProvider for OllamaProvider {
             })).collect::<Vec<_>>());
         }
 
-        let resp = self.client.post(&url)
+        let resp = self
+            .client
+            .post(&url)
             .json(&body)
-            .send().await
+            .send()
+            .await
             .context("Ollama HTTP request failed")?;
         let status = resp.status();
         let text = resp.text().await.context("Ollama response read failed")?;
         if !status.is_success() {
             bail!("Ollama API error {}: {}", status, text);
         }
-        let json: serde_json::Value = serde_json::from_str(&text)
-            .context("Ollama response JSON parse failed")?;
+        let json: serde_json::Value =
+            serde_json::from_str(&text).context("Ollama response JSON parse failed")?;
 
         let tokens_used = json["usage"]["total_tokens"].as_u64().unwrap_or(0);
         let choice = &json["choices"][0];
@@ -698,21 +874,37 @@ impl AiProvider for OllamaProvider {
         let content = msg["content"].as_str().map(|s| s.to_string());
         let tool_calls: Vec<AiToolCall> = msg["tool_calls"]
             .as_array()
-            .map(|tcs| tcs.iter().filter_map(|tc| {
-                let fn_obj = tc.get("function")?;
-                let args_str = fn_obj["arguments"].as_str().unwrap_or("{}");
-                let args: serde_json::Value = serde_json::from_str(args_str)
-                    .unwrap_or(serde_json::Value::Object(Default::default()));
-                Some(AiToolCall {
-                    id: tc["id"].as_str().unwrap_or("").to_string(),
-                    name: fn_obj["name"].as_str().unwrap_or("").to_string(),
-                    arguments: args,
-                })
-            }).collect())
+            .map(|tcs| {
+                tcs.iter()
+                    .filter_map(|tc| {
+                        let fn_obj = tc.get("function")?;
+                        let args_str = fn_obj["arguments"].as_str().unwrap_or("{}");
+                        let args: serde_json::Value = serde_json::from_str(args_str)
+                            .unwrap_or(serde_json::Value::Object(Default::default()));
+                        Some(AiToolCall {
+                            id: tc["id"].as_str().unwrap_or("").to_string(),
+                            name: fn_obj["name"].as_str().unwrap_or("").to_string(),
+                            arguments: args,
+                        })
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
 
-        let stop_reason = if finish_reason == "tool_calls" { "tool_use" } else { "end_turn" }.to_string();
+        let stop_reason = if finish_reason == "tool_calls" {
+            "tool_use"
+        } else {
+            "end_turn"
+        }
+        .to_string();
 
-        Ok(AiResponse { content, tool_calls, stop_reason, tokens_used, cost_usd: 0.0, raw_parts: None })
+        Ok(AiResponse {
+            content,
+            tool_calls,
+            stop_reason,
+            tokens_used,
+            cost_usd: 0.0,
+            raw_parts: None,
+        })
     }
 }

@@ -262,7 +262,8 @@ pub async fn run_sync_cycle(
     }
 
     let duration = start.elapsed().as_secs_f64();
-    metrics::histogram!("bonsai_servicenow_sync_duration_seconds", "sync_type" => "aiops").record(duration);
+    metrics::histogram!("bonsai_servicenow_sync_duration_seconds", "sync_type" => "aiops")
+        .record(duration);
 
     Ok(stats)
 }

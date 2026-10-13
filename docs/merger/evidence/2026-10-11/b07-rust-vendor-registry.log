@@ -1,0 +1,12 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 6.03s
+     Running tests/b07_vendor_registry.rs (target/debug/deps/b07_vendor_registry-0be5cd53309325a0)
+
+running 4 tests
+test b07_edge_a_hostname_works_without_vendor_prefix_and_hostname_is_advisory_only ... ok
+test b07_ipv6_and_hostname_endpoints_parse_cleanly ... ok
+test b07_canonical_platform_aliases_and_no_cisco_fallback_for_unknown ... ok
+test b07_ui_and_api_vendor_identifiers_agree ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

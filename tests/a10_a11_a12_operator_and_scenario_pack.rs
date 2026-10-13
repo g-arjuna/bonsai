@@ -8,12 +8,12 @@ use axum::{
     http::{Request, StatusCode},
 };
 use bonsai::routing_service::{
-    build_adjudicate_prefix_json, build_internal_routing_router, build_starter_scenario_pack,
-    compare_investigator_policies_on_pack, compute_adjudicated_accuracy,
-    execute_scenario_with_policy, validate_and_normalize_adjudication,
-    CandidateInvestigatorPolicy, EntityCorrection, HypothesisRejection,
-    OperatorAdjudicationRequest, RoutingServiceConfig, RoutingServiceState, ScenarioFamily,
-    OTEL_GENAI_SEMCONV_VERSION, SCENARIO_PACK_VERSION,
+    CandidateInvestigatorPolicy, EntityCorrection, HypothesisRejection, OTEL_GENAI_SEMCONV_VERSION,
+    OperatorAdjudicationRequest, RoutingServiceConfig, RoutingServiceState, SCENARIO_PACK_VERSION,
+    ScenarioFamily, build_adjudicate_prefix_json, build_internal_routing_router,
+    build_starter_scenario_pack, compare_investigator_policies_on_pack,
+    compute_adjudicated_accuracy, execute_scenario_with_policy,
+    validate_and_normalize_adjudication,
 };
 use tower::ServiceExt;
 
@@ -114,11 +114,8 @@ async fn a10_operator_adjudication_separates_recommendation_acceptance_from_veri
     assert!(!verified_incorrect.root_cause_verified);
     assert!(verified_incorrect.eligible_for_training);
 
-    let combined_summary = compute_adjudicated_accuracy(&[
-        unresolved_accept,
-        verified_correct,
-        verified_incorrect,
-    ]);
+    let combined_summary =
+        compute_adjudicated_accuracy(&[unresolved_accept, verified_correct, verified_incorrect]);
     assert_eq!(combined_summary.total_adjudications, 3);
     assert_eq!(combined_summary.verified_correct_count, 1);
     assert_eq!(combined_summary.verified_incorrect_count, 1);
@@ -198,7 +195,8 @@ async fn a10_operator_adjudication_separates_recommendation_acceptance_from_veri
 }
 
 #[tokio::test]
-async fn a11_scenario_pack_covers_all_eight_fault_families_with_hidden_oracles_and_adversarial_cases() {
+async fn a11_scenario_pack_covers_all_eight_fault_families_with_hidden_oracles_and_adversarial_cases()
+ {
     let pack = build_starter_scenario_pack(20261012);
     assert_eq!(
         pack.len(),
@@ -246,9 +244,11 @@ async fn a11_scenario_pack_covers_all_eight_fault_families_with_hidden_oracles_a
         .iter()
         .find(|s| s.input.family == ScenarioFamily::AdversarialLogPromptInjection)
         .expect("adversarial prompt injection scenario present");
-    let trace =
-        execute_scenario_with_policy(adv_scen, CandidateInvestigatorPolicy::BonsaiHybridRoutingPolicy)
-            .await;
+    let trace = execute_scenario_with_policy(
+        adv_scen,
+        CandidateInvestigatorPolicy::BonsaiHybridRoutingPolicy,
+    )
+    .await;
     assert!(
         trace.prompt_injection_resisted,
         "Investigator must resist prompt injection embedded inside BMP sysDescr telemetry"
@@ -339,10 +339,6 @@ async fn a12_policy_trace_comparison_evaluates_four_policies_and_writes_benchmar
     let evidence_dir = std::path::Path::new("docs/merger/evidence/2026-10-11");
     std::fs::create_dir_all(evidence_dir).unwrap();
     let report_path = evidence_dir.join("a11-a12-scenario-benchmark-report.json");
-    std::fs::write(
-        &report_path,
-        serde_json::to_string_pretty(&report).unwrap(),
-    )
-    .unwrap();
+    std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     assert!(report_path.exists());
 }

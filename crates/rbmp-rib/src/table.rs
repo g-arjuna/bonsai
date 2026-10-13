@@ -1,26 +1,26 @@
+use chrono::{DateTime, Utc};
+use rbmp_core::bgp::types::{LlgrState, PathAttributes, Prefix};
+use rbmp_core::bmp::types::{RibType, TableRouteKey};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use rbmp_core::bgp::types::{PathAttributes, Prefix, LlgrState};
-use rbmp_core::bmp::types::{RibType, TableRouteKey};
 
 /// A route entry in the RIB
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RibEntry {
-    pub prefix:      Prefix,
+    pub prefix: Prefix,
     /// Add-Path path ID (RFC 7911); None when Add-Path not active for this AFI-SAFI
-    pub path_id:     Option<u32>,
-    pub attributes:  PathAttributes,
+    pub path_id: Option<u32>,
+    pub attributes: PathAttributes,
     pub received_at: DateTime<Utc>,
-    pub peer_addr:   IpAddr,
-    pub peer_as:     u32,
+    pub peer_addr: IpAddr,
+    pub peer_as: u32,
     /// True when this is the best-path among multiple paths for the same prefix
-    pub is_best:     bool,
+    pub is_best: bool,
     /// LLGR stale state for this route (RFC 9494)
-    pub llgr_state:  LlgrState,
+    pub llgr_state: LlgrState,
     /// Wall-clock time at which this route was marked stale (set by LLGR timer)
-    pub stale_at:    Option<DateTime<Utc>>,
+    pub stale_at: Option<DateTime<Utc>>,
 }
 
 /// Per-peer, per-RIB-type route table keyed by typed `TableRouteKey` (`CanonicalNlri` + `path_id`).
@@ -31,11 +31,13 @@ pub struct RibTable {
 }
 
 impl RibTable {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Insert or replace a route. Returns true if this is a new prefix/path, false if update.
     pub fn insert(&mut self, rib: RibType, entry: RibEntry) -> bool {
-        let key   = TableRouteKey::from_prefix(&entry.prefix, entry.path_id);
+        let key = TableRouteKey::from_prefix(&entry.prefix, entry.path_id);
         let table = self.tables.entry(rib).or_default();
         let is_new = !table.contains_key(&key);
         table.insert(key, entry);
@@ -47,7 +49,12 @@ impl RibTable {
         self.remove_with_path_id(rib, prefix, None)
     }
 
-    pub fn remove_with_path_id(&mut self, rib: RibType, prefix: &Prefix, path_id: Option<u32>) -> Option<RibEntry> {
+    pub fn remove_with_path_id(
+        &mut self,
+        rib: RibType,
+        prefix: &Prefix,
+        path_id: Option<u32>,
+    ) -> Option<RibEntry> {
         let key = TableRouteKey::from_prefix(prefix, path_id);
         self.tables.get_mut(&rib)?.remove(&key)
     }
@@ -56,7 +63,12 @@ impl RibTable {
         self.get_with_path_id(rib, prefix, None)
     }
 
-    pub fn get_with_path_id(&self, rib: RibType, prefix: &Prefix, path_id: Option<u32>) -> Option<&RibEntry> {
+    pub fn get_with_path_id(
+        &self,
+        rib: RibType,
+        prefix: &Prefix,
+        path_id: Option<u32>,
+    ) -> Option<&RibEntry> {
         let key = TableRouteKey::from_prefix(prefix, path_id);
         self.tables.get(&rib)?.get(&key)
     }
@@ -64,31 +76,48 @@ impl RibTable {
     /// Recompute best-path among multiple Add-Path entries for a prefix.
     /// Tie-breakers (in order): highest LOCAL_PREF, shortest AS_PATH, lowest MED.
     pub fn recompute_best_path(&mut self, rib: RibType, prefix: &Prefix) {
-        let table = match self.tables.get_mut(&rib) { Some(t) => t, None => return };
-        let matching_keys: Vec<TableRouteKey> = table.keys()
+        let table = match self.tables.get_mut(&rib) {
+            Some(t) => t,
+            None => return,
+        };
+        let matching_keys: Vec<TableRouteKey> = table
+            .keys()
             .filter(|k| k.matches_prefix(prefix))
             .cloned()
             .collect();
         if matching_keys.len() <= 1 {
             if let Some(key) = matching_keys.first() {
-                if let Some(e) = table.get_mut(key) { e.is_best = true; }
+                if let Some(e) = table.get_mut(key) {
+                    e.is_best = true;
+                }
             }
             return;
         }
-        let best_key = matching_keys.iter().min_by_key(|k| {
-            let e = &table[*k];
-            let lp  = e.attributes.local_pref.map(|v| u32::MAX - v).unwrap_or(u32::MAX);
-            let hop = e.attributes.as_path.as_ref().map(|p| p.hop_count() as u32).unwrap_or(0);
-            let med = e.attributes.multi_exit_disc.unwrap_or(u32::MAX);
-            (lp, hop, med)
-        }).cloned();
+        let best_key = matching_keys
+            .iter()
+            .min_by_key(|k| {
+                let e = &table[*k];
+                let lp = e
+                    .attributes
+                    .local_pref
+                    .map(|v| u32::MAX - v)
+                    .unwrap_or(u32::MAX);
+                let hop = e
+                    .attributes
+                    .as_path
+                    .as_ref()
+                    .map(|p| p.hop_count() as u32)
+                    .unwrap_or(0);
+                let med = e.attributes.multi_exit_disc.unwrap_or(u32::MAX);
+                (lp, hop, med)
+            })
+            .cloned();
         for k in &matching_keys {
             if let Some(e) = table.get_mut(k) {
                 e.is_best = best_key.as_ref() == Some(k);
             }
         }
     }
-
 
     pub fn count(&self, rib: RibType) -> usize {
         self.tables.get(&rib).map_or(0, |t| t.len())
@@ -123,7 +152,7 @@ impl RibTable {
             for entry in table.values_mut() {
                 if entry.llgr_state == LlgrState::Normal {
                     entry.llgr_state = LlgrState::StaleMarked;
-                    entry.stale_at   = Some(at);
+                    entry.stale_at = Some(at);
                 }
             }
         }

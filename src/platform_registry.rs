@@ -321,4 +321,3 @@ pub fn extract_endpoint_host(address: &str) -> Result<String> {
     let _ = raw.parse::<Ipv4Addr>();
     Ok(raw.to_string())
 }
-

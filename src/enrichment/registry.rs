@@ -165,7 +165,10 @@ mod tests {
     fn registry() -> MultiSourceEnricherRegistry {
         MultiSourceEnricherRegistry {
             enrichers: vec![
-                Arc::new(GnmiGetConfigEnricher { paths: vec![], vault: None }),
+                Arc::new(GnmiGetConfigEnricher {
+                    paths: vec![],
+                    vault: None,
+                }),
                 Arc::new(ParserChainCliEnricher::new(Default::default())),
             ],
         }

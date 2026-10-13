@@ -270,7 +270,9 @@ impl RemediationPlan {
             );
         }
         if self.expires_at_epoch_secs <= self.created_at_epoch_secs {
-            return Err("expires_at_epoch_secs must be greater than created_at_epoch_secs".to_string());
+            return Err(
+                "expires_at_epoch_secs must be greater than created_at_epoch_secs".to_string(),
+            );
         }
         Ok(())
     }
@@ -362,7 +364,8 @@ pub fn verify_plan_in_digital_twin(
     });
 
     // 2. No eBGP peer session regression
-    let peers_ok = twin.ebgp_peers_up_after >= twin.ebgp_peers_up_before && twin.ebgp_peers_up_after > 0;
+    let peers_ok =
+        twin.ebgp_peers_up_after >= twin.ebgp_peers_up_before && twin.ebgp_peers_up_after > 0;
     results.push(InvariantCheckResult {
         invariant_id: "no_ebgp_peer_drop".to_string(),
         passed: peers_ok,
@@ -681,4 +684,3 @@ pub fn summarize_shadow_pilot(episodes: &[ShadowPilotObservation]) -> ShadowPilo
         failure_taxonomy_counts,
     }
 }
-

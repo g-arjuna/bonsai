@@ -10,12 +10,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::investigation_runtime::{
-    resolve_investigation_outcome, BudgetReservationLedger, InvestigationTerminalState,
+    BudgetReservationLedger, InvestigationTerminalState, resolve_investigation_outcome,
 };
 
 use super::{
+    ExplainPrefixQuery, OBSERVATION_SCHEMA_VERSION, RoutingServiceConfig, RoutingServiceState,
     build_explain_prefix_json, sample_bmp_session_frames, sample_bmp_withdraw_frame,
-    ExplainPrefixQuery, RoutingServiceConfig, RoutingServiceState, OBSERVATION_SCHEMA_VERSION,
 };
 
 pub const SCENARIO_PACK_VERSION: &str = "2026.10.v1";
@@ -418,15 +418,21 @@ pub fn build_starter_scenario_pack(seed: u64) -> Vec<ScenarioSpec> {
                 ("nokia_srl", "ghcr.io/nokia/srlinux:24.7.1")
             };
 
-            let (init, peer_up, rm) =
-                sample_bmp_session_frames(peer_ip, peer_as, pfx_octets, 100);
+            let (init, peer_up, rm) = sample_bmp_session_frames(peer_ip, peer_as, pfx_octets, 100);
             let eor_pre = build_eor_frame(0, 0, [0u8; 8], peer_ip, peer_as);
 
             let (vrf_rd, frames, disconnect, oracle) = match family {
                 ScenarioFamily::PolicyFiltering => {
                     // Present in AdjRibInPrePolicy, absent in synchronized LocRib
-                    let (loc_up, loc_rm_other) =
-                        build_custom_peer_up_and_route(3, 0, [0u8; 8], spk_ip, 65000, [198, 51, 100], 200);
+                    let (loc_up, loc_rm_other) = build_custom_peer_up_and_route(
+                        3,
+                        0,
+                        [0u8; 8],
+                        spk_ip,
+                        65000,
+                        [198, 51, 100],
+                        200,
+                    );
                     let eor_loc = build_eor_frame(3, 0, [0u8; 8], spk_ip, 65000);
                     (
                         "0:0".to_string(),
@@ -456,8 +462,9 @@ pub fn build_starter_scenario_pack(seed: u64) -> Vec<ScenarioSpec> {
                 ScenarioFamily::NextHopResolution => {
                     // Present in both AdjRibInPrePolicy and LocRib -> BMP control plane is healthy,
                     // so investigator must abstain on FIB/next-hop resolution and recommend FIB/next-hop check
-                    let (loc_up, loc_rm_same) =
-                        build_custom_peer_up_and_route(3, 0, [0u8; 8], spk_ip, 65000, pfx_octets, 200);
+                    let (loc_up, loc_rm_same) = build_custom_peer_up_and_route(
+                        3, 0, [0u8; 8], spk_ip, 65000, pfx_octets, 200,
+                    );
                     let eor_loc = build_eor_frame(3, 0, [0u8; 8], spk_ip, 65000);
                     (
                         "0:0".to_string(),
@@ -778,7 +785,8 @@ pub fn build_starter_scenario_pack(seed: u64) -> Vec<ScenarioSpec> {
             speaker_addr: spk_neg_str.clone(),
             vrf_rd: "0:0".to_string(),
             prefix: "203.0.250.0/24".to_string(),
-            question: "Explain missing prefix 203.0.250.0/24 under strict $0.001 budget.".to_string(),
+            question: "Explain missing prefix 203.0.250.0/24 under strict $0.001 budget."
+                .to_string(),
             allowed_tools,
             time_budget_ms: 5_000,
             cost_budget_usd: 0.001,
@@ -947,10 +955,7 @@ pub async fn execute_scenario_with_policy(
         .all(|c| actual_contradicted.contains(c));
 
     // Check forbidden causal claims (FIB reachability from BMP alone or withdrawal on collector gap)
-    let conclusion_lower = report["conclusion"]
-        .as_str()
-        .unwrap_or("")
-        .to_lowercase();
+    let conclusion_lower = report["conclusion"].as_str().unwrap_or("").to_lowercase();
     let unsupported_fib_claim = oracle.forbid_fib_reachability_claim
         && (conclusion_lower.contains("fib programming is verified")
             || conclusion_lower.contains("hardware forwarding confirmed"));
@@ -1122,4 +1127,3 @@ pub async fn compare_investigator_policies_on_pack(
         scenario_results_by_policy: all_results,
     }
 }
-

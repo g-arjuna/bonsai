@@ -1,0 +1,41 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 23.12s
+     Running tests/a04_a09_b22_prefix_investigator.rs (target/debug/deps/a04_a09_b22_prefix_investigator-9da208dc40e77c4e)
+
+running 5 tests
+test a04_scoped_mcp_tools_and_output_byte_caps ... ok
+test a05_canonical_observation_envelope_preserves_identity_and_lineage ... ok
+test a06_incident_specific_evidence_coverage_never_masks_target_speaker_gap ... ok
+test a07_compare_snapshots_and_a08_budget_reservation_and_deduplicator ... ok
+test a07_a09_b22_prefix_investigator_three_held_out_diagnostic_cases ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/a10_a11_a12_operator_and_scenario_pack.rs (target/debug/deps/a10_a11_a12_operator_and_scenario_pack-3a7052484c01c5ac)
+
+running 3 tests
+test a10_operator_adjudication_separates_recommendation_acceptance_from_verified_rca ... ok
+test a11_scenario_pack_covers_all_eight_fault_families_with_hidden_oracles_and_adversarial_cases ... ok
+test a12_policy_trace_comparison_evaluates_four_policies_and_writes_benchmark_report ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running tests/a13_a20_change_assurance_and_executor.rs (target/debug/deps/a13_a20_change_assurance_and_executor-eb77708be006b6f5)
+
+running 4 tests
+test a13_nokia_srl_adapter_separates_nos_schema_drift_from_network_failure ... ok
+test a19_shadow_operational_pilot_records_utility_and_enforces_zero_writes ... ok
+test a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idempotency_and_recovery ... ok
+test a16_a17_digital_twin_assurance_gate_and_mcp_evaluate_change_plan ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.90s
+
+     Running tests/b11_b12_b13_routing_workflow.rs (target/debug/deps/b11_b12_b13_routing_workflow-1165c31b5d0c6b58)
+
+running 3 tests
+test b12_security_rbac_scoped_reads_and_secret_redaction ... ok
+test b11_routing_api_contract_prefix_history_and_graceful_degradation ... ok
+test b13_b15_graph_routing_projector_idempotency_and_single_bmp_authority ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.39s
+

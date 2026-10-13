@@ -97,7 +97,10 @@ impl SidecarProcessManager {
         if guard.state == SidecarProcessState::Running
             || guard.state == SidecarProcessState::Starting
         {
-            return Err(anyhow::anyhow!("sidecar is already running (pid {:?})", guard.pid));
+            return Err(anyhow::anyhow!(
+                "sidecar is already running (pid {:?})",
+                guard.pid
+            ));
         }
         guard.state = SidecarProcessState::Starting;
         drop(guard);
@@ -263,9 +266,9 @@ impl SidecarProcessManager {
             cmd.env(k, v);
         }
 
-        let mut child = cmd.spawn().with_context(|| {
-            format!("failed to spawn sidecar: {} {}", python, script)
-        })?;
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("failed to spawn sidecar: {} {}", python, script))?;
 
         let pid = child.id();
         info!(pid, python = %python, script = %script, "sidecar process spawned");

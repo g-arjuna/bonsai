@@ -1,11 +1,11 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use chrono::{TimeZone, Utc};
-use crate::{Error, Result};
+use super::path_status_tlv::{PATH_STATUS_TLV_TYPE, find_path_status_tlv};
 use super::types::*;
-use super::path_status_tlv::{find_path_status_tlv, PATH_STATUS_TLV_TYPE};
+use crate::bgp::open::parse_bgp_open;
 use crate::bgp::types::{AfiSafi, BgpDecodeContext};
 use crate::bgp::update::parse_bgp_update_with_context;
-use crate::bgp::open::parse_bgp_open;
+use crate::{Error, Result};
+use chrono::{TimeZone, Utc};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 const BMP_VERSION: u8 = 3;
 /// Minimum BMP header: version(1) + length(4) + type(1)
@@ -97,8 +97,11 @@ where
     frame.resize(msg_len_usize, 0);
 
     if msg_len_usize > BMP_HEADER_LEN {
-        match tokio::time::timeout(body_timeout, reader.read_exact(&mut frame[BMP_HEADER_LEN..]))
-            .await
+        match tokio::time::timeout(
+            body_timeout,
+            reader.read_exact(&mut frame[BMP_HEADER_LEN..]),
+        )
+        .await
         {
             Ok(Ok(_)) => {}
             Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
@@ -122,11 +125,7 @@ where
 
 /// Parse a single BMP message from a byte slice.
 /// Returns (BmpPayload, speaker_addr) — caller wraps into BmpMessage with id/received_at.
-pub fn parse_bmp_message(
-    buf: &[u8],
-    speaker_addr: IpAddr,
-    max_frame: u32,
-) -> Result<BmpPayload> {
+pub fn parse_bmp_message(buf: &[u8], speaker_addr: IpAddr, max_frame: u32) -> Result<BmpPayload> {
     parse_bmp_message_with_peer_context(buf, speaker_addr, max_frame, |_| {
         BgpDecodeContext::default()
     })
@@ -170,12 +169,12 @@ where
     let body = &buf[BMP_HEADER_LEN..msg_len_usize];
 
     match msg_type {
-        BmpMsgType::Initiation    => parse_initiation(body),
-        BmpMsgType::Termination   => parse_termination(body),
-        BmpMsgType::PeerUp        => parse_peer_up(body),
-        BmpMsgType::PeerDown      => parse_peer_down(body),
+        BmpMsgType::Initiation => parse_initiation(body),
+        BmpMsgType::Termination => parse_termination(body),
+        BmpMsgType::PeerUp => parse_peer_up(body),
+        BmpMsgType::PeerDown => parse_peer_down(body),
         BmpMsgType::RouteMonitoring => parse_route_monitoring(body, resolve_ctx),
-        BmpMsgType::StatsReport   => parse_stats_report(body),
+        BmpMsgType::StatsReport => parse_stats_report(body),
         BmpMsgType::RouteMirroring => parse_route_mirroring(body),
     }
 }
@@ -184,9 +183,12 @@ where
 
 pub fn parse_peer_header(buf: &[u8]) -> Result<(PeerHeader, &[u8])> {
     if buf.len() < PEER_HEADER_LEN {
-        return Err(Error::UnexpectedEof { needed: PEER_HEADER_LEN, have: buf.len() });
+        return Err(Error::UnexpectedEof {
+            needed: PEER_HEADER_LEN,
+            have: buf.len(),
+        });
     }
-    let peer_type  = PeerType::try_from(buf[0])?;
+    let peer_type = PeerType::try_from(buf[0])?;
     let peer_flags = PeerFlags(buf[1]);
     let mut rd = [0u8; 8];
     rd.copy_from_slice(&buf[2..10]);
@@ -197,11 +199,12 @@ pub fn parse_peer_header(buf: &[u8]) -> Result<(PeerHeader, &[u8])> {
     } else {
         IpAddr::V4(Ipv4Addr::from([buf[22], buf[23], buf[24], buf[25]]))
     };
-    let peer_as   = u32::from_be_bytes([buf[26], buf[27], buf[28], buf[29]]);
-    let bgp_id    = Ipv4Addr::from([buf[30], buf[31], buf[32], buf[33]]);
-    let ts_secs   = u32::from_be_bytes([buf[34], buf[35], buf[36], buf[37]]);
+    let peer_as = u32::from_be_bytes([buf[26], buf[27], buf[28], buf[29]]);
+    let bgp_id = Ipv4Addr::from([buf[30], buf[31], buf[32], buf[33]]);
+    let ts_secs = u32::from_be_bytes([buf[34], buf[35], buf[36], buf[37]]);
     let ts_micros = u32::from_be_bytes([buf[38], buf[39], buf[40], buf[41]]);
-    let timestamp = Utc.timestamp_opt(ts_secs as i64, ts_micros * 1000)
+    let timestamp = Utc
+        .timestamp_opt(ts_secs as i64, ts_micros * 1000)
         .single()
         .unwrap_or_else(Utc::now);
 
@@ -258,18 +261,22 @@ pub fn parse_initiation_tlvs(buf: &[u8]) -> Result<Vec<InitiationInfo>> {
 }
 
 fn parse_initiation(buf: &[u8]) -> Result<BmpPayload> {
-    let mut sys_name  = None;
+    let mut sys_name = None;
     let mut sys_descr = None;
-    let mut labels    = Vec::new();
+    let mut labels = Vec::new();
     for info in parse_initiation_tlvs(buf)? {
         match info {
             InitiationInfo::AdminLabel(val) => labels.push(val),
-            InitiationInfo::SysDescr(val)   => sys_descr = Some(val),
-            InitiationInfo::SysName(val)    => sys_name = Some(val),
-            InitiationInfo::Unknown { .. }  => {}
+            InitiationInfo::SysDescr(val) => sys_descr = Some(val),
+            InitiationInfo::SysName(val) => sys_name = Some(val),
+            InitiationInfo::Unknown { .. } => {}
         }
     }
-    Ok(BmpPayload::Initiation { sys_name, sys_descr, labels })
+    Ok(BmpPayload::Initiation {
+        sys_name,
+        sys_descr,
+        labels,
+    })
 }
 
 fn parse_termination(buf: &[u8]) -> Result<BmpPayload> {
@@ -284,7 +291,7 @@ fn parse_termination(buf: &[u8]) -> Result<BmpPayload> {
             });
         }
         let tlv_type = u16::from_be_bytes([buf[pos], buf[pos + 1]]);
-        let tlv_len  = u16::from_be_bytes([buf[pos + 2], buf[pos + 3]]) as usize;
+        let tlv_len = u16::from_be_bytes([buf[pos + 2], buf[pos + 3]]) as usize;
         pos += 4;
         if pos + tlv_len > buf.len() {
             return Err(Error::UnexpectedEof {
@@ -308,13 +315,19 @@ fn parse_termination(buf: &[u8]) -> Result<BmpPayload> {
         }
         pos += tlv_len;
     }
-    Ok(BmpPayload::Termination { reason_code, reason_text })
+    Ok(BmpPayload::Termination {
+        reason_code,
+        reason_text,
+    })
 }
 
 fn parse_peer_up(buf: &[u8]) -> Result<BmpPayload> {
     let (peer_header, rest) = parse_peer_header(buf)?;
     if rest.len() < 20 {
-        return Err(Error::UnexpectedEof { needed: 20, have: rest.len() });
+        return Err(Error::UnexpectedEof {
+            needed: 20,
+            have: rest.len(),
+        });
     }
     let local_addr = if peer_header.peer_flags.ipv6() {
         let mut b = [0u8; 16];
@@ -323,16 +336,16 @@ fn parse_peer_up(buf: &[u8]) -> Result<BmpPayload> {
     } else {
         IpAddr::V4(Ipv4Addr::from([rest[12], rest[13], rest[14], rest[15]]))
     };
-    let local_port  = u16::from_be_bytes([rest[16], rest[17]]);
+    let local_port = u16::from_be_bytes([rest[16], rest[17]]);
     let remote_port = u16::from_be_bytes([rest[18], rest[19]]);
-    let bgp_pdus    = &rest[20..];
+    let bgp_pdus = &rest[20..];
 
     // Find boundary of sent OPEN: parse header to get length
     let sent_open = parse_bgp_open_pdu(bgp_pdus)?;
-    let sent_len  = bgp_open_pdu_len(bgp_pdus);
+    let sent_len = bgp_open_pdu_len(bgp_pdus);
     let recv_pdus = &bgp_pdus[sent_len..];
     let recv_open = parse_bgp_open_pdu(recv_pdus)?;
-    let recv_len  = bgp_open_pdu_len(recv_pdus);
+    let recv_len = bgp_open_pdu_len(recv_pdus);
 
     // Optional PeerUp Information TLVs (RFC 7854 §4.6)
     let _ = parse_initiation_tlvs(&recv_pdus[recv_len..])?;
@@ -348,14 +361,19 @@ fn parse_peer_up(buf: &[u8]) -> Result<BmpPayload> {
 }
 
 fn bgp_open_pdu_len(buf: &[u8]) -> usize {
-    if buf.len() < 19 { return buf.len(); }
+    if buf.len() < 19 {
+        return buf.len();
+    }
     // BGP common header = marker(16) + length(2) + type(1)
     u16::from_be_bytes([buf[16], buf[17]]) as usize
 }
 
 fn parse_bgp_open_pdu(buf: &[u8]) -> Result<BgpOpenInfo> {
     if buf.len() < 19 {
-        return Err(Error::UnexpectedEof { needed: 19, have: buf.len() });
+        return Err(Error::UnexpectedEof {
+            needed: 19,
+            have: buf.len(),
+        });
     }
     let msg_len = u16::from_be_bytes([buf[16], buf[17]]) as usize;
     if !(29..=4096).contains(&msg_len) {
@@ -364,7 +382,10 @@ fn parse_bgp_open_pdu(buf: &[u8]) -> Result<BgpOpenInfo> {
         )));
     }
     if buf.len() < msg_len {
-        return Err(Error::UnexpectedEof { needed: msg_len, have: buf.len() });
+        return Err(Error::UnexpectedEof {
+            needed: msg_len,
+            have: buf.len(),
+        });
     }
     parse_bgp_open(&buf[..msg_len])
 }
@@ -376,15 +397,22 @@ fn parse_peer_down(buf: &[u8]) -> Result<BmpPayload> {
     }
     let reason_code = rest[0];
     let reason = match reason_code {
-        1 => PeerDownReason::LocalSystemClosed  { notification: Some(rest[1..].to_vec()) },
+        1 => PeerDownReason::LocalSystemClosed {
+            notification: Some(rest[1..].to_vec()),
+        },
         2 => PeerDownReason::LocalSystemClosed2,
-        3 => PeerDownReason::RemoteSystemClosed { notification: Some(rest[1..].to_vec()) },
+        3 => PeerDownReason::RemoteSystemClosed {
+            notification: Some(rest[1..].to_vec()),
+        },
         4 => PeerDownReason::RemoteSystemClosed2,
         5 => PeerDownReason::PeerDeConfigured,
         6 => PeerDownReason::VrfDown,
         _ => PeerDownReason::Unknown(reason_code),
     };
-    Ok(BmpPayload::PeerDown { peer_header, reason })
+    Ok(BmpPayload::PeerDown {
+        peer_header,
+        reason,
+    })
 }
 
 fn parse_route_monitoring<F>(buf: &[u8], resolve_ctx: F) -> Result<BmpPayload>
@@ -393,7 +421,10 @@ where
 {
     let (peer_header, rest) = parse_peer_header(buf)?;
     if rest.len() < 19 {
-        return Err(Error::UnexpectedEof { needed: 19, have: rest.len() });
+        return Err(Error::UnexpectedEof {
+            needed: 19,
+            have: rest.len(),
+        });
     }
 
     // RV7-P2: Scan leading TLVs for Path Status TLV before the BGP PDU.
@@ -411,13 +442,19 @@ where
         update.attributes.path_status = Some(ps);
     }
 
-    Ok(BmpPayload::RouteMonitoring { peer_header, update })
+    Ok(BmpPayload::RouteMonitoring {
+        peer_header,
+        update,
+    })
 }
 
 fn parse_stats_report(buf: &[u8]) -> Result<BmpPayload> {
     let (peer_header, rest) = parse_peer_header(buf)?;
     if rest.len() < 4 {
-        return Err(Error::UnexpectedEof { needed: 4, have: rest.len() });
+        return Err(Error::UnexpectedEof {
+            needed: 4,
+            have: rest.len(),
+        });
     }
     let stat_count = u32::from_be_bytes([rest[0], rest[1], rest[2], rest[3]]) as usize;
     let max_possible = rest.len().saturating_sub(4) / 4;
@@ -437,7 +474,7 @@ fn parse_stats_report(buf: &[u8]) -> Result<BmpPayload> {
             });
         }
         let stat_type = u16::from_be_bytes([rest[pos], rest[pos + 1]]);
-        let stat_len  = u16::from_be_bytes([rest[pos + 2], rest[pos + 3]]) as usize;
+        let stat_len = u16::from_be_bytes([rest[pos + 2], rest[pos + 3]]) as usize;
         pos += 4;
         if pos + stat_len > rest.len() {
             return Err(Error::UnexpectedEof {
@@ -448,24 +485,24 @@ fn parse_stats_report(buf: &[u8]) -> Result<BmpPayload> {
 
         let entry = if stat_is_per_afi_safi_11byte(stat_type) && stat_len == 11 {
             // RFC 9972: AFI(2) + SAFI(1) + 64-bit Gauge(8)
-            let afi  = u16::from_be_bytes([rest[pos], rest[pos + 1]]);
+            let afi = u16::from_be_bytes([rest[pos], rest[pos + 1]]);
             let safi = rest[pos + 2];
-            let val  = u64::from_be_bytes(rest[pos + 3..pos + 11].try_into().unwrap());
+            let val = u64::from_be_bytes(rest[pos + 3..pos + 11].try_into().unwrap());
             StatEntry {
                 stat_type,
-                name:     stat_name(stat_type).to_string(),
-                value:    val,
+                name: stat_name(stat_type).to_string(),
+                value: val,
                 afi_safi: Some(AfiSafi::new(afi, safi)),
             }
         } else if stat_is_per_afi_safi_7byte(stat_type) && stat_len == 7 {
             // RFC 7854: AFI(2) + SAFI(1) + 32-bit Counter(4)
-            let afi  = u16::from_be_bytes([rest[pos], rest[pos + 1]]);
+            let afi = u16::from_be_bytes([rest[pos], rest[pos + 1]]);
             let safi = rest[pos + 2];
-            let val  = u32::from_be_bytes(rest[pos + 3..pos + 7].try_into().unwrap()) as u64;
+            let val = u32::from_be_bytes(rest[pos + 3..pos + 7].try_into().unwrap()) as u64;
             StatEntry {
                 stat_type,
-                name:     stat_name(stat_type).to_string(),
-                value:    val,
+                name: stat_name(stat_type).to_string(),
+                value: val,
                 afi_safi: Some(AfiSafi::new(afi, safi)),
             }
         } else {
@@ -474,7 +511,12 @@ fn parse_stats_report(buf: &[u8]) -> Result<BmpPayload> {
                 8 => u64::from_be_bytes(rest[pos..pos + 8].try_into().unwrap()),
                 _ => 0,
             };
-            StatEntry { stat_type, name: stat_name(stat_type).to_string(), value, afi_safi: None }
+            StatEntry {
+                stat_type,
+                name: stat_name(stat_type).to_string(),
+                value,
+                afi_safi: None,
+            }
         };
 
         pos += stat_len;
@@ -502,7 +544,7 @@ fn parse_route_mirroring(buf: &[u8]) -> Result<BmpPayload> {
             });
         }
         let tlv_type = u16::from_be_bytes([rest[pos], rest[pos + 1]]);
-        let tlv_len  = u16::from_be_bytes([rest[pos + 2], rest[pos + 3]]) as usize;
+        let tlv_len = u16::from_be_bytes([rest[pos + 2], rest[pos + 3]]) as usize;
         pos += 4;
         if pos + tlv_len > rest.len() {
             return Err(Error::UnexpectedEof {
@@ -523,7 +565,9 @@ mod tests {
     use super::*;
     use std::net::IpAddr;
 
-    fn speaker() -> IpAddr { "10.0.0.1".parse().unwrap() }
+    fn speaker() -> IpAddr {
+        "10.0.0.1".parse().unwrap()
+    }
 
     #[test]
     fn test_parse_initiation() {
@@ -537,7 +581,11 @@ mod tests {
         msg.extend_from_slice(b"hw");
         let payload = parse_bmp_message(&msg, speaker(), DEFAULT_MAX_FRAME).unwrap();
         match payload {
-            BmpPayload::Initiation { sys_name, sys_descr, .. } => {
+            BmpPayload::Initiation {
+                sys_name,
+                sys_descr,
+                ..
+            } => {
                 assert_eq!(sys_name, Some("test".to_string()));
                 assert_eq!(sys_descr, Some("hw".to_string()));
             }
@@ -564,4 +612,3 @@ mod tests {
         ));
     }
 }
-

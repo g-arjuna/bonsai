@@ -118,10 +118,18 @@ impl Default for ManagedSidecarConfig {
     }
 }
 
-fn default_sidecar_python() -> String { ".venv/bin/python".to_string() }
-fn default_sidecar_script() -> String { "python/collector_engine.py".to_string() }
-fn default_sidecar_restart_delay() -> u64 { 5 }
-fn default_sidecar_max_delay() -> u64 { 120 }
+fn default_sidecar_python() -> String {
+    ".venv/bin/python".to_string()
+}
+fn default_sidecar_script() -> String {
+    "python/collector_engine.py".to_string()
+}
+fn default_sidecar_restart_delay() -> u64 {
+    5
+}
+fn default_sidecar_max_delay() -> u64 {
+    120
+}
 
 // ── Auth / LDAP (D4-3 T2/T3) ────────────────────────────────────────────────
 
@@ -286,11 +294,21 @@ impl Default for AiConfig {
     }
 }
 
-fn default_ai_provider() -> String { "gemini".to_string() }
-fn default_ai_model() -> String { "gemini-2.5-pro".to_string() }
-fn default_ai_key_env() -> String { "BONSAI_AI_API_KEY".to_string() }
-fn default_ai_per_investigation_budget() -> f64 { 0.10 }
-fn default_ai_daily_budget() -> f64 { 1.00 }
+fn default_ai_provider() -> String {
+    "gemini".to_string()
+}
+fn default_ai_model() -> String {
+    "gemini-2.5-pro".to_string()
+}
+fn default_ai_key_env() -> String {
+    "BONSAI_AI_API_KEY".to_string()
+}
+fn default_ai_per_investigation_budget() -> f64 {
+    0.10
+}
+fn default_ai_daily_budget() -> f64 {
+    1.00
+}
 
 // ── Lab ──────────────────────────────────────────────────────────────────────
 
@@ -373,15 +391,33 @@ impl Default for DdosConfig {
     }
 }
 
-fn default_ddos_dry_run() -> bool { true }
-fn default_ddos_baseline_window_minutes() -> u64 { 60 }
-fn default_ddos_suspect_threshold() -> f64 { 5.0 }
-fn default_ddos_spike_threshold() -> f64 { 10.0 }
-fn default_ddos_confidence_floor() -> f64 { 0.50 }
-fn default_ddos_auto_trigger_confidence() -> f64 { 0.75 }
-fn default_ddos_corroboration_window_secs() -> u64 { 60 }
-fn default_ddos_max_concurrent_mitigations() -> u32 { 3 }
-fn default_ddos_cooldown_secs() -> u64 { 300 }
+fn default_ddos_dry_run() -> bool {
+    true
+}
+fn default_ddos_baseline_window_minutes() -> u64 {
+    60
+}
+fn default_ddos_suspect_threshold() -> f64 {
+    5.0
+}
+fn default_ddos_spike_threshold() -> f64 {
+    10.0
+}
+fn default_ddos_confidence_floor() -> f64 {
+    0.50
+}
+fn default_ddos_auto_trigger_confidence() -> f64 {
+    0.75
+}
+fn default_ddos_corroboration_window_secs() -> u64 {
+    60
+}
+fn default_ddos_max_concurrent_mitigations() -> u32 {
+    3
+}
+fn default_ddos_cooldown_secs() -> u64 {
+    300
+}
 
 // ── Signals ──────────────────────────────────────────────────────────────────
 
@@ -876,9 +912,15 @@ pub struct TsdbConfig {
     pub max_range: String,
 }
 
-fn default_tsdb_type() -> String { "prometheus".to_string() }
-fn default_tsdb_lookback() -> String { "1h".to_string() }
-fn default_tsdb_max_range() -> String { "24h".to_string() }
+fn default_tsdb_type() -> String {
+    "prometheus".to_string()
+}
+fn default_tsdb_lookback() -> String {
+    "1h".to_string()
+}
+fn default_tsdb_max_range() -> String {
+    "24h".to_string()
+}
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct ServiceNowConfig {
@@ -1885,7 +1927,8 @@ pub fn resolve_config_or_env(
 ) -> String {
     // Try DB
     if let Some(item) = db_items.iter().find(|i| i.name == config_key && i.enabled) {
-        let val: String = serde_json::from_str(&item.content_json).unwrap_or(item.content_json.clone());
+        let val: String =
+            serde_json::from_str(&item.content_json).unwrap_or(item.content_json.clone());
         if !val.is_empty() {
             return val;
         }

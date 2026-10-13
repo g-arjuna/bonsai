@@ -1,0 +1,35 @@
+name: bonsai-frr-r07
+
+mgmt:
+  network: clab-frr-r07
+  ipv4-subnet: 172.100.207.0/24
+
+topology:
+  nodes:
+    frr1:
+      kind: linux
+      image: quay.io/frrouting/frr:10.6.1
+      mgmt-ipv4: 172.100.207.11
+      binds:
+        - configs-r07/daemons:/etc/frr/daemons
+        - configs-r07/frr1.conf:/etc/frr/frr.conf
+        - configs-r07/vtysh.conf:/etc/frr/vtysh.conf
+      labels:
+        bonsai.role: bmp-exporter
+        bonsai.site: r07-verification
+
+    frr2:
+      kind: linux
+      image: quay.io/frrouting/frr:10.6.1
+      mgmt-ipv4: 172.100.207.12
+      binds:
+        - configs-r07/daemons:/etc/frr/daemons
+        - configs-r07/frr2.conf:/etc/frr/frr.conf
+        - configs-r07/vtysh.conf:/etc/frr/vtysh.conf
+      labels:
+        bonsai.role: bgp-peer
+        bonsai.site: r07-verification
+
+  links:
+    - endpoints: ["frr1:eth1", "frr2:eth1"]
+

@@ -396,7 +396,10 @@ pub async fn stop_all_subscribers(subscribers: &mut SubscriberHandleMap) {
 }
 
 /// Vault-aware cert loader — resolves `vault:name` references via the vault, falls back to filesystem.
-pub async fn load_ca_cert_pem(target: &TargetConfig, vault: &crate::credentials::CredentialVault) -> Result<Option<Vec<u8>>> {
+pub async fn load_ca_cert_pem(
+    target: &TargetConfig,
+    vault: &crate::credentials::CredentialVault,
+) -> Result<Option<Vec<u8>>> {
     match &target.ca_cert {
         Some(path) => {
             let bytes = crate::tls_util::read_cert_pem(path, vault).await?;

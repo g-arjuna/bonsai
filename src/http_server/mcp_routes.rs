@@ -1,4 +1,8 @@
-use axum::{Json, extract::{Query, State}, http::StatusCode};
+use axum::{
+    Json,
+    extract::{Query, State},
+    http::StatusCode,
+};
 use lbug::Connection;
 use serde::Deserialize;
 

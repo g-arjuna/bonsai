@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tokio::net::UdpSocket;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
@@ -282,7 +282,8 @@ fn parse_ipv4_sampled_header(data: &[u8]) -> Option<SampledFlow> {
     let src_port = read_u32(data, 16).ok()? as u16;
     let dst_port = read_u32(data, 20).ok()? as u16;
     let tcp_flags_word = read_u32(data, 24).ok()? as u8;
-    let (tcp_flags, icmp_type, icmp_code) = extract_transport_flags(protocol, tcp_flags_word, src_port);
+    let (tcp_flags, icmp_type, icmp_code) =
+        extract_transport_flags(protocol, tcp_flags_word, src_port);
 
     Some(SampledFlow {
         src_address: src_addr,
@@ -307,22 +308,21 @@ fn parse_ipv4_header(ip: &[u8], frame_length: u32) -> Option<SampledFlow> {
     let src_addr = Ipv4Addr::from([ip[12], ip[13], ip[14], ip[15]]).to_string();
     let dst_addr = Ipv4Addr::from([ip[16], ip[17], ip[18], ip[19]]).to_string();
 
-    let (src_port, dst_port, tcp_flags, icmp_type, icmp_code) =
-        if ip.len() >= ihl + 4 {
-            let t = &ip[ihl..];
-            let sp = u16::from_be_bytes([t[0], t[1]]);
-            let dp = u16::from_be_bytes([t[2], t[3]]);
-            let (tf, it, ic) = if protocol == 6 && t.len() >= 14 {
-                (t[13], 0u8, 0u8)
-            } else if protocol == 1 && t.len() >= 2 {
-                (0u8, t[0], t[1])
-            } else {
-                (0u8, 0u8, 0u8)
-            };
-            (sp, dp, tf, it, ic)
+    let (src_port, dst_port, tcp_flags, icmp_type, icmp_code) = if ip.len() >= ihl + 4 {
+        let t = &ip[ihl..];
+        let sp = u16::from_be_bytes([t[0], t[1]]);
+        let dp = u16::from_be_bytes([t[2], t[3]]);
+        let (tf, it, ic) = if protocol == 6 && t.len() >= 14 {
+            (t[13], 0u8, 0u8)
+        } else if protocol == 1 && t.len() >= 2 {
+            (0u8, t[0], t[1])
         } else {
-            (0, 0, 0, 0, 0)
+            (0u8, 0u8, 0u8)
         };
+        (sp, dp, tf, it, ic)
+    } else {
+        (0, 0, 0, 0, 0)
+    };
 
     Some(SampledFlow {
         src_address: src_addr,

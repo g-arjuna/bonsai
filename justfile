@@ -44,9 +44,9 @@ dev-up:
 dev-down:
     DOCKER_HOST=unix:///var/run/docker.sock docker compose --profile standalone down
 
-# Run FRR expected-state oracle and two-run reproducibility verification
+# Run real FRR Containerlab two-run reproducibility verification
 lab-test target="frr":
-    cargo test --package bonsai --test b16_b17_b18_b19_m3_release_gates b17_b18_frr_two_clean_runs_and_multivendor_capability_matrix --offline -- --exact --nocapture
+    cargo test --package bonsai --test r07_frr_containerlab_verification --offline -- --nocapture
 
 # Full release verification gate across protocol, replay, UI build, Python policies, and Compose config
 verify-release:

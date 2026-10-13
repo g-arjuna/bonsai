@@ -583,14 +583,16 @@ pub fn tool_schemas() -> JsonValue {
 
 // ── Tool implementations ──────────────────────────────────────────────────────
 
-async fn tool_get_incident(state: &AppState, args: &JsonValue) -> Result<JsonValue, String> {
+async fn tool_get_incident(
+    store: &std::sync::Arc<crate::graph::GraphStore>,
+    args: &JsonValue,
+) -> Result<JsonValue, String> {
     let id = args["id"]
         .as_str()
         .ok_or("missing argument: id")?
         .to_string();
 
-    let detections = state
-        .store
+    let detections = store
         .read_detections(500)
         .await
         .map_err(|e| e.to_string())?;
@@ -601,7 +603,7 @@ async fn tool_get_incident(state: &AppState, args: &JsonValue) -> Result<JsonVal
         .ok_or_else(|| format!("DetectionEvent {id} not found"))?;
 
     let blast = {
-        let db = state.store.db();
+        let db = store.db();
         let addr = root.device_address.clone();
         tokio::task::spawn_blocking(move || {
             let conn = Connection::new(&db).map_err(|e| e.to_string())?;
@@ -626,10 +628,13 @@ async fn tool_get_incident(state: &AppState, args: &JsonValue) -> Result<JsonVal
     }))
 }
 
-async fn tool_query_devices(state: &AppState, args: &JsonValue) -> Result<JsonValue, String> {
+async fn tool_query_devices(
+    store: &std::sync::Arc<crate::graph::GraphStore>,
+    args: &JsonValue,
+) -> Result<JsonValue, String> {
     let filter = args["filter"].as_str().unwrap_or("").to_lowercase();
 
-    let db = state.store.db();
+    let db = store.db();
     let raw: Vec<(String, String, String)> = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
         let rows: Vec<_> = conn
@@ -659,7 +664,7 @@ async fn tool_query_devices(state: &AppState, args: &JsonValue) -> Result<JsonVa
 }
 
 async fn tool_get_device_blast_radius(
-    state: &AppState,
+    store: &std::sync::Arc<crate::graph::GraphStore>,
     args: &JsonValue,
 ) -> Result<JsonValue, String> {
     let address = args["address"]
@@ -668,7 +673,7 @@ async fn tool_get_device_blast_radius(
         .to_string();
     let max_hops = args["max_hops"].as_u64().unwrap_or(2).min(5) as usize;
 
-    let db = state.store.db();
+    let db = store.db();
     let result = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
         crate::graph::queries::blast_radius(&conn, &address, max_hops).map_err(|e| e.to_string())
@@ -680,7 +685,7 @@ async fn tool_get_device_blast_radius(
 }
 
 async fn tool_list_active_detections(
-    state: &AppState,
+    store: &std::sync::Arc<crate::graph::GraphStore>,
     args: &JsonValue,
 ) -> Result<JsonValue, String> {
     let limit = args["limit"].as_u64().unwrap_or(50).min(500) as u32;
@@ -688,8 +693,7 @@ async fn tool_list_active_detections(
     let rule_filter = args["rule_id"].as_str().unwrap_or("").to_string();
     let device_filter = args["device_address"].as_str().unwrap_or("").to_string();
 
-    let detections = state
-        .store
+    let detections = store
         .read_detections(limit)
         .await
         .map_err(|e| e.to_string())?;
@@ -752,8 +756,7 @@ pub fn is_readonly_cypher(cypher: &str) -> bool {
     let upper = stripped.to_uppercase();
 
     const MUTATION_KEYWORDS: &[&str] = &[
-        "CREATE", "SET", "DELETE", "MERGE", "REMOVE", "DETACH",
-        "DROP", "LOAD", "CALL",
+        "CREATE", "SET", "DELETE", "MERGE", "REMOVE", "DETACH", "DROP", "LOAD", "CALL",
         // Additional Kuzu write-capable keywords not in the original list (D2-11 T1):
         "COPY",    // COPY FROM imports data
         "FOREACH", // FOREACH can execute write sub-clauses
@@ -853,7 +856,7 @@ pub fn enforce_tool_output_bounds(mut payload: JsonValue) -> JsonValue {
 }
 
 pub async fn tool_query_graph_with_store(
-    store: & std::sync::Arc<crate::graph::GraphStore>,
+    store: &std::sync::Arc<crate::graph::GraphStore>,
     args: &JsonValue,
 ) -> Result<JsonValue, String> {
     let cypher = args["cypher"].as_str().ok_or("missing argument: cypher")?;
@@ -872,6 +875,7 @@ pub async fn tool_query_graph_with_store(
             let result: Vec<Vec<String>> = conn
                 .query(&cypher)
                 .map_err(|e| e.to_string())?
+                .take(MAX_GRAPH_ROWS + 1)
                 .map(|row| row.iter().map(|v| format!("{v:?}")).collect())
                 .collect();
             Ok::<_, String>(result)
@@ -893,10 +897,6 @@ pub async fn tool_query_graph_with_store(
         "row_cap": MAX_GRAPH_ROWS,
         "truncated": truncated,
     })))
-}
-
-async fn tool_query_graph(state: &AppState, args: &JsonValue) -> Result<JsonValue, String> {
-    tool_query_graph_with_store(&state.store, args).await
 }
 
 pub async fn tool_get_changes_with_store(
@@ -951,19 +951,63 @@ pub async fn tool_get_changes_with_store(
     })))
 }
 
-async fn resolve_routing_state(
+async fn resolve_in_process_routing_state(
+    store: &crate::graph::GraphStore,
     explicit: Option<&std::sync::Arc<crate::routing_service::RoutingServiceState>>,
-) -> Result<std::sync::Arc<crate::routing_service::RoutingServiceState>, String> {
+) -> Option<std::sync::Arc<crate::routing_service::RoutingServiceState>> {
     if let Some(st) = explicit {
-        return Ok(std::sync::Arc::clone(st));
+        return Some(std::sync::Arc::clone(st));
     }
-    if let Some(st) = crate::routing_service::default_routing_service() {
-        return Ok(st);
+    let (_, _, has_explicit_db_url) =
+        crate::routing_service::resolve_routing_service_endpoint_config(store).await;
+    if has_explicit_db_url {
+        return None;
     }
-    Err("routing service state is not registered in-process".to_string())
+    crate::routing_service::default_routing_service()
 }
 
-/// Dispatch a single MCP tool call using `GraphStore` and an optional in-process `RoutingServiceState` (A04).
+async fn fetch_remote_routing_tool_json(
+    store: &crate::graph::GraphStore,
+    internal_subpath: &str,
+    query_pairs: &[(&str, Option<String>)],
+) -> Result<JsonValue, String> {
+    let (base_url, token, _) =
+        crate::routing_service::resolve_routing_service_endpoint_config(store).await;
+    let url = format!("{base_url}/internal/routing/v1/{internal_subpath}");
+    let client = reqwest::Client::builder()
+        .timeout(TOOL_QUERY_TIMEOUT)
+        .build()
+        .map_err(|e| format!("failed to build routing HTTP client: {e}"))?;
+    let params: Vec<(&str, String)> = query_pairs
+        .iter()
+        .filter_map(|(k, v)| v.as_ref().map(|val| (*k, val.clone())))
+        .collect();
+    let mut req = client.get(&url).query(&params);
+    if let Some(t) = token {
+        req = req.header("x-bonsai-routing-token", t);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("routing service HTTP request failed ({url}): {e}"))?;
+    let status = resp.status();
+    let mut body: JsonValue = resp
+        .json()
+        .await
+        .map_err(|e| format!("invalid JSON from routing service ({url}): {e}"))?;
+    crate::http_server::redact_secrets_in_json(&mut body);
+    if !status.is_success() {
+        let msg = body
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("remote routing tool error");
+        return Err(format!("routing service HTTP {status}: {msg}"));
+    }
+    Ok(body)
+}
+
+/// Dispatch a single MCP tool call using `GraphStore` and either an in-process `RoutingServiceState`
+/// or the private `bonsai-routing` HTTP service (`R05`, `A04`).
 pub async fn call_tool_with_store_and_routing(
     store: &std::sync::Arc<crate::graph::GraphStore>,
     routing: Option<&std::sync::Arc<crate::routing_service::RoutingServiceState>>,
@@ -971,12 +1015,24 @@ pub async fn call_tool_with_store_and_routing(
     args: &JsonValue,
 ) -> Result<JsonValue, String> {
     use crate::routing_service::{
-        build_compare_snapshots_json, build_evidence_coverage_json, build_explain_prefix_json,
-        build_peer_timeline_json, build_prefix_journey_json, CompareSnapshotsQuery,
-        EvidenceCoverageQuery, ExplainPrefixQuery, PeerTimelineQuery, PrefixJourneyQuery,
+        CompareSnapshotsQuery, EvidenceCoverageQuery, ExplainPrefixQuery, PeerTimelineQuery,
+        PrefixJourneyQuery, build_compare_snapshots_json, build_evidence_coverage_json,
+        build_explain_prefix_json, build_peer_timeline_json, build_prefix_journey_json,
     };
 
     match name {
+        "get_incident" => tool_get_incident(store, args)
+            .await
+            .map(enforce_tool_output_bounds),
+        "query_devices" => tool_query_devices(store, args)
+            .await
+            .map(enforce_tool_output_bounds),
+        "get_device_blast_radius" => tool_get_device_blast_radius(store, args)
+            .await
+            .map(enforce_tool_output_bounds),
+        "list_active_detections" => tool_list_active_detections(store, args)
+            .await
+            .map(enforce_tool_output_bounds),
         "query_graph" => tool_query_graph_with_store(store, args).await,
         "get_changes" => tool_get_changes_with_store(store, args).await,
         "get_prefix_journey" => {
@@ -985,15 +1041,31 @@ pub async fn call_tool_with_store_and_routing(
                 .ok_or("missing argument: prefix")?
                 .to_string();
             let q = PrefixJourneyQuery {
-                prefix: Some(prefix),
+                prefix: Some(prefix.clone()),
                 vrf_rd: args["vrf_rd"].as_str().map(String::from),
                 speaker: args["speaker"].as_str().map(String::from),
                 view: args["view"].as_str().map(String::from),
                 limit: args["limit"].as_u64().map(|v| v as usize),
                 tenant_id: args["tenant_id"].as_str().map(String::from),
             };
-            let st = resolve_routing_state(routing).await?;
-            let (_, val) = build_prefix_journey_json(&st, &q).await;
+            let val = if let Some(st) = resolve_in_process_routing_state(store, routing).await {
+                let (_, v) = build_prefix_journey_json(&st, &q).await;
+                v
+            } else {
+                fetch_remote_routing_tool_json(
+                    store,
+                    "prefix-journey",
+                    &[
+                        ("prefix", Some(prefix)),
+                        ("vrf_rd", q.vrf_rd),
+                        ("speaker", q.speaker),
+                        ("view", q.view),
+                        ("limit", q.limit.map(|n| n.to_string())),
+                        ("tenant_id", q.tenant_id),
+                    ],
+                )
+                .await?
+            };
             Ok(enforce_tool_output_bounds(val))
         }
         "get_peer_timeline" => {
@@ -1004,8 +1076,22 @@ pub async fn call_tool_with_store_and_routing(
                 limit: args["limit"].as_u64().map(|v| v as usize),
                 tenant_id: args["tenant_id"].as_str().map(String::from),
             };
-            let st = resolve_routing_state(routing).await?;
-            let val = build_peer_timeline_json(&st, &q).await;
+            let val = if let Some(st) = resolve_in_process_routing_state(store, routing).await {
+                build_peer_timeline_json(&st, &q).await
+            } else {
+                fetch_remote_routing_tool_json(
+                    store,
+                    "peer-timeline",
+                    &[
+                        ("speaker", q.speaker),
+                        ("peer", q.peer),
+                        ("vrf_rd", q.vrf_rd),
+                        ("limit", q.limit.map(|n| n.to_string())),
+                        ("tenant_id", q.tenant_id),
+                    ],
+                )
+                .await?
+            };
             Ok(enforce_tool_output_bounds(val))
         }
         "get_evidence_coverage" => {
@@ -1015,8 +1101,21 @@ pub async fn call_tool_with_store_and_routing(
                 prefix: args["prefix"].as_str().map(String::from),
                 tenant_id: args["tenant_id"].as_str().map(String::from),
             };
-            let st = resolve_routing_state(routing).await?;
-            let val = build_evidence_coverage_json(&st, &q).await;
+            let val = if let Some(st) = resolve_in_process_routing_state(store, routing).await {
+                build_evidence_coverage_json(&st, &q).await
+            } else {
+                fetch_remote_routing_tool_json(
+                    store,
+                    "evidence-coverage",
+                    &[
+                        ("speaker", q.speaker),
+                        ("vrf_rd", q.vrf_rd),
+                        ("prefix", q.prefix),
+                        ("tenant_id", q.tenant_id),
+                    ],
+                )
+                .await?
+            };
             Ok(enforce_tool_output_bounds(val))
         }
         "compare_snapshots" => {
@@ -1028,8 +1127,23 @@ pub async fn call_tool_with_store_and_routing(
                 prefix: args["prefix"].as_str().map(String::from),
                 limit: args["limit"].as_u64().map(|v| v as usize),
             };
-            let st = resolve_routing_state(routing).await?;
-            let val = build_compare_snapshots_json(&st, &q).await;
+            let val = if let Some(st) = resolve_in_process_routing_state(store, routing).await {
+                build_compare_snapshots_json(&st, &q).await
+            } else {
+                fetch_remote_routing_tool_json(
+                    store,
+                    "compare-snapshots",
+                    &[
+                        ("before_seq", q.before_seq.map(|n| n.to_string())),
+                        ("after_seq", q.after_seq.map(|n| n.to_string())),
+                        ("speaker", q.speaker),
+                        ("vrf_rd", q.vrf_rd),
+                        ("prefix", q.prefix),
+                        ("limit", q.limit.map(|n| n.to_string())),
+                    ],
+                )
+                .await?
+            };
             Ok(enforce_tool_output_bounds(val))
         }
         "explain_missing_prefix" => {
@@ -1039,13 +1153,28 @@ pub async fn call_tool_with_store_and_routing(
                 .to_string();
             let q = ExplainPrefixQuery {
                 question: args["question"].as_str().map(String::from),
-                prefix: Some(prefix),
+                prefix: Some(prefix.clone()),
                 vrf_rd: args["vrf_rd"].as_str().map(String::from),
                 speaker: args["speaker"].as_str().map(String::from),
                 tenant_id: args["tenant_id"].as_str().map(String::from),
             };
-            let st = resolve_routing_state(routing).await?;
-            let (_, val) = build_explain_prefix_json(&st, &q).await;
+            let val = if let Some(st) = resolve_in_process_routing_state(store, routing).await {
+                let (_, v) = build_explain_prefix_json(&st, &q).await;
+                v
+            } else {
+                fetch_remote_routing_tool_json(
+                    store,
+                    "explain-prefix",
+                    &[
+                        ("question", q.question),
+                        ("prefix", Some(prefix)),
+                        ("vrf_rd", q.vrf_rd),
+                        ("speaker", q.speaker),
+                        ("tenant_id", q.tenant_id),
+                    ],
+                )
+                .await?
+            };
             Ok(enforce_tool_output_bounds(val))
         }
         "evaluate_change_plan" => {
@@ -1107,22 +1236,7 @@ pub async fn call_tool(
     name: &str,
     args: &JsonValue,
 ) -> Result<JsonValue, String> {
-    match name {
-        "get_incident" => tool_get_incident(state, args)
-            .await
-            .map(enforce_tool_output_bounds),
-        "query_devices" => tool_query_devices(state, args)
-            .await
-            .map(enforce_tool_output_bounds),
-        "get_device_blast_radius" => tool_get_device_blast_radius(state, args)
-            .await
-            .map(enforce_tool_output_bounds),
-        "list_active_detections" => tool_list_active_detections(state, args)
-            .await
-            .map(enforce_tool_output_bounds),
-        "query_graph" => tool_query_graph(state, args).await,
-        other => call_tool_with_store_and_routing(&state.store, None, other, args).await,
-    }
+    call_tool_with_store_and_routing(&state.store, None, name, args).await
 }
 
 /// Return tool definitions in the `AiToolDef` format expected by the AI provider.

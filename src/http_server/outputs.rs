@@ -30,14 +30,16 @@ pub(super) struct AdapterTestResponse {
 pub(super) struct AdapterAuditResponse {
     entries: Vec<serde_json::Value>,
 }
-use std::sync::Arc;
-use serde::{Deserialize, Serialize};
 use axum::{Json, extract::State};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use super::AppState;
 use crate::output::traits::{OutputAdapterConfig, OutputAdapterRunState};
 
-pub(super) async fn adapter_list_handler(State(state): State<AppState>) -> Json<AdapterListResponse> {
+pub(super) async fn adapter_list_handler(
+    State(state): State<AppState>,
+) -> Json<AdapterListResponse> {
     let audit_dir = std::path::Path::new(&state.runtime_dir).join("audit");
     let latest_pushes = latest_adapter_push_state(&read_recent_adapter_audit(&audit_dir, 1000));
 
@@ -137,12 +139,17 @@ pub(super) async fn adapter_test_handler(
         }),
     }
 }
-pub(super) async fn adapter_audit_handler(State(state): State<AppState>) -> Json<AdapterAuditResponse> {
+pub(super) async fn adapter_audit_handler(
+    State(state): State<AppState>,
+) -> Json<AdapterAuditResponse> {
     let audit_dir = std::path::Path::new(&state.runtime_dir).join("audit");
     let entries = read_recent_adapter_audit(&audit_dir, 100);
     Json(AdapterAuditResponse { entries })
 }
-pub(super) fn read_recent_adapter_audit(audit_dir: &std::path::Path, limit: usize) -> Vec<serde_json::Value> {
+pub(super) fn read_recent_adapter_audit(
+    audit_dir: &std::path::Path,
+    limit: usize,
+) -> Vec<serde_json::Value> {
     if !audit_dir.exists() {
         return vec![];
     }

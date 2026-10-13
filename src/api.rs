@@ -110,7 +110,10 @@ impl<S: BonsaiStore> BonsaiService<S> {
         self
     }
 
-    pub fn with_ha_coordinator(mut self, ha_coordinator: Arc<crate::ha_coordinator::HACoordinator>) -> Self {
+    pub fn with_ha_coordinator(
+        mut self,
+        ha_coordinator: Arc<crate::ha_coordinator::HACoordinator>,
+    ) -> Self {
         self.ha_coordinator = Some(ha_coordinator);
         self
     }
@@ -165,7 +168,10 @@ impl<S: BonsaiStore> BonsaiService<S> {
     /// This requires access to the TLS connection which is not directly exposed
     /// by tonic's Request. For now, this returns None and can be enhanced
     /// with custom interceptors if needed.
-    async fn extract_tls_cert_fingerprint(&self, _req: &Request<CollectorIdentity>) -> Option<String> {
+    async fn extract_tls_cert_fingerprint(
+        &self,
+        _req: &Request<CollectorIdentity>,
+    ) -> Option<String> {
         // TODO: Extract TLS cert fingerprint using custom interceptor
         // This would require:
         // 1. Custom tonic interceptor to capture peer cert
@@ -197,7 +203,9 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             let is_leader = matches!(state, crate::ha_coordinator::LeaderState::Leader);
             let leader_id = match state {
                 crate::ha_coordinator::LeaderState::Leader => {
-                    if let crate::ha_coordinator::HAMode::Cluster { ref node_id } = ha_coordinator.mode {
+                    if let crate::ha_coordinator::HAMode::Cluster { ref node_id } =
+                        ha_coordinator.mode
+                    {
                         node_id.clone()
                     } else {
                         "standalone".to_string()
@@ -206,10 +214,11 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 crate::ha_coordinator::LeaderState::Follower { ref leader_id } => leader_id.clone(),
                 crate::ha_coordinator::LeaderState::Electing => "electing".to_string(),
             };
-            
+
             pb::GetLeaderResponse {
                 leader_id,
-                leader_addr: std::env::var("BONSAI_GRPC_BIND").unwrap_or_else(|_| "0.0.0.0:50051".to_string()),
+                leader_addr: std::env::var("BONSAI_GRPC_BIND")
+                    .unwrap_or_else(|_| "0.0.0.0:50051".to_string()),
                 is_leader,
                 error: String::new(),
             }
@@ -221,7 +230,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 error: "HA coordinator not configured".to_string(),
             }
         };
-        
+
         Ok(Response::new(response))
     }
 
@@ -287,7 +296,9 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                         Some("not_leader"),
                     );
                 }
-                return Err(Status::unavailable("this node is not the leader, collectors should connect to the leader"));
+                return Err(Status::unavailable(
+                    "this node is not the leader, collectors should connect to the leader",
+                ));
             }
         }
 
@@ -325,7 +336,9 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                         peer_addr.as_deref(),
                         cert_fingerprint.as_deref(),
                         false,
-                        Some(&format!("protocol_skew: collector={client} server={server}")),
+                        Some(&format!(
+                            "protocol_skew: collector={client} server={server}"
+                        )),
                     );
                 }
                 return Err(Status::failed_precondition(format!(
@@ -386,7 +399,11 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                     addr: r.addr.clone(),
                     packet_count: r.packet_count,
                     error_count: r.error_count,
-                    last_error: if r.last_error.is_empty() { None } else { Some(r.last_error.clone()) },
+                    last_error: if r.last_error.is_empty() {
+                        None
+                    } else {
+                        Some(r.last_error.clone())
+                    },
                 })
                 .collect();
             manager.record_heartbeat(
@@ -1117,7 +1134,13 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         }
         let sidecar_id = self
             .sidecar_registry
-            .register(r.name.clone(), r.kind.clone(), r.version, r.capabilities, r.address)
+            .register(
+                r.name.clone(),
+                r.kind.clone(),
+                r.version,
+                r.capabilities,
+                r.address,
+            )
             .await;
         tracing::info!(
             sidecar_id = %sidecar_id,
@@ -1304,15 +1327,14 @@ async fn target_conn_info_from_config(
     target: &TargetConfig,
     credentials: &CredentialVault,
 ) -> Result<TargetConnInfo, Status> {
-    let ca_cert_pem =
-        match &target.ca_cert {
-            Some(path) => Some(
-                crate::tls_util::read_cert_pem(path, credentials)
-                    .await
-                    .map_err(|e| Status::internal(format!("{e:#}")))?
-            ),
-            None => None,
-        };
+    let ca_cert_pem = match &target.ca_cert {
+        Some(path) => Some(
+            crate::tls_util::read_cert_pem(path, credentials)
+                .await
+                .map_err(|e| Status::internal(format!("{e:#}")))?,
+        ),
+        None => None,
+    };
 
     let resolved_credentials = resolve_target_credentials(target, credentials)
         .map_err(|e| Status::failed_precondition(format!("{e:#}")))?;
@@ -1354,7 +1376,10 @@ fn resolve_target_credentials(
 
     Ok(
         match (target.resolved_username(), target.resolved_password()) {
-            (Some(username), Some(password)) => Some(ResolvedCredential { username, password: zeroize::Zeroizing::new(password) }),
+            (Some(username), Some(password)) => Some(ResolvedCredential {
+                username,
+                password: zeroize::Zeroizing::new(password),
+            }),
             _ => None,
         },
     )
@@ -1379,7 +1404,10 @@ fn resolve_request_credentials(
         .as_deref()
         .and_then(|key| std::env::var(key).ok());
     Ok(match (username, password) {
-        (Some(username), Some(password)) => Some(ResolvedCredential { username, password: zeroize::Zeroizing::new(password) }),
+        (Some(username), Some(password)) => Some(ResolvedCredential {
+            username,
+            password: zeroize::Zeroizing::new(password),
+        }),
         _ => None,
     })
 }

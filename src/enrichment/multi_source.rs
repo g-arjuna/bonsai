@@ -195,7 +195,10 @@ fn parse_path(raw_path: &str) -> Result<Path> {
     }
 
     let mut elem = Vec::new();
-    for segment in split_path_segments(trimmed).into_iter().filter(|s| !s.is_empty()) {
+    for segment in split_path_segments(trimmed)
+        .into_iter()
+        .filter(|s| !s.is_empty())
+    {
         let first_key = segment.find('[').unwrap_or(segment.len());
         let name = segment[..first_key].trim();
         if name.is_empty() {

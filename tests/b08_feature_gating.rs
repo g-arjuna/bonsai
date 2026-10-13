@@ -44,7 +44,9 @@ fn b08_rollback_registry_persists_active_windows_across_reload() {
             remediation_id: "rem-42".to_string(),
             executed_at_ns: 100 * 1_000_000_000,
             window_secs: 60,
-            snapshot_json: r#"[{"yang_path":"/interfaces","before_value":"up","after_value":"down"}]"#.to_string(),
+            snapshot_json:
+                r#"[{"yang_path":"/interfaces","before_value":"up","after_value":"down"}]"#
+                    .to_string(),
             rolled_back: false,
         });
     }
@@ -56,5 +58,9 @@ fn b08_rollback_registry_persists_active_windows_across_reload() {
 
     reloaded.mark_rolled_back("prop-42");
     let reloaded_again = RollbackRegistry::load(dir.path());
-    assert!(reloaded_again.active_windows(120 * 1_000_000_000).is_empty());
+    assert!(
+        reloaded_again
+            .active_windows(120 * 1_000_000_000)
+            .is_empty()
+    );
 }

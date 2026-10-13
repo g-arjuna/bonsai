@@ -132,8 +132,12 @@ fn original_invalid_generator_fixtures_remain_negative_inputs() {
         include_bytes!("../fixtures/bmp/negative_legacy_7byte/02_peer_up.bin"),
         include_bytes!("../fixtures/bmp/negative_legacy_7byte/03_route_monitor_announce.bin"),
         include_bytes!("../fixtures/bmp/negative_legacy_7byte/04_route_monitor_withdraw.bin"),
-        include_bytes!("../fixtures/bmp/negative_legacy_7byte/05_route_monitor_path_status_best.bin"),
-        include_bytes!("../fixtures/bmp/negative_legacy_7byte/06_route_monitor_path_status_nonsel.bin"),
+        include_bytes!(
+            "../fixtures/bmp/negative_legacy_7byte/05_route_monitor_path_status_best.bin"
+        ),
+        include_bytes!(
+            "../fixtures/bmp/negative_legacy_7byte/06_route_monitor_path_status_nonsel.bin"
+        ),
         include_bytes!("../fixtures/bmp/negative_legacy_7byte/07_peer_down.bin"),
         include_bytes!("../fixtures/bmp/negative_legacy_7byte/08_stats_report.bin"),
         include_bytes!("../fixtures/bmp/negative_legacy_7byte/09_route_monitor_ipv6.bin"),
@@ -164,7 +168,12 @@ fn repaired_positive_fixtures_parse_cleanly() {
     ];
     for (index, bytes) in fixtures.iter().enumerate() {
         let declared = u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
-        assert_eq!(declared, bytes.len(), "fixture {} length mismatch", index + 1);
+        assert_eq!(
+            declared,
+            bytes.len(),
+            "fixture {} length mismatch",
+            index + 1
+        );
         assert!(
             parse(bytes).is_ok(),
             "repaired fixture {} rejected: {:?}",
@@ -301,10 +310,15 @@ async fn read_bmp_frame_enforces_bounds_deadlines_fragmentation_and_coalescing()
     });
     let mut buf_r = BufReader::new(r_ok);
     for _ in 0..3 {
-        let frame = read_bmp_frame(&mut buf_r, 1024, Duration::from_millis(200), Duration::from_millis(200))
-            .await
-            .unwrap()
-            .expect("expected frame");
+        let frame = read_bmp_frame(
+            &mut buf_r,
+            1024,
+            Duration::from_millis(200),
+            Duration::from_millis(200),
+        )
+        .await
+        .unwrap()
+        .expect("expected frame");
         assert_eq!(frame, VALID_INITIATION);
         assert!(parse(&frame).is_ok());
     }
@@ -408,8 +422,7 @@ fn b05_two_byte_as_trans_reconstructs_with_as4_path_and_as4_aggregator() {
     assert_eq!(
         update.attributes.as_path.unwrap().0,
         vec![rbmp_core::bgp::types::AsPathSegment::Sequence(vec![
-            65001,
-            4200000001
+            65001, 4200000001
         ])]
     );
     let agg = update.attributes.aggregator.expect("aggregator present");
@@ -424,7 +437,12 @@ fn b05_mp_reach_ipv6_populates_next_hop_and_evpn_unreach_is_not_eor() {
     mp_reach_val.extend_from_slice(&2u16.to_be_bytes()); // AFI = IPv6
     mp_reach_val.push(1); // SAFI = Unicast
     mp_reach_val.push(16); // next-hop len = 16
-    mp_reach_val.extend_from_slice(&"2001:db8::1".parse::<std::net::Ipv6Addr>().unwrap().octets());
+    mp_reach_val.extend_from_slice(
+        &"2001:db8::1"
+            .parse::<std::net::Ipv6Addr>()
+            .unwrap()
+            .octets(),
+    );
     mp_reach_val.push(0); // reserved
     mp_reach_val.extend_from_slice(&[48, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x01]); // 2001:db8:1::/48
 
@@ -459,7 +477,11 @@ fn b05_mp_reach_ipv6_populates_next_hop_and_evpn_unreach_is_not_eor() {
     unreach_attrs.extend_from_slice(&evpn_unreach);
 
     let unreach_frame = build_bmp_route_monitoring(0x00, &unreach_attrs, &[]);
-    let BmpPayload::RouteMonitoring { update: unreach_update, .. } = parse(&unreach_frame).unwrap() else {
+    let BmpPayload::RouteMonitoring {
+        update: unreach_update,
+        ..
+    } = parse(&unreach_frame).unwrap()
+    else {
         panic!("expected RouteMonitoring");
     };
     assert!(!unreach_update.is_eor());
@@ -488,7 +510,12 @@ fn b05_session_aware_add_path_eor_and_family_support_status() {
     mp_reach_val.extend_from_slice(&2u16.to_be_bytes()); // AFI = IPv6
     mp_reach_val.push(1); // SAFI = Unicast
     mp_reach_val.push(16); // next-hop len = 16
-    mp_reach_val.extend_from_slice(&"2001:db8::99".parse::<std::net::Ipv6Addr>().unwrap().octets());
+    mp_reach_val.extend_from_slice(
+        &"2001:db8::99"
+            .parse::<std::net::Ipv6Addr>()
+            .unwrap()
+            .octets(),
+    );
     mp_reach_val.push(0); // reserved
     mp_reach_val.extend_from_slice(&42u32.to_be_bytes()); // Add-Path path_id = 42
     mp_reach_val.extend_from_slice(&[48, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x99]); // 2001:db8:99::/48
@@ -540,13 +567,28 @@ fn b05_session_aware_add_path_eor_and_family_support_status() {
     assert_eq!(v6_eor.eor_afi_safi(), Some(AfiSafi::ipv6_unicast()));
 
     // 4. FamilySupportStatus explicitly classifies Supported vs ExperimentalParseOnly vs Unsupported
-    assert_eq!(AfiSafi::ipv4_unicast().support_status(), FamilySupportStatus::Supported);
-    assert_eq!(AfiSafi::ipv6_unicast().support_status(), FamilySupportStatus::Supported);
-    assert_eq!(AfiSafi::ipv4_vpn().support_status(), FamilySupportStatus::Supported);
-    assert_eq!(AfiSafi::evpn().support_status(), FamilySupportStatus::ExperimentalParseOnly);
-    assert_eq!(AfiSafi::new(16388, 71).support_status(), FamilySupportStatus::ExperimentalParseOnly);
-    assert_eq!(AfiSafi::new(9999, 250).support_status(), FamilySupportStatus::Unsupported);
+    assert_eq!(
+        AfiSafi::ipv4_unicast().support_status(),
+        FamilySupportStatus::Supported
+    );
+    assert_eq!(
+        AfiSafi::ipv6_unicast().support_status(),
+        FamilySupportStatus::Supported
+    );
+    assert_eq!(
+        AfiSafi::ipv4_vpn().support_status(),
+        FamilySupportStatus::Supported
+    );
+    assert_eq!(
+        AfiSafi::evpn().support_status(),
+        FamilySupportStatus::ExperimentalParseOnly
+    );
+    assert_eq!(
+        AfiSafi::new(16388, 71).support_status(),
+        FamilySupportStatus::ExperimentalParseOnly
+    );
+    assert_eq!(
+        AfiSafi::new(9999, 250).support_status(),
+        FamilySupportStatus::Unsupported
+    );
 }
-
-
-

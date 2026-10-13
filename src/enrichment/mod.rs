@@ -193,7 +193,9 @@ impl EnricherRegistry {
     /// Load from SQLite config store (preferred) or fall back to JSON.
     pub fn load(runtime_dir: &Path) -> Self {
         let configs_path = runtime_dir.join(CONFIGS_FILE);
-        let sqlite_store = crate::sqlite_store::SqliteStore::open(runtime_dir).ok().map(std::sync::Arc::new);
+        let sqlite_store = crate::sqlite_store::SqliteStore::open(runtime_dir)
+            .ok()
+            .map(std::sync::Arc::new);
 
         // Try to migrate from JSON if SQLite is new
         if let Some(ref store) = sqlite_store {
@@ -209,7 +211,15 @@ impl EnricherRegistry {
                 .unwrap_or_default()
         };
 
-        info!(count = configs.len(), source = if sqlite_store.is_some() { "sqlite" } else { "json" }, "enricher configs loaded");
+        info!(
+            count = configs.len(),
+            source = if sqlite_store.is_some() {
+                "sqlite"
+            } else {
+                "json"
+            },
+            "enricher configs loaded"
+        );
         Self {
             configs,
             states: std::collections::HashMap::new(),
@@ -223,7 +233,10 @@ impl EnricherRegistry {
         if let Some(ref store) = self.sqlite_store {
             for config in &self.configs {
                 if let Err(e) = store.upsert_enricher(config, "system") {
-                    warn!("failed to persist enricher config '{}' to SQLite: {e}", config.name);
+                    warn!(
+                        "failed to persist enricher config '{}' to SQLite: {e}",
+                        config.name
+                    );
                 }
             }
         } else {
@@ -248,7 +261,10 @@ impl EnricherRegistry {
     pub fn upsert(&mut self, config: EnricherConfig) {
         if let Some(ref store) = self.sqlite_store {
             if let Err(e) = store.upsert_enricher(&config, "enricher_upsert") {
-                warn!("failed to upsert enricher config '{}' to SQLite: {e}", config.name);
+                warn!(
+                    "failed to upsert enricher config '{}' to SQLite: {e}",
+                    config.name
+                );
             }
         }
         if let Some(existing) = self.configs.iter_mut().find(|c| c.name == config.name) {
@@ -264,7 +280,10 @@ impl EnricherRegistry {
     pub fn remove(&mut self, name: &str) -> bool {
         if let Some(ref store) = self.sqlite_store {
             if let Err(e) = store.delete_enricher(name, "enricher_remove") {
-                warn!("failed to delete enricher config '{}' from SQLite: {e}", name);
+                warn!(
+                    "failed to delete enricher config '{}' from SQLite: {e}",
+                    name
+                );
             }
         }
         let before = self.configs.len();
@@ -289,7 +308,11 @@ impl EnricherRegistry {
 
     pub fn record_run(&mut self, name: &str, report: &EnrichmentReport) {
         // G6: Emit histogram for enricher run duration
-        let outcome = if report.error.is_some() { "error" } else { "success" };
+        let outcome = if report.error.is_some() {
+            "error"
+        } else {
+            "success"
+        };
         metrics::histogram!("bonsai_enricher_run_duration_seconds", "enricher" => name.to_string(), "outcome" => outcome).record(report.duration_ms as f64 / 1000.0);
 
         let ts = std::time::SystemTime::now()

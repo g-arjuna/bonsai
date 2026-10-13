@@ -3,18 +3,18 @@
 //! Consumes health events from the event bus and sends them as SNMP traps.
 //! Supports SNMPv2c traps with configurable OID mappings.
 
-use std::sync::Arc;
 use crate::event_bus::InProcessBus;
 use crate::health_emitter::{HealthEvent, HealthEventType, HealthSeverity};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// SNMP trap configuration
 #[derive(Clone, Debug)]
 pub struct SnmpConfig {
     pub enabled: bool,
-    pub target: String, // SNMP manager address
+    pub target: String,    // SNMP manager address
     pub community: String, // SNMPv2c community string
-    pub port: u16, // SNMP manager port (default 162)
+    pub port: u16,         // SNMP manager port (default 162)
 }
 
 impl Default for SnmpConfig {
@@ -62,8 +62,8 @@ impl SnmpAdapter {
     /// Convert HealthSeverity to SNMP trap severity
     fn to_trap_severity(severity: &HealthSeverity) -> u32 {
         match severity {
-            HealthSeverity::Info => 1, // informational
-            HealthSeverity::Warning => 3, // warning
+            HealthSeverity::Info => 1,     // informational
+            HealthSeverity::Warning => 3,  // warning
             HealthSeverity::Critical => 5, // critical
         }
     }
@@ -76,19 +76,14 @@ impl SnmpAdapter {
         // Format as SNMPv2c trap
         format!(
             "SNMPv2c Trap: target={}, community={}, oid={}, severity={}, component={}, message={}",
-            config.target,
-            config.community,
-            oid,
-            severity,
-            event.component,
-            event.message
+            config.target, config.community, oid, severity, event.component, event.message
         )
     }
 
     /// Start the SNMP adapter
     pub async fn start(&self) {
         *self.running.write().await = true;
-        
+
         if !self.config.enabled {
             tracing::info!("SNMP adapter disabled");
             return;

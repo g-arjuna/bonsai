@@ -21,7 +21,9 @@ use crate::credentials::{CredentialVault, ResolvePurpose};
 use crate::enrichment::EnricherAuditLog;
 use crate::enrichment::EnrichmentSchedule;
 use crate::enrichment::{EnricherConfig, EnrichmentReport, EnrichmentWriteSurface, GraphEnricher};
-use crate::graph::common::{link_host_endpoint_to_interface, upsert_host_endpoint, upsert_location};
+use crate::graph::common::{
+    link_host_endpoint_to_interface, upsert_host_endpoint, upsert_location,
+};
 use crate::mcp_client::{EnricherTransport, McpClient};
 use crate::store::BonsaiStore;
 
@@ -425,7 +427,9 @@ impl GraphEnricher for NetBoxEnricher {
             },
             async {
                 let _p = sem.acquire().await.expect("sem");
-                transport.get_devices_by_roles(&base_url, token, &endpoint_roles).await
+                transport
+                    .get_devices_by_roles(&base_url, token, &endpoint_roles)
+                    .await
             },
         );
 
@@ -447,7 +451,9 @@ impl GraphEnricher for NetBoxEnricher {
         });
         let nb_endpoints = endpoints_res.unwrap_or_else(|e| {
             // Endpoint fetch failure is non-fatal — HostEndpoints are always optional.
-            warnings.push(format!("failed to fetch endpoint devices (non-fatal): {e:#}"));
+            warnings.push(format!(
+                "failed to fetch endpoint devices (non-fatal): {e:#}"
+            ));
             vec![]
         });
 
@@ -654,11 +660,7 @@ fn write_to_graph(
                     crate::graph::site_id_from_name(site_name)
                 };
                 if !site_id.is_empty() {
-                    let kind = loc.slug
-                        .split('-')
-                        .next()
-                        .unwrap_or("other")
-                        .to_string();
+                    let kind = loc.slug.split('-').next().unwrap_or("other").to_string();
                     let addr2 = addr.clone();
                     let loc_name = loc.name.clone();
                     let sid = site_id.clone();
@@ -683,13 +685,17 @@ fn write_to_graph(
                         serde_json::Value::Bool(b) => b.to_string(),
                         _ => continue, // skip nulls and nested objects
                     };
-                    if str_val.is_empty() { continue; }
+                    if str_val.is_empty() {
+                        continue;
+                    }
                     let key = format!("netbox_cf_{cf_key}");
                     let id = format!("{addr}:{key}");
                     let addr2 = addr.clone();
                     let src2 = source;
                     if let Err(e) = with_write_retry(|| {
-                        upsert_enrichment_property(&conn, &id, &addr2, &key, &str_val, &src2, now_ns)
+                        upsert_enrichment_property(
+                            &conn, &id, &addr2, &key, &str_val, &src2, now_ns,
+                        )
                     }) {
                         warnings.push(format!("device {addr} custom_field {cf_key}: {e:#}"));
                     } else {
@@ -783,11 +789,7 @@ fn write_to_graph(
             for ce in &iface.connected_endpoints {
                 if let Some(dev_name) = &ce.device.name {
                     // peer device_name → (switch device address, switch interface id)
-                    let sw_name = iface
-                        .device
-                        .name
-                        .as_deref()
-                        .unwrap_or("");
+                    let sw_name = iface.device.name.as_deref().unwrap_or("");
                     let sw_iface_id = format!("{sw_name}:{}", iface.name);
                     m.entry(dev_name.clone())
                         .or_default()
@@ -822,7 +824,13 @@ fn write_to_graph(
         let rack_id = ep
             .rack
             .as_ref()
-            .map(|r| format!("rack:{}:{}", ep.site.as_ref().map(|s| s.name.as_str()).unwrap_or(""), r.name))
+            .map(|r| {
+                format!(
+                    "rack:{}:{}",
+                    ep.site.as_ref().map(|s| s.name.as_str()).unwrap_or(""),
+                    r.name
+                )
+            })
             .unwrap_or_default();
         let site_id = ep
             .site
@@ -832,16 +840,7 @@ fn write_to_graph(
 
         if let Err(e) = with_write_retry(|| {
             upsert_host_endpoint(
-                &conn,
-                &ip,
-                kind,
-                hostname,
-                "",
-                vendor,
-                &rack_id,
-                &site_id,
-                source,
-                now_ns,
+                &conn, &ip, kind, hostname, "", vendor, &rack_id, &site_id, source, now_ns,
             )
         }) {
             warnings.push(format!("HostEndpoint {ip} ({hostname}): {e:#}"));
@@ -855,9 +854,7 @@ fn write_to_graph(
                 if let Err(e) =
                     with_write_retry(|| link_host_endpoint_to_interface(&conn, &ip, sw_iface_id))
                 {
-                    warnings.push(format!(
-                        "CONNECTED_TO {ip} → {sw_iface_id}: {e:#}"
-                    ));
+                    warnings.push(format!("CONNECTED_TO {ip} → {sw_iface_id}: {e:#}"));
                 } else {
                     edges += 1;
                 }
@@ -1093,8 +1090,14 @@ fn backfill_located_at(
         .execute(&mut stmt, vec![])
         .context("execute backfill_located_at query")?
         .map(|row| {
-            let addr = match &row[0] { lbug::Value::String(s) => s.clone(), _ => String::new() };
-            let site = match &row[1] { lbug::Value::String(s) => s.clone(), _ => String::new() };
+            let addr = match &row[0] {
+                lbug::Value::String(s) => s.clone(),
+                _ => String::new(),
+            };
+            let site = match &row[1] {
+                lbug::Value::String(s) => s.clone(),
+                _ => String::new(),
+            };
             (addr, site)
         })
         .filter(|(a, s)| !a.is_empty() && !s.is_empty())
@@ -1119,9 +1122,9 @@ fn backfill_located_at(
         conn.execute(
             &mut s_stmt,
             vec![
-                ("id",   Value::String(site_id.clone())),
+                ("id", Value::String(site_id.clone())),
                 ("name", Value::String(site_name.clone())),
-                ("ts",   now),
+                ("ts", now),
             ],
         )
         .context("execute backfill Site upsert")?;
@@ -1136,7 +1139,7 @@ fn backfill_located_at(
             &mut link,
             vec![
                 ("addr", Value::String(addr.clone())),
-                ("sid",  Value::String(site_id)),
+                ("sid", Value::String(site_id)),
             ],
         )
         .context("execute backfill LOCATED_AT")?;
@@ -1293,7 +1296,8 @@ mod tests {
             },
         ];
 
-        let (nodes, edges, warnings) = write_to_graph(&db, &[], &vlans, &[], &[], &[], "test").unwrap();
+        let (nodes, edges, warnings) =
+            write_to_graph(&db, &[], &vlans, &[], &[], &[], "test").unwrap();
 
         assert_eq!(nodes, 2, "two VLAN nodes should be touched");
         assert_eq!(edges, 0, "VLANs alone create no edges");

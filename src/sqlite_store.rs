@@ -57,14 +57,19 @@ impl SqliteStore {
     /// Run schema migrations to bring DB to current version.
     fn migrate(&self) -> Result<()> {
         let db = self.db.lock().unwrap();
-        let user_version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))
+        let user_version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap_or(0);
 
         if user_version == CURRENT_SCHEMA_VERSION {
             return Ok(());
         }
 
-        tracing::info!(from = user_version, to = CURRENT_SCHEMA_VERSION, "migrating config store schema");
+        tracing::info!(
+            from = user_version,
+            to = CURRENT_SCHEMA_VERSION,
+            "migrating config store schema"
+        );
 
         // Version 1: Initial schema
         if user_version < 1 {
@@ -157,7 +162,10 @@ impl SqliteStore {
         }
 
         if user_version < 2 {
-            let _ = db.execute("ALTER TABLE devices ADD COLUMN enabled INTEGER DEFAULT 1", []);
+            let _ = db.execute(
+                "ALTER TABLE devices ADD COLUMN enabled INTEGER DEFAULT 1",
+                [],
+            );
             let _ = db.execute("ALTER TABLE devices ADD COLUMN tls_domain TEXT", []);
             let _ = db.execute("ALTER TABLE devices ADD COLUMN credential_alias TEXT", []);
             let _ = db.execute("ALTER TABLE devices ADD COLUMN username_env TEXT", []);
@@ -176,7 +184,8 @@ impl SqliteStore {
         let tx = db.transaction()?;
 
         // Check if we already have data
-        let device_count: i64 = tx.query_row("SELECT COUNT(*) FROM devices", [], |row| row.get(0))
+        let device_count: i64 = tx
+            .query_row("SELECT COUNT(*) FROM devices", [], |row| row.get(0))
             .unwrap_or(0);
         if device_count > 0 {
             tracing::info!("config store already has data, skipping JSON migration");
@@ -189,7 +198,9 @@ impl SqliteStore {
         let registry_path = runtime_dir.join("bonsai-registry.json");
         if registry_path.exists() {
             if let Ok(raw) = std::fs::read_to_string(&registry_path) {
-                if let Ok(registry_state) = serde_json::from_str::<crate::registry::RegistryState>(&raw) {
+                if let Ok(registry_state) =
+                    serde_json::from_str::<crate::registry::RegistryState>(&raw)
+                {
                     let count = registry_state.targets.len();
                     for (address, target) in registry_state.targets {
                         let paths_json = serde_json::to_string(&target.paths).unwrap_or_default();
@@ -229,10 +240,13 @@ impl SqliteStore {
         let enricher_path = runtime_dir.join("enrichment_configs.json");
         if enricher_path.exists() {
             if let Ok(raw) = std::fs::read_to_string(&enricher_path) {
-                if let Ok(configs) = serde_json::from_str::<Vec<crate::enrichment::EnricherConfig>>(&raw) {
+                if let Ok(configs) =
+                    serde_json::from_str::<Vec<crate::enrichment::EnricherConfig>>(&raw)
+                {
                     let count = configs.len();
                     for config in configs {
-                        let scope_json = serde_json::to_string(&config.environment_scope).unwrap_or_default();
+                        let scope_json =
+                            serde_json::to_string(&config.environment_scope).unwrap_or_default();
                         let extra_json = serde_json::to_string(&config.extra).unwrap_or_default();
                         tx.execute(
                             "INSERT INTO enrichers (name, enricher_type, enabled, base_url, credential_alias, poll_interval_secs, environment_scope, extra) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -257,10 +271,13 @@ impl SqliteStore {
         let adapter_path = runtime_dir.join("adapter_configs.json");
         if adapter_path.exists() {
             if let Ok(raw) = std::fs::read_to_string(&adapter_path) {
-                if let Ok(configs) = serde_json::from_str::<Vec<crate::output::OutputAdapterConfig>>(&raw) {
+                if let Ok(configs) =
+                    serde_json::from_str::<Vec<crate::output::OutputAdapterConfig>>(&raw)
+                {
                     let count = configs.len();
                     for config in configs {
-                        let scope_json = serde_json::to_string(&config.environment_scope).unwrap_or_default();
+                        let scope_json =
+                            serde_json::to_string(&config.environment_scope).unwrap_or_default();
                         let extra_json = serde_json::to_string(&config.extra).unwrap_or_default();
                         tx.execute(
                             "INSERT INTO adapters (name, adapter_type, enabled, endpoint_url, credential_alias, topic, environment_scope, extra) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -286,7 +303,16 @@ impl SqliteStore {
     }
 
     /// Write an audit log entry.
-    pub fn audit(&self, table: &str, operation: &str, key: &str, actor: &str, action: &str, old: Option<&str>, new: Option<&str>) -> Result<()> {
+    pub fn audit(
+        &self,
+        table: &str,
+        operation: &str,
+        key: &str,
+        actor: &str,
+        action: &str,
+        old: Option<&str>,
+        new: Option<&str>,
+    ) -> Result<()> {
         let db = self.db.lock().unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -333,7 +359,8 @@ impl SqliteStore {
                 ..Default::default()
             })
         })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| anyhow!("failed to collect devices: {e}"))
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow!("failed to collect devices: {e}"))
     }
 
     pub fn get_device(&self, address: &str) -> Result<Option<crate::config::TargetConfig>> {
@@ -377,8 +404,15 @@ impl SqliteStore {
         }
     }
 
-    pub fn upsert_device(&self, device: &crate::config::TargetConfig, actor: &str, action: &str) -> Result<()> {
-        let old = self.get_device(&device.address)?.map(|d| serde_json::to_string(&d).unwrap());
+    pub fn upsert_device(
+        &self,
+        device: &crate::config::TargetConfig,
+        actor: &str,
+        action: &str,
+    ) -> Result<()> {
+        let old = self
+            .get_device(&device.address)?
+            .map(|d| serde_json::to_string(&d).unwrap());
         let new = serde_json::to_string(device).unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -417,7 +451,15 @@ impl SqliteStore {
             )?;
         }
 
-        self.audit("devices", "UPSERT", &device.address, actor, action, old.as_deref(), Some(&new))?;
+        self.audit(
+            "devices",
+            "UPSERT",
+            &device.address,
+            actor,
+            action,
+            old.as_deref(),
+            Some(&new),
+        )?;
 
         // G3 Session 5: Publish config change to etcd
         if let Some(ref replicator) = self.config_replicator {
@@ -441,13 +483,23 @@ impl SqliteStore {
     }
 
     pub fn delete_device(&self, address: &str, actor: &str) -> Result<()> {
-        let old = self.get_device(address)?.map(|d| serde_json::to_string(&d).unwrap());
+        let old = self
+            .get_device(address)?
+            .map(|d| serde_json::to_string(&d).unwrap());
         let rows = {
             let db = self.db.lock().unwrap();
             db.execute("DELETE FROM devices WHERE address = ?1", params![address])?
         };
         if rows > 0 {
-            self.audit("devices", "DELETE", address, actor, "registry_remove_device", old.as_deref(), None)?;
+            self.audit(
+                "devices",
+                "DELETE",
+                address,
+                actor,
+                "registry_remove_device",
+                old.as_deref(),
+                None,
+            )?;
 
             // G3 Session 5: Publish config change to etcd
             if let Some(ref replicator) = self.config_replicator {
@@ -483,7 +535,8 @@ impl SqliteStore {
             let scope_json: String = row.get(6)?;
             let scope: Vec<String> = serde_json::from_str(&scope_json).unwrap_or_default();
             let extra_json: String = row.get(7)?;
-            let extra: serde_json::Value = serde_json::from_str(&extra_json).unwrap_or(serde_json::Value::Null);
+            let extra: serde_json::Value =
+                serde_json::from_str(&extra_json).unwrap_or(serde_json::Value::Null);
             Ok(crate::enrichment::EnricherConfig {
                 name: row.get(0)?,
                 enricher_type: row.get(1)?,
@@ -495,11 +548,20 @@ impl SqliteStore {
                 extra,
             })
         })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| anyhow!("failed to collect enrichers: {e}"))
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow!("failed to collect enrichers: {e}"))
     }
 
-    pub fn upsert_enricher(&self, config: &crate::enrichment::EnricherConfig, actor: &str) -> Result<()> {
-        let old = self.list_enrichers()?.iter().find(|e| e.name == config.name).map(|d| serde_json::to_string(d).unwrap());
+    pub fn upsert_enricher(
+        &self,
+        config: &crate::enrichment::EnricherConfig,
+        actor: &str,
+    ) -> Result<()> {
+        let old = self
+            .list_enrichers()?
+            .iter()
+            .find(|e| e.name == config.name)
+            .map(|d| serde_json::to_string(d).unwrap());
         let new = serde_json::to_string(config).unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -528,7 +590,15 @@ impl SqliteStore {
             )?;
         }
 
-        self.audit("enrichers", "UPSERT", &config.name, actor, "enricher_upsert", old.as_deref(), Some(&new))?;
+        self.audit(
+            "enrichers",
+            "UPSERT",
+            &config.name,
+            actor,
+            "enricher_upsert",
+            old.as_deref(),
+            Some(&new),
+        )?;
 
         // G3 Session 5: Publish config change to etcd
         if let Some(ref replicator) = self.config_replicator {
@@ -552,13 +622,25 @@ impl SqliteStore {
     }
 
     pub fn delete_enricher(&self, name: &str, actor: &str) -> Result<()> {
-        let old = self.list_enrichers()?.iter().find(|e| e.name == name).map(|d| serde_json::to_string(d).unwrap());
+        let old = self
+            .list_enrichers()?
+            .iter()
+            .find(|e| e.name == name)
+            .map(|d| serde_json::to_string(d).unwrap());
         let rows = {
             let db = self.db.lock().unwrap();
             db.execute("DELETE FROM enrichers WHERE name = ?1", params![name])?
         };
         if rows > 0 {
-            self.audit("enrichers", "DELETE", name, actor, "enricher_remove", old.as_deref(), None)?;
+            self.audit(
+                "enrichers",
+                "DELETE",
+                name,
+                actor,
+                "enricher_remove",
+                old.as_deref(),
+                None,
+            )?;
 
             // G3 Session 5: Publish config change to etcd
             if let Some(ref replicator) = self.config_replicator {
@@ -594,7 +676,8 @@ impl SqliteStore {
             let scope_json: String = row.get(6)?;
             let scope: Vec<String> = serde_json::from_str(&scope_json).unwrap_or_default();
             let extra_json: String = row.get(7)?;
-            let extra: serde_json::Value = serde_json::from_str(&extra_json).unwrap_or(serde_json::Value::Null);
+            let extra: serde_json::Value =
+                serde_json::from_str(&extra_json).unwrap_or(serde_json::Value::Null);
             Ok(crate::output::OutputAdapterConfig {
                 name: row.get(0)?,
                 adapter_type: row.get(1)?,
@@ -607,11 +690,20 @@ impl SqliteStore {
                 flush_interval_secs: 30,
             })
         })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| anyhow!("failed to collect adapters: {e}"))
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow!("failed to collect adapters: {e}"))
     }
 
-    pub fn upsert_adapter(&self, config: &crate::output::OutputAdapterConfig, actor: &str) -> Result<()> {
-        let old = self.list_adapters()?.iter().find(|a| a.name == config.name).map(|d| serde_json::to_string(d).unwrap());
+    pub fn upsert_adapter(
+        &self,
+        config: &crate::output::OutputAdapterConfig,
+        actor: &str,
+    ) -> Result<()> {
+        let old = self
+            .list_adapters()?
+            .iter()
+            .find(|a| a.name == config.name)
+            .map(|d| serde_json::to_string(d).unwrap());
         let new = serde_json::to_string(config).unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -640,7 +732,15 @@ impl SqliteStore {
             )?;
         }
 
-        self.audit("adapters", "UPSERT", &config.name, actor, "adapter_upsert", old.as_deref(), Some(&new))?;
+        self.audit(
+            "adapters",
+            "UPSERT",
+            &config.name,
+            actor,
+            "adapter_upsert",
+            old.as_deref(),
+            Some(&new),
+        )?;
 
         // G3 Session 5: Publish config change to etcd
         if let Some(ref replicator) = self.config_replicator {
@@ -664,13 +764,25 @@ impl SqliteStore {
     }
 
     pub fn delete_adapter(&self, name: &str, actor: &str) -> Result<()> {
-        let old = self.list_adapters()?.iter().find(|a| a.name == name).map(|d| serde_json::to_string(d).unwrap());
+        let old = self
+            .list_adapters()?
+            .iter()
+            .find(|a| a.name == name)
+            .map(|d| serde_json::to_string(d).unwrap());
         let rows = {
             let db = self.db.lock().unwrap();
             db.execute("DELETE FROM adapters WHERE name = ?1", params![name])?
         };
         if rows > 0 {
-            self.audit("adapters", "DELETE", name, actor, "adapter_remove", old.as_deref(), None)?;
+            self.audit(
+                "adapters",
+                "DELETE",
+                name,
+                actor,
+                "adapter_remove",
+                old.as_deref(),
+                None,
+            )?;
 
             // G3 Session 5: Publish config change to etcd
             if let Some(ref replicator) = self.config_replicator {

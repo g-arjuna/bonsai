@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, Instant};
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 use crate::audit::append_security_event;
 
@@ -124,10 +124,10 @@ impl AnomalyDetectionManager {
     /// Initialize anomaly detection
     pub fn initialize(&self) -> Result<()> {
         info!("Initializing security anomaly detection");
-        
+
         // Initialize detection models
         self.initialize_detection_models();
-        
+
         info!("Anomaly detection initialized successfully");
         Ok(())
     }
@@ -135,7 +135,7 @@ impl AnomalyDetectionManager {
     /// Initialize detection models for different event types
     fn initialize_detection_models(&self) {
         let mut models = self.detection_models.lock().unwrap();
-        
+
         let event_types = vec![
             SecurityEventType::AuthenticationFailure,
             SecurityEventType::PrivilegeEscalation,
@@ -147,12 +147,15 @@ impl AnomalyDetectionManager {
         ];
 
         for event_type in event_types {
-            models.insert(event_type.clone(), SimpleDetectionModel {
-                event_type,
-                threshold_multiplier: 3.0, // 3-sigma rule
-                min_samples: 30,
-                window_size: 100,
-            });
+            models.insert(
+                event_type.clone(),
+                SimpleDetectionModel {
+                    event_type,
+                    threshold_multiplier: 3.0, // 3-sigma rule
+                    min_samples: 30,
+                    window_size: 100,
+                },
+            );
         }
     }
 
@@ -170,7 +173,7 @@ impl AnomalyDetectionManager {
 
         // Detect anomalies
         let mut anomalies = Vec::new();
-        
+
         // Rate-based anomaly detection
         if let Some(anomaly) = self.detect_rate_anomaly(&event) {
             anomalies.push(anomaly);
@@ -192,7 +195,7 @@ impl AnomalyDetectionManager {
         if !anomalies.is_empty() {
             let mut results = self.anomaly_results.lock().unwrap();
             results.extend(anomalies.clone());
-            
+
             // Log security events for anomalies
             for anomaly in &anomalies {
                 self.log_anomaly_detected(anomaly)?;
@@ -205,10 +208,12 @@ impl AnomalyDetectionManager {
     /// Store event in history
     fn store_event(&self, event: &SecurityEvent) {
         let mut history = self.event_history.lock().unwrap();
-        let events = history.entry(event.event_type.clone()).or_insert_with(VecDeque::new);
-        
+        let events = history
+            .entry(event.event_type.clone())
+            .or_insert_with(VecDeque::new);
+
         events.push_back(event.clone());
-        
+
         // Keep only recent events within the analysis window
         let cutoff = Instant::now() - Duration::from_secs(self.config.analysis_window_minutes * 60);
         while let Some(front_event) = events.front() {
@@ -224,7 +229,7 @@ impl AnomalyDetectionManager {
     fn update_baselines(&self, event_type: &SecurityEventType) {
         let history = self.event_history.lock().unwrap();
         let events = history.get(event_type);
-        
+
         if let Some(events) = events {
             if events.len() < self.config.min_samples_for_analysis {
                 return;
@@ -232,21 +237,22 @@ impl AnomalyDetectionManager {
 
             let now = Instant::now();
             let window_start = now - Duration::from_secs(self.config.analysis_window_minutes * 60);
-            
+
             // Calculate event rate (events per minute)
-            let events_in_window: Vec<_> = events.iter()
+            let events_in_window: Vec<_> = events
+                .iter()
                 .filter(|e| e.timestamp >= window_start)
                 .collect();
-            
+
             let rate = events_in_window.len() as f64 / self.config.analysis_window_minutes as f64;
-            
+
             // Calculate hourly pattern
             let mut hourly_counts = [0.0; 24];
             for event in &events_in_window {
                 let hour = event.timestamp.elapsed().as_secs() / 3600 % 24;
                 hourly_counts[hour as usize] += 1.0;
             }
-            
+
             // Normalize to percentages
             let total = hourly_counts.iter().sum::<f64>();
             if total > 0.0 {
@@ -256,14 +262,16 @@ impl AnomalyDetectionManager {
             }
 
             let mut baselines = self.baselines.lock().unwrap();
-            let baseline = baselines.entry(event_type.clone()).or_insert_with(|| EventBaseline {
-                event_type: event_type.clone(),
-                mean_rate: rate,
-                std_dev: 0.0,
-                sample_count: events_in_window.len(),
-                last_updated: now,
-                hourly_pattern: hourly_counts,
-            });
+            let baseline = baselines
+                .entry(event_type.clone())
+                .or_insert_with(|| EventBaseline {
+                    event_type: event_type.clone(),
+                    mean_rate: rate,
+                    std_dev: 0.0,
+                    sample_count: events_in_window.len(),
+                    last_updated: now,
+                    hourly_pattern: hourly_counts,
+                });
 
             // Update baseline with exponential smoothing
             let alpha = 0.1; // Smoothing factor
@@ -278,7 +286,7 @@ impl AnomalyDetectionManager {
     fn detect_rate_anomaly(&self, event: &SecurityEvent) -> Option<AnomalyResult> {
         let baselines = self.baselines.lock().unwrap();
         let models = self.detection_models.lock().unwrap();
-        
+
         if let Some(baseline) = baselines.get(&event.event_type) {
             if let Some(model) = models.get(&event.event_type) {
                 if baseline.sample_count < model.min_samples {
@@ -290,12 +298,14 @@ impl AnomalyDetectionManager {
                 if let Some(events) = history.get(&event.event_type) {
                     let now = Instant::now();
                     let recent_window = Duration::from_secs(300); // 5 minutes
-                    let recent_events: Vec<_> = events.iter()
+                    let recent_events: Vec<_> = events
+                        .iter()
                         .filter(|e| now.duration_since(e.timestamp) <= recent_window)
                         .collect();
-                    
-                    let current_rate = recent_events.len() as f64 / recent_window.as_secs() as f64 * 60.0; // per minute
-                    
+
+                    let current_rate =
+                        recent_events.len() as f64 / recent_window.as_secs() as f64 * 60.0; // per minute
+
                     // Calculate z-score
                     let z_score = if baseline.std_dev > 0.0 {
                         (current_rate - baseline.mean_rate) / baseline.std_dev
@@ -311,9 +321,13 @@ impl AnomalyDetectionManager {
                             anomaly_score: z_score.abs(),
                             threshold,
                             is_anomaly: true,
-                            description: format!("Unusual {} rate detected: {:.2} events/min (baseline: {:.2} ± {:.2})", 
-                                format!("{:?}", event.event_type).to_lowercase(), 
-                                current_rate, baseline.mean_rate, baseline.std_dev),
+                            description: format!(
+                                "Unusual {} rate detected: {:.2} events/min (baseline: {:.2} ± {:.2})",
+                                format!("{:?}", event.event_type).to_lowercase(),
+                                current_rate,
+                                baseline.mean_rate,
+                                baseline.std_dev
+                            ),
                             detected_at: Instant::now(),
                             contributing_factors: vec![
                                 format!("z-score: {:.2}", z_score),
@@ -323,7 +337,10 @@ impl AnomalyDetectionManager {
                             affected_entities: vec![
                                 event.source_ip.clone().unwrap_or_default(),
                                 event.user_id.clone().unwrap_or_default(),
-                            ].into_iter().filter(|s| !s.is_empty()).collect(),
+                            ]
+                            .into_iter()
+                            .filter(|s| !s.is_empty())
+                            .collect(),
                         });
                     }
                 }
@@ -336,21 +353,30 @@ impl AnomalyDetectionManager {
     /// Detect pattern-based anomalies
     fn detect_pattern_anomaly(&self, event: &SecurityEvent) -> Option<AnomalyResult> {
         let baselines = self.baselines.lock().unwrap();
-        
+
         if let Some(baseline) = baselines.get(&event.event_type) {
             let current_hour = (event.timestamp.elapsed().as_secs() / 3600) as usize % 24;
             let expected_percentage = baseline.hourly_pattern[current_hour];
-            
+
             // This is a simplified pattern detection
             // In production, you'd use more sophisticated pattern analysis
-            if expected_percentage < 5.0 && matches!(event.event_type, SecurityEventType::AuthenticationFailure) {
+            if expected_percentage < 5.0
+                && matches!(event.event_type, SecurityEventType::AuthenticationFailure)
+            {
                 return Some(AnomalyResult {
-                    id: format!("pattern-anomaly-{}-{:?}", uuid::Uuid::new_v4(), event.event_type),
+                    id: format!(
+                        "pattern-anomaly-{}-{:?}",
+                        uuid::Uuid::new_v4(),
+                        event.event_type
+                    ),
                     event_type: event.event_type.clone(),
                     anomaly_score: 2.5,
                     threshold: 2.0,
                     is_anomaly: true,
-                    description: format!("Unusual timing for {:?}: expected low activity at this hour", event.event_type),
+                    description: format!(
+                        "Unusual timing for {:?}: expected low activity at this hour",
+                        event.event_type
+                    ),
                     detected_at: Instant::now(),
                     contributing_factors: vec![
                         format!("hour: {}", current_hour),
@@ -359,7 +385,10 @@ impl AnomalyDetectionManager {
                     affected_entities: vec![
                         event.source_ip.clone().unwrap_or_default(),
                         event.user_id.clone().unwrap_or_default(),
-                    ].into_iter().filter(|s| !s.is_empty()).collect(),
+                    ]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect(),
                 });
             }
         }
@@ -368,9 +397,13 @@ impl AnomalyDetectionManager {
     }
 
     /// Detect user behavior anomalies
-    fn detect_user_behavior_anomaly(&self, event: &SecurityEvent, user_id: &str) -> Option<AnomalyResult> {
+    fn detect_user_behavior_anomaly(
+        &self,
+        event: &SecurityEvent,
+        user_id: &str,
+    ) -> Option<AnomalyResult> {
         let history = self.event_history.lock().unwrap();
-        
+
         // Analyze user's recent activity patterns
         let mut user_events = Vec::new();
         for events in history.values() {
@@ -390,12 +423,14 @@ impl AnomalyDetectionManager {
         // Check for unusual patterns
         let now = Instant::now();
         let recent_hour = Duration::from_secs(3600);
-        let recent_user_events: Vec<_> = user_events.iter()
+        let recent_user_events: Vec<_> = user_events
+            .iter()
             .filter(|e| now.duration_since(e.timestamp) <= recent_hour)
             .collect();
 
         // Detect rapid authentication failures
-        let auth_failures = recent_user_events.iter()
+        let auth_failures = recent_user_events
+            .iter()
             .filter(|e| matches!(e.event_type, SecurityEventType::AuthenticationFailure))
             .count();
 
@@ -406,7 +441,10 @@ impl AnomalyDetectionManager {
                 anomaly_score: auth_failures as f64,
                 threshold: 5.0,
                 is_anomaly: true,
-                description: format!("Multiple authentication failures for user {} in last hour", user_id),
+                description: format!(
+                    "Multiple authentication failures for user {} in last hour",
+                    user_id
+                ),
                 detected_at: Instant::now(),
                 contributing_factors: vec![
                     format!("auth_failures: {}", auth_failures),
@@ -415,7 +453,10 @@ impl AnomalyDetectionManager {
                 affected_entities: vec![
                     user_id.to_string(),
                     event.source_ip.clone().unwrap_or_default(),
-                ].into_iter().filter(|s| !s.is_empty()).collect(),
+                ]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect(),
             });
         }
 
@@ -443,17 +484,14 @@ impl AnomalyDetectionManager {
     /// Get recent anomalies
     pub fn get_recent_anomalies(&self, limit: usize) -> Vec<AnomalyResult> {
         let results = self.anomaly_results.lock().unwrap();
-        results.iter()
-            .rev()
-            .take(limit)
-            .cloned()
-            .collect()
+        results.iter().rev().take(limit).cloned().collect()
     }
 
     /// Get anomalies by event type
     pub fn get_anomalies_by_type(&self, event_type: &SecurityEventType) -> Vec<AnomalyResult> {
         let results = self.anomaly_results.lock().unwrap();
-        results.iter()
+        results
+            .iter()
             .filter(|a| &a.event_type == event_type)
             .cloned()
             .collect()
@@ -463,13 +501,15 @@ impl AnomalyDetectionManager {
     pub fn get_anomaly_stats(&self) -> serde_json::Value {
         let results = self.anomaly_results.lock().unwrap();
         let baselines = self.baselines.lock().unwrap();
-        
+
         let mut type_counts = HashMap::new();
         let mut severity_distribution = HashMap::new();
-        
+
         for anomaly in results.iter() {
-            *type_counts.entry(format!("{:?}", anomaly.event_type)).or_insert(0) += 1;
-            
+            *type_counts
+                .entry(format!("{:?}", anomaly.event_type))
+                .or_insert(0) += 1;
+
             let severity = if anomaly.anomaly_score >= 5.0 {
                 "critical"
             } else if anomaly.anomaly_score >= 3.0 {
@@ -481,7 +521,7 @@ impl AnomalyDetectionManager {
             };
             *severity_distribution.entry(severity).or_insert(0) += 1;
         }
-        
+
         serde_json::json!({
             "total_anomalies": results.len(),
             "analysis_window_minutes": self.config.analysis_window_minutes,
@@ -498,27 +538,29 @@ impl AnomalyDetectionManager {
     pub fn cleanup_old_results(&self) -> Result<()> {
         let cutoff = Instant::now() - Duration::from_secs(self.config.retention_hours * 3600);
         let mut results = self.anomaly_results.lock().unwrap();
-        
+
         let initial_count = results.len();
         results.retain(|a| a.detected_at >= cutoff);
         let removed_count = initial_count - results.len();
-        
+
         if removed_count > 0 {
             info!("Cleaned up {} old anomaly results", removed_count);
         }
-        
+
         Ok(())
     }
 }
 
 /// Global anomaly detection manager instance
-static ANOMALY_DETECTION_MANAGER: std::sync::OnceLock<std::sync::Arc<AnomalyDetectionManager>> = std::sync::OnceLock::new();
+static ANOMALY_DETECTION_MANAGER: std::sync::OnceLock<std::sync::Arc<AnomalyDetectionManager>> =
+    std::sync::OnceLock::new();
 
 /// Initialize global anomaly detection manager
 pub fn initialize_anomaly_detection(config: AnomalyDetectionConfig) -> Result<()> {
     let manager = Arc::new(AnomalyDetectionManager::new(config));
     manager.initialize()?;
-    ANOMALY_DETECTION_MANAGER.set(manager.clone())
+    ANOMALY_DETECTION_MANAGER
+        .set(manager.clone())
         .map_err(|_| anyhow::anyhow!("Anomaly detection manager already initialized"))?;
     Ok(())
 }

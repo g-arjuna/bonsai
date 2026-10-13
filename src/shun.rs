@@ -119,7 +119,14 @@ pub struct ShunRule {
 }
 
 impl ShunRule {
-    pub fn new_drop(scope_type: &str, scope_value: &str, match_type: &str, match_value: &str, expires_at_ns: i64, created_by: &str) -> Self {
+    pub fn new_drop(
+        scope_type: &str,
+        scope_value: &str,
+        match_type: &str,
+        match_value: &str,
+        expires_at_ns: i64,
+        created_by: &str,
+    ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             scope_type: scope_type.to_string(),
@@ -268,7 +275,9 @@ impl ShunEngine {
             match ShunAction::from_str(&r.action) {
                 ShunAction::Drop => {
                     self.record_shun(&r.id);
-                    return ShunOutcome::Dropped { rule_id: r.id.clone() };
+                    return ShunOutcome::Dropped {
+                        rule_id: r.id.clone(),
+                    };
                 }
                 ShunAction::RateLimit => {
                     let allow = {
@@ -280,7 +289,9 @@ impl ShunEngine {
                     };
                     if !allow {
                         self.record_shun(&r.id);
-                        return ShunOutcome::RateLimited { rule_id: r.id.clone() };
+                        return ShunOutcome::RateLimited {
+                            rule_id: r.id.clone(),
+                        };
                     }
                     // Token available — pass.
                     return ShunOutcome::Pass;
@@ -384,7 +395,10 @@ mod tests {
         r.scope_type = "device".to_string();
         r.scope_value = "10.0.0.1".to_string();
         engine.reload(vec![r]);
-        assert!(matches!(engine.evaluate("10.0.0.1", "noise", &[]), ShunOutcome::Dropped { .. }));
+        assert!(matches!(
+            engine.evaluate("10.0.0.1", "noise", &[]),
+            ShunOutcome::Dropped { .. }
+        ));
         assert_eq!(engine.evaluate("10.0.0.2", "noise", &[]), ShunOutcome::Pass);
     }
 
@@ -402,6 +416,9 @@ mod tests {
         let mut r = rule("substring", "noise", "drop", 0);
         r.enabled = false;
         engine.reload(vec![r]);
-        assert_eq!(engine.evaluate("10.0.0.1", "noise message", &[]), ShunOutcome::Pass);
+        assert_eq!(
+            engine.evaluate("10.0.0.1", "noise message", &[]),
+            ShunOutcome::Pass
+        );
     }
 }

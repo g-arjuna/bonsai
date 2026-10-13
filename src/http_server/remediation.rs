@@ -139,25 +139,30 @@ pub(super) struct InvestigationDetailResponse {
     investigation: crate::graph::InvestigationRecord,
     tool_calls: Vec<crate::graph::ToolCallRecord>,
 }
-use std::sync::Arc;
-use serde::{Deserialize, Serialize};
-use axum::{Json, body::Bytes, extract::{Path, Query, State}, http::{HeaderMap, StatusCode}, response::IntoResponse};
+use axum::{
+    Json,
+    body::Bytes,
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+};
 use lbug::{Connection, Value};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use super::AppState;
-use super::{default_proposal_status, default_verify_wait_secs, default_limit, default_trigger, now_ns};
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-use subtle::ConstantTimeEq;
+use super::{
+    default_limit, default_proposal_status, default_trigger, default_verify_wait_secs, now_ns,
+};
 use crate::audit;
 use crate::config::TargetConfig;
 use crate::credentials::{CredentialVault, ResolvePurpose, ResolvedCredential};
 use crate::gnmi_set::gnmi_set;
 use crate::graph::RemediationProposalRow;
-use crate::remediation::{
-    TrustKey, TrustState, check_graduation,
-};
-
+use crate::remediation::{TrustKey, TrustState, check_graduation};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use subtle::ConstantTimeEq;
 
 pub(super) async fn approvals_list_handler(
     State(state): State<AppState>,
@@ -569,7 +574,9 @@ pub(super) async fn approvals_rollback_handler(
         remediation_id: rollback_state.remediation_id,
     })
 }
-pub(super) async fn trust_list_handler(State(state): State<AppState>) -> Json<ApprovalsListResponse> {
+pub(super) async fn trust_list_handler(
+    State(state): State<AppState>,
+) -> Json<ApprovalsListResponse> {
     let (trust, graduation_hints) = {
         let store = state.trust_store.read().await;
         let records = store.list();
@@ -893,7 +900,9 @@ pub(super) async fn servicenow_aiops_sync_handler(
         }),
     }
 }
-pub(super) async fn list_overrides(State(state): State<AppState>) -> impl axum::response::IntoResponse {
+pub(super) async fn list_overrides(
+    State(state): State<AppState>,
+) -> impl axum::response::IntoResponse {
     match state.registry.list_overrides() {
         Ok(overrides) => Json(overrides).into_response(),
         Err(e) => (
@@ -972,7 +981,11 @@ pub(super) async fn create_investigation_handler(
         crate::investigation_runtime::spawn_investigation(
             inv.id.clone(),
             device_address,
-            if detection_id.is_empty() { None } else { Some(detection_id) },
+            if detection_id.is_empty() {
+                None
+            } else {
+                Some(detection_id)
+            },
             store_arc,
             state,
             ai_cfg,
@@ -1128,15 +1141,30 @@ pub(super) async fn webhook_change_event_handler(
             ));
         }
         let provided_bytes = hex::decode(provided_hex).map_err(|_| {
-            (StatusCode::UNAUTHORIZED, "invalid hex in X-Hub-Signature-256".to_string())
+            (
+                StatusCode::UNAUTHORIZED,
+                "invalid hex in X-Hub-Signature-256".to_string(),
+            )
         })?;
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("HMAC key error: {e}")))?;
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("HMAC key error: {e}"),
+            )
+        })?;
         mac.update(&body);
         let expected_bytes = mac.finalize().into_bytes();
         // Constant-time comparison — prevents timing oracle attacks
-        if expected_bytes.as_slice().ct_eq(provided_bytes.as_slice()).unwrap_u8() == 0 {
-            return Err((StatusCode::UNAUTHORIZED, "webhook signature mismatch".to_string()));
+        if expected_bytes
+            .as_slice()
+            .ct_eq(provided_bytes.as_slice())
+            .unwrap_u8()
+            == 0
+        {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "webhook signature mismatch".to_string(),
+            ));
         }
     }
 
@@ -1267,23 +1295,24 @@ pub(super) async fn list_changes_handler(
 
 // ── GET /api/playbooks ────────────────────────────────────────────────────────
 
-pub async fn playbooks_catalog_handler(
-    State(state): State<AppState>,
-) -> Json<serde_json::Value> {
-    let lib = crate::playbook::PlaybookLibrary::load_dir(&state.remediation_config.playbook_library_dir);
+pub async fn playbooks_catalog_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let lib =
+        crate::playbook::PlaybookLibrary::load_dir(&state.remediation_config.playbook_library_dir);
     let entries: Vec<serde_json::Value> = lib
         .catalog()
         .iter()
         .flat_map(|(rule_id, pbs)| {
             let rid = rule_id.clone();
-            pbs.iter().map(move |pb| serde_json::json!({
-                "rule_id": rid,
-                "name": pb.name,
-                "vendor": pb.vendor,
-                "operation": pb.operation,
-                "description": pb.description,
-                "risk_tier": pb.risk_tier,
-            }))
+            pbs.iter().map(move |pb| {
+                serde_json::json!({
+                    "rule_id": rid,
+                    "name": pb.name,
+                    "vendor": pb.vendor,
+                    "operation": pb.operation,
+                    "description": pb.description,
+                    "risk_tier": pb.risk_tier,
+                })
+            })
         })
         .collect();
     Json(serde_json::json!({ "playbooks": entries }))
@@ -1296,7 +1325,9 @@ pub struct AuditQuery {
     #[serde(default = "default_audit_limit")]
     limit: usize,
 }
-fn default_audit_limit() -> usize { 200 }
+fn default_audit_limit() -> usize {
+    200
+}
 
 pub async fn audit_log_handler(
     State(state): State<AppState>,
@@ -1326,12 +1357,10 @@ pub(super) async fn vault_rekey_handler(
         ));
     }
     let creds = Arc::clone(&state.credentials);
-    tokio::task::spawn_blocking(move || {
-        creds.rekey(&env_var)
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    tokio::task::spawn_blocking(move || creds.rekey(&env_var))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
 
     let now = now_ns();
     let _ = audit::append_trust_operation(
@@ -1410,7 +1439,11 @@ pub(super) async fn remediation_verify_handler(
         .unwrap_or_default()
         .into_iter()
         .find(|step| step.get("action").and_then(|a| a.as_str()) == Some("verify_graph"))
-        .and_then(|step| step.get("cypher").and_then(|c| c.as_str()).map(str::to_string))
+        .and_then(|step| {
+            step.get("cypher")
+                .and_then(|c| c.as_str())
+                .map(str::to_string)
+        })
         .unwrap_or_default();
 
     if cypher.is_empty() {
@@ -1454,9 +1487,19 @@ pub(super) async fn list_config_items_handler(
 /// Security: validates id length, config_class allowlist, and content_json size cap.
 const MAX_CONFIG_ITEM_CONTENT_BYTES: usize = 512 * 1024; // 512 KB
 const ALLOWED_CONFIG_CLASSES: &[&str] = &[
-    "syslog_pattern", "snmp_oid_pattern", "gnmi_path_profile", "synthesizer_rule",
-    "vendor_state_mapping", "gnmi_known_issues", "playbook", "runtime_config",
-    "api_key", "user", "jwt_revoked", "jwt_secret", "app_config",
+    "syslog_pattern",
+    "snmp_oid_pattern",
+    "gnmi_path_profile",
+    "synthesizer_rule",
+    "vendor_state_mapping",
+    "gnmi_known_issues",
+    "playbook",
+    "runtime_config",
+    "api_key",
+    "user",
+    "jwt_revoked",
+    "jwt_secret",
+    "app_config",
 ];
 
 pub(super) async fn upsert_config_item_handler(
@@ -1464,15 +1507,25 @@ pub(super) async fn upsert_config_item_handler(
     Json(item): Json<crate::graph::ConfigItemRecord>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     if item.id.is_empty() || item.id.len() > 256 {
-        return Err((StatusCode::BAD_REQUEST, "id must be 1–256 characters".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "id must be 1–256 characters".into(),
+        ));
     }
     if !ALLOWED_CONFIG_CLASSES.contains(&item.config_class.as_str()) {
-        return Err((StatusCode::BAD_REQUEST, format!("disallowed config_class: {}", item.config_class)));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("disallowed config_class: {}", item.config_class),
+        ));
     }
     if item.content_json.len() > MAX_CONFIG_ITEM_CONTENT_BYTES {
-        return Err((StatusCode::PAYLOAD_TOO_LARGE, format!(
-            "content_json exceeds {} byte limit", MAX_CONFIG_ITEM_CONTENT_BYTES
-        )));
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "content_json exceeds {} byte limit",
+                MAX_CONFIG_ITEM_CONTENT_BYTES
+            ),
+        ));
     }
     state
         .store

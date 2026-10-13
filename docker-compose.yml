@@ -35,7 +35,7 @@ services:
       - RUST_LOG=info,bonsai=debug
       - BONSAI_VAULT_PASSPHRASE=${BONSAI_VAULT_PASSPHRASE:?BONSAI_VAULT_PASSPHRASE is required — see .env.example}
       - BONSAI_ROUTING_SERVICE_URL=http://bonsai-routing:8081
-      - BONSAI_ROUTING_SERVICE_TOKEN=${BONSAI_ROUTING_SERVICE_TOKEN:-}
+      - BONSAI_ROUTING_SERVICE_TOKEN=${BONSAI_ROUTING_SERVICE_TOKEN:?BONSAI_ROUTING_SERVICE_TOKEN is required — see .env.example}
     volumes:
       - bonsai_graph_dev:/app/runtime
       - bonsai_creds_dev:/app/bonsai-credentials
@@ -69,7 +69,7 @@ services:
       - BONSAI_ROUTING_HTTP_ADDR=0.0.0.0:8081
       - BONSAI_ROUTING_BMP_JOURNAL=/app/runtime/routing-bmp.journal
       - BONSAI_ROUTING_EVENT_JOURNAL=/app/runtime/routing-events.jsonl
-      - BONSAI_ROUTING_SERVICE_TOKEN=${BONSAI_ROUTING_SERVICE_TOKEN:-}
+      - BONSAI_ROUTING_SERVICE_TOKEN=${BONSAI_ROUTING_SERVICE_TOKEN:?BONSAI_ROUTING_SERVICE_TOKEN is required — see .env.example}
     volumes:
       - bonsai_graph_dev:/app/runtime
     ports:

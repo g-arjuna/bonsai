@@ -133,14 +133,20 @@ impl ApiRegistry {
     pub fn open(path: impl Into<PathBuf>, seed_targets: Vec<TargetConfig>) -> Result<Self> {
         let path = path.into();
         let runtime_dir = path.parent().unwrap_or_else(|| Path::new("."));
-        let sqlite_store = crate::sqlite_store::SqliteStore::open(runtime_dir).ok().map(std::sync::Arc::new);
+        let sqlite_store = crate::sqlite_store::SqliteStore::open(runtime_dir)
+            .ok()
+            .map(std::sync::Arc::new);
 
         // Try to migrate from JSON if SQLite is new
         if let Some(ref store) = sqlite_store {
             let _ = store.migrate_from_json(runtime_dir);
         }
 
-        let state = Self::load_state(&path, seed_targets, sqlite_store.as_ref().map(|s| s.as_ref()))?;
+        let state = Self::load_state(
+            &path,
+            seed_targets,
+            sqlite_store.as_ref().map(|s| s.as_ref()),
+        )?;
         let (change_tx, _) = broadcast::channel(REGISTRY_CHANNEL_CAPACITY);
 
         Ok(Self {
@@ -352,7 +358,11 @@ impl ApiRegistry {
         Ok(target)
     }
 
-    fn load_state(path: &Path, seed_targets: Vec<TargetConfig>, sqlite_store: Option<&crate::sqlite_store::SqliteStore>) -> Result<RegistryState> {
+    fn load_state(
+        path: &Path,
+        seed_targets: Vec<TargetConfig>,
+        sqlite_store: Option<&crate::sqlite_store::SqliteStore>,
+    ) -> Result<RegistryState> {
         let mut targets = if let Some(store) = sqlite_store {
             store.list_devices().unwrap_or_default()
         } else if path.exists() {
@@ -386,11 +396,18 @@ impl ApiRegistry {
         Ok(state)
     }
 
-    fn persist_state(path: &Path, state: &RegistryState, sqlite_store: Option<&crate::sqlite_store::SqliteStore>) -> Result<()> {
+    fn persist_state(
+        path: &Path,
+        state: &RegistryState,
+        sqlite_store: Option<&crate::sqlite_store::SqliteStore>,
+    ) -> Result<()> {
         if let Some(store) = sqlite_store {
             for target in state.targets.values() {
                 if let Err(e) = store.upsert_device(target, "registry", "persist") {
-                    warn!("failed to persist device '{}' to SQLite: {e}", target.address);
+                    warn!(
+                        "failed to persist device '{}' to SQLite: {e}",
+                        target.address
+                    );
                 }
             }
         } else {
@@ -399,8 +416,8 @@ impl ApiRegistry {
                 format!("failed to create registry directory '{}'", parent.display())
             })?;
 
-            let serialized =
-                serde_json::to_string_pretty(&state).context("failed to serialize registry state")?;
+            let serialized = serde_json::to_string_pretty(&state)
+                .context("failed to serialize registry state")?;
             std::fs::write(path, serialized)
                 .with_context(|| format!("failed to write registry '{}'", path.display()))?;
         }
@@ -410,7 +427,12 @@ impl ApiRegistry {
 
 fn merge_seed_target(existing: &mut TargetConfig, seed: &TargetConfig) {
     existing.enabled = seed.enabled;
-    if existing.tls_domain.as_deref().unwrap_or_default().is_empty() {
+    if existing
+        .tls_domain
+        .as_deref()
+        .unwrap_or_default()
+        .is_empty()
+    {
         existing.tls_domain = seed.tls_domain.clone();
     }
     if existing.ca_cert.as_deref().unwrap_or_default().is_empty() {
@@ -419,13 +441,28 @@ fn merge_seed_target(existing: &mut TargetConfig, seed: &TargetConfig) {
     if existing.vendor.as_deref().unwrap_or_default().is_empty() {
         existing.vendor = seed.vendor.clone();
     }
-    if existing.credential_alias.as_deref().unwrap_or_default().is_empty() {
+    if existing
+        .credential_alias
+        .as_deref()
+        .unwrap_or_default()
+        .is_empty()
+    {
         existing.credential_alias = seed.credential_alias.clone();
     }
-    if existing.username_env.as_deref().unwrap_or_default().is_empty() {
+    if existing
+        .username_env
+        .as_deref()
+        .unwrap_or_default()
+        .is_empty()
+    {
         existing.username_env = seed.username_env.clone();
     }
-    if existing.password_env.as_deref().unwrap_or_default().is_empty() {
+    if existing
+        .password_env
+        .as_deref()
+        .unwrap_or_default()
+        .is_empty()
+    {
         existing.password_env = seed.password_env.clone();
     }
     if existing.username.as_deref().unwrap_or_default().is_empty() {
@@ -443,7 +480,12 @@ fn merge_seed_target(existing: &mut TargetConfig, seed: &TargetConfig) {
     if existing.site.as_deref().unwrap_or_default().is_empty() {
         existing.site = seed.site.clone();
     }
-    if existing.collector_id.as_deref().unwrap_or_default().is_empty() {
+    if existing
+        .collector_id
+        .as_deref()
+        .unwrap_or_default()
+        .is_empty()
+    {
         existing.collector_id = seed.collector_id.clone();
     }
     if existing.paths.is_empty() {

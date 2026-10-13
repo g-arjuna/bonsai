@@ -187,8 +187,13 @@ impl DatabaseSecurityManager {
         // or implement application-level encryption for sensitive columns
 
         let sensitive_tables = vec![
-            "Device", "UserContent", "SessionContent", "ConfigItem",
-            "SecurityPosture", "SecurityIncident", "Vulnerability"
+            "Device",
+            "UserContent",
+            "SessionContent",
+            "ConfigItem",
+            "SecurityPosture",
+            "SecurityIncident",
+            "Vulnerability",
         ];
 
         for table in &sensitive_tables {
@@ -200,26 +205,37 @@ impl DatabaseSecurityManager {
             })?;
 
             // Store encryption metadata
-            let mut stmt = conn.prepare(
-                "MERGE (em:EncryptionMetadata {id: $metadata_id}) \
+            let mut stmt = conn
+                .prepare(
+                    "MERGE (em:EncryptionMetadata {id: $metadata_id}) \
                  SET em.table_name = $table_name, \
                      em.column_name = $column_name, \
                      em.encryption_algorithm = $algorithm, \
                      em.key_id = $key_id, \
-                     em.encrypted_at_ns = $timestamp_ns"
-            ).context("prepare store encryption metadata")?;
-            conn.execute(&mut stmt, vec![
-                ("metadata_id", Value::String(format!("{}-all", table))),
-                ("table_name", Value::String((*table).to_string())),
-                ("column_name", Value::String("*".to_string())),
-                ("algorithm", Value::String("AES-256-GCM".to_string())),
-                ("key_id", Value::String(self.config.encryption_key_alias.clone())),
-                ("timestamp_ns", Value::Int64(crate::graph::common::now_ns())),
-            ])
+                     em.encrypted_at_ns = $timestamp_ns",
+                )
+                .context("prepare store encryption metadata")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("metadata_id", Value::String(format!("{}-all", table))),
+                    ("table_name", Value::String((*table).to_string())),
+                    ("column_name", Value::String("*".to_string())),
+                    ("algorithm", Value::String("AES-256-GCM".to_string())),
+                    (
+                        "key_id",
+                        Value::String(self.config.encryption_key_alias.clone()),
+                    ),
+                    ("timestamp_ns", Value::Int64(crate::graph::common::now_ns())),
+                ],
+            )
             .context("store encryption metadata")?;
         }
 
-        info!("Database encryption enabled for {} tables", sensitive_tables.len());
+        info!(
+            "Database encryption enabled for {} tables",
+            sensitive_tables.len()
+        );
         Ok(())
     }
 
@@ -260,16 +276,21 @@ impl DatabaseSecurityManager {
         ];
 
         for (role_name, permissions) in default_roles {
-            let mut stmt = conn.prepare(
-                "MERGE (dr:DatabaseRole {role_name: $role_name}) \
+            let mut stmt = conn
+                .prepare(
+                    "MERGE (dr:DatabaseRole {role_name: $role_name}) \
                  SET dr.permissions = $permissions, \
-                     dr.created_at_ns = $timestamp_ns"
-            ).context("prepare create default role")?;
-            conn.execute(&mut stmt, vec![
-                ("role_name", Value::String(role_name.to_string())),
-                ("permissions", Value::String(permissions.to_string())),
-                ("timestamp_ns", Value::Int64(crate::graph::common::now_ns())),
-            ])
+                     dr.created_at_ns = $timestamp_ns",
+                )
+                .context("prepare create default role")?;
+            conn.execute(
+                &mut stmt,
+                vec![
+                    ("role_name", Value::String(role_name.to_string())),
+                    ("permissions", Value::String(permissions.to_string())),
+                    ("timestamp_ns", Value::Int64(crate::graph::common::now_ns())),
+                ],
+            )
             .context("create default role")?;
         }
 
@@ -295,9 +316,10 @@ impl DatabaseSecurityManager {
         }
 
         let audit_id = format!("audit-{}-{}", crate::graph::common::now_ns(), user_id);
-        
-        let mut stmt = conn.prepare(
-            "CREATE (dal:DatabaseAuditLog { \
+
+        let mut stmt = conn
+            .prepare(
+                "CREATE (dal:DatabaseAuditLog { \
                 id: $audit_id, \
                 timestamp_ns: $timestamp_ns, \
                 user_id: $user_id, \
@@ -308,20 +330,27 @@ impl DatabaseSecurityManager {
                 success: $success, \
                 error_message: $error_message, \
                 client_ip: $client_ip \
-            })"
-        ).context("prepare log database access")?;
-        conn.execute(&mut stmt, vec![
-            ("audit_id", Value::String(audit_id)),
-            ("timestamp_ns", Value::Int64(crate::graph::common::now_ns())),
-            ("user_id", Value::String(user_id.to_string())),
-            ("session_id", Value::String(session_id.to_string())),
-            ("operation", Value::String(operation.to_string())),
-            ("table_name", Value::String(table_name.to_string())),
-            ("row_count", Value::Int64(row_count.unwrap_or(0) as i64)),
-            ("success", Value::Bool(success)),
-            ("error_message", Value::String(error_message.unwrap_or("").to_string())),
-            ("client_ip", Value::String(client_ip.to_string())),
-        ])
+            })",
+            )
+            .context("prepare log database access")?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("audit_id", Value::String(audit_id)),
+                ("timestamp_ns", Value::Int64(crate::graph::common::now_ns())),
+                ("user_id", Value::String(user_id.to_string())),
+                ("session_id", Value::String(session_id.to_string())),
+                ("operation", Value::String(operation.to_string())),
+                ("table_name", Value::String(table_name.to_string())),
+                ("row_count", Value::Int64(row_count.unwrap_or(0) as i64)),
+                ("success", Value::Bool(success)),
+                (
+                    "error_message",
+                    Value::String(error_message.unwrap_or("").to_string()),
+                ),
+                ("client_ip", Value::String(client_ip.to_string())),
+            ],
+        )
         .context("log database access")?;
 
         Ok(())
@@ -338,9 +367,10 @@ impl DatabaseSecurityManager {
         client_ip: &str,
     ) -> Result<()> {
         let violation_id = format!("violation-{}-{}", crate::graph::common::now_ns(), user_id);
-        
-        let mut stmt = conn.prepare(
-            "CREATE (svl:SecurityViolationLog { \
+
+        let mut stmt = conn
+            .prepare(
+                "CREATE (svl:SecurityViolationLog { \
                 id: $violation_id, \
                 timestamp_ns: $timestamp_ns, \
                 user_id: $user_id, \
@@ -349,17 +379,21 @@ impl DatabaseSecurityManager {
                 details: $details, \
                 client_ip: $client_ip, \
                 resolved: false \
-            })"
-        ).context("prepare log security violation")?;
-        conn.execute(&mut stmt, vec![
-            ("violation_id", Value::String(violation_id)),
-            ("timestamp_ns", Value::Int64(crate::graph::common::now_ns())),
-            ("user_id", Value::String(user_id.to_string())),
-            ("violation_type", Value::String(violation_type.to_string())),
-            ("severity", Value::String(severity.to_string())),
-            ("details", Value::String(details.to_string())),
-            ("client_ip", Value::String(client_ip.to_string())),
-        ])
+            })",
+            )
+            .context("prepare log security violation")?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("violation_id", Value::String(violation_id)),
+                ("timestamp_ns", Value::Int64(crate::graph::common::now_ns())),
+                ("user_id", Value::String(user_id.to_string())),
+                ("violation_type", Value::String(violation_type.to_string())),
+                ("severity", Value::String(severity.to_string())),
+                ("details", Value::String(details.to_string())),
+                ("client_ip", Value::String(client_ip.to_string())),
+            ],
+        )
         .context("log security violation")?;
 
         // Also log to memory for immediate alerts
@@ -370,7 +404,10 @@ impl DatabaseSecurityManager {
             severity: severity.to_string(),
         })?;
 
-        warn!("Security violation logged: {} - {}", violation_type, details);
+        warn!(
+            "Security violation logged: {} - {}",
+            violation_type, details
+        );
         Ok(())
     }
 
@@ -386,18 +423,24 @@ impl DatabaseSecurityManager {
             return Ok(true);
         }
 
-        let mut stmt = conn.prepare(
-            "MATCH (u:UserContent {username: $user_id}) \
+        let mut stmt = conn
+            .prepare(
+                "MATCH (u:UserContent {username: $user_id}) \
              -[:HAS_ROLE]->(ura:UserRoleAssignment) \
              -[:ASSIGNED_TO]->(dr:DatabaseRole) \
              WHERE ura.expires_at_ns IS NULL OR ura.expires_at_ns > $now_ns \
-             RETURN dr.permissions"
-        ).context("prepare check user permissions")?;
-        let rows = conn.execute(&mut stmt, vec![
-            ("user_id", Value::String(user_id.to_string())),
-            ("now_ns", Value::Int64(crate::graph::common::now_ns())),
-        ])
-        .context("check user permissions")?;
+             RETURN dr.permissions",
+            )
+            .context("prepare check user permissions")?;
+        let rows = conn
+            .execute(
+                &mut stmt,
+                vec![
+                    ("user_id", Value::String(user_id.to_string())),
+                    ("now_ns", Value::Int64(crate::graph::common::now_ns())),
+                ],
+            )
+            .context("check user permissions")?;
 
         for row in rows {
             let permissions = crate::graph::common::read_str(&row[0]);
@@ -416,8 +459,16 @@ impl DatabaseSecurityManager {
         }
 
         let sensitive_fields = vec![
-            "password", "api_key", "secret", "token", "private_key",
-            "credit_card", "ssn", "social_security", "phone", "email"
+            "password",
+            "api_key",
+            "secret",
+            "token",
+            "private_key",
+            "credit_card",
+            "ssn",
+            "social_security",
+            "phone",
+            "email",
         ];
 
         let field_lower = field_name.to_lowercase();
@@ -435,23 +486,24 @@ impl DatabaseSecurityManager {
         if value.len() <= 4 {
             "*".repeat(value.len())
         } else {
-            format!("{}***{}", &value[..2], &value[value.len()-2..])
+            format!("{}***{}", &value[..2], &value[value.len() - 2..])
         }
     }
 
     /// Log security event to memory
     fn log_security_event(&self, event: DatabaseSecurityEvent) -> Result<()> {
-        let mut log = self.audit_log.lock().map_err(|e| {
-            anyhow::anyhow!("Failed to acquire audit log lock: {}", e)
-        })?;
+        let mut log = self
+            .audit_log
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire audit log lock: {}", e))?;
         log.push(event);
-        
+
         // Keep only recent events (last 1000)
         let len = log.len();
         if len > 1000 {
             log.drain(0..len - 1000);
         }
-        
+
         Ok(())
     }
 
@@ -461,47 +513,53 @@ impl DatabaseSecurityManager {
             Ok(log) => log,
             Err(_) => return Vec::new(),
         };
-        log.iter()
-            .rev()
-            .take(limit)
-            .cloned()
-            .collect()
+        log.iter().rev().take(limit).cloned().collect()
     }
 
     /// Clean up old audit logs
     pub fn cleanup_old_logs(&self, conn: &Connection<'_>) -> Result<()> {
-        let cutoff_ns = crate::graph::common::now_ns() - (self.config.retention_days as i64 * 24 * 60 * 60 * 1_000_000_000);
-        
+        let cutoff_ns = crate::graph::common::now_ns()
+            - (self.config.retention_days as i64 * 24 * 60 * 60 * 1_000_000_000);
+
         // Clean old database audit logs
-        let mut stmt = conn.prepare(
-            "MATCH (dal:DatabaseAuditLog) \
+        let mut stmt = conn
+            .prepare(
+                "MATCH (dal:DatabaseAuditLog) \
              WHERE dal.timestamp_ns < $cutoff_ns \
-             DELETE dal"
-        ).context("prepare cleanup old database audit logs")?;
+             DELETE dal",
+            )
+            .context("prepare cleanup old database audit logs")?;
         conn.execute(&mut stmt, vec![("cutoff_ns", Value::Int64(cutoff_ns))])
-        .context("cleanup old database audit logs")?;
+            .context("cleanup old database audit logs")?;
 
         // Clean old security violation logs
-        let mut stmt = conn.prepare(
-            "MATCH (svl:SecurityViolationLog) \
+        let mut stmt = conn
+            .prepare(
+                "MATCH (svl:SecurityViolationLog) \
              WHERE svl.timestamp_ns < $cutoff_ns \
-             DELETE svl"
-        ).context("prepare cleanup old security violation logs")?;
+             DELETE svl",
+            )
+            .context("prepare cleanup old security violation logs")?;
         conn.execute(&mut stmt, vec![("cutoff_ns", Value::Int64(cutoff_ns))])
-        .context("cleanup old security violation logs")?;
+            .context("cleanup old security violation logs")?;
 
-        info!("Cleaned up audit logs older than {} days", self.config.retention_days);
+        info!(
+            "Cleaned up audit logs older than {} days",
+            self.config.retention_days
+        );
         Ok(())
     }
 }
 
 /// Global database security manager instance
-static DB_SECURITY_MANAGER: std::sync::OnceLock<std::sync::Arc<DatabaseSecurityManager>> = std::sync::OnceLock::new();
+static DB_SECURITY_MANAGER: std::sync::OnceLock<std::sync::Arc<DatabaseSecurityManager>> =
+    std::sync::OnceLock::new();
 
 /// Initialize global database security manager
 pub fn initialize_database_security(config: DatabaseSecurityConfig) -> Result<()> {
     let manager = Arc::new(DatabaseSecurityManager::new(config));
-    DB_SECURITY_MANAGER.set(manager.clone())
+    DB_SECURITY_MANAGER
+        .set(manager.clone())
         .map_err(|_| anyhow::anyhow!("Database security manager already initialized"))?;
     Ok(())
 }

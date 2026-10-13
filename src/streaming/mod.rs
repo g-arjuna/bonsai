@@ -283,7 +283,17 @@ fn role_supports_bgp_monitoring(role: &str) -> bool {
 fn role_supports_te_topology(role: &str) -> bool {
     matches!(
         role,
-        "leaf" | "spine" | "super-spine" | "superspine" | "border" | "edge" | "pe" | "p" | "rr" | "core" | "router"
+        "leaf"
+            | "spine"
+            | "super-spine"
+            | "superspine"
+            | "border"
+            | "edge"
+            | "pe"
+            | "p"
+            | "rr"
+            | "core"
+            | "router"
     )
 }
 

@@ -1,0 +1,34 @@
+{
+  "review_date": "2026-10-12",
+  "timezone": "Asia/Kolkata",
+  "bonsai_sha": "f42dcfa3635f9d43ae3e1f5b9891fd5c184d3ab7",
+  "rustybmp_integration_sha": "f330febcca2f2870d4dd29526057385abc4f308a",
+  "routing_crate_tests": {
+    "passed": 132,
+    "failed": 0,
+    "ignored": 2
+  },
+  "existing_selected_workflows": {
+    "passed": 12,
+    "failed": 0
+  },
+  "python_selected_regressions": {
+    "passed": 10,
+    "failed": 0
+  },
+  "new_recovery_probes": {
+    "passed": 0,
+    "failed": 4,
+    "exit": 101,
+    "scope": "deterministic in-process crash-window and accepted parsed-batch probes, not live routers"
+  },
+  "format_exit": 1,
+  "cloud_ci_checked": false,
+  "live_lab_started": false,
+  "implementation_files_changed": false,
+  "review_probe_removed_from_tests_directory": true,
+  "rbmp_core_clippy_exit": 101,
+  "rbmp_core_clippy_diagnostics": 24,
+  "full_workspace_clippy_run": false,
+  "missing_existing_document_links": 3
+}

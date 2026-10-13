@@ -272,8 +272,16 @@ pub struct QualityCoverage {
 
 impl QualityCoverage {
     fn new(total: i64, covered: i64) -> Self {
-        let pct = if total == 0 { 100.0 } else { (covered as f64 / total as f64 * 100.0 * 10.0).round() / 10.0 };
-        Self { total, covered, pct }
+        let pct = if total == 0 {
+            100.0
+        } else {
+            (covered as f64 / total as f64 * 100.0 * 10.0).round() / 10.0
+        };
+        Self {
+            total,
+            covered,
+            pct,
+        }
     }
 }
 
@@ -479,9 +487,7 @@ pub fn graph_quality(conn: &Connection<'_>) -> Result<GraphQuality> {
         .collect();
 
     let bgp_set: std::collections::HashSet<String> = conn
-        .query(
-            "MATCH (d:Device)-[:PEERS_WITH]->(:BgpNeighbor) RETURN DISTINCT d.address",
-        )
+        .query("MATCH (d:Device)-[:PEERS_WITH]->(:BgpNeighbor) RETURN DISTINCT d.address")
         .context("quality: bgp_set")?
         .map(|r| read_str(&r[0]))
         .collect();
@@ -495,9 +501,15 @@ pub fn graph_quality(conn: &Connection<'_>) -> Result<GraphQuality> {
     let mut weak_devices: Vec<WeakDevice> = Vec::new();
     for (addr, hostname) in &all_devs {
         let mut missing = Vec::new();
-        if !gnmi_set.contains(addr.as_str()) { missing.push("gnmi".to_string()); }
-        if !syslog_set.contains(addr.as_str()) { missing.push("syslog".to_string()); }
-        if !bgp_set.contains(addr.as_str()) { missing.push("bgp".to_string()); }
+        if !gnmi_set.contains(addr.as_str()) {
+            missing.push("gnmi".to_string());
+        }
+        if !syslog_set.contains(addr.as_str()) {
+            missing.push("syslog".to_string());
+        }
+        if !bgp_set.contains(addr.as_str()) {
+            missing.push("bgp".to_string());
+        }
         if !missing.is_empty() {
             weak_devices.push(WeakDevice {
                 address: addr.clone(),
@@ -506,7 +518,12 @@ pub fn graph_quality(conn: &Connection<'_>) -> Result<GraphQuality> {
             });
         }
     }
-    weak_devices.sort_by(|a, b| b.missing.len().cmp(&a.missing.len()).then(a.address.cmp(&b.address)));
+    weak_devices.sort_by(|a, b| {
+        b.missing
+            .len()
+            .cmp(&a.missing.len())
+            .then(a.address.cmp(&b.address))
+    });
 
     // ── Coverage structs ───────────────────────────────────────────────────
     let gnmi_coverage = QualityCoverage::new(total_devices, gnmi_active);
@@ -519,13 +536,13 @@ pub fn graph_quality(conn: &Connection<'_>) -> Result<GraphQuality> {
 
     // ── Overall score (weighted average of key dimensions) ────────────────
     // Weights: gNMI 30, syslog 20, interface counters 20, topology 15, BGP 15
-    let overall_score = (
-        gnmi_coverage.pct * 0.30
+    let overall_score = (gnmi_coverage.pct * 0.30
         + syslog_coverage.pct * 0.20
         + interface_counter_coverage.pct * 0.20
         + topology_link_coverage.pct * 0.15
-        + bgp_mapped_coverage.pct * 0.15
-    ).min(100.0).max(0.0);
+        + bgp_mapped_coverage.pct * 0.15)
+        .min(100.0)
+        .max(0.0);
     let overall_score = (overall_score * 10.0).round() / 10.0;
 
     Ok(GraphQuality {
@@ -679,7 +696,7 @@ pub fn compute_interface_utilization_baseline(
     lookback_hours: i32,
 ) -> Result<Vec<PerformanceBaselineRow>> {
     let _cutoff_ns = now_ns() - (lookback_hours as i64 * 3600 * 1_000_000_000);
-    
+
     let rows = conn
         .query(
             "MATCH (d:Device {address: $device_address})-[:HAS_INTERFACE]->(i:Interface) \
@@ -691,36 +708,42 @@ pub fn compute_interface_utilization_baseline(
 
     // Group by interface and compute statistics
     let mut interface_data: HashMap<String, Vec<(f64, i64)>> = HashMap::new();
-    
+
     for row in rows {
         let if_name = read_str(&row[0]);
         let in_octets = read_i64(&row[1]) as f64;
         let out_octets = read_i64(&row[2]) as f64;
         let speed = read_i64(&row[3]) as f64;
         let timestamp = read_i64(&row[4]);
-        
+
         if speed > 0.0 {
             let utilization = ((in_octets + out_octets) * 8.0 / speed) * 100.0; // Percentage
-            interface_data.entry(if_name).or_insert_with(Vec::new).push((utilization, timestamp));
+            interface_data
+                .entry(if_name)
+                .or_insert_with(Vec::new)
+                .push((utilization, timestamp));
         }
     }
-    
+
     let mut baselines = Vec::new();
-    
+
     for (if_name, samples) in interface_data {
         if samples.len() < 10 {
             continue; // Need sufficient samples for meaningful baseline
         }
-        
+
         let values: Vec<f64> = samples.iter().map(|(v, _)| *v).collect();
         let mean = values.iter().sum::<f64>() / values.len() as f64;
         let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
         let stddev = variance.sqrt();
         let min_val = values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
         let max_val = values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-        
+
         let baseline = PerformanceBaselineRow {
-            id: format!("baseline-{}-{}-{}", device_address, "interface_utilization", if_name),
+            id: format!(
+                "baseline-{}-{}-{}",
+                device_address, "interface_utilization", if_name
+            ),
             device_address: device_address.to_string(),
             metric_type: "interface_utilization".to_string(),
             metric_key: if_name,
@@ -733,10 +756,10 @@ pub fn compute_interface_utilization_baseline(
             lookback_hours,
             confidence_level: 0.95,
         };
-        
+
         baselines.push(baseline);
     }
-    
+
     Ok(baselines)
 }
 
@@ -761,22 +784,28 @@ pub fn store_performance_baseline(
                  pb.confidence_level = $confidence_level",
         )
         .context("prepare store performance baseline")?;
-    conn.execute(&mut stmt, vec![
-        ("id", Value::String(baseline.id.clone())),
-        ("device_address", Value::String(baseline.device_address.clone())),
-        ("metric_type", Value::String(baseline.metric_type.clone())),
-        ("metric_key", Value::String(baseline.metric_key.clone())),
-        ("baseline_mean", Value::Double(baseline.baseline_mean)),
-        ("baseline_stddev", Value::Double(baseline.baseline_stddev)),
-        ("baseline_min", Value::Double(baseline.baseline_min)),
-        ("baseline_max", Value::Double(baseline.baseline_max)),
-        ("sample_count", Value::Int64(baseline.sample_count)),
-        ("computed_at_ns", Value::Int64(baseline.computed_at_ns)),
-        ("lookback_hours", Value::Int32(baseline.lookback_hours)),
-        ("confidence_level", Value::Double(baseline.confidence_level)),
-    ])
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(baseline.id.clone())),
+            (
+                "device_address",
+                Value::String(baseline.device_address.clone()),
+            ),
+            ("metric_type", Value::String(baseline.metric_type.clone())),
+            ("metric_key", Value::String(baseline.metric_key.clone())),
+            ("baseline_mean", Value::Double(baseline.baseline_mean)),
+            ("baseline_stddev", Value::Double(baseline.baseline_stddev)),
+            ("baseline_min", Value::Double(baseline.baseline_min)),
+            ("baseline_max", Value::Double(baseline.baseline_max)),
+            ("sample_count", Value::Int64(baseline.sample_count)),
+            ("computed_at_ns", Value::Int64(baseline.computed_at_ns)),
+            ("lookback_hours", Value::Int32(baseline.lookback_hours)),
+            ("confidence_level", Value::Double(baseline.confidence_level)),
+        ],
+    )
     .context("store performance baseline")?;
-    
+
     // Create relationship to device
     let mut stmt = conn
         .prepare(
@@ -784,13 +813,19 @@ pub fn store_performance_baseline(
              MERGE (d)-[:HAS_BASELINE {updated_at: $updated_at}]->(pb)",
         )
         .context("prepare baseline relationship")?;
-    conn.execute(&mut stmt, vec![
-        ("device_address", Value::String(baseline.device_address.clone())),
-        ("id", Value::String(baseline.id.clone())),
-        ("updated_at", Value::Int64(now_ns())),
-    ])
+    conn.execute(
+        &mut stmt,
+        vec![
+            (
+                "device_address",
+                Value::String(baseline.device_address.clone()),
+            ),
+            ("id", Value::String(baseline.id.clone())),
+            ("updated_at", Value::Int64(now_ns())),
+        ],
+    )
     .context("create baseline relationship")?;
-    
+
     Ok(())
 }
 
@@ -819,7 +854,7 @@ pub fn check_baseline_drift(
             ],
         )
         .context("baseline drift check query")?;
-    
+
     if let Some(row) = rows.next() {
         let baseline_mean = read_f64(&row[0]);
         let baseline_stddev = read_f64(&row[1]);
