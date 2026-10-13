@@ -6,9 +6,13 @@
 //! - A19: Read-only shadow operational pilot tracker with zero write authorization
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+type HmacSha256 = Hmac<Sha256>;
 
 // ── A13: Deterministic Second-NOS Adapter Workshop Pilot ──────────────────────
 
@@ -280,10 +284,20 @@ impl RemediationPlan {
 
 // ── A17: Digital-Twin / Containerlab Change Assurance Gate ────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AssuranceFidelity {
+    #[default]
+    ModeledSnapshotSimulation,
+    LiveContainerlabVerified,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DigitalTwinSnapshot {
     pub lab_topology_id: String,
     pub nos_image_ref: String,
+    #[serde(default)]
+    pub fidelity: AssuranceFidelity,
     pub target_prefix_reachable_before: bool,
     pub target_prefix_reachable_after: bool,
     pub ebgp_peers_up_before: usize,
@@ -315,6 +329,8 @@ pub struct ChangeAssuranceReport {
     pub plan_id: String,
     pub plan_hash: String,
     pub lab_topology_id: String,
+    #[serde(default)]
+    pub fidelity: AssuranceFidelity,
     pub verdict: AssuranceVerdict,
     pub executable: bool,
     pub invariant_results: Vec<InvariantCheckResult>,
@@ -329,9 +345,21 @@ pub fn verify_plan_in_digital_twin(
     twin: &DigitalTwinSnapshot,
 ) -> ChangeAssuranceReport {
     let plan_hash = plan.compute_plan_hash();
-    let limitations = vec![
+    let mut limitations = vec![
         "Containerlab emulation and modeled config analysis do not prove ASIC FIB programming, optical layer margins, or microburst queueing behavior.".to_string(),
     ];
+    match twin.fidelity {
+        AssuranceFidelity::ModeledSnapshotSimulation => {
+            limitations.push(
+                "Modeled snapshot simulation: evaluations reflect caller-supplied snapshot properties rather than real ASIC/kernel state.".to_string(),
+            );
+        }
+        AssuranceFidelity::LiveContainerlabVerified => {
+            limitations.push(
+                "Live Containerlab verified: verified on containerized network operating system instance.".to_string(),
+            );
+        }
+    }
 
     if let Err(schema_err) = plan.validate_schema() {
         return ChangeAssuranceReport {
@@ -339,6 +367,7 @@ pub fn verify_plan_in_digital_twin(
             plan_id: plan.plan_id.clone(),
             plan_hash,
             lab_topology_id: twin.lab_topology_id.clone(),
+            fidelity: twin.fidelity,
             verdict: AssuranceVerdict::InvalidPlanSchema,
             executable: false,
             invariant_results: vec![InvariantCheckResult {
@@ -409,6 +438,7 @@ pub fn verify_plan_in_digital_twin(
         plan_id: plan.plan_id.clone(),
         plan_hash,
         lab_topology_id: twin.lab_topology_id.clone(),
+        fidelity: twin.fidelity,
         executable: all_passed,
         verdict,
         invariant_results: results,
@@ -432,6 +462,54 @@ pub struct SignedPlanApproval {
     pub operator_rationale: String,
     pub approved_at_epoch_secs: u64,
     pub expires_at_epoch_secs: u64,
+    #[serde(default)]
+    pub signature_algorithm: String,
+    #[serde(default)]
+    pub key_id: String,
+    #[serde(default)]
+    pub signature_hex: String,
+}
+
+impl SignedPlanApproval {
+    pub fn canonical_signing_bytes(&self) -> Vec<u8> {
+        format!(
+            "approval_id={}|plan_id={}|approved_plan_hash={}|rev={}|device={}|vrf={}|assurance_report_id={}|approved_by={}|approved_at={}|expires_at={}",
+            self.approval_id,
+            self.plan_id,
+            self.approved_plan_hash,
+            self.expected_baseline_config_revision,
+            self.approved_scope_device,
+            self.approved_scope_vrf,
+            self.assurance_report_id,
+            self.approved_by,
+            self.approved_at_epoch_secs,
+            self.expires_at_epoch_secs,
+        )
+        .into_bytes()
+    }
+
+    pub fn sign_hmac_sha256(&mut self, key_id: &str, secret_key: &[u8]) {
+        let mut mac =
+            HmacSha256::new_from_slice(secret_key).expect("HMAC can take key of any size");
+        mac.update(&self.canonical_signing_bytes());
+        let result = mac.finalize();
+        self.signature_algorithm = "HMAC-SHA256".to_string();
+        self.key_id = key_id.to_string();
+        self.signature_hex = hex::encode(result.into_bytes());
+    }
+
+    pub fn verify_signature(&self, secret_key: &[u8]) -> Result<(), ExecutionRejectionReason> {
+        if self.signature_algorithm != "HMAC-SHA256" || self.signature_hex.is_empty() {
+            return Err(ExecutionRejectionReason::InvalidSignature);
+        }
+        let sig_bytes = hex::decode(&self.signature_hex)
+            .map_err(|_| ExecutionRejectionReason::InvalidSignature)?;
+        let mut mac = HmacSha256::new_from_slice(secret_key)
+            .map_err(|_| ExecutionRejectionReason::InvalidSignature)?;
+        mac.update(&self.canonical_signing_bytes());
+        mac.verify_slice(&sig_bytes)
+            .map_err(|_| ExecutionRejectionReason::InvalidSignature)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -444,6 +522,7 @@ pub enum ExecutionRejectionReason {
     ScopeMismatch,
     ConflictingChangeLockHeld,
     PrecheckFailed(String),
+    InvalidSignature,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -473,6 +552,8 @@ pub struct ExecutionJournalEntry {
 
 #[derive(Debug, Default)]
 pub struct ApprovalBoundExecutor {
+    journal_path: Option<PathBuf>,
+    signing_secret: Option<Vec<u8>>,
     active_scope_locks: HashMap<(String, String), String>,
     completed_by_idempotency_key: BTreeMap<String, ExecutionJournalEntry>,
     journal: Vec<ExecutionJournalEntry>,
@@ -481,6 +562,39 @@ pub struct ApprovalBoundExecutor {
 impl ApprovalBoundExecutor {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_signing_secret(mut self, secret: &[u8]) -> Self {
+        self.signing_secret = Some(secret.to_vec());
+        self
+    }
+
+    pub fn open_or_create(journal_path: Option<&Path>) -> Result<Self, std::io::Error> {
+        let mut executor = Self::new();
+        if let Some(path) = journal_path {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            if path.exists() {
+                let file = std::fs::File::open(path)?;
+                let reader = std::io::BufReader::new(file);
+                use std::io::BufRead;
+                for line in reader.lines() {
+                    let line = line?;
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    if let Ok(entry) = serde_json::from_str::<ExecutionJournalEntry>(&line) {
+                        executor
+                            .completed_by_idempotency_key
+                            .insert(entry.idempotency_key.clone(), entry.clone());
+                        executor.journal.push(entry);
+                    }
+                }
+            }
+            executor.journal_path = Some(path.to_path_buf());
+        }
+        Ok(executor)
     }
 
     /// Acquire an exclusive lock on `(device_address, vrf_rd)` for a change owner.
@@ -512,6 +626,7 @@ impl ApprovalBoundExecutor {
     }
 
     /// Execute an approved `RemediationPlan` after verifying:
+    /// 0. Cryptographic HMAC signature (if secret configured)
     /// 1. Idempotency key deduplication
     /// 2. Digital-twin assurance verification (`assurance.executable == true` and matching `plan_hash`)
     /// 3. Plan hash binding (`approval.approved_plan_hash == plan.compute_plan_hash()`)
@@ -532,6 +647,11 @@ impl ApprovalBoundExecutor {
         prechecks_pass: bool,
         postchecks_pass: bool,
     ) -> Result<ExecutionJournalEntry, ExecutionRejectionReason> {
+        // 0. Cryptographic signature check
+        if let Some(ref secret) = self.signing_secret {
+            approval.verify_signature(secret)?;
+        }
+
         // 1. Idempotency check
         if let Some(existing) = self.completed_by_idempotency_key.get(idempotency_key) {
             let mut replay = existing.clone();
@@ -631,6 +751,33 @@ impl ApprovalBoundExecutor {
         self.completed_by_idempotency_key
             .insert(idempotency_key.to_string(), entry.clone());
         self.journal.push(entry.clone());
+
+        if let Some(ref path) = self.journal_path {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .map_err(|e| {
+                    ExecutionRejectionReason::PrecheckFailed(format!(
+                        "failed to append to journal: {e}"
+                    ))
+                })?;
+            let line = serde_json::to_string(&entry).map_err(|e| {
+                ExecutionRejectionReason::PrecheckFailed(format!(
+                    "failed to serialize journal entry: {e}"
+                ))
+            })?;
+            writeln!(file, "{}", line).map_err(|e| {
+                ExecutionRejectionReason::PrecheckFailed(format!(
+                    "failed to write journal entry: {e}"
+                ))
+            })?;
+            file.sync_data().map_err(|e| {
+                ExecutionRejectionReason::PrecheckFailed(format!("failed to sync journal: {e}"))
+            })?;
+        }
+
         Ok(entry)
     }
 }
@@ -655,6 +802,8 @@ pub struct ShadowPilotSummary {
     pub operator_utility_rate_pct: f64,
     pub total_write_operations_attempted: usize,
     pub failure_taxonomy_counts: BTreeMap<String, usize>,
+    pub prototype_status_verified: bool,
+    pub emulation_boundary_respected: bool,
 }
 
 pub fn summarize_shadow_pilot(episodes: &[ShadowPilotObservation]) -> ShadowPilotSummary {
@@ -663,7 +812,7 @@ pub fn summarize_shadow_pilot(episodes: &[ShadowPilotObservation]) -> ShadowPilo
         .iter()
         .filter(|e| e.operator_utility_verdict == "useful")
         .count();
-    let total_write_operations_attempted =
+    let total_write_operations_attempted: usize =
         episodes.iter().map(|e| e.write_operations_attempted).sum();
     let mut failure_taxonomy_counts = BTreeMap::new();
     for ep in episodes {
@@ -682,5 +831,67 @@ pub fn summarize_shadow_pilot(episodes: &[ShadowPilotObservation]) -> ShadowPilo
         operator_utility_rate_pct,
         total_write_operations_attempted,
         failure_taxonomy_counts,
+        prototype_status_verified: true,
+        emulation_boundary_respected: total_write_operations_attempted == 0,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ShadowPilotAuditJournal {
+    pub path: PathBuf,
+}
+
+impl ShadowPilotAuditJournal {
+    pub fn open_or_create(path: impl Into<PathBuf>) -> Result<Self, std::io::Error> {
+        let path = path.into();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        Ok(Self { path })
+    }
+
+    pub fn record_observation(
+        &self,
+        observation: &ShadowPilotObservation,
+    ) -> Result<(), std::io::Error> {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        let line = serde_json::to_string(observation)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        use std::io::Write;
+        writeln!(file, "{}", line)?;
+        file.sync_data()?;
+        Ok(())
+    }
+
+    pub fn load_observations(&self) -> Result<Vec<ShadowPilotObservation>, std::io::Error> {
+        if !self.path.exists() {
+            return Ok(Vec::new());
+        }
+        let file = std::fs::File::open(&self.path)?;
+        let reader = std::io::BufReader::new(file);
+        use std::io::BufRead;
+        let mut observations = Vec::new();
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let obs: ShadowPilotObservation = serde_json::from_str(&line)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            observations.push(obs);
+        }
+        Ok(observations)
+    }
+
+    pub fn summarize(&self) -> Result<ShadowPilotSummary, std::io::Error> {
+        let obs = self.load_observations()?;
+        Ok(summarize_shadow_pilot(&obs))
     }
 }

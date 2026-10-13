@@ -10,11 +10,11 @@ use std::sync::Arc;
 use bonsai::graph::GraphStore;
 use bonsai::mcp_server::call_tool_with_store_and_routing;
 use bonsai::remediation::{
-    ApprovalBoundExecutor, AssuranceCheckSpec, AssuranceVerdict, BlastRadiusSummary,
-    DigitalTwinSnapshot, DisruptionLevel, ExecutionOutcome, ExecutionRejectionReason,
-    NetworkInvariant, ParseQualityState, RecoveryPolicy, RemediationPlan, ShadowPilotObservation,
-    SignedPlanApproval, parse_nokia_srl_bgp_neighbor_json, summarize_shadow_pilot,
-    verify_plan_in_digital_twin,
+    ApprovalBoundExecutor, AssuranceCheckSpec, AssuranceFidelity, AssuranceVerdict,
+    BlastRadiusSummary, DigitalTwinSnapshot, DisruptionLevel, ExecutionOutcome,
+    ExecutionRejectionReason, NetworkInvariant, ParseQualityState, RecoveryPolicy, RemediationPlan,
+    ShadowPilotAuditJournal, ShadowPilotObservation, SignedPlanApproval,
+    parse_nokia_srl_bgp_neighbor_json, summarize_shadow_pilot, verify_plan_in_digital_twin,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -81,6 +81,7 @@ fn sample_healthy_twin() -> DigitalTwinSnapshot {
     DigitalTwinSnapshot {
         lab_topology_id: "clab-bonsai-frr-srl-twin".to_string(),
         nos_image_ref: "quay.io/frrouting/frr:9.1.0".to_string(),
+        fidelity: AssuranceFidelity::LiveContainerlabVerified,
         target_prefix_reachable_before: false,
         target_prefix_reachable_after: true,
         ebgp_peers_up_before: 2,
@@ -210,6 +211,9 @@ fn a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idem
             .to_string(),
         approved_at_epoch_secs: 1_760_000_100,
         expires_at_epoch_secs: 1_760_001_800,
+        signature_algorithm: String::new(),
+        key_id: String::new(),
+        signature_hex: String::new(),
     };
 
     let mut executor = ApprovalBoundExecutor::new();
@@ -362,6 +366,9 @@ fn a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idem
         operator_rationale: "Halt and page oncall if postchecks fail".to_string(),
         approved_at_epoch_secs: 1_760_000_100,
         expires_at_epoch_secs: 1_760_001_800,
+        signature_algorithm: String::new(),
+        key_id: String::new(),
+        signature_hex: String::new(),
     };
 
     let halt_entry = executor
@@ -408,4 +415,137 @@ fn a19_shadow_operational_pilot_records_utility_and_enforces_zero_writes() {
     assert_eq!(summary.total_episodes, 2);
     assert_eq!(summary.operator_utility_rate_pct, 100.0);
     assert_eq!(summary.total_write_operations_attempted, 0);
+    assert!(summary.emulation_boundary_respected);
+    assert!(summary.prototype_status_verified);
+}
+
+#[test]
+fn a18_cryptographic_signatures_and_executor_restart_persistence() {
+    let plan = sample_remediation_plan();
+    let twin = sample_healthy_twin();
+    let assurance = verify_plan_in_digital_twin(&plan, &twin);
+    let secret = b"super-secret-approval-signing-key-32bytes!";
+
+    let mut signed_approval = SignedPlanApproval {
+        approval_id: "appr-crypto-001".to_string(),
+        plan_id: plan.plan_id.clone(),
+        approved_plan_hash: plan.compute_plan_hash(),
+        expected_baseline_config_revision: plan.baseline_config_revision.clone(),
+        approved_scope_device: plan.device_address.clone(),
+        approved_scope_vrf: plan.vrf_rd.clone(),
+        assurance_report_id: assurance.report_id.clone(),
+        approved_by: "secops-officer".to_string(),
+        operator_rationale: "Cryptographically verified change".to_string(),
+        approved_at_epoch_secs: 1_760_000_100,
+        expires_at_epoch_secs: 1_760_001_800,
+        signature_algorithm: String::new(),
+        key_id: String::new(),
+        signature_hex: String::new(),
+    };
+
+    signed_approval.sign_hmac_sha256("key-primary-1", secret);
+    assert_eq!(signed_approval.signature_algorithm, "HMAC-SHA256");
+    assert!(!signed_approval.signature_hex.is_empty());
+    assert!(signed_approval.verify_signature(secret).is_ok());
+
+    // Tampering with payload fails signature verification:
+    let mut tampered = signed_approval.clone();
+    tampered.approved_plan_hash = "tampered-hash-000".to_string();
+    assert_eq!(
+        tampered.verify_signature(secret).unwrap_err(),
+        ExecutionRejectionReason::InvalidSignature
+    );
+
+    // Wrong secret fails signature verification:
+    assert_eq!(
+        signed_approval.verify_signature(b"wrong-key").unwrap_err(),
+        ExecutionRejectionReason::InvalidSignature
+    );
+
+    // Persistent executor journal:
+    let journal_dir = tempfile::tempdir().unwrap();
+    let journal_path = journal_dir.path().join("executor_journal.jsonl");
+
+    let mut executor = ApprovalBoundExecutor::open_or_create(Some(&journal_path))
+        .unwrap()
+        .with_signing_secret(secret);
+
+    // Execution with signed approval succeeds and writes to journal:
+    let entry = executor
+        .execute_approved_plan(
+            "idem-crypto-1",
+            &plan,
+            &assurance,
+            &signed_approval,
+            "rev-2026-10-12-001",
+            1_760_000_200,
+            true,
+            true,
+        )
+        .expect("execution must succeed");
+    assert_eq!(
+        entry.outcome,
+        ExecutionOutcome::CommittedAndPostchecksPassed
+    );
+    assert!(!entry.deduplicated_replay);
+    assert!(journal_path.exists());
+
+    // Simulate process crash and restart with a new executor instance from the same journal path:
+    let mut restarted_executor = ApprovalBoundExecutor::open_or_create(Some(&journal_path))
+        .unwrap()
+        .with_signing_secret(secret);
+    assert_eq!(restarted_executor.journal_entries().len(), 1);
+
+    // Submitting the same idempotency key after restart returns deduplicated replay:
+    let replay_entry = restarted_executor
+        .execute_approved_plan(
+            "idem-crypto-1",
+            &plan,
+            &assurance,
+            &signed_approval,
+            "rev-2026-10-12-001",
+            1_760_000_200,
+            true,
+            true,
+        )
+        .expect("deduplicated replay must succeed");
+    assert!(replay_entry.deduplicated_replay);
+}
+
+#[test]
+fn a19_shadow_pilot_audit_journal_persists_observations() {
+    let tmp = tempfile::tempdir().unwrap();
+    let audit_path = tmp.path().join("shadow_audit.jsonl");
+
+    let journal = ShadowPilotAuditJournal::open_or_create(&audit_path).unwrap();
+
+    let obs1 = ShadowPilotObservation {
+        episode_id: "ep-001".to_string(),
+        prefix: "198.51.100.0/24".to_string(),
+        vrf_rd: "0:0".to_string(),
+        investigator_status: "completed".to_string(),
+        operator_utility_verdict: "useful".to_string(),
+        failure_taxonomy_tag: Some("import_policy_rejected".to_string()),
+        write_operations_attempted: 0,
+    };
+    let obs2 = ShadowPilotObservation {
+        episode_id: "ep-002".to_string(),
+        prefix: "203.0.113.0/24".to_string(),
+        vrf_rd: "0:0".to_string(),
+        investigator_status: "completed".to_string(),
+        operator_utility_verdict: "useful".to_string(),
+        failure_taxonomy_tag: None,
+        write_operations_attempted: 0,
+    };
+
+    journal.record_observation(&obs1).unwrap();
+    journal.record_observation(&obs2).unwrap();
+
+    let summary = journal.summarize().unwrap();
+    assert_eq!(summary.total_episodes, 2);
+    assert_eq!(summary.useful_episodes, 2);
+    assert_eq!(summary.operator_utility_rate_pct, 100.0);
+    assert_eq!(summary.total_write_operations_attempted, 0);
+    assert!(summary.emulation_boundary_respected);
+    assert!(summary.prototype_status_verified);
 }

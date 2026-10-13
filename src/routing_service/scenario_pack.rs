@@ -123,6 +123,14 @@ pub enum CandidateInvestigatorPolicy {
     BonsaiHybridRoutingPolicy,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyExecutionMode {
+    MeasuredInProcessRunbook,
+    MeasuredHybridRoutingService,
+    SimulatedModelTraceScaffold,
+}
+
 impl CandidateInvestigatorPolicy {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -130,6 +138,16 @@ impl CandidateInvestigatorPolicy {
             Self::SmallModelSingleStep => "small_model_single_step",
             Self::StrongModelMultiStep => "strong_model_multi_step",
             Self::BonsaiHybridRoutingPolicy => "bonsai_hybrid_routing_policy",
+        }
+    }
+
+    pub fn execution_mode(&self) -> PolicyExecutionMode {
+        match self {
+            Self::DeterministicRunbook => PolicyExecutionMode::MeasuredInProcessRunbook,
+            Self::BonsaiHybridRoutingPolicy => PolicyExecutionMode::MeasuredHybridRoutingService,
+            Self::SmallModelSingleStep | Self::StrongModelMultiStep => {
+                PolicyExecutionMode::SimulatedModelTraceScaffold
+            }
         }
     }
 
@@ -178,6 +196,7 @@ pub struct ScenarioEvaluationResult {
     pub family: String,
     pub policy_id: String,
     pub lineage: InvestigatorLineageVersion,
+    pub execution_mode: PolicyExecutionMode,
     pub passed_oracle: bool,
     pub diagnosis_correct: bool,
     pub abstained_honestly: bool,
@@ -189,6 +208,7 @@ pub struct ScenarioEvaluationResult {
     pub actual_top_hypothesis: String,
     pub cost_usd: f64,
     pub latency_ms: u64,
+    pub measured_latency_ms: u64,
     pub failure_reason: Option<String>,
 }
 
@@ -196,6 +216,7 @@ pub struct ScenarioEvaluationResult {
 pub struct PolicySummaryMetrics {
     pub policy_id: String,
     pub lineage: InvestigatorLineageVersion,
+    pub execution_mode: PolicyExecutionMode,
     pub total_scenarios: usize,
     pub passed_scenarios: usize,
     pub pass_rate_pct: f64,
@@ -206,6 +227,8 @@ pub struct PolicySummaryMetrics {
     pub cost_per_correctly_resolved_case_usd: f64,
     pub p50_latency_ms: u64,
     pub p95_latency_ms: u64,
+    pub measured_p50_latency_ms: u64,
+    pub measured_p95_latency_ms: u64,
     pub failed_scenario_ids: Vec<String>,
 }
 
@@ -215,6 +238,7 @@ pub struct PolicyComparisonBenchmarkReport {
     pub seed: u64,
     pub generated_at: String,
     pub total_scenarios_in_pack: usize,
+    pub benchmark_scope_note: String,
     pub policy_summaries: Vec<PolicySummaryMetrics>,
     pub scenario_results_by_policy: Vec<ScenarioEvaluationResult>,
 }
@@ -821,6 +845,7 @@ pub async fn execute_scenario_with_policy(
     scenario: &ScenarioSpec,
     policy: CandidateInvestigatorPolicy,
 ) -> ScenarioEvaluationResult {
+    let start_instant = std::time::Instant::now();
     let input = &scenario.input;
     let oracle = &scenario.hidden_oracle;
     let lineage = policy.lineage();
@@ -842,6 +867,7 @@ pub async fn execute_scenario_with_policy(
             family: input.family.as_str().to_string(),
             policy_id: policy.as_str().to_string(),
             lineage,
+            execution_mode: policy.execution_mode(),
             passed_oracle: false,
             diagnosis_correct: false,
             abstained_honestly: true,
@@ -853,6 +879,7 @@ pub async fn execute_scenario_with_policy(
             actual_top_hypothesis: "budget_exhausted".to_string(),
             cost_usd: 0.0,
             latency_ms: 1,
+            measured_latency_ms: start_instant.elapsed().as_millis() as u64,
             failure_reason: Some(format!(
                 "policy {} required ${:.4} exceeding scenario budget ${:.4}",
                 policy.as_str(),
@@ -1003,11 +1030,14 @@ pub async fn execute_scenario_with_policy(
         ))
     };
 
+    let measured_latency_ms = start_instant.elapsed().as_millis() as u64;
+
     ScenarioEvaluationResult {
         scenario_id: input.scenario_id.clone(),
         family: input.family.as_str().to_string(),
         policy_id: policy.as_str().to_string(),
         lineage,
+        execution_mode: policy.execution_mode(),
         passed_oracle,
         diagnosis_correct,
         abstained_honestly,
@@ -1019,6 +1049,7 @@ pub async fn execute_scenario_with_policy(
         actual_top_hypothesis: actual_top_hyp,
         cost_usd: est_cost,
         latency_ms: policy.simulated_latency_ms(),
+        measured_latency_ms,
         failure_reason,
     }
 }
@@ -1091,6 +1122,15 @@ pub async fn compare_investigator_policies_on_pack(
             .copied()
             .unwrap_or(0);
 
+        let mut measured_latencies: Vec<u64> =
+            policy_runs.iter().map(|r| r.measured_latency_ms).collect();
+        measured_latencies.sort_unstable();
+        let m_p50 = measured_latencies.get(total / 2).copied().unwrap_or(0);
+        let m_p95 = measured_latencies
+            .get((total * 95 / 100).min(total.saturating_sub(1)))
+            .copied()
+            .unwrap_or(0);
+
         let failed_ids: Vec<String> = policy_runs
             .iter()
             .filter(|r| !r.passed_oracle)
@@ -1100,6 +1140,7 @@ pub async fn compare_investigator_policies_on_pack(
         summaries.push(PolicySummaryMetrics {
             policy_id: policy.as_str().to_string(),
             lineage: policy.lineage(),
+            execution_mode: policy.execution_mode(),
             total_scenarios: total,
             passed_scenarios: passed,
             pass_rate_pct: if total == 0 {
@@ -1114,6 +1155,8 @@ pub async fn compare_investigator_policies_on_pack(
             cost_per_correctly_resolved_case_usd: cost_per_resolved,
             p50_latency_ms: p50,
             p95_latency_ms: p95,
+            measured_p50_latency_ms: m_p50,
+            measured_p95_latency_ms: m_p95,
             failed_scenario_ids: failed_ids,
         });
     }
@@ -1123,6 +1166,7 @@ pub async fn compare_investigator_policies_on_pack(
         seed: pack.first().map(|s| s.seed).unwrap_or(0),
         generated_at: Utc::now().to_rfc3339(),
         total_scenarios_in_pack: pack.len(),
+        benchmark_scope_note: "Evaluates 44 scenarios across 8 fault families. DeterministicRunbook and BonsaiHybridRoutingPolicy execute measured in-process routing algorithms with recorded wall-clock latencies. SmallModelSingleStep and StrongModelMultiStep evaluate simulated policy branches and budget projections; live LLM API benchmarking requires external API provider configuration.".to_string(),
         policy_summaries: summaries,
         scenario_results_by_policy: all_results,
     }

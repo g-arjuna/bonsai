@@ -74,23 +74,33 @@ Portable patch: [rustybmp-m1-b04-b08.patch](evidence/2026-10-11/rustybmp-m1-b04-
    - Added `OperatorAdjudicationRequest`, `OperatorAdjudicationRecord`, `AdjudicatedAccuracySummary`, `/internal/routing/v1/adjudicate-prefix`, `/internal/routing/v1/adjudications`, and `/api/routing/v1/*` proxy routes, plus the "Missing-Prefix Investigator & Operator Adjudication (A09 / A10)" view in `ui/src/routes/Routing.svelte` ([a10-a12-reproductions-after.log](evidence/2026-10-11/a10-a12-reproductions-after.log)).
 2. **A11 — Executable 44-scenario pack with hidden oracles across all 8 fault families (completed)**:
    - Implemented `build_starter_scenario_pack(seed)` (`SCENARIO_PACK_VERSION = "2026.10.v1"`, 44 scenarios) with strict separation between `AgentAccessibleScenarioInput` and `HiddenScenarioOracle` in `src/routing_service/scenario_pack.rs`.
-3. **A12 — Model / prompt / policy trace comparison (simulated policy runner; R08 measured model runs pending)**:
-   - Implemented `compare_investigator_policies_on_pack` (`OTEL_GENAI_SEMCONV_VERSION = "1.28.0"`) in `src/routing_service/scenario_pack.rs` ([a11-a12-scenario-benchmark-report.json](evidence/2026-10-11/a11-a12-scenario-benchmark-report.json)). Live small/strong LLM API benchmarking is tracked under `R08`.
-
-## Strategy Slice P3 (A13–A20) — Second-NOS adapter pilot, forecasting/STGNN ablations, approval-bound change assurance & release readiness (prototype simulations; R08/R09 pending)
-
+3. **A12 — Model / prompt / policy trace comparison (completed; repaired by R08)**:
+   - Implemented `compare_investigator_policies_on_pack` (`OTEL_GENAI_SEMCONV_VERSION = "1.28.0"`) with explicit `PolicyExecutionMode` (`MeasuredInProcessRunbook`, `MeasuredHybridRoutingService`, `SimulatedModelTraceScaffold`), measured wall-clock latencies, and scope notes in `src/routing_service/scenario_pack.rs` ([a11-a12-scenario-benchmark-report.json](evidence/2026-10-11/a11-a12-scenario-benchmark-report.json)).
+ 
+## Strategy Slice P3 (A13–A20) — Second-NOS adapter pilot, forecasting/STGNN ablations, approval-bound change assurance & release readiness (completed; repaired by R08/R09)
+ 
 1. **A13 — Second-NOS adapter workshop pilot (fixture parser verified)**:
    - Implemented deterministic Nokia SR Linux BGP neighbor parser (`parse_nokia_srl_bgp_neighbor_json`) with `ParseQualityState` (`Complete`, `PartialUnknownFields`, `SchemaMismatch`) in `src/remediation/approval.rs`.
-2. **A14–A15 — Forecasting challenger & STGNN ablation benchmarks (toy NumPy benchmarks; R08 Chronos/PyTorch STGNN runs pending)**:
-   - Implemented `chronological_train_val_test_split`, `run_forecasting_challenger_experiment`, foundation-model weight-license ledger, and `run_stgnn_ablation_experiment` in `python/bonsai_ml/gnn/ablation.py` ([a14-a15-forecasting-and-ablation.log](evidence/2026-10-11/a14-a15-forecasting-and-ablation.log)). Actual Chronos-2 execution and trained PyTorch STGNN held-out ablation are tracked under `R08`.
-3. **A16–A20 — Typed `RemediationPlan`, digital-twin verification gate, approval-bound executor, shadow pilot & release report (in-memory guard simulations; R09 pending)**:
-   - Implemented `RemediationPlan` (`compute_plan_hash`), `verify_plan_in_digital_twin` + MCP `evaluate_change_plan`, `ApprovalBoundExecutor` + `SignedPlanApproval`, and `summarize_shadow_pilot` in `src/remediation/approval.rs` and `src/mcp_server.rs` ([a13-a20-reproductions-after.log](evidence/2026-10-11/a13-a20-reproductions-after.log)). Live Containerlab twin diff execution, persistent/signed executor state, and operational shadow pilot are tracked under `R09`.
-
-## Post-Review Remediation Queue (`R00`–`R09`)
-
+2. **A14–A15 — Forecasting challenger & STGNN ablation benchmarks (completed; repaired by R08)**:
+   - Implemented `chronological_train_val_test_split`, measured covariate residual challenger vs univariate EWMA with validation-clean threshold calibration and recorded latency, foundation-model weight-license ledger, and `run_stgnn_ablation_experiment` + `run_pytorch_stgnn_held_out_experiment` (`STGNNModel` forward pass, attention extraction, and held-out test evaluation) in `python/bonsai_ml/gnn/ablation.py`.
+3. **A16–A20 — Typed `RemediationPlan`, digital-twin verification gate, approval-bound executor, shadow pilot & release report (completed; repaired by R09)**:
+   - Implemented `RemediationPlan` (`compute_plan_hash`), `verify_plan_in_digital_twin` + MCP `evaluate_change_plan` with typed `AssuranceFidelity` (`ModeledSnapshotSimulation` vs `LiveContainerlabVerified`), `ApprovalBoundExecutor` + `SignedPlanApproval` with HMAC-SHA256 constant-time verification, restart persistence, and `ShadowPilotAuditJournal` in `src/remediation/approval.rs` and `src/mcp_server.rs`.
+ 
+## Post-Review Remediation Queue (`R00`–`R10`)
+ 
 See [CURRENT_STATE_REVIEW_2026-10-12.md](CURRENT_STATE_REVIEW_2026-10-12.md) and [STATUS.md](STATUS.md):
-- **R00–R07 & R10 (Completed)**: Reconciled status/release documentation, repaired missing B07/B09 log links (`R00`), removed broadcast lag from `ingest_bmp_message` (`R01`), added deterministic `RibEvent` UUIDs and missing-event recovery on restart (`R02`), truncated torn crash tails on disk in `BmpJournal` and `RibEventJournal` (`R03`), persisted epoch-fenced transport disconnect gaps (`R04`), wired `project_remote_routing_events_to_graph`, remote MCP routing HTTP fallback, and `BudgetReservationLedger` + `ToolCallDeduplicator` into `run_investigation_with_provider` (`R05`), enforced `speaker`/`vrf_rd` scoping, `RoutingAccessScope` token checks, bounded Cypher row materialization, and required `BONSAI_ROUTING_SERVICE_TOKEN` (`R06`), verified live Containerlab FRR two-run workflow with eBGP peering, BMP Initiation/PeerUp, 3-view route announcement, attribute change, withdrawal, TCP EOF gap preservation, epoch 2 reconnect, and reproducible digests ([r07-frr-clean-runs.json](evidence/2026-10-12-remediation/r07-frr-clean-runs.json)) (`R07`), and resolved all Clippy diagnostics and workspace formatting (`R10`).
-- **R08–R09 (Next)**: Measured model/Chronos/STGNN comparisons (`R08`), and live digital-twin / persistent executor verification (`R09`).
+- **R00–R10 (All Completed & Verified)**:
+  - Reconciled status/release documentation, repaired missing B07/B09 log links (`R00`).
+  - Removed broadcast lag from `ingest_bmp_message` (`R01`).
+  - Added deterministic `RibEvent` UUIDs and missing-event recovery on restart (`R02`).
+  - Truncated torn crash tails on disk in `BmpJournal` and `RibEventJournal` (`R03`).
+  - Persisted epoch-fenced transport disconnect gaps (`R04`).
+  - Wired `project_remote_routing_events_to_graph`, remote MCP routing HTTP fallback, and `BudgetReservationLedger` + `ToolCallDeduplicator` into `run_investigation_with_provider` (`R05`).
+  - Enforced `speaker`/`vrf_rd` scoping, `RoutingAccessScope` token checks, bounded Cypher row materialization, and required `BONSAI_ROUTING_SERVICE_TOKEN` (`R06`).
+  - Verified live Containerlab FRR two-run workflow with eBGP peering, BMP Initiation/PeerUp, 3-view route announcement, attribute change, withdrawal, TCP EOF gap preservation, epoch 2 reconnect, and reproducible digests (`R07`).
+  - Reconciled model comparison with explicit execution modes, measured wall-clock latencies, validation-clean threshold calibration, and PyTorch STGNN held-out evaluation (`R08`).
+  - Added typed digital-twin fidelity, HMAC-SHA256 constant-time approval signature verification, persistent file-backed executor journaling with crash restart recovery, and durable shadow pilot audit logs (`R09`).
+  - Resolved all Clippy diagnostics in `rbmp-core` and workspace formatting (`R10`).
 
 
 

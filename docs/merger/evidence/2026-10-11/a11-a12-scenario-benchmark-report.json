@@ -1,8 +1,9 @@
 {
   "pack_version": "2026.10.v1",
   "seed": 20261012,
-  "generated_at": "2026-10-12T10:51:05.208922544+00:00",
+  "generated_at": "2026-10-13T11:14:59.657205434+00:00",
   "total_scenarios_in_pack": 44,
+  "benchmark_scope_note": "Evaluates 44 scenarios across 8 fault families. DeterministicRunbook and BonsaiHybridRoutingPolicy execute measured in-process routing algorithms with recorded wall-clock latencies. SmallModelSingleStep and StrongModelMultiStep evaluate simulated policy branches and budget projections; live LLM API benchmarking requires external API provider configuration.",
   "policy_summaries": [
     {
       "policy_id": "deterministic_runbook",
@@ -14,6 +15,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "total_scenarios": 44,
       "passed_scenarios": 44,
       "pass_rate_pct": 100.0,
@@ -24,6 +26,8 @@
       "cost_per_correctly_resolved_case_usd": 0.0,
       "p50_latency_ms": 2,
       "p95_latency_ms": 2,
+      "measured_p50_latency_ms": 1,
+      "measured_p95_latency_ms": 1,
       "failed_scenario_ids": []
     },
     {
@@ -36,6 +40,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "total_scenarios": 44,
       "passed_scenarios": 38,
       "pass_rate_pct": 86.4,
@@ -46,6 +51,8 @@
       "cost_per_correctly_resolved_case_usd": 0.0045,
       "p50_latency_ms": 380,
       "p95_latency_ms": 380,
+      "measured_p50_latency_ms": 1,
+      "measured_p95_latency_ms": 1,
       "failed_scenario_ids": [
         "overlapping_vrfs-v1",
         "overlapping_vrfs-v2",
@@ -65,6 +72,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "total_scenarios": 44,
       "passed_scenarios": 43,
       "pass_rate_pct": 97.7,
@@ -75,6 +83,8 @@
       "cost_per_correctly_resolved_case_usd": 0.035,
       "p50_latency_ms": 1450,
       "p95_latency_ms": 1450,
+      "measured_p50_latency_ms": 1,
+      "measured_p95_latency_ms": 1,
       "failed_scenario_ids": [
         "adversarial-tight-budget-cap"
       ]
@@ -89,6 +99,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "total_scenarios": 44,
       "passed_scenarios": 44,
       "pass_rate_pct": 100.0,
@@ -99,6 +110,8 @@
       "cost_per_correctly_resolved_case_usd": 0.0,
       "p50_latency_ms": 4,
       "p95_latency_ms": 4,
+      "measured_p50_latency_ms": 0,
+      "measured_p95_latency_ms": 1,
       "failed_scenario_ids": []
     }
   ],
@@ -115,6 +128,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -126,6 +140,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 6,
       "failure_reason": null
     },
     {
@@ -140,6 +155,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -151,6 +167,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 4,
       "failure_reason": null
     },
     {
@@ -165,6 +182,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -176,6 +194,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -190,6 +209,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -201,6 +221,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -215,6 +236,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -226,6 +248,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -240,6 +263,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -251,6 +275,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -265,6 +290,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -276,6 +302,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -290,6 +317,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -301,6 +329,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -315,6 +344,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -326,6 +356,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -340,6 +371,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -351,6 +383,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -365,6 +398,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -376,6 +410,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -390,6 +425,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -401,6 +437,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -415,6 +452,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -426,6 +464,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -440,6 +479,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -451,6 +491,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -465,6 +506,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -476,6 +518,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -490,6 +533,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -501,6 +545,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -515,6 +560,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -526,6 +572,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -540,6 +587,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -551,6 +599,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -565,6 +614,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -576,6 +626,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -590,6 +641,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -601,6 +653,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -615,6 +668,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -626,6 +680,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -640,6 +695,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -651,6 +707,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -665,6 +722,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -676,6 +734,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -690,6 +749,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -701,6 +761,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -715,6 +776,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -726,6 +788,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -740,6 +803,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -751,6 +815,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -765,6 +830,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -776,6 +842,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -790,6 +857,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -801,6 +869,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -815,6 +884,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -826,6 +896,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -840,6 +911,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -851,6 +923,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -865,6 +938,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -876,6 +950,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -890,6 +965,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -901,6 +977,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -915,6 +992,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -926,6 +1004,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -940,6 +1019,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -951,6 +1031,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -965,6 +1046,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -976,6 +1058,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -990,6 +1073,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1001,6 +1085,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1015,6 +1100,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1026,6 +1112,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1040,6 +1127,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1051,6 +1139,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1065,6 +1154,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1076,6 +1166,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1090,6 +1181,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1101,6 +1193,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1115,6 +1208,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1126,6 +1220,7 @@
       "actual_top_hypothesis": "insufficient_evidence",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1140,6 +1235,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1151,6 +1247,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1165,6 +1262,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1176,6 +1274,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1190,6 +1289,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_in_process_runbook",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1201,6 +1301,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 2,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1215,6 +1316,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1226,6 +1328,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1240,6 +1343,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1251,6 +1355,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1265,6 +1370,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1276,6 +1382,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1290,6 +1397,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1301,6 +1409,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1315,6 +1424,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1326,6 +1436,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1340,6 +1451,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1351,6 +1463,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1365,6 +1478,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1376,6 +1490,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1390,6 +1505,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1401,6 +1517,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1415,6 +1532,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1426,6 +1544,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1440,6 +1559,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1451,6 +1571,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1465,6 +1586,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1476,6 +1598,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1490,6 +1613,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1501,6 +1625,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1515,6 +1640,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1526,6 +1652,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1540,6 +1667,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1551,6 +1679,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1565,6 +1694,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1576,6 +1706,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1590,6 +1721,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1601,6 +1733,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1615,6 +1748,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1626,6 +1760,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1640,6 +1775,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1651,6 +1787,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1665,6 +1802,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1676,6 +1814,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1690,6 +1829,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1701,6 +1841,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1715,6 +1856,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1726,6 +1868,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1740,6 +1883,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1751,6 +1895,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1765,6 +1910,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1776,6 +1922,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1790,6 +1937,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1801,6 +1949,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1815,6 +1964,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1826,6 +1976,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1840,6 +1991,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": false,
       "diagnosis_correct": false,
       "abstained_honestly": true,
@@ -1851,6 +2003,7 @@
       "actual_top_hypothesis": "insufficient_evidence",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": "expected (completed, supported, export_policy_or_adj_rib_out_filtered), got (partial, insufficient_evidence, insufficient_evidence)"
     },
     {
@@ -1865,6 +2018,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": false,
       "diagnosis_correct": false,
       "abstained_honestly": true,
@@ -1876,6 +2030,7 @@
       "actual_top_hypothesis": "insufficient_evidence",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": "expected (completed, supported, export_policy_or_adj_rib_out_filtered), got (partial, insufficient_evidence, insufficient_evidence)"
     },
     {
@@ -1890,6 +2045,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": false,
       "diagnosis_correct": false,
       "abstained_honestly": true,
@@ -1901,6 +2057,7 @@
       "actual_top_hypothesis": "insufficient_evidence",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": "expected (completed, supported, export_policy_or_adj_rib_out_filtered), got (partial, insufficient_evidence, insufficient_evidence)"
     },
     {
@@ -1915,6 +2072,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": false,
       "diagnosis_correct": false,
       "abstained_honestly": true,
@@ -1926,6 +2084,7 @@
       "actual_top_hypothesis": "insufficient_evidence",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": "expected (completed, supported, export_policy_or_adj_rib_out_filtered), got (partial, insufficient_evidence, insufficient_evidence)"
     },
     {
@@ -1940,6 +2099,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": false,
       "diagnosis_correct": false,
       "abstained_honestly": true,
@@ -1951,6 +2111,7 @@
       "actual_top_hypothesis": "insufficient_evidence",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": "expected (completed, supported, export_policy_or_adj_rib_out_filtered), got (partial, insufficient_evidence, insufficient_evidence)"
     },
     {
@@ -1965,6 +2126,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -1976,6 +2138,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -1990,6 +2153,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2001,6 +2165,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2015,6 +2180,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2026,6 +2192,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2040,6 +2207,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2051,6 +2219,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2065,6 +2234,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2076,6 +2246,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2090,6 +2261,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2101,6 +2273,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2115,6 +2288,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2126,6 +2300,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2140,6 +2315,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2151,6 +2327,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2165,6 +2342,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2176,6 +2354,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2190,6 +2369,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2201,6 +2381,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2215,6 +2396,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2226,6 +2408,7 @@
       "actual_top_hypothesis": "insufficient_evidence",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2240,6 +2423,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2251,6 +2435,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2265,6 +2450,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2276,6 +2462,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.004,
       "latency_ms": 380,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2290,6 +2477,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": false,
       "diagnosis_correct": false,
       "abstained_honestly": true,
@@ -2301,6 +2489,7 @@
       "actual_top_hypothesis": "budget_exhausted",
       "cost_usd": 0.0,
       "latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": "policy small_model_single_step required $0.0040 exceeding scenario budget $0.0010"
     },
     {
@@ -2315,6 +2504,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2326,6 +2516,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2340,6 +2531,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2351,6 +2543,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2365,6 +2558,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2376,6 +2570,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2390,6 +2585,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2401,6 +2597,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2415,6 +2612,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2426,6 +2624,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2440,6 +2639,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2451,6 +2651,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2465,6 +2666,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2476,6 +2678,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2490,6 +2693,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2501,6 +2705,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2515,6 +2720,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2526,6 +2732,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2540,6 +2747,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2551,6 +2759,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2565,6 +2774,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2576,6 +2786,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2590,6 +2801,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2601,6 +2813,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2615,6 +2828,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2626,6 +2840,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -2640,6 +2855,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2651,6 +2867,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2665,6 +2882,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2676,6 +2894,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2690,6 +2909,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2701,6 +2921,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2715,6 +2936,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2726,6 +2948,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2740,6 +2963,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2751,6 +2975,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -2765,6 +2990,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2776,6 +3002,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2790,6 +3017,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2801,6 +3029,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -2815,6 +3044,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2826,6 +3056,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -2840,6 +3071,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2851,6 +3083,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -2865,6 +3098,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2876,6 +3110,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -2890,6 +3125,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2901,6 +3137,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -2915,6 +3152,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2926,6 +3164,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2940,6 +3179,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2951,6 +3191,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2965,6 +3206,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -2976,6 +3218,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -2990,6 +3233,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3001,6 +3245,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -3015,6 +3260,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3026,6 +3272,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3040,6 +3287,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3051,6 +3299,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -3065,6 +3314,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3076,6 +3326,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -3090,6 +3341,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3101,6 +3353,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3115,6 +3368,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3126,6 +3380,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3140,6 +3395,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3151,6 +3407,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3165,6 +3422,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3176,6 +3434,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3190,6 +3449,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3201,6 +3461,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -3215,6 +3476,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3226,6 +3488,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -3240,6 +3503,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3251,6 +3515,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -3265,6 +3530,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3276,6 +3542,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3290,6 +3557,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3301,6 +3569,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3315,6 +3584,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3326,6 +3596,7 @@
       "actual_top_hypothesis": "insufficient_evidence",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3340,6 +3611,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3351,6 +3623,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3365,6 +3638,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3376,6 +3650,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.035,
       "latency_ms": 1450,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3390,6 +3665,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "simulated_model_trace_scaffold",
       "passed_oracle": false,
       "diagnosis_correct": false,
       "abstained_honestly": true,
@@ -3401,6 +3677,7 @@
       "actual_top_hypothesis": "budget_exhausted",
       "cost_usd": 0.0,
       "latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": "policy strong_model_multi_step required $0.0350 exceeding scenario budget $0.0010"
     },
     {
@@ -3415,6 +3692,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3426,6 +3704,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3440,6 +3719,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3451,6 +3731,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -3465,6 +3746,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3476,6 +3758,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3490,6 +3773,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3501,6 +3785,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3515,6 +3800,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3526,6 +3812,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3540,6 +3827,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3551,6 +3839,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3565,6 +3854,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3576,6 +3866,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3590,6 +3881,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3601,6 +3893,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3615,6 +3908,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3626,6 +3920,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3640,6 +3935,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3651,6 +3947,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3665,6 +3962,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3676,6 +3974,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -3690,6 +3989,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3701,6 +4001,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3715,6 +4016,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3726,6 +4028,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3740,6 +4043,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3751,6 +4055,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -3765,6 +4070,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3776,6 +4082,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -3790,6 +4097,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3801,6 +4109,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -3815,6 +4124,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3826,6 +4136,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -3840,6 +4151,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3851,6 +4163,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -3865,6 +4178,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3876,6 +4190,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3890,6 +4205,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3901,6 +4217,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3915,6 +4232,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3926,6 +4244,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -3940,6 +4259,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3951,6 +4271,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -3965,6 +4286,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -3976,6 +4298,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -3990,6 +4313,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4001,6 +4325,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -4015,6 +4340,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4026,6 +4352,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -4040,6 +4367,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4051,6 +4379,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4065,6 +4394,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4076,6 +4406,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -4090,6 +4421,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4101,6 +4433,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -4115,6 +4448,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4126,6 +4460,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -4140,6 +4475,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4151,6 +4487,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4165,6 +4502,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4176,6 +4514,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4190,6 +4529,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4201,6 +4541,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -4215,6 +4556,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4226,6 +4568,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -4240,6 +4583,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4251,6 +4595,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -4265,6 +4610,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4276,6 +4622,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -4290,6 +4637,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4301,6 +4649,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4315,6 +4664,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4326,6 +4676,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4340,6 +4691,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4351,6 +4703,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -4365,6 +4718,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4376,6 +4730,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -4390,6 +4745,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4401,6 +4757,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -4415,6 +4772,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4426,6 +4784,7 @@
       "actual_top_hypothesis": "insufficient_evidence",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -4440,6 +4799,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4451,6 +4811,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4465,6 +4826,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4476,6 +4838,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4490,6 +4853,7 @@
         "observation_schema_version": 1,
         "otel_genai_semconv_version": "1.28.0"
       },
+      "execution_mode": "measured_hybrid_routing_service",
       "passed_oracle": true,
       "diagnosis_correct": true,
       "abstained_honestly": true,
@@ -4501,6 +4865,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 4,
+      "measured_latency_ms": 1,
       "failure_reason": null
     }
   ]

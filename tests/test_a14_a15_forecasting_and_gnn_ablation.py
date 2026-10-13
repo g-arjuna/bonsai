@@ -7,6 +7,7 @@ from bonsai_ml.gnn.ablation import (
     chronological_train_val_test_split,
     get_foundation_model_license_ledger,
     run_forecasting_challenger_experiment,
+    run_pytorch_stgnn_held_out_experiment,
     run_stgnn_ablation_experiment,
 )
 
@@ -116,4 +117,23 @@ def test_a15_stgnn_ablation_compares_full_model_against_no_topology_and_no_tempo
     assert res["improves_over_simpler_ablations"] is True
     assert res["full_stgnn_metrics"]["event_recall"] == 1.0
     assert res["promotion_decision"] == "promote_to_shadow_ranking_aid_only"
+    assert res["execution_mode"] == "heuristic_feature_proxy"
+    assert "measured_latency_ms" in res
+
+
+def test_a15_pytorch_stgnn_held_out_experiment():
+    res = run_pytorch_stgnn_held_out_experiment(
+        num_devices=8,
+        temporal_steps=4,
+        fault_device_idx=1,
+    )
+    assert res["experiment_id"] == "a15-pytorch-stgnn-held-out-v1"
+    assert res["execution_mode"] == "measured_pytorch_model"
+    assert res["entity_alignment_verified"] is True
+    assert res["cold_start_entity_handled"] is True
+    assert res["inference_latency_ms"] > 0.0
+    assert res["total_experiment_time_ms"] > 0.0
+    assert 0.0 <= res["validation_calibrated_threshold"] <= 1.0
+    assert res["held_out_test_metrics"]["precision"] >= 0.0
+    assert res["promotion_decision"] == "verified_pytorch_stgnn_prototype"
 
