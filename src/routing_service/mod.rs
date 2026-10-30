@@ -86,6 +86,101 @@ impl RoutingServiceConfig {
         }
         Ok(())
     }
+
+    /// Validates production deployment settings, ensuring fail-closed security for binaries and services.
+    pub fn validate_deployment(&self) -> Result<(), String> {
+        self.validate()?;
+
+        let allow_insecure = std::env::var("BONSAI_ROUTING_ALLOW_INSECURE_NO_TOKEN")
+            .or_else(|_| std::env::var("BONSAI_ALLOW_INSECURE_DEV"))
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+
+        let allow_ephemeral = std::env::var("BONSAI_ROUTING_ALLOW_EPHEMERAL")
+            .or_else(|_| std::env::var("BONSAI_ALLOW_INSECURE_DEV"))
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+
+        // Fail closed if internal token is missing
+        if self
+            .internal_service_token
+            .as_ref()
+            .is_none_or(|s| s.trim().is_empty())
+            && !allow_insecure
+        {
+            return Err(
+                "Missing internal_service_token: BONSAI_ROUTING_SERVICE_TOKEN must be set in production deployment (or explicitly set BONSAI_ROUTING_ALLOW_INSECURE_NO_TOKEN=1 for local development)".to_string(),
+            );
+        }
+
+        // Fail closed if journals are unpersisted/ephemeral
+        if (self.bmp_journal_path.is_none() || self.event_journal_path.is_none())
+            && !allow_ephemeral
+        {
+            return Err(
+                "Missing persistent journal paths: BONSAI_ROUTING_BMP_JOURNAL and BONSAI_ROUTING_EVENT_JOURNAL must be configured (or explicitly set BONSAI_ROUTING_ALLOW_EPHEMERAL=1 for ephemeral dev)".to_string(),
+            );
+        }
+
+        // Parse addresses rather than classifying attacker-controlled hostname prefixes.
+        let http_addr: std::net::SocketAddr = self
+            .http_listen_addr
+            .parse()
+            .map_err(|_| "HTTP address must be an IP socket address".to_string())?;
+        self.bmp_listen_addr
+            .parse::<std::net::SocketAddr>()
+            .map_err(|_| "BMP address must be an IP socket address".to_string())?;
+        if !http_addr.ip().is_loopback()
+            && self
+                .internal_service_token
+                .as_ref()
+                .is_none_or(|s| s.trim().is_empty())
+        {
+            return Err("Refusing non-loopback HTTP without internal_service_token".into());
+        }
+        if let Some(token) = &self.internal_service_token {
+            if token.is_empty() || !token.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
+                return Err(
+                    "internal_service_token must contain only visible ASCII without whitespace"
+                        .into(),
+                );
+            }
+        }
+        if let (Some(bmp), Some(events)) = (&self.bmp_journal_path, &self.event_journal_path) {
+            // Resolve existing ancestors too, so symlink and ../ aliases cannot share a file.
+            fn resolved(path: &std::path::Path) -> std::io::Result<PathBuf> {
+                if path.exists() {
+                    return path.canonicalize();
+                }
+                let parent = path
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or(std::path::Path::new("."));
+                Ok(resolved(parent)?.join(
+                    path.file_name()
+                        .ok_or_else(|| std::io::Error::other("journal path has no file name"))?,
+                ))
+            }
+            if bmp.as_os_str().is_empty()
+                || events.as_os_str().is_empty()
+                || resolved(bmp).map_err(|e| e.to_string())?
+                    == resolved(events).map_err(|e| e.to_string())?
+            {
+                return Err("BMP and event journals must use distinct nonempty paths".into());
+            }
+            #[cfg(unix)]
+            if bmp.exists() && events.exists() {
+                use std::os::unix::fs::MetadataExt;
+                let a = std::fs::metadata(bmp).map_err(|e| e.to_string())?;
+                let b = std::fs::metadata(events).map_err(|e| e.to_string())?;
+                if a.dev() == b.dev() && a.ino() == b.ino() {
+                    return Err("BMP and event journals must not be hard links to one file".into());
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Transport loss metadata when a BMP TCP connection drops without an explicit BGP withdrawal.
@@ -106,6 +201,8 @@ pub struct RoutingServiceState {
     pub event_journal: RibEventJournal,
     pub decode_contexts: RwLock<HashMap<PeerKey, BgpDecodeContext>>,
     pub transport_gaps: RwLock<HashMap<IpAddr, TransportGapRecord>>,
+    // Serialize raw observation order, sequence allocation and durable publication.
+    ingestion_lock: tokio::sync::Mutex<()>,
 }
 
 impl RoutingServiceState {
@@ -163,6 +260,7 @@ impl RoutingServiceState {
             event_journal,
             decode_contexts: RwLock::new(recovered_contexts),
             transport_gaps: RwLock::new(recovered_gaps),
+            ingestion_lock: tokio::sync::Mutex::new(()),
         }))
     }
 
@@ -220,6 +318,7 @@ impl RoutingServiceState {
         session_epoch: Option<u64>,
         raw_frame: Option<&[u8]>,
     ) -> anyhow::Result<BmpMessage> {
+        let _ingestion = self.ingestion_lock.lock().await;
         self.bmp_journal
             .append_observation(&msg, session_epoch, raw_frame)
             .await?;
@@ -289,6 +388,7 @@ impl RoutingServiceState {
         session_epoch: Option<u64>,
         reason: impl Into<String>,
     ) {
+        let _ingestion = self.ingestion_lock.lock().await;
         let reason_str = reason.into();
         let effective_epoch = {
             let mut rib = self.rib.write().await;
@@ -341,6 +441,8 @@ impl RoutingServiceState {
         }
         let mut any_peer = false;
         let mut all_complete = true;
+        let mut any_gap = false;
+        let mut any_stale = false;
         for spk in speakers {
             if spk.peers.is_empty() {
                 all_complete = false;
@@ -348,15 +450,31 @@ impl RoutingServiceState {
             }
             for peer in spk.peers.values() {
                 any_peer = true;
-                if peer.state != PeerState::Up {
-                    return "gap";
-                }
-                if peer.eor_families.is_empty() {
-                    all_complete = false;
+                match peer.state {
+                    PeerState::Down => {
+                        if peer.llgr_active {
+                            any_stale = true;
+                        } else {
+                            any_gap = true;
+                        }
+                        all_complete = false;
+                    }
+                    PeerState::Unknown => {
+                        all_complete = false;
+                    }
+                    PeerState::Up => {
+                        if peer.eor_families.is_empty() {
+                            all_complete = false;
+                        }
+                    }
                 }
             }
         }
-        if !any_peer {
+        if any_gap {
+            "gap"
+        } else if any_stale {
+            "stale"
+        } else if !any_peer {
             "syncing"
         } else if all_complete {
             "complete_for_observed_view"
@@ -461,7 +579,9 @@ pub struct EventsQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct IngestBmpRequest {
-    pub speaker_addr: String,
+    pub speaker_addr: Option<String>,
+    pub speaker: Option<String>,
+    pub vrf_rd: Option<String>,
     pub session_epoch: Option<u64>,
     pub frame_hex: String,
 }
@@ -481,6 +601,21 @@ fn check_internal_token(headers: &HeaderMap, state: &RoutingServiceState) -> Res
                 Json(serde_json::json!({
                     "error": "unauthorized_internal_client",
                     "message": "Missing or invalid x-bonsai-routing-token"
+                })),
+            )
+                .into_response());
+        }
+    } else {
+        let allow_no_token = std::env::var("BONSAI_ROUTING_ALLOW_INSECURE_NO_TOKEN")
+            .or_else(|_| std::env::var("BONSAI_ALLOW_INSECURE_DEV"))
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+        if !allow_no_token {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": "unauthorized_internal_client",
+                    "message": "Routing service internal endpoint requires authentication; internal_service_token is not configured"
                 })),
             )
                 .into_response());
@@ -705,12 +840,36 @@ async fn internal_ingest_bmp_handler(
     if let Err(resp) = check_internal_token(&headers, &state) {
         return resp;
     }
-    let Ok(speaker_addr) = req.speaker_addr.parse::<IpAddr>() else {
+    if let (Some(s1), Some(s2)) = (req.speaker.as_deref(), req.speaker_addr.as_deref()) {
+        if s1 != s2 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "conflicting_speaker_aliases",
+                    "message": format!("Conflicting speaker aliases: speaker ('{s1}') != speaker_addr ('{s2}')")
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    let Some(spk_raw) = req.speaker_addr.as_deref().or(req.speaker.as_deref()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "missing_speaker_addr",
+                "message": "Missing required speaker or speaker_addr field"
+            })),
+        )
+            .into_response();
+    };
+
+    let Ok(speaker_addr) = spk_raw.parse::<IpAddr>() else {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": "invalid_speaker_addr",
-                "message": format!("Invalid speaker IP address: {}", req.speaker_addr)
+                "message": format!("Invalid speaker IP address: {spk_raw}")
             })),
         )
             .into_response();
@@ -725,6 +884,21 @@ async fn internal_ingest_bmp_handler(
         )
             .into_response();
     };
+
+    if let Some(frame_rd) = rbmp_core::bmp::parser::extract_frame_rd(&bytes) {
+        if let Some(ref req_vrf) = req.vrf_rd {
+            if req_vrf != &frame_rd {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "vrf_rd_mismatch",
+                        "message": format!("Ingest request vrf_rd '{req_vrf}' does not match BMP wire frame RD '{frame_rd}'")
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
     match state
         .ingest_bmp_bytes(speaker_addr, req.session_epoch, &bytes)
         .await
@@ -787,10 +961,22 @@ pub async fn build_speakers_json(state: &RoutingServiceState) -> serde_json::Val
         let gap = gaps.get(&spk.speaker_addr);
         let completeness = if gap.is_some() {
             "gap"
+        } else if spk.peers.is_empty() {
+            "syncing"
+        } else if spk.peers.values().any(|p| p.state == PeerState::Down) {
+            if spk
+                .peers
+                .values()
+                .any(|p| p.state == PeerState::Down && !p.llgr_active)
+            {
+                "gap"
+            } else {
+                "stale"
+            }
         } else if spk
             .peers
             .values()
-            .any(|p| p.state == PeerState::Up && !p.eor_families.is_empty())
+            .all(|p| p.state == PeerState::Up && !p.eor_families.is_empty())
         {
             "complete_for_observed_view"
         } else {
@@ -1056,7 +1242,11 @@ pub async fn build_prefix_history_json(
         .event_journal
         .prefix_history_filtered(prefix, q.speaker.as_deref(), q.vrf_rd.as_deref(), limit)
         .await;
-    let latest_seq = state.event_journal.latest_seq().await;
+    let history_window = state
+        .event_journal
+        .recent_window(rbmp_store::journal::HISTORY_SCAN_LIMIT)
+        .await;
+    let latest_seq = history_window.scanned_to_seq;
     let completeness = state.overall_completeness().await;
 
     (
@@ -1071,6 +1261,8 @@ pub async fn build_prefix_history_json(
             "durable_sequence": latest_seq,
             "receive_time": Utc::now().to_rfc3339(),
             "events": history,
+            "history_coverage": if history_window.truncated { "partial" } else { "complete" },
+            "history_window": history_window,
         }),
     )
 }
@@ -1107,22 +1299,32 @@ pub async fn build_coverage_json(state: &RoutingServiceState) -> serde_json::Val
 
 pub async fn build_events_json(state: &RoutingServiceState, q: &EventsQuery) -> serde_json::Value {
     let after_seq = q.after_seq.unwrap_or(0);
-    let limit = q.limit.unwrap_or(100).clamp(1, 1000);
-    let fetch_cap = if q.speaker.is_some() || q.vrf_rd.is_some() {
-        10_000
-    } else {
-        limit
-    };
-    let raw_events = state
-        .event_journal
-        .events_after_seq(after_seq, fetch_cap)
-        .await;
-    let events: Vec<_> = raw_events
-        .into_iter()
-        .filter(|ev| {
+    let limit = q.limit.unwrap_or(100).clamp(1, 10_000);
+    let latest_seq = state.event_journal.latest_seq().await;
+
+    let mut current_cursor = after_seq;
+    let mut events = Vec::new();
+    let mut scanned_to_seq = after_seq;
+    let chunk_size = 1000;
+    let mut scanned_events = 0;
+    let scan_limit = rbmp_store::journal::HISTORY_SCAN_LIMIT;
+
+    while events.len() < limit && current_cursor < latest_seq && scanned_events < scan_limit {
+        let chunk = state
+            .event_journal
+            .events_after_seq(current_cursor, chunk_size)
+            .await;
+        if chunk.is_empty() {
+            break;
+        }
+        for ev in chunk {
+            scanned_events += 1;
+            current_cursor = current_cursor.max(ev.event_key.sequence);
+            scanned_to_seq = current_cursor;
+
             if let Some(ref spk) = q.speaker {
                 if ev.speaker.to_string() != *spk {
-                    return false;
+                    continue;
                 }
             }
             if let Some(ref rd) = q.vrf_rd {
@@ -1137,24 +1339,34 @@ pub async fn build_events_json(state: &RoutingServiceState, q: &EventsQuery) -> 
                     RibEventPayload::SpeakerUp { .. } | RibEventPayload::SpeakerDown { .. } => None,
                 };
                 if ev_rd.as_deref() != Some(rd.as_str()) {
-                    return false;
+                    continue;
                 }
             }
-            true
-        })
-        .take(limit)
-        .collect();
-    let latest_seq = state.event_journal.latest_seq().await;
+
+            events.push(ev);
+            if events.len() >= limit {
+                break;
+            }
+        }
+    }
+
     let next_after_seq = events
         .last()
         .map(|e| e.event_key.sequence)
-        .unwrap_or(after_seq);
+        .unwrap_or(scanned_to_seq);
+
+    let truncated = scanned_to_seq < latest_seq;
 
     serde_json::json!({
         "api_version": ROUTING_API_VERSION,
         "durable_sequence": latest_seq,
         "after_seq": after_seq,
         "next_after_seq": next_after_seq,
+        "scanned_to_seq": scanned_to_seq,
+        "scanned_events": scanned_events,
+        "scan_limit": scan_limit,
+        "history_coverage": if truncated { "partial" } else { "complete" },
+        "truncated": truncated,
         "completeness_state": state.overall_completeness().await,
         "receive_time": Utc::now().to_rfc3339(),
         "events": events,
@@ -1248,7 +1460,9 @@ pub async fn resolve_routing_service_endpoint_config(
     });
     let token = items
         .iter()
-        .find(|i| i.name == "routing_service_token" && i.enabled)
+        .find(|i| {
+            (i.name == "routing_service_token" || i.name == "internal_service_token") && i.enabled
+        })
         .map(|i| i.content_json.trim().trim_matches('"').to_string())
         .filter(|s| !s.is_empty())
         .or_else(|| {

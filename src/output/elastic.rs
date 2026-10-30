@@ -468,6 +468,7 @@ mod tests {
 
     fn cfg(endpoint: &str) -> OutputAdapterConfig {
         OutputAdapterConfig {
+            topic: None,
             name: "elastic-test".to_string(),
             adapter_type: "elastic".to_string(),
             enabled: true,
@@ -497,6 +498,7 @@ mod tests {
     #[test]
     fn bulk_url_uses_custom_index() {
         let c = OutputAdapterConfig {
+            topic: None,
             name: "e".to_string(),
             adapter_type: "elastic".to_string(),
             enabled: true,

@@ -1,5 +1,7 @@
 # Bonsai: evidence-driven agentic NetOps
 
+> Reference design. Current implementation state and priorities are maintained in [docs/STATUS.md](docs/STATUS.md) and [BONSAI_BACKLOG.md](BONSAI_BACKLOG.md). Historical task/completion statements are superseded by the [13 October validation](docs/merger/CLAIM_VALIDATION_2026-10-13.md).
+
 Research and implementation strategy — 11 October 2026
 
 ## 1. Decision

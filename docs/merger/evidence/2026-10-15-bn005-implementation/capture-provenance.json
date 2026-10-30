@@ -1,0 +1,10 @@
+{
+  "live_bytes": 5365,
+  "live_frames": 46,
+  "live_sha256": "b1e078e8d3c85044f38faa20cded204cb985c09826541041a2ea520b500676df",
+  "synthetic_bytes": 329,
+  "synthetic_frames": 4,
+  "synthetic_sha256": "3db7c3b2c997a824fdfcc0bf0b860c6f36b0c0937ff1ce707ddb7ad4329d3e03",
+  "exact_fixture_frames_in_live": 0,
+  "vrf_live_nos_proven": false
+}

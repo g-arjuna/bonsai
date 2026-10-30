@@ -22,7 +22,7 @@ use axum::{
     extract::State,
     http::{Request, StatusCode},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
@@ -38,7 +38,7 @@ use super::AppState;
 // ── JWT claims ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(super) struct JwtClaims {
+pub(crate) struct JwtClaims {
     /// Subject: username
     pub sub: String,
     /// Bonsai role string
@@ -132,7 +132,7 @@ pub async fn mint_jwt(
 }
 
 /// Verify a JWT and return claims. Validates signature, expiry, algorithm.
-pub(super) async fn verify_jwt(
+pub(crate) async fn verify_jwt(
     token: &str,
     store: &crate::graph::GraphStore,
 ) -> Result<JwtClaims, String> {
@@ -265,7 +265,7 @@ fn hash_password(password: &str) -> Result<String, String> {
 /// Verify a password against a stored Argon2 PHC hash string.
 /// Also handles legacy SHA-256 hex hashes (migration path).
 /// Returns `Ok(true)` for match, `Ok(false)` for mismatch.
-fn verify_password(password: &str, stored_hash: &str) -> bool {
+pub(crate) fn verify_password(password: &str, stored_hash: &str) -> bool {
     if stored_hash.starts_with("$argon2") {
         // Argon2 PHC format
         let Ok(parsed) = PasswordHash::new(stored_hash) else {
@@ -544,7 +544,7 @@ pub(super) async fn rotate_api_key_handler(
 /// Roles from least to most privileged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[allow(dead_code)]
-pub(super) enum Role {
+pub enum Role {
     ApiReadonly,
     Viewer,
     Operator,
@@ -552,8 +552,7 @@ pub(super) enum Role {
 }
 
 impl Role {
-    #[allow(dead_code)]
-    fn from_str(s: &str) -> Self {
+    pub fn from_str(s: &str) -> Self {
         match s.trim().to_lowercase().as_str() {
             "admin" => Role::Admin,
             "operator" => Role::Operator,
@@ -562,8 +561,7 @@ impl Role {
         }
     }
 
-    #[allow(dead_code)]
-    fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Role::Admin => "admin",
             Role::Operator => "operator",
@@ -607,13 +605,13 @@ fn default_role() -> String {
 }
 
 #[derive(Deserialize)]
-pub(super) struct LoginRequest {
+pub(crate) struct LoginRequest {
     pub username: String,
     pub password: String,
 }
 
 #[derive(Serialize)]
-pub(super) struct LoginResponse {
+pub(crate) struct LoginResponse {
     pub success: bool,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub token: String,
@@ -630,7 +628,7 @@ pub(super) struct LoginResponse {
 pub(super) async fn login_handler(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
-) -> Result<Json<LoginResponse>, (StatusCode, String)> {
+) -> Result<Response, (StatusCode, String)> {
     let username = req.username.trim().to_string();
     if username.is_empty() || req.password.is_empty() {
         return Ok(Json(LoginResponse {
@@ -639,7 +637,8 @@ pub(super) async fn login_handler(
             username,
             role: String::new(),
             error: "username and password required".into(),
-        }));
+        })
+        .into_response());
     }
 
     // Rate-limit check — must be before any DB access to prevent user enumeration
@@ -650,7 +649,8 @@ pub(super) async fn login_handler(
             username,
             role: String::new(),
             error: "too many failed attempts — account temporarily locked".into(),
-        }));
+        })
+        .into_response());
     }
 
     // Look up user in ConfigItem DB
@@ -688,7 +688,8 @@ pub(super) async fn login_handler(
                 username,
                 role: String::new(),
                 error: "invalid credentials".into(),
-            }));
+            })
+            .into_response());
         }
         (content.role, false)
     } else if state.ldap_config.enabled && !state.ldap_config.server_url.is_empty() {
@@ -703,7 +704,8 @@ pub(super) async fn login_handler(
                     username,
                     role: String::new(),
                     error: "invalid credentials".into(),
-                }));
+                })
+                .into_response());
             }
         }
     } else {
@@ -714,7 +716,8 @@ pub(super) async fn login_handler(
             username,
             role: String::new(),
             error: "invalid credentials".into(),
-        }));
+        })
+        .into_response());
     };
 
     // Auth success — clear rate-limit state
@@ -749,13 +752,21 @@ pub(super) async fn login_handler(
         }
     }
 
-    Ok(Json(LoginResponse {
+    let mut resp = Json(LoginResponse {
         success: true,
-        token: jwt,
+        token: jwt.clone(),
         username,
         role: role_str,
         error: String::new(),
-    }))
+    })
+    .into_response();
+    if let Ok(cookie_val) = axum::http::HeaderValue::from_str(&format!(
+        "bonsai_token={jwt}; Path=/; SameSite=Lax; HttpOnly"
+    )) {
+        resp.headers_mut()
+            .insert(axum::http::header::SET_COOKIE, cookie_val);
+    }
+    Ok(resp)
 }
 
 /// POST /api/auth/logout — revoke the JWT by persisting its `jti` as a denylist entry.
@@ -763,15 +774,36 @@ pub(super) async fn login_handler(
 pub(super) async fn logout_handler(
     State(state): State<AppState>,
     request: Request<axum::body::Body>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    if let Some(bearer) = request
+) -> Result<Response, (StatusCode, String)> {
+    let mut bearer_token = request
         .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "))
-    {
+        .map(|s| s.to_string());
+
+    if bearer_token.is_none() {
+        if let Some(cookie_header) = request
+            .headers()
+            .get("cookie")
+            .and_then(|v| v.to_str().ok())
+        {
+            for part in cookie_header.split(';') {
+                let part = part.trim();
+                if let Some(token) = part
+                    .strip_prefix("bonsai_token=")
+                    .or_else(|| part.strip_prefix("bonsai_session="))
+                {
+                    bearer_token = Some(token.to_string());
+                    break;
+                }
+            }
+        }
+    }
+
+    if let Some(bearer) = bearer_token {
         // Verify and extract claims to get jti for denylist
-        if let Ok(claims) = verify_jwt(bearer, &state.store).await {
+        if let Ok(claims) = verify_jwt(&bearer, &state.store).await {
             let item = crate::graph::ConfigItemRecord {
                 id: format!("jwt-revoked-{}", claims.jti),
                 config_class: "jwt_revoked".to_string(),
@@ -785,7 +817,14 @@ pub(super) async fn logout_handler(
             let _ = state.store.upsert_config_item(item).await;
         }
     }
-    Ok(StatusCode::NO_CONTENT)
+    let mut resp = StatusCode::NO_CONTENT.into_response();
+    if let Ok(cookie_val) = axum::http::HeaderValue::from_str(
+        "bonsai_token=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly",
+    ) {
+        resp.headers_mut()
+            .insert(axum::http::header::SET_COOKIE, cookie_val);
+    }
+    Ok(resp)
 }
 
 /// GET /api/auth/users — list all users (admin only, but enforcement is at middleware level).
@@ -895,7 +934,9 @@ pub(super) async fn delete_user_handler(
 fn required_role(method: &str, path: &str) -> Role {
     // Health: no auth needed (handled before this)
     // Admin-only: vault, user management, DB purge, restart
-    if path.starts_with("/api/auth/users")
+    if path == "/api/ownership"
+        || path.starts_with("/api/ownership/")
+        || path.starts_with("/api/auth/users")
         || path.starts_with("/api/vault")
         || path == "/api/db/purge"
         || path == "/api/restart"
@@ -920,7 +961,40 @@ fn required_role(method: &str, path: &str) -> Role {
         }
         return Role::Viewer;
     }
+    // MCP JSON-RPC endpoints allow scoped ApiReadonly
+    if path == "/mcp" || path.starts_with("/mcp/") {
+        return Role::ApiReadonly;
+    }
     Role::Operator
+}
+
+/// Redact sensitive tokens, bearer headers, API keys, or private key blocks within arbitrary text.
+pub fn redact_sensitive_text(s: &str) -> String {
+    let mut out = s.to_string();
+    if out.contains("BEGIN PRIVATE KEY") {
+        return "[REDACTED_PRIVATE_KEY]".to_string();
+    }
+    if let Some(idx) = out.find("Bearer ") {
+        let after = &out[idx + 7..];
+        let end_idx = after
+            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+            .unwrap_or(after.len());
+        let token_part = &after[..end_idx];
+        if !token_part.is_empty() {
+            out = format!("{}Bearer [REDACTED]{}", &out[..idx], &after[end_idx..]);
+        }
+    }
+    for prefix in &["sk-", "bsk_"] {
+        while let Some(idx) = out.find(prefix) {
+            let after = &out[idx + prefix.len()..];
+            let end_idx = after
+                .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',')
+                .unwrap_or(after.len());
+            let secret_len = prefix.len() + end_idx;
+            out = format!("{}[REDACTED]{}", &out[..idx], &out[idx + secret_len..]);
+        }
+    }
+    out
 }
 
 /// Recursively redact secret/credential fields in a JSON value before returning or logging.
@@ -937,6 +1011,11 @@ pub fn redact_secrets_in_json(val: &mut serde_json::Value) {
         "api_key",
         "key_hash",
         "bind_password",
+        "authorization",
+        "auth_token",
+        "access_token",
+        "refresh_token",
+        "client_secret",
     ];
     match val {
         serde_json::Value::Object(map) => {
@@ -957,6 +1036,15 @@ pub fn redact_secrets_in_json(val: &mut serde_json::Value) {
                 redact_secrets_in_json(item);
             }
         }
+        serde_json::Value::String(s) => {
+            if s.contains("Bearer ")
+                || s.contains("sk-")
+                || s.contains("bsk_")
+                || s.contains("BEGIN PRIVATE KEY")
+            {
+                *s = redact_sensitive_text(s);
+            }
+        }
         _ => {}
     }
 }
@@ -969,30 +1057,144 @@ pub struct RoutingAccessScope {
     pub tenant_id: Option<String>,
 }
 
-/// Parse a scoped routing API key string such as `"routing:read:speaker=192.0.2.1,vrf_rd=65000:100,tenant_id=acme"`.
-pub fn parse_routing_access_scope(scope: &str) -> Option<RoutingAccessScope> {
-    let suffix = scope
-        .strip_prefix("routing:read:")
-        .or_else(|| scope.strip_prefix("routing:scope:"))?;
+#[derive(Debug, Clone)]
+pub struct OriginalRoutingAccessScope(pub RoutingAccessScope);
+
+impl RoutingAccessScope {
+    pub fn for_ownership_mode(
+        &self,
+        mode: crate::graph::ownership::OwnershipAccessMode,
+        device_bound: bool,
+    ) -> Self {
+        let mut effective = self.clone();
+        if mode == crate::graph::ownership::OwnershipAccessMode::AuditOnly {
+            effective.tenant_id = None;
+            if device_bound {
+                effective.vrf_rd = None;
+            }
+        }
+        effective
+    }
+}
+
+/// Authenticated subject for server-attributed administrative records, never a credential.
+#[derive(Debug, Clone)]
+pub struct AuthenticatedSubject(pub String);
+
+/// Typed representation of a parsed authorization scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeGrant {
+    /// Explicit global scope granting access with no resource constraints.
+    Global(Role),
+    /// Valid restricted routing scope with explicit resource constraints.
+    Restricted {
+        role: Role,
+        scope: RoutingAccessScope,
+    },
+    /// Invalid, malformed, or unparseable scope string.
+    Invalid(String),
+}
+
+/// Parse a scope string strictly, distinguishing explicit global grants,
+/// valid restricted grants, and invalid grants.
+pub fn parse_scope_grant(scope: &str) -> ScopeGrant {
+    let s = scope.trim();
+    if s.is_empty() {
+        return ScopeGrant::Invalid("scope string is empty".to_string());
+    }
+
+    // 1. Exact global grants (no resource restrictions)
+    match s {
+        "admin" | "*" => return ScopeGrant::Global(Role::Admin),
+        "operator" | "write" | "remediation" | "webhook" | "routing:write" | "routing:operator" => {
+            return ScopeGrant::Global(Role::Operator);
+        }
+        "viewer" | "read" | "routing" | "routing:read" => {
+            return ScopeGrant::Global(Role::Viewer);
+        }
+        "api_readonly" => {
+            return ScopeGrant::Global(Role::ApiReadonly);
+        }
+        _ => {}
+    }
+
+    // 2. Restricted routing grants with prefix
+    let (base_role, suffix) = if let Some(suff) = s.strip_prefix("routing:write:") {
+        (Role::Operator, suff)
+    } else if let Some(suff) = s.strip_prefix("routing:operator:") {
+        (Role::Operator, suff)
+    } else if let Some(suff) = s.strip_prefix("routing:read:") {
+        (Role::ApiReadonly, suff)
+    } else if let Some(suff) = s.strip_prefix("routing:scope:") {
+        (Role::ApiReadonly, suff)
+    } else if s.starts_with("routing:") || s.contains(':') {
+        return ScopeGrant::Invalid(format!("unrecognized or malformed scope prefix in '{s}'"));
+    } else {
+        return ScopeGrant::Invalid(format!("unknown grant scope: '{s}'"));
+    };
+
+    let suffix = suffix.trim();
+    if suffix.is_empty() {
+        return ScopeGrant::Invalid("restricted scope suffix cannot be empty".to_string());
+    }
+
     let mut out = RoutingAccessScope::default();
     for part in suffix.split(',') {
         let part = part.trim();
         if part.is_empty() {
-            continue;
+            return ScopeGrant::Invalid("empty comma-separated entry in scope".to_string());
         }
-        let (k, v) = part.split_once('=')?;
+        let Some((k, v)) = part.split_once('=') else {
+            return ScopeGrant::Invalid(format!("missing '=' in scope parameter '{part}'"));
+        };
+        let k = k.trim();
         let v = v.trim();
         if v.is_empty() {
-            return None;
+            return ScopeGrant::Invalid(format!("empty value for scope key '{k}'"));
         }
-        match k.trim() {
-            "speaker" => out.speaker = Some(v.to_string()),
-            "vrf_rd" | "rd" => out.vrf_rd = Some(v.to_string()),
-            "tenant_id" | "tenant" => out.tenant_id = Some(v.to_string()),
-            _ => return None,
+        match k {
+            "speaker" => {
+                if out.speaker.is_some() {
+                    return ScopeGrant::Invalid("duplicate 'speaker' in scope".to_string());
+                }
+                out.speaker = Some(v.to_string());
+            }
+            "vrf_rd" | "rd" => {
+                if out.vrf_rd.is_some() {
+                    return ScopeGrant::Invalid("duplicate 'vrf_rd' in scope".to_string());
+                }
+                out.vrf_rd = Some(v.to_string());
+            }
+            "tenant_id" | "tenant" => {
+                if out.tenant_id.is_some() {
+                    return ScopeGrant::Invalid("duplicate 'tenant_id' in scope".to_string());
+                }
+                out.tenant_id = Some(v.to_string());
+            }
+            unknown => {
+                return ScopeGrant::Invalid(format!("unknown scope key '{unknown}'"));
+            }
         }
     }
-    Some(out)
+
+    if out.speaker.is_none() && out.vrf_rd.is_none() && out.tenant_id.is_none() {
+        return ScopeGrant::Invalid(
+            "restricted scope must specify at least one of: speaker, vrf_rd, tenant_id".to_string(),
+        );
+    }
+
+    ScopeGrant::Restricted {
+        role: base_role,
+        scope: out,
+    }
+}
+
+/// Parse a scoped routing API key string such as `"routing:read:speaker=192.0.2.1,vrf_rd=65000:100,tenant_id=acme"`.
+pub fn parse_routing_access_scope(scope: &str) -> Option<RoutingAccessScope> {
+    match parse_scope_grant(scope) {
+        ScopeGrant::Restricted { scope, .. } => Some(scope),
+        _ => None,
+    }
 }
 
 // ── Auth middleware ──────────────────────────────────────────────────────────
@@ -1008,7 +1210,7 @@ pub async fn auth_middleware(
     mut request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // D4-7 T5: Check DB for require_auth setting, fallback to env var.
+    // D4-7 T5 / BN-005: Check DB for require_auth setting, fallback to env var. Fail closed by default.
     let require_auth = {
         let db_val = store
             .list_config_items(Some("app_config".to_string()))
@@ -1021,10 +1223,16 @@ pub async fn auth_middleware(
             Some("1") | Some("true") => true,
             Some("0") | Some("false") => false,
             _ => {
-                std::env::var("BONSAI_REQUIRE_AUTH")
-                    .unwrap_or_default()
-                    .trim()
-                    == "1"
+                let env_val = std::env::var("BONSAI_REQUIRE_AUTH").unwrap_or_default();
+                let allow_insecure = std::env::var("BONSAI_ALLOW_INSECURE_NO_AUTH")
+                    .or_else(|_| std::env::var("BONSAI_ALLOW_INSECURE_DEV"))
+                    .map(|v| v == "1" || v == "true")
+                    .unwrap_or(false);
+                if allow_insecure || env_val == "0" || env_val.eq_ignore_ascii_case("false") {
+                    false
+                } else {
+                    true
+                }
             }
         }
     };
@@ -1038,8 +1246,9 @@ pub async fn auth_middleware(
     if path == "/health" || path == "/healthz" || path == "/readyz" || path == "/api/auth/login" {
         return Ok(next.run(request).await);
     }
-    // Allow static UI files
-    if !path.starts_with("/api/") {
+    // Only protected paths require authentication; static UI files pass through
+    let is_protected = path.starts_with("/api/") || path == "/mcp" || path.starts_with("/mcp/");
+    if !is_protected {
         return Ok(next.run(request).await);
     }
 
@@ -1051,13 +1260,39 @@ pub async fn auth_middleware(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    let bearer = match auth_header.as_deref() {
-        Some(h) if h.starts_with("Bearer ") => h[7..].to_string(),
+    let mut bearer = auth_header
+        .as_deref()
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .map(|s| s.trim().to_string());
+
+    if bearer.is_none() {
+        if let Some(cookie_header) = request
+            .headers()
+            .get("cookie")
+            .and_then(|v| v.to_str().ok())
+        {
+            for part in cookie_header.split(';') {
+                let part = part.trim();
+                if let Some(token) = part
+                    .strip_prefix("bonsai_token=")
+                    .or_else(|| part.strip_prefix("bonsai_session="))
+                {
+                    bearer = Some(token.trim().to_string());
+                    break;
+                }
+            }
+        }
+    }
+
+    let bearer = match bearer {
+        Some(b) if !b.is_empty() => b,
         _ => return Err(StatusCode::UNAUTHORIZED),
     };
 
     let mut authenticated_role: Option<Role> = None;
-    let mut api_key_scope: Option<String> = None;
+    let mut authenticated_subject = None;
+    let mut authenticated_restricted_scope: Option<RoutingAccessScope> = None;
+    let mut raw_api_key_scope: Option<String> = None;
 
     // --- Path 1: JWT (bst_ prefix is legacy; JWTs are opaque base64url strings) ---
     if !bearer.starts_with("bsk_") {
@@ -1071,6 +1306,7 @@ pub async fn auth_middleware(
                 .any(|ci| ci.id == format!("jwt-revoked-{}", claims.jti) && ci.enabled);
             if !is_revoked {
                 authenticated_role = Some(Role::from_str(&claims.role));
+                authenticated_subject = Some(format!("user:{}", claims.sub));
             }
         }
     }
@@ -1097,14 +1333,28 @@ pub async fn auth_middleware(
             if content.expires_at_ns > 0 && super::now_ns() > content.expires_at_ns {
                 continue;
             }
-            let role = match content.scope.as_str() {
-                "admin" | "*" => Role::Admin,
-                "write" | "remediation" | "webhook" => Role::Operator,
-                "viewer" | "read" | "routing" | "routing:read" => Role::Viewer,
-                _ => Role::ApiReadonly,
-            };
-            authenticated_role = Some(role);
-            api_key_scope = Some(content.scope);
+
+            match parse_scope_grant(&content.scope) {
+                ScopeGrant::Global(role) => {
+                    authenticated_role = Some(role);
+                    authenticated_restricted_scope = None;
+                    raw_api_key_scope = Some(content.scope);
+                }
+                ScopeGrant::Restricted { role, scope } => {
+                    authenticated_role = Some(role);
+                    authenticated_restricted_scope = Some(scope);
+                    raw_api_key_scope = Some(content.scope);
+                }
+                ScopeGrant::Invalid(reason) => {
+                    tracing::warn!(
+                        scope = %content.scope,
+                        reason = %reason,
+                        "API key has invalid or malformed scope grant — failing closed"
+                    );
+                    return Err(StatusCode::FORBIDDEN);
+                }
+            }
+            authenticated_subject = Some(format!("api_key:{}", ci.id));
             break;
         }
     }
@@ -1113,30 +1363,114 @@ pub async fn auth_middleware(
         return Err(StatusCode::UNAUTHORIZED);
     };
 
-    // Enforce API key scope for /api/routing/* reads/writes
-    if path.starts_with("/api/routing/") {
-        if let Some(ref scope) = api_key_scope {
-            if let Some(routing_scope) = parse_routing_access_scope(scope) {
-                request.extensions_mut().insert(routing_scope);
-            } else {
-                let allowed_routing_scope = matches!(
-                    scope.as_str(),
-                    "*" | "admin" | "write" | "read" | "viewer" | "routing" | "routing:read"
-                );
-                if !allowed_routing_scope {
-                    return Err(StatusCode::FORBIDDEN);
-                }
+    request.extensions_mut().insert(user_role);
+    if let Some(subject) = authenticated_subject {
+        request
+            .extensions_mut()
+            .insert(AuthenticatedSubject(subject));
+    }
+
+    // Legacy capability grants must not turn their Operator role into global data access.
+    if let Some(raw_scope) = raw_api_key_scope.as_deref() {
+        let allowed = match raw_scope {
+            "webhook" => path.starts_with("/api/webhooks/") || path == "/api/webhooks",
+            "remediation" => path.starts_with("/api/remediations/") || path == "/api/remediations",
+            _ => true,
+        };
+        if !allowed {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+
+    // Enforce API key scope and attach fine-grained scope to request extensions
+    let ownership_mode = store.ownership_access_mode().await;
+    request.extensions_mut().insert(ownership_mode);
+    if let Some(ref scope) = authenticated_restricted_scope {
+        request
+            .extensions_mut()
+            .insert(OriginalRoutingAccessScope(scope.clone()));
+        // MCP retains the original grant so its shared dispatcher can normalize per tool.
+        let effective = if path == "/mcp" || path.starts_with("/mcp/") {
+            scope.clone()
+        } else {
+            scope.for_ownership_mode(ownership_mode, path.starts_with("/api/investigations"))
+        };
+        request.extensions_mut().insert(effective);
+
+        // Restrict scoped keys to an explicit allowlist of scope-aware HTTP routes
+        let is_scope_aware_route = path.starts_with("/api/routing/")
+            || path == "/api/investigations"
+            || path.starts_with("/api/investigations/")
+            || path == "/mcp"
+            || path.starts_with("/mcp/");
+
+        // Investigations are device-bound and have no VRF/tenant ownership fields.
+        if path.starts_with("/api/investigations")
+            && ownership_mode == crate::graph::ownership::OwnershipAccessMode::Strict
+            && (scope.speaker.is_none() || scope.vrf_rd.is_some() || scope.tenant_id.is_some())
+        {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        if !is_scope_aware_route {
+            tracing::warn!(
+                path = %path,
+                speaker = ?scope.speaker,
+                "Restricted API key denied access to unscoped route '{path}'"
+            );
+            return Err(StatusCode::FORBIDDEN);
+        }
+    } else if path.starts_with("/api/routing/") {
+        if let Some(ref raw_scope) = raw_api_key_scope {
+            let allowed_routing_scope = matches!(
+                raw_scope.as_str(),
+                "*" | "admin"
+                    | "operator"
+                    | "write"
+                    | "read"
+                    | "viewer"
+                    | "routing"
+                    | "routing:read"
+                    | "routing:write"
+                    | "routing:operator"
+            );
+            if !allowed_routing_scope {
+                return Err(StatusCode::FORBIDDEN);
             }
         }
     }
 
     // RBAC enforcement
-    let needed = required_role(&method, &path);
+    let scoped_investigation_read = method == "GET"
+        && path.starts_with("/api/investigations")
+        && authenticated_restricted_scope
+            .as_ref()
+            .is_some_and(|scope| {
+                ownership_mode == crate::graph::ownership::OwnershipAccessMode::AuditOnly
+                    || (scope.speaker.is_some()
+                        && scope.vrf_rd.is_none()
+                        && scope.tenant_id.is_none())
+            });
+    let needed = if scoped_investigation_read {
+        Role::ApiReadonly
+    } else {
+        required_role(&method, &path)
+    };
     if user_role < needed {
         return Err(StatusCode::FORBIDDEN);
     }
 
-    Ok(next.run(request).await)
+    let mut response = next.run(request).await;
+    if ownership_mode == crate::graph::ownership::OwnershipAccessMode::AuditOnly
+        && authenticated_restricted_scope
+            .as_ref()
+            .is_some_and(|s| s.tenant_id.is_some() || s.vrf_rd.is_some())
+    {
+        response.headers_mut().insert(
+            "x-bonsai-ownership-mode",
+            axum::http::HeaderValue::from_static("audit-only"),
+        );
+    }
+    Ok(response)
 }
 
 // ── D4-3 T3: LDAP/AD integration ───────────────────────────────────────────

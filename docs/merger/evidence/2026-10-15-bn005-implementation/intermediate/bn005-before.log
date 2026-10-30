@@ -1,0 +1,29 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2m 14s
+     Running tests/bn005_closeout.rs (target/debug/deps/bn005_closeout-bd595685cede2384)
+
+running 2 tests
+test conflicting_journals_rejected_before_open ... FAILED
+test encoded_output_bound_includes_unicode_and_json_escaping ... FAILED
+
+failures:
+
+---- conflicting_journals_rejected_before_open stdout ----
+
+thread 'conflicting_journals_rejected_before_open' (3392018) panicked at tests/bn005_closeout.rs:22:5:
+assertion failed: cfg.validate_deployment().is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- encoded_output_bound_includes_unicode_and_json_escaping stdout ----
+
+thread 'encoded_output_bound_includes_unicode_and_json_escaping' (3392019) panicked at tests/bn005_closeout.rs:9:9:
+assertion failed: serde_json::to_vec(&result).unwrap().len() <= MAX_TOOL_OUTPUT_BYTES
+
+
+failures:
+    conflicting_journals_rejected_before_open
+    encoded_output_bound_includes_unicode_and_json_escaping
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test bn005_closeout`

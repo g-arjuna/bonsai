@@ -1,5 +1,7 @@
 # Bonsai 7-Day Hands-Off Operational Proof
 
+> Historical operational procedure. Reconcile criteria with [current state](../STATUS.md) and BN-019 in [the common backlog](../../BONSAI_BACKLOG.md) before use. Autonomous remediation and operational readiness are not established by current routing/ML test suites.
+
 ## Purpose
 
 Validates that bonsai runs autonomously for 7 days on the cloud VM with no manual

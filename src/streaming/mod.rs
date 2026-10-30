@@ -345,6 +345,9 @@ mod tests {
     #[test]
     fn streaming_readiness_prefers_gnmi_then_bmp_for_bgp_roles() {
         let target = TargetConfig {
+            extra_ips: Vec::new(),
+            optional: false,
+            paths: Vec::new(),
             address: "10.0.0.1:57400".to_string(),
             enabled: true,
             tls_domain: None,

@@ -20,7 +20,7 @@
 //! Used by T5-2 grounded responses and tool catalogue responses.
 
 use axum::{Json, extract::State, http::StatusCode};
-use lbug::Connection;
+use lbug::{Connection, Value};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 
@@ -593,7 +593,7 @@ async fn tool_get_incident(
         .to_string();
 
     let detections = store
-        .read_detections(500)
+        .read_detections_filtered(1, Some(id.clone()), None, None, None)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -602,7 +602,16 @@ async fn tool_get_incident(
         .find(|d| d.id == id)
         .ok_or_else(|| format!("DetectionEvent {id} not found"))?;
 
-    let blast = {
+    if let Some(spk) = args.get("_scoped_speaker").and_then(|v| v.as_str()) {
+        if root.device_address != spk {
+            return Err(
+                "routing_scope_violation: requested detection is outside authenticated scope"
+                    .to_string(),
+            );
+        }
+    }
+
+    let mut blast = {
         let db = store.db();
         let addr = root.device_address.clone();
         tokio::task::spawn_blocking(move || {
@@ -612,6 +621,18 @@ async fn tool_get_incident(
         .await
         .map_err(|e| e.to_string())??
     };
+
+    if args
+        .get("_scoped_speaker")
+        .and_then(|v| v.as_str())
+        .is_some()
+    {
+        blast
+            .reachable_devices
+            .retain(|d| d.address == root.device_address);
+        blast.neighbor_apps.clear();
+        blast.active_detections.clear();
+    }
 
     let rule = rule_meta(&root.rule_id);
 
@@ -633,13 +654,22 @@ async fn tool_query_devices(
     args: &JsonValue,
 ) -> Result<JsonValue, String> {
     let filter = args["filter"].as_str().unwrap_or("").to_lowercase();
+    let scoped_speaker = args.get("_scoped_speaker").and_then(|v| v.as_str());
 
+    let scope_address = scoped_speaker.map(String::from);
+    let query_filter = filter.clone();
     let db = store.db();
     let raw: Vec<(String, String, String)> = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
-        let rows: Vec<_> = conn
-            .query("MATCH (d:Device) RETURN d.address, d.hostname, d.vendor")
-            .map_err(|e| e.to_string())?
+        let mut stmt = conn.prepare(
+            "MATCH (d:Device) WHERE ($scope = '' OR d.address = $scope) AND \
+             ($filter = '' OR lower(d.address) CONTAINS $filter OR lower(d.hostname) CONTAINS $filter) \
+             RETURN d.address, d.hostname, d.vendor LIMIT 501"
+        ).map_err(|e| e.to_string())?;
+        let rows: Vec<_> = conn.execute(&mut stmt, vec![
+            ("scope", Value::String(scope_address.unwrap_or_default())),
+            ("filter", Value::String(query_filter)),
+        ]).map_err(|e| e.to_string())?
             .map(|row| (read_str(&row[0]), read_str(&row[1]), read_str(&row[2])))
             .collect();
         Ok::<_, String>(rows)
@@ -647,9 +677,15 @@ async fn tool_query_devices(
     .await
     .map_err(|e| e.to_string())??;
 
+    let truncated = raw.len() > 500;
     let devices: Vec<JsonValue> = raw
-        .into_iter()
+        .into_iter().take(500)
         .filter(|(addr, host, _)| {
+            if let Some(spk) = scoped_speaker {
+                if addr != spk {
+                    return false;
+                }
+            }
             filter.is_empty()
                 || addr.to_lowercase().contains(&filter)
                 || host.to_lowercase().contains(&filter)
@@ -660,7 +696,7 @@ async fn tool_query_devices(
         .collect();
 
     let count = devices.len();
-    Ok(json!({ "devices": devices, "count": count }))
+    Ok(json!({ "devices": devices, "count": count, "truncated": truncated, "row_cap": 500 }))
 }
 
 async fn tool_get_device_blast_radius(
@@ -669,8 +705,14 @@ async fn tool_get_device_blast_radius(
 ) -> Result<JsonValue, String> {
     let address = args["address"]
         .as_str()
+        .or_else(|| args["device_address"].as_str())
+        .or_else(|| args["_scoped_speaker"].as_str())
         .ok_or("missing argument: address")?
         .to_string();
+    let restricted = args
+        .get("_scoped_speaker")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     let max_hops = args["max_hops"].as_u64().unwrap_or(2).min(5) as usize;
 
     let db = store.db();
@@ -681,6 +723,13 @@ async fn tool_get_device_blast_radius(
     .await
     .map_err(|e| e.to_string())??;
 
+    let mut result = result;
+    if let Some(speaker) = restricted {
+        result.reachable_devices.retain(|d| d.address == speaker);
+        // Neighbour applications/detections have no ownership fields in this result.
+        result.neighbor_apps.clear();
+        result.active_detections.clear();
+    }
     serde_json::to_value(&result).map_err(|e| e.to_string())
 }
 
@@ -691,10 +740,21 @@ async fn tool_list_active_detections(
     let limit = args["limit"].as_u64().unwrap_or(50).min(500) as u32;
     let severity_filter = args["severity"].as_str().unwrap_or("").to_string();
     let rule_filter = args["rule_id"].as_str().unwrap_or("").to_string();
-    let device_filter = args["device_address"].as_str().unwrap_or("").to_string();
+    let device_filter = args["device_address"]
+        .as_str()
+        .or_else(|| args["address"].as_str())
+        .or_else(|| args["_scoped_speaker"].as_str())
+        .unwrap_or("")
+        .to_string();
 
     let detections = store
-        .read_detections(limit)
+        .read_detections_filtered(
+            limit,
+            None,
+            Some(device_filter.clone()),
+            Some(severity_filter.clone()),
+            Some(rule_filter.clone()),
+        )
         .await
         .map_err(|e| e.to_string())?;
 
@@ -736,99 +796,9 @@ async fn tool_list_active_detections(
 /// 3. Extended keyword list includes `DROP`, `LOAD`, and `CALL` (which can
 ///    invoke write-capable procedures in Kuzu).
 ///
-/// **Known limitation**: this is a best-effort text filter. A fully correct
-/// solution requires opening the lbug `Connection` in a read-only transaction
-/// mode. lbug 0.15.x does not expose such a mode.
-///
-/// **Upgrade path (D2-11 T1)**: watch for `lbug::Connection::new_read_only(&db)`
-/// or an equivalent in the lbug changelog. When that API lands, replace the
-/// `tool_query_graph` body with:
-/// ```rust,ignore
-/// let conn = Connection::new_read_only(&db).map_err(|e| e.to_string())?;
-/// let result = conn.query(&cypher)...
-/// ```
-/// and remove the `is_readonly_cypher()` pre-filter (keep it as defence-in-depth).
-/// Until then the text gate prevents casual misuse and common injection patterns,
-/// but must NOT be treated as a security boundary against a determined adversary
-/// with direct API access.
+/// Lexical defence in depth; execution also uses a native read-only transaction.
 pub fn is_readonly_cypher(cypher: &str) -> bool {
-    let stripped = strip_cypher_comments(cypher);
-    let upper = stripped.to_uppercase();
-
-    const MUTATION_KEYWORDS: &[&str] = &[
-        "CREATE", "SET", "DELETE", "MERGE", "REMOVE", "DETACH", "DROP", "LOAD", "CALL",
-        // Additional Kuzu write-capable keywords not in the original list (D2-11 T1):
-        "COPY",    // COPY FROM imports data
-        "FOREACH", // FOREACH can execute write sub-clauses
-        "ALTER",   // ALTER TABLE schema mutation
-        "RENAME",  // RENAME TABLE/COLUMN
-        "IMPORT",  // IMPORT DATABASE
-        "EXPORT",  // EXPORT DATABASE (not a write, but leaks schema)
-    ];
-
-    for kw in MUTATION_KEYWORDS {
-        if contains_keyword(&upper, kw) {
-            return false;
-        }
-    }
-    true
-}
-
-/// Strip `--`, `//` single-line comments and `/* */` block comments.
-fn strip_cypher_comments(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let chars: Vec<char> = s.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        // Block comment
-        if i + 1 < chars.len() && chars[i] == '/' && chars[i + 1] == '*' {
-            i += 2;
-            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
-                i += 1;
-            }
-            i += 2; // consume */
-            continue;
-        }
-        // Line comment (-- or //)
-        if i + 1 < chars.len()
-            && ((chars[i] == '-' && chars[i + 1] == '-')
-                || (chars[i] == '/' && chars[i + 1] == '/'))
-        {
-            while i < chars.len() && chars[i] != '\n' {
-                i += 1;
-            }
-            continue;
-        }
-        out.push(chars[i]);
-        i += 1;
-    }
-    out
-}
-
-/// Check if `kw` appears as a whole word (word-boundary on both sides) in `upper`.
-fn contains_keyword(upper: &str, kw: &str) -> bool {
-    let mut start = 0;
-    while let Some(pos) = upper[start..].find(kw) {
-        let abs = start + pos;
-        let before_ok = abs == 0
-            || !upper
-                .chars()
-                .nth(abs.saturating_sub(1))
-                .map(|c| c.is_alphanumeric() || c == '_')
-                .unwrap_or(false);
-        let after_pos = abs + kw.len();
-        let after_ok = after_pos >= upper.len()
-            || !upper
-                .chars()
-                .nth(after_pos)
-                .map(|c| c.is_alphanumeric() || c == '_')
-                .unwrap_or(false);
-        if before_ok && after_ok {
-            return true;
-        }
-        start = abs + 1;
-    }
-    false
+    crate::graph::explorer::validate_query(cypher).is_ok()
 }
 
 /// Enforce a hard byte ceiling (`MAX_TOOL_OUTPUT_BYTES`) and attach `as_of` / `truncated` metadata (A04).
@@ -844,18 +814,34 @@ pub fn enforce_tool_output_bounds(mut payload: JsonValue) -> JsonValue {
     if serialized.len() <= MAX_TOOL_OUTPUT_BYTES {
         return payload;
     }
-    let preview_len = MAX_TOOL_OUTPUT_BYTES.saturating_sub(512);
-    let preview: String = serialized.chars().take(preview_len).collect();
-    json!({
+    // Bound the serialized envelope, including UTF-8 and JSON escaping.
+    let mut result = json!({
         "as_of": chrono::Utc::now().to_rfc3339(),
         "truncated": true,
         "byte_cap": MAX_TOOL_OUTPUT_BYTES,
         "original_bytes": serialized.len(),
-        "truncated_preview": preview,
-    })
+        "truncated_preview": "",
+    });
+    let overhead = result.to_string().len();
+    let mut remaining = MAX_TOOL_OUTPUT_BYTES.saturating_sub(overhead);
+    let mut preview = String::new();
+    for ch in serialized.chars() {
+        let cost = match ch {
+            '"' | '\\' | '\n' | '\r' | '\t' | '\u{0008}' | '\u{000c}' => 2,
+            c if c <= '\u{001f}' => 6,
+            c => c.len_utf8(),
+        };
+        if cost > remaining {
+            break;
+        }
+        remaining -= cost;
+        preview.push(ch);
+    }
+    result["truncated_preview"] = json!(preview);
+    result
 }
 
-pub async fn tool_query_graph_with_store(
+async fn tool_query_graph_with_store(
     store: &std::sync::Arc<crate::graph::GraphStore>,
     args: &JsonValue,
 ) -> Result<JsonValue, String> {
@@ -865,28 +851,22 @@ pub async fn tool_query_graph_with_store(
         return Err("mutation keywords not permitted in read-only query_graph tool".to_string());
     }
 
-    let cypher = cypher.to_string();
-    let db = store.db();
-
-    let rows: Vec<Vec<String>> = tokio::time::timeout(
+    let result = crate::graph::explorer::execute_query_with_deadline(
+        store.db(),
+        cypher.to_string(),
         TOOL_QUERY_TIMEOUT,
-        tokio::task::spawn_blocking(move || {
-            let conn = Connection::new(&db).map_err(|e| e.to_string())?;
-            let result: Vec<Vec<String>> = conn
-                .query(&cypher)
-                .map_err(|e| e.to_string())?
-                .take(MAX_GRAPH_ROWS + 1)
-                .map(|row| row.iter().map(|v| format!("{v:?}")).collect())
-                .collect();
-            Ok::<_, String>(result)
-        }),
     )
-    .await
-    .map_err(|_| "query_graph timed out after 5s".to_string())?
-    .map_err(|e| e.to_string())??;
+    .await?;
+    let engine_truncated = result.truncated;
+    let rows: Vec<Vec<String>> = result
+        .rows
+        .into_iter()
+        .take(MAX_GRAPH_ROWS + 1)
+        .map(|row| row.into_iter().map(|v| v.to_string()).collect())
+        .collect();
 
     let total_rows = rows.len();
-    let truncated = total_rows > MAX_GRAPH_ROWS;
+    let truncated = engine_truncated || total_rows > MAX_GRAPH_ROWS;
     let capped_rows: Vec<Vec<String>> = rows.into_iter().take(MAX_GRAPH_ROWS).collect();
     let row_count = capped_rows.len();
 
@@ -899,11 +879,15 @@ pub async fn tool_query_graph_with_store(
     })))
 }
 
-pub async fn tool_get_changes_with_store(
+async fn tool_get_changes_with_store(
     store: &std::sync::Arc<crate::graph::GraphStore>,
     args: &JsonValue,
 ) -> Result<JsonValue, String> {
-    let device_filter = args["device_address"].as_str().map(|s| s.to_string());
+    let device_filter = args["device_address"]
+        .as_str()
+        .or_else(|| args["address"].as_str())
+        .or_else(|| args["_scoped_speaker"].as_str())
+        .map(|s| s.to_string());
     let limit = args["limit"].as_u64().unwrap_or(25).clamp(1, 100) as usize;
     let db = store.db();
     let dev_clone = device_filter.clone();
@@ -1008,7 +992,67 @@ async fn fetch_remote_routing_tool_json(
 
 /// Dispatch a single MCP tool call using `GraphStore` and either an in-process `RoutingServiceState`
 /// or the private `bonsai-routing` HTTP service (`R05`, `A04`).
+/// Trusted server-side identity. Never deserialized from tool JSON.
+#[derive(Clone, Debug)]
+pub struct ToolExecutionContext {
+    pub role: crate::http_server::auth::Role,
+    pub scope: Option<crate::http_server::auth::RoutingAccessScope>,
+}
+
+impl ToolExecutionContext {
+    pub fn for_device(device: &str) -> Self {
+        Self {
+            role: crate::http_server::auth::Role::ApiReadonly,
+            scope: Some(crate::http_server::auth::RoutingAccessScope {
+                speaker: Some(device.to_string()),
+                ..Default::default()
+            }),
+        }
+    }
+    /// Explicit privileged service/global identity for trusted internal callers.
+    pub fn global(role: crate::http_server::auth::Role) -> Self {
+        Self { role, scope: None }
+    }
+}
+
+/// The shared execution boundary for MCP, prefetched context and agent tool calls.
 pub async fn call_tool_with_store_and_routing(
+    store: &std::sync::Arc<crate::graph::GraphStore>,
+    routing: Option<&std::sync::Arc<crate::routing_service::RoutingServiceState>>,
+    name: &str,
+    args: &JsonValue,
+    context: &ToolExecutionContext,
+) -> Result<JsonValue, String> {
+    let mut scoped_args = args.clone();
+    let mode = store.ownership_access_mode().await;
+    authorize_and_scope_tool_with_mode(
+        name,
+        &mut scoped_args,
+        context.scope.as_ref(),
+        Some(&context.role),
+        mode,
+    )?;
+    let mut result = dispatch_authorized_tool(store, routing, name, &scoped_args).await?;
+    if mode == crate::graph::ownership::OwnershipAccessMode::AuditOnly
+        && context
+            .scope
+            .as_ref()
+            .is_some_and(|s| s.tenant_id.is_some() || s.vrf_rd.is_some())
+        && name != "evaluate_change_plan"
+    {
+        if let Some(obj) = result.as_object_mut() {
+            obj.insert(
+                "ownership_access".into(),
+                json!({"mode":"audit_only", "tenant_isolation_enforced":false,
+                "unsupported_vrf_ownership_enforced":false, "speaker_constraints_retained":true}),
+            );
+        }
+        result = enforce_tool_output_bounds(result);
+    }
+    Ok(result)
+}
+
+async fn dispatch_authorized_tool(
     store: &std::sync::Arc<crate::graph::GraphStore>,
     routing: Option<&std::sync::Arc<crate::routing_service::RoutingServiceState>>,
     name: &str,
@@ -1192,10 +1236,319 @@ pub async fn call_tool_with_store_and_routing(
     }
 }
 
+/// Validate tool-level RBAC role and enforce identity-derived resource scoping on MCP tool arguments.
+pub fn authorize_and_scope_tool(
+    name: &str,
+    args: &mut JsonValue,
+    scope_opt: Option<&crate::http_server::auth::RoutingAccessScope>,
+    role_opt: Option<&crate::http_server::auth::Role>,
+) -> Result<(), String> {
+    authorize_and_scope_tool_with_mode(
+        name,
+        args,
+        scope_opt,
+        role_opt,
+        crate::graph::ownership::OwnershipAccessMode::Strict,
+    )
+}
+
+pub fn authorize_and_scope_tool_with_mode(
+    name: &str,
+    args: &mut JsonValue,
+    original_scope: Option<&crate::http_server::auth::RoutingAccessScope>,
+    role_opt: Option<&crate::http_server::auth::Role>,
+    mode: crate::graph::ownership::OwnershipAccessMode,
+) -> Result<(), String> {
+    use crate::graph::ownership::OwnershipAccessMode;
+    use crate::http_server::auth::Role;
+    let original_resource_scoped = original_scope
+        .is_some_and(|s| s.speaker.is_some() || s.vrf_rd.is_some() || s.tenant_id.is_some());
+    let effective = original_scope.map(|s| {
+        if name == "evaluate_change_plan" {
+            return s.clone();
+        }
+        s.for_ownership_mode(
+            mode,
+            matches!(
+                name,
+                "query_devices"
+                    | "get_changes"
+                    | "get_device_blast_radius"
+                    | "list_active_detections"
+                    | "get_incident"
+            ),
+        )
+    });
+    let scope_opt = effective.as_ref();
+
+    if !args.is_object() {
+        *args = json!({});
+    }
+
+    // Strip any client-supplied internal `_scoped_*` parameters to prevent spoofing
+    if let Some(obj) = args.as_object_mut() {
+        obj.retain(|k, _| !k.starts_with("_scoped_"));
+    }
+
+    // 1. Resource-scoped keys must never run arbitrary Cypher, regardless of role,
+    // and unsupported tool/scope combinations must fail closed.
+    if let Some(scope) = scope_opt {
+        let is_resource_scoped = original_resource_scoped;
+
+        if is_resource_scoped {
+            if name == "query_graph" {
+                return Err(
+                    "routing_scope_violation: arbitrary graph queries ('query_graph') are disabled for resource-scoped API keys; use scoped diagnostic tools instead"
+                        .to_string(),
+                );
+            }
+
+            // Device-bound tools operate on GraphStore Device/ConfigSnapshot/DetectionEvent nodes,
+            // which have no tenant_id or vrf_rd properties in the schema.
+            // Without an explicit speaker/device scope, ownership cannot be established.
+            let is_device_bound_tool = matches!(
+                name,
+                "query_devices"
+                    | "get_changes"
+                    | "get_device_blast_radius"
+                    | "list_active_detections"
+                    | "get_incident"
+            );
+            if mode == OwnershipAccessMode::Strict
+                && is_device_bound_tool
+                && scope.speaker.is_none()
+            {
+                return Err(format!(
+                    "routing_scope_violation: tool '{name}' cannot establish ownership for tenant/VRF scoped keys without an explicit speaker/device scope"
+                ));
+            }
+
+            // compare_snapshots does not support tenant_id scoping
+            if name == "compare_snapshots"
+                && scope.tenant_id.is_some()
+                && scope.speaker.is_none()
+                && scope.vrf_rd.is_none()
+            {
+                return Err(
+                    "routing_scope_violation: tool 'compare_snapshots' does not support tenant-only scoping"
+                        .to_string(),
+                );
+            }
+
+            if name != "evaluate_change_plan" && scope.tenant_id.is_some() {
+                return Err("routing_scope_violation: tenant ownership is unavailable for stored observations".into());
+            }
+            if is_device_bound_tool && scope.vrf_rd.is_some() {
+                return Err(
+                    "routing_scope_violation: device records do not support VRF ownership".into(),
+                );
+            }
+
+            if matches!(
+                name,
+                "get_prefix_journey"
+                    | "get_peer_timeline"
+                    | "get_evidence_coverage"
+                    | "explain_missing_prefix"
+            ) && scope.speaker.is_none()
+                && mode == OwnershipAccessMode::Strict
+            {
+                return Err("routing_scope_violation: transport evidence requires a speaker ownership constraint".into());
+            }
+            // Default deny any unknown or unclassified tool for restricted keys
+            let is_known_scoped_tool = is_device_bound_tool
+                || matches!(
+                    name,
+                    "get_prefix_journey"
+                        | "get_peer_timeline"
+                        | "get_evidence_coverage"
+                        | "compare_snapshots"
+                        | "explain_missing_prefix"
+                        | "evaluate_change_plan"
+                );
+            if !is_known_scoped_tool {
+                return Err(format!(
+                    "routing_scope_violation: tool '{name}' is not permitted for restricted API keys"
+                ));
+            }
+        }
+    }
+
+    // 2. Tool-level role authorization
+    if let Some(&role) = role_opt {
+        let required_role = match name {
+            "evaluate_change_plan" => Role::Operator,
+            "query_graph" => Role::Viewer,
+            _ => Role::ApiReadonly,
+        };
+        if role < required_role {
+            return Err(format!(
+                "insufficient_permissions: tool '{name}' requires at least {} role, user has '{}'",
+                required_role.as_str(),
+                role.as_str(),
+            ));
+        }
+    }
+
+    // 3. Identity-derived resource scoping for other tools
+    if let Some(scope) = scope_opt {
+        // Speaker / device address enforcement
+        if let Some(ref spk) = scope.speaker {
+            // Check top-level 'speaker'
+            if let Some(s) = args.get("speaker").and_then(|v| v.as_str()) {
+                if s != spk {
+                    return Err(format!(
+                        "routing_scope_violation: requested speaker '{s}' violates token scope '{spk}'"
+                    ));
+                }
+            } else if matches!(
+                name,
+                "get_prefix_journey"
+                    | "get_peer_timeline"
+                    | "get_evidence_coverage"
+                    | "compare_snapshots"
+                    | "explain_missing_prefix"
+            ) {
+                if let Some(obj) = args.as_object_mut() {
+                    obj.insert("speaker".to_string(), json!(spk));
+                }
+            }
+
+            // Check top-level 'device_address'
+            if let Some(d) = args.get("device_address").and_then(|v| v.as_str()) {
+                if !d.is_empty() && d != spk {
+                    return Err(format!(
+                        "routing_scope_violation: requested device_address '{d}' violates token scope '{spk}'"
+                    ));
+                }
+            }
+
+            // Check top-level 'address'
+            if let Some(a) = args.get("address").and_then(|v| v.as_str()) {
+                if !a.is_empty() && a != spk {
+                    return Err(format!(
+                        "routing_scope_violation: requested device address '{a}' violates token scope '{spk}'"
+                    ));
+                }
+            }
+
+            // Tool-specific defaults and tags for speaker
+            match name {
+                "get_changes" | "list_active_detections" => {
+                    if let Some(obj) = args.as_object_mut() {
+                        let needs_dev = obj
+                            .get("device_address")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.is_empty())
+                            .unwrap_or(true);
+                        if needs_dev {
+                            obj.insert("device_address".to_string(), json!(spk));
+                        }
+                        obj.insert("_scoped_speaker".to_string(), json!(spk));
+                    }
+                }
+                "get_device_blast_radius" => {
+                    if let Some(obj) = args.as_object_mut() {
+                        if obj.get("address").is_none() {
+                            obj.insert("address".to_string(), json!(spk));
+                        }
+                        obj.insert("_scoped_speaker".to_string(), json!(spk));
+                    }
+                }
+                "query_devices" | "get_incident" => {
+                    if let Some(obj) = args.as_object_mut() {
+                        obj.insert("_scoped_speaker".to_string(), json!(spk));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // VRF RD enforcement
+        if let Some(ref vrf) = scope.vrf_rd {
+            if let Some(v) = args.get("vrf_rd").and_then(|val| val.as_str()) {
+                if v != vrf {
+                    return Err(format!(
+                        "routing_scope_violation: requested vrf_rd '{v}' violates token scope '{vrf}'"
+                    ));
+                }
+            } else if matches!(
+                name,
+                "get_prefix_journey"
+                    | "get_peer_timeline"
+                    | "get_evidence_coverage"
+                    | "compare_snapshots"
+                    | "explain_missing_prefix"
+            ) {
+                if let Some(obj) = args.as_object_mut() {
+                    obj.insert("vrf_rd".to_string(), json!(vrf));
+                }
+            }
+        }
+
+        // Tenant ID enforcement
+        if let Some(ref tenant) = scope.tenant_id {
+            if let Some(t) = args.get("tenant_id").and_then(|val| val.as_str()) {
+                if t != tenant {
+                    return Err(format!(
+                        "routing_scope_violation: requested tenant_id '{t}' violates token scope '{tenant}'"
+                    ));
+                }
+            } else if matches!(
+                name,
+                "get_prefix_journey"
+                    | "get_peer_timeline"
+                    | "get_evidence_coverage"
+                    | "explain_missing_prefix"
+            ) {
+                if let Some(obj) = args.as_object_mut() {
+                    obj.insert("tenant_id".to_string(), json!(tenant));
+                }
+            }
+        }
+
+        // Plan fields enforcement for evaluate_change_plan
+        if name == "evaluate_change_plan" {
+            if let Some(plan_obj) = args.get("plan").and_then(|p| p.as_object()) {
+                if let Some(ref spk) = scope.speaker {
+                    if let Some(dev) = plan_obj.get("device_address").and_then(|v| v.as_str()) {
+                        if dev != spk {
+                            return Err(format!(
+                                "routing_scope_violation: plan device_address '{dev}' violates token scope '{spk}'"
+                            ));
+                        }
+                    }
+                }
+                if let Some(ref vrf) = scope.vrf_rd {
+                    if let Some(v) = plan_obj.get("vrf_rd").and_then(|val| val.as_str()) {
+                        if v != vrf {
+                            return Err(format!(
+                                "routing_scope_violation: plan vrf_rd '{v}' violates token scope '{vrf}'"
+                            ));
+                        }
+                    }
+                }
+                if let Some(ref tenant) = scope.tenant_id {
+                    if let Some(t) = plan_obj.get("tenant_id").and_then(|val| val.as_str()) {
+                        if t != tenant {
+                            return Err(format!(
+                                "routing_scope_violation: plan tenant_id '{t}' violates token scope '{tenant}'"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // ── MCP POST /mcp handler ─────────────────────────────────────────────────────
 
 pub async fn mcp_handler(
     State(state): State<AppState>,
+    extensions: axum::http::Extensions,
     Json(req): Json<McpRpcRequest>,
 ) -> Result<Json<McpRpcResponse>, (StatusCode, String)> {
     let id = req.id.clone().unwrap_or(JsonValue::Null);
@@ -1214,9 +1567,22 @@ pub async fn mcp_handler(
 
         "tools/call" => {
             let name = req.params["name"].as_str().unwrap_or("").to_string();
-            let args = &req.params["arguments"];
-
-            let result = call_tool(&state, &name, args).await;
+            let args = req.params["arguments"].clone();
+            let Some(role) = extensions.get::<crate::http_server::auth::Role>() else {
+                return Ok(Json(McpRpcResponse::err(
+                    id,
+                    -32000,
+                    "missing authenticated tool principal",
+                )));
+            };
+            let context = ToolExecutionContext {
+                role: *role,
+                scope: extensions
+                    .get::<crate::http_server::auth::RoutingAccessScope>()
+                    .cloned(),
+            };
+            let result =
+                call_tool_with_store_and_routing(&state.store, None, &name, &args, &context).await;
 
             match result {
                 Ok(payload) => McpRpcResponse::ok(id, mcp_content(payload)),
@@ -1235,8 +1601,9 @@ pub async fn call_tool(
     state: &AppState,
     name: &str,
     args: &JsonValue,
+    context: &ToolExecutionContext,
 ) -> Result<JsonValue, String> {
-    call_tool_with_store_and_routing(&state.store, None, name, args).await
+    call_tool_with_store_and_routing(&state.store, None, name, args, context).await
 }
 
 /// Return tool definitions in the `AiToolDef` format expected by the AI provider.

@@ -1,0 +1,13 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 35.16s
+     Running tests/claim_validation_executor_probes.rs (target/debug/deps/claim_validation_executor_probes-e4337ebb95921490)
+
+running 4 tests
+test pipe_delimited_signing_payload_has_a_field_boundary_collision ... ok
+test active_scope_lock_is_not_recovered_after_reopen ... ok
+test unsigned_modeled_plan_is_accepted_by_default_executor ... ok
+test failed_disk_append_can_be_replayed_as_success_in_memory ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,25 @@
+11:16:56 INFO Containerlab started version=0.79.0
+11:16:56 INFO Parsing & checking topology file=topology.clab.yml
+11:16:56 INFO Creating docker network name=bonsai-bn006-d821abca IPv4 subnet=172.31.216.0/24 IPv6 subnet="" MTU=0
+11:16:57 INFO Creating lab directory path=/tmp/bonsai-bn006-d821abca/clab-bonsai-bn006-d821abca
+11:16:57 INFO Creating container name=srl2
+11:16:57 INFO Creating container name=srl1
+11:16:58 INFO Running postdeploy actions kind=nokia_srlinux node=srl2
+11:16:58 INFO Created link: srl1:e1-1 ▪┄┄▪ srl2:e1-1
+11:16:58 INFO Running postdeploy actions kind=nokia_srlinux node=srl1
+11:19:49 INFO Adding host entries path=/etc/hosts
+11:19:50 INFO Adding SSH config for nodes path=/etc/ssh/ssh_config.d/clab-bonsai-bn006-d821abca.conf
+11:19:50 INFO containerlab version
+  🎉=
+  │ A newer containerlab version (0.82.0) is available!
+  │ Release notes: https://containerlab.dev/rn/0.82/
+  │ Run 'clab version upgrade' or see https://containerlab.dev/install/ for other installation options.
+╭─────────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────────┬─────────┬────────────────╮
+│               Name              │                                           Kind/Image                                          │  State  │ IPv4/6 Address │
+├─────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────┼─────────┼────────────────┤
+│ clab-bonsai-bn006-d821abca-srl1 │ nokia_srlinux                                                                                 │ running │ 172.31.216.3   │
+│                                 │ ghcr.io/nokia/srlinux@sha256:ad3d4a533674cf2e2e7321fef38806a6c66e3d56a3e8693c45fc2b4206078dd6 │         │ N/A            │
+├─────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────┼─────────┼────────────────┤
+│ clab-bonsai-bn006-d821abca-srl2 │ nokia_srlinux                                                                                 │ running │ 172.31.216.2   │
+│                                 │ ghcr.io/nokia/srlinux@sha256:ad3d4a533674cf2e2e7321fef38806a6c66e3d56a3e8693c45fc2b4206078dd6 │         │ N/A            │
+╰─────────────────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────┴─────────┴────────────────╯

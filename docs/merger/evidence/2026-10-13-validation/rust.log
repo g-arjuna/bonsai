@@ -1,0 +1,53 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3m 00s
+     Running tests/a10_a11_a12_operator_and_scenario_pack.rs (target/debug/deps/a10_a11_a12_operator_and_scenario_pack-3a7052484c01c5ac)
+
+running 3 tests
+test a10_operator_adjudication_separates_recommendation_acceptance_from_verified_rca ... ok
+test a11_scenario_pack_covers_all_eight_fault_families_with_hidden_oracles_and_adversarial_cases ... ok
+test a12_policy_trace_comparison_evaluates_four_policies_and_writes_benchmark_report ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+     Running tests/a13_a20_change_assurance_and_executor.rs (target/debug/deps/a13_a20_change_assurance_and_executor-eb77708be006b6f5)
+
+running 6 tests
+test a13_nokia_srl_adapter_separates_nos_schema_drift_from_network_failure ... ok
+test a19_shadow_operational_pilot_records_utility_and_enforces_zero_writes ... ok
+test a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idempotency_and_recovery ... ok
+test a18_cryptographic_signatures_and_executor_restart_persistence ... ok
+test a19_shadow_pilot_audit_journal_persists_observations ... ok
+test a16_a17_digital_twin_assurance_gate_and_mcp_evaluate_change_plan ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.25s
+
+     Running tests/b16_b17_b18_b19_m3_release_gates.rs (target/debug/deps/b16_b17_b18_b19_m3_release_gates-7350a8831f5926fd)
+
+running 3 tests
+test b16_versioned_config_and_routing_jsonl_migration_with_rollback ... ok
+test b17_b18_frr_two_clean_runs_and_multivendor_capability_matrix ... ok
+test b19_deterministic_load_fault_injection_and_crash_replay_equivalence ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 29.60s
+
+     Running tests/r01_r04_routing_history_recovery.rs (target/debug/deps/r01_r04_routing_history_recovery-fbc6567fb164f625)
+
+running 7 tests
+test accepted_raw_record_must_recover_event_history ... ok
+test recovered_truncated_event_tail_must_allow_future_restart ... ok
+test r02_second_restart_after_raw_recovery_is_idempotent_and_preserves_epoch ... ok
+test transport_gap_must_survive_restart ... ok
+test r03_truncated_bmp_journal_tail_is_repaired_on_disk_for_future_appends ... ok
+test r04_epoch_fenced_disconnect_and_resync_completeness_rules ... ok
+test large_valid_update_must_preserve_all_route_events ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+     Running tests/r05_r06_runtime_wiring_and_scope.rs (target/debug/deps/r05_r06_runtime_wiring_and_scope-6168a12f639d7217)
+
+running 2 tests
+test r05_r06_investigation_runtime_budget_dedup_and_bounded_graph_rows ... ok
+test r05_r06_remote_mcp_projector_and_scoped_routing_verification ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.78s
+

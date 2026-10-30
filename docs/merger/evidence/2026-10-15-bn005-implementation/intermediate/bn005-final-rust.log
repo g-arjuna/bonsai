@@ -1,0 +1,106 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 55.23s
+     Running tests/a13_a20_change_assurance_and_executor.rs (target/debug/deps/a13_a20_change_assurance_and_executor-eb77708be006b6f5)
+
+running 20 tests
+test a13_nokia_srl_adapter_separates_nos_schema_drift_from_network_failure ... ok
+test a19_shadow_operational_pilot_records_utility_and_enforces_zero_writes ... ok
+test a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idempotency_and_recovery ... ok
+test bn001_execution_intent_is_persisted_before_effects_and_recovered_in_flight ... ok
+test bn001_concurrent_executors_cannot_acquire_same_persisted_scope ... ok
+test bn001_idempotency_replay_strictly_bound_to_plan_scope_and_tenant ... ok
+test a19_shadow_pilot_audit_journal_persists_observations ... ok
+test bn002_canonical_signing_bytes_eliminates_delimiter_collisions ... ok
+test bn002_changing_unsigned_assurance_fidelity_is_rejected_in_enforced_mode ... ok
+test bn001_active_scope_lock_is_persisted_and_recovered_across_reopen ... ok
+test a18_cryptographic_signatures_and_executor_restart_persistence ... ok
+test bn002_fidelity_limitations_are_bound_by_report_hash ... ok
+test bn002_report_identity_delimiters_eliminate_identical_hashes ... ok
+test bn001_failed_disk_append_never_replays_as_success_from_memory ... ok
+test bn001_empty_durable_journal_fails_closed_on_replay ... ok
+test bn001_corruption_added_after_completion_fails_closed_on_replay ... ok
+test bn001_journal_rejects_corrupt_interior_records_and_repairs_torn_tail ... ok
+test bn002_enforced_mode_requires_signing_authority_and_rejects_modeled_assurance ... ok
+test bn002_completed_replay_in_enforced_mode_requires_signing_authority_and_rejects_simulation_replay ... ok
+test a16_a17_digital_twin_assurance_gate_and_mcp_evaluate_change_plan ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.28s
+
+     Running tests/b11_b12_b13_routing_workflow.rs (target/debug/deps/b11_b12_b13_routing_workflow-1165c31b5d0c6b58)
+
+running 3 tests
+test b12_security_rbac_scoped_reads_and_secret_redaction ... ok
+test b13_b15_graph_routing_projector_idempotency_and_single_bmp_authority ... ok
+test b11_routing_api_contract_prefix_history_and_graceful_degradation ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.72s
+
+     Running tests/bn004_production_investigator_wiring.rs (target/debug/deps/bn004_production_investigator_wiring-ad2a97f4a846b2fe)
+
+running 6 tests
+test test_bn004_measured_provider_policy_vs_scaffolds_on_held_out_scenarios ... ok
+test test_bn004_operator_adjudication_feedback ... ok
+test test_bn004_cancellation_and_timeouts ... ok
+test test_bn004_deduplication_and_redaction ... ok
+test test_bn004_configured_provider_wiring_and_read_only_shadow_mode ... ok
+test test_bn004_concurrent_budget_reservations_and_persisted_spend_across_restart ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.43s
+
+     Running tests/bn005_closeout.rs (target/debug/deps/bn005_closeout-bd595685cede2384)
+
+running 10 tests
+test advertised_tools_have_an_explicit_role_and_scope_support_matrix ... ok
+test conflicting_journals_rejected_before_open ... ok
+test compose_requires_token_and_persists_both_journals_on_the_runtime_volume ... ok
+test encoded_output_bound_includes_unicode_and_json_escaping ... ok
+test actual_binary_fail_closed_startup_matrix ... ok
+test actual_binary_kill_restart_preserves_history_and_accepts_new_ingest ... ok
+test sparse_late_scoped_history_is_bounded_pageable_and_restart_stable ... ok
+test query_deadline_and_request_cancellation_stop_engine_workers ... ok
+test investigator_inherits_principal_for_prefetch_and_model_tools ... ok
+test concurrent_ingestion_never_publishes_a_cursor_past_unpersisted_events ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.08s
+
+     Running tests/bn005_deployment_and_scope_hardening.rs (target/debug/deps/bn005_deployment_and_scope_hardening-0776d16e4f6549d5)
+
+running 13 tests
+test test_bn005_graph_explorer_readonly_and_evasion_checks ... ok
+test test_bn005_fail_closed_internal_endpoints ... ok
+test test_bn005_anonymous_mcp_access_is_denied ... ok
+test test_bn005_rib_event_journal_latest_evidence_without_truncation ... ok
+test test_bn005_routing_config_deployment_validation ... ok
+test test_bn005_quote_comment_mutation_evasion_is_rejected_and_graph_unchanged ... ok
+test test_bn005_fail_closed_public_web_auth ... ok
+test test_bn005_conflicting_speaker_aliases_are_rejected ... ok
+test test_bn005_decoded_bmp_vrf_mismatch_is_rejected ... ok
+test test_bn005_identity_derived_tenant_and_exporter_scoping ... ok
+test test_bn005_authenticated_mcp_scoped_tool_authorization_and_denial ... ok
+test test_bn005_http_scope_support_matrix_and_encoded_parameters ... ok
+test test_bn005_strict_scope_parsing_default_deny_and_readonly_transactions ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.68s
+
+     Running tests/r01_r04_routing_history_recovery.rs (target/debug/deps/r01_r04_routing_history_recovery-fbc6567fb164f625)
+
+running 7 tests
+test accepted_raw_record_must_recover_event_history ... ok
+test recovered_truncated_event_tail_must_allow_future_restart ... ok
+test r02_second_restart_after_raw_recovery_is_idempotent_and_preserves_epoch ... ok
+test r03_truncated_bmp_journal_tail_is_repaired_on_disk_for_future_appends ... ok
+test transport_gap_must_survive_restart ... ok
+test r04_epoch_fenced_disconnect_and_resync_completeness_rules ... ok
+test large_valid_update_must_preserve_all_route_events ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running tests/r05_r06_runtime_wiring_and_scope.rs (target/debug/deps/r05_r06_runtime_wiring_and_scope-6168a12f639d7217)
+
+running 2 tests
+test r05_r06_investigation_runtime_budget_dedup_and_bounded_graph_rows ... ok
+test r05_r06_remote_mcp_projector_and_scoped_routing_verification ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.72s
+

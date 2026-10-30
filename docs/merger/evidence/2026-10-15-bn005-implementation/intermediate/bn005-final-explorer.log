@@ -1,0 +1,28 @@
+    Blocking waiting for file lock on package cache
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1m 15s
+     Running unittests src/lib.rs (target/debug/deps/bonsai-cff27876cf17896b)
+
+running 19 tests
+test graph::explorer::tests::extract_columns_with_as_aliases ... ok
+test graph::explorer::tests::extract_columns_with_order_by ... ok
+test graph::explorer::tests::extract_columns_simple ... ok
+test graph::explorer::tests::validate_allows_legitimate_comments ... ok
+test graph::explorer::tests::validate_allows_match_return ... ok
+test graph::explorer::tests::validate_allows_mutation_keywords_inside_string_literals ... ok
+test graph::explorer::tests::validate_allows_optional_match ... ok
+test graph::explorer::tests::validate_does_not_false_positive_on_inlined_words ... ok
+test graph::explorer::tests::validate_rejects_comment_evasion ... ok
+test graph::explorer::tests::validate_rejects_create ... ok
+test graph::explorer::tests::validate_rejects_delete ... ok
+test graph::explorer::tests::validate_rejects_detach_delete ... ok
+test graph::explorer::tests::validate_rejects_extended_mutation_keywords ... ok
+test graph::explorer::tests::validate_rejects_merge ... ok
+test graph::explorer::tests::validate_rejects_quoted_comment_mutation_evasion ... ok
+test graph::explorer::tests::validate_rejects_set ... ok
+test graph::explorer::tests::validate_rejects_transaction_control_and_multistatement ... ok
+test graph::explorer::tests::execute_query_runs_against_test_graph ... ok
+test graph::explorer::tests::execute_query_rejects_create ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 249 filtered out; finished in 2.11s
+

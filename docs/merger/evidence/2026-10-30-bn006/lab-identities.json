@@ -1,0 +1,12 @@
+[
+  {
+    "Id": "8d99253494fcbf0abe8134aadb590cd7732173502dcfbd5b45b551adc9ea349c",
+    "Name": "/clab-bonsai-bn006-d821abca-srl1",
+    "Image": "sha256:72d7cf2949db277e19a411d1974504e5d588bb6e5c24dc41de7e96c0e7b4d044"
+  },
+  {
+    "Id": "fb9a2586d3f809f8ce9511817269f233c516efddf5089a3b495c2c8597697595",
+    "Name": "/clab-bonsai-bn006-d821abca-srl2",
+    "Image": "sha256:72d7cf2949db277e19a411d1974504e5d588bb6e5c24dc41de7e96c0e7b4d044"
+  }
+]

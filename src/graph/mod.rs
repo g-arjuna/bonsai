@@ -1,6 +1,7 @@
 pub mod algorithms;
 pub mod common;
 pub mod explorer;
+pub mod ownership;
 pub mod queries;
 #[cfg(test)]
 pub mod test_fixtures;
@@ -440,6 +441,7 @@ impl GraphStore {
 
     fn init_schema(&self) -> Result<()> {
         let conn = Connection::new(&self.db).context("schema connection")?;
+        ownership::init_schema(&conn)?;
 
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS Device(\
@@ -3096,18 +3098,40 @@ impl GraphStore {
 
     /// Return the most recent `limit` DetectionEvents joined with their Remediation.
     pub async fn read_detections(&self, limit: u32) -> Result<Vec<DetectionRow>> {
+        self.read_detections_filtered(limit, None, None, None, None)
+            .await
+    }
+
+    /// Apply identity and diagnostic filters before ORDER BY/LIMIT.
+    pub async fn read_detections_filtered(
+        &self,
+        limit: u32,
+        id: Option<String>,
+        device: Option<String>,
+        severity: Option<String>,
+        rule: Option<String>,
+    ) -> Result<Vec<DetectionRow>> {
         let db = Arc::clone(&self.db);
         tokio::task::spawn_blocking(move || {
             let conn = Connection::new(&db).context("read_detections connection")?;
+            conn.set_query_timeout(5000);
             let cypher = format!(
                 "MATCH (e:DetectionEvent) \
+                 WHERE ($id = '' OR e.id = $id) AND ($device = '' OR e.device_address = $device) \
+                 AND ($severity = '' OR e.severity = $severity) AND ($rule = '' OR e.rule_id = $rule) \
                  OPTIONAL MATCH (r:Remediation)-[:RESOLVES]->(e) \
                  RETURN e.id, e.device_address, e.rule_id, e.severity, \
                         e.features_json, e.source_types, e.latency_ns, e.fired_at, \
                         r.id, r.action, r.status \
                  ORDER BY e.fired_at DESC LIMIT {limit}"
             );
-            let rows = conn.query(&cypher).context("read_detections query")?;
+            let mut stmt = conn.prepare(&cypher).context("read_detections prepare")?;
+            let rows = conn.execute(&mut stmt, vec![
+                ("id", Value::String(id.unwrap_or_default())),
+                ("device", Value::String(device.unwrap_or_default())),
+                ("severity", Value::String(severity.unwrap_or_default())),
+                ("rule", Value::String(rule.unwrap_or_default())),
+            ]).context("read_detections query")?;
             let mut out = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
             for row in rows {
@@ -3960,7 +3984,9 @@ impl GraphStore {
     /// D4-7 T1: Upsert a single ConfigItem (insert or update by id).
     pub async fn upsert_config_item(&self, item: ConfigItemRecord) -> Result<()> {
         let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
         tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
             let conn = Connection::new(&db).context("upsert config item connection")?;
             let now = ts(now_ns());
             let mut stmt = conn.prepare(
@@ -10006,6 +10032,9 @@ mod tests {
 
         store
             .sync_sites_from_targets(vec![TargetConfig {
+                extra_ips: Vec::new(),
+                optional: false,
+                paths: Vec::new(),
                 address: "dut:57400".to_string(),
                 enabled: true,
                 tls_domain: None,

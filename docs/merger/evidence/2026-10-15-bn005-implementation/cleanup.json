@@ -1,0 +1,47 @@
+[
+  {
+    "kind": "container",
+    "name": "bn005-4bed53feb060-first",
+    "absent": true
+  },
+  {
+    "kind": "container",
+    "name": "bn005-4bed53feb060-replacement",
+    "absent": true
+  },
+  {
+    "kind": "volume",
+    "name": "bn005-4bed53feb060-runtime",
+    "absent": true
+  },
+  {
+    "kind": "container",
+    "name": "bn005-18bd7a106850-first",
+    "absent": true
+  },
+  {
+    "kind": "container",
+    "name": "bn005-18bd7a106850-replacement",
+    "absent": true
+  },
+  {
+    "kind": "volume",
+    "name": "bn005-18bd7a106850-runtime",
+    "absent": true
+  },
+  {
+    "kind": "container",
+    "name": "bn005-6182a248ef09-first",
+    "absent": true
+  },
+  {
+    "kind": "container",
+    "name": "bn005-6182a248ef09-replacement",
+    "absent": true
+  },
+  {
+    "kind": "volume",
+    "name": "bn005-6182a248ef09-runtime",
+    "absent": true
+  }
+]

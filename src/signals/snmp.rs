@@ -1181,6 +1181,9 @@ mod tests {
     #[test]
     fn resolves_target_by_source_ip() {
         let targets = vec![TargetConfig {
+            extra_ips: Vec::new(),
+            optional: false,
+            paths: Vec::new(),
             address: "192.0.2.44:57400".to_string(),
             enabled: true,
             tls_domain: None,

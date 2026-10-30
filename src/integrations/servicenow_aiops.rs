@@ -1027,6 +1027,7 @@ mod tests {
     #[test]
     fn root_cause_hint_formats_available_context() {
         let blast = queries::BlastRadiusResult {
+            bmp_sessions: Vec::new(),
             origin_address: "10.0.0.1".to_string(),
             origin_hostname: "leaf1".to_string(),
             site_name: "dc1".to_string(),

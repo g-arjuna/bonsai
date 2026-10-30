@@ -15,5 +15,10 @@ export default defineConfig({
     headless: true,
     screenshot: 'only-on-failure',
     video: 'off',
+    launchOptions: {
+      executablePath:
+        process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ||
+        `${process.env.HOME}/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome`,
+    },
   },
 });

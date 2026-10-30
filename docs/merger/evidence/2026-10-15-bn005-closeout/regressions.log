@@ -1,0 +1,66 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2m 24s
+     Running tests/a13_a20_change_assurance_and_executor.rs (target/debug/deps/a13_a20_change_assurance_and_executor-eb77708be006b6f5)
+
+running 20 tests
+test a13_nokia_srl_adapter_separates_nos_schema_drift_from_network_failure ... ok
+test a19_shadow_operational_pilot_records_utility_and_enforces_zero_writes ... ok
+test a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idempotency_and_recovery ... ok
+test bn001_execution_intent_is_persisted_before_effects_and_recovered_in_flight ... ok
+test bn001_concurrent_executors_cannot_acquire_same_persisted_scope ... ok
+test bn001_idempotency_replay_strictly_bound_to_plan_scope_and_tenant ... ok
+test a19_shadow_pilot_audit_journal_persists_observations ... ok
+test bn002_canonical_signing_bytes_eliminates_delimiter_collisions ... ok
+test bn002_changing_unsigned_assurance_fidelity_is_rejected_in_enforced_mode ... ok
+test bn001_active_scope_lock_is_persisted_and_recovered_across_reopen ... ok
+test bn001_failed_disk_append_never_replays_as_success_from_memory ... ok
+test bn001_empty_durable_journal_fails_closed_on_replay ... ok
+test a18_cryptographic_signatures_and_executor_restart_persistence ... ok
+test bn002_fidelity_limitations_are_bound_by_report_hash ... ok
+test bn002_report_identity_delimiters_eliminate_identical_hashes ... ok
+test bn001_corruption_added_after_completion_fails_closed_on_replay ... ok
+test bn001_journal_rejects_corrupt_interior_records_and_repairs_torn_tail ... ok
+test bn002_enforced_mode_requires_signing_authority_and_rejects_modeled_assurance ... ok
+test bn002_completed_replay_in_enforced_mode_requires_signing_authority_and_rejects_simulation_replay ... ok
+test a16_a17_digital_twin_assurance_gate_and_mcp_evaluate_change_plan ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.11s
+
+     Running tests/b11_b12_b13_routing_workflow.rs (target/debug/deps/b11_b12_b13_routing_workflow-1165c31b5d0c6b58)
+
+running 3 tests
+test b12_security_rbac_scoped_reads_and_secret_redaction ... ok
+test b13_b15_graph_routing_projector_idempotency_and_single_bmp_authority ... ok
+test b11_routing_api_contract_prefix_history_and_graceful_degradation ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.74s
+
+     Running tests/bn004_production_investigator_wiring.rs (target/debug/deps/bn004_production_investigator_wiring-ad2a97f4a846b2fe)
+
+running 6 tests
+test test_bn004_measured_provider_policy_vs_scaffolds_on_held_out_scenarios ... ok
+test test_bn004_operator_adjudication_feedback ... ok
+test test_bn004_cancellation_and_timeouts ... ok
+test test_bn004_deduplication_and_redaction ... ok
+test test_bn004_configured_provider_wiring_and_read_only_shadow_mode ... ok
+test test_bn004_concurrent_budget_reservations_and_persisted_spend_across_restart ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.27s
+
+     Running tests/bn005_deployment_and_scope_hardening.rs (target/debug/deps/bn005_deployment_and_scope_hardening-0776d16e4f6549d5)
+
+running 11 tests
+test test_bn005_graph_explorer_readonly_and_evasion_checks ... ok
+test test_bn005_fail_closed_internal_endpoints ... ok
+test test_bn005_rib_event_journal_latest_evidence_without_truncation ... ok
+test test_bn005_routing_config_deployment_validation ... ok
+test test_bn005_fail_closed_public_web_auth ... ok
+test test_bn005_quote_comment_mutation_evasion_is_rejected_and_graph_unchanged ... ok
+test test_bn005_conflicting_speaker_aliases_are_rejected ... ok
+test test_bn005_anonymous_mcp_access_is_denied ... ok
+test test_bn005_identity_derived_tenant_and_exporter_scoping ... ok
+test test_bn005_decoded_bmp_vrf_mismatch_is_rejected ... ok
+test test_bn005_authenticated_mcp_scoped_tool_authorization_and_denial ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.73s
+

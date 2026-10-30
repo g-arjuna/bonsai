@@ -427,6 +427,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut reg = OutputAdapterRegistry::load(dir.path());
         let cfg = OutputAdapterConfig {
+            topic: None,
             name: "prom1".to_string(),
             adapter_type: "prometheus_remote_write".to_string(),
             enabled: true,

@@ -1,0 +1,85 @@
+{
+  "timestamp": "2026-10-14T16:43:00+05:30",
+  "audit": "BN-005 Deployment Hardening, Scoping, and History Verification",
+  "status": "PASS",
+  "tests": [
+    {
+      "suite": "tests/bn005_deployment_and_scope_hardening.rs",
+      "test_name": "test_bn005_routing_config_deployment_validation",
+      "status": "PASS",
+      "verifies": [
+        "Default RoutingServiceConfig fails validate_deployment without explicit dev override",
+        "Config with internal_service_token but missing durable journals fails validate_deployment",
+        "Non-loopback bind without internal_service_token is unconditionally refused"
+      ]
+    },
+    {
+      "suite": "tests/bn005_deployment_and_scope_hardening.rs",
+      "test_name": "test_bn005_fail_closed_internal_endpoints",
+      "status": "PASS",
+      "verifies": [
+        "Unauthenticated calls to /internal/routing/v1/health, /speakers, /peers, /routes, /events return HTTP 401 Unauthorized",
+        "Missing or invalid x-bonsai-routing-token returns HTTP 401 Unauthorized with unauthorized_internal_client error",
+        "Correct x-bonsai-routing-token returns HTTP 200 OK"
+      ]
+    },
+    {
+      "suite": "tests/bn005_deployment_and_scope_hardening.rs",
+      "test_name": "test_bn005_fail_closed_public_web_auth",
+      "status": "PASS",
+      "verifies": [
+        "Public web router fails closed by default requiring auth for /api/*",
+        "Public /health liveness probe remains accessible without auth",
+        "Valid JWT / API key authenticates requests"
+      ]
+    },
+    {
+      "suite": "tests/bn005_deployment_and_scope_hardening.rs",
+      "test_name": "test_bn005_identity_derived_tenant_and_exporter_scoping",
+      "status": "PASS",
+      "verifies": [
+        "Cross-speaker GET /api/routing/v1/routes is rejected with HTTP 403 Forbidden (routing_scope_violation)",
+        "Cross-VRF GET /api/routing/v1/routes is rejected with HTTP 403 Forbidden (routing_scope_violation)",
+        "Cross-tenant GET /api/routing/v1/routes is rejected with HTTP 403 Forbidden (routing_scope_violation)",
+        "Valid unscoped GET /api/routing/v1/routes automatically injects identity-derived filters",
+        "Cross-speaker POST /api/routing/v1/adjudicate-prefix is rejected with HTTP 403 Forbidden (routing_scope_violation)",
+        "Cross-speaker POST /api/investigations is rejected with HTTP 403 Forbidden",
+        "Cross-speaker GET /api/investigations/{id} is rejected with HTTP 403 Forbidden",
+        "GET /api/investigations returns only investigations matching the caller's scoped speaker"
+      ]
+    },
+    {
+      "suite": "tests/bn005_deployment_and_scope_hardening.rs",
+      "test_name": "test_bn005_graph_explorer_readonly_and_evasion_checks",
+      "status": "PASS",
+      "verifies": [
+        "Rejects all Cypher mutation keywords: CREATE, DELETE, MERGE, DROP, ALTER, COPY, LOAD, FOREACH, IMPORT, EXPORT",
+        "Strips comments (/* */, //, --) preventing comment-evasion attacks",
+        "Accepts valid read queries containing comments",
+        "Applies database engine execution timeout (5,000ms)"
+      ]
+    },
+    {
+      "suite": "tests/bn005_deployment_and_scope_hardening.rs",
+      "test_name": "test_bn005_rib_event_journal_latest_evidence_without_truncation",
+      "status": "PASS",
+      "verifies": [
+        "RibEventJournal::all_events() reads all 1,200 events without truncating at early limit",
+        "RibEventJournal::latest_events(50) retrieves newest events preserving latest evidence",
+        "/internal/routing/v1/events chunked progressive scanning supports limits up to 10,000 without artificial 1,000 clamp"
+      ]
+    }
+  ],
+  "regressions": {
+    "a13_a20_change_assurance_and_executor": "20 passed; 0 failed",
+    "r01_r04_routing_history_recovery": "7 passed; 0 failed",
+    "r05_r06_runtime_wiring_and_scope": "2 passed; 0 failed",
+    "b11_b12_b13_routing_workflow": "3 passed; 0 failed",
+    "bn003_live_routing_browser_acceptance": "12 browser journeys passed (22.86s, 0 fixture contamination)",
+    "python_tests": "16 passed in 6.12s",
+    "cargo_fmt": "PASSED",
+    "clippy_core": "PASSED (0 warnings)",
+    "ui_build": "PASSED (7.18s)"
+  }
+}
+

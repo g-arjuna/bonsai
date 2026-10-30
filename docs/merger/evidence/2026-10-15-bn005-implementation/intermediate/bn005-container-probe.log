@@ -1,0 +1,1 @@
+Error: Invalid routing service deployment configuration: Missing internal_service_token: BONSAI_ROUTING_SERVICE_TOKEN must be set in production deployment (or explicitly set BONSAI_ROUTING_ALLOW_INSECURE_NO_TOKEN=1 for local development)

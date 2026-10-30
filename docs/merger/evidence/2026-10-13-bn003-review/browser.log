@@ -1,0 +1,67 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3m 23s
+     Running tests/bn003_live_routing_browser_acceptance.rs (target/debug/deps/bn003_live_routing_browser_acceptance-0e7065f6a880821f)
+
+running 1 test
+
+=======================================================
+=== BN-003 Live Routing & RIB Browser Acceptance Gate ===
+=======================================================
+
+Deploying Containerlab topology: lab/fast-iteration/frr-bmp-r07.clab.yml...
+Containerlab deployed successfully: ╭──────────────────────────┬──────────────────────────────┬─────────┬────────────────╮
+│           Name           │          Kind/Image          │  State  │ IPv4/6 Address │
+├──────────────────────────┼──────────────────────────────┼─────────┼────────────────┤
+│ clab-bonsai-frr-r07-frr1 │ linux                        │ running │ 172.100.207.11 │
+│                          │ quay.io/frrouting/frr:10.6.1 │         │ N/A            │
+├──────────────────────────┼──────────────────────────────┼─────────┼────────────────┤
+│ clab-bonsai-frr-r07-frr2 │ linux                        │ running │ 172.100.207.12 │
+│                          │ quay.io/frrouting/frr:10.6.1 │         │ N/A            │
+╰──────────────────────────┴──────────────────────────────┴─────────┴────────────────╯
+
+Waiting for BMP connection from frr1...
+Accepted BMP connection from frr1: 172.100.207.11
+Configuring BMP exporter on frr2 (172.100.207.12)...
+Waiting for BGP neighbor session between frr1 and frr2...
+Announcing 10.10.1.0/24 from frr2...
+Route 10.10.1.0/24 active in RIB.
+
+--- Launching Playwright Chromium Acceptance Suite ---
+Bonsai URL:   http://127.0.0.1:40461
+Control URL:  http://127.0.0.1:40633
+Evidence Dir: docs/merger/evidence/2026-10-13-bn003
+
+Accepted BMP connection from frr2: 172.100.207.12
+
+Running 11 tests using 1 worker
+
+  ✓   1 tests/ui_driver/routing_live_acceptance.spec.js:36:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 1. Unauthenticated access is denied with HTTP 401 in API and UI (6.4s)
+  ✓   2 tests/ui_driver/routing_live_acceptance.spec.js:53:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 2. Cross-scope access is denied with HTTP 403 (46ms)
+  ✓   3 tests/ui_driver/routing_live_acceptance.spec.js:77:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 3. Authenticated login grants browser session and loads Routing Observatory (2.9s)
+  ✓   4 tests/ui_driver/routing_live_acceptance.spec.js:135:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 4. RIB Explorer populates 3 views: AdjRibInPrePolicy, AdjRibInPostPolicy, and LocRib (4.2s)
+  ✓   5 tests/ui_driver/routing_live_acceptance.spec.js:181:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 5. Route attribute modification is reflected in browser DOM (1.6s)
+  ✓   6 tests/ui_driver/routing_live_acceptance.spec.js:204:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 6. Route withdrawal removes prefix from active RIB table in browser DOM (1.5s)
+  ✓   7 tests/ui_driver/routing_live_acceptance.spec.js:225:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 7. Re-announcement and BMP TCP EOF disconnect preserves routes and updates completeness to gap (1.6s)
+Control signal received: waiting for epoch 2 reconnect on port 11019...
+Accepted epoch 2 BMP connection from 172.100.207.11
+  ✓   8 tests/ui_driver/routing_live_acceptance.spec.js:265:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 8. Reconnect on session epoch 2 resolves transport gap in browser DOM (1.3s)
+  ✓   9 tests/ui_driver/routing_live_acceptance.spec.js:283:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 9. Prefix History Timeline renders announcement, modification and withdrawal events (1.7s)
+  ✓  10 tests/ui_driver/routing_live_acceptance.spec.js:307:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 10. Truthful empty filter and unsupported family states are displayed accurately (1.6s)
+  ✓  11 tests/ui_driver/routing_live_acceptance.spec.js:332:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 11. Routing Service restart from durable journals preserves complete state (1.2s)
+
+  11 passed (25.8s)
+
+Playwright test execution finished with status: exit status: 0
+
+Saving router vtysh states and evidence bundle to docs/merger/evidence/2026-10-13-bn003...
+Tearing down test servers and Containerlab resources...
+
+=======================================================
+=== BN-003 Acceptance Gate Passed Successfully! ===
+=======================================================
+
+test test_bn003_live_routing_browser_acceptance ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 37.57s
+

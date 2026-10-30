@@ -1,0 +1,13 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.27s
+     Running tests/bn005_closure_scope_probe.rs (target/debug/deps/bn005_closure_scope_probe-296b0bb3b0247f7e)
+
+running 3 tests
+test installed_engine_readonly_transaction_rejects_write ... ok
+Observed unrestricted inventory for scope kind tenant
+Observed unrestricted inventory for scope kind vrf
+Observed unrestricted inventory for scope kind malformed
+test speaker_scoped_viewer_reads_unscoped_http_detections ... ok
+test residual_scope_shapes_read_global_inventory ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.66s
+

@@ -1,0 +1,64 @@
+{
+  "date": "2026-10-14",
+  "base_commit": "e4d8c4489da4b0048a72cd383685131c66adc7ae",
+  "implementation_uncommitted": true,
+  "prior_four_findings": "Fixed in current focused tests",
+  "BN-005": "Partial: authenticated MCP scope bypass",
+  "ordinary_rust_passed": 48,
+  "playwright_passed": 12,
+  "python_passed": 16,
+  "observed_scope_probe_passed": 1,
+  "probe_cases": [
+    "Scoped query_graph reads foreign Device",
+    "Scoped get_changes reads foreign ConfigSnapshot"
+  ],
+  "source_sha256": {
+    "crates/rbmp-core/src/bmp/parser.rs": "ce16b68c93ca7058526ce91c8808a69da27d45f9fda2597a11e1f71e78b1b86b",
+    "src/graph/explorer.rs": "9d33e1feb5f14e9df9173b79c3eb53f4b4eaffcab3d8091f6f18e4c4a9bc0ea8",
+    "src/mcp_server.rs": "d18780a4457c705bf8acde08234ee3cb3786338c408ac40968101a8a153daf3c",
+    "src/http_server/auth.rs": "7477a03949a99b2682f4e7c737ac62006bc6d4f49e5649cecbcab335f0416700",
+    "src/http_server/mod.rs": "d7f92edeb51e5c097cbc8c8e1cb2f6a22f49855e2c8e5df1c37dda7fbaa0d6df",
+    "src/routing_service/mod.rs": "f9ea2c407caae2e0500da1d49804ddfcd13416bb57436f8463d2fa47f9651686",
+    "tests/bn005_deployment_and_scope_hardening.rs": "f3592beb115bbc1e54ff238cc3992af175bd040b116e0f79e1cab8693bda3a9b"
+  },
+  "logs": {
+    "ui.log": {
+      "exit_code": 0,
+      "sha256": "95a26ff69c1065edfc334e27121dcafb354f72a7738e0c157f9562c06431d52c"
+    },
+    "clippy.log": {
+      "exit_code": 0,
+      "sha256": "e28b0abc527312b09b48c839e81f2377377177cde946c6ec7596ffee63cdc368"
+    },
+    "browser.log": {
+      "exit_code": 0,
+      "sha256": "c0d263bbe78a20654d56fca98a07eeadce7cb4254444ea56e7e8b68d8f43cc47"
+    },
+    "python.log": {
+      "exit_code": 0,
+      "sha256": "4f93b418558a8c0d78ed3b02f97ffe82ba2bd98e43031a578207654c91a13b48"
+    },
+    "fmt.log": {
+      "exit_code": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "scope-probe.log": {
+      "exit_code": 0,
+      "sha256": "5cffe854f943bf170ef14de46e9eb08eff80ea94b185867ef38998710863622e"
+    },
+    "regressions.log": {
+      "exit_code": 0,
+      "sha256": "b5fa6113d2ee463dd2f6e4ec0e50e24f5f506a74b992d631dfc192247e8f71de"
+    }
+  },
+  "submitted_browser_bundle_preserved": true,
+  "commands": {
+    "regressions.log": "cargo test --locked --offline --test bn005_deployment_and_scope_hardening --test a13_a20_change_assurance_and_executor --test r01_r04_routing_history_recovery --test b11_b12_b13_routing_workflow --test bn004_production_investigator_wiring",
+    "scope-probe.log": "cargo test --locked --offline --test bn005_scope_followup_probe",
+    "browser.log": "DOCKER_HOST=unix:///var/run/docker.sock cargo test --locked --offline --test bn003_live_routing_browser_acceptance -- --nocapture",
+    "fmt.log": "cargo fmt --check",
+    "python.log": "PYTHONPATH=. .venv/bin/pytest tests/test_*.py",
+    "ui.log": "npm --prefix ui run build",
+    "clippy.log": "cargo clippy -p rbmp-core --locked --offline -- -D warnings"
+  }
+}

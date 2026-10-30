@@ -9,9 +9,7 @@ use bonsai::http_server::build_public_routing_router;
 use bonsai::investigation_runtime::{
     InvestigationTerminalState, load_durable_budget_ledger, run_investigation_with_provider,
 };
-use bonsai::mcp_server::{
-    MAX_GRAPH_ROWS, call_tool_with_store_and_routing, tool_query_graph_with_store,
-};
+use bonsai::mcp_server::{MAX_GRAPH_ROWS, call_tool_with_store_and_routing};
 use bonsai::routing_service::{
     EventsQuery, PeersQuery, PrefixHistoryQuery, RoutingServiceConfig, RoutingServiceState,
     build_events_json, build_internal_routing_router, build_peers_json, build_prefix_history_json,
@@ -295,6 +293,7 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
             "speaker": "192.0.2.11",
             "vrf_rd": "65000:10"
         }),
+        &bonsai::mcp_server::ToolExecutionContext::global(bonsai::http_server::auth::Role::Admin),
     )
     .await
     .expect("remote get_prefix_journey succeeds over HTTP");
@@ -316,6 +315,7 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
             "speaker": "192.0.2.12",
             "vrf_rd": "65000:20"
         }),
+        &bonsai::mcp_server::ToolExecutionContext::global(bonsai::http_server::auth::Role::Admin),
     )
     .await
     .expect("remote get_peer_timeline succeeds over HTTP");
@@ -337,6 +337,7 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
             "vrf_rd": "65000:10",
             "prefix": "10.99.0.0/24"
         }),
+        &bonsai::mcp_server::ToolExecutionContext::global(bonsai::http_server::auth::Role::Admin),
     )
     .await
     .expect("remote get_evidence_coverage succeeds over HTTP");
@@ -352,6 +353,7 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
             "speaker": "192.0.2.11",
             "vrf_rd": "65000:10"
         }),
+        &bonsai::mcp_server::ToolExecutionContext::global(bonsai::http_server::auth::Role::Admin),
     )
     .await
     .expect("remote explain_missing_prefix succeeds over HTTP");
@@ -599,11 +601,14 @@ async fn r05_r06_investigation_runtime_budget_dedup_and_bounded_graph_rows() {
     );
 
     // 3. Test bounded graph row materialization (`MAX_GRAPH_ROWS`) in `tool_query_graph_with_store`.
-    let bounded_res: Value = tool_query_graph_with_store(
+    let bounded_res: Value = call_tool_with_store_and_routing(
         &store,
+        None,
+        "query_graph",
         &serde_json::json!({
             "cypher": "UNWIND range(1, 1200) AS x RETURN x"
         }),
+        &bonsai::mcp_server::ToolExecutionContext::global(bonsai::http_server::auth::Role::Viewer),
     )
     .await
     .expect("UNWIND query succeeds");

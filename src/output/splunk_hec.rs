@@ -425,6 +425,7 @@ mod tests {
 
     fn cfg(endpoint: &str) -> OutputAdapterConfig {
         OutputAdapterConfig {
+            topic: None,
             name: "splunk-test".to_string(),
             adapter_type: "splunk_hec".to_string(),
             enabled: true,
@@ -463,6 +464,7 @@ mod tests {
     #[test]
     fn sourcetype_overrideable_via_extra() {
         let c = OutputAdapterConfig {
+            topic: None,
             name: "s".to_string(),
             adapter_type: "splunk_hec".to_string(),
             enabled: true,

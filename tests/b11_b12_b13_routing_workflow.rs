@@ -239,9 +239,13 @@ async fn b12_security_rbac_scoped_reads_and_secret_redaction() {
         GraphStore::open(graph_path.to_str().unwrap(), 256 * 1024 * 1024).expect("open graph"),
     );
 
-    let routing_state = RoutingServiceState::new(RoutingServiceConfig::default())
-        .await
-        .unwrap();
+    let routing_token = "b12-internal-routing-secret-token";
+    let routing_state = RoutingServiceState::new(RoutingServiceConfig {
+        internal_service_token: Some(routing_token.to_string()),
+        ..RoutingServiceConfig::default()
+    })
+    .await
+    .unwrap();
     let routing_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let routing_addr = routing_listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -259,6 +263,7 @@ async fn b12_security_rbac_scoped_reads_and_secret_redaction() {
         &format!("http://{routing_addr}"),
     )
     .await;
+    set_app_config(&store, "routing_service_token", routing_token).await;
     set_app_config(&store, "require_auth", "1").await;
 
     let bonsai_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

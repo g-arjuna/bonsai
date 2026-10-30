@@ -1,5 +1,7 @@
 # Milestone M3 Prototype Report (`B16`–`B20`) & Reconciled Definition of Done
 
+> Historical report as of 12 October 2026. Some pending/completed statements below are superseded. Use [current state](../STATUS.md), [the common backlog](../../BONSAI_BACKLOG.md), and [current claim validation](CLAIM_VALIDATION_2026-10-13.md) for present readiness.
+
 **Date**: 12 October 2026 (Asia/Kolkata)  
 **Repository**: `bonsai` (`main`)  
 **Imported RustyBMP Baseline**: `/home/arjuna/rustybmp-b01` (`f330febcca2f2870d4dd29526057385abc4f308a`, derived from `e2a1189392db520b25a376795e1bfae72eca5b55`)  

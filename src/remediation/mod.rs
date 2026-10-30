@@ -9,10 +9,12 @@
 
 pub mod approval;
 pub mod graduation;
+pub mod nos_adapter;
 pub mod rollback;
 pub mod trust;
 
 pub use approval::*;
 pub use graduation::{GraduationHint, check_graduation};
+pub use nos_adapter::*;
 pub use rollback::{RollbackRegistry, RollbackState, SharedRollbackRegistry};
 pub use trust::{SharedTrustStore, TrustKey, TrustRecord, TrustState, TrustStore};

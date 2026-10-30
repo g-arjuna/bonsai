@@ -1,0 +1,15 @@
+{
+  "containers": [
+    {
+      "container_id": "8d99253494fcbf0abe8134aadb590cd7732173502dcfbd5b45b551adc9ea349c",
+      "name": "/clab-bonsai-bn006-d821abca-srl1",
+      "absent_after_cleanup": true
+    },
+    {
+      "container_id": "fb9a2586d3f809f8ce9511817269f233c516efddf5089a3b495c2c8597697595",
+      "name": "/clab-bonsai-bn006-d821abca-srl2",
+      "absent_after_cleanup": true
+    }
+  ],
+  "owned_network_absent": true
+}

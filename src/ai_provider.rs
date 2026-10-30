@@ -104,7 +104,11 @@ pub fn build_provider_with_key(
                 base,
             )))
         }
-        "anthropic" => Ok(Box::new(AnthropicProvider::new(cfg.model.clone(), api_key))),
+        "anthropic" => Ok(Box::new(AnthropicProvider::with_base_url(
+            cfg.model.clone(),
+            api_key,
+            cfg.base_url.clone(),
+        ))),
         "ollama" => {
             let base = if cfg.base_url.is_empty() {
                 "http://localhost:11434".to_string()
@@ -602,19 +606,30 @@ fn openai_cost_usd(model: &str, tokens: u64) -> f64 {
 pub struct AnthropicProvider {
     model: String,
     api_key: String,
+    base_url: String,
     client: reqwest::Client,
 }
 
 impl AnthropicProvider {
     pub fn new(model: String, api_key: String) -> Self {
+        Self::with_base_url(model, api_key, "https://api.anthropic.com".to_string())
+    }
+
+    pub fn with_base_url(model: String, api_key: String, base_url: String) -> Self {
         let model = if model == "gemini-2.5-pro" || model == "moonshot-v1-8k" {
             "claude-opus-4-5".to_string()
         } else {
             model
         };
+        let base_url = if base_url.trim().is_empty() {
+            "https://api.anthropic.com".to_string()
+        } else {
+            base_url.trim().trim_end_matches('/').to_string()
+        };
         Self {
             model,
             api_key,
+            base_url,
             client: reqwest::Client::new(),
         }
     }
@@ -631,7 +646,7 @@ impl AiProvider for AnthropicProvider {
         messages: Vec<AiMessage>,
         tools: Vec<AiToolDef>,
     ) -> Result<AiResponse> {
-        let url = "https://api.anthropic.com/v1/messages";
+        let url = format!("{}/v1/messages", self.base_url);
 
         // Anthropic separates the system message from user/assistant turns
         let system_text: Option<String> = messages

@@ -1,0 +1,89 @@
+{
+  "review_date": "2026-10-14",
+  "timezone": "Asia/Kolkata",
+  "base_commit": "e4d8c4489da4b0048a72cd383685131c66adc7ae",
+  "implementation_uncommitted": true,
+  "source_sha256": {
+    "src/remediation/approval.rs": "154c774031ca21ba25b3f0eee5477313d29393832f25302e42a5391b5e36141a",
+    "tests/a13_a20_change_assurance_and_executor.rs": "c39275d6a37966bf40fdebc4804855dd46b593ce0f49d68b093ee99d68adf0ff",
+    "tests/bn003_live_routing_browser_acceptance.rs": "5360b0674f1b996764ee6acd3d5b4de609b3226d9161cc0d0f70538360ebb80a",
+    "tests/ui_driver/routing_live_acceptance.spec.js": "7484ab3807d608a959a291167553d7c41ac7516d5703106dbde5babf9be11e93",
+    "tests/bn004_production_investigator_wiring.rs": "73ff864c764dec276ee502a93b76c98cc8a1ff80d50eb45d1ea4425682838ba2",
+    "src/http_server/auth.rs": "a30f3d89777bc5776215c639dc26a9cf611f1b0874f3744cb3e2b1f157ecbd39",
+    "src/routing_service/mod.rs": "737b9a2d43c480b981efdf11ea997e13ab0bf54be21c7ea2ba2bbd5de9f0d296",
+    "src/mcp_server.rs": "a99917fc98195a8a227031ba87b65576cf37a8082e2bb9fd765ed639f319ceb4",
+    "ui/src/routes/Routing.svelte": "c7c0d5d01c1f8526c81df55320e36d34d17928028ca04150e00658c340a8986f"
+  },
+  "checks": [
+    {
+      "command": "cargo test --locked --offline --test a13_a20_change_assurance_and_executor --test r01_r04_routing_history_recovery --test r05_r06_runtime_wiring_and_scope -p bonsai",
+      "exit_code": 0,
+      "log": "regressions.log",
+      "sha256": "c3eaea448bd7a9191d3bffb6b29623965d5482fda4026d721f4ff91d593508c5"
+    },
+    {
+      "command": "cargo test --locked --offline -p rbmp-core -p rbmp-rib -p rbmp-store",
+      "exit_code": 0,
+      "log": "imported.log",
+      "sha256": "13d738692716b8b31f33ddfab21c84ac6e1d9a2afe9d509a862988daed835dae"
+    },
+    {
+      "command": "DOCKER_HOST=unix:///var/run/docker.sock cargo test --locked --offline --test bn003_live_routing_browser_acceptance -- --nocapture",
+      "exit_code": 101,
+      "log": "browser-attempt1.log",
+      "sha256": "032b6cf5678ae6463596033427b09e56d11348568bbdd1d77914146ac510f28c"
+    },
+    {
+      "command": "DOCKER_HOST=unix:///var/run/docker.sock cargo test --locked --offline --test bn003_live_routing_browser_acceptance test_bn003_live_routing_browser_acceptance -- --nocapture",
+      "exit_code": 0,
+      "log": "browser-attempt2.log",
+      "sha256": "e9b7fc48134106b49ebbc7e4698c85a2a542336328a594130599d34068cba093"
+    },
+    {
+      "command": "cargo fmt --check",
+      "exit_code": 0,
+      "log": "fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "PYTHONPATH=. .venv/bin/pytest tests/test_*.py",
+      "exit_code": 0,
+      "log": "python.log",
+      "sha256": "431cb2718923a293beb22696093a34b13c43f074a7b6ff5776d9ff0afe65031c"
+    },
+    {
+      "command": "npm --prefix ui run build",
+      "exit_code": 0,
+      "log": "ui.log",
+      "sha256": "815e8a2358b794f5a89848e52a53953f39ee1024063cadae7374a68f68d8d88e"
+    },
+    {
+      "command": "cargo clippy -p rbmp-core --locked --offline -- -D warnings",
+      "exit_code": 0,
+      "log": "clippy.log",
+      "sha256": "cdc362d4e128232b5fd6666df40eb8875da39f0d4edbefc0a17d3c45bea6a3a8"
+    }
+  ],
+  "browser_attempts": [
+    {
+      "rust_sanity_passed": 1,
+      "browser_rust_failed": 1,
+      "playwright_passed": 7,
+      "playwright_failed": 1,
+      "playwright_did_not_run": 4,
+      "failure": "Epoch-2 reconnect header remains gap for 20s"
+    },
+    {
+      "browser_rust_passed": 1,
+      "playwright_passed": 12,
+      "diagnostic_rerun": true
+    }
+  ],
+  "submitted_hashes_match": true,
+  "live_capture_provenance_valid": false,
+  "fixture_bytes_in_submitted_live_file": 299,
+  "fixture_frames_in_submitted_live_file": 3,
+  "decision": "BN-005 may proceed independently; first address BN-003 capture contamination and intermittent reconnect before calling the routing gate clean",
+  "BN-004": "Mock-client integration and mock scenario provider only; real model comparison pending; six tests not rerun",
+  "submitted_bundle_restored_byte_identically": true
+}

@@ -1,0 +1,12 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 6.62s
+     Running tests/bn005_independent_security_probes.rs (target/debug/deps/bn005_independent_security_probes-86c7e660385d19f7)
+
+running 4 tests
+test quote_comment_string_hides_mutation_and_mcp_writes_temp_graph ... ok
+test anonymous_mcp_query_succeeds_while_api_requires_auth ... ok
+test conflicting_speaker_alias_ingests_outside_token_scope ... ok
+test decoded_vrf_ingest_ignores_top_level_scope_label ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.75s
+

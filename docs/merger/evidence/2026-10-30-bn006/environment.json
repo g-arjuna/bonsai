@@ -1,0 +1,25 @@
+{
+  "client_date": "2026-10-30",
+  "timezone": "Asia/Kolkata",
+  "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+  "node": "v20.20.2",
+  "python": "Python 3.12.3",
+  "docker_server": "29.8.1",
+  "containerlab": "0.79.0",
+  "initial_bonsai_ports_inspected": [
+    3000,
+    50051,
+    8090,
+    11019
+  ],
+  "initial_bonsai_ports_listening": [],
+  "workspace_dotenv_present": false,
+  "remaining_containers": [
+    "docker-kibana-1\tUp 4 days (healthy)",
+    "docker-grafana-1\tUp 4 days (healthy)",
+    "docker-splunk-1\tUp 4 days (healthy)",
+    "docker-elasticsearch-1\tUp 4 days (healthy)",
+    "docker-prometheus-1\tUp 4 days (healthy)"
+  ]
+}

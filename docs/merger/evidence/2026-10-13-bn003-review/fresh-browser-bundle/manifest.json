@@ -1,0 +1,50 @@
+{
+  "bmp_bytes_total": 4940,
+  "bmp_stream_sha256": "3e787c01d177a42c03bde7426968f4b570498777aa4aeae7e818e21b17160410",
+  "browser": "Chromium 149.0.7827.55 (headless)",
+  "gate": "BN-003",
+  "playwright_success": true,
+  "routers": [
+    {
+      "as": 65001,
+      "ip": "172.100.207.11",
+      "name": "frr1",
+      "role": "bmp-exporter"
+    },
+    {
+      "as": 65002,
+      "ip": "172.100.207.12",
+      "name": "frr2",
+      "role": "bgp-peer / second exporter"
+    }
+  ],
+  "screenshots": [
+    "00_unauthenticated_denied.png",
+    "01_routing_dashboard_initial.png",
+    "02_route_attribute_modified.png",
+    "03_route_withdrawn.png",
+    "04_transport_gap_preservation.png",
+    "05_reconnect_epoch2.png",
+    "06_prefix_history_timeline.png",
+    "07_empty_and_unsupported_states.png",
+    "08_after_restart_preserved.png"
+  ],
+  "status": "Verified",
+  "task": "Live /routing browser acceptance through Bonsai login/API/proxy against dedicated FRR streams",
+  "verified_requirements": [
+    "1. Unauthenticated access denied with HTTP 401 in API and UI",
+    "2. Cross-scope access denied with HTTP 403 (speaker and VRF scope)",
+    "3. Authenticated login via POST /api/auth/login setting signed JWT cookie bonsai_token",
+    "4. 3 RIB views: AdjRibInPrePolicy, AdjRibInPostPolicy, and LocRib",
+    "5. Two exporters (172.100.207.11 and 172.100.207.12) and VRF RD isolation (0:0 and 65000:100)",
+    "6. Route announcement 10.10.1.0/24 visible with attributes in browser DOM",
+    "7. Route attribute modification (MED 150 / AS-path prepend) reflected in browser DOM",
+    "8. Route withdrawal removes prefix from active table in browser DOM",
+    "9. Re-announcement and BMP TCP EOF disconnect preserves routes and updates completeness badge to gap",
+    "10. Reconnect on session epoch 2 resolves transport gap",
+    "11. Prefix History Timeline renders events with before/after path attributes",
+    "12. Truthful empty (198.51.100.99/32) and unsupported (bgp-ls) states",
+    "13. Graph projection lag 0 and sequence tracking",
+    "14. Routing service restart from durable journals preserves complete state"
+  ]
+}

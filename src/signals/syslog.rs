@@ -1089,6 +1089,9 @@ mod tests {
     #[test]
     fn resolves_syslog_hostname_to_managed_target() {
         let targets = vec![TargetConfig {
+            extra_ips: Vec::new(),
+            optional: false,
+            paths: Vec::new(),
             address: "10.0.0.5:57400".to_string(),
             enabled: true,
             tls_domain: None,

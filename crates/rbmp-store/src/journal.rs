@@ -478,6 +478,21 @@ pub struct PrefixHistoryItem {
 
 /// Durable append-only JSONL journal of `RibEvent` records for prefix-history queries
 /// and downstream checkpointed projection (such as the Bonsai graph summary projector).
+/// Maximum historical records inspected by one diagnostic request.
+pub const HISTORY_SCAN_LIMIT: usize = 10_000;
+
+#[derive(Debug, serde::Serialize)]
+pub struct EventWindow {
+    #[serde(skip)]
+    pub events: Vec<rbmp_rib::event::RibEvent>,
+    pub total_events: usize,
+    pub scanned_events: usize,
+    pub scanned_from_seq: Option<u64>,
+    pub scanned_to_seq: u64,
+    pub truncated: bool,
+    pub scan_limit: usize,
+}
+
 pub struct RibEventJournal {
     path: Option<PathBuf>,
     file: Option<Arc<Mutex<tokio::fs::File>>>,
@@ -570,6 +585,7 @@ impl RibEventJournal {
                 (Some(pb), Some(Arc::new(Mutex::new(f))))
             }
         };
+        initial_events.sort_by_key(|e| e.event_key.sequence);
         Ok(Self {
             path: pb_opt,
             file: file_opt,
@@ -599,6 +615,13 @@ impl RibEventJournal {
         }
         let mut guard = self.events.lock().await;
         guard.extend_from_slice(events);
+        // Concurrent ingestion can append batches out of sequence; cursors use sequence order.
+        if !guard
+            .windows(2)
+            .all(|w| w[0].event_key.sequence <= w[1].event_key.sequence)
+        {
+            guard.sort_by_key(|e| e.event_key.sequence);
+        }
         metrics::counter!("rib_events_written_total").increment(events.len() as u64);
         Ok(())
     }
@@ -624,12 +647,36 @@ impl RibEventJournal {
         limit: usize,
     ) -> Vec<rbmp_rib::event::RibEvent> {
         let guard = self.events.lock().await;
-        guard
-            .iter()
-            .filter(|e| e.event_key.sequence > after_seq)
-            .take(limit)
-            .cloned()
-            .collect()
+        let start = guard.partition_point(|e| e.event_key.sequence <= after_seq);
+        guard[start..].iter().take(limit).cloned().collect()
+    }
+
+    /// Read the latest `limit` events in the journal, or all events if limit >= total_events.
+    pub async fn latest_events(&self, limit: usize) -> Vec<rbmp_rib::event::RibEvent> {
+        let guard = self.events.lock().await;
+        let start = guard.len().saturating_sub(limit);
+        guard[start..].to_vec()
+    }
+
+    /// Bounded recent evidence window, with explicit coverage of the retained history.
+    pub async fn recent_window(&self, limit: usize) -> EventWindow {
+        let guard = self.events.lock().await;
+        let start = guard.len().saturating_sub(limit);
+        EventWindow {
+            events: guard[start..].to_vec(),
+            total_events: guard.len(),
+            scanned_events: guard.len() - start,
+            scanned_from_seq: guard.get(start).map(|e| e.event_key.sequence),
+            scanned_to_seq: guard.last().map(|e| e.event_key.sequence).unwrap_or(0),
+            truncated: start > 0,
+            scan_limit: limit,
+        }
+    }
+
+    /// Read all events currently in the journal.
+    pub async fn all_events(&self) -> Vec<rbmp_rib::event::RibEvent> {
+        let guard = self.events.lock().await;
+        guard.clone()
     }
 
     pub async fn prefix_history(&self, prefix: &str, limit: usize) -> Vec<PrefixHistoryItem> {
@@ -653,9 +700,18 @@ impl RibEventJournal {
         > = HashMap::new();
         let mut items = Vec::new();
 
-        for ev in guard.iter() {
+        for ev in guard
+            .iter()
+            .skip(guard.len().saturating_sub(HISTORY_SCAN_LIMIT))
+        {
             if let RibEventPayload::RouteChange(rc) = &ev.payload {
                 let pfx_str = rc.prefix.to_string();
+                if pfx_str != prefix
+                    || speaker_filter.is_some_and(|spk| ev.speaker.to_string() != spk)
+                    || vrf_rd_filter.is_some_and(|rd| rc.peer_key.distinguisher_string() != rd)
+                {
+                    continue;
+                }
                 let prev = last_attrs_by_route.get(&rc.route_key).cloned().flatten();
                 let next = match rc.action {
                     RouteAction::Announce => rc.attributes.clone(),

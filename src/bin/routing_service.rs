@@ -16,19 +16,40 @@ async fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with_ansi(false)
         .init();
 
     let cfg = RoutingServiceConfig::default();
-    cfg.validate()
-        .map_err(|e| anyhow::anyhow!("Invalid routing service configuration: {e}"))?;
+    cfg.validate_deployment()
+        .map_err(|e| anyhow::anyhow!("Invalid routing service deployment configuration: {e}"))?;
+
+    // One executable owns each durable journal pair. Keep leases until process exit;
+    // a second service must not allocate independent sequences into the same files.
+    let mut _journal_leases = Vec::new();
+    for path in [&cfg.bmp_journal_path, &cfg.event_journal_path]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+        let lease = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        lease
+            .try_lock()
+            .map_err(|e| anyhow::anyhow!("Cannot lock routing journal {}: {e}", path.display()))?;
+        _journal_leases.push(lease);
+    }
 
     let state = RoutingServiceState::new(cfg.clone()).await?;
     let bmp_listener = TcpListener::bind(&cfg.bmp_listen_addr).await?;
     let http_listener = TcpListener::bind(&cfg.http_listen_addr).await?;
 
     info!(
-        bmp_addr = %cfg.bmp_listen_addr,
-        http_addr = %cfg.http_listen_addr,
+        bmp_addr = %bmp_listener.local_addr()?,
+        http_addr = %http_listener.local_addr()?,
         "Started reduced bonsai-routing service"
     );
 

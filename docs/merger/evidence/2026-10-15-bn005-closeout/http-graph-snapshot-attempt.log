@@ -1,0 +1,22 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 49.47s
+     Running tests/bn005_closure_scope_probe.rs (target/debug/deps/bn005_closure_scope_probe-296b0bb3b0247f7e)
+
+running 1 test
+
+thread 'speaker_scoped_viewer_reads_unscoped_http_graph_snapshot' (3274199) panicked at tests/bn005_closure_scope_probe.rs:122:5:
+assertion `left == right` failed
+  left: 500
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test speaker_scoped_viewer_reads_unscoped_http_graph_snapshot ... FAILED
+
+failures:
+
+failures:
+    speaker_scoped_viewer_reads_unscoped_http_graph_snapshot
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 1.16s
+
+error: test failed, to rerun pass `--test bn005_closure_scope_probe`

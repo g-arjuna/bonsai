@@ -97,15 +97,21 @@ async fn build_context(
     device_address: &str,
     detection_id: Option<&str>,
     store: &Arc<GraphStore>,
+    context: &crate::mcp_server::ToolExecutionContext,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     // 1. Incident details if we have a detection ID
     if let Some(did) = detection_id {
         let args = serde_json::json!({ "id": did });
-        if let Ok(v) =
-            crate::mcp_server::call_tool_with_store_and_routing(store, None, "get_incident", &args)
-                .await
+        if let Ok(v) = crate::mcp_server::call_tool_with_store_and_routing(
+            store,
+            None,
+            "get_incident",
+            &args,
+            context,
+        )
+        .await
         {
             parts.push(format!(
                 "## Incident\n```json\n{}\n```",
@@ -121,6 +127,7 @@ async fn build_context(
         None,
         "get_device_blast_radius",
         &args,
+        context,
     )
     .await
     {
@@ -137,6 +144,7 @@ async fn build_context(
         None,
         "list_active_detections",
         &args,
+        context,
     )
     .await
     {
@@ -162,6 +170,7 @@ pub fn spawn_investigation(
     _state: AppState,
     ai_cfg: AiConfig,
     api_key: String,
+    tool_context: crate::mcp_server::ToolExecutionContext,
 ) {
     tokio::spawn(async move {
         run_investigation(
@@ -171,6 +180,7 @@ pub fn spawn_investigation(
             store,
             ai_cfg,
             api_key,
+            tool_context,
         )
         .await;
     });
@@ -183,6 +193,7 @@ async fn run_investigation(
     store: Arc<GraphStore>,
     ai_cfg: AiConfig,
     api_key: String,
+    tool_context: crate::mcp_server::ToolExecutionContext,
 ) {
     // Daily budget gate — fail closed if spend query fails or budget is exceeded (A03).
     let daily_budget = ai_cfg.daily_budget_usd;
@@ -270,15 +281,59 @@ async fn run_investigation(
         }
     };
 
-    let _ = run_investigation_with_provider(
+    let _ = run_investigation_with_options(
         investigation_id,
         device_address,
         detection_id,
         store,
         ai_cfg,
         provider,
+        InvestigationRunOptions {
+            tool_context: Some(tool_context),
+            ..Default::default()
+        },
     )
     .await;
+}
+
+/// Execution options for an investigation run in the production runtime.
+#[derive(Clone, Debug)]
+pub struct InvestigationRunOptions {
+    /// Optional cancellation receiver. When it changes to `true`, the investigation terminates.
+    pub cancellation_rx: Option<tokio::sync::watch::Receiver<bool>>,
+    /// Hard overall timeout for the entire investigation loop.
+    pub overall_timeout: Option<std::time::Duration>,
+    /// Per-iteration / per-provider-call timeout.
+    pub call_timeout: Option<std::time::Duration>,
+    /// Enforces read-only shadow mode where all device write tools are rejected.
+    pub read_only_shadow_mode: bool,
+    /// Inherited authenticated identity; absence defaults to device-only read access.
+    pub tool_context: Option<crate::mcp_server::ToolExecutionContext>,
+}
+
+impl Default for InvestigationRunOptions {
+    fn default() -> Self {
+        Self {
+            cancellation_rx: None,
+            overall_timeout: None,
+            call_timeout: None,
+            read_only_shadow_mode: true,
+            tool_context: None,
+        }
+    }
+}
+
+pub fn is_forbidden_write_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "execute_remediation"
+            | "apply_config"
+            | "deploy_change"
+            | "rollback_change"
+            | "restart_bgp_peer"
+            | "set_interface_state"
+            | "device_write"
+    )
 }
 
 /// Execute the full investigation runtime loop with pre-call durable `BudgetReservationLedger`
@@ -290,6 +345,29 @@ pub async fn run_investigation_with_provider(
     store: Arc<GraphStore>,
     ai_cfg: AiConfig,
     provider: Box<dyn AiProvider>,
+) -> InvestigationOutcome {
+    run_investigation_with_options(
+        investigation_id,
+        device_address,
+        detection_id,
+        store,
+        ai_cfg,
+        provider,
+        InvestigationRunOptions::default(),
+    )
+    .await
+}
+
+/// Execute investigation runtime with cancellation token, timeouts, read-only shadow mode,
+/// and credential redaction (BN-004).
+pub async fn run_investigation_with_options(
+    investigation_id: String,
+    device_address: String,
+    detection_id: Option<String>,
+    store: Arc<GraphStore>,
+    ai_cfg: AiConfig,
+    provider: Box<dyn AiProvider>,
+    options: InvestigationRunOptions,
 ) -> InvestigationOutcome {
     let daily_budget = ai_cfg.daily_budget_usd;
     let per_budget = ai_cfg.per_investigation_budget_usd;
@@ -357,7 +435,17 @@ pub async fn run_investigation_with_provider(
         );
     }
 
-    let context = build_context(&device_address, detection_id.as_deref(), &store).await;
+    let tool_context = options
+        .tool_context
+        .clone()
+        .unwrap_or_else(|| crate::mcp_server::ToolExecutionContext::for_device(&device_address));
+    let context = build_context(
+        &device_address,
+        detection_id.as_deref(),
+        &store,
+        &tool_context,
+    )
+    .await;
     let mut messages = vec![
         AiMessage::system(system_prompt(&device_address, detection_id.as_deref())),
         AiMessage::user(format!(
@@ -384,7 +472,31 @@ pub async fn run_investigation_with_provider(
         0.0
     };
 
+    let start_instant = std::time::Instant::now();
+
     for iteration in 0..MAX_ITERATIONS {
+        // 1. Pre-iteration cancellation check
+        if let Some(ref rx) = options.cancellation_rx {
+            if *rx.borrow() {
+                warn!(id = %investigation_id, iteration, "investigation cancelled by token before iteration");
+                exit_reason = LoopExitReason::Cancelled {
+                    reason: "investigation cancelled by operator request".to_string(),
+                };
+                break;
+            }
+        }
+
+        // 2. Pre-iteration overall timeout check
+        if let Some(overall_to) = options.overall_timeout {
+            if start_instant.elapsed() >= overall_to {
+                warn!(id = %investigation_id, iteration, ?overall_to, "overall investigation timeout exceeded");
+                exit_reason = LoopExitReason::Cancelled {
+                    reason: format!("overall investigation timeout of {:?} exceeded", overall_to),
+                };
+                break;
+            }
+        }
+
         let reservation_id = format!("{investigation_id}:iter:{iteration}");
         if let Err(budget_reason) = reserve_durable_budget(
             &store,
@@ -401,18 +513,56 @@ pub async fn run_investigation_with_provider(
             break;
         }
 
-        let resp = match provider.complete(messages.clone(), tools.clone()).await {
-            Ok(r) => r,
-            Err(e) => {
+        let call_fut = provider.complete(messages.clone(), tools.clone());
+        let resp = if let Some(call_to) = options.call_timeout {
+            match tokio::time::timeout(call_to, call_fut).await {
+                Ok(call_res) => match call_res {
+                    Ok(r) => r,
+                    Err(e) => {
+                        release_durable_budget(&store, &reservation_id).await;
+                        warn!(id = %investigation_id, error = %e, iteration, "LLM call failed");
+                        exit_reason = LoopExitReason::ProviderCallFailed {
+                            error: e.to_string(),
+                            iteration,
+                        };
+                        break;
+                    }
+                },
+                Err(_elapsed) => {
+                    release_durable_budget(&store, &reservation_id).await;
+                    warn!(id = %investigation_id, iteration, ?call_to, "LLM call timed out");
+                    exit_reason = LoopExitReason::Cancelled {
+                        reason: format!("provider call timed out after {:?}", call_to),
+                    };
+                    break;
+                }
+            }
+        } else {
+            match call_fut.await {
+                Ok(r) => r,
+                Err(e) => {
+                    release_durable_budget(&store, &reservation_id).await;
+                    warn!(id = %investigation_id, error = %e, iteration, "LLM call failed");
+                    exit_reason = LoopExitReason::ProviderCallFailed {
+                        error: e.to_string(),
+                        iteration,
+                    };
+                    break;
+                }
+            }
+        };
+
+        // Post-call cancellation check
+        if let Some(ref rx) = options.cancellation_rx {
+            if *rx.borrow() {
                 release_durable_budget(&store, &reservation_id).await;
-                warn!(id = %investigation_id, error = %e, iteration, "LLM call failed");
-                exit_reason = LoopExitReason::ProviderCallFailed {
-                    error: e.to_string(),
-                    iteration,
+                warn!(id = %investigation_id, iteration, "investigation cancelled after provider call");
+                exit_reason = LoopExitReason::Cancelled {
+                    reason: "investigation cancelled by operator request".to_string(),
                 };
                 break;
             }
-        };
+        }
 
         total_tokens += resp.tokens_used as i64;
         total_cost += resp.cost_usd;
@@ -466,17 +616,42 @@ pub async fn run_investigation_with_provider(
 
             queried_paths.push(tc.name.clone());
 
-            let input_json = serde_json::to_string(&tc.arguments).unwrap_or_default();
-            let tool_result = crate::mcp_server::call_tool_with_store_and_routing(
-                &store,
-                None,
-                &tc.name,
-                &tc.arguments,
-            )
-            .await;
+            // Redact secrets in tool call arguments before recording to store
+            let mut redacted_args = tc.arguments.clone();
+            crate::http_server::auth::redact_secrets_in_json(&mut redacted_args);
+            let input_json = serde_json::to_string(&redacted_args).unwrap_or_default();
+
+            // Enforce read-only shadow mode: block any write/mutation tools
+            let tool_result = if options.read_only_shadow_mode && is_forbidden_write_tool(&tc.name)
+            {
+                warn!(
+                    id = %investigation_id,
+                    tool = %tc.name,
+                    "write tool call rejected in read-only shadow mode"
+                );
+                Err("write operations strictly prohibited in read-only shadow mode".to_string())
+            } else {
+                crate::mcp_server::call_tool_with_store_and_routing(
+                    &store,
+                    None,
+                    &tc.name,
+                    &tc.arguments,
+                    &tool_context,
+                )
+                .await
+            };
+
             let output_json = match &tool_result {
-                Ok(v) => serde_json::to_string(v).unwrap_or_default(),
-                Err(e) => serde_json::json!({ "error": e }).to_string(),
+                Ok(v) => {
+                    let mut redacted_out = v.clone();
+                    crate::http_server::auth::redact_secrets_in_json(&mut redacted_out);
+                    serde_json::to_string(&redacted_out).unwrap_or_default()
+                }
+                Err(e) => {
+                    let mut err_obj = serde_json::json!({ "error": e });
+                    crate::http_server::auth::redact_secrets_in_json(&mut err_obj);
+                    err_obj.to_string()
+                }
             };
 
             let _ = store
@@ -1021,6 +1196,23 @@ async fn sync_durable_budget_ledger(
         ledger.daily_committed_usd = db_daily_spent_usd;
         save_durable_budget_ledger(store, &ledger).await;
     }
+    ledger
+}
+
+/// Reconcile and recover the durable budget ledger across process restarts (BN-004).
+/// Clears orphaned in-flight reservations that were left active when a previous
+/// process terminated, while preserving all previously committed spend.
+pub async fn recover_and_reconcile_budget_ledger(
+    store: &GraphStore,
+    db_daily_spent_usd: f64,
+) -> BudgetReservationLedger {
+    let _guard = budget_ledger_lock().lock().await;
+    let mut ledger = load_durable_budget_ledger(store).await;
+    ledger.active_reservations.clear();
+    if db_daily_spent_usd > ledger.daily_committed_usd {
+        ledger.daily_committed_usd = db_daily_spent_usd;
+    }
+    save_durable_budget_ledger(store, &ledger).await;
     ledger
 }
 

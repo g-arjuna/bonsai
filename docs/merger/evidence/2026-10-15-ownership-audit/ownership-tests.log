@@ -1,0 +1,12 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 40.13s
+     Running tests/ownership_mapping.rs (target/debug/deps/ownership_mapping-e2671e2c39e2b093)
+
+running 3 tests
+test labels_are_bound_parameters_and_empty_values_are_rejected ... ok
+test admin_http_inventory_and_audit_do_not_change_authorization ... ok
+test durable_exact_ownership_distinguishes_device_exporter_and_rd ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.65s
+

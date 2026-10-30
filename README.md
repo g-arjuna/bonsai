@@ -2,7 +2,9 @@
 
 **Network observability and autonomous remediation for engineers who own the infrastructure.**
 
-Bonsai collects streaming telemetry from network devices via gNMI, builds a live graph of your network state, detects anomalies with multi-source correlation, and can autonomously remediate faults — with a human-in-the-loop trust model that graduates to full autonomy only when you are ready.
+Bonsai collects network telemetry, builds a graph of network state and supports routing diagnostics and anomaly investigation. It is an integrated development prototype; operational autonomous remediation is not an accepted capability.
+
+Start with the [current state](docs/STATUS.md) and [common Bonsai backlog](BONSAI_BACKLOG.md). Verification and remaining release gates are recorded in the [13 October review](docs/merger/CLAIM_VALIDATION_2026-10-13.md).
 
 ---
 

@@ -1438,12 +1438,12 @@ pub(super) async fn explorer_query_handler(
     let saved_query_id = body.saved_query_id.clone();
     let db = state.store.db();
 
-    let result = tokio::task::spawn_blocking(move || {
-        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
-        crate::graph::explorer::execute_query(&conn, &cypher).map_err(|e| format!("{e:#}"))
-    })
+    let result = crate::graph::explorer::execute_query_with_deadline(
+        db,
+        cypher,
+        std::time::Duration::from_secs(5),
+    )
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     // Best-effort: update run metadata on the saved query if one was specified.

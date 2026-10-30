@@ -1,0 +1,52 @@
+   Compiling rbmp-store v0.1.0 (/home/arjuna/Desktop/bonsai/crates/rbmp-store)
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+error[E0283]: type annotations needed
+    --> src/mcp_server.rs:1459:60
+     |
+1456 |                 return Ok(Json(McpRpcResponse::err(
+     |                                ------------------- required by a bound introduced by this call
+...
+1459 |                     "missing authenticated tool principal".into(),
+     |                                                            ^^^^
+     |
+     = note: multiple `impl`s satisfying `_: Into<std::string::String>` found in the following crates: `core`, `unicase`:
+             - impl<'a> Into<std::string::String> for unicase::UniCase<std::string::String>;
+             - impl<T, U> Into<U> for T
+               where U: From<T>;
+note: required by a bound in `McpRpcResponse::err`
+    --> src/mcp_server.rs:401:52
+     |
+ 401 |     fn err(id: JsonValue, code: i32, message: impl Into<String>) -> Self {
+     |                                                    ^^^^^^^^^^^^ required by this bound in `McpRpcResponse::err`
+help: try using a fully qualified path to specify the expected types
+     |
+1459 -                     "missing authenticated tool principal".into(),
+1459 +                     <&str as Into<T>>::into("missing authenticated tool principal"),
+     |
+help: consider removing this method call, as the receiver has type `&'static str` and `&'static str: Into<std::string::String>` trivially holds
+     |
+1459 -                     "missing authenticated tool principal".into(),
+1459 +                     "missing authenticated tool principal",
+     |
+
+error[E0283]: type annotations needed
+    --> src/mcp_server.rs:1459:60
+     |
+1459 |                     "missing authenticated tool principal".into(),
+     |                                                            ^^^^
+     |
+     = note: multiple `impl`s satisfying `_: From<&str>` found in the following crates: `axum_core`, `bytes`, `hyper`, `reqwest`, `winnow`:
+             - impl From<&'static str> for AxumBody;
+             - impl From<&'static str> for hyper::body::body::Body;
+             - impl From<&'static str> for prost::bytes::Bytes;
+             - impl From<&'static str> for reqwest::Body;
+             - impl From<&'static str> for winnow::error::StrContextValue;
+     = note: required for `&str` to implement `Into<_>`
+help: try using a fully qualified path to specify the expected types
+     |
+1459 -                     "missing authenticated tool principal".into(),
+1459 +                     <&str as Into<T>>::into("missing authenticated tool principal"),
+     |
+
+For more information about this error, try `rustc --explain E0283`.
+error: could not compile `bonsai` (lib) due to 2 previous errors

@@ -1,0 +1,49 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+error[E0603]: function `tool_query_graph_with_store` is private
+   --> tests/bn005_deployment_and_scope_hardening.rs:642:37
+    |
+642 |     let check = bonsai::mcp_server::tool_query_graph_with_store(
+    |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ private function
+    |
+note: the function `tool_query_graph_with_store` is defined here
+   --> src/mcp_server.rs:844:1
+    |
+844 | / async fn tool_query_graph_with_store(
+845 | |     store: &std::sync::Arc<crate::graph::GraphStore>,
+846 | |     args: &JsonValue,
+847 | | ) -> Result<JsonValue, String> {
+    | |______________________________^
+
+error[E0603]: function `tool_query_graph_with_store` is private
+   --> tests/bn005_deployment_and_scope_hardening.rs:668:35
+    |
+668 |     let res = bonsai::mcp_server::tool_query_graph_with_store(
+    |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^ private function
+    |
+note: the function `tool_query_graph_with_store` is defined here
+   --> src/mcp_server.rs:844:1
+    |
+844 | / async fn tool_query_graph_with_store(
+845 | |     store: &std::sync::Arc<crate::graph::GraphStore>,
+846 | |     args: &JsonValue,
+847 | | ) -> Result<JsonValue, String> {
+    | |______________________________^
+
+error[E0603]: function `tool_query_graph_with_store` is private
+   --> tests/bn005_deployment_and_scope_hardening.rs:678:37
+    |
+678 |     let check = bonsai::mcp_server::tool_query_graph_with_store(
+    |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ private function
+    |
+note: the function `tool_query_graph_with_store` is defined here
+   --> src/mcp_server.rs:844:1
+    |
+844 | / async fn tool_query_graph_with_store(
+845 | |     store: &std::sync::Arc<crate::graph::GraphStore>,
+846 | |     args: &JsonValue,
+847 | | ) -> Result<JsonValue, String> {
+    | |______________________________^
+
+For more information about this error, try `rustc --explain E0603`.
+error: could not compile `bonsai` (test "bn005_deployment_and_scope_hardening") due to 3 previous errors
+warning: build failed, waiting for other jobs to finish...

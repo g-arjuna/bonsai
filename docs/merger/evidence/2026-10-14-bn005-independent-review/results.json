@@ -1,0 +1,85 @@
+{
+  "review_date": "2026-10-14",
+  "timezone": "Asia/Kolkata",
+  "base_commit": "e4d8c4489da4b0048a72cd383685131c66adc7ae",
+  "implementation_uncommitted": true,
+  "BN-005": "Partial: four reproduced security blockers",
+  "ordinary_rust_passed": 40,
+  "observed_gap_probes_passed": 4,
+  "playwright_passed": 12,
+  "python_passed": 16,
+  "BN-003_exact_fixture_matches": {
+    "submitted": 0,
+    "fresh": 0
+  },
+  "reproduced_blockers": [
+    "Unauthenticated MCP graph read/write",
+    "Quoted comment string permits engine mutation",
+    "Conflicting speaker aliases bypass scope",
+    "Encoded BMP RD bypasses top-level VRF scope"
+  ],
+  "source_sha256": {
+    "src/http_server/auth.rs": "6232d345a2f722579f5a4a1da3c348d8e80022f788ef2fef9ea568777493cbf8",
+    "src/http_server/mod.rs": "6de0da674690bb967d93f34a386848345f4a61ccf80a4ab17f77e2d34e6f68ce",
+    "src/http_server/remediation.rs": "661146522d805466a73c15f6643ef323f75a40c9ddd8ebebe1acfe829afe88ed",
+    "src/mcp_server.rs": "15b49cd7a7e6cb448bdd13ea462e6624153569c82db7a7a4c8c94e6028201f85",
+    "src/graph/explorer.rs": "c8091dd6d26e21d18a7874d13567197149e02bc122f588c9f85a347403deb7cd",
+    "src/routing_service/mod.rs": "2037d09afa94a67eee655dc1d33e23bf18cbf6e49cd55c937727f27f4fc727c7",
+    "src/routing_service/diagnostics.rs": "ac56600a5e03556b0fd0d0211106eede4a355e0631f6e4778c9382dac198abb5",
+    "src/bin/routing_service.rs": "8c2b5e0c4d22a91a98fe129c13da357ffb28c8074783662acceaa31b242b6b0b",
+    "crates/rbmp-store/src/journal.rs": "ab7bd8bdd696cfa344cdaac41dbaedbf1bb9ae05aeb376a43c6d10db4bce9465",
+    "tests/bn005_deployment_and_scope_hardening.rs": "40fd73dc4dc27785436769a8df0cf7eb0488a97c215c9472a830712f831b4872",
+    "tests/bn003_live_routing_browser_acceptance.rs": "3be2f27aa8791d599416d977d85934e04eb038dcf6a095337d1c9cc7e0cc8106",
+    "tests/ui_driver/routing_live_acceptance.spec.js": "7484ab3807d608a959a291167553d7c41ac7516d5703106dbde5babf9be11e93"
+  },
+  "checks": [
+    {
+      "command": "cargo test --locked --offline --test bn005_deployment_and_scope_hardening --test a13_a20_change_assurance_and_executor --test r01_r04_routing_history_recovery --test r05_r06_runtime_wiring_and_scope --test b11_b12_b13_routing_workflow",
+      "log": "regressions.log",
+      "exit_code": 0,
+      "sha256": "23369d39560c5a0ca2573eff0937efea318800ae604297863c9237a75236acec"
+    },
+    {
+      "command": "DOCKER_HOST=unix:///var/run/docker.sock cargo test --locked --offline --test bn003_live_routing_browser_acceptance -- --nocapture",
+      "log": "browser.log",
+      "exit_code": 0,
+      "sha256": "a70c56e17cf359c5293713c342cd4102879b518a7dc9c4ca3e30a9b56e62bd29"
+    },
+    {
+      "command": "cargo test --locked --offline --test bn005_independent_security_probes",
+      "log": "security-probes.log",
+      "exit_code": 0,
+      "sha256": "d7de0cadbe871e8cf2ae2034789a1ef294b0bf9713b18eb908fa89107c7bd088"
+    },
+    {
+      "command": "cargo fmt --check",
+      "log": "fmt.log",
+      "exit_code": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "PYTHONPATH=. .venv/bin/pytest tests/test_*.py",
+      "log": "python.log",
+      "exit_code": 0,
+      "sha256": "880ed7dd04b54cbc3e7366718cc256a69f44a76165f08b65c6406bd1469ecd50"
+    },
+    {
+      "command": "npm --prefix ui run build",
+      "log": "ui.log",
+      "exit_code": 0,
+      "sha256": "cb9bb4ebf80eb99f58e95c1a8559202fc160361aa17b7158805a29a10fd67808"
+    },
+    {
+      "command": "cargo clippy -p rbmp-core --locked --offline -- -D warnings",
+      "log": "clippy.log",
+      "exit_code": 0,
+      "sha256": "dd667fe7513f1ce8b754ad5ccaf0138807102f524c22132b0b5a7a6e94df986d"
+    }
+  ],
+  "not_rerun": [
+    "imported crate suite",
+    "BN-004 provider suite",
+    "full workspace Clippy"
+  ],
+  "submitted_bundle_restored_byte_identically": true
+}

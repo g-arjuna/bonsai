@@ -1,7 +1,7 @@
 {
   "pack_version": "2026.10.v1",
   "seed": 20261012,
-  "generated_at": "2026-10-13T11:14:59.657205434+00:00",
+  "generated_at": "2026-10-13T16:12:53.305504363+00:00",
   "total_scenarios_in_pack": 44,
   "benchmark_scope_note": "Evaluates 44 scenarios across 8 fault families. DeterministicRunbook and BonsaiHybridRoutingPolicy execute measured in-process routing algorithms with recorded wall-clock latencies. SmallModelSingleStep and StrongModelMultiStep evaluate simulated policy branches and budget projections; live LLM API benchmarking requires external API provider configuration.",
   "policy_summaries": [
@@ -52,7 +52,7 @@
       "p50_latency_ms": 380,
       "p95_latency_ms": 380,
       "measured_p50_latency_ms": 1,
-      "measured_p95_latency_ms": 1,
+      "measured_p95_latency_ms": 2,
       "failed_scenario_ids": [
         "overlapping_vrfs-v1",
         "overlapping_vrfs-v2",
@@ -84,7 +84,7 @@
       "p50_latency_ms": 1450,
       "p95_latency_ms": 1450,
       "measured_p50_latency_ms": 1,
-      "measured_p95_latency_ms": 1,
+      "measured_p95_latency_ms": 2,
       "failed_scenario_ids": [
         "adversarial-tight-budget-cap"
       ]
@@ -110,8 +110,8 @@
       "cost_per_correctly_resolved_case_usd": 0.0,
       "p50_latency_ms": 4,
       "p95_latency_ms": 4,
-      "measured_p50_latency_ms": 0,
-      "measured_p95_latency_ms": 1,
+      "measured_p50_latency_ms": 1,
+      "measured_p95_latency_ms": 2,
       "failed_scenario_ids": []
     }
   ],
@@ -140,7 +140,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 6,
+      "measured_latency_ms": 4,
       "failure_reason": null
     },
     {
@@ -167,7 +167,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 4,
+      "measured_latency_ms": 3,
       "failure_reason": null
     },
     {
@@ -410,7 +410,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -437,7 +437,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -464,7 +464,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -491,7 +491,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -518,7 +518,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -545,7 +545,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -572,7 +572,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -599,7 +599,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -896,7 +896,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -923,7 +923,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -950,7 +950,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -977,7 +977,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -1058,7 +1058,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -1085,7 +1085,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -1112,7 +1112,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -1166,7 +1166,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -1193,7 +1193,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -1220,7 +1220,7 @@
       "actual_top_hypothesis": "insufficient_evidence",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -1247,7 +1247,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.0,
       "latency_ms": 2,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -1652,7 +1652,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.004,
       "latency_ms": 380,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -1679,7 +1679,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.004,
       "latency_ms": 380,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -1706,7 +1706,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.004,
       "latency_ms": 380,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -1733,7 +1733,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.004,
       "latency_ms": 380,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -1760,7 +1760,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.004,
       "latency_ms": 380,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -1841,7 +1841,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.004,
       "latency_ms": 380,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -2084,7 +2084,7 @@
       "actual_top_hypothesis": "insufficient_evidence",
       "cost_usd": 0.004,
       "latency_ms": 380,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 2,
       "failure_reason": "expected (completed, supported, export_policy_or_adj_rib_out_filtered), got (partial, insufficient_evidence, insufficient_evidence)"
     },
     {
@@ -2138,7 +2138,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.004,
       "latency_ms": 380,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 2,
       "failure_reason": null
     },
     {
@@ -2408,7 +2408,7 @@
       "actual_top_hypothesis": "insufficient_evidence",
       "cost_usd": 0.004,
       "latency_ms": 380,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 2,
       "failure_reason": null
     },
     {
@@ -2435,7 +2435,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.004,
       "latency_ms": 380,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 2,
       "failure_reason": null
     },
     {
@@ -2462,7 +2462,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.004,
       "latency_ms": 380,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 2,
       "failure_reason": null
     },
     {
@@ -2597,7 +2597,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 2,
       "failure_reason": null
     },
     {
@@ -2651,7 +2651,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 2,
       "failure_reason": null
     },
     {
@@ -2759,7 +2759,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 2,
       "failure_reason": null
     },
     {
@@ -2840,7 +2840,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -2975,7 +2975,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3029,7 +3029,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3056,7 +3056,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3083,7 +3083,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3110,7 +3110,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3137,7 +3137,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3218,7 +3218,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3245,7 +3245,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3299,7 +3299,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3326,7 +3326,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3461,7 +3461,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3488,7 +3488,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3515,7 +3515,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3623,7 +3623,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 2,
       "failure_reason": null
     },
     {
@@ -3650,7 +3650,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.035,
       "latency_ms": 1450,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 2,
       "failure_reason": null
     },
     {
@@ -3731,7 +3731,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -3758,7 +3758,7 @@
       "actual_top_hypothesis": "import_policy_rejected_before_loc_rib",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 2,
       "failure_reason": null
     },
     {
@@ -3920,7 +3920,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 2,
       "failure_reason": null
     },
     {
@@ -3947,7 +3947,7 @@
       "actual_top_hypothesis": "forwarding_or_next_hop_unverified",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 2,
       "failure_reason": null
     },
     {
@@ -3974,7 +3974,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4055,7 +4055,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4163,7 +4163,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4190,7 +4190,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -4217,7 +4217,7 @@
       "actual_top_hypothesis": "peer_session_down",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -4244,7 +4244,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4271,7 +4271,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4298,7 +4298,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4325,7 +4325,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4352,7 +4352,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4406,7 +4406,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4433,7 +4433,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4460,7 +4460,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4487,7 +4487,7 @@
       "actual_top_hypothesis": "export_policy_or_adj_rib_out_filtered",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 1,
+      "measured_latency_ms": 0,
       "failure_reason": null
     },
     {
@@ -4541,7 +4541,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4568,7 +4568,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4595,7 +4595,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4622,7 +4622,7 @@
       "actual_top_hypothesis": "collector_transport_gap",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4703,7 +4703,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4730,7 +4730,7 @@
       "actual_top_hypothesis": "upstream_prefix_withdrawn",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {
@@ -4784,7 +4784,7 @@
       "actual_top_hypothesis": "insufficient_evidence",
       "cost_usd": 0.0,
       "latency_ms": 4,
-      "measured_latency_ms": 0,
+      "measured_latency_ms": 1,
       "failure_reason": null
     },
     {

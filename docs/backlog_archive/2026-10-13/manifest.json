@@ -1,0 +1,66 @@
+{
+  "date": "2026-10-13",
+  "source_commit": "e4d8c4489da4b0048a72cd383685131c66adc7ae",
+  "files": [
+    {
+      "original_path": "BONSAI_CONSOLIDATED_BACKLOG_DV1.md",
+      "snapshot_path": "docs/backlog_archive/2026-10-13/BONSAI_CONSOLIDATED_BACKLOG_DV1.md",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "original_path": "BONSAI_CONSOLIDATED_BACKLOG_DV2.md",
+      "snapshot_path": "docs/backlog_archive/2026-10-13/BONSAI_CONSOLIDATED_BACKLOG_DV2.md",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "original_path": "BONSAI_CONSOLIDATED_BACKLOG_DV3.md",
+      "snapshot_path": "docs/backlog_archive/2026-10-13/BONSAI_CONSOLIDATED_BACKLOG_DV3.md",
+      "sha256": "090fddf4efed3e3ada15564677285f2b191b6dde39647f322db6f4e3d721ef6f",
+      "bytes": 74606
+    },
+    {
+      "original_path": "BONSAI_CONSOLIDATED_BACKLOG_DV4.md",
+      "snapshot_path": "docs/backlog_archive/2026-10-13/BONSAI_CONSOLIDATED_BACKLOG_DV4.md",
+      "sha256": "26ccf8e947dbe55927358073e0b14c0fe3e5866859ac512c8a23792e9b6f28d3",
+      "bytes": 88112
+    },
+    {
+      "original_path": "BONSAI_CONSOLIDATED_BACKLOG_DV4S.md",
+      "snapshot_path": "docs/backlog_archive/2026-10-13/BONSAI_CONSOLIDATED_BACKLOG_DV4S.md",
+      "sha256": "16a665a98253363f17e4371e03d144c54d4c63af8aef4084da40184da962718b",
+      "bytes": 83291
+    },
+    {
+      "original_path": "BONSAI_CONSOLIDATED_BACKLOG_EV1.md",
+      "snapshot_path": "docs/backlog_archive/2026-10-13/BONSAI_CONSOLIDATED_BACKLOG_EV1.md",
+      "sha256": "506861c4a445020827535326f0f9e703173ab65d53c787c29fda57eaeea7b679",
+      "bytes": 94582
+    },
+    {
+      "original_path": "docs/merger/STATUS.md",
+      "snapshot_path": "docs/backlog_archive/2026-10-13/docs/merger/STATUS.md",
+      "sha256": "1305e44402f682d57852e56573ec6aa9089149a5547281676fa4c66000b5e085",
+      "bytes": 28467
+    },
+    {
+      "original_path": "docs/merger/BACKLOG.md",
+      "snapshot_path": "docs/backlog_archive/2026-10-13/docs/merger/BACKLOG.md",
+      "sha256": "43af4c2d8ff617a74027bbe2f13b54fb7fb17105e07d7c3ff7991b5405466033",
+      "bytes": 14085
+    },
+    {
+      "original_path": "docs/operations/ubuntu_dv2_backlog.md",
+      "snapshot_path": "docs/backlog_archive/2026-10-13/docs/operations/ubuntu_dv2_backlog.md",
+      "sha256": "893c8a57800394d9a0c8089f19102c73eac24933eb1f3e79a4985ffd13076c7b",
+      "bytes": 15416
+    },
+    {
+      "original_path": "docs/CANONICAL.md",
+      "snapshot_path": "docs/backlog_archive/2026-10-13/docs/CANONICAL.md",
+      "sha256": "87519ed8943d7a038ba3712b6660ad574cd2b72946a11e827780fbbbf4b3daf4",
+      "bytes": 16878
+    }
+  ]
+}

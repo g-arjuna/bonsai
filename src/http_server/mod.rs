@@ -55,6 +55,7 @@ pub mod ml_jobs;
 pub(crate) mod nl_query;
 mod observability;
 mod outputs;
+mod ownership;
 pub mod playbooks;
 mod remediation;
 mod schema;
@@ -806,6 +807,90 @@ pub struct AppState {
     pub sidecar_manager: Option<crate::sidecar_manager::SharedSidecarManager>,
 }
 
+impl AppState {
+    pub fn new_minimal(store: Arc<GraphStore>) -> Self {
+        let runtime_dir = "/tmp";
+        let path = std::path::Path::new(runtime_dir);
+        let seed_targets = vec![crate::config::TargetConfig {
+            address: "172.100.207.11".to_string(),
+            enabled: true,
+            hostname: Some("frr1".to_string()),
+            vendor: Some("FRRouting".to_string()),
+            site: Some("lab".to_string()),
+            ..Default::default()
+        }];
+        let registry = Arc::new(
+            ApiRegistry::open(path.join("bonsai_minimal_registry.json"), seed_targets)
+                .unwrap_or_else(|_| panic!("failed to open minimal api registry")),
+        );
+        let credentials = Arc::new(
+            CredentialVault::open(path.join("vault"), "BONSAI_VAULT_PASSPHRASE")
+                .unwrap_or_else(|_| panic!("failed to open minimal credential vault")),
+        );
+        let change_detection = Arc::new(ChangeDetectionRuntime::dummy());
+        let catalogue = Arc::new(RwLock::new(CatalogueState::default()));
+        let enricher_registry = Arc::new(tokio::sync::RwLock::new(
+            crate::enrichment::EnricherRegistry::load(path),
+        ));
+        let adapter_registry = Arc::new(tokio::sync::RwLock::new(
+            crate::output::traits::OutputAdapterRegistry::load(path),
+        ));
+        let trust_store =
+            crate::remediation::trust::new_trust_store(path, RemediationConfig::default());
+        let rollback_registry = crate::remediation::rollback::new_rollback_registry();
+        let receiver_supervisor = crate::receiver_supervisor::new_shared();
+        let event_bus = crate::event_bus::InProcessBus::new(1024);
+        let ml_event_bus = Arc::new(crate::ml_event_bus::MlEventBus::new());
+        let sidecar_registry = Arc::new(crate::sidecar_registry::SidecarRegistry::default());
+
+        Self {
+            store,
+            registry,
+            credentials,
+            change_detection,
+            collector_manager: None,
+            catalogue,
+            catalogue_dir: String::new(),
+            enricher_registry,
+            adapter_registry,
+            trust_store,
+            rollback_registry,
+            remediation_config: RemediationConfig::default(),
+            servicenow_config: ServiceNowConfig::default(),
+            runtime_dir: runtime_dir.to_string(),
+            archive_path: String::new(),
+            graph_path: String::new(),
+            storage_config: StorageConfig::default(),
+            layered_ingestion: LayeredIngestionConfig::default(),
+            streaming: StreamingConfig::default(),
+            signals: crate::config::SignalsConfig::default(),
+            yang_library_root: String::new(),
+            yang_cache_root: String::new(),
+            yang_bundle_key_env: String::new(),
+            counter_mode: String::new(),
+            counter_window_secs: 0,
+            counter_debounce_secs: 0,
+            governor: None,
+            sidecar_registry,
+            receiver_supervisor,
+            ha_coordinator: None,
+            event_bus,
+            targets: Vec::new(),
+            ai_config: crate::config::AiConfig::default(),
+            gnn_config: crate::config::GnnConfig::default(),
+            shun_engine: None,
+            syslog_pattern_tx: None,
+            snmp_pattern_tx: None,
+            syslog_pattern_dir: String::new(),
+            snmp_oid_pattern_dir: String::new(),
+            ldap_config: crate::config::LdapConfig::default(),
+            tsdb_config: crate::config::TsdbConfig::default(),
+            ml_event_bus,
+            sidecar_manager: None,
+        }
+    }
+}
+
 impl axum::extract::FromRef<AppState> for Option<Arc<crate::ha_coordinator::HACoordinator>> {
     fn from_ref(state: &AppState) -> Self {
         state.ha_coordinator.clone()
@@ -935,12 +1020,15 @@ pub fn router(
                         {
                             crate::investigation_runtime::spawn_investigation(
                                 inv.id,
-                                req.device_address,
+                                req.device_address.clone(),
                                 Some(req.detection_id),
                                 store,
                                 inv_state.clone(),
                                 ai_cfg,
                                 api_key,
+                                crate::mcp_server::ToolExecutionContext::for_device(
+                                    &req.device_address,
+                                ),
                             );
                         }
                     }
@@ -956,6 +1044,10 @@ pub fn router(
         });
     }
 
+    router_from_state(state)
+}
+
+pub fn router_from_state(state: AppState) -> Router {
     // Serve the Svelte SPA from ui/dist/. Fall back to index.html so
     // client-side routing works (the SPA handles /events and /trace/:id paths).
     let spa = ServeDir::new("ui/dist")
@@ -963,13 +1055,6 @@ pub fn router(
 
     // CV7 T4-5: Bonpy — a separate Svelte SPA for Python/ML/AIOps surfaces,
     // mounted at /bonpy/ on the same Axum process.
-    //
-    // SvelteKit adapter-static with base=/bonpy puts JS/CSS chunks under
-    // dist-bonpy/_app/. Those are served by ServeDir via /bonpy/_app/*.
-    // All SPA page routes (/bonpy, /bonpy/jobs, …) are handled by
-    // bonpy_shell_handler which returns index.html with HTTP 200, allowing
-    // the SvelteKit client-side router to hydrate. tower-http ServeDir's
-    // not_found_service preserves the 404 status, so we avoid it for SPA routes.
     let bonpy_app_assets = ServeDir::new("ui-bonpy/dist-bonpy/_app");
 
     let auth_store = Arc::clone(&state.store);
@@ -988,6 +1073,7 @@ pub fn router(
         .merge(ml_routes())
         .merge(ev1_playbook_routes())
         .merge(routing_v1_routes())
+        .merge(ownership::routes())
         .route("/mcp", post(crate::mcp_server::mcp_handler))
         // Static JS/CSS assets for BonPy (SvelteKit puts them under /_app/)
         .nest_service("/bonpy/_app", bonpy_app_assets)
@@ -1027,6 +1113,14 @@ pub fn build_public_routing_router(store: Arc<GraphStore>) -> Router {
             auth::auth_middleware,
         ))
         .with_state(store)
+}
+
+/// Build a Bonsai public web router backed by `AppState::new_minimal(store)`
+/// mounting the canonical production router path with `auth::login_handler`,
+/// `auth::logout_handler`, `/api/setup/status`, and `/api/routing/v1/*` proxy routes.
+pub fn build_public_routing_web_router(store: Arc<GraphStore>) -> Router {
+    let state = AppState::new_minimal(store);
+    router_from_state(state)
 }
 
 fn routing_v1_routes<S>() -> Router<S>
@@ -1098,19 +1192,9 @@ fn apply_routing_access_scope_to_query(
     let Some(scope) = scope else {
         return Ok(raw_query.filter(|q| !q.is_empty()).map(String::from));
     };
-    let mut pairs: Vec<(String, String)> = Vec::new();
-    if let Some(q) = raw_query {
-        for part in q.split('&') {
-            if part.is_empty() {
-                continue;
-            }
-            if let Some((k, v)) = part.split_once('=') {
-                pairs.push((k.to_string(), v.to_string()));
-            } else {
-                pairs.push((part.to_string(), String::new()));
-            }
-        }
-    }
+    let mut parsed = reqwest::Url::parse("http://scope.invalid/").expect("static URL");
+    parsed.set_query(raw_query);
+    let mut pairs: Vec<(String, String)> = parsed.query_pairs().into_owned().collect();
 
     for (key, scoped_val) in [
         ("speaker", scope.speaker.as_deref()),
@@ -1133,11 +1217,9 @@ fn apply_routing_access_scope_to_query(
     if pairs.is_empty() {
         Ok(None)
     } else {
-        let joined = pairs
-            .into_iter()
-            .map(|(k, v)| if v.is_empty() { k } else { format!("{k}={v}") })
-            .collect::<Vec<_>>()
-            .join("&");
+        parsed.set_query(None);
+        parsed.query_pairs_mut().extend_pairs(pairs);
+        let joined = parsed.query().unwrap_or("").to_string();
         Ok(Some(joined))
     }
 }
@@ -1162,6 +1244,38 @@ async fn routing_v1_proxy_get_handler(
         }
     };
 
+    if let Some(scope) = ext_scope {
+        let relaxed = extensions.get::<crate::graph::ownership::OwnershipAccessMode>()
+            == Some(&crate::graph::ownership::OwnershipAccessMode::AuditOnly);
+        let endpoint = uri.path().rsplit('/').next().unwrap_or("");
+        if scope.tenant_id.is_some()
+            || (!relaxed
+                && scope.speaker.is_none()
+                && matches!(
+                    endpoint,
+                    "evidence-coverage" | "prefix-journey" | "peer-timeline" | "explain-prefix"
+                ))
+            || ((!relaxed || scope.speaker.is_some())
+                && !matches!(
+                    endpoint,
+                    "peers"
+                        | "routes"
+                        | "prefix-history"
+                        | "events"
+                        | "evidence-coverage"
+                        | "prefix-journey"
+                        | "peer-timeline"
+                        | "compare-snapshots"
+                        | "explain-prefix"
+                ))
+        {
+            return axum::response::IntoResponse::into_response((
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({"error":"routing_scope_violation",
+                    "message":"Endpoint cannot establish ownership for this scope"})),
+            ));
+        }
+    }
     let (base_url, token) = resolve_routing_service_endpoint(&store).await;
     let internal_path = uri
         .path()
@@ -1191,12 +1305,30 @@ async fn routing_v1_proxy_get_handler(
             match resp.json::<serde_json::Value>().await {
                 Ok(mut json_val) => {
                     auth::redact_secrets_in_json(&mut json_val);
-                    // Run graph projection step and attach lag on /health and /coverage (R05)
-                    if uri.path().ends_with("/health") || uri.path().ends_with("/coverage") {
-                        let _ = crate::routing_service::project_remote_routing_events_to_graph(
-                            &store, 250,
-                        )
-                        .await;
+                    if ext_scope.is_some() {
+                        if let Some(obj) = json_val.as_object_mut() {
+                            obj.remove("global_completeness_state");
+                            if matches!(
+                                uri.path().rsplit('/').next(),
+                                Some("routes" | "peers" | "prefix-history" | "events")
+                            ) {
+                                obj.insert(
+                                    "completeness_state".into(),
+                                    serde_json::json!("unknown"),
+                                );
+                                obj.insert("completeness_note".into(), serde_json::json!("No aggregate completeness is computed for this scope; consult individual observations."));
+                            }
+                        }
+                    }
+                    if uri.path().ends_with("/health") {
+                        if let Err(e) =
+                            crate::routing_service::project_remote_routing_events_to_graph(
+                                &store, 250,
+                            )
+                            .await
+                        {
+                            eprintln!("project_remote_routing_events_to_graph ERROR: {e:?}");
+                        }
                         let cp = crate::routing_service::load_projection_checkpoint(&store).await;
                         let latest_seq = json_val
                             .get("durable_sequence")
@@ -1228,9 +1360,141 @@ async fn routing_v1_proxy_get_handler(
 
 async fn routing_v1_proxy_post_handler(
     axum::extract::State(store): axum::extract::State<Arc<GraphStore>>,
+    extensions: axum::http::Extensions,
     uri: axum::http::Uri,
-    axum::Json(payload): axum::Json<serde_json::Value>,
+    axum::Json(mut payload): axum::Json<serde_json::Value>,
 ) -> Response<Body> {
+    let spk_opt = payload.get("speaker").and_then(|v| v.as_str());
+    let spk_addr_opt = payload.get("speaker_addr").and_then(|v| v.as_str());
+    if let (Some(s1), Some(s2)) = (spk_opt, spk_addr_opt) {
+        if s1 != s2 {
+            return axum::response::IntoResponse::into_response((
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({
+                    "api_version": crate::routing_service::ROUTING_API_VERSION,
+                    "error": "conflicting_speaker_aliases",
+                    "message": format!("Conflicting speaker aliases: 'speaker' ('{s1}') != 'speaker_addr' ('{s2}')"),
+                })),
+            ));
+        }
+    }
+
+    let mut decoded_frame_rd: Option<String> = None;
+    if let Some(frame_hex) = payload.get("frame_hex").and_then(|v| v.as_str()) {
+        if let Ok(bytes) = hex::decode(frame_hex.trim()) {
+            decoded_frame_rd = rbmp_core::bmp::parser::extract_frame_rd(&bytes);
+        }
+    }
+
+    if let Some(ref frame_rd) = decoded_frame_rd {
+        if let Some(declared_vrf) = payload.get("vrf_rd").and_then(|v| v.as_str()) {
+            if declared_vrf != frame_rd {
+                return axum::response::IntoResponse::into_response((
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(serde_json::json!({
+                        "api_version": crate::routing_service::ROUTING_API_VERSION,
+                        "error": "vrf_rd_mismatch",
+                        "message": format!("Payload declared vrf_rd '{declared_vrf}' contradicts BMP wire frame RD '{frame_rd}'"),
+                    })),
+                ));
+            }
+        }
+    }
+
+    if let Some(scope) = extensions.get::<auth::RoutingAccessScope>() {
+        if let Some(ref enforced_spk) = scope.speaker {
+            if let Some(s) = spk_opt {
+                if s != enforced_spk {
+                    return axum::response::IntoResponse::into_response((
+                        StatusCode::FORBIDDEN,
+                        axum::Json(serde_json::json!({
+                            "api_version": crate::routing_service::ROUTING_API_VERSION,
+                            "error": "routing_scope_violation",
+                            "message": format!("Requested speaker '{s}' violates token scope '{enforced_spk}'"),
+                        })),
+                    ));
+                }
+            }
+            if let Some(s) = spk_addr_opt {
+                if s != enforced_spk {
+                    return axum::response::IntoResponse::into_response((
+                        StatusCode::FORBIDDEN,
+                        axum::Json(serde_json::json!({
+                            "api_version": crate::routing_service::ROUTING_API_VERSION,
+                            "error": "routing_scope_violation",
+                            "message": format!("Requested speaker_addr '{s}' violates token scope '{enforced_spk}'"),
+                        })),
+                    ));
+                }
+            }
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("speaker".to_string(), serde_json::json!(enforced_spk));
+                obj.insert("speaker_addr".to_string(), serde_json::json!(enforced_spk));
+            }
+        }
+        if let Some(ref enforced_vrf) = scope.vrf_rd {
+            if let Some(ref frame_rd) = decoded_frame_rd {
+                if frame_rd != enforced_vrf {
+                    return axum::response::IntoResponse::into_response((
+                        StatusCode::FORBIDDEN,
+                        axum::Json(serde_json::json!({
+                            "api_version": crate::routing_service::ROUTING_API_VERSION,
+                            "error": "routing_scope_violation",
+                            "message": format!("BMP frame payload RD '{frame_rd}' violates token scope '{enforced_vrf}'"),
+                        })),
+                    ));
+                }
+            }
+            if let Some(v) = payload.get("vrf_rd").and_then(|val| val.as_str()) {
+                if v != enforced_vrf {
+                    return axum::response::IntoResponse::into_response((
+                        StatusCode::FORBIDDEN,
+                        axum::Json(serde_json::json!({
+                            "api_version": crate::routing_service::ROUTING_API_VERSION,
+                            "error": "routing_scope_violation",
+                            "message": format!("Requested vrf_rd '{v}' violates token scope '{enforced_vrf}'"),
+                        })),
+                    ));
+                }
+            } else if let Some(obj) = payload.as_object_mut() {
+                obj.insert("vrf_rd".to_string(), serde_json::json!(enforced_vrf));
+            }
+        }
+        if let Some(ref enforced_tenant) = scope.tenant_id {
+            if let Some(t) = payload.get("tenant_id").and_then(|val| val.as_str()) {
+                if t != enforced_tenant {
+                    return axum::response::IntoResponse::into_response((
+                        StatusCode::FORBIDDEN,
+                        axum::Json(serde_json::json!({
+                            "api_version": crate::routing_service::ROUTING_API_VERSION,
+                            "error": "routing_scope_violation",
+                            "message": format!("Requested tenant_id '{t}' violates token scope '{enforced_tenant}'"),
+                        })),
+                    ));
+                }
+            } else if let Some(obj) = payload.as_object_mut() {
+                obj.insert("tenant_id".to_string(), serde_json::json!(enforced_tenant));
+            }
+        }
+    }
+
+    if let Some(ref frame_rd) = decoded_frame_rd {
+        if let Some(obj) = payload.as_object_mut() {
+            if !obj.contains_key("vrf_rd") {
+                obj.insert("vrf_rd".to_string(), serde_json::json!(frame_rd));
+            }
+        }
+    }
+
+    if let Some(scope) = extensions.get::<auth::RoutingAccessScope>() {
+        if scope.tenant_id.is_some() || uri.path().ends_with("/ingest-bmp") {
+            return axum::response::IntoResponse::into_response((
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({"error":"routing_scope_violation",
+                    "message":"Unsupported tenant ownership or exporter-wide ingestion authority"})),
+            ));
+        }
+    }
     let (base_url, token) = resolve_routing_service_endpoint(&store).await;
     let internal_path = uri
         .path()

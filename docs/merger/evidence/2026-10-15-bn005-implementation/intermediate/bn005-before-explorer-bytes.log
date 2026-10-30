@@ -1,0 +1,22 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2m 05s
+     Running tests/bn005_closeout.rs (target/debug/deps/bn005_closeout-bd595685cede2384)
+
+running 1 test
+test shared_explorer_runner_bounds_serialized_unicode_rows ... FAILED
+
+failures:
+
+---- shared_explorer_runner_bounds_serialized_unicode_rows stdout ----
+
+thread 'shared_explorer_runner_bounds_serialized_unicode_rows' (3449570) panicked at tests/bn005_closeout.rs:898:5:
+assertion failed: result.truncated
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    shared_explorer_runner_bounds_serialized_unicode_rows
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 1.88s
+
+error: test failed, to rerun pass `--test bn005_closeout`

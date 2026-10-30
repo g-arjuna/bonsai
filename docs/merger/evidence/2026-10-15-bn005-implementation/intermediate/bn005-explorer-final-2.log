@@ -1,0 +1,20 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+error: literal out of range for `u16`
+    --> src/streaming/bmp.rs:1384:59
+     |
+1384 |         let sent_open = build_bgp_open([10, 9, 0, 8], 90, 65900);
+     |                                                           ^^^^^
+     |
+     = note: the literal `65900` does not fit into the type `u16` whose range is `0..=65535`
+     = note: `#[deny(overflowing_literals)]` on by default
+
+error: literal out of range for `u16`
+    --> src/streaming/bmp.rs:1385:60
+     |
+1385 |         let recv_open = build_bgp_open([10, 9, 0, 1], 180, 65900);
+     |                                                            ^^^^^
+     |
+     = note: the literal `65900` does not fit into the type `u16` whose range is `0..=65535`
+
+error: could not compile `bonsai` (lib test) due to 2 previous errors

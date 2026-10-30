@@ -1,0 +1,213 @@
+{
+  "interface": [
+    {
+      "name": "ethernet-1/1",
+      "admin-state": "enable",
+      "mtu": 9232,
+      "loopback-mode": "none",
+      "ifindex": 32768,
+      "oper-state": "up",
+      "last-change": "2026-10-30T05:49:26.557Z (48 seconds ago)",
+      "linecard": 1,
+      "forwarding-complex": "0",
+      "forwarding-mode": "store-and-forward",
+      "vlan-tagging": false,
+      "tpid": "TPID_0X8100",
+      "phy-group-members": [
+        "ethernet-1/1",
+        "ethernet-1/2",
+        "ethernet-1/3",
+        "ethernet-1/6"
+      ],
+      "statistics": {
+        "in-packets": "17",
+        "in-octets": "1594",
+        "in-unicast-packets": "8",
+        "in-broadcast-packets": "6",
+        "in-multicast-packets": "3",
+        "in-discarded-packets": "0",
+        "in-error-packets": "0",
+        "in-fcs-error-packets": "0",
+        "out-packets": "19",
+        "out-octets": "1796",
+        "out-mirror-octets": "0",
+        "out-unicast-packets": "10",
+        "out-broadcast-packets": "6",
+        "out-multicast-packets": "3",
+        "out-discarded-packets": "0",
+        "out-error-packets": "0",
+        "out-mirror-packets": "0",
+        "carrier-transitions": "1",
+        "interface-transitions": "1",
+        "link-transitions": "0"
+      },
+      "traffic-rate": {
+        "in-bps": "123",
+        "out-bps": "130"
+      },
+      "transceiver": {
+        "tx-laser": false,
+        "oper-state": "down",
+        "oper-down-reason": "not-present",
+        "ddm-events": true,
+        "healthz": {
+          "status": "unspecified"
+        }
+      },
+      "ethernet": {
+        "dac-link-training": false,
+        "lacp-port-priority": 32768,
+        "port-speed": "25G",
+        "hw-mac-address": "1A:B0:00:FF:00:01",
+        "flow-control": {
+          "receive": false
+        },
+        "forward-error-correction": {
+          "operational-host-if-fec": "disabled"
+        },
+        "hold-time": {
+          "up": 0,
+          "down": 0
+        },
+        "statistics": {
+          "in-mac-pause-frames": "0",
+          "in-oversize-frames": "0",
+          "in-undersize-frames": "0",
+          "in-jabber-frames": "0",
+          "in-fragment-frames": "0",
+          "in-crc-error-frames": "0",
+          "out-mac-pause-frames": "0",
+          "in-64b-frames": "6",
+          "in-65b-to-127b-frames": "8",
+          "in-128b-to-255b-frames": "3",
+          "in-256b-to-511b-frames": "0",
+          "in-512b-to-1023b-frames": "0",
+          "in-1024b-to-1518b-frames": "0",
+          "in-1519b-or-longer-frames": "0",
+          "out-64b-frames": "7",
+          "out-65b-to-127b-frames": "9",
+          "out-128b-to-255b-frames": "3",
+          "out-256b-to-511b-frames": "0",
+          "out-512b-to-1023b-frames": "0",
+          "out-1024b-to-1518b-frames": "0",
+          "out-1519b-or-longer-frames": "0"
+        },
+        "dot1x": {
+          "tunnel": {
+            "tunnel-all": false,
+            "oper-rule": "trap-to-cpu-untagged"
+          }
+        },
+        "l2cp-transparency": {
+          "tunnel-all-l2cp": false,
+          "lldp": {
+            "tunnel": false,
+            "oper-rule": "trap-to-cpu-untagged"
+          },
+          "lacp": {
+            "tunnel": false,
+            "oper-rule": "trap-to-cpu-untagged"
+          },
+          "xstp": {
+            "tunnel": false,
+            "oper-rule": "drop-tagged-and-untagged"
+          },
+          "ptp": {
+            "tunnel": false,
+            "oper-rule": "drop-tagged-and-untagged"
+          }
+        }
+      },
+      "subinterface": [
+        {
+          "index": 0,
+          "type": "routed",
+          "admin-state": "enable",
+          "ip-mtu": 1500,
+          "name": "ethernet-1/1.0",
+          "ifindex": 65536,
+          "oper-state": "up",
+          "last-change": "2026-10-30T05:49:26.558Z (48 seconds ago)",
+          "ipv4": {
+            "admin-state": "enable",
+            "allow-directed-broadcast": false,
+            "address": [
+              {
+                "ip-prefix": "10.206.0.1/30",
+                "origin": "static",
+                "primary": [null],
+                "status": "preferred"
+              }
+            ],
+            "unnumbered": {
+              "admin-state": "disable"
+            },
+            "arp": {
+              "duplicate-address-detection": true,
+              "timeout": 14400,
+              "learn-unsolicited": false,
+              "proxy-arp": false,
+              "neighbor": [
+                {
+                  "ipv4-address": "10.206.0.2",
+                  "link-layer-address": "1A:22:01:FF:00:01",
+                  "origin": "dynamic",
+                  "expiration-time": "2026-10-30T09:49:34.696Z (3 hours from now)",
+                  "group-based-policy-tag": 0,
+                  "datapath-programming": {
+                    "status": "success"
+                  }
+                }
+              ]
+            }
+          },
+          "ipv6": {
+            "admin-state": "disable",
+            "neighbor-discovery": {
+              "duplicate-address-detection": true,
+              "reachable-time": 30,
+              "stale-time": 14400,
+              "learn-unsolicited": "none",
+              "proxy-nd": false,
+              "limit": {
+                "log-only": false,
+                "warning-threshold-pct": 90
+              }
+            },
+            "router-advertisement": {
+              "router-role": {
+                "admin-state": "disable",
+                "current-hop-limit": 64,
+                "managed-configuration-flag": false,
+                "other-configuration-flag": false,
+                "max-advertisement-interval": 600,
+                "min-advertisement-interval": 200,
+                "reachable-time": 0,
+                "retransmit-time": 0,
+                "router-lifetime": 1800
+              }
+            }
+          },
+          "statistics": {
+            "in-packets": "8",
+            "in-octets": "646",
+            "in-discarded-packets": "8",
+            "in-forwarded-packets": "0",
+            "in-forwarded-octets": "0",
+            "in-matched-ra-packets": "0",
+            "out-forwarded-packets": "0",
+            "out-forwarded-octets": "0",
+            "out-originated-packets": "9",
+            "out-originated-octets": "712",
+            "out-discarded-packets": "0",
+            "out-packets": "9",
+            "out-octets": "712"
+          }
+        }
+      ],
+      "sflow": {
+        "admin-state": "enable"
+      }
+    }
+  ]
+}

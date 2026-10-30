@@ -1,0 +1,15 @@
+name: bonsai-bn006-srl
+mgmt:
+  network: bonsai-bn006-srl
+  ipv4-subnet: 172.31.216.0/24
+topology:
+  defaults:
+    kind: nokia_srlinux
+    image: ghcr.io/nokia/srlinux@sha256:ad3d4a533674cf2e2e7321fef38806a6c66e3d56a3e8693c45fc2b4206078dd6
+  nodes:
+    srl1:
+      startup-config: srl1.cfg
+    srl2:
+      startup-config: srl2.cfg
+  links:
+    - endpoints: ["srl1:e1-1", "srl2:e1-1"]

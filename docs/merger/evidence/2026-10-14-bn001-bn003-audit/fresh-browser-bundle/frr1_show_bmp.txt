@@ -1,0 +1,20 @@
+BMP state for BGP VRF default:
+
+  Route Mirroring         0 bytes (0 messages) pending
+                          0 bytes maximum buffer used
+
+  Targets "bonsai":
+    Route Mirroring disabled
+    Route Monitoring IPv4 unicast pre-policy post-policy loc-rib
+    Listeners:
+
+    Outbound connections:
+ remote                state                         timer      local      
+ --------------------------------------------------------------------------
+ 172.100.207.1:11019   Up      172.100.207.1:11019   00:00:07   (unspec)   
+
+    1 connected clients:
+ remote                uptime     MonSent   MirrSent   MirrLost   ByteSent   ByteQ   ByteQKernel   
+ --------------------------------------------------------------------------------------------------
+ 172.100.207.1:11019   00:00:07   8         0          0          1394       0       0             
+

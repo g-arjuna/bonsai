@@ -139,6 +139,9 @@ mod tests {
 
     fn target(vendor: &str, tls: bool) -> TargetConfig {
         TargetConfig {
+            extra_ips: Vec::new(),
+            optional: false,
+            paths: Vec::new(),
             address: "172.100.102.21:57400".to_string(),
             enabled: true,
             tls_domain: tls.then(|| "device.local".to_string()),

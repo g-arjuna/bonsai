@@ -1,5 +1,7 @@
 # Bonsai + RustyBMP: repository audit and Codex development handoff
 
+> Reference design. Current implementation state and priorities are maintained in [docs/STATUS.md](docs/STATUS.md) and [BONSAI_BACKLOG.md](BONSAI_BACKLOG.md). Historical task/completion statements are superseded by the [13 October validation](docs/merger/CLAIM_VALIDATION_2026-10-13.md).
+
 Prepared 11 October 2026 for Arjuna Ganesan. Target: VS Code/Codex on the owner's Ubuntu machine with containerlab and locally available NOS images.
 
 ## 1. Decision and first instruction

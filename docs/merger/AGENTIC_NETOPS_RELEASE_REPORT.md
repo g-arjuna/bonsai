@@ -1,5 +1,7 @@
 # Bonsai Agentic NetOps 2026 — Prototype Capability & Readiness Report (`A00`–`A20`)
 
+> Historical report as of 12 October 2026. Some pending/completed statements below are superseded. Use [current state](../STATUS.md), [the common backlog](../../BONSAI_BACKLOG.md), and [current claim validation](CLAIM_VALIDATION_2026-10-13.md) for present readiness.
+
 Updated: 12 October 2026 (Asia/Kolkata)
 Companion Strategy: [BONSAI_AGENTIC_NETOPS_STRATEGY_2026.md](../../BONSAI_AGENTIC_NETOPS_STRATEGY_2026.md)
 Routing Merger Release Report: [M3_RELEASE_REPORT.md](M3_RELEASE_REPORT.md)

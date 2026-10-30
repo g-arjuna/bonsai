@@ -1,0 +1,54 @@
+{
+  "date": "2026-10-13",
+  "base_commit": "e4d8c44",
+  "implementation_uncommitted": true,
+  "source_sha256": {
+    "src/http_server/auth.rs": "29a3440159f16cfa70d7740d7f00a7188e479afd2553424457daaf14228e47c6",
+    "src/http_server/mod.rs": "6338ca6071cc7baba642cf47f4a357e8a431cafa6c766c97e89116c7d7ef2f52",
+    "src/graph/mod.rs": "683ade4476fa0b42fa1658fc2aa4f32aeb750be7b7fc5249517f17fbe4e961c3",
+    "src/remediation/approval.rs": "9f02ff53d810d28dfa3917636608e6063eadf34029397cba7f7c4c137d28f365",
+    "src/routing_service/mod.rs": "737b9a2d43c480b981efdf11ea997e13ab0bf54be21c7ea2ba2bbd5de9f0d296",
+    "tests/a13_a20_change_assurance_and_executor.rs": "82fdfc598026c3fc7d81dd483af9d45a6b8a1e9345d7a6bdbfd796e489034c10",
+    "tests/bn003_live_routing_browser_acceptance.rs": "f901afb3470a4f4f18d0642e7fc4f2033087c7a9eaffc32a30b0d310c545d960",
+    "tests/ui_driver/routing_live_acceptance.spec.js": "ee8f21217cfe499375b3a77477c828114214eb2637f2f9656ac339a851628d28",
+    "tests/ui_driver/playwright.config.js": "719a5e838af96e67ffc36e07b5f91c2aef0dca7f5c2c2a71f5fbb0f5f82a326d",
+    "ui/src/routes/Routing.svelte": "f4b0db3864917764d86a9e0a883a72a8b1eecf1fdc17461dc6b18cd891a6d664"
+  },
+  "checks": {
+    "regressions": {
+      "passed": 22,
+      "log": "regressions.log"
+    },
+    "browser": {
+      "rust_passed": 1,
+      "playwright_passed": 11,
+      "log": "browser.log"
+    },
+    "executor_diagnostic_probes": {
+      "observations_reproduced": 3,
+      "log": "executor-probes.log"
+    },
+    "python": {
+      "passed": 16,
+      "log": "python.log"
+    },
+    "format": {
+      "exit_code": 0,
+      "log": "fmt.log"
+    },
+    "ui_build": {
+      "exit_code": 0,
+      "warnings": true,
+      "log": "ui-build.log"
+    }
+  },
+  "not_rerun": [
+    "imported crate suites",
+    "Clippy"
+  ],
+  "dispositions": {
+    "BN-001": "Partial",
+    "BN-002": "Partial",
+    "BN-003": "Partial"
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "review_date": "2026-10-13",
+  "timezone": "Asia/Kolkata",
+  "source_commit": "e4d8c4489da4b0048a72cd383685131c66adc7ae",
+  "remote_main_verified": true,
+  "checks": [
+    {
+      "command": "cargo test --locked --test a10_a11_a12_operator_and_scenario_pack --test a13_a20_change_assurance_and_executor --test r01_r04_routing_history_recovery --test r05_r06_runtime_wiring_and_scope --test b16_b17_b18_b19_m3_release_gates",
+      "exit_code": 0,
+      "log": "rust.log",
+      "sha256": "a639fb5562466611c4b01f6b7973cb898aa4d1be28de5c4b915e6e5a98ab0019",
+      "passed": 21,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "DOCKER_HOST=unix:///var/run/docker.sock cargo test --locked --test r07_frr_containerlab_verification",
+      "exit_code": 0,
+      "log": "frr.log",
+      "sha256": "2a45f5c143434ba3f98c025a00d9623cf896452465d02789f4a8e2f9735f2bbf",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test --locked --offline -p rbmp-core -p rbmp-rib -p rbmp-store",
+      "exit_code": 0,
+      "log": "imported-crates.log",
+      "sha256": "65ffc50f605ce8a9db156fbeacf2e06b4644dbeacb9bb5b3dc89ca1b4801fe1c",
+      "passed": 132,
+      "failed": 0,
+      "ignored": 2
+    },
+    {
+      "command": "cargo test --locked --test claim_validation_executor_probes",
+      "exit_code": 0,
+      "log": "executor-probes.log",
+      "sha256": "6de8d5353f5d3e13a113fb2daf5e21ddf672c65121fc425c54b92627ec6b9aec",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "PYTHONPATH=. .venv/bin/pytest tests/test_*.py",
+      "exit_code": 0,
+      "log": "python.log",
+      "sha256": "0597f306c57136359bf4dd0447c214427c1a74674aa3183ec7f0b30d67e6bb57"
+    },
+    {
+      "command": "cargo fmt --check",
+      "exit_code": 0,
+      "log": "fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "cargo clippy -p rbmp-core --locked --offline -- -D warnings",
+      "exit_code": 0,
+      "log": "clippy.log",
+      "sha256": "d6e3e909d867b197d7ac744e48152fc79800151d19995c0f30a55cf6e5fa22b8"
+    },
+    {
+      "command": "npm --prefix ui run build",
+      "exit_code": 0,
+      "log": "ui.log",
+      "sha256": "444e825f4a793c7179f9f35df9fb3f632107b310beedfc23506ce43e0959373e"
+    }
+  ],
+  "limitations": [
+    "No browser, second NOS, actual provider benchmark, trained model evaluation or operational pilot run",
+    "Executor probes assert observed gaps, not desired safe behavior",
+    "Generated harness reports may retain their hardcoded historical dates; this manifest records the fresh execution date"
+  ]
+}

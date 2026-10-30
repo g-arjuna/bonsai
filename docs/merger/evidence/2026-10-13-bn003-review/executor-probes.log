@@ -1,0 +1,12 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1m 33s
+     Running tests/bn003_review_executor_probes.rs (target/debug/deps/bn003_review_executor_probes-1983d0f62d2f7ca2)
+
+running 3 tests
+test completed_replay_precedes_enforced_signature_authority_check ... ok
+test changing_unsigned_assurance_fidelity_allows_enforced_execution ... ok
+test concurrent_executors_can_acquire_same_persisted_scope ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+

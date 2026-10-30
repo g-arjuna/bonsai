@@ -1,0 +1,255 @@
+{
+  "status": "passed",
+  "fixture_provenance": "synthetic BMP; not a live NOS test",
+  "containers": [
+    "bn005-18bd7a106850-first",
+    "bn005-18bd7a106850-replacement"
+  ],
+  "volume": "bn005-18bd7a106850-runtime",
+  "runtime_image_id": "sha256:4228a8af13e9418cb0113a44330a01780528872b2fef1b8d5d189026ce65aaeb",
+  "binary_sha256": "f546d40c209b1f93e0a5dd10ceae6c58b70084f1341647bf7607da98ca978e2d",
+  "before": {
+    "api_version": "v1",
+    "completeness_state": "syncing",
+    "durable_sequence": 3,
+    "events": [
+      {
+        "action": "announce",
+        "after_attributes": {
+          "aggregator": null,
+          "as4_aggregator": null,
+          "as4_path": null,
+          "as_path": [
+            {
+              "Sequence": [
+                65002
+              ]
+            }
+          ],
+          "atomic_aggregate": false,
+          "bgpls_attr": null,
+          "bgpls_reach": null,
+          "bgpls_unreach": null,
+          "bgpsec_path": null,
+          "cluster_list": [],
+          "communities": [],
+          "evpn_reach": null,
+          "evpn_unreach": null,
+          "extended_communities": [],
+          "flowspec_reach": null,
+          "flowspec_unreach": null,
+          "large_communities": [],
+          "local_pref": 100,
+          "mp_reach": null,
+          "mp_unreach": null,
+          "multi_exit_disc": null,
+          "next_hop": "192.0.2.2",
+          "only_to_customer": null,
+          "origin": "Igp",
+          "originator_id": null,
+          "path_status": null,
+          "prefix_sid": null,
+          "rtc_nlris": [],
+          "sr_policy_nlris": [],
+          "sr_policy_paths": [],
+          "tunnel_encap": null,
+          "unknown": []
+        },
+        "before_attributes": null,
+        "event_id": "4ad9334d-b936-4b66-b973-b59878f3442d",
+        "occurred_at": "2026-10-15T08:31:37.065521148Z",
+        "path_id": null,
+        "peer_addr": "192.0.2.2",
+        "peer_as": 65002,
+        "peer_distinguisher": "0:0",
+        "prefix": "10.77.10.0/24",
+        "rib_type": "AdjRibInPrePolicy",
+        "sequence": 3,
+        "speaker_addr": "172.17.0.1"
+      }
+    ],
+    "history_coverage": "complete",
+    "history_window": {
+      "scan_limit": 10000,
+      "scanned_events": 3,
+      "scanned_from_seq": 1,
+      "scanned_to_seq": 3,
+      "total_events": 3,
+      "truncated": false
+    },
+    "prefix": "10.77.10.0/24",
+    "receive_time": "2026-10-15T08:31:37.095961897+00:00",
+    "speaker": null,
+    "support_status": "supported",
+    "vrf_rd": null
+  },
+  "after": {
+    "api_version": "v1",
+    "completeness_state": "syncing",
+    "durable_sequence": 6,
+    "events": [
+      {
+        "action": "announce",
+        "after_attributes": {
+          "aggregator": null,
+          "as4_aggregator": null,
+          "as4_path": null,
+          "as_path": [
+            {
+              "Sequence": [
+                65002
+              ]
+            }
+          ],
+          "atomic_aggregate": false,
+          "bgpls_attr": null,
+          "bgpls_reach": null,
+          "bgpls_unreach": null,
+          "bgpsec_path": null,
+          "cluster_list": [],
+          "communities": [],
+          "evpn_reach": null,
+          "evpn_unreach": null,
+          "extended_communities": [],
+          "flowspec_reach": null,
+          "flowspec_unreach": null,
+          "large_communities": [],
+          "local_pref": 250,
+          "mp_reach": null,
+          "mp_unreach": null,
+          "multi_exit_disc": null,
+          "next_hop": "192.0.2.2",
+          "only_to_customer": null,
+          "origin": "Igp",
+          "originator_id": null,
+          "path_status": null,
+          "prefix_sid": null,
+          "rtc_nlris": [],
+          "sr_policy_nlris": [],
+          "sr_policy_paths": [],
+          "tunnel_encap": null,
+          "unknown": []
+        },
+        "before_attributes": {
+          "aggregator": null,
+          "as4_aggregator": null,
+          "as4_path": null,
+          "as_path": [
+            {
+              "Sequence": [
+                65002
+              ]
+            }
+          ],
+          "atomic_aggregate": false,
+          "bgpls_attr": null,
+          "bgpls_reach": null,
+          "bgpls_unreach": null,
+          "bgpsec_path": null,
+          "cluster_list": [],
+          "communities": [],
+          "evpn_reach": null,
+          "evpn_unreach": null,
+          "extended_communities": [],
+          "flowspec_reach": null,
+          "flowspec_unreach": null,
+          "large_communities": [],
+          "local_pref": 100,
+          "mp_reach": null,
+          "mp_unreach": null,
+          "multi_exit_disc": null,
+          "next_hop": "192.0.2.2",
+          "only_to_customer": null,
+          "origin": "Igp",
+          "originator_id": null,
+          "path_status": null,
+          "prefix_sid": null,
+          "rtc_nlris": [],
+          "sr_policy_nlris": [],
+          "sr_policy_paths": [],
+          "tunnel_encap": null,
+          "unknown": []
+        },
+        "event_id": "81448ef3-f960-4b08-b4b9-551a111f1cf3",
+        "occurred_at": "2026-10-15T08:31:37.988513573Z",
+        "path_id": null,
+        "peer_addr": "192.0.2.2",
+        "peer_as": 65002,
+        "peer_distinguisher": "0:0",
+        "prefix": "10.77.10.0/24",
+        "rib_type": "AdjRibInPrePolicy",
+        "sequence": 6,
+        "speaker_addr": "172.17.0.1"
+      },
+      {
+        "action": "announce",
+        "after_attributes": {
+          "aggregator": null,
+          "as4_aggregator": null,
+          "as4_path": null,
+          "as_path": [
+            {
+              "Sequence": [
+                65002
+              ]
+            }
+          ],
+          "atomic_aggregate": false,
+          "bgpls_attr": null,
+          "bgpls_reach": null,
+          "bgpls_unreach": null,
+          "bgpsec_path": null,
+          "cluster_list": [],
+          "communities": [],
+          "evpn_reach": null,
+          "evpn_unreach": null,
+          "extended_communities": [],
+          "flowspec_reach": null,
+          "flowspec_unreach": null,
+          "large_communities": [],
+          "local_pref": 100,
+          "mp_reach": null,
+          "mp_unreach": null,
+          "multi_exit_disc": null,
+          "next_hop": "192.0.2.2",
+          "only_to_customer": null,
+          "origin": "Igp",
+          "originator_id": null,
+          "path_status": null,
+          "prefix_sid": null,
+          "rtc_nlris": [],
+          "sr_policy_nlris": [],
+          "sr_policy_paths": [],
+          "tunnel_encap": null,
+          "unknown": []
+        },
+        "before_attributes": null,
+        "event_id": "4ad9334d-b936-4b66-b973-b59878f3442d",
+        "occurred_at": "2026-10-15T08:31:37.065521148Z",
+        "path_id": null,
+        "peer_addr": "192.0.2.2",
+        "peer_as": 65002,
+        "peer_distinguisher": "0:0",
+        "prefix": "10.77.10.0/24",
+        "rib_type": "AdjRibInPrePolicy",
+        "sequence": 3,
+        "speaker_addr": "172.17.0.1"
+      }
+    ],
+    "history_coverage": "complete",
+    "history_window": {
+      "scan_limit": 10000,
+      "scanned_events": 6,
+      "scanned_from_seq": 1,
+      "scanned_to_seq": 6,
+      "total_events": 6,
+      "truncated": false
+    },
+    "prefix": "10.77.10.0/24",
+    "receive_time": "2026-10-15T08:31:38.021998975+00:00",
+    "speaker": null,
+    "support_status": "supported",
+    "vrf_rd": null
+  },
+  "named_volume_reused_after_container_removal": true
+}

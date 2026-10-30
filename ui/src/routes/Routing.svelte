@@ -250,6 +250,45 @@
     }
   }
 
+  function formatAsPath(raw) {
+    if (!raw) return '—';
+    if (typeof raw === 'string') return raw;
+    if (Array.isArray(raw)) {
+      const parts = [];
+      for (const seg of raw) {
+        if (seg && typeof seg === 'object') {
+          if (Array.isArray(seg.sequence)) {
+            parts.push(seg.sequence.join(' '));
+          } else if (Array.isArray(seg.set)) {
+            parts.push(`{${seg.set.join(' ')}}`);
+          } else if (Array.isArray(seg.confed_sequence)) {
+            parts.push(`(${seg.confed_sequence.join(' ')})`);
+          } else {
+            const vals = Object.values(seg).find(v => Array.isArray(v));
+            if (vals) parts.push(vals.join(' '));
+          }
+        } else if (typeof seg === 'number' || typeof seg === 'string') {
+          parts.push(String(seg));
+        }
+      }
+      return parts.join(' ') || '—';
+    }
+    if (typeof raw === 'object') {
+      if (raw.segments) return formatAsPath(raw.segments);
+      if (raw.sequence) return formatAsPath(raw.sequence);
+    }
+    return String(raw);
+  }
+
+  function normalizeAttributes(attr) {
+    if (!attr) return null;
+    return {
+      ...attr,
+      as_path: formatAsPath(attr.as_path),
+      med: attr.med ?? attr.multi_exit_disc,
+    };
+  }
+
   async function loadPrefixHistory(pfx) {
     if (!pfx) return;
     historyPrefix = pfx;
@@ -259,7 +298,15 @@
       const r = await fetch(`/api/routing/v1/prefix-history?${params.toString()}`);
       if (r.ok) {
         const data = await r.json();
-        prefixHistory = data.events || [];
+        prefixHistory = (data.events || []).map(ev => ({
+          ...ev,
+          action: (ev.action || '').toLowerCase() === 'withdraw' ? 'Withdraw' : 'Announce',
+          speaker: ev.speaker || ev.speaker_addr,
+          peer: ev.peer || ev.peer_addr,
+          rib_type: ev.rib_type || ev.view?.rib_type || '—',
+          previous_attributes: normalizeAttributes(ev.previous_attributes || ev.before_attributes),
+          attributes: normalizeAttributes(ev.attributes || ev.after_attributes),
+        }));
       }
     } catch (_) {
       prefixHistory = [];
@@ -590,14 +637,14 @@
                   {ev.action}
                 </span>
               </td>
-              <td><code>{ev.view?.rib_type || '—'}</code></td>
+              <td><code>{ev.rib_type || ev.view?.rib_type || '—'}</code></td>
               <td><code>{ev.speaker}</code> / <code>{ev.peer}</code> (AS{ev.peer_as})</td>
               <td>
                 {#if ev.previous_attributes}
                   <code>
                     NH: {ev.previous_attributes.next_hop || '—'} |
                     AS: {ev.previous_attributes.as_path || '—'} |
-                    LP: {ev.previous_attributes.local_pref ?? '—'}
+                    LP: {ev.previous_attributes.local_pref ?? '—'}{#if ev.previous_attributes.med !== undefined && ev.previous_attributes.med !== null} | MED: {ev.previous_attributes.med}{/if}
                   </code>
                 {:else}
                   <span class="muted">None (initial)</span>
@@ -608,7 +655,7 @@
                   <code>
                     NH: {ev.attributes.next_hop || '—'} |
                     AS: {ev.attributes.as_path || '—'} |
-                    LP: {ev.attributes.local_pref ?? '—'}
+                    LP: {ev.attributes.local_pref ?? '—'}{#if ev.attributes.med !== undefined && ev.attributes.med !== null} | MED: {ev.attributes.med}{/if}
                   </code>
                 {:else}
                   <span class="muted">Withdrawn</span>

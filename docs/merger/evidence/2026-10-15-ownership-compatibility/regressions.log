@@ -1,0 +1,67 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 4m 09s
+     Running tests/bn004_production_investigator_wiring.rs (target/debug/deps/bn004_production_investigator_wiring-ad2a97f4a846b2fe)
+
+running 6 tests
+test test_bn004_measured_provider_policy_vs_scaffolds_on_held_out_scenarios ... ok
+test test_bn004_operator_adjudication_feedback ... ok
+test test_bn004_cancellation_and_timeouts ... ok
+test test_bn004_deduplication_and_redaction ... ok
+test test_bn004_configured_provider_wiring_and_read_only_shadow_mode ... ok
+test test_bn004_concurrent_budget_reservations_and_persisted_spend_across_restart ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.52s
+
+     Running tests/bn005_closeout.rs (target/debug/deps/bn005_closeout-bd595685cede2384)
+
+running 11 tests
+test advertised_tools_have_an_explicit_role_and_scope_support_matrix ... ok
+test conflicting_journals_rejected_before_open ... ok
+test compose_requires_token_and_persists_both_journals_on_the_runtime_volume ... ok
+test encoded_output_bound_includes_unicode_and_json_escaping ... ok
+test actual_binary_kill_restart_preserves_history_and_accepts_new_ingest ... ok
+test actual_binary_fail_closed_startup_matrix ... ok
+test sparse_late_scoped_history_is_bounded_pageable_and_restart_stable ... ok
+test shared_explorer_runner_bounds_serialized_unicode_rows ... ok
+test query_deadline_and_request_cancellation_stop_engine_workers ... ok
+test investigator_inherits_principal_for_prefetch_and_model_tools ... ok
+test concurrent_ingestion_never_publishes_a_cursor_past_unpersisted_events ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.67s
+
+     Running tests/bn005_deployment_and_scope_hardening.rs (target/debug/deps/bn005_deployment_and_scope_hardening-0776d16e4f6549d5)
+
+running 13 tests
+test test_bn005_graph_explorer_readonly_and_evasion_checks ... ok
+test test_bn005_fail_closed_internal_endpoints ... ok
+test test_bn005_quote_comment_mutation_evasion_is_rejected_and_graph_unchanged ... ok
+test test_bn005_anonymous_mcp_access_is_denied ... ok
+test test_bn005_fail_closed_public_web_auth ... ok
+test test_bn005_routing_config_deployment_validation ... ok
+test test_bn005_conflicting_speaker_aliases_are_rejected ... ok
+test test_bn005_identity_derived_tenant_and_exporter_scoping ... ok
+test test_bn005_rib_event_journal_latest_evidence_without_truncation ... ok
+test test_bn005_decoded_bmp_vrf_mismatch_is_rejected ... ok
+test test_bn005_authenticated_mcp_scoped_tool_authorization_and_denial ... ok
+test test_bn005_http_scope_support_matrix_and_encoded_parameters ... ok
+test test_bn005_strict_scope_parsing_default_deny_and_readonly_transactions ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
+
+     Running tests/ownership_mapping.rs (target/debug/deps/ownership_mapping-e2671e2c39e2b093)
+
+running 3 tests
+test labels_are_bound_parameters_and_empty_values_are_rejected ... ok
+test admin_http_inventory_and_audit_do_not_change_authorization ... ok
+test durable_exact_ownership_distinguishes_device_exporter_and_rd ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.96s
+
+     Running tests/r05_r06_runtime_wiring_and_scope.rs (target/debug/deps/r05_r06_runtime_wiring_and_scope-6168a12f639d7217)
+
+running 2 tests
+test r05_r06_investigation_runtime_budget_dedup_and_bounded_graph_rows ... ok
+test r05_r06_remote_mcp_projector_and_scoped_routing_verification ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.26s
+

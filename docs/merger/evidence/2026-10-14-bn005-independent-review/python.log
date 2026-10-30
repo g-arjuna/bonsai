@@ -1,0 +1,14 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.3, pluggy-1.6.0
+rootdir: /home/arjuna/Desktop/bonsai
+plugins: anyio-4.13.0, cov-7.1.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 16 items
+
+tests/test_a01_conformal_and_eval_metrics.py ....                        [ 25%]
+tests/test_a02_stgnn_entity_alignment.py ...                             [ 43%]
+tests/test_a14_a15_forecasting_and_gnn_ablation.py ....                  [ 68%]
+tests/test_b07_vendor_registry.py ...                                    [ 87%]
+tests/test_b15_ssh_host_key_policy.py ..                                 [100%]
+
+============================== 16 passed in 5.80s ==============================

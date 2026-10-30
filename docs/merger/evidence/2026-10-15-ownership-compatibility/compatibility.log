@@ -1,0 +1,12 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2m 29s
+     Running tests/ownership_compatibility.rs (target/debug/deps/ownership_compatibility-764e111cad3bbb40)
+
+running 3 tests
+test temporary_tool_policy_relaxes_ownership_dimensions_but_retains_other_boundaries ... ok
+test http_compatibility_and_admin_policy_switch_retain_speaker_and_supported_rd_filters ... ok
+test shared_dispatch_and_persisted_strict_restore ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.13s
+

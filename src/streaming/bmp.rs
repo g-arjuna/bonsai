@@ -1381,8 +1381,8 @@ mod tests {
             msg
         }
 
-        let sent_open = build_bgp_open([10, 9, 0, 8], 90, 65900);
-        let recv_open = build_bgp_open([10, 9, 0, 1], 180, 65900);
+        let sent_open = build_bgp_open([10, 9, 0, 8], 90, 65000);
+        let recv_open = build_bgp_open([10, 9, 0, 1], 180, 65000);
         body.extend_from_slice(&sent_open);
         body.extend_from_slice(&recv_open);
 

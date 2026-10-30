@@ -63,6 +63,14 @@ pub struct ChangeDetectionRuntime {
 }
 
 impl ChangeDetectionRuntime {
+    pub fn dummy() -> Self {
+        let (tx, _) = mpsc::channel(1);
+        Self {
+            tx,
+            history_limit: 10,
+        }
+    }
+
     pub fn start(
         store: Arc<GraphStore>,
         registry: Arc<ApiRegistry>,

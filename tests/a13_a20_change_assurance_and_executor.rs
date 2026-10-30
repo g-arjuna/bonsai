@@ -11,10 +11,11 @@ use bonsai::graph::GraphStore;
 use bonsai::mcp_server::call_tool_with_store_and_routing;
 use bonsai::remediation::{
     ApprovalBoundExecutor, AssuranceCheckSpec, AssuranceFidelity, AssuranceVerdict,
-    BlastRadiusSummary, DigitalTwinSnapshot, DisruptionLevel, ExecutionOutcome,
-    ExecutionRejectionReason, NetworkInvariant, ParseQualityState, RecoveryPolicy, RemediationPlan,
-    ShadowPilotAuditJournal, ShadowPilotObservation, SignedPlanApproval,
-    parse_nokia_srl_bgp_neighbor_json, summarize_shadow_pilot, verify_plan_in_digital_twin,
+    BlastRadiusSummary, DigitalTwinSnapshot, DisruptionLevel, ExecutionEnforcementMode,
+    ExecutionJournalRecord, ExecutionOutcome, ExecutionRejectionReason, NetworkInvariant,
+    ParseQualityState, RecoveryPolicy, RemediationPlan, ShadowPilotAuditJournal,
+    ShadowPilotObservation, SignedPlanApproval, parse_nokia_srl_bgp_neighbor_json,
+    summarize_shadow_pilot, verify_plan_in_digital_twin,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -183,6 +184,7 @@ async fn a16_a17_digital_twin_assurance_gate_and_mcp_evaluate_change_plan() {
             "plan": plan,
             "digital_twin_snapshot": twin_ok,
         }),
+        &bonsai::mcp_server::ToolExecutionContext::global(bonsai::http_server::auth::Role::Admin),
     )
     .await
     .expect("evaluate_change_plan MCP tool succeeded");
@@ -206,6 +208,8 @@ fn a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idem
         approved_scope_device: plan.device_address.clone(),
         approved_scope_vrf: plan.vrf_rd.clone(),
         assurance_report_id: assurance.report_id.clone(),
+        approved_assurance_report_hash: assurance.compute_report_hash(),
+        tenant_id: plan.tenant_id.clone(),
         approved_by: "netops-lead".to_string(),
         operator_rationale: "Verified in Containerlab FRR twin; restores 203.0.113.0/24"
             .to_string(),
@@ -311,7 +315,11 @@ fn a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idem
         err_lock,
         ExecutionRejectionReason::ConflictingChangeLockHeld
     );
-    executor.release_scope_lock("192.0.2.10", "0:0", "other-change-owner");
+    assert!(
+        executor
+            .release_scope_lock("192.0.2.10", "0:0", "other-change-owner")
+            .is_ok()
+    );
 
     // 5. Valid execution -> CommittedAndPostchecksPassed, and duplicate idempotency_key is deduplicated
     let ok_entry = executor
@@ -362,6 +370,8 @@ fn a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idem
         approved_scope_device: halt_plan.device_address.clone(),
         approved_scope_vrf: halt_plan.vrf_rd.clone(),
         assurance_report_id: halt_assurance.report_id.clone(),
+        approved_assurance_report_hash: halt_assurance.compute_report_hash(),
+        tenant_id: halt_plan.tenant_id.clone(),
         approved_by: "netops-lead".to_string(),
         operator_rationale: "Halt and page oncall if postchecks fail".to_string(),
         approved_at_epoch_secs: 1_760_000_100,
@@ -434,6 +444,8 @@ fn a18_cryptographic_signatures_and_executor_restart_persistence() {
         approved_scope_device: plan.device_address.clone(),
         approved_scope_vrf: plan.vrf_rd.clone(),
         assurance_report_id: assurance.report_id.clone(),
+        approved_assurance_report_hash: assurance.compute_report_hash(),
+        tenant_id: plan.tenant_id.clone(),
         approved_by: "secops-officer".to_string(),
         operator_rationale: "Cryptographically verified change".to_string(),
         approved_at_epoch_secs: 1_760_000_100,
@@ -548,4 +560,1040 @@ fn a19_shadow_pilot_audit_journal_persists_observations() {
     assert_eq!(summary.total_write_operations_attempted, 0);
     assert!(summary.emulation_boundary_respected);
     assert!(summary.prototype_status_verified);
+}
+
+// ── BN-001 & BN-002 Verification Tests ────────────────────────────────────────
+
+fn sample_probe_approval(plan: &RemediationPlan) -> SignedPlanApproval {
+    SignedPlanApproval {
+        approval_id: "probe-approval-001".to_string(),
+        plan_id: plan.plan_id.clone(),
+        approved_plan_hash: plan.compute_plan_hash(),
+        expected_baseline_config_revision: plan.baseline_config_revision.clone(),
+        approved_scope_device: plan.device_address.clone(),
+        approved_scope_vrf: plan.vrf_rd.clone(),
+        assurance_report_id: format!("assurance-{}", plan.plan_id),
+        approved_assurance_report_hash: String::new(),
+        tenant_id: plan.tenant_id.clone(),
+        approved_by: "probe-reviewer".to_string(),
+        operator_rationale: "Automated regression verification".to_string(),
+        approved_at_epoch_secs: 1_760_000_100,
+        expires_at_epoch_secs: 1_760_001_800,
+        signature_algorithm: String::new(),
+        key_id: String::new(),
+        signature_hex: String::new(),
+    }
+}
+
+#[test]
+fn bn001_failed_disk_append_never_replays_as_success_from_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal.jsonl");
+
+    // Initialize journal cleanly
+    let mut executor = ApprovalBoundExecutor::open_or_create(Some(&path)).unwrap();
+
+    // Obstruct the journal path by creating a directory where the file was
+    std::fs::remove_file(&path).ok();
+    std::fs::create_dir(&path).unwrap();
+
+    let plan = sample_remediation_plan();
+    let twin = sample_healthy_twin();
+    let assurance = verify_plan_in_digital_twin(&plan, &twin);
+    let approval = sample_probe_approval(&plan);
+
+    // First call must fail with a journal persistence error (not PrecheckFailed)
+    let first_res = executor.execute_approved_plan(
+        "idem-fail-test",
+        &plan,
+        &assurance,
+        &approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    match first_res {
+        Err(ExecutionRejectionReason::JournalPersistenceError(_)) => {}
+        other => panic!("expected JournalPersistenceError, got {:?}", other),
+    }
+
+    // Crucial check: A retry with the same idempotency key must NOT replay as success!
+    let retry_res = executor.execute_approved_plan(
+        "idem-fail-test",
+        &plan,
+        &assurance,
+        &approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    match retry_res {
+        Err(ExecutionRejectionReason::JournalPersistenceError(_)) => {}
+        other => panic!(
+            "retry must fail persistence again, not replay as success: {:?}",
+            other
+        ),
+    }
+
+    // Now remove the obstruction so writes succeed
+    std::fs::remove_dir(&path).unwrap();
+
+    let ok_res = executor
+        .execute_approved_plan(
+            "idem-fail-test",
+            &plan,
+            &assurance,
+            &approval,
+            "rev-2026-10-12-001",
+            1_760_000_200,
+            true,
+            true,
+        )
+        .expect("execution must succeed once disk is writable");
+    assert!(!ok_res.deduplicated_replay);
+    assert_eq!(executor.journal_entries().len(), 1);
+
+    // Now that it was durably persisted, a subsequent call correctly dedup-replays
+    let third_res = executor
+        .execute_approved_plan(
+            "idem-fail-test",
+            &plan,
+            &assurance,
+            &approval,
+            "rev-2026-10-12-001",
+            1_760_000_200,
+            true,
+            true,
+        )
+        .expect("deduplicated replay must succeed");
+    assert!(third_res.deduplicated_replay);
+}
+
+#[test]
+fn bn001_active_scope_lock_is_persisted_and_recovered_across_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal.jsonl");
+
+    let mut first = ApprovalBoundExecutor::open_or_create(Some(&path)).unwrap();
+    first
+        .acquire_scope_lock("192.0.2.10", "0:0", "change-agent-1")
+        .unwrap();
+    drop(first);
+
+    // Reopening executor from the same journal path recovers the active scope lock
+    let mut second = ApprovalBoundExecutor::open_or_create(Some(&path)).unwrap();
+    assert_eq!(
+        second
+            .active_locks()
+            .get(&("192.0.2.10".into(), "0:0".into())),
+        Some(&"change-agent-1".to_string())
+    );
+
+    // Conflicting owner is rejected
+    let conflict = second.acquire_scope_lock("192.0.2.10", "0:0", "change-agent-2");
+    assert_eq!(
+        conflict,
+        Err(ExecutionRejectionReason::ConflictingChangeLockHeld)
+    );
+
+    // Same owner is permitted
+    assert!(
+        second
+            .acquire_scope_lock("192.0.2.10", "0:0", "change-agent-1")
+            .is_ok()
+    );
+
+    // Releasing the lock persists release
+    assert!(
+        second
+            .release_scope_lock("192.0.2.10", "0:0", "change-agent-1")
+            .is_ok()
+    );
+    drop(second);
+
+    // Third executor confirms lock is now free
+    let mut third = ApprovalBoundExecutor::open_or_create(Some(&path)).unwrap();
+    assert!(third.active_locks().is_empty());
+    assert!(
+        third
+            .acquire_scope_lock("192.0.2.10", "0:0", "change-agent-2")
+            .is_ok()
+    );
+}
+
+#[test]
+fn bn001_idempotency_replay_strictly_bound_to_plan_scope_and_tenant() {
+    let mut executor = ApprovalBoundExecutor::new();
+    let plan = sample_remediation_plan();
+    let twin = sample_healthy_twin();
+    let assurance = verify_plan_in_digital_twin(&plan, &twin);
+    let approval = sample_probe_approval(&plan);
+
+    // 1. Initial execution succeeds
+    let entry = executor
+        .execute_approved_plan(
+            "idem-key-bound",
+            &plan,
+            &assurance,
+            &approval,
+            "rev-2026-10-12-001",
+            1_760_000_200,
+            true,
+            true,
+        )
+        .unwrap();
+    assert!(!entry.deduplicated_replay);
+
+    // 2. Exact match replays cleanly
+    let replay = executor
+        .execute_approved_plan(
+            "idem-key-bound",
+            &plan,
+            &assurance,
+            &approval,
+            "rev-2026-10-12-001",
+            1_760_000_200,
+            true,
+            true,
+        )
+        .unwrap();
+    assert!(replay.deduplicated_replay);
+
+    // 3. Replay with different plan_id fails with IdempotencyConflict
+    let mut diff_plan = plan.clone();
+    diff_plan.plan_id = "plan-different-id".into();
+    let diff_assurance = verify_plan_in_digital_twin(&diff_plan, &twin);
+    let mut diff_approval = approval.clone();
+    diff_approval.plan_id = diff_plan.plan_id.clone();
+    diff_approval.assurance_report_id = diff_assurance.report_id.clone();
+    diff_approval.approved_plan_hash = diff_plan.compute_plan_hash();
+
+    let err_plan = executor.execute_approved_plan(
+        "idem-key-bound",
+        &diff_plan,
+        &diff_assurance,
+        &diff_approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    match err_plan {
+        Err(ExecutionRejectionReason::IdempotencyConflict(_)) => {}
+        other => panic!(
+            "expected IdempotencyConflict on mismatched plan, got {:?}",
+            other
+        ),
+    }
+
+    // 4. Replay with different device scope fails with IdempotencyConflict
+    let mut diff_scope_plan = plan.clone();
+    diff_scope_plan.device_address = "192.0.2.99".into();
+    let diff_scope_assurance = verify_plan_in_digital_twin(&diff_scope_plan, &twin);
+    let mut diff_scope_approval = approval.clone();
+    diff_scope_approval.approved_scope_device = "192.0.2.99".into();
+    diff_scope_approval.assurance_report_id = diff_scope_assurance.report_id.clone();
+    diff_scope_approval.approved_plan_hash = diff_scope_plan.compute_plan_hash();
+
+    let err_scope = executor.execute_approved_plan(
+        "idem-key-bound",
+        &diff_scope_plan,
+        &diff_scope_assurance,
+        &diff_scope_approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    match err_scope {
+        Err(ExecutionRejectionReason::IdempotencyConflict(_)) => {}
+        other => panic!(
+            "expected IdempotencyConflict on mismatched scope, got {:?}",
+            other
+        ),
+    }
+
+    // 5. Replay with different tenant fails with IdempotencyConflict
+    let mut diff_tenant_plan = plan.clone();
+    diff_tenant_plan.tenant_id = "tenant-xyz".into();
+    let diff_tenant_assurance = verify_plan_in_digital_twin(&diff_tenant_plan, &twin);
+    let mut diff_tenant_approval = approval.clone();
+    diff_tenant_approval.tenant_id = "tenant-xyz".into();
+    diff_tenant_approval.assurance_report_id = diff_tenant_assurance.report_id.clone();
+    diff_tenant_approval.approved_plan_hash = diff_tenant_plan.compute_plan_hash();
+
+    let err_tenant = executor.execute_approved_plan(
+        "idem-key-bound",
+        &diff_tenant_plan,
+        &diff_tenant_assurance,
+        &diff_tenant_approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    match err_tenant {
+        Err(ExecutionRejectionReason::IdempotencyConflict(_)) => {}
+        other => panic!(
+            "expected IdempotencyConflict on mismatched tenant, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn bn001_journal_rejects_corrupt_interior_records_and_repairs_torn_tail() {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let journal_path = dir.path().join("corrupt_test_journal.jsonl");
+
+    // Part A: Corrupt interior line must return an error
+    let plan = sample_remediation_plan();
+    let twin = sample_healthy_twin();
+    let assurance = verify_plan_in_digital_twin(&plan, &twin);
+    let approval = sample_probe_approval(&plan);
+
+    {
+        let mut f = std::fs::File::create(&journal_path).unwrap();
+        // Valid line 1
+        let mut executor = ApprovalBoundExecutor::new();
+        let entry1 = executor
+            .execute_approved_plan(
+                "idem-1",
+                &plan,
+                &assurance,
+                &approval,
+                "rev-2026-10-12-001",
+                1_760_000_200,
+                true,
+                true,
+            )
+            .unwrap();
+        writeln!(
+            f,
+            "{}",
+            serde_json::to_string(&ExecutionJournalRecord::ExecutionCompleted { entry: entry1 })
+                .unwrap()
+        )
+        .unwrap();
+
+        // Corrupt interior line (invalid JSON ending with newline)
+        writeln!(
+            f,
+            "{{\"record_type\":\"corrupted_interior\", invalid_json..."
+        )
+        .unwrap();
+
+        // Valid line 2
+        let mut plan2 = plan.clone();
+        plan2.plan_id = "plan-2".into();
+        let assurance2 = verify_plan_in_digital_twin(&plan2, &twin);
+        let mut approval2 = approval.clone();
+        approval2.plan_id = "plan-2".into();
+        approval2.assurance_report_id = assurance2.report_id.clone();
+        approval2.approved_plan_hash = plan2.compute_plan_hash();
+
+        let entry2 = executor
+            .execute_approved_plan(
+                "idem-2",
+                &plan2,
+                &assurance2,
+                &approval2,
+                "rev-2026-10-12-001",
+                1_760_000_200,
+                true,
+                true,
+            )
+            .unwrap();
+        writeln!(
+            f,
+            "{}",
+            serde_json::to_string(&ExecutionJournalRecord::ExecutionCompleted { entry: entry2 })
+                .unwrap()
+        )
+        .unwrap();
+    }
+
+    // Opening with corrupt interior line must return Err
+    assert!(
+        ApprovalBoundExecutor::open_or_create(Some(&journal_path)).is_err(),
+        "corrupt interior line must be rejected"
+    );
+
+    // Part B: Torn tail (partial bytes without trailing newline) must be repaired
+    {
+        let mut f = std::fs::File::create(&journal_path).unwrap();
+        // Valid line 1
+        let mut executor = ApprovalBoundExecutor::new();
+        let entry1 = executor
+            .execute_approved_plan(
+                "idem-valid-1",
+                &plan,
+                &assurance,
+                &approval,
+                "rev-2026-10-12-001",
+                1_760_000_200,
+                true,
+                true,
+            )
+            .unwrap();
+        writeln!(
+            f,
+            "{}",
+            serde_json::to_string(&ExecutionJournalRecord::ExecutionCompleted { entry: entry1 })
+                .unwrap()
+        )
+        .unwrap();
+
+        // Torn crash tail (no newline)
+        write!(f, "{{\"record_type\":\"execution_intent\",\"partial\":true").unwrap();
+    }
+
+    // Opening must succeed and truncate the torn tail
+    let mut repaired_executor = ApprovalBoundExecutor::open_or_create(Some(&journal_path))
+        .expect("torn tail must be repaired cleanly");
+    assert_eq!(repaired_executor.journal_entries().len(), 1);
+
+    // Appending after repair writes valid records without corruption
+    let mut plan3 = plan.clone();
+    plan3.plan_id = "plan-3".into();
+    let assurance3 = verify_plan_in_digital_twin(&plan3, &twin);
+    let mut approval3 = approval.clone();
+    approval3.plan_id = "plan-3".into();
+    approval3.assurance_report_id = assurance3.report_id.clone();
+    approval3.approved_plan_hash = plan3.compute_plan_hash();
+
+    repaired_executor
+        .execute_approved_plan(
+            "idem-valid-3",
+            &plan3,
+            &assurance3,
+            &approval3,
+            "rev-2026-10-12-001",
+            1_760_000_200,
+            true,
+            true,
+        )
+        .expect("append after torn tail repair must succeed");
+    assert_eq!(repaired_executor.journal_entries().len(), 2);
+
+    // Reopening verifies both entries are valid
+    let reopened = ApprovalBoundExecutor::open_or_create(Some(&journal_path)).unwrap();
+    assert_eq!(reopened.journal_entries().len(), 2);
+}
+
+#[test]
+fn bn001_execution_intent_is_persisted_before_effects_and_recovered_in_flight() {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let journal_path = dir.path().join("in_flight_journal.jsonl");
+
+    // Simulate an interrupted execution (intent persisted, but process crashed before completion)
+    {
+        let mut f = std::fs::File::create(&journal_path).unwrap();
+        let lock_rec = ExecutionJournalRecord::LockAcquired {
+            device_address: "192.0.2.10".into(),
+            vrf_rd: "0:0".into(),
+            owner_id: "in-flight-approval".into(),
+            acquired_at_epoch_secs: 1_760_000_100,
+        };
+        writeln!(f, "{}", serde_json::to_string(&lock_rec).unwrap()).unwrap();
+
+        let intent_rec = ExecutionJournalRecord::ExecutionIntent {
+            execution_id: "exec-in-flight-001".into(),
+            idempotency_key: "idem-crashed-job".into(),
+            plan_id: "plan-fix-rm-deny-203-0-113".into(),
+            plan_hash: "plan-hash-123".into(),
+            tenant_id: "default".into(),
+            approval_id: "in-flight-approval".into(),
+            device_address: "192.0.2.10".into(),
+            vrf_rd: "0:0".into(),
+            started_at_epoch_secs: 1_760_000_100,
+        };
+        writeln!(f, "{}", serde_json::to_string(&intent_rec).unwrap()).unwrap();
+    }
+
+    // Reopen executor
+    let mut executor = ApprovalBoundExecutor::open_or_create(Some(&journal_path)).unwrap();
+
+    // 1. In-flight execution is recovered
+    let in_flight = executor.in_flight_executions();
+    assert_eq!(in_flight.len(), 1);
+    assert_eq!(in_flight[0].idempotency_key, "idem-crashed-job");
+
+    // 2. Scope lock is retained
+    assert_eq!(
+        executor
+            .active_locks()
+            .get(&("192.0.2.10".into(), "0:0".into())),
+        Some(&"in-flight-approval".to_string())
+    );
+
+    // 3. Retry with in-flight key is rejected rather than faking success or replaying
+    let plan = sample_remediation_plan();
+    let twin = sample_healthy_twin();
+    let assurance = verify_plan_in_digital_twin(&plan, &twin);
+    let approval = sample_probe_approval(&plan);
+
+    let err = executor.execute_approved_plan(
+        "idem-crashed-job",
+        &plan,
+        &assurance,
+        &approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    match err {
+        Err(ExecutionRejectionReason::InFlightExecutionInterrupted(_)) => {}
+        other => panic!("expected InFlightExecutionInterrupted, got {:?}", other),
+    }
+}
+
+#[test]
+fn bn002_enforced_mode_requires_signing_authority_and_rejects_modeled_assurance() {
+    let plan = sample_remediation_plan();
+    let key_id = "key-prod-alpha-1";
+    let secret = b"super-strong-production-signing-secret-key-32b!";
+
+    let mut valid_twin = sample_healthy_twin();
+    valid_twin.fidelity = AssuranceFidelity::LiveContainerlabVerified;
+    let live_assurance = verify_plan_in_digital_twin(&plan, &valid_twin);
+
+    let mut modeled_twin = sample_healthy_twin();
+    modeled_twin.fidelity = AssuranceFidelity::ModeledSnapshotSimulation;
+    let modeled_assurance = verify_plan_in_digital_twin(&plan, &modeled_twin);
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("enforced_journal.jsonl");
+
+    // 0. Enforced mode requires durable journal backing (unbacked rejected fail-closed)
+    let mut unbacked_executor =
+        ApprovalBoundExecutor::new().with_enforcement_mode(ExecutionEnforcementMode::Enforced);
+    let mut unsigned_approval = sample_probe_approval(&plan);
+    unsigned_approval.approved_assurance_report_hash = live_assurance.compute_report_hash();
+
+    let err_unbacked = unbacked_executor.execute_approved_plan(
+        "idem-enforced-0",
+        &plan,
+        &live_assurance,
+        &unsigned_approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    assert_eq!(
+        err_unbacked,
+        Err(ExecutionRejectionReason::DurableBackingRequiredInEnforcedMode)
+    );
+
+    // 1. Missing signature authority in enforced mode
+    let mut executor_no_keys = ApprovalBoundExecutor::open_or_create(Some(&path))
+        .unwrap()
+        .with_enforcement_mode(ExecutionEnforcementMode::Enforced);
+
+    let err_no_auth = executor_no_keys.execute_approved_plan(
+        "idem-enforced-1",
+        &plan,
+        &live_assurance,
+        &unsigned_approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    assert_eq!(
+        err_no_auth,
+        Err(ExecutionRejectionReason::MissingSignatureAuthority)
+    );
+
+    // 2. Unsigned approval in enforced mode with keys configured
+    let mut enforced_executor = ApprovalBoundExecutor::open_or_create(Some(&path))
+        .unwrap()
+        .with_enforcement_mode(ExecutionEnforcementMode::Enforced)
+        .with_signing_key(key_id, secret);
+
+    let err_unsigned = enforced_executor.execute_approved_plan(
+        "idem-enforced-2",
+        &plan,
+        &live_assurance,
+        &unsigned_approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    assert_eq!(
+        err_unsigned,
+        Err(ExecutionRejectionReason::InvalidSignature)
+    );
+
+    // 3. Modeled snapshot simulation rejected in enforced mode
+    let mut signed_approval = sample_probe_approval(&plan);
+    signed_approval.approved_assurance_report_hash = live_assurance.compute_report_hash();
+    signed_approval.sign_hmac_sha256(key_id, secret);
+    assert!(signed_approval.verify_signature(secret).is_ok());
+
+    let mut signed_modeled_approval = sample_probe_approval(&plan);
+    signed_modeled_approval.assurance_report_id = modeled_assurance.report_id.clone();
+    signed_modeled_approval.approved_assurance_report_hash =
+        modeled_assurance.compute_report_hash();
+    signed_modeled_approval.sign_hmac_sha256(key_id, secret);
+
+    let err_modeled = enforced_executor.execute_approved_plan(
+        "idem-enforced-3",
+        &plan,
+        &modeled_assurance,
+        &signed_modeled_approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    assert_eq!(
+        err_modeled,
+        Err(ExecutionRejectionReason::ModeledAssuranceRejectedInEnforcedMode)
+    );
+
+    // 4. Revoked key rejected in enforced mode
+    let mut revoked_executor = ApprovalBoundExecutor::open_or_create(Some(&path))
+        .unwrap()
+        .with_enforcement_mode(ExecutionEnforcementMode::Enforced)
+        .with_signing_key(key_id, secret)
+        .with_revoked_key(key_id);
+
+    let err_revoked = revoked_executor.execute_approved_plan(
+        "idem-enforced-4",
+        &plan,
+        &live_assurance,
+        &signed_approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    assert_eq!(
+        err_revoked,
+        Err(ExecutionRejectionReason::RevokedSigningKey(
+            key_id.to_string()
+        ))
+    );
+
+    // 5. Tenant mismatch rejected in enforced mode
+    let mut tenant_mismatched_approval = signed_approval.clone();
+    tenant_mismatched_approval.tenant_id = "alien-tenant".to_string();
+    tenant_mismatched_approval.sign_hmac_sha256(key_id, secret);
+
+    let err_tenant = enforced_executor.execute_approved_plan(
+        "idem-enforced-5",
+        &plan,
+        &live_assurance,
+        &tenant_mismatched_approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    assert_eq!(err_tenant, Err(ExecutionRejectionReason::TenantMismatch));
+
+    // 5b. Empty tenant ID rejected in enforced mode
+    let mut empty_tenant_approval = signed_approval.clone();
+    empty_tenant_approval.tenant_id = "".to_string();
+    empty_tenant_approval.sign_hmac_sha256(key_id, secret);
+
+    let err_empty_tenant = enforced_executor.execute_approved_plan(
+        "idem-enforced-5b",
+        &plan,
+        &live_assurance,
+        &empty_tenant_approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    assert_eq!(
+        err_empty_tenant,
+        Err(ExecutionRejectionReason::EmptyTenantId)
+    );
+
+    // 6. Valid live verified plan with valid signature succeeds in enforced mode
+    let ok_enforced = enforced_executor
+        .execute_approved_plan(
+            "idem-enforced-6",
+            &plan,
+            &live_assurance,
+            &signed_approval,
+            "rev-2026-10-12-001",
+            1_760_000_200,
+            true,
+            true,
+        )
+        .expect("valid signed execution with live assurance must succeed in enforced mode");
+    assert_eq!(
+        ok_enforced.outcome,
+        ExecutionOutcome::CommittedAndPostchecksPassed
+    );
+
+    // 7. Simulation mode allows modeled snapshot for developer workflows
+    let mut sim_executor = ApprovalBoundExecutor::new();
+    let ok_sim = sim_executor.execute_approved_plan(
+        "idem-sim-1",
+        &plan,
+        &modeled_assurance,
+        &unsigned_approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    assert!(ok_sim.is_ok(), "simulation mode allows modeled snapshot");
+}
+
+#[test]
+fn bn001_concurrent_executors_cannot_acquire_same_persisted_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal.jsonl");
+
+    let mut a = ApprovalBoundExecutor::open_or_create(Some(&path)).unwrap();
+    let mut b = ApprovalBoundExecutor::open_or_create(Some(&path)).unwrap();
+
+    a.acquire_scope_lock("192.0.2.10", "0:0", "owner-a")
+        .unwrap();
+    let res_b = b.acquire_scope_lock("192.0.2.10", "0:0", "owner-b");
+    assert_eq!(
+        res_b,
+        Err(ExecutionRejectionReason::ConflictingChangeLockHeld),
+        "concurrent executor must observe persisted scope lock held by owner-a and reject owner-b"
+    );
+}
+
+#[test]
+fn bn002_changing_unsigned_assurance_fidelity_is_rejected_in_enforced_mode() {
+    let plan = sample_remediation_plan();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal.jsonl");
+
+    let mut twin = sample_healthy_twin();
+    twin.fidelity = AssuranceFidelity::ModeledSnapshotSimulation;
+    let mut modeled_assurance = verify_plan_in_digital_twin(&plan, &twin);
+
+    let mut approval = sample_probe_approval(&plan);
+    approval.approved_assurance_report_hash = modeled_assurance.compute_report_hash();
+    approval.sign_hmac_sha256("key-1", b"secret-1234");
+
+    let mut executor = ApprovalBoundExecutor::open_or_create(Some(&path))
+        .unwrap()
+        .with_enforcement_mode(ExecutionEnforcementMode::Enforced)
+        .with_signing_key("key-1", b"secret-1234");
+
+    // First attempt: rejected because modeled assurance is rejected in enforced mode
+    let res1 = executor.execute_approved_plan(
+        "idem-probe-1",
+        &plan,
+        &modeled_assurance,
+        &approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    assert_eq!(
+        res1,
+        Err(ExecutionRejectionReason::ModeledAssuranceRejectedInEnforcedMode)
+    );
+
+    // Caller attempts to bypass by tampering with the fidelity enum in memory:
+    modeled_assurance.fidelity = AssuranceFidelity::LiveContainerlabVerified;
+    let res2 = executor.execute_approved_plan(
+        "idem-probe-1",
+        &plan,
+        &modeled_assurance,
+        &approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    assert_eq!(
+        res2,
+        Err(ExecutionRejectionReason::AssuranceReportHashMismatch),
+        "tampering with fidelity enum must invalidate assurance report hash binding"
+    );
+}
+
+#[test]
+fn bn002_completed_replay_in_enforced_mode_requires_signing_authority_and_rejects_simulation_replay()
+ {
+    let plan = sample_remediation_plan();
+    let twin = sample_healthy_twin();
+    let assurance = verify_plan_in_digital_twin(&plan, &twin);
+    let mut approval = sample_probe_approval(&plan);
+    approval.approved_assurance_report_hash = assurance.compute_report_hash();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal.jsonl");
+
+    // Step 1: Run in simulation mode (no signing key)
+    let mut sim_executor = ApprovalBoundExecutor::open_or_create(Some(&path)).unwrap();
+    let out_sim = sim_executor
+        .execute_approved_plan(
+            "idem-sim-replay",
+            &plan,
+            &assurance,
+            &approval,
+            "rev-2026-10-12-001",
+            1_760_000_200,
+            true,
+            true,
+        )
+        .expect("simulation execution succeeds");
+    assert_eq!(
+        out_sim.enforcement_mode,
+        ExecutionEnforcementMode::Simulation
+    );
+
+    // Step 2: Switch to enforced mode without signing authority
+    let mut enforced_no_auth = ApprovalBoundExecutor::open_or_create(Some(&path))
+        .unwrap()
+        .with_enforcement_mode(ExecutionEnforcementMode::Enforced);
+    let replay_err1 = enforced_no_auth.execute_approved_plan(
+        "idem-sim-replay",
+        &plan,
+        &assurance,
+        &approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    // Simulation replay must be rejected in enforced mode
+    assert_eq!(
+        replay_err1,
+        Err(ExecutionRejectionReason::SimulationReplayRejectedInEnforcedMode)
+    );
+
+    // Step 3: Now run an enforced execution with signing authority
+    approval.sign_hmac_sha256("key-1", b"secret-1234");
+    let mut enforced_with_auth = ApprovalBoundExecutor::open_or_create(Some(&path))
+        .unwrap()
+        .with_enforcement_mode(ExecutionEnforcementMode::Enforced)
+        .with_signing_key("key-1", b"secret-1234");
+
+    let out_enforced = enforced_with_auth
+        .execute_approved_plan(
+            "idem-enforced-replay",
+            &plan,
+            &assurance,
+            &approval,
+            "rev-2026-10-12-001",
+            1_760_000_200,
+            true,
+            true,
+        )
+        .expect("enforced execution succeeds");
+    assert_eq!(
+        out_enforced.enforcement_mode,
+        ExecutionEnforcementMode::Enforced
+    );
+
+    // Step 4: Replay in enforced mode requires signing authority configured
+    let mut enforced_replay_no_auth = ApprovalBoundExecutor::open_or_create(Some(&path))
+        .unwrap()
+        .with_enforcement_mode(ExecutionEnforcementMode::Enforced);
+    let replay_err2 = enforced_replay_no_auth.execute_approved_plan(
+        "idem-enforced-replay",
+        &plan,
+        &assurance,
+        &approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    assert_eq!(
+        replay_err2,
+        Err(ExecutionRejectionReason::MissingSignatureAuthority),
+        "enforced replay without signing authority must be rejected"
+    );
+
+    // Step 5: Replay with signing authority succeeds
+    let replay_ok = enforced_with_auth
+        .execute_approved_plan(
+            "idem-enforced-replay",
+            &plan,
+            &assurance,
+            &approval,
+            "rev-2026-10-12-001",
+            1_760_000_200,
+            true,
+            true,
+        )
+        .expect("enforced replay succeeds with valid authority");
+    assert!(replay_ok.deduplicated_replay);
+}
+
+#[test]
+fn bn002_canonical_signing_bytes_eliminates_delimiter_collisions() {
+    let plan = sample_remediation_plan();
+    let mut first = sample_probe_approval(&plan);
+    let mut second = first.clone();
+
+    // Boundary shift that caused delimiter collision with unescaped pipes
+    first.approval_id = "a|plan_id=b".into();
+    first.plan_id = "c".into();
+
+    second.approval_id = "a".into();
+    second.plan_id = "b|plan_id=c".into();
+
+    assert_ne!(first.approval_id, second.approval_id);
+    assert_ne!(
+        first.canonical_signing_bytes(),
+        second.canonical_signing_bytes(),
+        "canonical signing bytes must be collision-free across delimiter variations"
+    );
+
+    // Signing first does not validate second
+    let secret = b"my-signing-key-32bytes-secret!!";
+    first.sign_hmac_sha256("key-1", secret);
+    second.signature_algorithm = first.signature_algorithm.clone();
+    second.key_id = first.key_id.clone();
+    second.signature_hex = first.signature_hex.clone();
+
+    assert!(first.verify_signature(secret).is_ok());
+    assert_eq!(
+        second.verify_signature(secret),
+        Err(ExecutionRejectionReason::InvalidSignature)
+    );
+}
+
+#[test]
+fn bn001_corruption_added_after_completion_fails_closed_on_replay() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal.jsonl");
+    let mut executor = ApprovalBoundExecutor::open_or_create(Some(&path)).unwrap();
+    let plan = sample_remediation_plan();
+    let twin = sample_healthy_twin();
+    let assurance = verify_plan_in_digital_twin(&plan, &twin);
+    let approval = sample_probe_approval(&plan);
+
+    executor
+        .execute_approved_plan(
+            "idem-corrupt-after",
+            &plan,
+            &assurance,
+            &approval,
+            "rev-2026-10-12-001",
+            1_760_000_200,
+            true,
+            true,
+        )
+        .expect("first execution succeeds");
+
+    // Corrupt journal on disk after completion
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    writeln!(file, "{{corrupted-unparseable-json}}").unwrap();
+    file.sync_all().unwrap();
+
+    // Replay attempt must FAIL CLOSED with JournalPersistenceError rather than serving memory cache
+    let replay_res = executor.execute_approved_plan(
+        "idem-corrupt-after",
+        &plan,
+        &assurance,
+        &approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    match replay_res {
+        Err(ExecutionRejectionReason::JournalPersistenceError(_)) => {}
+        other => panic!("expected JournalPersistenceError, got {:?}", other),
+    }
+}
+
+#[test]
+fn bn001_empty_durable_journal_fails_closed_on_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal.jsonl");
+    let mut executor = ApprovalBoundExecutor::open_or_create(Some(&path)).unwrap();
+    let plan = sample_remediation_plan();
+    let twin = sample_healthy_twin();
+    let assurance = verify_plan_in_digital_twin(&plan, &twin);
+    let approval = sample_probe_approval(&plan);
+
+    executor
+        .execute_approved_plan(
+            "idem-empty-after",
+            &plan,
+            &assurance,
+            &approval,
+            "rev-2026-10-12-001",
+            1_760_000_200,
+            true,
+            true,
+        )
+        .expect("first execution succeeds");
+
+    // Truncate journal file to empty after completion
+    std::fs::write(&path, b"").unwrap();
+
+    // Replay attempt must FAIL CLOSED with JournalPersistenceError
+    let replay_res = executor.execute_approved_plan(
+        "idem-empty-after",
+        &plan,
+        &assurance,
+        &approval,
+        "rev-2026-10-12-001",
+        1_760_000_200,
+        true,
+        true,
+    );
+    match replay_res {
+        Err(ExecutionRejectionReason::JournalPersistenceError(_)) => {}
+        other => panic!("expected JournalPersistenceError, got {:?}", other),
+    }
+}
+
+#[test]
+fn bn002_report_identity_delimiters_eliminate_identical_hashes() {
+    let plan = sample_remediation_plan();
+    let mut a = verify_plan_in_digital_twin(&plan, &sample_healthy_twin());
+    let mut b = a.clone();
+    a.report_id = "a:b".into();
+    a.plan_id = "c".into();
+    b.report_id = "a".into();
+    b.plan_id = "b:c".into();
+    assert_ne!(a.report_id, b.report_id);
+    assert_ne!(
+        a.compute_report_hash(),
+        b.compute_report_hash(),
+        "delimiter boundary shifting must not create hash collisions"
+    );
+}
+
+#[test]
+fn bn002_fidelity_limitations_are_bound_by_report_hash() {
+    let plan = sample_remediation_plan();
+    let a = verify_plan_in_digital_twin(&plan, &sample_healthy_twin());
+    let mut b = a.clone();
+    b.emulation_fidelity_limitations = vec!["Independent lab evidence unavailable".into()];
+    assert_ne!(
+        a.emulation_fidelity_limitations,
+        b.emulation_fidelity_limitations
+    );
+    assert_ne!(
+        a.compute_report_hash(),
+        b.compute_report_hash(),
+        "fidelity limitations must be bound into report hash"
+    );
 }

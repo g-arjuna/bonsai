@@ -1,0 +1,20 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 52.00s
+     Running tests/bn001_003_comprehensive_review_probes.rs (target/debug/deps/bn001_003_comprehensive_review_probes-b2e7c515bd0d4013)
+
+running 5 tests
+test fidelity_limitations_are_not_bound_by_report_hash ... ok
+test report_identity_delimiters_create_identical_hashes ... ok
+
+running 1 test
+test empty_durable_journal_still_replays_from_memory ... ok
+test corruption_added_after_completion_is_ignored_during_replay ... ok
+test process_scope_worker ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.02s
+
+test second_process_with_stale_snapshot_observes_new_scope_lock ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.02s
+

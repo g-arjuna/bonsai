@@ -953,18 +953,47 @@ pub(super) async fn remove_override(
 }
 pub(super) async fn list_investigations_handler(
     State(state): State<AppState>,
+    extensions: axum::http::Extensions,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    state
+    let invs = state
         .store
         .list_investigations()
         .await
-        .map(|inv| Json(serde_json::json!({ "investigations": inv })))
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let filtered =
+        if let Some(scope) = extensions.get::<crate::http_server::auth::RoutingAccessScope>() {
+            if let Some(ref spk) = scope.speaker {
+                invs.into_iter()
+                    .filter(|i| &i.device_address == spk)
+                    .collect()
+            } else {
+                invs
+            }
+        } else {
+            invs
+        };
+
+    Ok(Json(serde_json::json!({ "investigations": filtered })))
 }
 pub(super) async fn create_investigation_handler(
     State(state): State<AppState>,
+    extensions: axum::http::Extensions,
     Json(body): Json<CreateInvestigationBody>,
 ) -> Result<Json<crate::graph::InvestigationRecord>, (StatusCode, String)> {
+    if let Some(scope) = extensions.get::<crate::http_server::auth::RoutingAccessScope>() {
+        if let Some(ref spk) = scope.speaker {
+            if &body.device_address != spk {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "Requested device_address '{}' violates token scope '{}'",
+                        body.device_address, spk
+                    ),
+                ));
+            }
+        }
+    }
     let detection_id = body.detection_id.clone();
     let device_address = body.device_address.clone();
     let inv = state
@@ -990,6 +1019,20 @@ pub(super) async fn create_investigation_handler(
             state,
             ai_cfg,
             api_key,
+            crate::mcp_server::ToolExecutionContext {
+                role: extensions
+                    .get::<crate::http_server::auth::Role>()
+                    .copied()
+                    .unwrap_or(crate::http_server::auth::Role::ApiReadonly),
+                scope: extensions
+                    .get::<crate::http_server::auth::OriginalRoutingAccessScope>()
+                    .map(|scope| scope.0.clone())
+                    .or_else(|| {
+                        extensions
+                            .get::<crate::http_server::auth::RoutingAccessScope>()
+                            .cloned()
+                    }),
+            },
         );
     }
 
@@ -997,6 +1040,7 @@ pub(super) async fn create_investigation_handler(
 }
 pub(super) async fn get_investigation_handler(
     State(state): State<AppState>,
+    extensions: axum::http::Extensions,
     Path(id): Path<String>,
 ) -> Result<Json<InvestigationDetailResponse>, (StatusCode, String)> {
     let inv = state
@@ -1010,6 +1054,16 @@ pub(super) async fn get_investigation_handler(
                 format!("investigation {} not found", id),
             )
         })?;
+    if let Some(scope) = extensions.get::<crate::http_server::auth::RoutingAccessScope>() {
+        if let Some(ref spk) = scope.speaker {
+            if &inv.device_address != spk {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    "Investigation is outside authenticated scope".to_string(),
+                ));
+            }
+        }
+    }
     let tool_calls = state
         .store
         .list_tool_calls(id)
@@ -1022,8 +1076,30 @@ pub(super) async fn get_investigation_handler(
 }
 pub(super) async fn list_tool_calls_handler(
     State(state): State<AppState>,
+    extensions: axum::http::Extensions,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if let Some(scope) = extensions.get::<crate::http_server::auth::RoutingAccessScope>() {
+        let inv = state
+            .store
+            .get_investigation(id.clone())
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    format!("investigation {id} not found"),
+                )
+            })?;
+        if let Some(ref spk) = scope.speaker {
+            if &inv.device_address != spk {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    "Investigation is outside authenticated scope".to_string(),
+                ));
+            }
+        }
+    }
     state
         .store
         .list_tool_calls(id)
@@ -1033,9 +1109,31 @@ pub(super) async fn list_tool_calls_handler(
 }
 pub(super) async fn complete_investigation_handler(
     State(state): State<AppState>,
+    extensions: axum::http::Extensions,
     Path(id): Path<String>,
     Json(body): Json<CompleteInvestigationBody>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    if let Some(scope) = extensions.get::<crate::http_server::auth::RoutingAccessScope>() {
+        let inv = state
+            .store
+            .get_investigation(id.clone())
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    format!("investigation {id} not found"),
+                )
+            })?;
+        if let Some(ref spk) = scope.speaker {
+            if &inv.device_address != spk {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    "Investigation is outside authenticated scope".to_string(),
+                ));
+            }
+        }
+    }
     state
         .store
         .complete_investigation(

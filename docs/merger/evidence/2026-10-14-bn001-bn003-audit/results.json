@@ -1,0 +1,79 @@
+{
+  "review_date": "2026-10-14",
+  "timezone": "Asia/Kolkata",
+  "base_commit": "e4d8c4489da4b0048a72cd383685131c66adc7ae",
+  "implementation_uncommitted": true,
+  "source_sha256": {
+    "Cargo.toml": "d4b806d66648b472cecd486228bf3560da828b7265c52368815984c61457e150",
+    "Cargo.lock": "7ded09b8d57fff517da635e2cd63b9aff0bebb840ea667253e4dd16f55414757",
+    "src/remediation/approval.rs": "7672056c11d920d43b446bc091fd201624e61c68d6d9f404953a25ac9ab54a91",
+    "src/http_server/auth.rs": "a30f3d89777bc5776215c639dc26a9cf611f1b0874f3744cb3e2b1f157ecbd39",
+    "src/http_server/mod.rs": "9aeab4608481371212cbdf16fbb84a2e875a90e1cfe51296b17910d272b67ec7",
+    "src/graph/mod.rs": "683ade4476fa0b42fa1658fc2aa4f32aeb750be7b7fc5249517f17fbe4e961c3",
+    "src/routing_service/mod.rs": "737b9a2d43c480b981efdf11ea997e13ab0bf54be21c7ea2ba2bbd5de9f0d296",
+    "src/bin/routing_service.rs": "4b35cab5441aef7b8ccf1c96d51fcbfd17c342b314f6b198c4d9bad4119da6c8",
+    "tests/a13_a20_change_assurance_and_executor.rs": "5139a19ca98155278bbb45b83ccd8a0fd7d6d5c82dcc4d9e31bbbd69da2b783e",
+    "tests/bn003_live_routing_browser_acceptance.rs": "9c1963b095619cda752da73842cdc95013ae306aedcbba94b10d5d2f0e0b7340",
+    "tests/ui_driver/routing_live_acceptance.spec.js": "aa32296142a055975d33f682cbcd8ba709525831aadf0fb4e83361a5973e5796",
+    "tests/ui_driver/playwright.config.js": "719a5e838af96e67ffc36e07b5f91c2aef0dca7f5c2c2a71f5fbb0f5f82a326d",
+    "ui/src/routes/Routing.svelte": "c7c0d5d01c1f8526c81df55320e36d34d17928028ca04150e00658c340a8986f",
+    "lab/fast-iteration/frr-bmp-r07.clab.yml": "474eb50af10a6bbfe7b62de56e1492bb1572f619b51032a07b9c283c9a197b2c"
+  },
+  "dispositions": {
+    "BN-001": "Partial",
+    "BN-002": "Partial",
+    "BN-003": "Partial",
+    "BN-004": "Outside audit scope"
+  },
+  "existing_rust_passed": 158,
+  "rust_ignored": 2,
+  "playwright_passed": 12,
+  "python_passed": 16,
+  "review_checks": {
+    "top_level_passed": 5,
+    "undesirable_behaviors_reproduced": 4,
+    "cross_process_scope_confirmations": 1,
+    "child_worker_not_counted_as_separate_product_gate": true
+  },
+  "logs": {
+    "browser.log": {
+      "exit_code": 0,
+      "sha256": "dfc3195bf19f0d8734fb057b0f3ca857d380cff51a819f53c1b65c65992c3702"
+    },
+    "clippy.log": {
+      "exit_code": 0,
+      "sha256": "a24a2fb43b32e1c40929adf411f30c14ff9afa08dd85dedb383b530b94687e4e"
+    },
+    "fmt.log": {
+      "exit_code": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "imported.log": {
+      "exit_code": 0,
+      "sha256": "d13bd28e932feb67697a8b5e599a036986c9748ac97777ce2a9a065e7d10c0b9"
+    },
+    "probes.log": {
+      "exit_code": 0,
+      "sha256": "d3007bb2ae13b6964f11cc80d2f767e9301e5fb83b88a94e1883e3334ca1f984"
+    },
+    "python.log": {
+      "exit_code": 0,
+      "sha256": "8e90ee2410610410b01e9076ac60fd52481d7a6c422e3b71bc9ef2ac59f52e44"
+    },
+    "regressions.log": {
+      "exit_code": 0,
+      "sha256": "35af07ff143ca103de92deff5ddf1fa821150e0b3aacb5c6a76f76bc90d68b9b"
+    },
+    "ui.log": {
+      "exit_code": 0,
+      "sha256": "1b9ed9244bab0f620a18cec6a83096c675f0abfdab20a6988a66cace378a6dee"
+    }
+  },
+  "evidence_limit": "Fresh browser bytes include live BMP and injected VRF fixture; source hashes identify the working tree, not a committed release",
+  "raw_bundle_integrity": {
+    "sha256_matches": true,
+    "bytes": 5568,
+    "sha256": "f14d49b7c55e02152c3b06c00197788e4ea725b873525575d85ab1997df417af"
+  },
+  "submitted_bundle_restored_byte_for_byte": true
+}

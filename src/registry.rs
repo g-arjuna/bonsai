@@ -689,6 +689,9 @@ mod tests {
 
     fn target(address: &str, vendor: &str) -> TargetConfig {
         TargetConfig {
+            extra_ips: Vec::new(),
+            optional: false,
+            paths: Vec::new(),
             address: address.to_string(),
             enabled: true,
             tls_domain: None,

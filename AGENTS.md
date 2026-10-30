@@ -1,7 +1,7 @@
 # Development contract
 
 - Product: Bonsai. Routing protocol/history components originate in RustyBMP (`crates/rbmp-core`, `crates/rbmp-rib`, `crates/rbmp-store`).
-- Read `docs/merger/STATUS.md` and `docs/merger/BACKLOG.md`; inspect current Git state before making changes.
+- Read `BONSAI_BACKLOG.md` and `docs/STATUS.md` (older planning documents are historical references); inspect current Git state before making changes.
 - Work on one task at a time. Preserve unrelated local changes.
 - Reproduce correctness bugs before fixing them; use independent expected values.
 - Protocol parsers must reject malformed input without panic or unbounded allocation (`validate_bmp_header`, `read_bmp_frame`).

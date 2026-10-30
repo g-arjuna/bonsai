@@ -433,7 +433,11 @@ pub async fn build_evidence_coverage_json(
     let overall = state.overall_completeness().await;
     let rib = state.rib.read().await;
     let gaps = state.transport_gaps.read().await;
-    let events = state.event_journal.events_after_seq(0, 5_000).await;
+    let mut window = state
+        .event_journal
+        .recent_window(rbmp_store::journal::HISTORY_SCAN_LIMIT)
+        .await;
+    let events = std::mem::take(&mut window.events);
 
     let target_speaker_ip: Option<IpAddr> = q.speaker.as_deref().and_then(|s| s.parse().ok());
     let mut target_speaker_found = false;
@@ -583,6 +587,8 @@ pub async fn build_evidence_coverage_json(
             "prefix": q.prefix,
             "tenant_id": q.tenant_id.clone().unwrap_or_else(|| "default".to_string()),
         },
+        "history_coverage": if window.truncated { "partial" } else { "complete" },
+        "history_window": window,
         "target_speaker_found": target_speaker_found,
         "completeness_state": scoped_completeness,
         "global_completeness_state": overall,
@@ -711,7 +717,11 @@ pub async fn build_prefix_journey_json(
     drop(rib);
 
     // Reconstruct durable event history & observation envelopes for this prefix/VRF/speaker
-    let all_events = state.event_journal.events_after_seq(0, 5_000).await;
+    let mut window = state
+        .event_journal
+        .recent_window(rbmp_store::journal::HISTORY_SCAN_LIMIT)
+        .await;
+    let all_events = std::mem::take(&mut window.events);
     let mut envelopes = Vec::new();
     let mut observation_ids = Vec::new();
     let mut announce_count = 0usize;
@@ -819,6 +829,8 @@ pub async fn build_prefix_journey_json(
             },
             "observation_ids": observation_ids,
             "observations": envelopes,
+            "history_coverage": if window.truncated { "partial" } else { "complete" },
+            "history_window": window,
             "total_observations": total_events_matching,
             "truncated": truncated,
         }),
@@ -843,7 +855,11 @@ pub async fn build_peer_timeline_json(
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
     let tenant_id = q.tenant_id.as_deref().unwrap_or("default");
     let latest_seq = state.event_journal.latest_seq().await;
-    let all_events = state.event_journal.events_after_seq(0, 5_000).await;
+    let mut window = state
+        .event_journal
+        .recent_window(rbmp_store::journal::HISTORY_SCAN_LIMIT)
+        .await;
+    let all_events = std::mem::take(&mut window.events);
     let gaps = state.transport_gaps.read().await;
 
     let mut session_epochs = BTreeSet::new();
@@ -863,6 +879,9 @@ pub async fn build_peer_timeline_json(
 
         match &ev.payload {
             RibEventPayload::SpeakerUp { .. } | RibEventPayload::SpeakerDown { .. } => {
+                if q.vrf_rd.is_some() || q.peer.is_some() {
+                    continue;
+                }
                 let env = ObservationEnvelope::from_rib_event(ev, tenant_id, has_gap);
                 observation_ids.push(env.observation_id.clone());
                 transitions.push(env);
@@ -953,6 +972,8 @@ pub async fn build_peer_timeline_json(
         "transport_gaps": active_transport_gaps,
         "transitions": transitions,
         "observation_ids": observation_ids,
+        "history_coverage": if window.truncated { "partial" } else { "complete" },
+        "history_window": window,
         "total_transitions": total_transitions,
         "truncated": truncated,
     })
@@ -995,7 +1016,26 @@ pub async fn build_compare_snapshots_json(
     let after_seq = q.after_seq.unwrap_or(latest_seq);
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
 
-    let all_events = state.event_journal.events_after_seq(0, 10_000).await;
+    let mut window = state
+        .event_journal
+        .recent_window(rbmp_store::journal::HISTORY_SCAN_LIMIT)
+        .await;
+    let all_events = std::mem::take(&mut window.events);
+
+    // Tail windows cannot reconstruct a historical baseline. Fail explicitly instead of
+    // fabricating a diff from missing announcements/withdrawals.
+    if window.truncated {
+        return json!({
+            "api_version": ROUTING_API_VERSION,
+            "durable_sequence": latest_seq,
+            "status": "partial",
+            "history_coverage": "partial",
+            "history_window": window,
+            "reason": "historical baseline exceeds bounded reconstruction; use paginated events",
+            "added_routes": [], "removed_routes": [], "modified_routes": [],
+            "before_seq": before_seq, "after_seq": after_seq,
+        });
+    }
 
     let build_state_at = |target_seq: u64| -> BTreeMap<String, SnapshotRouteRecord> {
         let mut table: BTreeMap<String, SnapshotRouteRecord> = BTreeMap::new();
@@ -1121,6 +1161,7 @@ pub async fn build_compare_snapshots_json(
         }
     }
 
+    let result_truncated = added.len() > limit || removed.len() > limit || modified.len() > limit;
     added.truncate(limit);
     removed.truncate(limit);
     modified.truncate(limit);
@@ -1136,6 +1177,9 @@ pub async fn build_compare_snapshots_json(
             "vrf_rd": q.vrf_rd,
             "prefix": q.prefix,
         },
+        "history_coverage": "complete",
+        "history_window": window,
+        "truncated": result_truncated,
         "added_routes": added,
         "removed_routes": removed,
         "modified_routes": modified,
@@ -1413,6 +1457,20 @@ pub async fn build_explain_prefix_json(
             "Observation gap on speaker {:?}: BMP transport disconnected. A missing or stale route during a collector gap is not evidence of BGP withdrawal.",
             q.speaker
         );
+    } else if cov["history_coverage"] == "partial" {
+        status = "partial";
+        epistemic_state = "insufficient_evidence";
+        root_cause_type = "bounded_history_window";
+        missing_observations.push("complete_historical_baseline; paginate /events".to_string());
+        hypotheses.push(json!({
+            "hypothesis_id": "hyp-incomplete-history", "category": "insufficient_evidence",
+            "rank": 1, "status": "insufficient_evidence",
+            "rationale": "Earlier announcements and withdrawals are outside this bounded history window."
+        }));
+        next_check = json!({ "tool_or_command": "/api/routing/v1/events", "read_only": true,
+            "reason": "Page durable history before asserting a route was never advertised." });
+        conclusion =
+            "Historical evidence is incomplete within the request scan budget.".to_string();
     } else if completeness_state == "missing_speaker" || completeness_state == "syncing" {
         status = "partial";
         epistemic_state = "insufficient_evidence";
@@ -1699,6 +1757,8 @@ pub async fn build_explain_prefix_json(
             "as_of": Utc::now().to_rfc3339(),
             "durable_sequence": latest_seq,
             "completeness_state": completeness_state,
+            "history_coverage": cov["history_coverage"],
+            "history_window": cov["history_window"],
             "conclusion": conclusion,
             "observed_facts": observed_facts,
             "hypotheses": hypotheses,

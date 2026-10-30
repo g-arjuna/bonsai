@@ -1,0 +1,30 @@
+{
+  "normal_render": "rejected because .env is absent; deployment setup remains explicit",
+  "render_only_command": "BONSAI_VAULT_PASSPHRASE=<synthetic> BONSAI_ROUTING_SERVICE_TOKEN=<synthetic> docker compose --profile routing config --no-env-resolution --format json",
+  "render_only_exit_code": 0,
+  "entrypoint": [
+    "/usr/local/bin/bonsai-routing"
+  ],
+  "token_required_by_compose": true,
+  "bmp_journal": "/app/runtime/routing-bmp.journal",
+  "event_journal": "/app/runtime/routing-events.jsonl",
+  "volumes": [
+    {
+      "type": "volume",
+      "source": "bonsai_graph_dev",
+      "target": "/app/runtime",
+      "volume": {}
+    }
+  ],
+  "ports": [
+    {
+      "mode": "ingress",
+      "target": 11019,
+      "published": "11019",
+      "protocol": "tcp"
+    }
+  ],
+  "expose": [
+    "8081"
+  ]
+}

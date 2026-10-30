@@ -1,0 +1,20 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+warning: unused imports: `RoutingServiceConfig`, `RoutingServiceState`, `build_internal_routing_router`, and `sample_bmp_session_frames`
+ --> tests/bn005_scope_followup_probe.rs:4:5
+  |
+4 |     RoutingServiceConfig, RoutingServiceState, build_internal_routing_router,
+  |     ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+5 |     sample_bmp_session_frames,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `bonsai` (test "bn005_scope_followup_probe") generated 1 warning (run `cargo fix --test "bn005_scope_followup_probe" -p bonsai` to apply 1 suggestion)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2m 06s
+     Running tests/bn005_scope_followup_probe.rs (target/debug/deps/bn005_scope_followup_probe-2a807e3350043e57)
+
+running 1 test
+test scoped_mcp_reads_foreign_graph_and_device_changes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.16s
+

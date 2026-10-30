@@ -1,0 +1,81 @@
+{
+  "date": "2026-10-15",
+  "timezone": "Asia/Kolkata",
+  "base_commit": "e4d8c4489da4b0048a72cd383685131c66adc7ae",
+  "implementation_uncommitted": true,
+  "BN-005": "Partial; finite six-step closeout plan documented",
+  "existing_rust_tests_passed": 40,
+  "python_tests_passed": 16,
+  "review_checks": {
+    "top_level_passed": 3,
+    "observed_scope_cases": 4,
+    "positive_readonly_engine_feasibility": 1
+  },
+  "exploratory_graph_snapshot_probe": "HTTP 500, not proof of exposure and not counted as a product-gate failure",
+  "source_sha256": {
+    "src/mcp_server.rs": "6f1783ba35f65d36b2c56096c391a07a2bc348abbae9299274e3737174703c61",
+    "src/http_server/auth.rs": "3fbd683cb6d111ca8e5bd8c34f155c944c8293f433b7852c4d43c918c8015a50",
+    "src/http_server/observability.rs": "70528d8f6c2d4e0c621e59dec2bb038622f2648bed0acfbe57f6891f50773b39",
+    "src/investigation_runtime.rs": "72dc1a66174327a8d8d9151722f9ad0e393659881e8e289a946167dcb906f54b",
+    "src/graph/explorer.rs": "9d33e1feb5f14e9df9173b79c3eb53f4b4eaffcab3d8091f6f18e4c4a9bc0ea8",
+    "tests/bn005_deployment_and_scope_hardening.rs": "7c05831a80b24de8c94fc6263fa72daa12d04d902d1340d79ee9412cd7beee28"
+  },
+  "commands": {
+    "regressions.log": "cargo test --locked --offline --test bn005_deployment_and_scope_hardening --test a13_a20_change_assurance_and_executor --test bn004_production_investigator_wiring --test b11_b12_b13_routing_workflow",
+    "closure-probes.log": "cargo test --locked --offline --test bn005_closure_scope_probe -- --nocapture",
+    "python.log": "PYTHONPATH=. .venv/bin/pytest tests/test_*.py",
+    "fmt.log": "cargo fmt --check",
+    "ui.log": "npm --prefix ui run build",
+    "clippy.log": "cargo clippy -p rbmp-core --locked --offline -- -D warnings"
+  },
+  "not_rerun": [
+    "live browser/Containerlab",
+    "imported crates",
+    "history recovery",
+    "actual process launches",
+    "query-cancellation workload",
+    "real provider evaluation"
+  ],
+  "logs": {
+    "ui.log": {
+      "sha256": "760e5eb2d06c18bd4eb239361e8827957804dbcc58addd1cb7a95e82281f129f",
+      "exit_code": 0
+    },
+    "http-graph-snapshot-attempt.log": {
+      "sha256": "2800ac119ff4c57578c62601e18790ee93c2cde44cec96539a240aa472ab47b8",
+      "exit_code": 101
+    },
+    "http-probe.log": {
+      "sha256": "52447a669dbb549089bd0ca8ae83681145033ffac69eadf2573996f51e2b00ce",
+      "exit_code": 0
+    },
+    "clippy.log": {
+      "sha256": "cb1dbb9e3cb0d27673d25b2aa36b78b7afee9dce98ec35194c046697bbb0a9f0",
+      "exit_code": 0
+    },
+    "closure-probes.log": {
+      "sha256": "1f9a57bf61f10cd56f6da03a2d272a9d58cbf26a4423ce77e4015262c3e47739",
+      "exit_code": 0
+    },
+    "readonly-feasibility.log": {
+      "sha256": "4bd7a0d7ff4f4c81e8194c73744ad849aa52a0523b44cbcba4f2d337ecb0af31",
+      "exit_code": 0
+    },
+    "python.log": {
+      "sha256": "89166cf1062814f2ef47d2e1959d501cddb2c6422f3c8bef8de3b4d43502d613",
+      "exit_code": 0
+    },
+    "fmt.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit_code": 0
+    },
+    "scope-probe.log": {
+      "sha256": "13d4167c31f0ad8d58e1722923c84046735634d86c01b8b60dd5dc478914c375",
+      "exit_code": 0
+    },
+    "regressions.log": {
+      "sha256": "cffde6170c4f1b6c9adce5ad9125ef005ffc5be36d22c97da6a3b76940d63fa7",
+      "exit_code": 0
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "platform": "Linux-7.0.0-34-generic-x86_64-with-glibc2.39",
+  "base_commit": "e4d8c4489da4b0048a72cd383685131c66adc7ae",
+  "timezone": "Asia/Kolkata",
+  "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+  "python": "Python 3.12.3",
+  "node": "v20.20.2",
+  "docker": "Docker version 29.6.2-rd, build ede120b"
+}

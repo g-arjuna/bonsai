@@ -1,0 +1,27 @@
+{
+  "submitted_live_frames": 46,
+  "fixture_frames": 4,
+  "exact_fixture_frames_in_live": [
+    {
+      "type": 3,
+      "bytes": 126,
+      "sha256": "ef1d65a0b9aaeefd400166d851c9655cfc275fa03ca729a40483fbe6847fc680",
+      "peer_type": 1,
+      "rd_hex": "0000fde800000064"
+    },
+    {
+      "type": 0,
+      "bytes": 102,
+      "sha256": "19a30fa13a9df5894d1f58449546a2a2388fb32d30ade3c091f4dce999e77f73",
+      "peer_type": 1,
+      "rd_hex": "0000fde800000064"
+    },
+    {
+      "type": 0,
+      "bytes": 71,
+      "sha256": "c08c39b2b8691edfae249331be8a17105353e57986df4a0bed72fb6ee13c0b6f",
+      "peer_type": 1,
+      "rd_hex": "0000fde800000064"
+    }
+  ]
+}

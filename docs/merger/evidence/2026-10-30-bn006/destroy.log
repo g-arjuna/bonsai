@@ -1,0 +1,7 @@
+11:25:41 INFO Parsing & checking topology file=topology.clab.yml
+11:25:41 INFO Parsing & checking topology file=topology.clab.yml
+11:25:41 INFO Destroying lab name=bonsai-bn006-d821abca
+11:25:43 INFO Removed container name=clab-bonsai-bn006-d821abca-srl2
+11:25:43 INFO Removed container name=clab-bonsai-bn006-d821abca-srl1
+11:25:43 INFO Removing host entries path=/etc/hosts
+11:25:43 INFO Removing SSH config path=/etc/ssh/ssh_config.d/clab-bonsai-bn006-d821abca.conf

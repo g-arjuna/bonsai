@@ -1,0 +1,3 @@
+2026-10-15T08:15:01.684309Z  INFO bonsai_routing: Started reduced bonsai-routing service bmp_addr=0.0.0.0:11019 http_addr=0.0.0.0:8081
+2026-10-15T08:15:01.756357Z  INFO rbmp_rib::manager: BMP speaker connected speaker=172.17.0.1
+2026-10-15T08:15:01.761943Z  INFO rbmp_rib::manager: BGP peer up speaker=172.17.0.1 peer_addr=192.0.2.2 peer_as=65002

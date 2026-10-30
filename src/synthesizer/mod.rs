@@ -624,6 +624,9 @@ mod tests {
 
     fn target(role: &str, vendor: &str) -> TargetConfig {
         TargetConfig {
+            extra_ips: Vec::new(),
+            optional: false,
+            paths: Vec::new(),
             address: "10.0.0.1:57400".to_string(),
             enabled: true,
             tls_domain: None,

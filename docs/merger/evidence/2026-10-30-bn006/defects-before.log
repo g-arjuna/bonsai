@@ -1,0 +1,43 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 8m 15s
+     Running tests/bn006_native_nos_adapter.rs (target/debug/deps/bn006_native_nos_adapter-f55ebcc8d1c83704)
+
+running 3 tests
+test bn006_absent_version_is_unknown_not_assumed_24_7 ... FAILED
+test bn006_incomplete_flat_records_are_not_reported_complete ... FAILED
+test bn006_peer_as_overflow_is_not_wrapped_to_zero ... FAILED
+
+failures:
+
+---- bn006_absent_version_is_unknown_not_assumed_24_7 stdout ----
+
+thread 'bn006_absent_version_is_unknown_not_assumed_24_7' (1700340) panicked at tests/bn006_native_nos_adapter.rs:25:5:
+assertion `left == right` failed
+  left: "24.7.1"
+ right: "unknown"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- bn006_incomplete_flat_records_are_not_reported_complete stdout ----
+
+thread 'bn006_incomplete_flat_records_are_not_reported_complete' (1700341) panicked at tests/bn006_native_nos_adapter.rs:16:9:
+assertion `left == right` failed: missing peer-address must not fabricate complete telemetry
+  left: Complete
+ right: SchemaMismatch
+
+---- bn006_peer_as_overflow_is_not_wrapped_to_zero stdout ----
+
+thread 'bn006_peer_as_overflow_is_not_wrapped_to_zero' (1700342) panicked at tests/bn006_native_nos_adapter.rs:33:5:
+assertion `left == right` failed
+  left: Complete
+ right: SchemaMismatch
+
+
+failures:
+    bn006_absent_version_is_unknown_not_assumed_24_7
+    bn006_incomplete_flat_records_are_not_reported_complete
+    bn006_peer_as_overflow_is_not_wrapped_to_zero
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test bn006_native_nos_adapter`

@@ -1,0 +1,83 @@
+ M AGENTS.md
+ M BONSAI_AGENTIC_NETOPS_STRATEGY_2026.md
+ M BONSAI_CONSOLIDATED_BACKLOG_DV1.md
+ M BONSAI_CONSOLIDATED_BACKLOG_DV2.md
+ M BONSAI_CONSOLIDATED_BACKLOG_DV3.md
+ M BONSAI_CONSOLIDATED_BACKLOG_DV4.md
+ M BONSAI_CONSOLIDATED_BACKLOG_DV4S.md
+ M BONSAI_CONSOLIDATED_BACKLOG_EV1.md
+ M BONSAI_RUSTYBMP_CODEX_HANDOFF.md
+ M README.md
+ M crates/rbmp-core/src/bmp/parser.rs
+ M crates/rbmp-store/src/journal.rs
+ M docs/CANONICAL.md
+ M docs/backlog_archive/README.md
+ M docs/merger/AGENTIC_NETOPS_RELEASE_REPORT.md
+ M docs/merger/BACKLOG.md
+ M docs/merger/M3_RELEASE_REPORT.md
+ M docs/merger/STATUS.md
+ M docs/merger/evidence/2026-10-11/a11-a12-scenario-benchmark-report.json
+ M docs/operations/7day_handoff.md
+ M docs/operations/ubuntu_dv2_backlog.md
+ M src/ai_provider.rs
+ M src/bin/routing_service.rs
+ M src/change_detection.rs
+ M src/enrichment/registry.rs
+ M src/graph/explorer.rs
+ M src/graph/mod.rs
+ M src/http_server/auth.rs
+ M src/http_server/mod.rs
+ M src/http_server/observability.rs
+ M src/http_server/remediation.rs
+ M src/integrations/servicenow_aiops.rs
+ M src/investigation_runtime.rs
+ M src/mcp_server.rs
+ M src/output/elastic.rs
+ M src/output/splunk_hec.rs
+ M src/output/traits.rs
+ M src/registry.rs
+ M src/remediation/approval.rs
+ M src/routing_service/diagnostics.rs
+ M src/routing_service/mod.rs
+ M src/routing_service/scenario_pack.rs
+ M src/signals/snmp.rs
+ M src/signals/syslog.rs
+ M src/streaming/bmp.rs
+ M src/streaming/mod.rs
+ M src/synthesizer/mod.rs
+ M tests/a13_a20_change_assurance_and_executor.rs
+ M tests/b11_b12_b13_routing_workflow.rs
+ M tests/r05_r06_runtime_wiring_and_scope.rs
+ M tests/ui_driver/playwright.config.js
+ M ui/src/routes/Routing.svelte
+?? BONSAI_BACKLOG.md
+?? docs/STATUS.md
+?? docs/backlog_archive/2026-10-13/
+?? docs/merger/BN001_BN002_BN003_COMPREHENSIVE_REVIEW_2026-10-14.md
+?? docs/merger/BN003_REVIEW_2026-10-13.md
+?? docs/merger/BN005_CLOSEOUT_PLAN_2026-10-15.md
+?? docs/merger/BN005_DEPLOYMENT_AND_SCOPE_REVIEW_2026-10-14.md
+?? docs/merger/BN005_FIX_FOLLOWUP_REVIEW_2026-10-14.md
+?? docs/merger/BN005_IMPLEMENTATION_CLOSEOUT_2026-10-15.md
+?? docs/merger/BN005_INDEPENDENT_SECURITY_REVIEW_2026-10-14.md
+?? docs/merger/BN005_READINESS_REVIEW_2026-10-14.md
+?? docs/merger/CLAIM_VALIDATION_2026-10-13.md
+?? docs/merger/evidence/2026-10-13-bn003-review/
+?? docs/merger/evidence/2026-10-13-bn003/
+?? docs/merger/evidence/2026-10-13-bn004/
+?? docs/merger/evidence/2026-10-13-validation/
+?? docs/merger/evidence/2026-10-14-bn001-bn003-audit/
+?? docs/merger/evidence/2026-10-14-bn005-audit/
+?? docs/merger/evidence/2026-10-14-bn005-fix-followup/
+?? docs/merger/evidence/2026-10-14-bn005-independent-review/
+?? docs/merger/evidence/2026-10-14-bn005-readiness/
+?? docs/merger/evidence/2026-10-15-bn005-closeout/
+?? docs/merger/evidence/2026-10-15-bn005-implementation/
+?? test-results/
+?? tests/bn003_live_routing_browser_acceptance.rs
+?? tests/bn004_production_investigator_wiring.rs
+?? tests/bn005_closeout.rs
+?? tests/bn005_container_mount_acceptance.py
+?? tests/bn005_deployment_and_scope_hardening.rs
+?? tests/ui_driver/routing_live_acceptance.spec.js
+?? tests/ui_driver/test-results/

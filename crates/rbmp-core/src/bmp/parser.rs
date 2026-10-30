@@ -222,6 +222,31 @@ pub fn parse_peer_header(buf: &[u8]) -> Result<(PeerHeader, &[u8])> {
     Ok((hdr, &buf[PEER_HEADER_LEN..]))
 }
 
+/// Extract the route distinguisher ("hi:lo") from a raw BMP PDU frame if it contains a per-peer header.
+pub fn extract_frame_rd(frame: &[u8]) -> Option<String> {
+    if frame.len() >= 48 && frame[0] == 3 {
+        let msg_type = frame[5];
+        if matches!(msg_type, 0 | 1 | 2 | 3 | 6)
+            && let Ok((peer_hdr, _)) = parse_peer_header(&frame[6..])
+        {
+            let hi = u32::from_be_bytes([
+                peer_hdr.peer_distinguisher[0],
+                peer_hdr.peer_distinguisher[1],
+                peer_hdr.peer_distinguisher[2],
+                peer_hdr.peer_distinguisher[3],
+            ]);
+            let lo = u32::from_be_bytes([
+                peer_hdr.peer_distinguisher[4],
+                peer_hdr.peer_distinguisher[5],
+                peer_hdr.peer_distinguisher[6],
+                peer_hdr.peer_distinguisher[7],
+            ]);
+            return Some(format!("{hi}:{lo}"));
+        }
+    }
+    None
+}
+
 // ─── Message type parsers ─────────────────────────────────────────────────────
 
 /// Decode Initiation Information TLVs (RFC 7854 §4.4), preserving unknown TLV types and raw bytes.

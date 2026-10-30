@@ -1,0 +1,82 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+error[E0063]: missing fields `extra_ips`, `optional` and `paths` in initializer of `config::TargetConfig`
+   --> src/enrichment/registry.rs:141:9
+    |
+141 |         TargetConfig {
+    |         ^^^^^^^^^^^^ missing `extra_ips`, `optional` and `paths`
+
+error[E0063]: missing fields `extra_ips`, `optional` and `paths` in initializer of `config::TargetConfig`
+     --> src/graph/mod.rs:10032:43
+      |
+10032 |             .sync_sites_from_targets(vec![TargetConfig {
+      |                                           ^^^^^^^^^^^^ missing `extra_ips`, `optional` and `paths`
+
+error[E0063]: missing field `bmp_sessions` in initializer of `BlastRadiusResult`
+    --> src/integrations/servicenow_aiops.rs:1029:21
+     |
+1029 |         let blast = queries::BlastRadiusResult {
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `bmp_sessions`
+
+error[E0063]: missing field `topic` in initializer of `traits::OutputAdapterConfig`
+   --> src/output/elastic.rs:470:9
+    |
+470 |         OutputAdapterConfig {
+    |         ^^^^^^^^^^^^^^^^^^^ missing `topic`
+
+error[E0063]: missing field `topic` in initializer of `traits::OutputAdapterConfig`
+   --> src/output/elastic.rs:499:17
+    |
+499 |         let c = OutputAdapterConfig {
+    |                 ^^^^^^^^^^^^^^^^^^^ missing `topic`
+
+error[E0063]: missing field `topic` in initializer of `traits::OutputAdapterConfig`
+   --> src/output/splunk_hec.rs:427:9
+    |
+427 |         OutputAdapterConfig {
+    |         ^^^^^^^^^^^^^^^^^^^ missing `topic`
+
+error[E0063]: missing field `topic` in initializer of `traits::OutputAdapterConfig`
+   --> src/output/splunk_hec.rs:465:17
+    |
+465 |         let c = OutputAdapterConfig {
+    |                 ^^^^^^^^^^^^^^^^^^^ missing `topic`
+
+error[E0063]: missing field `topic` in initializer of `traits::OutputAdapterConfig`
+   --> src/output/traits.rs:429:19
+    |
+429 |         let cfg = OutputAdapterConfig {
+    |                   ^^^^^^^^^^^^^^^^^^^ missing `topic`
+
+error[E0063]: missing fields `extra_ips`, `optional` and `paths` in initializer of `config::TargetConfig`
+   --> src/registry.rs:691:9
+    |
+691 |         TargetConfig {
+    |         ^^^^^^^^^^^^ missing `extra_ips`, `optional` and `paths`
+
+error[E0063]: missing fields `extra_ips`, `optional` and `paths` in initializer of `config::TargetConfig`
+    --> src/signals/snmp.rs:1183:28
+     |
+1183 |         let targets = vec![TargetConfig {
+     |                            ^^^^^^^^^^^^ missing `extra_ips`, `optional` and `paths`
+
+error[E0063]: missing fields `extra_ips`, `optional` and `paths` in initializer of `config::TargetConfig`
+    --> src/signals/syslog.rs:1091:28
+     |
+1091 |         let targets = vec![TargetConfig {
+     |                            ^^^^^^^^^^^^ missing `extra_ips`, `optional` and `paths`
+
+error[E0063]: missing fields `extra_ips`, `optional` and `paths` in initializer of `config::TargetConfig`
+   --> src/streaming/mod.rs:347:22
+    |
+347 |         let target = TargetConfig {
+    |                      ^^^^^^^^^^^^ missing `extra_ips`, `optional` and `paths`
+
+error[E0063]: missing fields `extra_ips`, `optional` and `paths` in initializer of `config::TargetConfig`
+   --> src/synthesizer/mod.rs:626:9
+    |
+626 |         TargetConfig {
+    |         ^^^^^^^^^^^^ missing `extra_ips`, `optional` and `paths`
+
+For more information about this error, try `rustc --explain E0063`.
+error: could not compile `bonsai` (lib test) due to 13 previous errors
