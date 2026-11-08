@@ -232,6 +232,9 @@ split-debuginfo = "packed"
 # version changes — so this is a one-time cost, not a per-build cost.
 # Ensures lbug/arrow/parquet/tonic run at full speed in dev.
 opt-level = 3
+# Maximum parallel codegen units for dependency crates: fastest cold dep
+# builds on many-core machines; negligible runtime cost at opt-level 3.
+codegen-units = 256
 
 [profile.ci]
 # For `cargo test --profile ci` in GitHub Actions / local CI runs.

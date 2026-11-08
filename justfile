@@ -1,4 +1,14 @@
 # Bonsai + RustyBMP Unified Development & Verification Runner (B20)
+#
+# INNER LOOP (day-to-day coding): never run bare `cargo build`/`cargo test` —
+# the workspace links a ~1 GB dev binary. Use crate slicing instead:
+#   just check-fast     # rbmp crates + python eval tests (seconds, cached)
+#   just test-protocol  # BMP parser contract corpus
+#   just test-replay    # journal/RIB/history + release gates
+#   cargo test --test <name>   # single integration suite only
+#   cargo check -p <crate>     # type-check one crate
+# sccache + mold are already configured in .cargo/config.toml; keep
+# RUSTC_WRAPPER unset in your shell so dep artifacts stay cached.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
