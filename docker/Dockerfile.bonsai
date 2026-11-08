@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM lukemathwalker/cargo-chef:latest-rust-1.91-trixie AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.95-trixie AS chef
 WORKDIR /app
 
 RUN apt-get update \
@@ -90,7 +90,7 @@ COPY --from=rust-builder /app/bonsai-routing /usr/local/bin/bonsai-routing
 COPY --from=rust-builder /app/healthcheck    /usr/local/bin/healthcheck
 COPY --from=rust-builder /app/liblbug.so.0   /usr/local/lib/liblbug.so.0
 COPY --from=ui-builder   /ui/dist           /app/ui/dist
-COPY --from=bonpy-builder /ui-bonpy/dist    /app/ui-bonpy/dist
+COPY --from=bonpy-builder /ui-bonpy/dist-bonpy /app/ui-bonpy/dist-bonpy
 
 ENV BONSAI_CONFIG=/etc/bonsai/bonsai.toml
 ENV LD_LIBRARY_PATH=/usr/local/lib
