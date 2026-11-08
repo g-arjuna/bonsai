@@ -495,11 +495,21 @@ impl RoutingServiceState {
 }
 
 /// Spawn a bounded TCP BMP listener that feeds accepted frames into `RoutingServiceState`.
+///
+/// Routers may export several BMP sessions over distinct TCP connections from the same
+/// exporter IP — e.g. FRR opens one session per BGP instance (global + each VRF). Epoch
+/// fencing is per speaker, so connections that are concurrently live share the speaker's
+/// session epoch; a new epoch is opened only when the speaker's last connection closes.
+/// Otherwise the newer connection's epoch would fence the sibling connection's
+/// End-of-RIB/PeerUp as stale and its peers could never reach a complete state.
 pub async fn run_bmp_listener(
     listener: TcpListener,
     state: Arc<RoutingServiceState>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
+    // speaker_addr -> (session_epoch, live connection count)
+    let live_sessions: Arc<tokio::sync::Mutex<HashMap<IpAddr, (u64, usize)>>> =
+        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     loop {
         tokio::select! {
             _ = shutdown.changed() => {
@@ -511,37 +521,63 @@ pub async fn run_bmp_listener(
                 let Ok((stream, peer_sock)) = accept_res else { continue; };
                 let speaker_ip = peer_sock.ip();
                 let st = Arc::clone(&state);
+                let sessions = Arc::clone(&live_sessions);
                 tokio::spawn(async move {
                     let epoch = {
-                        let mut rib = st.rib.write().await;
-                        rib.open_speaker_session(speaker_ip, Utc::now())
+                        // Lock ordering: `sessions` is only ever acquired before `rib`
+                        // (never the reverse), so holding it across the rib write is safe.
+                        let mut live = sessions.lock().await;
+                        match live.get(&speaker_ip) {
+                            Some(&(epoch, count)) if count > 0 => {
+                                if let Some(entry) = live.get_mut(&speaker_ip) {
+                                    entry.1 += 1;
+                                }
+                                epoch
+                            }
+                            _ => {
+                                let epoch = {
+                                    let mut rib = st.rib.write().await;
+                                    rib.open_speaker_session(speaker_ip, Utc::now())
+                                };
+                                live.insert(speaker_ip, (epoch, 1));
+                                epoch
+                            }
+                        }
                     };
                     let mut reader = BufReader::new(stream);
                     let hdr_timeout = Duration::from_secs(30);
                     let body_timeout = Duration::from_secs(10);
-                    loop {
+                    let disconnect_reason = loop {
                         match read_bmp_frame(&mut reader, st.config.max_frame_bytes, hdr_timeout, body_timeout).await {
                             Ok(Some(frame)) => {
                                 if let Err(e) = st.ingest_bmp_bytes(speaker_ip, Some(epoch), &frame).await {
                                     tracing::warn!(%speaker_ip, error = %e, "Rejected invalid BMP frame");
-                                    break;
+                                    break None;
                                 }
                             }
                             Ok(None) => {
                                 // TCP EOF without BMP Termination = observation gap, not BGP withdraw
-                                st.record_transport_disconnect_for_epoch(speaker_ip, Some(epoch), "bmp_tcp_eof").await;
-                                break;
+                                break Some("bmp_tcp_eof".to_string());
                             }
                             Err(e) => {
-                                st.record_transport_disconnect_for_epoch(
-                                    speaker_ip,
-                                    Some(epoch),
-                                    format!("bmp_transport_error: {e}"),
-                                )
-                                .await;
-                                break;
+                                break Some(format!("bmp_transport_error: {e}"));
                             }
                         }
+                    };
+                    // Release this connection's share of the speaker epoch before recording
+                    // the disconnect so a fast reconnect opens a fresh epoch.
+                    {
+                        let mut live = sessions.lock().await;
+                        if let Some(entry) = live.get_mut(&speaker_ip) {
+                            entry.1 = entry.1.saturating_sub(1);
+                            if entry.1 == 0 {
+                                live.remove(&speaker_ip);
+                            }
+                        }
+                    }
+                    if let Some(reason) = disconnect_reason {
+                        st.record_transport_disconnect_for_epoch(speaker_ip, Some(epoch), reason)
+                            .await;
                     }
                 });
             }

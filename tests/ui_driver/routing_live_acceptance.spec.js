@@ -148,7 +148,7 @@ test.describe('BN-003 Live Routing & RIB Browser Acceptance Gate', () => {
     await expect(ribTable).toContainText('LocRib');
     await expect(ribTable).toContainText('10.10.1.0/24');
 
-    // 4. VRF RD isolation: filter by 65000:100 (deterministic test fixture)
+    // 4. VRF RD isolation: filter by 65000:100 (genuine FRR VRF-instance BMP stream)
     await viewSelect.selectOption('');
     const vrfInput = page.locator('input[aria-label="VRF RD Filter"]');
     await vrfInput.fill('65000:100');
@@ -260,7 +260,7 @@ test.describe('BN-003 Live Routing & RIB Browser Acceptance Gate', () => {
     await page.screenshot({ path: path.join(EVIDENCE_DIR, '04_transport_gap_preservation.png'), fullPage: true });
   });
 
-  test('8. Reconnect on session epoch 2 resolves transport gap and restores complete state', async ({ page, request }) => {
+  test('8. Reconnect on a fresh speaker session epoch resolves transport gap and restores complete state', async ({ page, request }) => {
     // Enable and accept epoch 2 reconnect
     const reconRes = await request.post(`${CTRL_URL}/bmp/reconnect`);
     expect(reconRes.status()).toBe(200);
