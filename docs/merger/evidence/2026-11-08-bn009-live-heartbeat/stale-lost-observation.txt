@@ -1,0 +1,8 @@
+SIGTERM sent to collector_engine pid at 17:10:15 UTC (graceful shutdown logged).
+GET /api/sidecars status samples (admin JWT, packaged deployment):
+  t+50s  -> stale
+  t+75s  -> stale
+  t+130s -> lost
+Matches src/sidecar_registry.rs thresholds: STALE_AFTER=45s, LOST_AFTER=120s.
+Prior samples showed status_json advancing while alive:
+  uptime_secs 15->30->90->120->165, rss_bytes ~139MB, rules_loaded=35.

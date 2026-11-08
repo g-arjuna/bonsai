@@ -71,14 +71,24 @@ via `bonsai_graph` volumes. Leftovers disposed: rbmp crates versioned to
 receiver retirement still blocked on projection parity, CI/install gates
 deferred to BN-019. Evidence: [BN-007 audit](merger/evidence/2026-11-08-bn007-audit/README.md).
 
+BN-009 live heartbeat (8 November): `collector_engine.py` registered with
+the packaged deployment over gRPC — `/api/sidecars` shows healthy with
+advancing `status_json` (uptime/cpu/rss/queue/rules_loaded=35); SIGTERM →
+registry transitions stale (45s) → lost (120s) matching
+`sidecar_registry.rs` thresholds. Gap found: sidecar ML/export jobs hit
+unauthenticated 401s on the JWT API (no credential path); heartbeat
+timestamp fields render null. Evidence:
+[live heartbeat](merger/evidence/2026-11-08-bn009-live-heartbeat/README.md).
+
 BN-009 lifecycle slice (8 November): `collector_engine.py` heartbeat
 `status_json` now reports uptime/cpu/rss/queue-depth/drops/rules-loaded
 (stdlib /proc, null-safe); Sidecars UI gained a gRPC-registry panel rendering
 `/api/sidecars` with parsed metrics — the registry was previously not
 surfaced in the UI. Verified: py_compile, /proc parsing, clean UI build.
 Supervision/resource-limit gaps closed by inspection (single combined
-sidecar unit + `BONSAI_SIDECAR_MAX_MEM_MB` enforcement). Remaining: live
-heartbeat exercise and the restart/overload soak acceptance.
+sidecar unit + `BONSAI_SIDECAR_MAX_MEM_MB` enforcement). Live heartbeat
+exercise done same day (see above); remaining: restart/overload soak
+acceptance.
 Evidence: [BN-009 lifecycle](merger/evidence/2026-11-08-bn009-lifecycle/README.md).
 
 BN-009 intake reconciliation (8 November): existing sidecar lifecycle
