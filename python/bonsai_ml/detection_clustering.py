@@ -26,6 +26,8 @@ from typing import Optional
 
 import numpy as np
 
+from .api_auth import auth_headers
+
 log = logging.getLogger(__name__)
 
 DEFAULT_MIN_CLUSTER_SIZE = 3
@@ -125,7 +127,8 @@ class DetectionClusterer:
         since_ns = int((time.time() - self.window_hours * 3600) * 1e9)
         url = f"{self.api_url}/api/detections?since_ns={since_ns}&limit=2000"
         try:
-            with urllib.request.urlopen(url, timeout=15) as resp:
+            req = urllib.request.Request(url, headers=auth_headers())
+            with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read())
             items = data.get("detections", data) if isinstance(data, dict) else data
             log.debug("DetectionClusterer: fetched %d detections", len(items))
@@ -194,7 +197,7 @@ class DetectionClusterer:
                 url,
                 data=payload,
                 method="PATCH",
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", **auth_headers()},
             )
             try:
                 with urllib.request.urlopen(req, timeout=5):

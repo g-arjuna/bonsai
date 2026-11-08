@@ -1,0 +1,108 @@
+/home/arjuna/Desktop/bonsai/python/bonsai_sdk/client.py:55: UserWarning: BonsaiClient: gRPC channel is INSECURE (no ca_cert/cert/key). Credential operations will transmit secrets in cleartext. Pass ca_cert, cert, and key to enable mTLS.
+  self.connect()
+2026-11-08 22:37:06,122 INFO bonsai_ml.inference_loop: InferenceLoop: registered gnn_inference (interval=300s)
+2026-11-08 22:37:06,122 INFO bonsai_ml.job_engine: JobEngine: background thread started
+2026-11-08 22:37:06,526 INFO bonsai_ml.job_engine: JobEngine: APScheduler initialised (db=runtime/ml_jobs.db)
+2026-11-08 22:37:06,687 INFO apscheduler._schedulers.async_: Scheduler started
+2026-11-08 22:37:06,688 INFO bonsai_ml.job_engine: JobEngine: scheduler started
+2026-11-08 22:37:06,694 INFO apscheduler._schedulers.async_: Cleaned up expired job results and finished schedules
+2026-11-08 22:37:08,095 INFO bonsai_ml.export_job: IncrementalExportJob: no previous anomaly export found, running full export
+2026-11-08 22:37:08,099 INFO bonsai_ml.export_job: ParquetExportJob: starting anomaly export (id=local-1794157628099324105) → runtime/parquet/anomaly/2026-11-08T17-07-08Z_full_initial.parquet
+2026-11-08 22:37:08,099 WARNING bonsai_ml.export_job: bonsai_sdk.training not available; writing empty parquet
+2026-11-08 22:37:08,271 INFO bonsai_ml.export_job: ParquetExportJob: anomaly export complete — 0 rows, quality_passed=False
+2026-11-08 22:37:08,317 INFO apscheduler._schedulers.async_: Job 37cfacc7-245d-44e4-ba84-f1094ef7c054 completed successfully
+2026-11-08 22:37:14,794 INFO bonsai_ml.syslog_cluster: SyslogClusterer: only 0 embedded events (need 100), skipping
+2026-11-08 22:37:14,832 INFO apscheduler._schedulers.async_: Job 4911cb05-97d4-4d8a-ad04-1a74d5207555 completed successfully
+2026-11-08 22:37:14,923 WARNING bonsai_ml.inference_loop: InferenceLoop: no active STGNN model found — skipping inference
+2026-11-08 22:37:14,930 INFO apscheduler._schedulers.async_: Job 5f70e593-846b-44f8-9f85-9a13d27f8275 completed successfully
+2026-11-08 22:37:14,969 WARNING bonsai_ml.snapshot_client: GET /api/graph/snapshot attempt 1 failed: 401 Client Error: Unauthorized for url: http://localhost:3000/api/graph/snapshot — retrying in 1s
+2026-11-08 22:37:15,972 WARNING bonsai_ml.snapshot_client: GET /api/graph/snapshot attempt 2 failed: 401 Client Error: Unauthorized for url: http://localhost:3000/api/graph/snapshot — retrying in 2s
+2026-11-08 22:37:17,974 ERROR bonsai_ml.job_engine: graph_snapshot: failed: GET /api/graph/snapshot failed after 3 retries: 401 Client Error: Unauthorized for url: http://localhost:3000/api/graph/snapshot
+Traceback (most recent call last):
+  File "/home/arjuna/Desktop/bonsai/python/bonsai_ml/snapshot_client.py", line 123, in _http_get
+    resp.raise_for_status()
+  File "/home/arjuna/Desktop/bonsai/.venv/lib/python3.12/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 401 Client Error: Unauthorized for url: http://localhost:3000/api/graph/snapshot
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/arjuna/Desktop/bonsai/python/bonsai_ml/job_engine.py", line 761, in _take_graph_snapshot
+    snap = client.fetch()
+           ^^^^^^^^^^^^^^
+  File "/home/arjuna/Desktop/bonsai/python/bonsai_ml/snapshot_client.py", line 162, in fetch
+    data = self._http_get("/api/graph/snapshot")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/arjuna/Desktop/bonsai/python/bonsai_ml/snapshot_client.py", line 134, in _http_get
+    raise RuntimeError(
+RuntimeError: GET /api/graph/snapshot failed after 3 retries: 401 Client Error: Unauthorized for url: http://localhost:3000/api/graph/snapshot
+2026-11-08 22:37:17,975 ERROR bonsai_ml.job_engine: JobEngine: job gnn_snapshot failed: GET /api/graph/snapshot failed after 3 retries: 401 Client Error: Unauthorized for url: http://localhost:3000/api/graph/snapshot
+2026-11-08 22:37:17,975 INFO bonsai_ml.job_engine: JobEngine: scheduling retry 1 for gnn_snapshot in 300s
+2026-11-08 22:37:17,982 INFO apscheduler._schedulers.async_: Job d8d09ba9-5d76-4c0c-b405-8fe1701fe129 completed successfully
+2026-11-08 22:37:18,023 INFO bonsai_ml.export_job: IncrementalExportJob: no previous remediation export found, running full export
+2026-11-08 22:37:18,027 INFO bonsai_ml.export_job: ParquetExportJob: starting remediation export (id=local-1794157638026963930) → runtime/parquet/remediation/2026-11-08T17-07-18Z_full_initial.parquet
+2026-11-08 22:37:18,027 WARNING bonsai_ml.export_job: bonsai_sdk.training not available; writing empty parquet
+2026-11-08 22:37:18,028 INFO bonsai_ml.export_job: ParquetExportJob: remediation export complete — 0 rows, quality_passed=False
+2026-11-08 22:37:18,040 INFO apscheduler._schedulers.async_: Job 4a474947-195f-4998-9305-f824f65aaeb4 completed successfully
+2026-11-08 22:37:18,072 INFO bonsai_ml.syslog_embedding_worker: SyslogEmbeddingWorker: starting (model=all-MiniLM-L6-v2, poll_interval=60s)
+2026-11-08 22:37:18,076 WARNING bonsai_ml.syslog_embedding_worker: Failed to fetch unembedded events: 401 Client Error: Unauthorized for url: http://localhost:3000/api/events/unembedded?type=syslog&limit=200
+2026-11-08 22:37:18,085 INFO apscheduler._schedulers.async_: Job db93ddac-d60d-45d3-bb41-688f1a924d60 completed successfully
+2026-11-08 22:37:18,110 INFO bonsai_ml.config_embedding_worker: ConfigEmbeddingWorker: starting (model=all-MiniLM-L6-v2, poll_interval=300s)
+2026-11-08 22:37:18,121 INFO apscheduler._schedulers.async_: Job 388be43d-9a54-4fd0-aead-8a637a03e687 completed successfully
+2026-11-08 22:37:18,147 WARNING bonsai_ml.snapshot_client: GET /api/graph/snapshot attempt 1 failed: 401 Client Error: Unauthorized for url: http://localhost:3000/api/graph/snapshot — retrying in 1s
+2026-11-08 22:37:19,149 WARNING bonsai_ml.snapshot_client: GET /api/graph/snapshot attempt 2 failed: 401 Client Error: Unauthorized for url: http://localhost:3000/api/graph/snapshot — retrying in 2s
+2026-11-08 22:37:21,153 ERROR bonsai_ml.job_engine: graph_snapshot: failed: GET /api/graph/snapshot failed after 3 retries: 401 Client Error: Unauthorized for url: http://localhost:3000/api/graph/snapshot
+Traceback (most recent call last):
+  File "/home/arjuna/Desktop/bonsai/python/bonsai_ml/snapshot_client.py", line 123, in _http_get
+    resp.raise_for_status()
+  File "/home/arjuna/Desktop/bonsai/.venv/lib/python3.12/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 401 Client Error: Unauthorized for url: http://localhost:3000/api/graph/snapshot
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/arjuna/Desktop/bonsai/python/bonsai_ml/job_engine.py", line 761, in _take_graph_snapshot
+    snap = client.fetch()
+           ^^^^^^^^^^^^^^
+  File "/home/arjuna/Desktop/bonsai/python/bonsai_ml/snapshot_client.py", line 162, in fetch
+    data = self._http_get("/api/graph/snapshot")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/arjuna/Desktop/bonsai/python/bonsai_ml/snapshot_client.py", line 134, in _http_get
+    raise RuntimeError(
+RuntimeError: GET /api/graph/snapshot failed after 3 retries: 401 Client Error: Unauthorized for url: http://localhost:3000/api/graph/snapshot
+2026-11-08 22:37:21,154 ERROR bonsai_ml.job_engine: JobEngine: job graph_snapshot failed: GET /api/graph/snapshot failed after 3 retries: 401 Client Error: Unauthorized for url: http://localhost:3000/api/graph/snapshot
+2026-11-08 22:37:21,154 INFO bonsai_ml.job_engine: JobEngine: scheduling retry 1 for graph_snapshot in 300s
+2026-11-08 22:37:21,161 INFO apscheduler._schedulers.async_: Job 409c745d-6060-446d-84be-0e3df868846c completed successfully
+2026-11-08 22:38:00,110 INFO bonsai_ml.syslog_embedding_worker: SyslogEmbeddingWorker: starting (model=all-MiniLM-L6-v2, poll_interval=60s)
+2026-11-08 22:38:00,117 WARNING bonsai_ml.syslog_embedding_worker: Failed to fetch unembedded events: 401 Client Error: Unauthorized for url: http://localhost:3000/api/events/unembedded?type=syslog&limit=200
+2026-11-08 22:38:00,133 INFO apscheduler._schedulers.async_: Job de92850f-95c5-4e6e-931a-5bf8634ffddb completed successfully
+2026-11-08 22:39:00,060 INFO bonsai_ml.syslog_embedding_worker: SyslogEmbeddingWorker: starting (model=all-MiniLM-L6-v2, poll_interval=60s)
+2026-11-08 22:39:00,064 WARNING bonsai_ml.syslog_embedding_worker: Failed to fetch unembedded events: 401 Client Error: Unauthorized for url: http://localhost:3000/api/events/unembedded?type=syslog&limit=200
+2026-11-08 22:39:00,073 INFO apscheduler._schedulers.async_: Job 134ec2d4-2c3b-4b4b-835c-7fe042f3b5f4 completed successfully
+2026-11-08 22:40:00,060 WARNING bonsai_ml.inference_loop: InferenceLoop: no active STGNN model found — skipping inference
+2026-11-08 22:40:00,067 INFO apscheduler._schedulers.async_: Job ade3f895-4d33-4620-964e-b83592841b88 completed successfully
+2026-11-08 22:40:00,088 INFO bonsai_ml.syslog_embedding_worker: SyslogEmbeddingWorker: starting (model=all-MiniLM-L6-v2, poll_interval=60s)
+2026-11-08 22:40:00,091 WARNING bonsai_ml.syslog_embedding_worker: Failed to fetch unembedded events: 401 Client Error: Unauthorized for url: http://localhost:3000/api/events/unembedded?type=syslog&limit=200
+2026-11-08 22:40:00,097 INFO apscheduler._schedulers.async_: Job 94880306-1e5e-40a0-8072-89c8d7b6090a completed successfully
+Bonsai Collector Rule Engine
+  local collector: localhost:50051
+  core ingest:     localhost:50051
+  sidecar name:    bn009-live-hb (kind=rules)
+[collector-engine] health endpoint listening on :9293/health
+[collector-engine] core forwarder starting, core=localhost:50051
+[collector-engine] connected to core at localhost:50051
+[collector-engine] ML job engine started
+[collector-engine] connected to local collector at localhost:50051
+[collector-engine] registered as sidecar 4011c5fb-92a4-486d-b47b-0557e02383b7
+[engine] no ML models found for scope 'local' in 'models' — running rules-only mode
+[engine] could not fetch rule overrides: HTTP 401 /api/sidecar/rules: 
+[engine] could not fetch rule overrides: HTTP 401 /api/sidecar/rules: 
+[engine] could not fetch rule overrides: HTTP 401 /api/sidecar/rules: 
+[engine] could not fetch rule overrides: HTTP 401 /api/sidecar/rules: 
+[collector-engine] received SIGTERM — shutting down gracefully
+[collector-engine] snapshot buffer persisted
+[collector-engine] job engine stopped
+[collector-engine] graceful shutdown complete. drops=0
+2026-11-08 22:40:15,919 INFO apscheduler._schedulers.async_: Scheduler stopped

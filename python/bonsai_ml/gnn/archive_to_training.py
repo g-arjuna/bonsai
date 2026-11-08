@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 
 from .data_loader import BonsaiGnnDataLoader, BonsaiGraphData
+from ..api_auth import auth_headers
 
 
 # ── Public types ──────────────────────────────────────────────────────────────
@@ -446,7 +447,8 @@ def compute_change_weights_from_api(
             continue
         try:
             url = f"{api_url}/api/change-requests?active_at_ns={snap_ns}&window_secs={window_secs}"
-            with urllib.request.urlopen(url, timeout=2) as resp:
+            req = urllib.request.Request(url, headers=auth_headers())
+            with urllib.request.urlopen(req, timeout=2) as resp:
                 data = _json.loads(resp.read())
             change_requests = data.get("change_requests", [])
             if not change_requests:

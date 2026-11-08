@@ -1,0 +1,108 @@
+/home/arjuna/Desktop/bonsai/python/bonsai_sdk/client.py:56: UserWarning: BonsaiClient: gRPC channel is INSECURE (no ca_cert/cert/key). Credential operations will transmit secrets in cleartext. Pass ca_cert, cert, and key to enable mTLS.
+  self.connect()
+2026-11-09 05:12:30,451 INFO bonsai_ml.inference_loop: InferenceLoop: registered gnn_inference (interval=300s)
+2026-11-09 05:12:30,451 INFO bonsai_ml.job_engine: JobEngine: background thread started
+2026-11-09 05:12:30,859 INFO bonsai_ml.job_engine: JobEngine: APScheduler initialised (db=runtime/ml_jobs.db)
+2026-11-09 05:12:31,018 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*/6', minute='0', second='0', start_time='2026-11-09T05:12:31.011393+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 06:00:00+05:30
+2026-11-09 05:12:31,021 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*/4', minute='0', second='0', start_time='2026-11-09T05:12:31.018894+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 08:00:00+05:30
+2026-11-09 05:12:31,023 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*/4', minute='0', second='0', start_time='2026-11-09T05:12:31.021438+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 08:00:00+05:30
+2026-11-09 05:12:31,026 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*/1', minute='0', second='0', start_time='2026-11-09T05:12:31.023861+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 06:00:00+05:30
+2026-11-09 05:12:31,029 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*/1', minute='0', second='0', start_time='2026-11-09T05:12:31.026261+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 06:00:00+05:30
+2026-11-09 05:12:31,110 INFO apscheduler._schedulers.async_: Scheduler started
+2026-11-09 05:12:31,110 INFO bonsai_ml.job_engine: JobEngine: scheduler started
+2026-11-09 05:12:31,114 INFO apscheduler._schedulers.async_: Cleaned up expired job results and finished schedules
+2026-11-09 05:12:31,260 INFO bonsai_ml.export_job: IncrementalExportJob: no previous anomaly export found, running full export
+2026-11-09 05:12:31,273 INFO bonsai_ml.export_job: ParquetExportJob: starting anomaly export (id=651382b5-d4b4-47d7-a052-a2a0688874b4) → runtime/parquet/anomaly/2026-11-08T23-42-31Z_full_initial.parquet
+2026-11-09 05:12:31,274 WARNING bonsai_ml.export_job: bonsai_sdk.training not available; writing empty parquet
+2026-11-09 05:12:31,353 INFO bonsai_ml.export_job: ParquetExportJob: anomaly export complete — 0 rows, quality_passed=False
+2026-11-09 05:12:31,397 INFO apscheduler._schedulers.async_: Job a32acd5b-54b6-4d5a-82b7-0e015125e5ea completed successfully
+2026-11-09 05:12:31,432 WARNING bonsai_ml.inference_loop: InferenceLoop: no active STGNN model found — skipping inference
+2026-11-09 05:12:31,460 INFO apscheduler._schedulers.async_: Job 6c4628f1-4272-4b13-87b6-440a3495ef51 completed successfully
+2026-11-09 05:12:31,513 WARNING bonsai_ml.snapshot_client: GET /api/graph/snapshot attempt 1 failed: 500 Server Error: Internal Server Error for url: http://localhost:3000/api/graph/snapshot — retrying in 1s
+2026-11-09 05:12:32,524 WARNING bonsai_ml.snapshot_client: GET /api/graph/snapshot attempt 2 failed: 500 Server Error: Internal Server Error for url: http://localhost:3000/api/graph/snapshot — retrying in 2s
+2026-11-09 05:12:34,535 ERROR bonsai_ml.job_engine: graph_snapshot: failed: GET /api/graph/snapshot failed after 3 retries: 500 Server Error: Internal Server Error for url: http://localhost:3000/api/graph/snapshot
+Traceback (most recent call last):
+  File "/home/arjuna/Desktop/bonsai/python/bonsai_ml/snapshot_client.py", line 126, in _http_get
+    resp.raise_for_status()
+  File "/home/arjuna/Desktop/bonsai/.venv/lib/python3.12/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://localhost:3000/api/graph/snapshot
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/arjuna/Desktop/bonsai/python/bonsai_ml/job_engine.py", line 772, in _take_graph_snapshot
+    snap = client.fetch()
+           ^^^^^^^^^^^^^^
+  File "/home/arjuna/Desktop/bonsai/python/bonsai_ml/snapshot_client.py", line 165, in fetch
+    data = self._http_get("/api/graph/snapshot")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/arjuna/Desktop/bonsai/python/bonsai_ml/snapshot_client.py", line 137, in _http_get
+    raise RuntimeError(
+RuntimeError: GET /api/graph/snapshot failed after 3 retries: 500 Server Error: Internal Server Error for url: http://localhost:3000/api/graph/snapshot
+2026-11-09 05:12:34,536 ERROR bonsai_ml.job_engine: JobEngine: job gnn_snapshot failed: GET /api/graph/snapshot failed after 3 retries: 500 Server Error: Internal Server Error for url: http://localhost:3000/api/graph/snapshot
+2026-11-09 05:12:34,536 INFO bonsai_ml.job_engine: JobEngine: scheduling retry 1 for gnn_snapshot in 300s
+2026-11-09 05:12:34,572 INFO apscheduler._schedulers.async_: Job d4b60d22-9dc1-4d22-9d5d-442c705913d8 completed successfully
+2026-11-09 05:12:34,605 INFO bonsai_ml.syslog_embedding_worker: SyslogEmbeddingWorker: starting (model=all-MiniLM-L6-v2, poll_interval=60s)
+2026-11-09 05:12:34,640 INFO apscheduler._schedulers.async_: Job bd4e6225-0c03-4e7d-baa0-89b87aa45ea1 completed successfully
+2026-11-09 05:12:34,672 INFO bonsai_ml.config_embedding_worker: ConfigEmbeddingWorker: starting (model=all-MiniLM-L6-v2, poll_interval=300s)
+2026-11-09 05:12:34,708 INFO apscheduler._schedulers.async_: Job 9508dfcc-9153-43b0-82e2-9d6dbe517dd2 completed successfully
+2026-11-09 05:12:34,750 WARNING bonsai_ml.snapshot_client: GET /api/graph/snapshot attempt 1 failed: 500 Server Error: Internal Server Error for url: http://localhost:3000/api/graph/snapshot — retrying in 1s
+2026-11-09 05:12:35,761 WARNING bonsai_ml.snapshot_client: GET /api/graph/snapshot attempt 2 failed: 500 Server Error: Internal Server Error for url: http://localhost:3000/api/graph/snapshot — retrying in 2s
+2026-11-09 05:12:37,772 ERROR bonsai_ml.job_engine: graph_snapshot: failed: GET /api/graph/snapshot failed after 3 retries: 500 Server Error: Internal Server Error for url: http://localhost:3000/api/graph/snapshot
+Traceback (most recent call last):
+  File "/home/arjuna/Desktop/bonsai/python/bonsai_ml/snapshot_client.py", line 126, in _http_get
+    resp.raise_for_status()
+  File "/home/arjuna/Desktop/bonsai/.venv/lib/python3.12/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://localhost:3000/api/graph/snapshot
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/arjuna/Desktop/bonsai/python/bonsai_ml/job_engine.py", line 772, in _take_graph_snapshot
+    snap = client.fetch()
+           ^^^^^^^^^^^^^^
+  File "/home/arjuna/Desktop/bonsai/python/bonsai_ml/snapshot_client.py", line 165, in fetch
+    data = self._http_get("/api/graph/snapshot")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/arjuna/Desktop/bonsai/python/bonsai_ml/snapshot_client.py", line 137, in _http_get
+    raise RuntimeError(
+RuntimeError: GET /api/graph/snapshot failed after 3 retries: 500 Server Error: Internal Server Error for url: http://localhost:3000/api/graph/snapshot
+2026-11-09 05:12:37,772 ERROR bonsai_ml.job_engine: JobEngine: job graph_snapshot failed: GET /api/graph/snapshot failed after 3 retries: 500 Server Error: Internal Server Error for url: http://localhost:3000/api/graph/snapshot
+2026-11-09 05:12:37,773 INFO bonsai_ml.job_engine: JobEngine: scheduling retry 1 for graph_snapshot in 300s
+2026-11-09 05:12:37,809 INFO apscheduler._schedulers.async_: Job 69e290aa-c1ef-4cd1-8311-d6255244e9e4 completed successfully
+2026-11-09 05:13:00,058 INFO bonsai_ml.syslog_embedding_worker: SyslogEmbeddingWorker: starting (model=all-MiniLM-L6-v2, poll_interval=60s)
+2026-11-09 05:13:00,111 INFO apscheduler._schedulers.async_: Job 9af24dff-e6d8-4544-aef6-d7897c4c838f completed successfully
+2026-11-09 05:13:31,115 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='2', minute='0', second='0', start_time='2026-11-09T05:13:31.112329+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-10 02:00:00+05:30
+2026-11-09 05:13:31,121 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*/6', minute='0', second='0', start_time='2026-11-09T05:13:31.115229+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 06:00:00+05:30
+2026-11-09 05:13:31,129 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='sun', hour='3', minute='0', second='0', start_time='2026-11-09T05:13:31.121651+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-15 03:00:00+05:30
+2026-11-09 05:13:31,134 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*', minute='*/5', second='0', start_time='2026-11-09T05:13:31.129466+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 05:15:00+05:30
+2026-11-09 05:13:31,138 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*/4', minute='0', second='0', start_time='2026-11-09T05:13:31.135007+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 08:00:00+05:30
+2026-11-09 05:13:31,142 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*/4', minute='0', second='0', start_time='2026-11-09T05:13:31.138309+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 08:00:00+05:30
+2026-11-09 05:13:31,176 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='sun', hour='2', minute='0', second='0', start_time='2026-11-09T05:13:31.142250+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-15 02:00:00+05:30
+2026-11-09 05:13:31,179 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*', minute='*/1', second='0', start_time='2026-11-09T05:13:31.176485+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 05:14:00+05:30
+2026-11-09 05:14:00,059 INFO bonsai_ml.syslog_embedding_worker: SyslogEmbeddingWorker: starting (model=all-MiniLM-L6-v2, poll_interval=60s)
+2026-11-09 05:14:00,115 INFO apscheduler._schedulers.async_: Job 67fdabfb-bd6a-476a-a290-e92c69e451a1 completed successfully
+2026-11-09 05:14:31,199 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='2', minute='0', second='0', start_time='2026-11-09T05:14:31.194560+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-10 02:00:00+05:30
+2026-11-09 05:14:31,203 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*/6', minute='0', second='0', start_time='2026-11-09T05:14:31.200034+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 06:00:00+05:30
+2026-11-09 05:14:31,207 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='sun', hour='3', minute='0', second='0', start_time='2026-11-09T05:14:31.203408+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-15 03:00:00+05:30
+2026-11-09 05:14:31,211 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*', minute='*/5', second='0', start_time='2026-11-09T05:14:31.207420+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 05:15:00+05:30
+2026-11-09 05:14:31,215 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*/4', minute='0', second='0', start_time='2026-11-09T05:14:31.211930+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 08:00:00+05:30
+2026-11-09 05:14:31,220 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*/4', minute='0', second='0', start_time='2026-11-09T05:14:31.215926+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 08:00:00+05:30
+2026-11-09 05:14:31,224 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='sun', hour='2', minute='0', second='0', start_time='2026-11-09T05:14:31.220879+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-15 02:00:00+05:30
+2026-11-09 05:14:31,228 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*', minute='*/1', second='0', start_time='2026-11-09T05:14:31.224446+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 05:15:00+05:30
+2026-11-09 05:15:00,082 WARNING bonsai_ml.inference_loop: InferenceLoop: no active STGNN model found — skipping inference
+2026-11-09 05:15:00,115 INFO apscheduler._schedulers.async_: Job 14aa3c49-7faa-420d-82ef-c390e96ee75a completed successfully
+2026-11-09 05:15:00,148 INFO bonsai_ml.syslog_embedding_worker: SyslogEmbeddingWorker: starting (model=all-MiniLM-L6-v2, poll_interval=60s)
+2026-11-09 05:15:00,187 INFO apscheduler._schedulers.async_: Job 7b151914-154f-479c-a50d-fe49a8979b45 completed successfully
+2026-11-09 05:15:31,246 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='2', minute='0', second='0', start_time='2026-11-09T05:15:31.242608+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-10 02:00:00+05:30
+2026-11-09 05:15:31,250 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*/6', minute='0', second='0', start_time='2026-11-09T05:15:31.246401+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 06:00:00+05:30
+2026-11-09 05:15:31,253 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='sun', hour='3', minute='0', second='0', start_time='2026-11-09T05:15:31.250178+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-15 03:00:00+05:30
+2026-11-09 05:15:31,256 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*', minute='*/5', second='0', start_time='2026-11-09T05:15:31.253408+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 05:20:00+05:30
+2026-11-09 05:15:31,259 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*/4', minute='0', second='0', start_time='2026-11-09T05:15:31.257063+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 08:00:00+05:30
+2026-11-09 05:15:31,262 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*/4', minute='0', second='0', start_time='2026-11-09T05:15:31.259901+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 08:00:00+05:30
+2026-11-09 05:15:31,266 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='sun', hour='2', minute='0', second='0', start_time='2026-11-09T05:15:31.262812+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-15 02:00:00+05:30
+2026-11-09 05:15:31,269 INFO apscheduler._schedulers.async_: Added new schedule (task='bonsai_ml.job_engine:_trigger_job_from_scheduler', trigger=CronTrigger(year='*', month='*', day='*', week='*', day_of_week='*', hour='*', minute='*/1', second='0', start_time='2026-11-09T05:15:31.266698+05:30', timezone='Asia/Kolkata')); next run time at 2026-11-09 05:16:00+05:30
+2026-11-09 05:16:00,069 INFO bonsai_ml.syslog_embedding_worker: SyslogEmbeddingWorker: starting (model=all-MiniLM-L6-v2, poll_interval=60s)
+2026-11-09 05:16:00,120 INFO apscheduler._schedulers.async_: Job 1be054fd-9f03-4f67-8bc7-9c384a35fdde completed successfully

@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import time
@@ -20,6 +21,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 log = logging.getLogger(__name__)
+
+from .api_auth import auth_headers
 
 DEFAULT_API_URL = "http://localhost:3000"
 DEFAULT_OUTPUT_DIR = "runtime/parquet"
@@ -251,6 +254,7 @@ class ParquetExportJob:
                     "since_ns": since_ns,
                     "until_ns": until_ns,
                 },
+                headers=auth_headers(),
                 timeout=10,
             )
             if resp.ok:
@@ -281,8 +285,9 @@ class ParquetExportJob:
                     "normal_rows": normal_rows,
                     "status": status,
                     "error_message": error_message,
-                    "quality_json": quality_report.to_dict(),
+                    "quality_json": json.dumps(quality_report.to_dict()),
                 },
+                headers=auth_headers(),
                 timeout=10,
             )
         except Exception as exc:
@@ -325,6 +330,7 @@ class IncrementalExportJob(ParquetExportJob):
             resp = requests.get(
                 f"{self.api_url}/api/ml/exports",
                 params={"export_type": export_type, "status": "completed", "limit": 1},
+                headers=auth_headers(),
                 timeout=10,
             )
             if resp.ok:

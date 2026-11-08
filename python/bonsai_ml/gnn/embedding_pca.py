@@ -24,6 +24,8 @@ from typing import Optional
 
 import numpy as np
 
+from ..api_auth import auth_headers
+
 log = logging.getLogger(__name__)
 
 DEFAULT_MODEL_PATH = "models/config_embedding_pca.pkl"
@@ -164,7 +166,8 @@ def fit_from_api(
     log.info("EmbeddingPCA: fetching config embedding vectors from %s", url)
 
     try:
-        with urllib.request.urlopen(url, timeout=30) as resp:
+        req = urllib.request.Request(url, headers=auth_headers())
+        with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
     except Exception as exc:
         log.error("EmbeddingPCA: failed to fetch vectors: %s", exc)

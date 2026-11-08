@@ -80,6 +80,20 @@ unauthenticated 401s on the JWT API (no credential path); heartbeat
 timestamp fields render null. Evidence:
 [live heartbeat](merger/evidence/2026-11-08-bn009-live-heartbeat/README.md).
 
+BN-009 sidecar→API auth (9 November): `BONSAI_API_TOKEN` (`bsk_` API key)
+support added via `bonsai_ml/api_auth.py` and injected into all sidecar
+HTTP call sites (job engine aiohttp, requests workers, urllib probes,
+`BonsaiClient` env fallback, snapshot/inference clients). Verified live
+against the packaged deployment: minted `bn009-sidecar` key (operator
+scope), restarted `collector_engine` — zero 401s (was 21), ML jobs
+succeed via scheduler with real `MlJobRun` records, schedules/exports
+writes land. Also fixed `export_job` `quality_json` type bug (PATCH 422 →
+records stuck `running`). `last_heartbeat_at` null was a field-name
+expectation, not an API defect (`*_ns` fields populated). New findings:
+`/api/graph/snapshot` 500s on missing DuckDB `TIMESTAMP_NS` (pre-existing,
+affects JWT too); pandas absent in venv → empty parquet exports.
+Evidence: [api-auth](merger/evidence/2026-11-09-bn009-api-auth/README.md).
+
 BN-009 lifecycle slice (8 November): `collector_engine.py` heartbeat
 `status_json` now reports uptime/cpu/rss/queue-depth/drops/rules-loaded
 (stdlib /proc, null-safe); Sidecars UI gained a gRPC-registry panel rendering

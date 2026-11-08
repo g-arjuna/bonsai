@@ -21,6 +21,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from .api_auth import auth_headers
+
 log = logging.getLogger(__name__)
 
 
@@ -93,6 +95,7 @@ class GnnInferenceClient:
                 import requests
                 s = requests.Session()
                 s.headers["Content-Type"] = "application/json"
+                s.headers.update(auth_headers())
                 self._session = s
             except ImportError as exc:
                 raise RuntimeError(

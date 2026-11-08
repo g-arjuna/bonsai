@@ -36,6 +36,8 @@ from typing import Any, Callable, Coroutine, Optional
 
 log = logging.getLogger(__name__)
 
+from .api_auth import auth_headers
+
 DEFAULT_API_URL = "http://localhost:3000"
 DEFAULT_JOB_DB = "runtime/ml_jobs.db"
 SCHEDULE_POLL_INTERVAL = 60
@@ -146,6 +148,7 @@ class BonsaiJobEngine:
         _global_engine = self
 
         self.api_url = api_url.rstrip("/")
+        self._auth_headers = auth_headers()
         self.job_db_path = job_db_path
         self.enable_metrics = enable_metrics
 
@@ -312,7 +315,9 @@ class BonsaiJobEngine:
             import aiohttp
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    f"{self.api_url}/api/ml/schedules", timeout=aiohttp.ClientTimeout(total=10)
+                    f"{self.api_url}/api/ml/schedules",
+                    headers=self._auth_headers,
+                    timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.ok:
                         schedules = await resp.json()
@@ -337,6 +342,7 @@ class BonsaiJobEngine:
                                 "cron_expr": cron_expr,
                                 "enabled": True,
                             },
+                            headers=self._auth_headers,
                             timeout=aiohttp.ClientTimeout(total=5),
                         ) as resp:
                             pass
@@ -480,6 +486,7 @@ class BonsaiJobEngine:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(
                         f"{self.api_url}/api/governance/pressure",
+                        headers=self._auth_headers,
                         timeout=aiohttp.ClientTimeout(total=5),
                     ) as resp:
                         if resp.ok:
@@ -507,6 +514,7 @@ class BonsaiJobEngine:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"{self.api_url}/api/ml/jobs/dead-letter",
+                    headers=self._auth_headers,
                     timeout=aiohttp.ClientTimeout(total=5),
                 ) as resp:
                     if not resp.ok:
@@ -532,6 +540,7 @@ class BonsaiJobEngine:
                         "trigger": "scheduler",
                         "started_at_ns": time.time_ns(),
                     },
+                    headers=self._auth_headers,
                     timeout=aiohttp.ClientTimeout(total=5),
                 ) as resp:
                     if resp.ok:
@@ -567,6 +576,7 @@ class BonsaiJobEngine:
                 async with session.patch(
                     f"{self.api_url}/api/ml/jobs/{run_record_id}",
                     json=payload,
+                    headers=self._auth_headers,
                     timeout=aiohttp.ClientTimeout(total=5),
                 ) as resp:
                     pass
@@ -579,6 +589,7 @@ class BonsaiJobEngine:
             requests.post(
                 f"{self.api_url}/api/ml/events/publish",
                 json={"event_type": event_type, "payload": payload},
+                headers=self._auth_headers,
                 timeout=2,
             )
         except Exception:

@@ -22,6 +22,8 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+from .api_auth import auth_headers
+
 POLL_INTERVAL_SECS = 60
 FETCH_LIMIT = 200
 BACKOFF_SECS = [60, 120, 300]
@@ -91,6 +93,7 @@ def _fetch_unembedded_events(api_url: str, limit: int) -> list[dict[str, Any]]:
         resp = requests.get(
             f"{api_url}/api/events/unembedded",
             params={"type": "syslog", "limit": limit},
+            headers=auth_headers(),
             timeout=15,
         )
         resp.raise_for_status()
@@ -157,6 +160,7 @@ def _embed_and_post(
         resp = requests.post(
             f"{api_url}/api/events/embeddings",
             json={"embeddings": embedding_records},
+            headers=auth_headers(),
             timeout=30,
         )
         resp.raise_for_status()

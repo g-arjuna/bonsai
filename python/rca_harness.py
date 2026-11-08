@@ -89,7 +89,9 @@ def _inject(args_list: list[str], config_path: str, topology: str) -> None:
 
 
 def _get_json(url: str, path: str) -> Any:
-    resp = requests.get(f"{url}{path}", timeout=10)
+    token = os.environ.get("BONSAI_API_TOKEN", "").strip()
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+    resp = requests.get(f"{url}{path}", headers=headers, timeout=10)
     resp.raise_for_status()
     return resp.json()
 

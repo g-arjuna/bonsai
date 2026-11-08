@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -44,7 +45,7 @@ class BonsaiClient:
         self._key = key
         self._server_name = server_name
         self._http_base_url = http_base_url.rstrip("/")
-        self._http_token = http_token
+        self._http_token = http_token or os.environ.get("BONSAI_API_TOKEN") or None
         self._channel: grpc.Channel | None = None
         self._stub: pb_grpc.BonsaiGraphStub | None = None
         self._grpc_is_insecure: bool = True

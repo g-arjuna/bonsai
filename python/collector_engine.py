@@ -182,7 +182,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         api_url = os.environ.get("BONSAI_API_URL", "http://localhost:3000")
         try:
             import urllib.request as _ur, json as _json
-            with _ur.urlopen(f"{api_url}/api/ml/embedding-stats", timeout=1) as _resp:
+            from bonsai_ml.api_auth import auth_headers as _ah
+            _req = _ur.Request(f"{api_url}/api/ml/embedding-stats", headers=_ah())
+            with _ur.urlopen(_req, timeout=1) as _resp:
                 _es = _json.loads(_resp.read())
                 embedding_pending_syslog = _es.get("pending_syslog", 0)
                 embedding_pending_config = _es.get("pending_config", 0)

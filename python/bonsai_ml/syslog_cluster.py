@@ -24,6 +24,8 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
+from .api_auth import auth_headers
+
 DEFAULT_N_CLUSTERS = 20
 MIN_SAMPLES_TO_CLUSTER = 100
 DEFAULT_API_URL = "http://localhost:3000"
@@ -132,6 +134,7 @@ class SyslogClusterer:
             resp = requests.get(
                 f"{self.api_url}/api/ml/embeddings/events",
                 params={"event_type": "syslog", "since_ns": since_ns, "limit": FETCH_LIMIT},
+                headers=auth_headers(),
                 timeout=30,
             )
             if resp.ok:
@@ -226,6 +229,7 @@ class SyslogClusterer:
             resp = requests.patch(
                 f"{self.api_url}/api/events/cluster-labels",
                 json={"assignments": assignments},
+                headers=auth_headers(),
                 timeout=30,
             )
             if not resp.ok:
@@ -242,6 +246,7 @@ class SyslogClusterer:
             resp = requests.post(
                 f"{self.api_url}/api/ml/syslog-clusters",
                 json={"clusters": payload},
+                headers=auth_headers(),
                 timeout=30,
             )
             if not resp.ok:

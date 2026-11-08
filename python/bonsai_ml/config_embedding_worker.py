@@ -22,6 +22,8 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+from .api_auth import auth_headers
+
 POLL_INTERVAL_SECS = 300
 FETCH_LIMIT = 50
 BACKOFF_SECS = [60, 120, 300]
@@ -91,6 +93,7 @@ def _fetch_unembedded_devices(api_url: str, limit: int) -> list[dict[str, Any]]:
         resp = requests.get(
             f"{api_url}/api/devices/unembedded-config",
             params={"limit": limit},
+            headers=auth_headers(),
             timeout=15,
         )
         resp.raise_for_status()
@@ -106,6 +109,7 @@ def _fetch_config_text(api_url: str, address: str) -> str:
         import requests
         resp = requests.get(
             f"{api_url}/api/devices/{address}/config-text",
+            headers=auth_headers(),
             timeout=15,
         )
         if resp.ok:
@@ -135,6 +139,7 @@ def _post_config_embedding(
                 "computed_at_ns": time.time_ns(),
                 "schema_hash": schema_hash,
             },
+            headers=auth_headers(),
             timeout=15,
         )
         return resp.ok

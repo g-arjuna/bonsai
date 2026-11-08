@@ -18,6 +18,8 @@ from typing import Any, Optional
 
 log = logging.getLogger(__name__)
 
+from .api_auth import auth_headers
+
 DEFAULT_API_URL = "http://localhost:3000"
 
 
@@ -88,6 +90,7 @@ class JobProgressReporter:
             requests.post(
                 f"{self.api_url}/api/ml/events/publish",
                 json={"event_type": "job_progress", "payload": payload},
+                headers=auth_headers(),
                 timeout=2,
             )
         except Exception as exc:

@@ -799,7 +799,9 @@ def _get_hostname_vendor(device) -> tuple[str, str, str]:
 
 def _api_post(api_url: str, path: str, body: dict, timeout: int = 15) -> dict:
     url = api_url.rstrip("/") + path
-    r = requests.post(url, json=body, timeout=timeout)
+    token = os.environ.get("BONSAI_API_TOKEN", "").strip()
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+    r = requests.post(url, json=body, headers=headers, timeout=timeout)
     r.raise_for_status()
     return r.json() if r.text.strip() else {}
 

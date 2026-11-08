@@ -22,6 +22,8 @@ from typing import Any, Optional
 
 log = logging.getLogger(__name__)
 
+from .api_auth import auth_headers
+
 DEFAULT_API_URL = "http://localhost:3000"
 DEFAULT_SNAPSHOT_DIR = "runtime/parquet/gnn_snapshots"
 DEFAULT_MODEL_DIR = "models"
@@ -160,6 +162,7 @@ class StgnnInferenceLoop:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"{self.api_url}/api/graph/snapshot",
+                    headers=auth_headers(),
                     timeout=aiohttp.ClientTimeout(total=30),
                 ) as resp:
                     if resp.ok:
@@ -256,7 +259,7 @@ class StgnnInferenceLoop:
 
         try:
             import aiohttp
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=auth_headers()) as session:
                 async with session.post(
                     f"{self.api_url}/api/gnn/inference-results",
                     json=results_payload,
@@ -290,6 +293,7 @@ class StgnnInferenceLoop:
             requests.post(
                 f"{self.api_url}/api/ml/events/publish",
                 json={"event_type": "gnn_inference_complete", "payload": result},
+                headers=auth_headers(),
                 timeout=2,
             )
         except Exception:
@@ -304,6 +308,7 @@ class StgnnInferenceLoop:
                     "event_type": "gnn_inference_failed",
                     "payload": {"error": error, "failed_at_ns": time.time_ns()},
                 },
+                headers=auth_headers(),
                 timeout=2,
             )
         except Exception:

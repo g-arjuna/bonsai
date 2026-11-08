@@ -35,6 +35,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent))
 
 import logging
+from bonsai_ml.api_auth import auth_headers
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [train_stgnn] %(message)s")
 
@@ -255,7 +256,7 @@ def register_with_api(api_url: str, result: TrainingResult, model_type: str = "s
             "schema_hash": result.schema_hash,
             "model_path": result.model_path,
         }
-        resp = requests.post(f"{api_url}/api/ml/models", json=payload, timeout=10)
+        resp = requests.post(f"{api_url}/api/ml/models", json=payload, headers=auth_headers(), timeout=10)
         if resp.ok:
             model_id = resp.json().get("id", "unknown")
             log.info("Registered model as id=%s", model_id)
@@ -282,6 +283,7 @@ def emit_job_event(api_url: str, result: TrainingResult, model_id: str) -> None:
                     "duration_s": result.duration_s,
                 },
             },
+            headers=auth_headers(),
             timeout=5,
         )
     except Exception as exc:
