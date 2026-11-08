@@ -1,0 +1,17 @@
+
+Running 12 tests using 1 worker
+
+  ✓   1 tests/ui_driver/routing_live_acceptance.spec.js:26:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 1. Unauthenticated access is denied with HTTP 401 in API and UI (662ms)
+  ✓   2 tests/ui_driver/routing_live_acceptance.spec.js:43:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 2. Cross-scope access is denied with HTTP 403 (61ms)
+  ✓   3 tests/ui_driver/routing_live_acceptance.spec.js:67:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 3. Authenticated login issues JWT Set-Cookie and loads Routing Observatory (676ms)
+  ✓   4 tests/ui_driver/routing_live_acceptance.spec.js:122:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 4. RIB Explorer populates 3 views and verifies VRF and Speaker isolation (3.3s)
+  ✓   5 tests/ui_driver/routing_live_acceptance.spec.js:176:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 5. Route attribute modification is reflected in browser DOM (758ms)
+  ✓   6 tests/ui_driver/routing_live_acceptance.spec.js:199:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 6. Route withdrawal removes prefix from active RIB table in browser DOM (768ms)
+  ✓   7 tests/ui_driver/routing_live_acceptance.spec.js:220:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 7. Re-announcement and router-driven TCP EOF disconnect preserves routes and updates completeness to gap (981ms)
+  ✓   8 tests/ui_driver/routing_live_acceptance.spec.js:263:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 8. Reconnect on a fresh speaker session epoch resolves transport gap and restores complete state (2.7s)
+  ✓   9 tests/ui_driver/routing_live_acceptance.spec.js:286:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 9. Prefix History Timeline renders announcement, modification and withdrawal events with exact attributes (1.1s)
+  ✓  10 tests/ui_driver/routing_live_acceptance.spec.js:312:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 10. Truthful empty filter and unsupported family states are displayed accurately (870ms)
+  ✓  11 tests/ui_driver/routing_live_acceptance.spec.js:337:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 11. Routing Service restart from durable journals preserves complete state (16.0s)
+  ✓  12 tests/ui_driver/routing_live_acceptance.spec.js:366:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 12. Logout revokes browser session and subsequent navigation is denied (560ms)
+
+  12 passed (29.9s)

@@ -1,0 +1,46 @@
+
+Running 12 tests using 1 worker
+
+  ✓   1 tests/ui_driver/routing_live_acceptance.spec.js:26:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 1. Unauthenticated access is denied with HTTP 401 in API and UI (595ms)
+  ✓   2 tests/ui_driver/routing_live_acceptance.spec.js:43:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 2. Cross-scope access is denied with HTTP 403 (50ms)
+  ✓   3 tests/ui_driver/routing_live_acceptance.spec.js:67:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 3. Authenticated login issues JWT Set-Cookie and loads Routing Observatory (669ms)
+  ✓   4 tests/ui_driver/routing_live_acceptance.spec.js:122:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 4. RIB Explorer populates 3 views and verifies VRF and Speaker isolation (3.4s)
+  ✓   5 tests/ui_driver/routing_live_acceptance.spec.js:176:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 5. Route attribute modification is reflected in browser DOM (780ms)
+  ✘   6 tests/ui_driver/routing_live_acceptance.spec.js:199:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 6. Route withdrawal removes prefix from active RIB table in browser DOM (20.3s)
+  -   7 tests/ui_driver/routing_live_acceptance.spec.js:220:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 7. Re-announcement and router-driven TCP EOF disconnect preserves routes and updates completeness to gap
+  -   8 tests/ui_driver/routing_live_acceptance.spec.js:263:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 8. Reconnect on a fresh speaker session epoch resolves transport gap and restores complete state
+  -   9 tests/ui_driver/routing_live_acceptance.spec.js:286:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 9. Prefix History Timeline renders announcement, modification and withdrawal events with exact attributes
+  -  10 tests/ui_driver/routing_live_acceptance.spec.js:312:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 10. Truthful empty filter and unsupported family states are displayed accurately
+  -  11 tests/ui_driver/routing_live_acceptance.spec.js:337:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 11. Routing Service restart from durable journals preserves complete state
+  -  12 tests/ui_driver/routing_live_acceptance.spec.js:366:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 12. Logout revokes browser session and subsequent navigation is denied
+
+
+  1) tests/ui_driver/routing_live_acceptance.spec.js:199:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 6. Route withdrawal removes prefix from active RIB table in browser DOM 
+
+    Error: [2mexpect([22m[31mreceived[39m[2m).[22mnot[2m.[22mtoContain[2m([22m[32mexpected[39m[2m) // indexOf[22m
+
+    Expected substring: not [32m"10.10.1.0/24"[39m
+    Received string:        [31m"Canonical RIB Explorer IPv4 Unicast (1/1)IPv6 Unicast (2/1)VPNv4 L3VPN (1/128)VPNv6 L3VPN (2/128)L2VPN EVPN (25/70)BGP-LS (16388/71) All ViewsAdj-RIB-In (Pre-Policy)Adj-RIB-In (Post-Policy)Loc-RIBLoc-RIB (Filtered)Adj-RIB-Out (Pre-Policy)Adj-RIB-Out (Post-Policy)     Filter Routes PrefixViewVRF / RDSpeakerPeer (ASN)Next HopAS PathLP / MEDCommunitiesState / FreshnessHistory10.99.1.0/24LocRib65000:100172.100.207.110.0.0.0 (AS65001)10.100.2.165001 65002— / 0—complete_for_observed_viewTimeline10.99.1.0/24AdjRibInPrePolicy65000:100172.100.207.1110.100.2.1 (AS65002)10.100.2.165001 65002— / 0—complete_for_observed_viewTimeline10.99.1.0/24AdjRibInPostPolicy65000:100172.100.207.1110.100.2.1 (AS65002)10.100.2.165001 65002— / 0—complete_for_observed_viewTimeline[7m10.10.1.0/24[27mAdjRibInPrePolicy0:0172.20.0.110.100.1.1 (AS65002)10.100.1.165001 65002— / 0—complete_for_observed_viewTimeline10.10.1.0/24AdjRibInPostPolicy0:0172.20.0.110.100.1.1 (AS65002)10.100.1.165001 65002— / 0—complete_for_observed_viewTimeline10.99.1.0/24LocRib65000:100172.20.0.10.0.0.0 (AS65001)10.100.2.165001 65002— / 0—complete_for_observed_viewTimeline10.10.1.0/24LocRib0:0172.20.0.10.0.0.0 (AS65001)10.100.1.165001 65002— / 0—complete_for_observed_viewTimeline10.99.1.0/24AdjRibInPrePolicy65000:100172.20.0.110.100.2.1 (AS65002)10.100.2.165001 65002— / 0—complete_for_observed_viewTimeline10.99.1.0/24AdjRibInPostPolicy65000:100172.20.0.110.100.2.1 (AS65002)10.100.2.165001 65002— / 0—complete_for_observed_viewTimeline"[39m
+
+    Call Log:
+    - Timeout 20000ms exceeded while waiting on the predicate
+
+      213 |       const text = await ribPanel.textContent();
+      214 |       expect(text).not.toContain('10.10.1.0/24');
+    > 215 |     }).toPass({ timeout: 20_000, intervals: [1000] });
+          |        ^
+      216 |
+      217 |     await page.screenshot({ path: path.join(EVIDENCE_DIR, '03_route_withdrawn.png'), fullPage: true });
+      218 |   });
+        at /home/arjuna/Desktop/bonsai/tests/ui_driver/routing_live_acceptance.spec.js:215:8
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    tests/ui_driver/test-results/routing_live_acceptance-BN-b8e51-ve-RIB-table-in-browser-DOM/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: tests/ui_driver/test-results/routing_live_acceptance-BN-b8e51-ve-RIB-table-in-browser-DOM/error-context.md
+
+  1 failed
+    tests/ui_driver/routing_live_acceptance.spec.js:199:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 6. Route withdrawal removes prefix from active RIB table in browser DOM 
+  6 did not run
+  5 passed (26.9s)

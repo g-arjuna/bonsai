@@ -1,0 +1,51 @@
+
+Running 12 tests using 1 worker
+
+  ✓   1 tests/ui_driver/routing_live_acceptance.spec.js:26:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 1. Unauthenticated access is denied with HTTP 401 in API and UI (877ms)
+  ✓   2 tests/ui_driver/routing_live_acceptance.spec.js:43:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 2. Cross-scope access is denied with HTTP 403 (50ms)
+  ✘   3 tests/ui_driver/routing_live_acceptance.spec.js:67:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 3. Authenticated login issues JWT Set-Cookie and loads Routing Observatory (639ms)
+  -   4 tests/ui_driver/routing_live_acceptance.spec.js:122:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 4. RIB Explorer populates 3 views and verifies VRF and Speaker isolation
+  -   5 tests/ui_driver/routing_live_acceptance.spec.js:176:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 5. Route attribute modification is reflected in browser DOM
+  -   6 tests/ui_driver/routing_live_acceptance.spec.js:199:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 6. Route withdrawal removes prefix from active RIB table in browser DOM
+  -   7 tests/ui_driver/routing_live_acceptance.spec.js:220:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 7. Re-announcement and router-driven TCP EOF disconnect preserves routes and updates completeness to gap
+  -   8 tests/ui_driver/routing_live_acceptance.spec.js:263:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 8. Reconnect on a fresh speaker session epoch resolves transport gap and restores complete state
+  -   9 tests/ui_driver/routing_live_acceptance.spec.js:286:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 9. Prefix History Timeline renders announcement, modification and withdrawal events with exact attributes
+  -  10 tests/ui_driver/routing_live_acceptance.spec.js:312:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 10. Truthful empty filter and unsupported family states are displayed accurately
+  -  11 tests/ui_driver/routing_live_acceptance.spec.js:337:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 11. Routing Service restart from durable journals preserves complete state
+  -  12 tests/ui_driver/routing_live_acceptance.spec.js:366:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 12. Logout revokes browser session and subsequent navigation is denied
+
+
+  1) tests/ui_driver/routing_live_acceptance.spec.js:67:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 3. Authenticated login issues JWT Set-Cookie and loads Routing Observatory 
+
+    Error: [2mexpect([22m[31mlocator[39m[2m).[22mtoHaveText[2m([22m[32mexpected[39m[2m)[22m failed
+
+    Locator: locator('.eyebrow')
+    Expected: [32m"Canonical BMP / BGP Control Plane"[39m
+    Error: strict mode violation: locator('.eyebrow') resolved to 2 elements:
+        1) <p class="eyebrow">Runtime onboarding</p> aka getByText('Runtime onboarding')
+        2) <p class="eyebrow">Welcome</p> aka getByText('Welcome', { exact: true })
+
+    Call log:
+    [2m  - Expect "toHaveText" with timeout 5000ms[22m
+    [2m  - waiting for locator('.eyebrow')[22m
+
+
+      94 |
+      95 |     // Workspace Header elements
+    > 96 |     await expect(page.locator('.eyebrow')).toHaveText('Canonical BMP / BGP Control Plane');
+         |                                            ^
+      97 |     await expect(page.locator('h2')).toHaveText('Routing & RIB Observatory');
+      98 |
+      99 |     // Summary KPI cards populated
+        at /home/arjuna/Desktop/bonsai/tests/ui_driver/routing_live_acceptance.spec.js:96:44
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    tests/ui_driver/test-results/routing_live_acceptance-BN-6f2bb-d-loads-Routing-Observatory/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: tests/ui_driver/test-results/routing_live_acceptance-BN-6f2bb-d-loads-Routing-Observatory/error-context.md
+
+  1 failed
+    tests/ui_driver/routing_live_acceptance.spec.js:67:3 › BN-003 Live Routing & RIB Browser Acceptance Gate › 3. Authenticated login issues JWT Set-Cookie and loads Routing Observatory 
+  9 did not run
+  2 passed (2.9s)

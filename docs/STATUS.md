@@ -50,11 +50,12 @@ block access. Speaker and supported routing RD filters remain. This default is
 not a tenant isolation guarantee. Use the admin policy API to restore `strict`.
 The original closeout manifest identifies its earlier tested source snapshot.
 
-**Next action:** BN-019 operational/release proof — packaged build/boot,
-volume backup→restore, install-from-package/upgrade-in-place, and the
-`bonsai-migrate` live drill are done; remaining are lab browser acceptance
-against the packaged deployment, soak (shared with BN-009), and handoff
-reconciliation. UI warning and link/provenance debt are cleared. BN-009/BN-013 intake triage remains doable
+**Next action:** BN-019 operational/release proof is effectively complete —
+packaged build/boot, volume backup→restore, install/upgrade, `bonsai-migrate`
+drill, packaged-deployment browser acceptance (12/12 journeys on genuine
+FRR BMP), bounded packaged soak, and handoff reconciliation all evidenced.
+Only the full-length soak window remains open (shared with BN-009).
+UI warning and link/provenance debt are cleared. BN-009/BN-013 intake triage remains doable
 without external deps.
 BN-003 genuine router VRF/deployed browser-graph parity, and BN-004 real
 provider evaluation remain open. Operational device writes remain disabled.
@@ -144,6 +145,22 @@ restores exact SHA), synthetic v1 fixture (2 migrations flagged
 alias migration, and corrupted-backup rollback fails closed. Binary is
 not shipped in the image; quiesced-copy operator procedure documented.
 Evidence: [migrate drill](merger/evidence/2026-11-08-bn019-migrate/README.md).
+
+BN-019 packaged browser acceptance + soak + handoff (8 November): all 12
+BN-003 Playwright journeys passed against the packaged `bonsai:latest`
+compose deployment fed by genuine FRR BMP — required host-network
+`bonsai-routing` (bridge SNAT collapses exporter IPs to the docker
+gateway; documented as a packaging finding) and clearing the first-run
+onboarding gate via admin API. A control shim drove vtysh +
+`docker restart` for the journey hooks. 12-minute packaged soak: 24/24
+samples `complete_for_observed_view`, 0 gaps/restarts, stable memory;
+shared BN-009/BN-009 soak design recorded, full-length window still open.
+Legacy CV5 clean-slate/7-day criteria reconciled to the read-only
+prototype boundary (unattended-proof/chaos/governor deferred to
+BN-009/014/016). Evidence:
+[browser](merger/evidence/2026-11-08-bn019-packaged-browser/README.md),
+[soak](merger/evidence/2026-11-08-bn019-soak/README.md),
+[handoff](merger/evidence/2026-11-08-bn019-handoff/README.md).
 
 BN-019 link/provenance debt (8 November): scripted check of 164 relative links
 across 84 live docs found 4 dead links (absolute `file://`/machine paths, two
