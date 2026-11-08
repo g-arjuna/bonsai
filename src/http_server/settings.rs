@@ -549,11 +549,19 @@ pub async fn patch_streaming_settings_handler(
     let pattern_dir = state.layered_ingestion.syslog_patterns_path.clone();
 
     // Build updated configs before acquiring the write lock.
-    let bmp_to_restart = patch.bmp.is_some().then(|| crate::config::BmpConfig {
-        enabled: new_bmp_enabled,
-        tcp_addr: new_bmp_addr.clone(),
-        ..state.streaming.bmp.clone()
-    });
+    // BN-007: the settings API must honor the single-authority contract —
+    // the legacy in-process BMP receiver may only (re)spawn when
+    // `authority == "legacy_bonsai"`, identical to startup gating. Otherwise a
+    // PATCH could create a second BMP authority alongside bonsai-routing.
+    let bmp_to_restart = patch
+        .bmp
+        .is_some()
+        .then(|| crate::config::BmpConfig {
+            enabled: new_bmp_enabled,
+            tcp_addr: new_bmp_addr.clone(),
+            ..state.streaming.bmp.clone()
+        })
+        .filter(|c| c.should_spawn_legacy_receiver());
     let bgp_ls_to_restart = patch.bgp_ls.is_some().then(|| crate::config::BgpLsConfig {
         enabled: new_bgpls_enabled,
         tcp_addr: new_bgpls_addr.clone(),

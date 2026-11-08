@@ -1,0 +1,38 @@
+{
+  "date": "2026-11-08",
+  "base_commit": "0b89f00a3141ecb152556a6c89192028e202d751",
+  "implementation_committed": false,
+  "item": "BN-007",
+  "scope": "intake triage + first bounded fixes: legacy/duplicate-authority inventory, settings authority bypass fix, dead config fix, license gate repair",
+  "changed_files": [
+    "src/http_server/settings.rs",
+    "docker/configs/standalone.toml",
+    "Cargo.toml",
+    "deny.toml",
+    "LICENSE",
+    "NOTICE",
+    "src/server_startup.rs",
+    "src/bin/bonsai_migrate.rs",
+    "docs/merger/evidence/2026-11-08-bn007-audit/README.md",
+    "docs/merger/evidence/2026-11-08-bn007-audit/results.json"
+  ],
+  "second_pass": {
+    "bonsai_migrate_cli": "backup/migrate-jsonl/migrate-toml/rollback verified end-to-end with SHA-256-verified rollback",
+    "journal_backup_coverage": "routing journals under /app/runtime are inside bonsai_graph(_dev) volumes already covered by backup_volumes.sh",
+    "authority_validation": "unrecognized authority values warn at startup",
+    "license_notice": "Apache-2.0 LICENSE + NOTICE with RustyBMP import provenance added"
+  },
+  "gates": {
+    "imported_crate_tests": {"passed": 135, "failed": 0, "ignored": 2},
+    "b11_b12_b13_routing_workflow": {"passed": 3, "failed": 0},
+    "cargo_deny_licenses_sources": "ok",
+    "fmt_check": "clean",
+    "diff_check": "clean"
+  },
+  "remaining": [
+    "DuckDB duckdb-store feature disposition undecided",
+    "legacy src/streaming/bmp.rs retirement blocked on graph-projection parity",
+    "crate version skew 0.1.0 vs 0.2.0",
+    "CI/release and install/upgrade gates (BN-019 overlap)"
+  ]
+}

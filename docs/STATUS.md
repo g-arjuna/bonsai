@@ -2,7 +2,7 @@
 
 8 November repository review: BN-006 bounded live acceptance is complete;
 the detailed snapshot below is the 30 October baseline. BN-006 code and fixtures
-remain uncommitted. The EOS reconnect replay regression is fixed, including legacy
+were committed in `0b89f00`. The EOS reconnect replay regression is fixed, including legacy
 event and checkpoint recovery. Live EOS lifecycle, offline policy update, virtual FIB,
 and SR Linux native collection evidence is in [BN-006 evidence](merger/evidence/2026-11-07-bn006-live/README.md).
 
@@ -50,9 +50,36 @@ block access. Speaker and supported routing RD filters remain. This default is
 not a tenant isolation guarantee. Use the admin policy API to restore `strict`.
 The original closeout manifest identifies its earlier tested source snapshot.
 
-**Next action:** BN-001 phase-specific crash recovery and interrupted-work
-reconciliation. BN-002 operational gates, BN-003 genuine router VRF/deployed
-browser-graph parity, and BN-004 real provider evaluation remain open. Operational device writes remain disabled.
+**Next action:** BN-007 merger/release audit. BN-003 genuine router VRF/deployed
+browser-graph parity, and BN-004 real provider evaluation remain open.
+Operational device writes remain disabled.
+
+BN-007 intake (8 November): legacy/duplicate-authority inventory completed;
+fixed a settings-API path that could spawn a second BMP authority, a dead
+`[bmp]` config block, and license-gate failures (`cargo deny` passes;
+135 imported-crate tests pass). Added `bonsai-migrate` operator CLI
+(backup/migrate/rollback, SHA-verified end-to-end), `authority` typo warning,
+and LICENSE/NOTICE RustyBMP attribution. Journal backups confirmed covered
+via `bonsai_graph` volumes. Leftovers disposed: rbmp crates versioned to
+0.2.0, `duckdb-store` kept optional-disabled pending EOR parity, legacy
+receiver retirement still blocked on projection parity, CI/install gates
+deferred to BN-019. Evidence: [BN-007 audit](merger/evidence/2026-11-08-bn007-audit/README.md).
+
+BN-002 progress (8 November): signing keys and revocations are now durable in a
+versioned key store beside the executor journal — register/rotate-overlap/revoke
+survive restart and propagate across executor instances; corrupt or vanished
+stores fail closed. Assurance reports carry optional HMAC signatures that
+enforced mode now requires (`MissingAssuranceSignature`). 34 focused tests pass
+(20 + 8 + 6). Remaining: vault custody, per-role key separation, boundary
+transport, asymmetric crypto. Evidence:
+[BN-002 key lifecycle](merger/evidence/2026-11-08-bn002-key-lifecycle/README.md).
+
+BN-001 closeout (8 November): phase-specific process-kill recovery is verified
+at all five durable executor journal phases using real child-process aborts, and
+interrupted intents reconcile via the operator-driven
+`abort_interrupted_execution` API (durable `ExecutionAborted` + scoped lock
+release). 28 focused tests pass (20 existing + 8 new). Limits and evidence:
+[BN-001 crash recovery](merger/evidence/2026-11-08-bn001-crash-recovery/README.md).
 
 Ownership mapping follow-up (BN-015): explicit device and exporter/RD → tenant
 bindings persist in the graph, with admin assignment/list/audit endpoints. Missing

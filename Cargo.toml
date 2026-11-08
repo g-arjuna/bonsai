@@ -8,7 +8,9 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version      = "0.1.0"
+# Imported rbmp-* crates are vendored path dependencies versioned with the
+# product; keep in lockstep with the bonsai package version (BN-007).
+version      = "0.2.0"
 edition      = "2024"
 authors      = ["Arjuna Ganesan"]
 license      = "Apache-2.0"
@@ -45,6 +47,7 @@ rbmp-store   = { path = "crates/rbmp-store" }
 name = "bonsai"
 version = "0.2.0"
 edition = "2024"
+license = "Apache-2.0"
 
 [lib]
 name = "bonsai"
@@ -65,6 +68,10 @@ path = "src/bin/query.rs"
 [[bin]]
 name = "bonsai-routing"
 path = "src/bin/routing_service.rs"
+
+[[bin]]
+name = "bonsai-migrate"
+path = "src/bin/bonsai_migrate.rs"
 
 [dependencies]
 rbmp-core = { workspace = true }

@@ -1,0 +1,49 @@
+{
+  "date": "2026-11-08",
+  "base_commit": "0b89f00a3141ecb152556a6c89192028e202d751",
+  "implementation_committed": false,
+  "item": "BN-001",
+  "scope": "approval-bound executor durable journal: phase-specific process-kill recovery and interrupted-work reconciliation",
+  "changed_files": [
+    "src/remediation/approval.rs",
+    "tests/bn001_executor_crash_recovery.rs",
+    "docs/merger/evidence/2026-11-08-bn001-crash-recovery/README.md",
+    "docs/merger/evidence/2026-11-08-bn001-crash-recovery/results.json"
+  ],
+  "tests": {
+    "new_tests": 8,
+    "regression_tests": 20,
+    "failed": 0,
+    "evidence_level": "integration (real child-process abort at each durable journal phase)"
+  },
+  "commands": [
+    {
+      "command": "RUSTC_WRAPPER= cargo test --test a13_a20_change_assurance_and_executor --test bn001_executor_crash_recovery",
+      "log": "regressions.log",
+      "passed": 28,
+      "exit_code": 0,
+      "log_sha256": "d1bfe5d5e49a82ddd3ef10b2b624ce0ec05365e95f645d3d79e2ed05c551aa77"
+    },
+    {
+      "command": "cargo fmt --check",
+      "log": "format.log",
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "git diff --check",
+      "log": "diff-check.log",
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "cargo clippy --lib --tests",
+      "exit_code": 101,
+      "note": "1 pre-existing deny-level never_loop error in untouched src/http_server/device.rs:637; no new warnings from changed files"
+    }
+  ],
+  "limits": [
+    "abort() simulates process kill after sync_data; physical power-loss/fsync-failure injection not exercised",
+    "interrupted-work reconciliation is operator-driven; device writes remain disabled"
+  ]
+}

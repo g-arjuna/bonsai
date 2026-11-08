@@ -1,0 +1,54 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 22m 48s
+     Running tests/a13_a20_change_assurance_and_executor.rs (target/debug/deps/a13_a20_change_assurance_and_executor-eb77708be006b6f5)
+
+running 20 tests
+test a13_nokia_srl_adapter_separates_nos_schema_drift_from_network_failure ... ok
+test a18_approval_bound_executor_enforces_plan_hash_baseline_revision_locking_idempotency_and_recovery ... ok
+test a19_shadow_operational_pilot_records_utility_and_enforces_zero_writes ... ok
+test bn001_execution_intent_is_persisted_before_effects_and_recovered_in_flight ... ok
+test bn001_concurrent_executors_cannot_acquire_same_persisted_scope ... ok
+test bn001_idempotency_replay_strictly_bound_to_plan_scope_and_tenant ... ok
+test a19_shadow_pilot_audit_journal_persists_observations ... ok
+test bn002_canonical_signing_bytes_eliminates_delimiter_collisions ... ok
+test bn002_changing_unsigned_assurance_fidelity_is_rejected_in_enforced_mode ... ok
+test bn001_active_scope_lock_is_persisted_and_recovered_across_reopen ... ok
+test bn001_failed_disk_append_never_replays_as_success_from_memory ... ok
+test bn001_empty_durable_journal_fails_closed_on_replay ... ok
+test bn002_fidelity_limitations_are_bound_by_report_hash ... ok
+test bn002_report_identity_delimiters_eliminate_identical_hashes ... ok
+test bn001_corruption_added_after_completion_fails_closed_on_replay ... ok
+test bn001_journal_rejects_corrupt_interior_records_and_repairs_torn_tail ... ok
+test a18_cryptographic_signatures_and_executor_restart_persistence ... ok
+test bn002_enforced_mode_requires_signing_authority_and_rejects_modeled_assurance ... ok
+test bn002_completed_replay_in_enforced_mode_requires_signing_authority_and_rejects_simulation_replay ... ok
+test a16_a17_digital_twin_assurance_gate_and_mcp_evaluate_change_plan ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.94s
+
+     Running tests/bn001_executor_crash_recovery.rs (target/debug/deps/bn001_executor_crash_recovery-ccb3ae86ae87880a)
+
+running 8 tests
+test bn001_crash_child_entrypoint ... ok
+test bn001_reconciliation_abort_in_simulation_mode_clears_in_flight ... ok
+test bn001_durable_reconciliation_survives_restart ... ok
+test bn001_process_kill_after_lock_acquire_recovers_and_completes ... ok
+test bn001_process_kill_after_abort_recovers_without_in_flight_leak ... ok
+test bn001_process_kill_after_intent_requires_operator_reconciliation ... ok
+test bn001_process_kill_after_lock_release_leaves_clean_durable_state ... ok
+test bn001_process_kill_after_completion_leaves_durable_entry_and_orphaned_lock ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.47s
+
+     Running tests/bn002_key_lifecycle_and_provenance.rs (target/debug/deps/bn002_key_lifecycle_and_provenance-818553a21d784f95)
+
+running 6 tests
+test bn002_unsigned_assurance_still_allowed_in_simulation_mode ... ok
+test bn002_corrupt_or_vanished_key_store_fails_closed ... ok
+test bn002_revoked_assurance_signing_key_rejected ... ok
+test bn002_enforced_mode_requires_signed_assurance_report ... ok
+test bn002_registered_keys_and_revocations_survive_restart ... ok
+test bn002_key_rotation_overlap_and_reactivation ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+

@@ -1,0 +1,20 @@
+Bonsai
+Copyright 2026 Bonsai contributors
+
+This product includes components derived from RustyBMP, imported under the
+Apache License 2.0 (see LICENSE).
+
+Import provenance (docs/merger/B10_IMPORT_MANIFEST.md):
+- Audited upstream RustyBMP SHA: e2a1189392db520b25a376795e1bfae72eca5b55
+- Hardened integration source (rustybmp-b01 @ f330febcca2f2870d4dd29526057385abc4f308a)
+- Bonsai pre-import SHA: 85de666
+
+Imported crates: crates/rbmp-core, crates/rbmp-rib, crates/rbmp-store
+(license = Apache-2.0 via workspace.package).
+
+Excluded at import (not present): rbmp-kafka, rbmp-nats, rbmp-enrichment,
+rbmp-mrt, bmppy, rbmp-server.
+
+Bonsai-only additions: UI, inventory, configuration, authentication,
+src/routing_service orchestration, graph projection, remediation/assurance
+executor, and all src/ product code.

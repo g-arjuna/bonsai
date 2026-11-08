@@ -15,10 +15,10 @@ path                   = "runtime/archive"
 flush_interval_seconds = 10
 max_batch_rows         = 1000
 
-[bmp]
+[streaming.bmp]
 enabled             = false
 authority           = "routing_service"
-listen_addr         = "0.0.0.0:11019"
+tcp_addr            = "0.0.0.0:11019"
 routing_service_url = "http://bonsai-routing:8081"
 
 # No [[target]] blocks — devices are added via the UI onboarding wizard or

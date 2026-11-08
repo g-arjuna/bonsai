@@ -9,6 +9,9 @@ rust-version.workspace = true
 
 [features]
 default = []
+# BN-007 disposition: kept optional and disabled. Enabling requires EOR route
+# retirement parity with BmpJournal/RibEventJournal first (see docs/STATUS.md);
+# do not wire as a durable-history authority until that gate passes.
 duckdb-store = ["dep:duckdb"]
 
 [dependencies]

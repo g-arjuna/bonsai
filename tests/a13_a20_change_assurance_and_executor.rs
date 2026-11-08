@@ -1063,7 +1063,9 @@ fn bn002_enforced_mode_requires_signing_authority_and_rejects_modeled_assurance(
 
     let mut valid_twin = sample_healthy_twin();
     valid_twin.fidelity = AssuranceFidelity::LiveContainerlabVerified;
-    let live_assurance = verify_plan_in_digital_twin(&plan, &valid_twin);
+    // BN-002: enforced mode requires the assurance report itself to be signed.
+    let mut live_assurance = verify_plan_in_digital_twin(&plan, &valid_twin);
+    live_assurance.sign_hmac_sha256(key_id, secret);
 
     let mut modeled_twin = sample_healthy_twin();
     modeled_twin.fidelity = AssuranceFidelity::ModeledSnapshotSimulation;
@@ -1161,18 +1163,26 @@ fn bn002_enforced_mode_requires_signing_authority_and_rejects_modeled_assurance(
         Err(ExecutionRejectionReason::ModeledAssuranceRejectedInEnforcedMode)
     );
 
-    // 4. Revoked key rejected in enforced mode
+    // 4. Revoked key rejected in enforced mode. Key revocations are durable
+    // and shared across executor instances (BN-002), so this case uses a
+    // dedicated revoked key to avoid invalidating key-primary-1 for the
+    // remaining assertions.
+    let revoked_key_id = "key-revoked-1";
     let mut revoked_executor = ApprovalBoundExecutor::open_or_create(Some(&path))
         .unwrap()
         .with_enforcement_mode(ExecutionEnforcementMode::Enforced)
-        .with_signing_key(key_id, secret)
-        .with_revoked_key(key_id);
+        .with_signing_key(revoked_key_id, secret)
+        .with_revoked_key(revoked_key_id);
+
+    let mut revoked_approval = signed_approval.clone();
+    revoked_approval.key_id = revoked_key_id.to_string();
+    revoked_approval.sign_hmac_sha256(revoked_key_id, secret);
 
     let err_revoked = revoked_executor.execute_approved_plan(
         "idem-enforced-4",
         &plan,
         &live_assurance,
-        &signed_approval,
+        &revoked_approval,
         "rev-2026-10-12-001",
         1_760_000_200,
         true,
@@ -1181,7 +1191,7 @@ fn bn002_enforced_mode_requires_signing_authority_and_rejects_modeled_assurance(
     assert_eq!(
         err_revoked,
         Err(ExecutionRejectionReason::RevokedSigningKey(
-            key_id.to_string()
+            revoked_key_id.to_string()
         ))
     );
 
@@ -1332,7 +1342,9 @@ fn bn002_completed_replay_in_enforced_mode_requires_signing_authority_and_reject
  {
     let plan = sample_remediation_plan();
     let twin = sample_healthy_twin();
-    let assurance = verify_plan_in_digital_twin(&plan, &twin);
+    // BN-002: enforced-mode executions require a signed assurance report.
+    let mut assurance = verify_plan_in_digital_twin(&plan, &twin);
+    assurance.sign_hmac_sha256("key-1", b"secret-1234");
     let mut approval = sample_probe_approval(&plan);
     approval.approved_assurance_report_hash = assurance.compute_report_hash();
 
@@ -1402,11 +1414,15 @@ fn bn002_completed_replay_in_enforced_mode_requires_signing_authority_and_reject
         ExecutionEnforcementMode::Enforced
     );
 
-    // Step 4: Replay in enforced mode requires signing authority configured
+    // Step 4: BN-002 durable key lifecycle — signing authority now persists in
+    // the executor key store beside the journal, so an enforced executor with
+    // no locally configured keys still reloads key-1 and honors replay. This
+    // replaces the previous memory-only assumption; MissingSignatureAuthority
+    // on a keyless store is covered by bn002_enforced_mode_requires_signing_authority.
     let mut enforced_replay_no_auth = ApprovalBoundExecutor::open_or_create(Some(&path))
         .unwrap()
         .with_enforcement_mode(ExecutionEnforcementMode::Enforced);
-    let replay_err2 = enforced_replay_no_auth.execute_approved_plan(
+    let replay_durable = enforced_replay_no_auth.execute_approved_plan(
         "idem-enforced-replay",
         &plan,
         &assurance,
@@ -1416,11 +1432,15 @@ fn bn002_completed_replay_in_enforced_mode_requires_signing_authority_and_reject
         true,
         true,
     );
-    assert_eq!(
-        replay_err2,
-        Err(ExecutionRejectionReason::MissingSignatureAuthority),
-        "enforced replay without signing authority must be rejected"
-    );
+    match replay_durable {
+        Ok(entry) => {
+            assert!(entry.deduplicated_replay);
+            assert_eq!(entry.enforcement_mode, ExecutionEnforcementMode::Enforced);
+        }
+        Err(e) => {
+            panic!("durable key store must supply signing authority after restart, got {e:?}")
+        }
+    }
 
     // Step 5: Replay with signing authority succeeds
     let replay_ok = enforced_with_auth

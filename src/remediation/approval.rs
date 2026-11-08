@@ -336,6 +336,15 @@ pub struct ChangeAssuranceReport {
     pub invariant_results: Vec<InvariantCheckResult>,
     pub unsupported_constructs: Vec<String>,
     pub emulation_fidelity_limitations: Vec<String>,
+    /// BN-002 provenance: optional HMAC-SHA256 signature over `canonical_bytes()`.
+    /// Excluded from `canonical_bytes()`/`compute_report_hash()` so signing does
+    /// not change the report hash bound into approvals.
+    #[serde(default)]
+    pub signature_algorithm: String,
+    #[serde(default)]
+    pub key_id: String,
+    #[serde(default)]
+    pub signature_hex: String,
 }
 
 impl ChangeAssuranceReport {
@@ -414,6 +423,30 @@ impl ChangeAssuranceReport {
         hasher.update(&self.canonical_bytes());
         format!("{:x}", hasher.finalize())
     }
+
+    /// Sign the report's canonical bytes so enforced execution can verify the
+    /// assurance result came from a trusted producer (BN-002 provenance).
+    pub fn sign_hmac_sha256(&mut self, key_id: &str, secret_key: &[u8]) {
+        self.signature_algorithm = "HMAC-SHA256".to_string();
+        self.key_id = key_id.to_string();
+        let mut mac =
+            HmacSha256::new_from_slice(secret_key).expect("HMAC can take key of any size");
+        mac.update(&self.canonical_bytes());
+        self.signature_hex = hex::encode(mac.finalize().into_bytes());
+    }
+
+    pub fn verify_signature(&self, secret_key: &[u8]) -> Result<(), ExecutionRejectionReason> {
+        if self.signature_algorithm != "HMAC-SHA256" || self.signature_hex.is_empty() {
+            return Err(ExecutionRejectionReason::InvalidSignature);
+        }
+        let sig_bytes = hex::decode(&self.signature_hex)
+            .map_err(|_| ExecutionRejectionReason::InvalidSignature)?;
+        let mut mac = HmacSha256::new_from_slice(secret_key)
+            .map_err(|_| ExecutionRejectionReason::InvalidSignature)?;
+        mac.update(&self.canonical_bytes());
+        mac.verify_slice(&sig_bytes)
+            .map_err(|_| ExecutionRejectionReason::InvalidSignature)
+    }
 }
 
 /// Evaluate a `RemediationPlan` against a `DigitalTwinSnapshot` (Batfish / Containerlab gate, A17).
@@ -455,6 +488,9 @@ pub fn verify_plan_in_digital_twin(
             }],
             unsupported_constructs: twin.unsupported_vendor_constructs.clone(),
             emulation_fidelity_limitations: limitations,
+            signature_algorithm: String::new(),
+            key_id: String::new(),
+            signature_hex: String::new(),
         };
     }
 
@@ -522,6 +558,9 @@ pub fn verify_plan_in_digital_twin(
         invariant_results: results,
         unsupported_constructs: twin.unsupported_vendor_constructs.clone(),
         emulation_fidelity_limitations: limitations,
+        signature_algorithm: String::new(),
+        key_id: String::new(),
+        signature_hex: String::new(),
     }
 }
 
@@ -652,6 +691,8 @@ pub enum ExecutionRejectionReason {
     DurableBackingRequiredInEnforcedMode,
     IdempotencyConflict(String),
     InFlightExecutionInterrupted(String),
+    InterruptedExecutionNotFound(String),
+    MissingAssuranceSignature,
     JournalPersistenceError(String),
 }
 
@@ -776,6 +817,38 @@ fn append_journal_record(
     Ok(())
 }
 
+// ── BN-002: Durable signing-key lifecycle ─────────────────────────────────────
+//
+// Signing keys and revocations are persisted beside the executor journal so a
+// process restart cannot silently resurrect a revoked key or lose the signing
+// authority required by enforced mode. The store is a single JSON document
+// rewritten atomically (temp file + rename, mode 0600 on Unix). This is a
+// development-prototype file store: production custody (vault/HSM) remains
+// BN-015/BN-019 scope.
+
+const EXECUTOR_KEY_STORE_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PersistedSigningKey {
+    secret_hex: String,
+    /// "active" | "revoked"
+    status: String,
+    created_at_epoch_secs: u64,
+    #[serde(default)]
+    note: String,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct PersistedKeyStore {
+    version: u32,
+    #[serde(default)]
+    keys: BTreeMap<String, PersistedSigningKey>,
+}
+
+fn executor_keys_file_path(journal_path: &Path) -> PathBuf {
+    journal_path.with_extension("keys.json")
+}
+
 struct FileLockGuard {
     file: std::fs::File,
 }
@@ -807,6 +880,20 @@ impl Drop for FileLockGuard {
     }
 }
 
+/// Fault-injection point for BN-001 crash-recovery verification.
+/// `#[doc(hidden)]`: used only by integration tests that spawn a real child
+/// process and kill it after a durable journal record is synced, simulating
+/// power loss at each persistence phase. Never enabled in production paths.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutorCrashPoint {
+    AfterLockAcquiredPersisted,
+    AfterIntentPersisted,
+    AfterCompletedPersisted,
+    AfterAbortedPersisted,
+    AfterLockReleasedPersisted,
+}
+
 #[derive(Debug, Default)]
 pub struct ApprovalBoundExecutor {
     journal_path: Option<PathBuf>,
@@ -817,6 +904,12 @@ pub struct ApprovalBoundExecutor {
     in_flight_executions: HashMap<String, ExecutionIntentRecord>,
     completed_by_idempotency_key: BTreeMap<String, ExecutionJournalEntry>,
     journal: Vec<ExecutionJournalEntry>,
+    crash_point: Option<ExecutorCrashPoint>,
+    /// Set when in-memory key state has not yet been flushed to the durable
+    /// key store; the next journal-locked operation retries persistence.
+    keys_dirty: bool,
+    /// key_id -> (created_at_epoch_secs, note) for durable-store round-trips.
+    key_meta: HashMap<String, (u64, String)>,
 }
 
 impl ApprovalBoundExecutor {
@@ -832,19 +925,236 @@ impl ApprovalBoundExecutor {
     pub fn with_signing_key(mut self, key_id: &str, secret: &[u8]) -> Self {
         self.signing_keys
             .insert(key_id.to_string(), secret.to_vec());
+        self.revoked_keys.remove(key_id);
+        self.key_meta
+            .entry(key_id.to_string())
+            .or_insert((0, String::new()));
+        self.keys_dirty = true;
+        // Best effort at construction time; journal-locked operations retry
+        // and surface persistence failures via JournalPersistenceError.
+        let _ = self.persist_key_store_if_dirty();
         self
     }
 
     pub fn with_revoked_key(mut self, key_id: &str) -> Self {
         self.revoked_keys.insert(key_id.to_string());
+        self.key_meta
+            .entry(key_id.to_string())
+            .or_insert((0, String::new()));
+        self.keys_dirty = true;
+        let _ = self.persist_key_store_if_dirty();
         self
     }
 
     pub fn with_signing_secret(mut self, secret: &[u8]) -> Self {
-        self.signing_keys.insert(String::new(), secret.to_vec());
+        self = self.with_signing_key("", secret);
+        self.with_signing_key("default", secret)
+    }
+
+    /// Register a signing key (or rotate to a new `key_id` while keeping
+    /// existing keys valid for an overlap window). Re-registering a revoked
+    /// `key_id` explicitly reactivates it. Durable when the executor is
+    /// journal-backed; the key store is reloaded under the journal lock so
+    /// concurrent executor instances observe the same keyring.
+    pub fn register_signing_key(
+        &mut self,
+        key_id: &str,
+        secret: &[u8],
+        now_epoch_secs: u64,
+    ) -> Result<(), ExecutionRejectionReason> {
+        self.lock_and_reload_keys()?;
         self.signing_keys
-            .insert("default".to_string(), secret.to_vec());
+            .insert(key_id.to_string(), secret.to_vec());
+        self.revoked_keys.remove(key_id);
+        self.key_meta
+            .insert(key_id.to_string(), (now_epoch_secs, String::new()));
+        self.keys_dirty = true;
+        self.persist_key_store_if_dirty().map_err(|e| {
+            ExecutionRejectionReason::JournalPersistenceError(format!(
+                "failed to persist signing key: {e}"
+            ))
+        })
+    }
+
+    /// Revoke a signing key durably. Revocation survives restart; approvals
+    /// signed by the key are rejected with `RevokedSigningKey`. Idempotent.
+    pub fn revoke_signing_key(
+        &mut self,
+        key_id: &str,
+        _now_epoch_secs: u64,
+    ) -> Result<(), ExecutionRejectionReason> {
+        self.lock_and_reload_keys()?;
+        self.revoked_keys.insert(key_id.to_string());
+        self.key_meta
+            .entry(key_id.to_string())
+            .or_insert((0, String::new()));
+        self.keys_dirty = true;
+        self.persist_key_store_if_dirty().map_err(|e| {
+            ExecutionRejectionReason::JournalPersistenceError(format!(
+                "failed to persist key revocation: {e}"
+            ))
+        })
+    }
+
+    /// Acquire the journal file lock (when durable) and reload the persisted
+    /// key store so this instance observes registrations/revocations made by
+    /// other executor instances.
+    fn lock_and_reload_keys(&mut self) -> Result<(), ExecutionRejectionReason> {
+        if let Some(ref path) = self.journal_path.clone() {
+            let _guard = FileLockGuard::acquire(path).map_err(|e| {
+                ExecutionRejectionReason::JournalPersistenceError(format!(
+                    "failed to acquire journal file lock: {e}"
+                ))
+            })?;
+            self.reload_keys_from_disk().map_err(|e| {
+                ExecutionRejectionReason::JournalPersistenceError(format!(
+                    "failed to reload executor keys: {e}"
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Flush pending key mutations, then reload the durable store into memory.
+    /// Fails closed when the store vanished after keys existed, mirroring the
+    /// journal's durability checks.
+    fn reload_keys_from_disk(&mut self) -> Result<(), std::io::Error> {
+        let Some(journal_path) = self.journal_path.clone() else {
+            return Ok(());
+        };
+        if self.keys_dirty {
+            self.persist_key_store()?;
+            self.keys_dirty = false;
+        }
+        let keys_path = executor_keys_file_path(&journal_path);
+        if !keys_path.exists() {
+            if !self.signing_keys.is_empty() || !self.revoked_keys.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "durable executor key store vanished after keys existed",
+                ));
+            }
+            return Ok(());
+        }
+        let raw = std::fs::read(&keys_path)?;
+        let store: PersistedKeyStore = serde_json::from_slice(&raw).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("corrupt executor key store: {e}"),
+            )
+        })?;
+        if store.version != EXECUTOR_KEY_STORE_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unsupported executor key store version {}", store.version),
+            ));
+        }
+        self.signing_keys.clear();
+        self.revoked_keys.clear();
+        self.key_meta.clear();
+        for (key_id, rec) in &store.keys {
+            if !rec.secret_hex.is_empty() {
+                if let Ok(secret) = hex::decode(&rec.secret_hex) {
+                    self.signing_keys.insert(key_id.clone(), secret);
+                }
+            }
+            if rec.status == "revoked" {
+                self.revoked_keys.insert(key_id.clone());
+            }
+            self.key_meta.insert(
+                key_id.clone(),
+                (rec.created_at_epoch_secs, rec.note.clone()),
+            );
+        }
+        Ok(())
+    }
+
+    fn persist_key_store_if_dirty(&mut self) -> Result<(), std::io::Error> {
+        if !self.keys_dirty {
+            return Ok(());
+        }
+        self.persist_key_store()?;
+        self.keys_dirty = false;
+        Ok(())
+    }
+
+    fn persist_key_store(&self) -> Result<(), std::io::Error> {
+        let Some(journal_path) = &self.journal_path else {
+            return Ok(());
+        };
+        let path = executor_keys_file_path(journal_path);
+        let mut keys = BTreeMap::new();
+        for (key_id, secret) in &self.signing_keys {
+            let (created, note) = self
+                .key_meta
+                .get(key_id)
+                .cloned()
+                .unwrap_or((0, String::new()));
+            keys.insert(
+                key_id.clone(),
+                PersistedSigningKey {
+                    secret_hex: hex::encode(secret),
+                    status: if self.revoked_keys.contains(key_id) {
+                        "revoked".to_string()
+                    } else {
+                        "active".to_string()
+                    },
+                    created_at_epoch_secs: created,
+                    note,
+                },
+            );
+        }
+        // Defensive revocations for key_ids that have no secret material.
+        for key_id in &self.revoked_keys {
+            keys.entry(key_id.clone())
+                .or_insert_with(|| PersistedSigningKey {
+                    secret_hex: String::new(),
+                    status: "revoked".to_string(),
+                    created_at_epoch_secs: self.key_meta.get(key_id).map(|m| m.0).unwrap_or(0),
+                    note: self
+                        .key_meta
+                        .get(key_id)
+                        .map(|m| m.1.clone())
+                        .unwrap_or_default(),
+                });
+        }
+        let store = PersistedKeyStore {
+            version: EXECUTOR_KEY_STORE_VERSION,
+            keys,
+        };
+        let bytes = serde_json::to_vec_pretty(&store)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let tmp_path = path.with_extension("tmp");
+        {
+            use std::io::Write;
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let mut file = opts.open(&tmp_path)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&tmp_path, &path)?;
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn with_crash_point_for_testing(mut self, point: ExecutorCrashPoint) -> Self {
+        self.crash_point = Some(point);
         self
+    }
+
+    /// `abort()` skips destructors, matching SIGKILL/power-loss semantics: the
+    /// OS releases the flock, in-memory state is lost, and disk retains exactly
+    /// the records synced so far.
+    fn crash_if_configured(&self, point: ExecutorCrashPoint) {
+        if self.crash_point == Some(point) {
+            std::process::abort();
+        }
     }
 
     pub fn in_flight_executions(&self) -> Vec<ExecutionIntentRecord> {
@@ -984,6 +1294,7 @@ impl ApprovalBoundExecutor {
             let _file_lock = FileLockGuard::acquire(path)?;
             executor.reload_from_journal_path(path)?;
             executor.journal_path = Some(path.to_path_buf());
+            executor.reload_keys_from_disk()?;
         }
         Ok(executor)
     }
@@ -1082,6 +1393,7 @@ impl ApprovalBoundExecutor {
             ))
         })?;
         self.active_scope_locks.insert(key, owner_id.to_string());
+        self.crash_if_configured(ExecutorCrashPoint::AfterLockAcquiredPersisted);
         Ok(())
     }
 
@@ -1107,6 +1419,7 @@ impl ApprovalBoundExecutor {
                 ))
             })?;
             self.active_scope_locks.remove(&key);
+            self.crash_if_configured(ExecutorCrashPoint::AfterLockReleasedPersisted);
         }
         Ok(())
     }
@@ -1138,6 +1451,11 @@ impl ApprovalBoundExecutor {
             self.reload_from_journal_path(path).map_err(|e| {
                 ExecutionRejectionReason::JournalPersistenceError(format!(
                     "failed to reload journal records: {e}"
+                ))
+            })?;
+            self.reload_keys_from_disk().map_err(|e| {
+                ExecutionRejectionReason::JournalPersistenceError(format!(
+                    "failed to reload executor keys: {e}"
                 ))
             })?;
             self.acquire_scope_lock_locked(path, device_address, vrf_rd, owner_id, now_epoch_secs)
@@ -1182,6 +1500,11 @@ impl ApprovalBoundExecutor {
                     "failed to reload journal records: {e}"
                 ))
             })?;
+            self.reload_keys_from_disk().map_err(|e| {
+                ExecutionRejectionReason::JournalPersistenceError(format!(
+                    "failed to reload executor keys: {e}"
+                ))
+            })?;
             self.release_scope_lock_locked(path, device_address, vrf_rd, owner_id, now_epoch_secs)
         } else {
             let key = (device_address.to_string(), vrf_rd.to_string());
@@ -1190,6 +1513,83 @@ impl ApprovalBoundExecutor {
             }
             Ok(())
         }
+    }
+
+    /// Operator-driven reconciliation for an execution whose intent was
+    /// persisted but which never reached a durable completion or abort record
+    /// (e.g. process kill). Persists an `ExecutionAborted` record and releases
+    /// the scope lock when it is still owned by the interrupted approval, so a
+    /// fresh execution with the same idempotency key can proceed.
+    ///
+    /// The interrupted execution may have applied partial effects before the
+    /// crash; the operator MUST verify actual device state before retrying.
+    /// Returns the recovered intent record.
+    pub fn abort_interrupted_execution(
+        &mut self,
+        idempotency_key: &str,
+        reason: &str,
+        now_epoch_secs: u64,
+    ) -> Result<ExecutionIntentRecord, ExecutionRejectionReason> {
+        let path_opt = self.journal_path.clone();
+        let _file_lock = if let Some(ref path) = path_opt {
+            let guard = FileLockGuard::acquire(path).map_err(|e| {
+                ExecutionRejectionReason::JournalPersistenceError(format!(
+                    "failed to acquire journal file lock: {e}"
+                ))
+            })?;
+            self.reload_from_journal_path(path).map_err(|e| {
+                ExecutionRejectionReason::JournalPersistenceError(format!(
+                    "failed to reload journal records: {e}"
+                ))
+            })?;
+            self.reload_keys_from_disk().map_err(|e| {
+                ExecutionRejectionReason::JournalPersistenceError(format!(
+                    "failed to reload executor keys: {e}"
+                ))
+            })?;
+            Some(guard)
+        } else {
+            None
+        };
+
+        let intent = self
+            .in_flight_executions
+            .get(idempotency_key)
+            .cloned()
+            .ok_or_else(|| {
+                ExecutionRejectionReason::InterruptedExecutionNotFound(idempotency_key.to_string())
+            })?;
+
+        if let Some(ref path) = path_opt {
+            let abort_record = ExecutionJournalRecord::ExecutionAborted {
+                execution_id: intent.execution_id.clone(),
+                idempotency_key: idempotency_key.to_string(),
+                reason: reason.to_string(),
+                aborted_at_epoch_secs: now_epoch_secs,
+            };
+            append_journal_record(path, &abort_record).map_err(|e| {
+                ExecutionRejectionReason::JournalPersistenceError(format!(
+                    "failed to persist reconciliation abort: {e}"
+                ))
+            })?;
+            self.crash_if_configured(ExecutorCrashPoint::AfterAbortedPersisted);
+            self.in_flight_executions.remove(idempotency_key);
+            // Only releases the lock when it is still owned by the interrupted
+            // approval; a lock re-acquired by another owner is left untouched.
+            self.release_scope_lock_locked(
+                path,
+                &intent.device_address,
+                &intent.vrf_rd,
+                &intent.approval_id,
+                now_epoch_secs,
+            )?;
+        } else {
+            self.in_flight_executions.remove(idempotency_key);
+            self.active_scope_locks
+                .remove(&(intent.device_address.clone(), intent.vrf_rd.clone()));
+        }
+
+        Ok(intent)
     }
 
     pub fn journal_entries(&self) -> &[ExecutionJournalEntry] {
@@ -1271,6 +1671,27 @@ impl ApprovalBoundExecutor {
                     return Err(ExecutionRejectionReason::AssuranceReportHashMismatch);
                 }
 
+                // BN-002 provenance: the assurance report itself must carry a
+                // valid signature from a configured, non-revoked key so a
+                // fabricated twin result cannot be bound into an approval.
+                if assurance.signature_algorithm.is_empty() || assurance.signature_hex.is_empty() {
+                    return Err(ExecutionRejectionReason::MissingAssuranceSignature);
+                }
+                if self.revoked_keys.contains(&assurance.key_id) {
+                    return Err(ExecutionRejectionReason::RevokedSigningKey(
+                        assurance.key_id.clone(),
+                    ));
+                }
+                let assurance_secret = self
+                    .signing_keys
+                    .get(&assurance.key_id)
+                    .or_else(|| self.signing_keys.get(""))
+                    .or_else(|| self.signing_keys.get("default"))
+                    .ok_or_else(|| {
+                        ExecutionRejectionReason::UnknownKeyId(assurance.key_id.clone())
+                    })?;
+                assurance.verify_signature(assurance_secret)?;
+
                 // In enforced mode, tenant identity binding must match:
                 if approval.tenant_id != plan.tenant_id {
                     return Err(ExecutionRejectionReason::TenantMismatch);
@@ -1287,6 +1708,19 @@ impl ApprovalBoundExecutor {
                             ExecutionRejectionReason::UnknownKeyId(approval.key_id.clone())
                         })?;
                     approval.verify_signature(secret)?;
+                }
+                // Signed assurance reports are verified when a keyring exists;
+                // unsigned reports remain allowed for developer workflows.
+                if !assurance.signature_hex.is_empty() && !self.signing_keys.is_empty() {
+                    let secret = self
+                        .signing_keys
+                        .get(&assurance.key_id)
+                        .or_else(|| self.signing_keys.get(""))
+                        .or_else(|| self.signing_keys.get("default"))
+                        .ok_or_else(|| {
+                            ExecutionRejectionReason::UnknownKeyId(assurance.key_id.clone())
+                        })?;
+                    assurance.verify_signature(secret)?;
                 }
             }
         }
@@ -1346,6 +1780,11 @@ impl ApprovalBoundExecutor {
             self.reload_from_journal_path(path).map_err(|e| {
                 ExecutionRejectionReason::JournalPersistenceError(format!(
                     "failed to reload journal records: {e}"
+                ))
+            })?;
+            self.reload_keys_from_disk().map_err(|e| {
+                ExecutionRejectionReason::JournalPersistenceError(format!(
+                    "failed to reload executor keys: {e}"
                 ))
             })?;
             Some(guard)
@@ -1465,6 +1904,7 @@ impl ApprovalBoundExecutor {
                     "failed to persist execution intent: {e}"
                 )));
             }
+            self.crash_if_configured(ExecutorCrashPoint::AfterIntentPersisted);
         }
         self.in_flight_executions.insert(
             idempotency_key.to_string(),
@@ -1495,6 +1935,7 @@ impl ApprovalBoundExecutor {
                         "failed to persist execution abort: {e}"
                     )));
                 }
+                self.crash_if_configured(ExecutorCrashPoint::AfterAbortedPersisted);
                 self.in_flight_executions.remove(idempotency_key);
                 self.release_scope_lock_locked(
                     path,
@@ -1565,6 +2006,7 @@ impl ApprovalBoundExecutor {
                     "failed to append completed entry to journal: {e}"
                 )));
             }
+            self.crash_if_configured(ExecutorCrashPoint::AfterCompletedPersisted);
         }
 
         // 8. State committed durably: update in-memory maps and release scope lock

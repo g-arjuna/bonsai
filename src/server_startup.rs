@@ -795,6 +795,15 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     }
 
     {
+        // BN-007: reject typos in `authority` loudly instead of silently
+        // falling back to routing-service mode.
+        let authority = cfg.streaming.bmp.authority.as_str();
+        if authority != "routing_service" && authority != "legacy_bonsai" {
+            tracing::warn!(
+                authority,
+                "unrecognized [streaming.bmp] authority value; treating as \"routing_service\""
+            );
+        }
         let bmp_cfg = cfg.streaming.bmp.clone();
         let targets = cfg.target.clone();
         let bmp_bus = std::sync::Arc::clone(&bus);

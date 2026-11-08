@@ -1,0 +1,47 @@
+{
+  "date": "2026-11-08",
+  "base_commit": "0b89f00a3141ecb152556a6c89192028e202d751",
+  "implementation_committed": false,
+  "item": "BN-002",
+  "scope": "durable signing-key lifecycle (register/rotate/revoke across restart) and signed assurance-report provenance in enforced mode",
+  "changed_files": [
+    "src/remediation/approval.rs",
+    "tests/a13_a20_change_assurance_and_executor.rs",
+    "tests/bn002_key_lifecycle_and_provenance.rs",
+    "docs/merger/evidence/2026-11-08-bn002-key-lifecycle/README.md",
+    "docs/merger/evidence/2026-11-08-bn002-key-lifecycle/results.json"
+  ],
+  "tests": {
+    "new_tests": 6,
+    "regression_tests": 28,
+    "failed": 0,
+    "evidence_level": "integration (durable keystore across executor instances and restarts)"
+  },
+  "commands": [
+    {
+      "command": "RUSTC_WRAPPER= cargo test --test a13_a20_change_assurance_and_executor --test bn001_executor_crash_recovery --test bn002_key_lifecycle_and_provenance",
+      "log": "regressions.log",
+      "passed": 34,
+      "exit_code": 0,
+      "log_sha256": "ce467f44804dc81d1427bd7c071cf0dcc51dc6c4539ee1ef9b2daa8fcb318a15"
+    },
+    {
+      "command": "cargo fmt --check",
+      "log": "format.log",
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "git diff --check",
+      "log": "diff-check.log",
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "limits": [
+    "HMAC-SHA256 symmetric keys retained; asymmetric non-repudiation deferred",
+    "file-based key custody (0600); vault/HSM integration is BN-015/BN-019 scope",
+    "approval and report signatures share one keyring; per-role separation and operational-boundary transport deferred to BN-014",
+    "no BONSAI-APPROVAL-V2 migration needed; canonical encodings unchanged"
+  ]
+}
