@@ -1,0 +1,6 @@
+1. Verify actual received prefixes, views and RD isolation
+2. Independent wire MED update triggers startup-configured import policy
+3. Actual withdrawal and reannouncement; BLUE stays present
+4. Ungraceful exporter loss: real TCP EOF, retained RIB and explicit gap
+5. Recreate only the owned lab; exporter reconnects on a later epoch
+PASS: EOS BMP/RIB lifecycle, live RD isolation, policy update, EOF gap and reconnect

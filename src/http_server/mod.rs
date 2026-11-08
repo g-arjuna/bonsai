@@ -52,6 +52,7 @@ mod ha;
 mod managed_devices;
 mod mcp_routes;
 pub mod ml_jobs;
+mod native_bgp;
 pub(crate) mod nl_query;
 mod observability;
 mod outputs;
@@ -809,7 +810,11 @@ pub struct AppState {
 
 impl AppState {
     pub fn new_minimal(store: Arc<GraphStore>) -> Self {
-        let runtime_dir = "/tmp";
+        Self::new_minimal_with_runtime_dir(store, "/tmp")
+    }
+
+    /// Isolate registry and vault state when embedding a minimal server.
+    pub fn new_minimal_with_runtime_dir(store: Arc<GraphStore>, runtime_dir: &str) -> Self {
         let path = std::path::Path::new(runtime_dir);
         let seed_targets = vec![crate::config::TargetConfig {
             address: "172.100.207.11".to_string(),
@@ -1074,6 +1079,7 @@ pub fn router_from_state(state: AppState) -> Router {
         .merge(ev1_playbook_routes())
         .merge(routing_v1_routes())
         .merge(ownership::routes())
+        .route("/api/routing/v1/native-bgp", post(native_bgp::collect))
         .route("/mcp", post(crate::mcp_server::mcp_handler))
         // Static JS/CSS assets for BonPy (SvelteKit puts them under /_app/)
         .nest_service("/bonpy/_app", bonpy_app_assets)

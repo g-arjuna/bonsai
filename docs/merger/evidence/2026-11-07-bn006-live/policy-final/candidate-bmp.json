@@ -1,0 +1,174 @@
+{
+  "global": [
+    {
+      "afi_safi": "ipv4-unicast",
+      "as_path": "65002",
+      "communities": [],
+      "completeness_state": "complete_for_observed_view",
+      "is_best": true,
+      "llgr_state": "normal",
+      "local_pref": 300,
+      "med": 150,
+      "next_hop": "10.206.0.2",
+      "observation_time": "2026-11-07T14:26:40.716026002Z",
+      "origin": "IGP",
+      "path_id": null,
+      "peer_addr": "10.206.0.2",
+      "peer_as": 65002,
+      "peer_distinguisher": "0:0",
+      "peer_key": {
+        "peer_address": "10.206.0.2",
+        "peer_distinguisher": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "peer_type": "GlobalInstance",
+        "speaker_addr": "172.31.218.11"
+      },
+      "prefix": "10.77.1.0/24",
+      "source": {
+        "collector_id": "default",
+        "exporter_addr": "172.31.218.11",
+        "exporter_id": "172.31.218.11",
+        "exporter_instance": "default",
+        "session_epoch": 3
+      },
+      "speaker_addr": "172.31.218.11",
+      "view": "AdjRibInPostPolicy"
+    },
+    {
+      "afi_safi": "ipv4-unicast",
+      "as_path": "65002",
+      "communities": [],
+      "completeness_state": "complete_for_observed_view",
+      "is_best": true,
+      "llgr_state": "normal",
+      "local_pref": 300,
+      "med": 150,
+      "next_hop": "10.206.0.2",
+      "observation_time": "2026-11-07T14:26:40.729084850Z",
+      "origin": "IGP",
+      "path_id": 1,
+      "peer_addr": "0.0.0.0",
+      "peer_as": 65001,
+      "peer_distinguisher": "0:0",
+      "peer_key": {
+        "peer_address": "0.0.0.0",
+        "peer_distinguisher": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "peer_type": "LocRib",
+        "speaker_addr": "172.31.218.11"
+      },
+      "prefix": "10.77.1.0/24",
+      "source": {
+        "collector_id": "default",
+        "exporter_addr": "172.31.218.11",
+        "exporter_id": "172.31.218.11",
+        "exporter_instance": "default",
+        "session_epoch": 3
+      },
+      "speaker_addr": "172.31.218.11",
+      "view": "LocRib"
+    }
+  ],
+  "blue": [
+    {
+      "afi_safi": "ipv4-unicast",
+      "as_path": "65002",
+      "communities": [],
+      "completeness_state": "complete_for_observed_view",
+      "is_best": true,
+      "llgr_state": "normal",
+      "local_pref": 100,
+      "med": 0,
+      "next_hop": "10.206.1.2",
+      "observation_time": "2026-11-07T14:24:39.545705725Z",
+      "origin": "IGP",
+      "path_id": 2,
+      "peer_addr": "0.0.0.0",
+      "peer_as": 65001,
+      "peer_distinguisher": "65001:100",
+      "peer_key": {
+        "peer_address": "0.0.0.0",
+        "peer_distinguisher": [
+          0,
+          0,
+          253,
+          233,
+          0,
+          0,
+          0,
+          100
+        ],
+        "peer_type": "LocRib",
+        "speaker_addr": "172.31.218.11"
+      },
+      "prefix": "10.77.2.0/24",
+      "source": {
+        "collector_id": "default",
+        "exporter_addr": "172.31.218.11",
+        "exporter_id": "172.31.218.11",
+        "exporter_instance": "default",
+        "session_epoch": 3
+      },
+      "speaker_addr": "172.31.218.11",
+      "view": "LocRib"
+    },
+    {
+      "afi_safi": "ipv4-unicast",
+      "as_path": "65002",
+      "communities": [],
+      "completeness_state": "complete_for_observed_view",
+      "is_best": true,
+      "llgr_state": "normal",
+      "local_pref": 100,
+      "med": 0,
+      "next_hop": "10.206.1.2",
+      "observation_time": "2026-11-07T14:24:45.045155514Z",
+      "origin": "IGP",
+      "path_id": null,
+      "peer_addr": "10.206.1.2",
+      "peer_as": 65002,
+      "peer_distinguisher": "65001:100",
+      "peer_key": {
+        "peer_address": "10.206.1.2",
+        "peer_distinguisher": [
+          0,
+          0,
+          253,
+          233,
+          0,
+          0,
+          0,
+          100
+        ],
+        "peer_type": "RdInstance",
+        "speaker_addr": "172.31.218.11"
+      },
+      "prefix": "10.77.2.0/24",
+      "source": {
+        "collector_id": "default",
+        "exporter_addr": "172.31.218.11",
+        "exporter_id": "172.31.218.11",
+        "exporter_instance": "default",
+        "session_epoch": 3
+      },
+      "speaker_addr": "172.31.218.11",
+      "view": "AdjRibInPostPolicy"
+    }
+  ]
+}

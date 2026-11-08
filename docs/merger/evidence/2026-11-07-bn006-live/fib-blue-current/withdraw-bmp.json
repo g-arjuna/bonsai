@@ -1,0 +1,10 @@
+{
+  "api_version": "v1",
+  "completeness_state": "complete_for_observed_view",
+  "durable_sequence": 106,
+  "next_cursor": null,
+  "receive_time": "2026-11-07T14:33:20.313109441+00:00",
+  "routes": [],
+  "support_status": "supported",
+  "total_matching": 0
+}

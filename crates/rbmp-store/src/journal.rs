@@ -631,6 +631,90 @@ impl RibEventJournal {
         guard.iter().map(|e| e.event_key.sequence).collect()
     }
 
+    /// Whether stored event identities and EOR contexts are covered by raw BMP history.
+    pub async fn events_covered_by(&self, replayed: &[rbmp_rib::event::RibEvent]) -> bool {
+        use rbmp_rib::event::RibEventPayload;
+        let replayed_events: HashMap<_, _> =
+            replayed.iter().map(|e| (e.event_key.sequence, e)).collect();
+        self.events.lock().await.iter().all(|e| {
+            let Some(other) = replayed_events.get(&e.event_key.sequence) else {
+                return false;
+            };
+            if e.id != other.id || e.event_key != other.event_key {
+                return false;
+            }
+            match (&e.payload, &other.payload) {
+                (
+                    RibEventPayload::EndOfRib {
+                        peer_header: a,
+                        afi_safi: x,
+                        ..
+                    },
+                    RibEventPayload::EndOfRib {
+                        peer_header: b,
+                        afi_safi: y,
+                        ..
+                    },
+                ) => a == b && x == y,
+                (RibEventPayload::EndOfRib { .. }, _) | (_, RibEventPayload::EndOfRib { .. }) => {
+                    false
+                }
+                _ => true,
+            }
+        })
+    }
+
+    /// Restore EOR retirement metadata from the authoritative BMP journal without
+    /// changing event IDs, sequence numbers, or the existing event-journal bytes.
+    pub async fn enrich_replayed_eors(&self, replayed: &[rbmp_rib::event::RibEvent]) -> Result<()> {
+        use rbmp_rib::event::RibEventPayload;
+        let mut events = self.events.lock().await;
+        for replay in replayed {
+            let RibEventPayload::EndOfRib {
+                peer_header,
+                afi_safi,
+                retired_routes,
+            } = &replay.payload
+            else {
+                continue;
+            };
+            if retired_routes.is_empty() {
+                continue;
+            }
+            let Ok(index) =
+                events.binary_search_by_key(&replay.event_key.sequence, |e| e.event_key.sequence)
+            else {
+                continue;
+            };
+            let existing = &mut events[index];
+            if existing.id != replay.id || existing.event_key != replay.event_key {
+                return Err(anyhow!(
+                    "event journal conflicts with BMP replay at sequence {}",
+                    replay.event_key.sequence
+                ));
+            }
+            let RibEventPayload::EndOfRib {
+                peer_header: stored_header,
+                afi_safi: stored_family,
+                retired_routes: stored,
+            } = &mut existing.payload
+            else {
+                return Err(anyhow!(
+                    "event journal EOR conflicts with BMP replay at sequence {}",
+                    replay.event_key.sequence
+                ));
+            };
+            if stored_header != peer_header || stored_family != afi_safi {
+                return Err(anyhow!(
+                    "event journal EOR identity conflicts with BMP replay at sequence {}",
+                    replay.event_key.sequence
+                ));
+            }
+            *stored = retired_routes.clone();
+        }
+        Ok(())
+    }
+
     pub async fn latest_seq(&self) -> u64 {
         let guard = self.events.lock().await;
         guard.last().map(|e| e.event_key.sequence).unwrap_or(0)
@@ -704,6 +788,38 @@ impl RibEventJournal {
             .iter()
             .skip(guard.len().saturating_sub(HISTORY_SCAN_LIMIT))
         {
+            if let RibEventPayload::EndOfRib {
+                peer_header,
+                retired_routes,
+                ..
+            } = &ev.payload
+            {
+                for retired in retired_routes {
+                    let rd = retired.route_key.view.peer.distinguisher_string();
+                    if retired.prefix.to_string() != prefix
+                        || speaker_filter.is_some_and(|spk| ev.speaker.to_string() != spk)
+                        || vrf_rd_filter.is_some_and(|filter| rd != filter)
+                    {
+                        continue;
+                    }
+                    let previous = last_attrs_by_route.remove(&retired.route_key).flatten();
+                    items.push(PrefixHistoryItem {
+                        sequence: ev.event_key.sequence,
+                        event_id: ev.id,
+                        occurred_at: ev.occurred_at,
+                        speaker_addr: ev.speaker,
+                        peer_addr: peer_header.peer_address,
+                        peer_as: peer_header.peer_as,
+                        peer_distinguisher: rd,
+                        rib_type: format!("{:?}", retired.route_key.view.rib_type),
+                        action: "retire".to_string(),
+                        prefix: retired.prefix.to_string(),
+                        path_id: retired.route_key.path_id,
+                        before_attributes: previous,
+                        after_attributes: None,
+                    });
+                }
+            }
             if let RibEventPayload::RouteChange(rc) = &ev.payload {
                 let pfx_str = rc.prefix.to_string();
                 if pfx_str != prefix

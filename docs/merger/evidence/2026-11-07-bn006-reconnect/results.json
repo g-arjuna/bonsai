@@ -1,0 +1,61 @@
+{
+  "base_commit": "ffb264e8a515f457efc792d5062b6a97f02c8b81",
+  "captured_at": "2026-11-07T19:27:17.268223+05:30",
+  "working_tree_sha256": {
+    "AGENTS.md": "cdc39a9cb67bc95be3408bf13c2e28c2726b8d2bf75816f51c98e6ba77d41955",
+    "BONSAI_BACKLOG.md": "fcebb14c903d7d0e520bf7606444138e86d559a2b6ddb260bb97b516bb77f1ab",
+    "crates/rbmp-rib/src/event.rs": "bc5a5a6709204d223ebf6d6b27c6bb1436e19d8ac0ac2b7c5c5e8d6af3dc5fe5",
+    "crates/rbmp-rib/src/manager.rs": "625663114b9ff1cb18e912b72c3e84ec720a17e70d86071bbdca685fcc22b24a",
+    "crates/rbmp-rib/src/table.rs": "f593d8308377080ad8fb2ace35cafdff52392a168f6a48e8fddcd073eb1866fc",
+    "crates/rbmp-store/src/journal.rs": "f0cf956e984ec561d93e69649bffb5eb1d86633c02a836767c8a3812fc0b16bc",
+    "crates/rbmp-store/src/writer.rs": "8a3b3664e05f10f73e33fd6edf576c7a4567cd10054986bd16fb71f210c3c44e",
+    "docs/STATUS.md": "b954729685ce8f74e993a5a7a03b073c04c88f5f3c5fad04beafa545d236d6bb",
+    "src/enrichment/mod.rs": "9a74d70a5dbb5da281e7d0e6afacf920e9660c1e07d3ef18743d9ae223de4ede",
+    "src/http_server/mod.rs": "efd2feeb5c7e34f4f2799782043e807265cd7f02980812dc1529215229edf35d",
+    "src/mcp_server.rs": "37af240d51283ec7f443340835445b481f749f0641793f52a0e1665a6a6a4f2c",
+    "src/routing_service/diagnostics.rs": "607441ec5e345338e3be21f65186685fa3fa0e47cdde8cf0c46c6835f3cf6119",
+    "src/routing_service/mod.rs": "9dfa4baed7b327c8cc5b281d35e75ef55d89c2f3624f62ade0caf04e999273a8",
+    "tests/bn005_closeout.rs": "a2716f61d9b0b730e596b64d8fffd4910ba04c4bcee9ec1ac52f2de942218a68",
+    "crates/rbmp-store/tests/bn006_epoch_resync.rs": "7f637f971e5cb43750a8506872672a02214d0305eaa915b243dc146166595407",
+    "docs/merger/BN006_RECONNECT_INVESTIGATION_2026-11-07.md": "1c31920a3dbe184bef11fb84802ebb0eb237bc1a0576b8b223d064a50a26feb7",
+    "scripts/native_bgp_capture.py": "03bf8a6852744b429fdc2a51855f6a679dbb3a825405003c33e296b6176939df",
+    "src/enrichment/native_bgp.rs": "3dc446922dc7a8f869a14f2100ba4f5e947cc6a96af83cad964d5ae26d61297c",
+    "src/http_server/native_bgp.rs": "cf2ec8cf132cf5a7b56256d2c47a29be1e834a2d5b68b4a8f78632a8a53e48b3",
+    "tests/bn006_bmp_live_acceptance.py": "9e48905fd33f72e0ffb918afc17bc348b43010a7b08001e604c597ab9daf6c2f",
+    "tests/bn006_collection_wiring.rs": "180e8f7af4e555a819212206861245d19a166c358c40c669ea30c103a4d76191",
+    "tests/bn006_reconnect_projection.rs": "61be25033603b726151b23b229d1a099a500cb5d4791cb67548bc7fede796487",
+    "tests/fixtures/bn006_eos_4_36/reconnect.journal.jsonl": "d4746fd8e3179f31a28512aa8417f781ae9971b6d02e2b594644ac2586f1fc97",
+    "tests/lab/bn006_bgp_speaker.py": "3c4ae3f2a8ae849c24f7c1c3b12f9b182c3104bd666c8fe3ebd54e8df4fe5cff"
+  },
+  "commands": [
+    {
+      "command": "env RUSTC_WRAPPER= cargo test --locked -p rbmp-core -p rbmp-rib -p rbmp-store",
+      "result": "135 passed; 2 ignored",
+      "log": "imported-crates.log"
+    },
+    {
+      "command": "env RUSTC_WRAPPER= cargo test --locked --test bn006_reconnect_projection --test r01_r04_routing_history_recovery --test r05_r06_runtime_wiring_and_scope",
+      "result": "11 passed",
+      "log": "service-regressions.log"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "passed",
+      "log": "format.log"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "pre_fix": "reproduction-before.txt",
+  "not_executed": [
+    "live EOS or other device acceptance",
+    "duckdb-store feature tests",
+    "full product release and soak gates"
+  ],
+  "limitations": [
+    "legacy journal with stale EOR not covered by replay requires separate review",
+    "optional DuckDB writer does not materialize retired route identities"
+  ]
+}

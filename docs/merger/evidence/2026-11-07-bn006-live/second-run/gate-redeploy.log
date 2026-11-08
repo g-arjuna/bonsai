@@ -1,0 +1,31 @@
+╭────────────────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────────┬─────────┬────────────────╮
+│                  Name                  │                                           Kind/Image                                          │  State  │ IPv4/6 Address │
+├────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────┼─────────┼────────────────┤
+│ clab-bonsai-bn006-live-20261107-eos    │ arista_ceos                                                                                   │ running │ 172.31.218.11  │
+│                                        │ ceos64:4.36.0F                                                                                │         │ N/A            │
+├────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────┼─────────┼────────────────┤
+│ clab-bonsai-bn006-live-20261107-source │ linux                                                                                         │ running │ 172.31.218.12  │
+│                                        │ bonsai-pyats-sidecar:latest                                                                   │         │ N/A            │
+├────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────┼─────────┼────────────────┤
+│ clab-bonsai-bn006-live-20261107-srl    │ nokia_srlinux                                                                                 │ running │ 172.31.218.13  │
+│                                        │ ghcr.io/nokia/srlinux@sha256:ad3d4a533674cf2e2e7321fef38806a6c66e3d56a3e8693c45fc2b4206078dd6 │         │ N/A            │
+╰────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────┴─────────┴────────────────╯
+19:51:53 INFO Containerlab started version=0.82.0
+19:51:53 INFO Parsing & checking topology file=topology.clab.yml
+19:51:53 INFO Creating docker network name=bonsai-bn006-live-20261107 IPv4 subnet=172.31.218.0/24 IPv6 subnet="" MTU=0
+19:51:53 INFO Creating lab directory path=/tmp/bonsai-bn006-live-20261107/clab-bonsai-bn006-live-20261107
+19:51:53 INFO Creating container name=source
+19:51:53 INFO Creating container name=eos
+19:51:53 INFO Creating container name=srl
+19:51:53 INFO Running postdeploy actions kind=nokia_srlinux node=srl
+19:51:53 INFO Created link: eos:eth1 ▪┄┄▪ source:eth1
+19:51:53 INFO Created link: eos:eth2 ▪┄┄▪ source:eth2
+19:51:53 INFO Running postdeploy actions for Arista cEOS 'eos' node
+19:51:53 INFO Created link: srl:e1-1 ▪┄┄▪ source:eth3
+19:52:25 INFO Adding host entries path=/etc/hosts
+19:52:25 INFO Adding SSH config for nodes path=/etc/ssh/ssh_config.d/clab-bonsai-bn006-live-20261107.conf
+19:52:25 INFO containerlab version
+  🎉=
+  │ A newer containerlab version (0.83.0) is available!
+  │ Release notes: https://containerlab.dev/rn/0.83/
+  │ Run 'clab version upgrade' or see https://containerlab.dev/install/ for other installation options.

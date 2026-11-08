@@ -1,0 +1,9 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 12.39s
+     Running tests/bn006_reconnect_projection.rs (target/debug/deps/bn006_reconnect_projection-46586222c77bed3e)
+
+running 2 tests
+test remote_projector_rejects_service_without_retirement_semantics ... ok
+test legacy_journal_and_checkpoint_rebuild_without_changing_sequences ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.21s

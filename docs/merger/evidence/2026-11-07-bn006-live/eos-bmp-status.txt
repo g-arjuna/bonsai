@@ -1,0 +1,31 @@
+BGP Monitoring status: enabled
+BMP Timestamp mode: send-time
+BGP received route monitoring status:
+  All VRFs monitoring: enabled
+  Address families monitored: IPv4 Unicast, IPv6 Unicast
+BGP rib bestpaths monitoring status:
+  All VRFs monitoring: enabled
+  Address families monitored: IPv4 Unicast, IPv6 Unicast
+BGP advertised route monitoring status:
+  Address families monitored: none
+All stations export status (can be overridden by per-station settings):
+  BGP received route pre-policy export: disabled
+  BGP received route post-policy export: enabled
+  BGP rib bestpaths export: enabled
+
+Station - bonsai
+  BGP received route export:
+    Pre-policy export: disabled
+    Post-policy export: enabled
+  BGP rib bestpaths export:
+    Export status: enabled
+  BGP advertised route export:
+    Export status: disabled
+  Connection mode: active
+  VRF: default
+  Address: 172.31.218.1
+  Port: 19019
+  Connection: connected
+  State: up
+  Uptime: 00:02:21
+  Station flap count: 1

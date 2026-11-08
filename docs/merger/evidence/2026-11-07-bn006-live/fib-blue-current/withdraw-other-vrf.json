@@ -1,0 +1,95 @@
+{
+  "api_version": "v1",
+  "completeness_state": "complete_for_observed_view",
+  "durable_sequence": 106,
+  "next_cursor": null,
+  "receive_time": "2026-11-07T14:33:20.313708805+00:00",
+  "routes": [
+    {
+      "afi_safi": "ipv4-unicast",
+      "as_path": "65002",
+      "communities": [],
+      "completeness_state": "complete_for_observed_view",
+      "is_best": true,
+      "llgr_state": "normal",
+      "local_pref": 100,
+      "med": 0,
+      "next_hop": "10.206.0.2",
+      "observation_time": "2026-11-07T14:33:13.365443630Z",
+      "origin": "IGP",
+      "path_id": null,
+      "peer_addr": "10.206.0.2",
+      "peer_as": 65002,
+      "peer_distinguisher": "0:0",
+      "peer_key": {
+        "peer_address": "10.206.0.2",
+        "peer_distinguisher": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "peer_type": "GlobalInstance",
+        "speaker_addr": "172.31.218.11"
+      },
+      "prefix": "10.77.1.0/24",
+      "source": {
+        "collector_id": "default",
+        "exporter_addr": "172.31.218.11",
+        "exporter_id": "172.31.218.11",
+        "exporter_instance": "default",
+        "session_epoch": 4
+      },
+      "speaker_addr": "172.31.218.11",
+      "view": "AdjRibInPostPolicy"
+    },
+    {
+      "afi_safi": "ipv4-unicast",
+      "as_path": "65002",
+      "communities": [],
+      "completeness_state": "complete_for_observed_view",
+      "is_best": true,
+      "llgr_state": "normal",
+      "local_pref": 100,
+      "med": 0,
+      "next_hop": "10.206.0.2",
+      "observation_time": "2026-11-07T14:33:13.445191248Z",
+      "origin": "IGP",
+      "path_id": 3,
+      "peer_addr": "0.0.0.0",
+      "peer_as": 65001,
+      "peer_distinguisher": "0:0",
+      "peer_key": {
+        "peer_address": "0.0.0.0",
+        "peer_distinguisher": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "peer_type": "LocRib",
+        "speaker_addr": "172.31.218.11"
+      },
+      "prefix": "10.77.1.0/24",
+      "source": {
+        "collector_id": "default",
+        "exporter_addr": "172.31.218.11",
+        "exporter_id": "172.31.218.11",
+        "exporter_instance": "default",
+        "session_epoch": 4
+      },
+      "speaker_addr": "172.31.218.11",
+      "view": "LocRib"
+    }
+  ],
+  "support_status": "supported",
+  "total_matching": 2
+}

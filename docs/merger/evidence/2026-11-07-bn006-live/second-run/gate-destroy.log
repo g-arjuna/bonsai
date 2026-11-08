@@ -1,0 +1,210 @@
+19:51:52 INFO Parsing & checking topology file=topology.clab.yml
+19:51:52 INFO Parsing & checking topology file=topology.clab.yml
+19:51:52 INFO Destroying lab name=bonsai-bn006-live-20261107
+19:51:52 ERRO container "clab-bonsai-bn006-live-20261107-eos" exited; container output:
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+[ 5652.172472] Aaa.sh[775]: Completing EOS initialization: [  OK  ]
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;32m  OK  [0m] Finished [0;1;39mEOS Warmup Service[0m.
+         Starting [0;1;39mThis init script starts t… system and hardware properties.[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[ 5652.436386] EosStage3[1886]: Model and Serial Number: unknown
+[ 5652.436519] EosStage3[1886]: System RAM: 48951968 kB
+[ 5652.436636] EosStage3[1886]: Flash Memory size:  468G
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Finished [0;1;39mThis init script starts t…in system and hardware properties.[0m.
+[[0;32m  OK  [0m] Reached target [0;1;39mMulti-User System[0m.
+[[0;32m  OK  [0m] Reached target [0;1;39mGraphical Interface[0m.
+[[0;32m  OK  [0m] Started [0;1;39mService to capture snapshot of systemd journal at boot[0m.
+         Starting [0;1;39mRecord Runlevel Change in UTMP[0m...
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;32m  OK  [0m] Finished [0;1;39mRecord Runlevel Change in UTMP[0m.
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+19:51:52 ERRO container "clab-bonsai-bn006-live-20261107-eos" exited; container output:
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+[ 5652.172472] Aaa.sh[775]: Completing EOS initialization: [  OK  ]
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;32m  OK  [0m] Finished [0;1;39mEOS Warmup Service[0m.
+         Starting [0;1;39mThis init script starts t… system and hardware properties.[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[ 5652.436386] EosStage3[1886]: Model and Serial Number: unknown
+[ 5652.436519] EosStage3[1886]: System RAM: 48951968 kB
+[ 5652.436636] EosStage3[1886]: Flash Memory size:  468G
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+[[0;32m  OK  [0m] Finished [0;1;39mThis init script starts t…in system and hardware properties.[0m.
+[[0;32m  OK  [0m] Reached target [0;1;39mMulti-User System[0m.
+[[0;32m  OK  [0m] Reached target [0;1;39mGraphical Interface[0m.
+[[0;32m  OK  [0m] Started [0;1;39mService to capture snapshot of systemd journal at boot[0m.
+         Starting [0;1;39mRecord Runlevel Change in UTMP[0m...
+[[0;32m  OK  [0m] Stopped [0;1;39mSystem Logging Service[0m.
+         Starting [0;1;39mSystem Logging Service[0m...
+[[0;32m  OK  [0m] Finished [0;1;39mRecord Runlevel Change in UTMP[0m.
+[[0;1;31mFAILED[0m] Failed to start [0;1;39mSystem Logging Service[0m.
+See 'systemctl status rsyslog.service' for details.
+19:51:52 INFO Removed container name=clab-bonsai-bn006-live-20261107-eos
+19:51:52 INFO Removed container name=clab-bonsai-bn006-live-20261107-source
+19:51:52 INFO Removed container name=clab-bonsai-bn006-live-20261107-srl
+19:51:52 INFO Removing host entries path=/etc/hosts
+19:51:52 INFO Removing SSH config path=/etc/ssh/ssh_config.d/clab-bonsai-bn006-live-20261107.conf

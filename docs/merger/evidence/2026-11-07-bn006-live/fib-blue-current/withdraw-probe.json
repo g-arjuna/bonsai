@@ -1,0 +1,8 @@
+{
+  "forwarded": false,
+  "expected": "absent",
+  "instance": "blue",
+  "destination": "10.77.2.123",
+  "sent_frame_hex": "aac1ab611099aac1abd5a77e08004500003daa0100004011b8170ace01020a4d027bb041b04200290000626f6e7361692d626e3030362d6669622d4d8607212abec8f1e12c0ec6cff4c491",
+  "received_frame_hex": null
+}

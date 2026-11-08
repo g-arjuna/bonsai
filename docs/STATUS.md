@@ -1,6 +1,12 @@
 # Bonsai current state
 
-Updated: 30 October 2026 (Asia/Kolkata). Base Git commit: `e4d8c44`.
+8 November repository review: BN-006 bounded live acceptance is complete;
+the detailed snapshot below is the 30 October baseline. BN-006 code and fixtures
+remain uncommitted. The EOS reconnect replay regression is fixed, including legacy
+event and checkpoint recovery. Live EOS lifecycle, offline policy update, virtual FIB,
+and SR Linux native collection evidence is in [BN-006 evidence](merger/evidence/2026-11-07-bn006-live/README.md).
+
+Baseline snapshot: 30 October 2026 (Asia/Kolkata). Base Git commit: `e4d8c44`.
 The BN-001–005 implementation is uncommitted working-tree code. Source hashes
 and fresh results identify exactly what this review inspected.
 
@@ -26,7 +32,7 @@ capture only, not fresh FRR/browser or full second-NOS route acceptance.
 | Routing history R01–R04 | 7 current regressions pass | Production scale/fault/soak remains release work |
 | Wiring/scope R05–R06 / BN-004 | 2 wiring/scope regressions pass; provider clients have mock integration coverage | BN-004 real model comparison pending; mock scenario token/cost/conclusion is not model evidence; deployment/query scope under BN-005 |
 | BN-005 Partial — temporary exception | Prior strict closure and current strict-mode regression assertions remain; default `audit_only` now relaxes tenant/unsupported-VRF denials at user request. Mappings persist; admin policy endpoint can restore strict denials | Tenant isolation is not enforced in compatibility mode. Authentication, roles, speaker and supported RD restrictions remain. See [policy contract](architecture/ownership_mapping.md) |
-| BN-006 Partial | Pinned SR Linux 26.3.1 pair reached established eBGP; exact native/version captures, separate CLI summary, source/VRF/family-aware native adapter and flat-parser missing-field/version/ASN fixes | Default-instance IPv4 CLI only, zero routes. Automatic tool wiring, real prefixes/policy, BMP/RIB lifecycle and genuine VRF/RD/FIB acceptance remain |
+| BN-006 Complete (bounded live profile) | EOS 4.36.0F BMP lifecycle and offline startup-policy change across default and BLUE/RD 65001:100; cEOS software-FIB route/withdrawal probes; live SR Linux 26.3.1 collection through operator API and MCP; reconnect replay regression | No periodic scheduler, physical ASIC claim, IPv6, extra release/vendor coverage, or DuckDB EOR retirement parity. See [evidence and support limits](merger/evidence/2026-11-07-bn006-live/README.md) |
 | ML/research | Metrics/alignment/prototype smoke evidence remains | Trained held-out models, actual forecasting/provider comparisons remain separate gates |
 | Release hygiene | Format, strict selected-core Clippy and UI build pass | UI warnings and full-product release gates remain |
 
@@ -44,9 +50,9 @@ block access. Speaker and supported routing RD filters remain. This default is
 not a tenant isolation guarantee. Use the admin policy API to restore `strict`.
 The original closeout manifest identifies its earlier tested source snapshot.
 
-**Next action:** Continue BN-006 with automatic native collection/tool wiring and a real second-NOS BMP/RIB route lifecycle. BN-001/002 operational gates,
-BN-003 genuine router VRF/deployed browser-graph parity, and BN-004 real provider
-evaluation remain open. Operational device writes remain disabled.
+**Next action:** BN-001 phase-specific crash recovery and interrupted-work
+reconciliation. BN-002 operational gates, BN-003 genuine router VRF/deployed
+browser-graph parity, and BN-004 real provider evaluation remain open. Operational device writes remain disabled.
 
 Ownership mapping follow-up (BN-015): explicit device and exporter/RD → tenant
 bindings persist in the graph, with admin assignment/list/audit endpoints. Missing
@@ -65,3 +71,9 @@ mapping/regression tests plus 3 compatibility tests). Strict acceptance fixtures
 retain all original assertions; separate tests verify the requested relaxation,
 retained speaker/RD/role constraints and persisted admin restore switch.
 [Current evidence](merger/evidence/2026-10-15-ownership-compatibility/results.json).
+
+
+8 November BN-006 closeout: the live evidence validates only the bounded support
+profile in the linked report. Native collection is operator-triggered; no scheduled
+polling is present. The test used isolated task-owned cEOS/SR Linux nodes and made
+no live configuration writes. BN-007 still owns the optional DuckDB EOR lifecycle gap.

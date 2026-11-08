@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use rbmp_core::bgp::types::{LlgrState, PathAttributes, Prefix};
+use rbmp_core::bgp::types::{AfiSafi, LlgrState, PathAttributes, Prefix};
 use rbmp_core::bmp::types::{RibType, TableRouteKey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -21,6 +21,9 @@ pub struct RibEntry {
     pub llgr_state: LlgrState,
     /// Wall-clock time at which this route was marked stale (set by LLGR timer)
     pub stale_at: Option<DateTime<Utc>>,
+    /// BMP session in which this path was last observed.
+    #[serde(default)]
+    pub session_epoch: u64,
 }
 
 /// Per-peer, per-RIB-type route table keyed by typed `TableRouteKey` (`CanonicalNlri` + `path_id`).
@@ -139,6 +142,32 @@ impl RibTable {
     /// Clear all routes for this peer entirely
     pub fn clear_all(&mut self) {
         self.tables.clear();
+    }
+
+    pub fn retire_older_epoch(
+        &mut self,
+        rib: RibType,
+        family: AfiSafi,
+        epoch: u64,
+    ) -> Vec<RibEntry> {
+        let Some(table) = self.tables.get_mut(&rib) else {
+            return Vec::new();
+        };
+        let mut keys: Vec<_> = table
+            .iter()
+            .filter(|(_, entry)| entry.prefix.afi_safi() == family && entry.session_epoch < epoch)
+            .map(|(key, _)| key.clone())
+            .collect();
+        keys.sort();
+        let removed: Vec<_> = keys
+            .into_iter()
+            .filter_map(|key| table.remove(&key))
+            .collect();
+        let prefixes: Vec<_> = removed.iter().map(|entry| entry.prefix.clone()).collect();
+        for prefix in prefixes {
+            self.recompute_best_path(rib, &prefix);
+        }
+        removed
     }
 
     pub fn rib_counts(&self) -> HashMap<RibType, usize> {

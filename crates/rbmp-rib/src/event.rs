@@ -56,7 +56,16 @@ pub enum RibEventPayload {
     EndOfRib {
         peer_header: PeerHeader,
         afi_safi: String,
+        /// Paths absent from this completed snapshot, not BGP withdrawals.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        retired_routes: Vec<RetiredRoute>,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetiredRoute {
+    pub route_key: RouteKey,
+    pub prefix: Prefix,
 }
 
 /// A single route change event

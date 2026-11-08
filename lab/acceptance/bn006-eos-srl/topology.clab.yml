@@ -1,0 +1,27 @@
+name: bonsai-bn006-live-20261107
+mgmt:
+  network: bonsai-bn006-live-20261107
+  ipv4-subnet: 172.31.218.0/24
+topology:
+  nodes:
+    eos:
+      kind: arista_ceos
+      image: ceos64:4.36.0F
+      mgmt-ipv4: 172.31.218.11
+      startup-config: eos.cfg
+    source:
+      kind: linux
+      image: bonsai-pyats-sidecar:latest
+      mgmt-ipv4: 172.31.218.12
+      cmd: sleep infinity
+      binds:
+        - bn006_bgp_speaker.py:/bn006_bgp_speaker.py:ro
+    srl:
+      kind: nokia_srlinux
+      image: ghcr.io/nokia/srlinux@sha256:ad3d4a533674cf2e2e7321fef38806a6c66e3d56a3e8693c45fc2b4206078dd6
+      mgmt-ipv4: 172.31.218.13
+      startup-config: srl.cfg
+  links:
+    - endpoints: ["eos:eth1", "source:eth1"]
+    - endpoints: ["eos:eth2", "source:eth2"]
+    - endpoints: ["srl:e1-1", "source:eth3"]

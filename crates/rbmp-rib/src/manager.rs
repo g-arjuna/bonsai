@@ -1,4 +1,6 @@
-use crate::event::{RibEvent, RibEventPayload, RibEventPayload::*, RouteAction, RouteChange};
+use crate::event::{
+    RetiredRoute, RibEvent, RibEventPayload, RibEventPayload::*, RouteAction, RouteChange,
+};
 use crate::filter::{FilterEngine, FilterVerdict};
 use crate::roto_ctx::RouteCtx as RotoCtx;
 use crate::roto_filter::RotoFilterEngine;
@@ -169,6 +171,9 @@ impl RibManager {
         let now = msg.received_at;
         let mut emitted = Vec::new();
 
+        let stale_epoch = session_epoch
+            .zip(self.speakers.get(&speaker).map(|s| s.source.session_epoch))
+            .is_some_and(|(incoming, active)| incoming < active);
         if matches!(msg.payload, BmpPayload::Termination { .. }) {
             if let (Some(incoming_epoch), Some(active_sess)) =
                 (session_epoch, self.speakers.get(&speaker))
@@ -358,6 +363,35 @@ impl RibManager {
 
                 // Check for End-of-RIB (RFC 4724 §2)
                 if let Some(eor_family) = update.eor_afi_safi() {
+                    if stale_epoch {
+                        // Older versions emitted one EOR event here. Reserve its
+                        // sequence so replay cannot renumber later durable events.
+                        self.next_event_seq += 1;
+                        return emitted;
+                    }
+                    let retired_routes = self
+                        .ribs
+                        .get_mut(&peer_key)
+                        .map(|rib| {
+                            rib.retire_older_epoch(rib_type, eor_family, source.session_epoch)
+                        })
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|entry| RetiredRoute {
+                            route_key: RouteKey {
+                                view: ViewKey::from_peer(
+                                    peer_key,
+                                    eor_family,
+                                    rib_type,
+                                    peer_header.peer_flags,
+                                ),
+                                nlri: CanonicalNlri::from_prefix(&entry.prefix),
+                                path_id: entry.path_id,
+                            },
+                            prefix: entry.prefix,
+                        })
+                        .collect();
+                    self.sync_peer_route_counts(&peer_key);
                     if let Some(speaker_sess) = self.speakers.get_mut(&speaker) {
                         if let Some(peer) = speaker_sess.peers.get_mut(&peer_key) {
                             peer.mark_eor(rib_type, eor_family);
@@ -373,6 +407,7 @@ impl RibManager {
                         EndOfRib {
                             peer_header,
                             afi_safi,
+                            retired_routes,
                         },
                         &mut emitted,
                     );
@@ -462,6 +497,7 @@ impl RibManager {
                         is_best: true,
                         llgr_state: rbmp_core::bgp::types::LlgrState::Normal,
                         stale_at: None,
+                        session_epoch: source.session_epoch,
                     };
                     {
                         let rib = self.ribs.entry(peer_key).or_default();
@@ -702,6 +738,96 @@ mod tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn reconnect_eor_only_retires_unrefreshed_paths_in_its_view_and_family() {
+        let (mut mgr, _) = RibManager::new(128);
+        let speaker: IpAddr = "10.0.0.1".parse().unwrap();
+        let peer: IpAddr = "192.0.2.1".parse().unwrap();
+        let hdr = peer_hdr(
+            peer,
+            PeerType::GlobalInstance,
+            [0; 8],
+            RibType::AdjRibInPrePolicy,
+        );
+        let mut other_view = hdr.clone();
+        other_view.rib_type = RibType::AdjRibInPostPolicy;
+        let mut other_rd = hdr.clone();
+        other_rd.peer_distinguisher[7] = 1;
+        let v4 = Prefix::V4("203.0.113.0/24".parse().unwrap());
+        let v6 = Prefix::V6("2001:db8::/32".parse().unwrap());
+        let old = mgr.open_speaker_session(speaker, Utc::now());
+        for (header, prefix, id) in [
+            (&hdr, &v4, 1),
+            (&hdr, &v4, 2),
+            (&hdr, &v6, 3),
+            (&other_view, &v4, 4),
+            (&other_rd, &v4, 5),
+        ] {
+            mgr.process_for_epoch(
+                route_announce_msg(speaker, header.clone(), prefix.clone(), Some(id), 100),
+                Some(old),
+            );
+        }
+        let new = mgr.open_speaker_session(speaker, Utc::now());
+        mgr.process_for_epoch(
+            route_announce_msg(speaker, hdr.clone(), v4.clone(), Some(2), 200),
+            Some(new),
+        );
+        assert_eq!(
+            mgr.total_routes(),
+            5,
+            "reconnect alone must retain old routes"
+        );
+        let eor = BmpMessage {
+            id: uuid::Uuid::new_v4(),
+            received_at: Utc::now(),
+            speaker_addr: speaker,
+            payload: BmpPayload::RouteMonitoring {
+                peer_header: hdr.clone(),
+                update: BgpUpdate {
+                    withdrawn: vec![],
+                    withdrawn_path_ids: vec![],
+                    attributes: PathAttributes::default(),
+                    announced: vec![],
+                    announced_path_ids: vec![],
+                },
+            },
+        };
+        let reserved_sequence = mgr.next_event_seq;
+        let stale = mgr.process_for_epoch(eor.clone(), Some(old));
+        assert!(
+            stale.is_empty(),
+            "stale EOR must not claim current synchronization"
+        );
+        assert_eq!(mgr.next_event_seq, reserved_sequence + 1);
+        assert_eq!(
+            mgr.total_routes(),
+            5,
+            "stale EOR must not retire new snapshot state"
+        );
+        let events = mgr.process_for_epoch(eor, Some(new));
+        assert_eq!(events[0].event_key.sequence, reserved_sequence + 1);
+        assert_eq!(mgr.total_routes(), 4);
+        assert!(
+            matches!(&events[0].payload, RibEventPayload::EndOfRib { retired_routes, .. } if retired_routes.len() == 1 && retired_routes[0].route_key.path_id == Some(1))
+        );
+        let rib = mgr
+            .rib_for_peer_key(&PeerKey::from_header(speaker, &hdr))
+            .unwrap();
+        assert!(rib.get_with_path_id(hdr.rib_type, &v4, Some(2)).is_some());
+        assert!(rib.get_with_path_id(hdr.rib_type, &v6, Some(3)).is_some());
+        assert!(
+            rib.get_with_path_id(other_view.rib_type, &v4, Some(4))
+                .is_some()
+        );
+        assert!(
+            mgr.rib_for_peer_key(&PeerKey::from_header(speaker, &other_rd))
+                .unwrap()
+                .get_with_path_id(hdr.rib_type, &v4, Some(5))
+                .is_some()
+        );
     }
 
     #[test]

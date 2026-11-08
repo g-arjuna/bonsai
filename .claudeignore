@@ -22,3 +22,14 @@ __pycache__/
 
 # Generated protobuf — Claude should work from .proto, not generated output
 src/proto/generated/
+
+# Superseded root planning document — use BONSAI_BACKLOG.md and docs/STATUS.md
+/BONSAI_CONSOLIDATED_BACKLOG_DV4.md
+
+# Frontend dependencies and generated build output
+ui/node_modules/
+ui/dist/
+ui/.svelte-kit/
+ui-bonpy/node_modules/
+ui-bonpy/dist/
+ui-bonpy/.svelte-kit/

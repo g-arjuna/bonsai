@@ -1,0 +1,22 @@
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai)
+    Finished `test` profile [optimized + debuginfo] target(s) in 9m 11s
+     Running tests/bn006_collection_wiring.rs (target/debug/deps/bn006_collection_wiring-bf19887e2c4e032a)
+
+running 2 tests
+test live_native_collection_enters_operator_api_and_mcp ... ignored, explicit dedicated Containerlab SR Linux and pinned host-key file required
+test native_tool_reads_persisted_evidence_with_scope_and_truthful_freshness ... ok
+
+test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.92s
+
+     Running tests/bn006_native_nos_adapter.rs (target/debug/deps/bn006_native_nos_adapter-f55ebcc8d1c83704)
+
+running 7 tests
+test bn006_absent_version_is_unknown_not_assumed_24_7 ... ok
+test bn006_incomplete_flat_records_are_not_reported_complete ... ok
+test bn006_peer_as_overflow_is_not_wrapped_to_zero ... ok
+test bn006_live_native_capture_preserves_source_vrf_family_and_state ... ok
+test bn006_missing_native_metrics_and_overflow_remain_unknown ... ok
+test bn006_native_identity_policy_and_family_projection_do_not_collapse_context ... ok
+test bn006_native_empty_schema_mismatch_and_input_bounds_are_distinct ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

@@ -273,6 +273,7 @@ impl ObservationEnvelope {
                 RibEventPayload::EndOfRib {
                     peer_header,
                     afi_safi,
+                    ..
                 } => {
                     let pk = PeerKey::from_header(ev.speaker, peer_header);
                     let vrf_rd = pk.distinguisher_string();
@@ -993,6 +994,8 @@ pub struct CompareSnapshotsQuery {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct SnapshotRouteRecord {
+    #[serde(skip)]
+    peer_type: u8,
     speaker_addr: String,
     vrf_rd: String,
     peer_addr: String,
@@ -1015,6 +1018,18 @@ pub async fn build_compare_snapshots_json(
     let before_seq = q.before_seq.unwrap_or(0);
     let after_seq = q.after_seq.unwrap_or(latest_seq);
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
+
+    if !state.projection_semantics_ready {
+        return json!({
+            "api_version": ROUTING_API_VERSION,
+            "durable_sequence": latest_seq,
+            "status": "partial",
+            "history_coverage": "partial",
+            "reason": "BMP history does not cover stored events needed for snapshot retirement",
+            "added_routes": [], "removed_routes": [], "modified_routes": [],
+            "before_seq": before_seq, "after_seq": after_seq,
+        });
+    }
 
     let mut window = state
         .event_journal
@@ -1050,6 +1065,22 @@ pub async fn build_compare_snapshots_json(
                 }
             }
             match &ev.payload {
+                RibEventPayload::EndOfRib { retired_routes, .. } => {
+                    for retired in retired_routes {
+                        let peer = retired.route_key.view.peer;
+                        let key = format!(
+                            "{}|{}|{}|{}|{:?}|{}|{:?}",
+                            peer.speaker_addr,
+                            peer.peer_type as u8,
+                            peer.distinguisher_string(),
+                            peer.peer_address,
+                            retired.route_key.view.rib_type,
+                            retired.prefix,
+                            retired.route_key.path_id
+                        );
+                        table.remove(&key);
+                    }
+                }
                 RibEventPayload::PeerDown { peer_header, .. } => {
                     let pk = PeerKey::from_header(ev.speaker, peer_header);
                     let vrf_rd = pk.distinguisher_string();
@@ -1062,6 +1093,7 @@ pub async fn build_compare_snapshots_json(
                     let spk_str = ev.speaker.to_string();
                     table.retain(|_, v| {
                         !(v.speaker_addr == spk_str
+                            && v.peer_type == peer_header.peer_type as u8
                             && v.vrf_rd == vrf_rd
                             && v.peer_addr == peer_str)
                     });
@@ -1083,8 +1115,8 @@ pub async fn build_compare_snapshots_json(
                     let peer_str = rc.peer_header.peer_address.to_string();
                     let spk_str = ev.speaker.to_string();
                     let key = format!(
-                        "{spk_str}|{vrf_rd}|{peer_str}|{view_str}|{pfx_str}|{:?}",
-                        rc.path_id
+                        "{spk_str}|{}|{vrf_rd}|{peer_str}|{view_str}|{pfx_str}|{:?}",
+                        rc.peer_key.peer_type as u8, rc.path_id
                     );
                     let obs_id = format!("obs-bmp-seq-{seq}-{}", ev.id);
                     match rc.action {
@@ -1093,6 +1125,7 @@ pub async fn build_compare_snapshots_json(
                             table.insert(
                                 key,
                                 SnapshotRouteRecord {
+                                    peer_type: rc.peer_key.peer_type as u8,
                                     speaker_addr: spk_str,
                                     vrf_rd,
                                     peer_addr: peer_str,

@@ -341,6 +341,7 @@ fn persist_one(conn: &duckdb::Connection, ev: &RibEvent) -> Result<()> {
         RibEventPayload::EndOfRib {
             peer_header,
             afi_safi,
+            ..
         } => {
             conn.execute(
                 "INSERT INTO peer_events (
@@ -573,6 +574,7 @@ mod tests {
             RibEventPayload::EndOfRib {
                 peer_header: sample_peer_header(),
                 afi_safi: "ipv6-unicast".to_string(),
+                retired_routes: vec![],
             },
         );
         let written = flush_batch(&store, &[eor]).expect("flush_batch must succeed");

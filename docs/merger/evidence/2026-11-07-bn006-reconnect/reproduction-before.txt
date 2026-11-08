@@ -1,0 +1,6 @@
+Pre-fix observation, transcribed from this session's command output.
+Command: env RUSTC_WRAPPER= cargo test --locked -p rbmp-store --test bn006_epoch_resync
+Base: ffb264e plus the uncommitted regression and fixture hashes in the investigation.
+Result: FAILED; expected 4, observed 5.
+Assertion: two real VRFs x post-policy/Loc-RIB: old epoch path IDs must not survive a complete new snapshot.
+No ignored test is counted as a pass.

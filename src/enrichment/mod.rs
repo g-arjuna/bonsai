@@ -11,6 +11,7 @@
 
 pub mod factory;
 pub mod multi_source;
+pub mod native_bgp;
 pub mod netbox;
 pub mod parser_chain_enricher;
 pub mod registry;

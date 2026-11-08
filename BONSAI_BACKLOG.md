@@ -1,14 +1,14 @@
 # Bonsai backlog
 
-Updated: 30 October 2026. **This is the only active product backlog.**
-Current state: [docs/STATUS.md](docs/STATUS.md). Latest review: [30 October state and BN-006 slice](docs/merger/CURRENT_STATE_REVIEW_2026-10-30.md). Earlier claim validation:
+Updated: 8 November 2026. **This is the only active product backlog.**
+Current state: [docs/STATUS.md](docs/STATUS.md). Latest review: [BN-006 live acceptance](docs/merger/evidence/2026-11-07-bn006-live/README.md). Earlier claim validation:
 [BN-005 implementation closeout](docs/merger/BN005_IMPLEMENTATION_CLOSEOUT_2026-10-15.md).
 
 Bonsai owns UI, inventory, configuration and authentication. RustyBMP contributes
 protocol, RIB and history libraries, not a second product/control plane. The
 current result is an integrated development prototype with a live FRR backend
-gate; live FRR browser journeys pass, while actual router VRF browser acceptance, a
-second-NOS live gate, trained model evaluation and an operational shadow pilot remain.
+gate; live FRR browser journeys pass, while actual router VRF browser
+acceptance, trained model evaluation and an operational shadow pilot remain.
 
 ## Working rules
 
@@ -27,14 +27,24 @@ second-NOS live gate, trained model evaluation and an operational shadow pilot r
 | BN-003 | P1 Partial | Native cookie login and revoked-token replay are exercised. 12 browser journeys pass cleanly; reconnect completeness is synchronized and verified. The fresh live capture has zero exact synthetic-fixture frame matches (capture-provenance.json). BN-005 independently verifies actual routing-process restart and named-volume container replacement. Genuine router VRF export and a deployed browser/graph restart journey remain open. | B08–B14, B17–B19, R05–R07; verified in tests/bn003_live_routing_browser_acceptance.rs |
 | BN-004 | P1 Partial | Production provider clients and investigation runtime have mock HTTP/trait integration coverage. Held-out policy benchmark uses ScenarioMockProvider with hardcoded conclusion/token/cost values. Real hosted/local model execution and actual cost/quality comparison remain pending; retain existing wiring tests. | A03–A12, R05–R08; six mock wiring tests pass in the BN-005 closeout; real model evidence still pending |
 | BN-005 | P0 Partial (temporary exception) | Strict-mode closure remains regression-tested. User-requested default `audit_only` temporarily relaxes tenant and unsupported-VRF denials while retaining authentication, roles, speaker restrictions and supported RD filters. Admin policy API restores `strict`; no automatic expiry. Ownership mappings persist but do not enforce isolation. Default-mode tenant isolation is deliberately not certified. | R06, B11–B13, D4-3; [policy contract](docs/architecture/ownership_mapping.md); prior strict closeout is historical evidence |
-| BN-006 | P1 Partial | First native slice: pinned live SR Linux 26.3.1 pair, independently observed established eBGP, exact native CLI/version captures, bounded source/VRF/family-aware native projection and flat-parser truthfulness fixes. Adapter remains a library boundary. Pending: automatic collection/tool wiring, actual advertised test prefixes and policy changes, BMP/RIB lifecycle parity, genuine VRF/RD acceptance, and separately proven FIB claims. | A13, B07, B17–B18, R07; [30 October review](docs/merger/CURRENT_STATE_REVIEW_2026-10-30.md) and native evidence |
+| BN-006 | P1 Complete (bounded live profile) | Verified EOS 4.36.0F BMP/RIB lifecycle and offline startup-policy change across default and BLUE/RD 65001:100 IPv4 views; actual cEOS software-FIB forwarding/withdrawal probes; live SR Linux 26.3.1 native collection through operator API and MCP. Scope and limits are in the [support/evidence report](docs/merger/evidence/2026-11-07-bn006-live/README.md). | A13, B07, B17–B18, R07; live evidence under `docs/merger/evidence/2026-11-07-bn006-live/` |
 | BN-007 | P1 Partial | Close merger/release audit: inventory legacy BMP/RIB/store/API/config paths, identify duplicate authority, preserve migration backups and test rollback; document imported baseline and Bonsai-only fixes/upstream disposition; run imported-crate tests and declared CI/release gates, validate licenses/provenance and install/upgrade. Retire legacy code only after equivalent acceptance. | B00–B20, R10, D3-1/10, D4-11/19/22/23 |
 
-**Next planned item: BN-006, second-NOS live acceptance.** BN-005 has an explicit
-temporary ownership-access exception. Its strict profile was verified in the [closeout report](docs/merger/BN005_IMPLEMENTATION_CLOSEOUT_2026-10-15.md).
+**Next planned item: BN-001, phase-specific crash recovery.**
+
+BN-005 has an explicit temporary ownership-access exception. Its strict profile was verified in the [closeout report](docs/merger/BN005_IMPLEMENTATION_CLOSEOUT_2026-10-15.md).
 Its [evidence manifest](docs/merger/evidence/2026-10-15-bn005-implementation/results.json)
 records the base commit and exact working-tree hashes; implementation remains uncommitted.
 BN-001–004 retain their separate acceptance gaps. Operational device writes stay disabled.
+
+BN-006 closeout (7 November): in addition to the reconnect replay fix documented
+in the [investigation](docs/merger/BN006_RECONNECT_INVESTIGATION_2026-11-07.md), the bounded live profile completed lifecycle, route-policy,
+VRF/RD isolation, software-FIB, and SR Linux native-collection checks. It does not claim
+physical ASIC forwarding, scheduled polling, broader platform/release support, or optional
+DuckDB retirement parity. See [evidence and limits](docs/merger/evidence/2026-11-07-bn006-live/README.md).
+BN-007 intake: the optional legacy DuckDB writer stores EOR events but does not
+materialize their retired route identities; reconcile its schema and lifecycle
+before claiming equivalent history or enabling it as an authority.
 
 ## Unified product queue
 
@@ -76,7 +86,7 @@ already verified tasks or execute old destructive instructions verbatim.
 |---|---|
 | B00–B03 | Verified baseline/parser foundation; continuing release gates BN-007/019 |
 | B04–B06 | RIB/history foundation; current recovery verification in review; scale/semantics audit BN-007 (including directional AddPath negotiation and source-aware collector limits) |
-| B07 | Vendor metadata exists; live second-NOS acceptance BN-006 |
+| B07 | Vendor metadata exists; bounded live second-NOS acceptance is recorded under BN-006 |
 | B08–B10 | Proxy/UI/correlation foundation; end-to-end acceptance BN-003/008 |
 | B11–B13 | Auth/redaction/scoping foundation; deployment/security acceptance BN-005/015 |
 | B14–B15 | Investigation/SSH helper foundation; operational acceptance BN-004/013/015 |
@@ -86,7 +96,7 @@ already verified tasks or execute old destructive instructions verbatim.
 | A03 | Runtime schema/budget foundation; operational loop BN-004/005 |
 | A04–A08 | Evidence/diagnostic helpers; multi-source acceptance BN-005/008 |
 | A09–A12 | Investigator/adjudication/scenario scaffolds; real provider/browser evidence BN-003/004/013 |
-| A13 | Native SR Linux CLI capture/replay and flat-parser fixes now exist; full NOS/BMP route acceptance remains BN-006 |
+| A13 | Native SR Linux capture and bounded live route acceptance are recorded under BN-006; broader release/vendor coverage remains out of scope |
 | A14–A15 | Forecasting surrogate/PyTorch smoke evidence; full model experiments BN-010/012 |
 | A16–A20 | Plan/signature/audit helpers; execution/assurance/pilot BN-001/002/014/019 |
 | R00 | Documentation reconciliation now superseded by this backlog and current review |

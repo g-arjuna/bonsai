@@ -1,0 +1,6 @@
+route-map BN006-IN permit 10
+   match metric 150
+   set local-preference 300
+route-map BN006-IN permit 20
+router bgp 65001
+   neighbor 10.206.0.2 route-map BN006-IN in

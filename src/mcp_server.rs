@@ -436,6 +436,14 @@ pub fn tool_schemas() -> JsonValue {
                 }
             },
             {
+                "name": "get_native_bgp_neighbors",
+                "description": "Read the latest persisted native SR Linux BGP neighbor observation for one exporter. Reports capture time, freshness, schema quality and raw hash; this is CLI state, not BMP or FIB proof. Collection is triggered by an authenticated operator through POST /api/routing/v1/native-bgp.",
+                "inputSchema": {"type":"object", "properties": {
+                    "device_address":{"type":"string","description":"Registered exporter IP; defaults to caller speaker scope."},
+                    "afi_safi":{"type":"string","enum":["ipv4-unicast","ipv6-unicast"],"default":"ipv4-unicast"}
+                }}
+            },
+            {
                 "name": "query_devices",
                 "description": "Return devices matching an optional hostname or address filter. Returns address, hostname, vendor, health, and current BGP session states.",
                 "inputSchema": {
@@ -1065,6 +1073,33 @@ async fn dispatch_authorized_tool(
     };
 
     match name {
+        "get_native_bgp_neighbors" => {
+            let address = args["device_address"]
+                .as_str()
+                .or_else(|| args["_scoped_speaker"].as_str())
+                .ok_or("missing device_address")?;
+            let family = args["afi_safi"].as_str().unwrap_or("ipv4-unicast");
+            let mut observation =
+                crate::enrichment::native_bgp::latest_observation(store, address, family)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            let now = crate::graph::common::now_ns();
+            let age = now.saturating_sub(observation.captured_at_ns);
+            let freshness = if observation.captured_at_ns > now {
+                "unknown"
+            } else if age > 60_000_000_000 {
+                "stale"
+            } else {
+                "fresh"
+            };
+            let total = observation.capture.neighbors.len();
+            observation.capture.neighbors.truncate(100);
+            Ok(enforce_tool_output_bounds(
+                json!({"observation_id":crate::enrichment::native_bgp::observation_id(address,family),
+                "captured_at_ns":observation.captured_at_ns,"freshness":freshness,"age_ms":age/1_000_000,
+                "transport":observation.transport,"total_neighbors":total,"truncated":total>100,"capture":observation.capture}),
+            ))
+        }
         "get_incident" => tool_get_incident(store, args)
             .await
             .map(enforce_tool_output_bounds),
@@ -1272,6 +1307,7 @@ pub fn authorize_and_scope_tool_with_mode(
             matches!(
                 name,
                 "query_devices"
+                    | "get_native_bgp_neighbors"
                     | "get_changes"
                     | "get_device_blast_radius"
                     | "list_active_detections"
@@ -1309,6 +1345,7 @@ pub fn authorize_and_scope_tool_with_mode(
             let is_device_bound_tool = matches!(
                 name,
                 "query_devices"
+                    | "get_native_bgp_neighbors"
                     | "get_changes"
                     | "get_device_blast_radius"
                     | "list_active_detections"
@@ -1455,7 +1492,7 @@ pub fn authorize_and_scope_tool_with_mode(
                         obj.insert("_scoped_speaker".to_string(), json!(spk));
                     }
                 }
-                "query_devices" | "get_incident" => {
+                "query_devices" | "get_incident" | "get_native_bgp_neighbors" => {
                     if let Some(obj) = args.as_object_mut() {
                         obj.insert("_scoped_speaker".to_string(), json!(spk));
                     }

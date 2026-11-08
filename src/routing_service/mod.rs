@@ -36,6 +36,7 @@ use uuid::Uuid;
 pub const ROUTING_API_VERSION: &str = "v1";
 pub const ROUTING_CHECKPOINT_CONFIG_CLASS: &str = "routing_checkpoint";
 pub const ROUTING_CHECKPOINT_ID: &str = "routing-projection-checkpoint-v1";
+const ROUTING_PROJECTION_VERSION: u64 = 1;
 
 /// Configuration for the reduced routing process (`bonsai-routing`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,6 +196,7 @@ pub struct TransportGapRecord {
 
 /// Shared state of the reduced routing service.
 pub struct RoutingServiceState {
+    projection_semantics_ready: bool,
     pub config: RoutingServiceConfig,
     pub rib: RwLock<RibManager>,
     pub bmp_journal: BmpJournal,
@@ -212,6 +214,7 @@ impl RoutingServiceState {
             .map_err(|e| anyhow::anyhow!("Invalid RoutingServiceConfig: {e}"))?;
 
         let event_journal = RibEventJournal::open(config.event_journal_path.as_ref()).await?;
+        let mut projection_semantics_ready = event_journal.events_covered_by(&[]).await;
         let (mut rib_mgr, _rx) = RibManager::new(4096);
         let mut recovered_contexts = HashMap::new();
         let mut recovered_gaps = HashMap::new();
@@ -219,6 +222,9 @@ impl RoutingServiceState {
         if let Some(ref bmp_path) = config.bmp_journal_path {
             if bmp_path.exists() {
                 let outcome = BmpJournal::replay_into_with_state(bmp_path, &mut rib_mgr)?;
+                projection_semantics_ready = event_journal
+                    .events_covered_by(&outcome.emitted_events)
+                    .await;
                 recovered_contexts = outcome.decode_contexts;
                 recovered_gaps = outcome
                     .transport_gaps
@@ -236,6 +242,9 @@ impl RoutingServiceState {
                     })
                     .collect();
 
+                event_journal
+                    .enrich_replayed_eors(&outcome.emitted_events)
+                    .await?;
                 let existing_seqs = event_journal.existing_sequences().await;
                 let missing_events: Vec<_> = outcome
                     .emitted_events
@@ -254,6 +263,7 @@ impl RoutingServiceState {
         let bmp_journal = BmpJournal::open(config.bmp_journal_path.as_ref()).await?;
 
         Ok(Arc::new(Self {
+            projection_semantics_ready,
             config,
             rib: RwLock::new(rib_mgr),
             bmp_journal,
@@ -1261,7 +1271,7 @@ pub async fn build_prefix_history_json(
             "durable_sequence": latest_seq,
             "receive_time": Utc::now().to_rfc3339(),
             "events": history,
-            "history_coverage": if history_window.truncated { "partial" } else { "complete" },
+            "history_coverage": if history_window.truncated || !state.projection_semantics_ready { "partial" } else { "complete" },
             "history_window": history_window,
         }),
     )
@@ -1361,6 +1371,7 @@ pub async fn build_events_json(state: &RoutingServiceState, q: &EventsQuery) -> 
         "api_version": ROUTING_API_VERSION,
         "durable_sequence": latest_seq,
         "after_seq": after_seq,
+        "projection_semantics_version": if state.projection_semantics_ready { ROUTING_PROJECTION_VERSION } else { 0 },
         "next_after_seq": next_after_seq,
         "scanned_to_seq": scanned_to_seq,
         "scanned_events": scanned_events,
@@ -1403,6 +1414,8 @@ pub struct PeerSummaryProjection {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RoutingProjectionCheckpoint {
+    #[serde(default)]
+    pub projection_version: u32,
     pub last_applied_sequence: u64,
     pub last_event_id: String,
     pub updated_at_ns: i64,
@@ -1434,10 +1447,15 @@ pub async fn load_projection_checkpoint(
         .find(|i| i.id == ROUTING_CHECKPOINT_ID && i.enabled)
     {
         if let Ok(cp) = serde_json::from_str::<RoutingProjectionCheckpoint>(&ci.content_json) {
-            return cp;
+            if cp.projection_version == 1 {
+                return cp;
+            }
         }
     }
-    RoutingProjectionCheckpoint::default()
+    RoutingProjectionCheckpoint {
+        projection_version: 1,
+        ..Default::default()
+    }
 }
 
 /// Resolve the private routing service `(base_url, token, has_explicit_db_url)` from `GraphStore` (`app_config`) or environment (`R05`/`R06`).
@@ -1505,6 +1523,11 @@ pub async fn project_remote_routing_events_to_graph(
         resolve_routing_service_endpoint_config(store).await;
     if !has_explicit_db_url {
         if let Some(in_proc) = default_routing_service() {
+            if !in_proc.projection_semantics_ready {
+                anyhow::bail!(
+                    "routing history lacks BMP data needed for snapshot retirement projection"
+                );
+            }
             return project_routing_events_to_graph(&in_proc.event_journal, store, batch_limit)
                 .await;
         }
@@ -1531,6 +1554,15 @@ pub async fn project_remote_routing_events_to_graph(
         );
     }
     let body: serde_json::Value = resp.json().await?;
+    if body
+        .get("projection_semantics_version")
+        .and_then(|v| v.as_u64())
+        != Some(ROUTING_PROJECTION_VERSION)
+    {
+        anyhow::bail!(
+            "remote routing service does not provide compatible snapshot retirement semantics"
+        );
+    }
     let latest_seq = body
         .get("durable_sequence")
         .and_then(|v| v.as_u64())
@@ -1715,6 +1747,7 @@ async fn apply_routing_events_to_graph(
             RibEventPayload::EndOfRib {
                 peer_header,
                 afi_safi,
+                retired_routes,
             } => {
                 let peer_key = PeerKey::from_header(ev.speaker, peer_header);
                 let pk_id = format!(
@@ -1732,6 +1765,13 @@ async fn apply_routing_events_to_graph(
                 ps.peer_type = peer_header.peer_type as u8;
                 ps.peer_distinguisher = peer_key.distinguisher_string();
                 ps.eor_families.insert(afi_safi.clone());
+                for retired in retired_routes {
+                    let route_id = format!(
+                        "{:?}|{}|{:?}",
+                        retired.route_key.view.rib_type, retired.prefix, retired.route_key.path_id
+                    );
+                    ps.active_prefixes.remove(&route_id);
+                }
                 ps.last_event_sequence = seq;
             }
             RibEventPayload::RouteChange(rc) => {
