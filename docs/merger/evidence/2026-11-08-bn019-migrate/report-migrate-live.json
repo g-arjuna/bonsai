@@ -1,0 +1,15 @@
+{
+  "total_records_read": 2890,
+  "migrated_v1_to_v2": 0,
+  "already_v2_records": 2890,
+  "legacy_identity_incomplete_count": 0,
+  "corrupt_lines_skipped": 0,
+  "backup": {
+    "source_path": "live-events.snapshot.jsonl",
+    "backup_path": "live-events.snapshot.jsonl.pre-m3.bak",
+    "source_sha256": "42e3266250d8865c46d495b9d07d1edfeac94b0cf8c8509ed48464e8bce919d9",
+    "backup_sha256": "42e3266250d8865c46d495b9d07d1edfeac94b0cf8c8509ed48464e8bce919d9",
+    "created_at": "2026-11-08T12:28:30.915795108Z"
+  },
+  "output_sha256": "9ee889bfe93cdc8efc885a916b8cfbbbada10f085d3af94f094fc31e3a8ca808"
+}

@@ -1,0 +1,15 @@
+{
+  "total_records_read": 4,
+  "migrated_v1_to_v2": 2,
+  "already_v2_records": 1,
+  "legacy_identity_incomplete_count": 2,
+  "corrupt_lines_skipped": 1,
+  "backup": {
+    "source_path": "legacy-v1.jsonl",
+    "backup_path": "legacy-v1.jsonl.pre-m3.bak",
+    "source_sha256": "6fd1d2ef839816cdab8fede12096e579373c6fa94c3e66ce5cec84d146cd2ec7",
+    "backup_sha256": "6fd1d2ef839816cdab8fede12096e579373c6fa94c3e66ce5cec84d146cd2ec7",
+    "created_at": "2026-11-08T12:28:47.838048833Z"
+  },
+  "output_sha256": "e5c6c97efa913a2545ed17e9f7aa1580aa89c7f7e4e95bfcbdd0a7eab633b623"
+}

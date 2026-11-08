@@ -1,0 +1,24 @@
+{
+  "migrated_vendor_aliases": [
+    [
+      "srl",
+      "nokia.srlinux"
+    ],
+    [
+      "xrd",
+      "cisco.iosxr"
+    ]
+  ],
+  "unsupported_vendors": [
+    "unknown_appliance_os"
+  ],
+  "added_bmp_authority": true,
+  "backup": {
+    "source_path": "legacy-bonsai.toml",
+    "backup_path": "legacy-bonsai.toml.pre-m3.bak",
+    "source_sha256": "d5078838b5c9d9f9b61170ea387593efe54f5b0336ce06b9248ebd1be78ebb39",
+    "backup_sha256": "d5078838b5c9d9f9b61170ea387593efe54f5b0336ce06b9248ebd1be78ebb39",
+    "created_at": "2026-11-08T12:28:51.413579981Z"
+  },
+  "output_sha256": "13b5e7dc406b4d1462d14b663f47e6e0128ed4d42cb284ea914ce9caf3b030cb"
+}

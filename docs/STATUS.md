@@ -51,9 +51,9 @@ not a tenant isolation guarantee. Use the admin policy API to restore `strict`.
 The original closeout manifest identifies its earlier tested source snapshot.
 
 **Next action:** BN-019 operational/release proof — packaged build/boot,
-volume backup→restore, and install-from-package/upgrade-in-place drills are
-done; remaining are lab browser acceptance against the packaged deployment,
-`bonsai-migrate` live drill, soak (shared with BN-009), and handoff
+volume backup→restore, install-from-package/upgrade-in-place, and the
+`bonsai-migrate` live drill are done; remaining are lab browser acceptance
+against the packaged deployment, soak (shared with BN-009), and handoff
 reconciliation. UI warning and link/provenance debt are cleared. BN-009/BN-013 intake triage remains doable
 without external deps.
 BN-003 genuine router VRF/deployed browser-graph parity, and BN-004 real
@@ -135,6 +135,15 @@ volume sentinel, admin login and routing proxy verified post-upgrade.
 Not exercised: interactive passphrase prompt, `--source`/`--uninstall`/
 `--verify`. Evidence:
 [install drill](merger/evidence/2026-11-08-bn019-install/README.md).
+
+BN-019 bonsai-migrate drill (8 November): host-side run of the BN-007 CLI
+against real data — 2,890-record genuine FRR lab journal snapshot (all
+schema v2; migrate rewrites bytes but preserves semantics — rollback
+restores exact SHA), synthetic v1 fixture (2 migrations flagged
+`legacy_identity_incomplete`, 1 corrupt line skipped), legacy TOML vendor
+alias migration, and corrupted-backup rollback fails closed. Binary is
+not shipped in the image; quiesced-copy operator procedure documented.
+Evidence: [migrate drill](merger/evidence/2026-11-08-bn019-migrate/README.md).
 
 BN-019 link/provenance debt (8 November): scripted check of 164 relative links
 across 84 live docs found 4 dead links (absolute `file://`/machine paths, two

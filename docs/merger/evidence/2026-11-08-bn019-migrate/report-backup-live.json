@@ -1,0 +1,7 @@
+{
+  "source_path": "live-events.snapshot.jsonl",
+  "backup_path": "live-events.snapshot.jsonl.pre-m3.bak",
+  "source_sha256": "42e3266250d8865c46d495b9d07d1edfeac94b0cf8c8509ed48464e8bce919d9",
+  "backup_sha256": "42e3266250d8865c46d495b9d07d1edfeac94b0cf8c8509ed48464e8bce919d9",
+  "created_at": "2026-11-08T12:28:30.867044675Z"
+}
