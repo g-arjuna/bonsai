@@ -94,6 +94,17 @@ expectation, not an API defect (`*_ns` fields populated). New findings:
 affects JWT too); pandas absent in venv → empty parquet exports.
 Evidence: [api-auth](merger/evidence/2026-11-09-bn009-api-auth/README.md).
 
+BN-009 restart/overload slice (9 November): sidecar SIGKILL → registry
+stale (~61 s) → lost (~125 s) → restart re-registered healthy with zero
+401s; `docker restart` of the app container exercised the
+`reregister_required` heartbeat path (new sidecar_id, job/export/schedule
+state durable); routing container restart replayed the journal to
+identical RIB state (`durable_sequence=297`, `peers_up=6`,
+`transport_gaps=1` unchanged — no synthesized withdrawals). Forward-queue
+overload unexercised (no detection source; device writes disabled);
+full-length soak window remains open. Evidence:
+[soak](merger/evidence/2026-11-09-bn009-soak/README.md).
+
 BN-009 lifecycle slice (8 November): `collector_engine.py` heartbeat
 `status_json` now reports uptime/cpu/rss/queue-depth/drops/rules-loaded
 (stdlib /proc, null-safe); Sidecars UI gained a gRPC-registry panel rendering

@@ -42,6 +42,15 @@ journal growing).
 - **Observability:** `/health` subsystem statuses + sidecar metrics
   (`status_json` cpu/rss/queue/uptime) scrape-able throughout.
 
+## BN-009 restart slice executed (9 November): PASS
+
+Sidecar SIGKILL → stale (~61 s) → lost (~125 s) → re-register healthy;
+app container restart → heartbeat `reregister_required` → new sidecar_id;
+routing container restart → journal replay reproduced identical
+`durable_sequence`/RIB (`peers_up=6`, `total_routes=7`, gaps unchanged).
+Details: `docs/merger/evidence/2026-11-09-bn009-soak/README.md`.
+Forward-queue overload path remains unexercised (no detection source).
+
 ## Not claimed
 
 A 12-minute slice does not satisfy the full soak acceptance. A longer
