@@ -954,7 +954,7 @@
                 <span class="hint">Suppress re-push of (device, rule) within this window. Default: 300.</span>
               </label>
 
-              <label>
+              <div class="form-note">
                 Severity mapping reference
                 <div class="severity-map-table">
                   <div class="smt-row"><span>critical</span><span>→</span><span>1 Critical</span></div>
@@ -962,7 +962,7 @@
                   <div class="smt-row"><span>warning</span><span>→</span><span>3 Minor</span></div>
                   <div class="smt-row"><span>info</span><span>→</span><span>5 Informational</span></div>
                 </div>
-              </label>
+              </div>
             </div>
           </div>
         {/if}
@@ -1386,7 +1386,8 @@
     gap: 0.75rem;
     margin-bottom: 0.75rem;
   }
-  .form-grid label {
+  .form-grid label,
+  .form-grid .form-note {
     display: flex;
     flex-direction: column;
     gap: 0.3rem;

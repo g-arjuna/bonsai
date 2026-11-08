@@ -1,0 +1,20 @@
+{
+  "item": "BN-009",
+  "slice": "sidecar resource metrics + registry UI surfacing",
+  "date": "2026-11-08",
+  "base_commit": "8017090f42e1d841908606feb3459b5953221cb0",
+  "changed_files": [
+    "python/collector_engine.py",
+    "ui/src/routes/Sidecar.svelte"
+  ],
+  "commands": [
+    {"command": "python3 -m py_compile python/collector_engine.py", "result": "pass"},
+    {"command": "cd ui && npm run build", "result": "clean, zero warnings"},
+    {"command": "standalone /proc stat+status parse check", "result": "cpu_seconds and VmRSS read correctly"}
+  ],
+  "not_claimed": [
+    "live sidecar heartbeat exercised (needs project venv + running bonsai)",
+    "restart/overload soak acceptance",
+    "Rust-side changes (none needed)"
+  ]
+}

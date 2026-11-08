@@ -1,0 +1,32 @@
+# BN-003: FRR 10.6.2 real Linux VRF -> genuine RD-instance BMP
+# NOTE: 172.100.208.1:11029 must have a BMP listener on the host.
+name: bonsai-bn003-vrf
+
+mgmt:
+  network: bonsai-bn003-vrf-mgmt
+  ipv4-subnet: 172.100.208.0/24
+  ipv4-gw: 172.100.208.1
+
+topology:
+  defaults:
+    kind: linux
+    image: quay.io/frrouting/frr:10.6.2
+    privileged: true
+  nodes:
+    frr1:
+      mgmt-ipv4: 172.100.208.11
+      cmd: /bin/sh /bootstrap.sh frr1
+      binds:
+        - ./bootstrap.sh:/bootstrap.sh:ro
+        - ./frr1/frr.conf:/etc/frr/frr.conf:ro
+        - ./frr1/daemons:/etc/frr/daemons:ro
+    frr2:
+      mgmt-ipv4: 172.100.208.12
+      cmd: /bin/sh /bootstrap.sh frr2
+      binds:
+        - ./bootstrap.sh:/bootstrap.sh:ro
+        - ./frr2/frr.conf:/etc/frr/frr.conf:ro
+        - ./frr2/daemons:/etc/frr/daemons:ro
+  links:
+    - endpoints: [frr1:eth1, frr2:eth1]
+    - endpoints: [frr1:eth2, frr2:eth2]

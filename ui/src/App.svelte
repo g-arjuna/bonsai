@@ -2,36 +2,40 @@
   import { path, navigate, matchRoute } from '$lib/router.svelte.js';
   import { getToasts, dismissToast } from '$lib/toast.svelte.js';
   import Live from './routes/Live.svelte';
-  import Incidents from './routes/Incidents.svelte';
-  import Devices from './routes/Devices.svelte';
-  import Collectors from './routes/Collectors.svelte';
-  import Sites from './routes/Sites.svelte';
-  import Credentials from './routes/Credentials.svelte';
-  import Operations from './routes/Operations.svelte';
-  import TraceRoute from './routes/TraceRoute.svelte';
-  import Onboarding from '$lib/Onboarding.svelte';
+  import Lazy from '$lib/Lazy.svelte';
   import CommandPalette from '$lib/CommandPalette.svelte';
-  import Environments from './routes/Environments.svelte';
-  import Profiles from './routes/Profiles.svelte';
-  import Integrations from './routes/Integrations.svelte';
-  import Approvals from './routes/Approvals.svelte';
-  import Explorer from './routes/Explorer.svelte';
-  import Investigations from './routes/Investigations.svelte';
-  import Settings from './routes/Settings.svelte';
-  import Audit from './routes/Audit.svelte';
   import DensityToggle from '$lib/components/DensityToggle.svelte';
-  import HA from './routes/HA.svelte';
-  import Syslog from './routes/Syslog.svelte';
-  import DbManagement from './routes/DbManagement.svelte';
-  import Governance from './routes/Governance.svelte';
-  import Snmp from './routes/Snmp.svelte';
-  import Sidecar from './routes/Sidecar.svelte';
-  import Users from './routes/Users.svelte';
-  import SynthesizerRules from './routes/SynthesizerRules.svelte';
-  import Endpoints from './routes/Endpoints.svelte';
-  import Certs from './routes/Certs.svelte';
-  import StreamControl from './routes/StreamControl.svelte';
-  import Routing from './routes/Routing.svelte';
+
+  // Route-level code splitting: heavy views load on demand so the entry
+  // bundle stays small. Loaders are stable references (Lazy caches by them).
+  const loadIncidents      = () => import('./routes/Incidents.svelte');
+  const loadDevices        = () => import('./routes/Devices.svelte');
+  const loadCollectors     = () => import('./routes/Collectors.svelte');
+  const loadSites          = () => import('./routes/Sites.svelte');
+  const loadCredentials    = () => import('./routes/Credentials.svelte');
+  const loadOperations     = () => import('./routes/Operations.svelte');
+  const loadTraceRoute     = () => import('./routes/TraceRoute.svelte');
+  const loadOnboarding     = () => import('$lib/Onboarding.svelte');
+  const loadEnvironments   = () => import('./routes/Environments.svelte');
+  const loadProfiles       = () => import('./routes/Profiles.svelte');
+  const loadIntegrations   = () => import('./routes/Integrations.svelte');
+  const loadApprovals      = () => import('./routes/Approvals.svelte');
+  const loadExplorer       = () => import('./routes/Explorer.svelte');
+  const loadInvestigations = () => import('./routes/Investigations.svelte');
+  const loadSettings       = () => import('./routes/Settings.svelte');
+  const loadAudit          = () => import('./routes/Audit.svelte');
+  const loadHA             = () => import('./routes/HA.svelte');
+  const loadSyslog         = () => import('./routes/Syslog.svelte');
+  const loadDbManagement   = () => import('./routes/DbManagement.svelte');
+  const loadGovernance     = () => import('./routes/Governance.svelte');
+  const loadSnmp           = () => import('./routes/Snmp.svelte');
+  const loadSidecar        = () => import('./routes/Sidecar.svelte');
+  const loadUsers          = () => import('./routes/Users.svelte');
+  const loadSynthesizerRules = () => import('./routes/SynthesizerRules.svelte');
+  const loadEndpoints      = () => import('./routes/Endpoints.svelte');
+  const loadCerts          = () => import('./routes/Certs.svelte');
+  const loadStreamControl  = () => import('./routes/StreamControl.svelte');
+  const loadRouting        = () => import('./routes/Routing.svelte');
 
   // Cmd-1..9 workspace shortcuts mirror CommandPalette WORKSPACE_SHORTCUTS
   const NAV = [
@@ -179,67 +183,67 @@
     {#if !isFirstRunChecked}
       <!-- wait for first-run check -->
     {:else if isFirstRun}
-      <Onboarding first_run={true} onComplete={() => { isFirstRun = false; }} />
+      <Lazy loader={loadOnboarding} first_run={true} onComplete={() => { isFirstRun = false; }} />
     {:else if traceParams}
-      <TraceRoute id={traceParams.id} />
+      <Lazy loader={loadTraceRoute} id={traceParams.id} />
     {:else if path() === '/' || path() === ''}
       <Live />
     {:else if path() === '/incidents'}
-      <Incidents />
+      <Lazy loader={loadIncidents} />
     {:else if path() === '/devices/new'}
-      <Onboarding />
+      <Lazy loader={loadOnboarding} />
     {:else if deviceParams}
-      <Devices selectedAddress={deviceParams.address} />
+      <Lazy loader={loadDevices} selectedAddress={deviceParams.address} />
     {:else if path() === '/devices'}
-      <Devices />
+      <Lazy loader={loadDevices} />
     {:else if path() === '/collectors'}
-      <Collectors />
+      <Lazy loader={loadCollectors} />
     {:else if path() === '/routing'}
-      <Routing />
+      <Lazy loader={loadRouting} />
     {:else if path() === '/environments'}
-      <Environments />
+      <Lazy loader={loadEnvironments} />
     {:else if path() === '/profiles'}
-      <Profiles />
+      <Lazy loader={loadProfiles} />
     {:else if path() === '/sites'}
-      <Sites />
+      <Lazy loader={loadSites} />
     {:else if path() === '/credentials'}
-      <Credentials />
+      <Lazy loader={loadCredentials} />
     {:else if path() === '/operations'}
-      <Operations />
+      <Lazy loader={loadOperations} />
     {:else if path() === '/integrations'}
-      <Integrations />
+      <Lazy loader={loadIntegrations} />
     {:else if path() === '/approvals'}
-      <Approvals />
+      <Lazy loader={loadApprovals} />
     {:else if path() === '/explorer'}
-      <Explorer />
+      <Lazy loader={loadExplorer} />
     {:else if path() === '/investigations'}
-      <Investigations />
+      <Lazy loader={loadInvestigations} />
     {:else if path() === '/ha'}
-      <HA />
+      <Lazy loader={loadHA} />
     {:else if path() === '/audit'}
-      <Audit />
+      <Lazy loader={loadAudit} />
     {:else if path() === '/syslog'}
-      <Syslog />
+      <Lazy loader={loadSyslog} />
     {:else if path() === '/db'}
-      <DbManagement />
+      <Lazy loader={loadDbManagement} />
     {:else if path() === '/governance'}
-      <Governance />
+      <Lazy loader={loadGovernance} />
     {:else if path() === '/snmp'}
-      <Snmp />
+      <Lazy loader={loadSnmp} />
     {:else if path() === '/sidecars'}
-      <Sidecar />
+      <Lazy loader={loadSidecar} />
     {:else if path() === '/users'}
-      <Users />
+      <Lazy loader={loadUsers} />
     {:else if path() === '/config-library'}
-      <SynthesizerRules />
+      <Lazy loader={loadSynthesizerRules} />
     {:else if path() === '/endpoints'}
-      <Endpoints />
+      <Lazy loader={loadEndpoints} />
     {:else if path() === '/certs'}
-      <Certs />
+      <Lazy loader={loadCerts} />
     {:else if path() === '/stream-control'}
-      <StreamControl />
+      <Lazy loader={loadStreamControl} />
     {:else if path() === '/settings'}
-      <Settings />
+      <Lazy loader={loadSettings} />
     {:else}
       <div class="empty">Page not found.</div>
     {/if}

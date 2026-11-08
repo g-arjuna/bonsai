@@ -135,7 +135,7 @@ These patterns in source code are always worth a direct comment in the backlog:
 
 ## Cross-references
 
-- Backlog that drove this: [`BONSAI_CONSOLIDATED_BACKLOG_DV1.md`](../BONSAI_CONSOLIDATED_BACKLOG_DV1.md#tier-d3)
+- Backlog that drove this: [`BONSAI_CONSOLIDATED_BACKLOG_DV1.md`](backlog_archive/2026-10-13/BONSAI_CONSOLIDATED_BACKLOG_DV1.md#tier-d3)
 - The chunked review that found F-1/F-2: [`CHUNKED_CODE_REVIEW_2026-05-15.md`](../CHUNKED_CODE_REVIEW_2026-05-15.md)
 - Canonical entry point: [`docs/CANONICAL.md`](CANONICAL.md)
 - Sidecar architecture: [`docs/architecture/sidecars.md`](architecture/sidecars.md)

@@ -100,7 +100,7 @@
         {@const sev = inc.severity?.toLowerCase() ?? 'unknown'}
         {@const count = detectionCount(inc)}
 
-        <!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_no_noninteractive_tabindex -->
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_tabindex -->
         <article
           class="inc-card sev-{sevClass(sev)}"
           onclick={() => toggleExpand(key)}
@@ -171,7 +171,7 @@
 
             <!-- Expanded: correlation chain + blast radius + detection timeline -->
             {#if isOpen}
-              <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
               <div class="expanded-body" role="presentation" onclick={(e) => e.stopPropagation()}>
 
                 <!-- Provenance: correlation chain -->

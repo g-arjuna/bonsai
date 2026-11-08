@@ -52,6 +52,48 @@ HEARTBEAT_PERIOD = 15.0          # seconds — matches src/sidecar_registry.rs
 # explicit lock needed for monotonically-increasing int reads/writes.
 _metrics = {"events_in_total": 0, "detections_out_total": 0}
 
+
+def _proc_status_field(name: str) -> Optional[int]:
+    """Read a single kB-valued field (e.g. VmRSS) from /proc/self/status."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith(name + ":"):
+                    return int(line.split()[1]) * 1024
+    except Exception:
+        pass
+    return None
+
+
+def _proc_cpu_seconds() -> Optional[float]:
+    """Total CPU jiffies consumed by this process (utime+stime), if /proc is readable."""
+    try:
+        with open("/proc/self/stat") as f:
+            parts = f.read().rsplit(")", 1)[1].split()
+        # fields after comm: state(0) ppid(1) ... utime(11) stime(12) in parts[]
+        return (int(parts[11]) + int(parts[12])) / os.sysconf("SC_CLK_TCK")
+    except Exception:
+        return None
+
+
+def _status_json() -> str:
+    """BN-009: sidecar resource/backlog snapshot for SidecarHeartbeat.status_json.
+
+    Surfaced verbatim at GET /api/sidecars — bonsai treats it as opaque JSON.
+    Stdlib /proc reads only; every field degrades to null when unavailable.
+    """
+    return json.dumps({
+        "uptime_secs": round(time.monotonic() - _start_time, 1),
+        "cpu_seconds": _proc_cpu_seconds(),
+        "rss_bytes": _proc_status_field("VmRSS"),
+        "queue_depth": forward_queue.qsize(),
+        "forward_queue_drops_total": _forward_queue_drops_total,
+        "priority_only_mode": _priority_only_mode,
+        "detections_today": _detections_today,
+        "last_detection_at_ns": _last_detection_at_ns or None,
+        "rules_loaded": _rules_loaded,
+    })
+
 # D4-9 T1 / EV1-9 T7: Health HTTP endpoint state
 _start_time = time.monotonic()
 _last_detection_at_ns: int = 0
@@ -348,7 +390,7 @@ def _heartbeat_loop(
                 sidecar_id=sidecar_id,
                 events_in_total=events_in,
                 detections_out_total=_metrics["detections_out_total"],
-                status_json="",
+                status_json=_status_json(),
             )
             if not still_known:
                 print("[collector-engine] bonsai lost our sidecar_id — re-registering")

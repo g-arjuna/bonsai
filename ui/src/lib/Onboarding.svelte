@@ -1202,7 +1202,7 @@
               <input id="fr-env-name" bind:value={frEnvName} placeholder="e.g. Lab DC Fabric" autocomplete="off" />
             </div>
             <div class="form-row span-2">
-              <label>Archetype</label>
+              <span class="form-row-label">Archetype</span>
               <div class="archetype-grid">
                 {#each ARCHETYPES as arch}
                   <label class="archetype-option" class:selected={frEnvArchetype === arch.value}>

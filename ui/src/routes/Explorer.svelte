@@ -126,6 +126,14 @@
     loadNlBudget();
   });
 
+  function onWindowKeydown(e) {
+    if (e.key === 'Escape' && saveModalOpen) saveModalOpen = false;
+  }
+
+  function onBackdropClick(e) {
+    if (e.target === e.currentTarget) saveModalOpen = false;
+  }
+
   // ── query execution ────────────────────────────────────────────────────────
 
   async function runQuery(queryText, savedQueryId) {
@@ -534,9 +542,9 @@
 
     <!-- ── save modal ────────────────────────────────────────────────────── -->
     {#if saveModalOpen}
-      <div class="modal-backdrop" onclick={() => { saveModalOpen = false; }}>
-        <div class="modal" onclick={(e) => e.stopPropagation()}>
-          <h2 class="modal-title">Save query</h2>
+      <div class="modal-backdrop" role="presentation" onclick={onBackdropClick} onkeydown={(e) => e.key === 'Escape' && onBackdropClick(e)}>
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="save-query-title">
+          <h2 class="modal-title" id="save-query-title">Save query</h2>
           <label class="field-label">Name
             <input class="field-input" bind:value={saveName} placeholder="My query name" />
           </label>
@@ -794,6 +802,8 @@
     {/if}
   {/if}
 </div>
+
+<svelte:window onkeydown={onWindowKeydown} />
 
 <style>
   /* ── layout ──────────────────────────────────────────────────────────────── */

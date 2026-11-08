@@ -381,10 +381,11 @@
             </div>
             <p class="card-hint">{r.hint}</p>
             <div class="card-addr-row">
-              <label class="addr-label">
+              <label class="addr-label" for="recv-addr-{r.key}">
                 {r.proto === 'udp' ? 'UDP' : r.proto === 'http' ? 'HTTP' : 'TCP'} address
               </label>
               <input
+                id="recv-addr-{r.key}"
                 class="addr-input"
                 type="text"
                 value={rcfg.addr}

@@ -301,7 +301,7 @@
   {/if}
 </div>
 
-<script context="module">
+<script module>
   const SEED_PATTERNS = [
     { vendor: 'Nokia SRL', match_type: 'substring', match_value: 'LICC: License warning', scope_type: 'global', action: 'drop' },
     { vendor: 'Nokia SRL', match_type: 'substring', match_value: 'LOGGER: Timed out waiting for sync', scope_type: 'global', action: 'drop' },

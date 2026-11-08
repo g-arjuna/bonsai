@@ -1,0 +1,44 @@
+name: bonsai-bn003-r07vrf
+
+mgmt:
+  network: clab-bn003-r07vrf
+  ipv4-subnet: 172.100.207.0/24
+
+topology:
+  defaults:
+    kind: linux
+    image: quay.io/frrouting/frr:10.6.1
+    privileged: true
+
+  nodes:
+    frr1:
+      kind: linux
+      image: quay.io/frrouting/frr:10.6.1
+      mgmt-ipv4: 172.100.207.11
+      cmd: /bin/sh /bootstrap.sh frr1
+      binds:
+        - configs-r07vrf/bootstrap.sh:/bootstrap.sh:ro
+        - configs-r07vrf/daemons:/etc/frr/daemons:ro
+        - configs-r07vrf/frr1.conf:/etc/frr/frr.conf:ro
+        - configs-r07vrf/vtysh.conf:/etc/frr/vtysh.conf:ro
+      labels:
+        bonsai.role: bmp-exporter
+        bonsai.site: r07-verification
+
+    frr2:
+      kind: linux
+      image: quay.io/frrouting/frr:10.6.1
+      mgmt-ipv4: 172.100.207.12
+      cmd: /bin/sh /bootstrap.sh frr2
+      binds:
+        - configs-r07vrf/bootstrap.sh:/bootstrap.sh:ro
+        - configs-r07vrf/daemons:/etc/frr/daemons:ro
+        - configs-r07vrf/frr2.conf:/etc/frr/frr.conf:ro
+        - configs-r07vrf/vtysh.conf:/etc/frr/vtysh.conf:ro
+      labels:
+        bonsai.role: bgp-peer
+        bonsai.site: r07-verification
+
+  links:
+    - endpoints: ["frr1:eth1", "frr2:eth1"]
+    - endpoints: ["frr1:eth2", "frr2:eth2"]

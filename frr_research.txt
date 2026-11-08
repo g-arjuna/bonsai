@@ -1,0 +1,420 @@
+BN-003: FRRouting VRF + BMP — Technical Root-Cause Investigation
+1. Executive findings
+The investigation has already uncovered a fundamental problem with the earlier implementation: the lab was expecting FRRouting to perform a Linux VRF provisioning operation that FRRouting explicitly says it does not perform.
+
+The FRRouting 10.6 Zebra documentation states:
+Zebra does not create Linux VRF.
+
+This is documented under Virtual Routing and Forwarding in the official FRR manual. FRRouting
+
+This changes how we should approach BN-003.
+Initial conclusions
+Question	Finding	Implication
+Why was BLUE inactive?	The Linux VRF device was not provisioned.	FRR could not activate the configured VRF.
+Was the BGP VRF syntax necessarily wrong?	No.	The inactive kernel VRF explains the observed Idle state without requiring a BGP syntax error.
+Should Zebra create the VRF automatically?	No.	Provision the Linux VRF before expecting FRR to use it.
+Is running Zebra as root the correct fix?	No.	It addresses the wrong responsibility.
+Is FRR 10.6.1 inherently unsuitable?	Not established.	We need to examine BMP behavior before selecting a replacement.
+Does VPNv4 automatically satisfy BN-003?	No.	An RD in VPNv4 NLRI is not equivalent to an RD in the BMP per-peer header.
+
+
+The last distinction is particularly important.
+
+BN-003 requires two independently verifiable properties:
+1. A real BGP speaker produces BMP Route Monitoring messages for the route 10.99.1.0/24.
+2. The corresponding BMP per-peer header identifies an RD-instance peer with the exact distinguisher 65000:100.
+A successful BGP session, an active VRF, and even a correct VPNv4 route do not individually prove the second property.
+
+The solution must explicitly validate the emitted BMP bytes, not merely confirm that FRR accepts the configuration.
+2. Strongest evidence: FRR's own BMP VRF regression tests
+I located something more useful than generic configuration examples: FRRouting's upstream BMP test suite contains an implementation of almost exactly the behavior BN-003 is attempting to prove.
+
+The relevant upstream files are:
+Upstream reference	What it establishes
+FRR test_bgp_bmp_2.py	Tests genuine VRF BMP peer-up, route monitoring, withdrawals and RD changes.
+FRR r1vrf/frr.conf	Provides the working reference configuration for a VRF BGP speaker with BMP enabled.
+FRR r2vrf/frr.conf	Provides the reference BGP neighbor advertising real prefixes.
+FRR test_bgp_bmp_3.py	Tests importing BMP monitoring from another BGP/VRF instance.
+FRR bgp_bmp.c	Shows exactly how FRR computes BMP peer types and distinguishers.
+
+
+These are from the FRR 10.6 maintenance branch, rather than an unrelated routing implementation.
+2.1 The test provisions the kernel VRF explicitly
+The upstream test_bgp_bmp_2.py runs:
+tgen.net["r1vrf"].cmd(    """ip link add vrf1 type vrf table 10ip link set vrf1 upip link set r1vrf-eth1 master vrf1""")
+
+
+It executes those commands before starting the FRR routing daemons.
+
+That is the missing architectural step in the earlier BN-003 implementation.
+
+The test then starts Zebra and BGP, explicitly loading BMP through:
+router.load_frr_config(    config_path,    [        (TopoRouter.RD_ZEBRA, None),        (TopoRouter.RD_BGP, "-M bmp")    ],)
+
+
+This is significant because BMP is a loadable FRR module. Enabling BMP configuration without loading the module is insufficient.
+2.2 The reference uses rd vpn export, not merely vrf BLUE rd
+The upstream router configuration includes:
+router bgp 65501 vrf vrf1
+ bgp router-id 192.168.0.1
+ no bgp ebgp-requires-policy
+ neighbor 192.168.0.2 remote-as 65502
+ !
+ bmp targets bmp1
+  bmp connect 192.0.2.10 port 1789 min-retry 100 max-retry 10000
+  bmp monitor ipv4 unicast pre-policy
+  bmp monitor ipv4 unicast post-policy
+  bmp monitor ipv4 unicast loc-rib
+ exit
+ !
+ address-family ipv4 unicast
+  rd vpn export 444:1
+  neighbor 192.168.0.2 activate
+ exit-address-family
+
+The important command is:
+rd vpn export 444:1
+
+For BN-003, we need:
+rd vpn export 65000:100
+
+The BGP instance's export RD is directly relevant to how FRR constructs the BMP per-peer header.
+2.3 FRR source code confirms the exact behavior
+I inspected bgpd/bgp_bmp.c in the 10.6 branch.
+
+Its bmp_get_peer_type_vrf() function distinguishes:
+- Default VRF: peer type 0, global instance.
+- Known non-default VRF: peer type 1, RD instance.
+- Unknown VRF: peer type 2, local instance.
+More importantly, bmp_get_peer_distinguisher() checks the configured IPv4 VPN export RD and copies its eight bytes into the BMP peer distinguisher.
+
+Consequently, a recognized BLUE VRF with:
+address-family ipv4 unicast
+ rd vpn export 65000:100
+
+has a source-code-supported path to producing the exact RD-instance peer header BN-003 requires.
+
+That is much stronger evidence than assuming an RD configured somewhere in FRR will automatically reach BMP.
+2.4 The upstream test actually validates RD changes
+The test suite goes beyond checking BGP adjacency.
+
+It changes an RD from 444:1 to 666:22 and checks that the collector receives corresponding BMP peer-down and peer-up events with the expected distinguishers.
+
+This demonstrates that the desired functionality is already exercised by FRR's upstream tests.
+
+It does not yet establish that your exact container image, startup sequence, and Bonsai collector work together. Those still require an end-to-end run.
+3. Correct image and container strategy
+Recommended version: FRR 10.6.2
+I recommend quay.io/frrouting/frr:10.6.2, released on 25 August 2026.
+
+This is a conservative upgrade from your existing 10.6.1 deployment, not a switch to an unrelated implementation.
+
+Importantly, I checked the source at the exact frr-10.6.2 release tag, rather than relying only on the moving stable/10.6 branch.
+
+The relevant BMP peer-type and RD-encoding logic is present in that release. Its upstream VRF BMP regression test is also present. frrouting.org
+
+I would not upgrade to 10.7.1 solely to solve this problem. Nothing identified so far makes 10.7.x necessary.
+3.1 What I found in the official container build
+The exact release's alpine/APKBUILD.in declares these runtime dependencies:
+depends="json-c c-ares iproute2 python3 bash"
+
+The build also includes c-ares-dev, and FRR's configure script enables the BGP BMP module when c-ares is available.
+
+This establishes two useful properties of the official image:
+- iproute2 is a declared runtime dependency. We should not need to build a custom image merely to obtain the ip command.
+- BMP is included in the official build configuration, but must still be activated at BGP daemon startup with -M bmp.
+The upstream Docker image is based on Alpine Linux and launches FRR through:
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["/usr/lib/frr/docker-start"]
+
+These are verified against the frr-10.6.2 release source.
+3.2 Why the capability investigation went in the wrong direction
+The image is not intended to give the unprivileged frr account unrestricted ability to create Linux networking devices.
+
+Containerlab runs Linux nodes in privileged mode by default. Your observation that root can successfully execute ip link add ... type vrf already shows that the container's root context has the relevant permission. containerlab.dev
+
+FRR's privilege framework also supports temporarily changing effective capabilities for operations that require them.
+
+Therefore, an idle Zebra process showing CapEff=0 does not, by itself, establish a Zebra malfunction.
+
+The previous attempts to modify file capabilities, daemon identity, and group membership were unnecessary for the required setup.
+
+Regarding the daemon flags:
+- -A sets the VTY listening address. It is not a supplementary-group option.
+- -u sets the runtime user.
+- I found no documented FRR 10.6 -G option that provides the proposed supplementary-group workaround.
+The supported solution is to perform the small amount of kernel networking initialization as root and then let FRR start normally under its intended privilege model. FRRouting
+3.3 One important containerlab detail
+Containerlab's node-level exec commands run after container startup.
+
+That means a simple configuration such as:
+exec:
+  - ip link add BLUE type vrf table 1001
+
+does not guarantee that BLUE exists before FRR starts.
+
+I recommend a pre-start wrapper using containerlab's documented cmd override:
+1. Start the container with its existing tini entrypoint.
+2. Wait until containerlab has created eth1 and eth2.
+3. Create BLUE and attach eth2, as root.
+4. Start FRR using the image's original /usr/lib/frr/docker-start.
+This removes the VRF initialization race and does not require patching FRR or rebuilding the image. containerlab.dev
+4. Reproducible BN-003 lab package
+I've prepared the revised lab as actual configuration files rather than leaving you to translate the findings into YAML.
+
+bn003-frr-bmp-vrf-repro.zip
+
+The archive contains the containerlab topology, configurations for both routers, startup wrapper, README, and a Python BMP wire-verification utility.
+4.1 Revised containerlab topology
+The important part is:
+name: bonsai-bn003-vrf
+
+mgmt:
+  network: bonsai-bn003-vrf-mgmt
+  ipv4-subnet: 172.100.208.0/24
+  ipv4-gw: 172.100.208.1
+
+topology:
+  defaults:
+    kind: linux
+    image: quay.io/frrouting/frr:10.6.2
+    privileged: true
+
+  nodes:
+    frr1:
+      mgmt-ipv4: 172.100.208.11
+      cmd: /bin/sh /bootstrap.sh frr1
+      binds:
+        - ./bootstrap.sh:/bootstrap.sh:ro
+        - ./frr1/frr.conf:/etc/frr/frr.conf:ro
+        - ./frr1/daemons:/etc/frr/daemons:ro
+
+    frr2:
+      mgmt-ipv4: 172.100.208.12
+      cmd: /bin/sh /bootstrap.sh frr2
+      binds:
+        - ./bootstrap.sh:/bootstrap.sh:ro
+        - ./frr2/frr.conf:/etc/frr/frr.conf:ro
+        - ./frr2/daemons:/etc/frr/daemons:ro
+
+  links:
+    - endpoints: [frr1:eth1, frr2:eth1]
+    - endpoints: [frr1:eth2, frr2:eth2]
+
+Both routers retain the global IPv4 BGP adjacency on eth1, while eth2 belongs to BLUE.
+4.2 Kernel VRF initialization
+The startup script executes the following before launching FRR:
+ip link add BLUE type vrf table 1001
+ip link set dev BLUE up
+ip route add table 1001 unreachable default metric 4278198272
+
+ip link set dev eth2 master BLUE
+ip link set dev eth2 up
+
+These operations follow the Linux kernel's documented VRF setup procedure. Kernel Documentation
+
+The full script also waits for containerlab to attach the interfaces.
+
+On frr2, it creates a dummy interface inside BLUE with address 10.99.1.1/24. This provides a genuine connected network for BGP to originate.
+4.3 Corrected BGP and BMP configuration
+The central portion of frr1/frr.conf is:
+router bgp 65001 vrf BLUE
+ bgp router-id 1.1.1.2
+ no bgp ebgp-requires-policy
+ neighbor 10.100.2.1 remote-as 65002
+ !
+ bmp targets bn003
+  bmp connect 172.100.208.1 port 11029 min-retry 100 max-retry 10000
+   bmp monitor ipv4 unicast pre-policy
+   bmp monitor ipv4 unicast post-policy
+   bmp monitor ipv4 unicast loc-rib
+ exit
+ !
+ address-family ipv4 unicast
+  rd vpn export 65000:100
+  neighbor 10.100.2.1 activate
+  neighbor 10.100.2.1 soft-reconfiguration inbound
+ exit-address-family
+
+This deliberately follows FRR's upstream direct-VRF BMP configuration pattern. The BMP target lives in the BLUE BGP instance itself.
+
+On frr2:
+router bgp 65002 vrf BLUE
+ bgp router-id 2.2.2.3
+ no bgp ebgp-requires-policy
+ neighbor 10.100.2.0 remote-as 65001
+ !
+ address-family ipv4 unicast
+  neighbor 10.100.2.0 activate
+  network 10.99.1.0/24
+ exit-address-family
+
+Therefore:
+
+frr2 BLUE route → real eBGP UPDATE → frr1 BLUE Adj-RIB-In → FRR BMP Route Monitoring → Bonsai
+
+This is materially different from injecting synthetic BMP frames or relying solely on a locally originated route.
+4.4 BMP module activation
+The supplied daemon configuration enables BGP and starts it with:
+bgpd=yes
+bgpd_options=" -A 127.0.0.1 -M bmp"
+
+FRR explicitly requires the -M bmp startup argument. FRRouting
+
+Validation status: I verified the YAML parses, checked the shell syntax, and unit-checked the independent BMP parser. I have not represented the lab as successfully deployed: this execution environment has neither Docker/containerlab nor access to your local Bonsai checkout. The archive provides the executable test needed to establish that final result on your Ubuntu machine.
+5. Does the VPNv4 workaround solve BN-003?
+No—not the acceptance criterion you described.
+
+FRR 10.6 supports the relevant commands:
+address-family ipv4 vpn
+
+and:
+bmp monitor ipv4 vpn pre-policy
+bmp monitor ipv4 vpn post-policy
+
+These are the FRR command forms; address-family vpnv4 unicast and bmp monitor vpnv4 unicast are not the syntax used in its official 10.6 examples. FRRouting
+
+However, there are two distinct places where an RD can appear.
+Property	VPNv4 from a global BGP session	BLUE VRF BMP implementation
+RD carried in VPNv4 NLRI	Yes, for VPNv4 routes	Not necessary
+BMP peer type	0 — global instance	1 — RD instance
+BMP peer distinguisher	Zero	65000:100
+Route Monitoring payload	MP_REACH/MP_UNREACH VPNv4 data	IPv4-unicast BGP UPDATE
+Meets the requested BN-003 proof	No	Yes, if live verification passes
+
+
+FRR's source establishes the critical distinction: the BMP peer type comes from the monitored BGP instance's VRF ID, not from the address family of the BGP UPDATE.
+
+For a default-instance peer, the BMP distinguisher is zero even when the UPDATE contains VPNv4 NLRI with its own RD.
+
+That behavior is consistent with RFC 7854's distinction between global-instance and RD-instance BMP peers. RFC Editor
+What about rbmp-core?
+I could not inspect these files:
+/home/arjuna/Desktop/bonsai/crates/rbmp-core/src/bgp/nlri.rs
+/home/arjuna/Desktop/bonsai/crates/rbmp-rib/src/manager.rs
+
+They are local to your Ubuntu machine and were not available in this execution environment.
+
+Therefore, I cannot verify whether rbmp-core parses VPNv4 MP_REACH_NLRI and preserves its embedded RD, or whether the RIB manager can associate that information with the correct VRF.
+
+But even if both are implemented perfectly, VPNv4 parsing support would not convert a type-0 BMP peer header into a type-1 header.
+
+I would treat VPNv4 BMP as a separate acceptance test for MP-BGP parsing, not as a workaround for BN-003.
+6. Precisely how to prove the corrected configuration works
+This is the most important operational part.
+
+A green containerlab deployment is not enough. An Established BGP session is not enough. Even a route appearing in FRR's BLUE RIB is not enough.
+
+We want proof from actual transmitted BMP bytes.
+Step 1: Extract the lab
+Copy the downloaded ZIP to the Ubuntu machine, then:
+cd /home/arjuna/Desktop/bonsai/lab/fast-iteration
+
+unzip bn003-frr-bmp-vrf-repro.zip
+
+cd bn003-frr-bmp-vrf
+
+Step 2: Run the independent BMP collector
+In terminal 1:
+python3 verify_bmp.py --seconds 120
+
+This opens a genuine TCP listener on port 11029.
+
+It does not create synthetic frames. It reads what FRR sends across the TCP connection.
+
+Do not run it at the same time as Bonsai's own BMP listener on that port.
+Step 3: Deploy FRR
+In terminal 2:
+sudo containerlab deploy -t frr-bmp-vrf.clab.yml
+
+Inspect the VRF and BGP state:
+sudo docker exec clab-bonsai-bn003-vrf-frr1 \
+  vtysh -c 'show vrf'
+
+sudo docker exec clab-bonsai-bn003-vrf-frr1 \
+  vtysh -c 'show bgp vrf BLUE ipv4 unicast summary'
+
+sudo docker exec clab-bonsai-bn003-vrf-frr1 \
+  vtysh -c 'show bgp vrf BLUE ipv4 unicast 10.99.1.0/24'
+
+The expected result is an active BLUE VRF, an Established BLUE BGP adjacency, and the prefix 10.99.1.0/24 received from frr2.
+Step 4: Examine the BMP wire proof
+The supplied Python collector checks for both of these events:
+
+BMP Peer Up
+BMP version:         3
+BMP message type:    3 (Peer Up)
+BMP peer type:       1 (RD instance)
+Peer distinguisher:  65000:100
+
+BMP Route Monitoring
+BMP version:         3
+BMP message type:    0 (Route Monitoring)
+BMP peer type:       1 (RD instance)
+Peer distinguisher:  65000:100
+BGP message type:    2 (UPDATE)
+Advertised NLRI:    10.99.1.0/24
+
+For this ASN-based RD, the eight-byte distinguisher must be:
+00 00 fd e8 00 00 00 64
+
+The BMP common header occupies the first six bytes. The peer-type byte is at offset 6, and the eight-byte peer distinguisher occupies offsets 8–15.
+
+These offsets are defined by the BMPv3 common and per-peer header layouts in RFC 7854. RFC Editor
+
+The probe records the raw frames in genuine-bmp-stream.bin, giving you evidence that can be inspected independently.
+Step 5: Only then integrate Bonsai
+Once the raw wire test passes, stop the standalone collector and start Bonsai's real BMP listener.
+
+Check the listening address carefully.
+
+If Bonsai listens only on:
+127.0.0.1:11029
+
+the FRR container cannot reach that socket through the Docker management bridge.
+
+Bonsai must listen on an address reachable from the container, such as:
+0.0.0.0:11029
+
+or the management bridge address:
+172.100.208.1:11029
+
+Restart or reconnect the BMP exporter so Bonsai receives a fresh peer-up and initial route synchronization.
+
+At that point, the final BN-003 assertion should verify that Bonsai populated the expected VRF-scoped RIB using the actual received BMP stream.
+7. What the coding tool failed to do
+My assessment is that the previous attempt had four identifiable shortcomings.
+Failure	Why it mattered	Corrected approach
+Expected Zebra to create BLUE	FRR doesn't create Linux VRFs	Provision BLUE through Linux before starting FRR
+Focused on Zebra privileges	FRR daemon identity was not the underlying provisioning requirement	Use the container's existing root startup context
+Used an insufficiently established RD configuration	A VRF declaration alone doesn't prove that BMP uses 65000:100	Configure rd vpn export 65000:100, matching FRR's upstream test
+Relied on local prefix origination	Could produce Loc-RIB observations without proving a monitored RD-instance neighbor update	Have frr2 advertise the prefix and frr1 receive it
+
+
+The distinction between a locally originated route and an inbound BGP UPDATE is particularly important.
+
+FRR's BMP implementation uses peer type 3 for Loc-RIB monitoring, while a normal BGP neighbor in an active non-default VRF produces peer type 1.
+
+BN-003 should not accidentally accept the former as proof of the latter. FRRouting
+One additional finding: 10.6.1 was not necessarily the problem
+I compared the BMP peer-type and RD-distinguisher implementation at the exact FRR 10.6.1 and 10.6.2 release tags.
+
+The relevant source code is identical in those two releases.
+
+This means the recommendation to move to 10.6.2 is for a maintained patch version, not because 10.6.1 lacked the required capability.
+
+The previous lab most likely failed because of its VRF provisioning and RD-export configuration, not because the feature was absent from FRR 10.6.1.
+8. Final recommendation
+For BN-003, I would make this the reference implementation:
+
+FRR 10.6.2 → Linux VRF BLUE provisioned before FRR startup → eBGP prefix received inside BLUE → BMP peer type 1 with RD 65000:100 → Bonsai VRF-scoped RIB.
+
+This path is supported by three independent forms of evidence:
+1. Official FRR documentation establishes the VRF provisioning responsibilities and BMP configuration requirements.
+2. The exact FRR release source establishes how peer type and peer distinguisher are encoded.
+3. FRR's own upstream regression tests exercise VRF BMP monitoring, RD-instance peers, prefix advertisements and RD changes.
+The remaining uncertainty is runtime integration with your specific Docker/containerlab installation and Bonsai codebase. That cannot be eliminated through documentation alone, so I included an independent wire-level acceptance probe rather than claiming an unexecuted lab is guaranteed to pass.
+
+bn003-frr-bmp-vrf-repro.zip
+
+Once its wire test passes, you will have the key evidence missing from the previous attempt: a real FRR router—not build_rd_bmp_frames—emitting the exact RD-bearing BMP messages BN-003 needs.

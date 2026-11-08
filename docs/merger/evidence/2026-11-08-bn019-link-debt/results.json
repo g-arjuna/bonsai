@@ -1,0 +1,30 @@
+{
+  "item": "BN-019",
+  "slice": "documentation link/provenance debt review",
+  "date": "2026-11-08",
+  "base_commit": "8017090f42e1d841908606feb3459b5953221cb0",
+  "working_tree": "uncommitted; docs-only changes",
+  "scope": "verify all relative markdown links in live docs resolve; fix dead links; confirm provenance artifacts present; archived backlogs excluded per freeze policy",
+  "commands": [
+    {
+      "command": "python3 markdown link check over 84 live doc files",
+      "result": "before: 4 missing links; after fixes: 0 missing",
+      "links_checked": 164
+    },
+    {
+      "command": "ls docs/merger/B10_IMPORT_MANIFEST.md LICENSE NOTICE",
+      "result": "all present"
+    }
+  ],
+  "changed_files": [
+    "docs/DEVELOPMENT.md",
+    "docs/review_discipline.md",
+    "docs/merger/BN005_DEPLOYMENT_AND_SCOPE_REVIEW_2026-10-14.md",
+    "docs/architecture/sidecars.md"
+  ],
+  "not_claimed": [
+    "anchor/heading validation inside linked files",
+    "archived backlog internal links (frozen point-in-time records)",
+    "BN-019 install/upgrade, lab, backup/recovery, soak gates"
+  ]
+}

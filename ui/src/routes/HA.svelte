@@ -183,8 +183,8 @@
 
       <div class="settings-form">
         <div class="form-group">
-          <label>HA Mode</label>
-          <select bind:value={settings.mode} disabled={!editingSettings}>
+          <label for="ha-mode">HA Mode</label>
+          <select id="ha-mode" bind:value={settings.mode} disabled={!editingSettings}>
             <option value="standalone">Standalone</option>
             <option value="cluster">Cluster</option>
           </select>
@@ -192,26 +192,26 @@
         </div>
 
         <div class="form-group">
-          <label>Node ID</label>
-          <input type="text" bind:value={settings.node_id} disabled={!editingSettings} />
+          <label for="ha-node-id">Node ID</label>
+          <input id="ha-node-id" type="text" bind:value={settings.node_id} disabled={!editingSettings} />
           <small>Unique identifier for this node in the cluster</small>
         </div>
 
         <div class="form-group">
-          <label>etcd Endpoints</label>
-          <input type="text" bind:value={settings.etcd_endpoints} disabled={!editingSettings} />
+          <label for="ha-etcd-endpoints">etcd Endpoints</label>
+          <input id="ha-etcd-endpoints" type="text" bind:value={settings.etcd_endpoints} disabled={!editingSettings} />
           <small>Comma-separated etcd endpoint URLs (e.g., http://etcd-1:2379,http://etcd-2:2379)</small>
         </div>
 
         <div class="form-group">
-          <label>Election TTL (seconds)</label>
-          <input type="number" bind:value={settings.election_ttl_secs} disabled={!editingSettings} />
+          <label for="ha-election-ttl">Election TTL (seconds)</label>
+          <input id="ha-election-ttl" type="number" bind:value={settings.election_ttl_secs} disabled={!editingSettings} />
           <small>Leader election lease TTL - lower values = faster failover but more etcd traffic</small>
         </div>
 
         <div class="form-group">
-          <label>Config Prefix</label>
-          <input type="text" bind:value={settings.config_prefix} disabled={!editingSettings} />
+          <label for="ha-config-prefix">Config Prefix</label>
+          <input id="ha-config-prefix" type="text" bind:value={settings.config_prefix} disabled={!editingSettings} />
           <small>etcd key prefix for config replication (e.g., /bonsai/config)</small>
         </div>
       </div>

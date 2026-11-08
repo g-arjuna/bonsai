@@ -339,7 +339,14 @@
   {/if}
 
   <div class="apply-panel">
-    <div class="apply-header" onclick={() => showApply = !showApply} role="button" tabindex="0">
+    <div
+      class="apply-header"
+      onclick={() => showApply = !showApply}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (showApply = !showApply)}
+      role="button"
+      tabindex="0"
+      aria-expanded={showApply}
+    >
       <h4>Apply to Service {showApply ? '▲' : '▼'}</h4>
       <span class="muted apply-subtitle">Activate a cert bundle for HTTPS, mTLS, or gNMI — saves to DB, optionally restarts</span>
     </div>

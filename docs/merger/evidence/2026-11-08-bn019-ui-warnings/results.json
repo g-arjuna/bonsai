@@ -1,0 +1,43 @@
+{
+  "item": "BN-019",
+  "slice": "ui accessibility and bundle warnings",
+  "date": "2026-11-08",
+  "base_commit": "8017090f42e1d841908606feb3459b5953221cb0",
+  "working_tree": "uncommitted; ui/ sources modified plus new ui/src/lib/Lazy.svelte; user-owned AGENTS.md/CLAUDE.md/gemini_analysis.txt untouched",
+  "scope": "eliminate all vite-plugin-svelte a11y/deprecation warnings and the >500kB chunk warning; no behavior change intended beyond dialog focus and listbox semantics",
+  "commands": [
+    {
+      "command": "cd ui && npm run build",
+      "result": "pass, zero warnings",
+      "log": "ui-build.log",
+      "log_sha256": "d2911acbf51e695857564900babb022aae7279a57d481f8e5466d166e24ef934"
+    },
+    {
+      "command": "vite preview --port 4173 + Playwright (system Chrome) smoke over 15 hash routes",
+      "result": "pass: each route renders its own content, no pageerrors; Ctrl+K focuses palette input; API errors expected without backend"
+    }
+  ],
+  "changed_files": [
+    "ui/vite.config.js",
+    "ui/src/App.svelte",
+    "ui/src/app.css",
+    "ui/src/lib/Lazy.svelte",
+    "ui/src/lib/CommandPalette.svelte",
+    "ui/src/lib/Onboarding.svelte",
+    "ui/src/routes/Certs.svelte",
+    "ui/src/routes/Explorer.svelte",
+    "ui/src/routes/HA.svelte",
+    "ui/src/routes/Incidents.svelte",
+    "ui/src/routes/Integrations.svelte",
+    "ui/src/routes/Profiles.svelte",
+    "ui/src/routes/Settings.svelte",
+    "ui/src/routes/SynthesizerRules.svelte",
+    "ui/src/routes/Syslog.svelte"
+  ],
+  "bundle_before": { "index_js_bytes": 637510, "warnings": "~20 a11y/deprecation + chunk >500kB" },
+  "bundle_after": { "index_js_bytes": 97720, "vendor_js_bytes": 118080, "largest_route_chunk_bytes": 62380, "warnings": 0 },
+  "not_claimed": [
+    "live backend browser journeys (BN-003/BN-019 lab gates)",
+    "install/upgrade, backup/recovery, soak, or support-matrix gates of BN-019"
+  ]
+}

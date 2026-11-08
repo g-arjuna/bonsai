@@ -1,0 +1,9 @@
+Listening on 0.0.0.0:11029; start containerlab in another terminal.
+Looking for BMP peer type=1, RD=65000:100, BGP NLRI=10.99.1.0/24
+BMP TCP connected from ('172.100.208.11', 38592)
+other BMP event: msg=3, peer_type=3, RD=0000fde800000064
+PASS: genuine RD-instance BMP Peer Up, RD=65000:100
+other BMP event: msg=0, peer_type=3, RD=0000fde800000064
+PASS: genuine RD-instance BMP Route Monitoring NLRI 10.99.1.0/24 (L/post-policy flag=True)
+Recorded 5 native BMP frames to genuine-bmp-stream.bin
+BN-003 WIRE PROOF PASSED: peer-up + real route-monitoring with type=1 and RD=65000:100

@@ -12,7 +12,7 @@ Evidence Bundle: [`docs/merger/evidence/2026-10-14-bn005-audit/results.json`](ev
 
 This review validates the closure of **BN-005** ("Audit every deployment's auth, internal-token and persistence defaults, including direct binary launch; test identity-derived tenant/exporter/VRF scope rather than caller labels. Verify graph queries use an enforced read-only boundary and bounded/cancellable execution, and history queries include latest evidence without silent truncation").
 
-All 6 integration tests in [`tests/bn005_deployment_and_scope_hardening.rs`](file:///home/arjuna/Desktop/bonsai/tests/bn005_deployment_and_scope_hardening.rs) passed cleanly alongside the full regression gate, including 20 executor/assurance tests, 9 recovery/wiring tests, 3 workflow tests, 12 Playwright browser journeys against live dual FRR routers (22.86s), strict Clippy on core, formatting, UI build, and 16 Python tests.
+All 6 integration tests in [`tests/bn005_deployment_and_scope_hardening.rs`](../../tests/bn005_deployment_and_scope_hardening.rs) passed cleanly alongside the full regression gate, including 20 executor/assurance tests, 9 recovery/wiring tests, 3 workflow tests, 12 Playwright browser journeys against live dual FRR routers (22.86s), strict Clippy on core, formatting, UI build, and 16 Python tests.
 
 ---
 

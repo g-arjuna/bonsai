@@ -4,7 +4,7 @@
 
 Bonsai uses a native Ubuntu/Linux workflow for Rust, Python, and live lab operations.
 
-- The source of truth for Python dependencies is [python/pyproject.toml](/home/arjuna/Desktop/bonsai/python/pyproject.toml:1).
+- The source of truth for Python dependencies is [python/pyproject.toml](../python/pyproject.toml).
 - Create a project-local virtual environment at `.venv/`.
 - Run `scripts/chaos_runner.py`, `python/inject_fault.py`, and `clab` commands directly on Linux.
 - Keep `bonsai.toml` in the repo root so Rust, Python, and the live lab use the same target inventory.

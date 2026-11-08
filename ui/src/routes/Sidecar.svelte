@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
 
   let data = $state(null);
+  let registry = $state([]);
   let loading = $state(true);
   let error = $state('');
   let interval;
@@ -81,6 +82,10 @@
       if (!r.ok) throw new Error(await r.text());
       data = await r.json();
       error = '';
+      try {
+        const rr = await fetch('/api/sidecars');
+        if (rr.ok) registry = await rr.json();
+      } catch { /* registry is best-effort */ }
     } catch (e) {
       error = e.message;
     } finally {
@@ -153,6 +158,20 @@
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
+
+  function registryMetrics(sc) {
+    try {
+      const j = JSON.parse(sc.status_json || '{}');
+      const parts = [];
+      if (j.rss_bytes != null) parts.push(`${(j.rss_bytes / 1048576).toFixed(0)} MB RSS`);
+      if (j.cpu_seconds != null) parts.push(`${j.cpu_seconds.toFixed(1)}s CPU`);
+      if (j.queue_depth != null) parts.push(`queue ${j.queue_depth}`);
+      if (j.uptime_secs != null) parts.push(`up ${fmtUptime(j.uptime_secs)}`);
+      return parts.join(' · ') || 'no metrics reported';
+    } catch {
+      return 'status_json unparseable';
+    }
+  }
 
   function fmtUptime(secs) {
     if (!secs) return '—';
@@ -283,6 +302,19 @@
         </div>
       {/each}
     </div>
+
+    {#if registry.length}
+      <div class="info-panel" style="margin-top:12px">
+        <h3>gRPC Registry ({registry.length})</h3>
+        {#each registry as sc}
+          <div class="sc-stats" style="margin-bottom:8px">
+            <div class="stat"><span class="stat-label">{sc.name} · {sc.kind}</span><span class="sc-status status-{sc.status}">{sc.status}</span></div>
+            <div class="stat"><span class="stat-label">v{sc.version}</span><span class="stat-val muted small">{registryMetrics(sc)}</span></div>
+            <div class="stat"><span class="stat-label">Events in / det out</span><span class="stat-val">{sc.events_in_total} / {sc.detections_out_total}</span></div>
+          </div>
+        {/each}
+      </div>
+    {/if}
 
     <div class="info-panel">
       <h3>Configuration</h3>

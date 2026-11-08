@@ -1,0 +1,35 @@
+name: bonsai-bn003-vrf
+
+mgmt:
+  network: clab-bn003-vrf
+  ipv4-subnet: 172.100.208.0/24
+
+topology:
+  nodes:
+    frr1:
+      kind: linux
+      image: quay.io/frrouting/frr:10.6.1
+      mgmt-ipv4: 172.100.208.11
+      binds:
+        - configs-bn003vrf/daemons:/etc/frr/daemons
+        - configs-bn003vrf/frr1.conf:/etc/frr/frr.conf
+        - configs-bn003vrf/vtysh.conf:/etc/frr/vtysh.conf
+      labels:
+        bonsai.role: bmp-exporter
+        bonsai.site: bn003-vrf-verification
+
+    frr2:
+      kind: linux
+      image: quay.io/frrouting/frr:10.6.1
+      mgmt-ipv4: 172.100.208.12
+      binds:
+        - configs-bn003vrf/daemons:/etc/frr/daemons
+        - configs-bn003vrf/frr2.conf:/etc/frr/frr.conf
+        - configs-bn003vrf/vtysh.conf:/etc/frr/vtysh.conf
+      labels:
+        bonsai.role: bgp-peer
+        bonsai.site: bn003-vrf-verification
+
+  links:
+    - endpoints: ["frr1:eth1", "frr2:eth1"]
+    - endpoints: ["frr1:eth2", "frr2:eth2"]

@@ -3,8 +3,8 @@
 > Authored CV7 Tier 4 — 2026-05-14. Supersedes the deleted `detection_paths.md`
 > draft from earlier the same day, after the operator and I dug into the
 > runtime model and decided the right answer was visibility, not parallel
-> logic. The full reasoning is in [`DECISIONS.md`](../../DECISIONS.md) under
-> "2026-05-14 — CV7 T4: Retire Rust event-detection fastpath."
+> logic. The full reasoning is in [`DECISIONS.md`](../../DECISIONS.md) — see
+> D12 "event_detection.rs retirement" (the CV7 T4 fastpath retirement).
 
 ---
 
@@ -125,10 +125,12 @@ agent reading this doc) knows not to delete `event_detection.rs` opportunistical
 
 ## Cross-references
 
-- CV7 backlog Tier 4: [`BONSAI_CONSOLIDATED_BACKLOG_CV7.md`](../../BONSAI_CONSOLIDATED_BACKLOG_CV7.md#tier-4)
-- CV7 backlog Tier 2: [`BONSAI_CONSOLIDATED_BACKLOG_CV7.md`](../../BONSAI_CONSOLIDATED_BACKLOG_CV7.md#tier-2)
-- ADR: [`DECISIONS.md`](../../DECISIONS.md) — "2026-05-14 — CV7 T4: Retire Rust event-detection fastpath."
+- CV7 backlog Tier 4 / Tier 2: the CV7 sprint backlog snapshot is not present in
+  the repository; the archive index is [`docs/backlog_archive/README.md`](../backlog_archive/README.md)
+  (CV6 and CV7 snapshots were never committed).
+- ADR: [`DECISIONS.md`](../../DECISIONS.md) — D12 "event_detection.rs retirement"
+  (the CV7 T4 fastpath retirement this document describes).
 - Canonical orientation: [`docs/CANONICAL.md`](../CANONICAL.md)
 - Sidecar implementation (Python): [`python/collector_engine.py`](../../python/collector_engine.py)
-- Sidecar registry (Rust, to be authored): `src/sidecar_registry.rs`
+- Sidecar registry (Rust): `src/sidecar_registry.rs`
 - gRPC service definition: [`proto/bonsai_service.proto`](../../proto/bonsai_service.proto)

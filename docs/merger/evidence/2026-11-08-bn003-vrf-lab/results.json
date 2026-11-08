@@ -1,0 +1,30 @@
+{
+  "item": "BN-003",
+  "slice": "genuine router VRF export lab bring-up",
+  "date": "2026-11-08",
+  "base_commit": "8017090f42e1d841908606feb3459b5953221cb0",
+  "status": "partial",
+  "environment": {
+    "containerlab": "0.82.0",
+    "docker": "29.9.3",
+    "netbox": "restarted via docker/compose-netbox.yml, healthy, 8 seeded devices",
+    "external_services": "splunk/elastic/kibana/grafana/prometheus healthy",
+    "stale_clab_containers_removed": [
+      "clab-bonsai-srl-srl1", "clab-bonsai-srl-srl2", "clab-bonsai-srl-srl3",
+      "clab-bonsai-bn006-live-65f2f2-eos", "clab-bonsai-bn006-live-65f2f2-srl",
+      "clab-bonsai-bn006-live-65f2f2-source"
+    ]
+  },
+  "lab": {
+    "name": "bonsai-bn003-vrf",
+    "topology": "lab/fast-iteration/frr-bmp-vrf.clab.yml",
+    "configs": "lab/fast-iteration/configs-bn003vrf/",
+    "state": "deployed, frr1/frr2 running; global BGP session established; VRF BLUE sessions Idle (zebra rejects 'ip vrf forwarding')"
+  },
+  "blocker": "zebra on quay.io/frrouting/frr:10.6.1 rejects 'ip vrf forwarding BLUE' under interface config; VRF stays inactive; kernel VRF creation works in container",
+  "not_claimed": [
+    "genuine RD-instance BMP frames observed",
+    "synthetic fixture replacement in bn003 acceptance test",
+    "deployed browser/graph restart journey"
+  ]
+}

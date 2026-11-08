@@ -140,15 +140,16 @@
       {:else if filtered.length === 0}
         <div class="empty-state">No profiles match the filter.</div>
       {:else}
-        <ul class="profile-list">
+        <ul class="profile-list" role="listbox" aria-label="Collection profiles">
           {#each filtered as p}
             <li
               class="profile-row"
               class:active={selected?.name === p.name}
               onclick={() => selected = p}
-              role="button"
+              role="option"
+              aria-selected={selected?.name === p.name}
               tabindex="0"
-              onkeydown={(e) => e.key === 'Enter' && (selected = p)}
+              onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (selected = p)}
             >
               <div class="profile-name">{p.name}</div>
               <div class="badge-row">
@@ -277,8 +278,8 @@
         <div class="detail-card">
           <h3>Create Override</h3>
           <div class="form-group">
-            <label>Scope Type</label>
-            <select bind:value={newOverride.type} class="search-input">
+            <label for="ov-scope-type">Scope Type</label>
+            <select id="ov-scope-type" bind:value={newOverride.type} class="search-input">
               <option value="site">Site</option>
               <option value="role_env">Role + Environment</option>
               <option value="device">Device</option>
@@ -286,13 +287,13 @@
           </div>
           {#if newOverride.type === "site"}
             <div class="form-group">
-              <label>Site ID</label>
-              <input bind:value={newOverride.site} class="search-input" placeholder="e.g. lab" />
+              <label for="ov-site-id">Site ID</label>
+              <input id="ov-site-id" bind:value={newOverride.site} class="search-input" placeholder="e.g. lab" />
             </div>
           {:else if newOverride.type === "role_env"}
             <div class="form-group">
-              <label>Environment</label>
-              <select bind:value={newOverride.environment} class="search-input">
+              <label for="ov-environment">Environment</label>
+              <select id="ov-environment" bind:value={newOverride.environment} class="search-input">
                 <option value="data_center">Data Center</option>
                 <option value="campus_wired">Campus Wired</option>
                 <option value="campus_wireless">Campus Wireless</option>
@@ -301,30 +302,30 @@
               </select>
             </div>
             <div class="form-group">
-              <label>Role</label>
-              <input bind:value={newOverride.role} class="search-input" placeholder="e.g. leaf" />
+              <label for="ov-role">Role</label>
+              <input id="ov-role" bind:value={newOverride.role} class="search-input" placeholder="e.g. leaf" />
             </div>
           {:else}
             <div class="form-group">
-              <label>Device Address</label>
-              <input bind:value={newOverride.device} class="search-input" placeholder="e.g. 10.0.0.1:57400" />
+              <label for="ov-device">Device Address</label>
+              <input id="ov-device" bind:value={newOverride.device} class="search-input" placeholder="e.g. 10.0.0.1:57400" />
             </div>
           {/if}
           <div class="form-group">
-            <label>Action</label>
-            <select bind:value={newOverride.action} class="search-input">
+            <label for="ov-action">Action</label>
+            <select id="ov-action" bind:value={newOverride.action} class="search-input">
               <option value="add">Add Path</option>
               <option value="drop">Drop Path</option>
               <option value="modify">Modify Path</option>
             </select>
           </div>
           <div class="form-group">
-            <label>Path</label>
-            <input bind:value={newOverride.path} class="search-input" placeholder="/interfaces/interface[name=*]/state/counters" />
+            <label for="ov-path">Path</label>
+            <input id="ov-path" bind:value={newOverride.path} class="search-input" placeholder="/interfaces/interface[name=*]/state/counters" />
           </div>
           <div class="form-group">
-            <label>Sample Interval (s)</label>
-            <input type="number" bind:value={newOverride.sample_interval_s} class="search-input" />
+            <label for="ov-interval">Sample Interval (s)</label>
+            <input id="ov-interval" type="number" bind:value={newOverride.sample_interval_s} class="search-input" />
           </div>
           <button class="primary-btn" style="margin-top:10px" onclick={createOverride}>Create</button>
         </div>

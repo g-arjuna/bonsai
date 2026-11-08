@@ -4,6 +4,7 @@
   Mounts globally in App.svelte.
 -->
 <script>
+  import { tick } from 'svelte';
   import { navigate } from '$lib/router.svelte.js';
 
   let open = $state(false);
@@ -82,8 +83,13 @@
 
   $effect(() => { selectedIdx = 0; });
 
-  function show() {
-    if (!open) { open = true; loadEntities(); }
+  async function show() {
+    if (!open) {
+      open = true;
+      loadEntities();
+      await tick();
+      inputEl?.focus();
+    }
   }
 
   function hide() {
@@ -136,7 +142,7 @@
 <svelte:window onkeydown={onKeydown} />
 
 {#if open}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="palette-backdrop" onclick={onBackdropClick} role="presentation">
     <div class="palette" role="dialog" aria-label="Command palette" aria-modal="true">
 
@@ -148,7 +154,6 @@
           placeholder="Go to workspace, device, site…"
           class="palette-input"
           aria-label="Search"
-          autofocus
         />
         <kbd class="esc-hint">ESC</kbd>
       </div>

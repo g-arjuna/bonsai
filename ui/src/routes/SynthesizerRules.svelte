@@ -168,16 +168,17 @@
       {:else if filtered.length === 0}
         <div class="empty-state">No items match.</div>
       {:else}
-        <ul class="item-list">
+        <ul class="item-list" role="listbox" aria-label="Config library items">
           {#each filtered as item}
             <li
               class="item-row"
               class:active={selected?.id === item.id}
               class:disabled={!item.enabled}
               onclick={() => selectItem(item)}
-              role="button"
+              role="option"
+              aria-selected={selected?.id === item.id}
               tabindex="0"
-              onkeydown={(e) => e.key === 'Enter' && selectItem(item)}
+              onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && selectItem(item)}
             >
               <div class="item-header">
                 <span class="item-name">{item.name || item.id}</span>
@@ -220,8 +221,8 @@
 
           {#if editing}
             <div class="edit-section">
-              <label class="edit-label">Content JSON</label>
-              <textarea bind:value={editJson} class="json-editor" rows="20" spellcheck="false"></textarea>
+              <label class="edit-label" for="edit-content-json">Content JSON</label>
+              <textarea id="edit-content-json" bind:value={editJson} class="json-editor" rows="20" spellcheck="false"></textarea>
               <div class="edit-actions">
                 <button class="primary-btn" onclick={saveEdit} disabled={saving}>
                   {saving ? 'Saving…' : 'Save'}

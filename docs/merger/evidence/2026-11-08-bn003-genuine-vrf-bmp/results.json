@@ -1,0 +1,43 @@
+{
+  "item": "BN-003",
+  "slice": "genuine router VRF export via FRR 10.6.2 kernel-VRF BMP",
+  "date": "2026-11-08",
+  "base_commit": "8017090f42e1d841908606feb3459b5953221cb0",
+  "status": "bonsai-ingestion-verified",
+  "lab": {
+    "name": "bonsai-bn003-vrf",
+    "topology": "lab/fast-iteration/bn003-frr-bmp-vrf/frr-bmp-vrf.clab.yml",
+    "image": "quay.io/frrouting/frr:10.6.2",
+    "state": "deployed; BLUE VRF active; eBGP session Established; 10.99.1.0/24 received"
+  },
+  "commands": [
+    {
+      "command": "containerlab deploy -t frr-bmp-vrf.clab.yml",
+      "result": "success"
+    },
+    {
+      "command": "python3 verify_bmp.py --seconds 240 --bind 0.0.0.0",
+      "result": "WIRE PROOF PASSED: peer-up type=1 RD=65000:100 + route-monitoring NLRI 10.99.1.0/24"
+    },
+    {
+      "command": "vtysh show vrf / show bgp vrf BLUE summary / show bgp vrf BLUE 10.99.1.0/24",
+      "result": "BLUE active table 1001; Established; valid best path"
+    }
+  ],
+  "artifacts": {
+    "genuine-bmp-stream.bin": "sha256:59d7a562b4bfe09403b6be8547fe77aac07a5ada9993c88f4428e134526d8ce9",
+    "verify_bmp.log": "sha256:c25b51817e29c687926658175d51ba5387c93f4d1c895ed2cfe673bce0b38fe7"
+  },
+  "not_claimed": [
+    "deployed browser/graph restart journey",
+    "acceptance-test fixture replacement"
+  ],
+  "bonsai_ingestion": {
+    "bmp_addr": "172.100.208.1:11029",
+    "http_addr": "127.0.0.1:18081",
+    "journal_dir": "/tmp/bn003-journal",
+    "peers": "RdInstance 65000:100 10.100.2.1 up; LocRib peer distinguished",
+    "routes": "10.99.1.0/24 in LocRib + AdjRibInPre/PostPolicy, peer_distinguisher 65000:100, exporter identity preserved",
+    "transport_gap": "bmp_tcp_eof from deliberate frr1 restart recorded; completeness_state=gap"
+  }
+}

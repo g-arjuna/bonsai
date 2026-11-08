@@ -34,7 +34,7 @@ capture only, not fresh FRR/browser or full second-NOS route acceptance.
 | BN-005 Partial — temporary exception | Prior strict closure and current strict-mode regression assertions remain; default `audit_only` now relaxes tenant/unsupported-VRF denials at user request. Mappings persist; admin policy endpoint can restore strict denials | Tenant isolation is not enforced in compatibility mode. Authentication, roles, speaker and supported RD restrictions remain. See [policy contract](architecture/ownership_mapping.md) |
 | BN-006 Complete (bounded live profile) | EOS 4.36.0F BMP lifecycle and offline startup-policy change across default and BLUE/RD 65001:100; cEOS software-FIB route/withdrawal probes; live SR Linux 26.3.1 collection through operator API and MCP; reconnect replay regression | No periodic scheduler, physical ASIC claim, IPv6, extra release/vendor coverage, or DuckDB EOR retirement parity. See [evidence and support limits](merger/evidence/2026-11-07-bn006-live/README.md) |
 | ML/research | Metrics/alignment/prototype smoke evidence remains | Trained held-out models, actual forecasting/provider comparisons remain separate gates |
-| Release hygiene | Format, strict selected-core Clippy and UI build pass | UI warnings and full-product release gates remain |
+| Release hygiene | Format, strict selected-core Clippy and UI build pass; UI build warning-free with route-level code splitting and live-doc links verified (8 Nov, [UI](merger/evidence/2026-11-08-bn019-ui-warnings/README.md), [links](merger/evidence/2026-11-08-bn019-link-debt/README.md)) | Full-product release gates remain |
 
 BN-005 closeout snapshot verification: **62 focused Rust tests**, **19 explorer unit tests**, **132 imported-crate tests**
 (**2 older FRR tests remain ignored and are not counted as passes**), and **12 live
@@ -50,9 +50,12 @@ block access. Speaker and supported routing RD filters remain. This default is
 not a tenant isolation guarantee. Use the admin policy API to restore `strict`.
 The original closeout manifest identifies its earlier tested source snapshot.
 
-**Next action:** BN-007 merger/release audit. BN-003 genuine router VRF/deployed
-browser-graph parity, and BN-004 real provider evaluation remain open.
-Operational device writes remain disabled.
+**Next action:** BN-019 operational/release proof (install/upgrade, packaged
+build, lab browser acceptance, backups/recovery, soak); UI warning and
+link/provenance debt are cleared. BN-009/BN-013 intake triage remains doable
+without external deps.
+BN-003 genuine router VRF/deployed browser-graph parity, and BN-004 real
+provider evaluation remain open. Operational device writes remain disabled.
 
 BN-007 intake (8 November): legacy/duplicate-authority inventory completed;
 fixed a settings-API path that could spawn a second BMP authority, a dead
@@ -64,6 +67,59 @@ via `bonsai_graph` volumes. Leftovers disposed: rbmp crates versioned to
 0.2.0, `duckdb-store` kept optional-disabled pending EOR parity, legacy
 receiver retirement still blocked on projection parity, CI/install gates
 deferred to BN-019. Evidence: [BN-007 audit](merger/evidence/2026-11-08-bn007-audit/README.md).
+
+BN-009 lifecycle slice (8 November): `collector_engine.py` heartbeat
+`status_json` now reports uptime/cpu/rss/queue-depth/drops/rules-loaded
+(stdlib /proc, null-safe); Sidecars UI gained a gRPC-registry panel rendering
+`/api/sidecars` with parsed metrics — the registry was previously not
+surfaced in the UI. Verified: py_compile, /proc parsing, clean UI build.
+Supervision/resource-limit gaps closed by inspection (single combined
+sidecar unit + `BONSAI_SIDECAR_MAX_MEM_MB` enforcement). Remaining: live
+heartbeat exercise and the restart/overload soak acceptance.
+Evidence: [BN-009 lifecycle](merger/evidence/2026-11-08-bn009-lifecycle/README.md).
+
+BN-009 intake reconciliation (8 November): existing sidecar lifecycle
+surfaces inventoried — registry/heartbeat/stale-lost, `BONSAI_REQUIRE_SIDECAR`
+health gate, `/api/ml/{exports,schedules,jobs}` incl. cancel, job_engine
+memory-pressure shedding, `/sidecars` UI route, rules-sidecar systemd unit.
+Build should extend these; gaps are unified event contract, watchdog
+coverage, backlog visibility, per-sidecar resource metrics, soak acceptance.
+Evidence: [BN-009 intake](merger/evidence/2026-11-08-bn009-intake/README.md).
+
+BN-003 genuine VRF BMP — WIRE PROOF PASSED (8 November): rebuilt the lab
+per FRR 10.6.2 research — kernel VRF BLUE provisioned as root before FRR
+start (`bootstrap.sh` via containerlab `cmd:`), `rd vpn export 65000:100` in
+the VRF BGP instance, real eBGP route `10.99.1.0/24` from frr2. FRR emitted
+genuine BMP Peer Up + Route Monitoring with peer type=1 RD-instance
+distinguisher 65000:100 — verified on the wire by `verify_bmp.py`, 5 frames
+captured. Earlier failure root-caused: FRR does not create Linux VRFs and
+never needed the capability workaround. Lab `bonsai-bn003-vrf` left running.
+Remaining: deployed
+browser/graph restart journey and acceptance-test fixture replacement.
+Phase 2 same day: `bonsai-routing` ingested the genuine stream — RdInstance
+peer 65000:100 up, `10.99.1.0/24` in LocRib + AdjRibIn pre/post-policy views
+with VRF key/exporter identity preserved; restart gap honestly recorded.
+Evidence:
+[genuine VRF BMP](merger/evidence/2026-11-08-bn003-genuine-vrf-bmp/README.md).
+Earlier blocked attempt:
+[BN-003 VRF lab](merger/evidence/2026-11-08-bn003-vrf-lab/README.md). NetBox restarted (healthy, 8 seeded
+devices); Splunk/Elastic/Kibana/Grafana/Prometheus confirmed up; stale clab
+containers removed. Evidence:
+[BN-003 VRF lab](merger/evidence/2026-11-08-bn003-vrf-lab/README.md).
+
+BN-019 link/provenance debt (8 November): scripted check of 164 relative links
+across 84 live docs found 4 dead links (absolute `file://`/machine paths, two
+pre-consolidation backlog paths, and a never-committed CV7 sprint doc in
+`sidecars.md`); all fixed, re-check clean. Archived backlogs excluded per their
+freeze policy; `B10_IMPORT_MANIFEST.md`, `LICENSE`, `NOTICE` verified present.
+Evidence: [link debt](merger/evidence/2026-11-08-bn019-link-debt/README.md).
+
+BN-019 progress (8 November): UI accessibility/bundle warning debt cleared —
+zero-warning `vite build`, route-level code splitting (entry 637 kB → 98 kB),
+proper label/listbox/dialog semantics and programmatic palette focus. Browser
+smoke over 15 hash routes passed on `vite preview`. Install/upgrade, lab
+acceptance, backup/recovery and soak gates remain. Evidence:
+[BN-019 UI warnings](merger/evidence/2026-11-08-bn019-ui-warnings/README.md).
 
 BN-002 progress (8 November): signing keys and revocations are now durable in a
 versioned key store beside the executor journal — register/rotate-overlap/revoke

@@ -10,4 +10,18 @@ export default defineConfig({
       '$lib': path.resolve(__dirname, 'src/lib'),
     },
   },
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            {
+              name: 'vendor',
+              test: /node_modules/,
+            },
+          ],
+        },
+      },
+    },
+  },
 })
