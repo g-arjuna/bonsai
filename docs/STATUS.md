@@ -50,9 +50,11 @@ block access. Speaker and supported routing RD filters remain. This default is
 not a tenant isolation guarantee. Use the admin policy API to restore `strict`.
 The original closeout manifest identifies its earlier tested source snapshot.
 
-**Next action:** BN-019 operational/release proof (install/upgrade, packaged
-build, lab browser acceptance, backups/recovery, soak); UI warning and
-link/provenance debt are cleared. BN-009/BN-013 intake triage remains doable
+**Next action:** BN-019 operational/release proof — packaged build/boot,
+volume backup→restore, and install-from-package/upgrade-in-place drills are
+done; remaining are lab browser acceptance against the packaged deployment,
+`bonsai-migrate` live drill, soak (shared with BN-009), and handoff
+reconciliation. UI warning and link/provenance debt are cleared. BN-009/BN-013 intake triage remains doable
 without external deps.
 BN-003 genuine router VRF/deployed browser-graph parity, and BN-004 real
 provider evaluation remain open. Operational device writes remain disabled.
@@ -119,6 +121,20 @@ fixing project-prefix resolution in `backup_volumes.sh`/
 `restore_volumes.sh`. Install/upgrade, lab browser acceptance, soak and
 handoff reconciliation remain. Evidence:
 [packaged build](merger/evidence/2026-11-08-bn019-packaged-build/README.md).
+
+BN-019 install + upgrade drill (8 November): `scripts/install.sh` executed
+end-to-end in an isolated Compose project (pristine clone @ `ec50410`,
+project `bn019inst`, ports remapped to 13000/25051/127.0.0.1:11020 via
+`COMPOSE_FILE`/`COMPOSE_PROJECT_NAME` — running deployment and lab
+`bonsai-routing` untouched). Install-from-package PASS: build → both
+containers healthy → `/health` ok, JWT login, all `/api/routing/v1/*`
+200 (`prefix-journey` requires `?prefix=`). Idempotent re-run is a no-op
+(byte-identical image, no container recreation). Upgrade-in-place PASS:
+forced new image (`sha256:e5c32496c77f`) recreated both containers; graph
+volume sentinel, admin login and routing proxy verified post-upgrade.
+Not exercised: interactive passphrase prompt, `--source`/`--uninstall`/
+`--verify`. Evidence:
+[install drill](merger/evidence/2026-11-08-bn019-install/README.md).
 
 BN-019 link/provenance debt (8 November): scripted check of 164 relative links
 across 84 live docs found 4 dead links (absolute `file://`/machine paths, two

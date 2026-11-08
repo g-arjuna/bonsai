@@ -1,0 +1,270 @@
+[0;32m[bonsai][0m Platform: linux/x86_64
+[0;32m[bonsai][0m Repository: /tmp/bn019-install
+
+[1mBonsai — Network Intelligence Platform[0m
+Version: ec50410
+
+
+[1m── Docker Compose install (standalone profile) ──[0m
+[0;32m[bonsai][0m BONSAI_VAULT_PASSPHRASE already set in .env.
+
+[1m── Building bonsai image ──[0m
+ Image bonsai:latest Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 950B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile.bonsai
+#2 transferring dockerfile: 5.23kB done
+#2 DONE 0.0s
+
+#3 resolve image config for docker-image://docker.io/docker/dockerfile:1.7
+#3 DONE 0.3s
+
+#4 docker-image://docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+#4 CACHED
+
+#5 [internal] load metadata for docker.io/library/debian:trixie-slim
+#5 DONE 0.0s
+
+#6 [internal] load metadata for docker.io/library/node:20-alpine
+#6 ...
+
+#7 [internal] load metadata for docker.io/lukemathwalker/cargo-chef:latest-rust-1.95-trixie
+#7 DONE 0.0s
+
+#6 [internal] load metadata for docker.io/library/node:20-alpine
+#6 DONE 0.3s
+
+#8 [internal] load .dockerignore
+#8 transferring context: 494B done
+#8 DONE 0.0s
+
+#9 [runtime  1/10] FROM docker.io/library/debian:trixie-slim
+#9 DONE 0.0s
+
+#10 [bonpy-builder 1/7] FROM docker.io/library/node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
+#10 DONE 0.0s
+
+#11 [chef 1/3] FROM docker.io/lukemathwalker/cargo-chef:latest-rust-1.95-trixie
+#11 DONE 0.0s
+
+#12 [internal] load build context
+#12 transferring context: 149.54kB 0.1s done
+#12 DONE 0.1s
+
+#13 [ui-builder 3/7] COPY ui/package.json ui/package-lock.json ./
+#13 CACHED
+
+#14 [ui-builder 2/7] WORKDIR /ui
+#14 CACHED
+
+#15 [ui-builder 4/7] RUN npm ci
+#15 CACHED
+
+#16 [chef 2/3] WORKDIR /app
+#16 CACHED
+
+#17 [rust-planner 1/3] COPY Cargo.toml Cargo.lock ./
+#17 CACHED
+
+#18 [rust-planner 3/3] RUN cargo chef prepare --recipe-path recipe.json
+#18 CACHED
+
+#19 [rust-planner 2/3] COPY crates ./crates
+#19 CACHED
+
+#20 [rust-builder 1/4] COPY --from=rust-planner /app/recipe.json recipe.json
+#20 CACHED
+
+#21 [chef 3/3] RUN apt-get update     && apt-get install -y --no-install-recommends         ca-certificates         clang         cmake         g++         make         mold         pkg-config         protobuf-compiler         sccache     && rm -rf /var/lib/apt/lists/*
+#21 CACHED
+
+#22 [rust-builder 2/4] RUN --mount=type=cache,target=/usr/local/cargo/registry     --mount=type=cache,target=/usr/local/cargo/git     --mount=type=cache,target=/app/target     --mount=type=cache,target=/root/.cache/sccache     cargo chef cook --release --recipe-path recipe.json
+#22 CACHED
+
+#23 [ui-builder 5/7] COPY ui/index.html ui/svelte.config.js ui/vite.config.js ./
+#23 DONE 0.1s
+
+#24 [ui-builder 6/7] COPY ui/src ./src
+#24 DONE 0.1s
+
+#25 [rust-builder 3/4] COPY . .
+#25 DONE 0.5s
+
+#26 [ui-builder 7/7] RUN npm run build
+#26 0.573 
+#26 0.573 > ui@0.0.0 build
+#26 0.573 > vite build
+#26 0.573 
+#26 1.558 vite v8.0.14 building client environment for production...
+#26 1.585 [2Ktransforming...
+#26 ...
+
+#27 [rust-builder 4/4] RUN --mount=type=cache,target=/usr/local/cargo/registry     --mount=type=cache,target=/usr/local/cargo/git     --mount=type=cache,target=/app/target     --mount=type=cache,target=/root/.cache/sccache     cargo build --release --bin bonsai --bin bonsai-routing --bin healthcheck     && cp /app/target/release/bonsai /app/bonsai     && cp /app/target/release/bonsai-routing /app/bonsai-routing     && cp /app/target/release/healthcheck /app/healthcheck     && find /app/target/release/build -name 'liblbug.so.0' -exec cp -L {} /app/liblbug.so.0 ;     && test -f /app/liblbug.so.0     && strip /app/bonsai     && strip /app/bonsai-routing     && strip /app/healthcheck     && strip --strip-debug /app/liblbug.so.0
+#27 0.885    Compiling bonsai v0.2.0 (/app)
+#27 ...
+
+#26 [ui-builder 7/7] RUN npm run build
+#26 1.585 [2Ktransforming...✓ 4382 modules transformed.
+#26 11.02 rendering chunks...
+#26 11.22 computing gzip size...
+#26 11.23 dist/index.html                              0.91 kB │ gzip:  0.49 kB
+#26 11.23 dist/assets/Credentials-B8ZOODJG.css         0.26 kB │ gzip:  0.19 kB
+#26 11.23 dist/assets/Devices-kkJBlgtO.css             0.69 kB │ gzip:  0.31 kB
+#26 11.23 dist/assets/Environments-DjS07TPk.css        1.32 kB │ gzip:  0.51 kB
+#26 11.23 dist/assets/Audit-D8l50QhK.css               1.39 kB │ gzip:  0.52 kB
+#26 11.23 dist/assets/Sites-CsS4H3IW.css               1.97 kB │ gzip:  0.68 kB
+#26 11.23 dist/assets/Governance-O2IWmCK4.css          2.50 kB │ gzip:  0.73 kB
+#26 11.23 dist/assets/Approvals-UefCT8B6.css           2.68 kB │ gzip:  0.86 kB
+#26 11.23 dist/assets/Endpoints-D2TLTZQo.css           3.13 kB │ gzip:  0.88 kB
+#26 11.23 dist/assets/HA-Xb9Bzpk9.css                  3.46 kB │ gzip:  0.87 kB
+#26 11.23 dist/assets/Collectors-FiPXdDAP.css          3.64 kB │ gzip:  1.00 kB
+#26 11.23 dist/assets/Snmp-Co64qwKn.css                3.66 kB │ gzip:  0.97 kB
+#26 11.23 dist/assets/Routing-B0Tn-MPE.css             4.01 kB │ gzip:  1.00 kB
+#26 11.23 dist/assets/Profiles-Cznzd6v9.css            4.31 kB │ gzip:  1.12 kB
+#26 11.23 dist/assets/StreamControl-6Pv1m0uz.css       4.37 kB │ gzip:  1.09 kB
+#26 11.23 dist/assets/Operations-BRSSdp_I.css          4.76 kB │ gzip:  1.16 kB
+#26 11.23 dist/assets/Investigations-CJq1TmNK.css      5.15 kB │ gzip:  1.33 kB
+#26 11.23 dist/assets/SynthesizerRules-BFjxUqzV.css    5.33 kB │ gzip:  1.35 kB
+#26 11.23 dist/assets/DbManagement-8-a4S8Kt.css        5.38 kB │ gzip:  1.35 kB
+#26 11.23 dist/assets/Users-BIsXuUzs.css               5.42 kB │ gzip:  1.32 kB
+#26 11.23 dist/assets/Sidecar-CD5LlqSL.css             6.65 kB │ gzip:  1.51 kB
+#26 11.23 dist/assets/Syslog-C9TSxXxF.css              6.76 kB │ gzip:  1.41 kB
+#26 11.23 dist/assets/TraceRoute-B3bCl7_A.css          6.85 kB │ gzip:  1.54 kB
+#26 11.23 dist/assets/Settings-4V4WuPpc.css            8.53 kB │ gzip:  1.87 kB
+#26 11.23 dist/assets/Incidents-Dsnq1Gpv.css           8.84 kB │ gzip:  1.98 kB
+#26 11.23 dist/assets/Certs-D701NUgl.css              10.06 kB │ gzip:  1.86 kB
+#26 11.23 dist/assets/Integrations-BHDVPnuJ.css       12.50 kB │ gzip:  2.28 kB
+#26 11.23 dist/assets/Explorer-CxzsolDX.css           13.82 kB │ gzip:  2.88 kB
+#26 11.23 dist/assets/index-BYIMnOaE.css              48.36 kB │ gzip:  9.70 kB
+#26 11.23 dist/assets/Audit-OH3a9iql.js                3.11 kB │ gzip:  1.54 kB
+#26 11.23 dist/assets/Governance-BVZr8_BI.js           5.11 kB │ gzip:  2.10 kB
+#26 11.23 dist/assets/Credentials-C_BixkhW.js          6.01 kB │ gzip:  2.24 kB
+#26 11.23 dist/assets/Endpoints-DyqMvENT.js            6.16 kB │ gzip:  2.35 kB
+#26 11.23 dist/assets/Devices-CjhoRozd.js              6.17 kB │ gzip:  2.75 kB
+#26 11.23 dist/assets/Environments-DQftULS8.js         6.80 kB │ gzip:  2.56 kB
+#26 11.23 dist/assets/StreamControl-DXwIu5Df.js        7.02 kB │ gzip:  2.84 kB
+#26 11.23 dist/assets/SynthesizerRules-CVdf1vu1.js     7.66 kB │ gzip:  2.88 kB
+#26 11.23 dist/assets/HA-akhZx5pU.js                   8.24 kB │ gzip:  2.67 kB
+#26 11.23 dist/assets/TraceRoute-BQItqL-k.js           8.72 kB │ gzip:  3.06 kB
+#26 11.23 dist/assets/Investigations-BFhW0Yik.js       9.65 kB │ gzip:  3.34 kB
+#26 11.23 dist/assets/Syslog-RVPZDpEB.js              10.61 kB │ gzip:  3.61 kB
+#26 11.23 dist/assets/Approvals-C-aWZZx3.js           10.63 kB │ gzip:  3.69 kB
+#26 11.23 dist/assets/Snmp-CMAtCIMv.js                10.83 kB │ gzip:  3.68 kB
+#26 11.23 dist/assets/Incidents-CKh0SUIr.js           11.05 kB │ gzip:  4.15 kB
+#26 11.23 dist/assets/Sites-C6K_Wtzy.js               12.95 kB │ gzip:  4.35 kB
+#26 11.23 dist/assets/Profiles-B9wwOK1x.js            13.02 kB │ gzip:  4.17 kB
+#26 11.23 dist/assets/Collectors-CIATNOp-.js          13.24 kB │ gzip:  4.16 kB
+#26 11.23 dist/assets/Sidecar-Ca_T0NUZ.js             14.11 kB │ gzip:  4.84 kB
+#26 11.23 dist/assets/Users-DkBRbfcw.js               15.45 kB │ gzip:  5.06 kB
+#26 11.23 dist/assets/Certs-BA3JKmkP.js               18.36 kB │ gzip:  6.13 kB
+#26 11.23 dist/assets/Settings-BfnZO2dZ.js            21.09 kB │ gzip:  6.32 kB
+#26 11.23 dist/assets/DbManagement-CddKknzJ.js        22.15 kB │ gzip:  6.20 kB
+#26 11.23 dist/assets/Operations-D_7wOEJC.js          26.37 kB │ gzip:  6.88 kB
+#26 11.23 dist/assets/Explorer-Bq8qSTDq.js            28.56 kB │ gzip:  8.15 kB
+#26 11.23 dist/assets/Routing-BY6yQPhz.js             32.69 kB │ gzip:  9.48 kB
+#26 11.23 dist/assets/Integrations-YsI5GDCe.js        40.63 kB │ gzip: 10.54 kB
+#26 11.23 dist/assets/Onboarding-DMVoF8nV.js          62.38 kB │ gzip: 18.14 kB
+#26 11.23 dist/assets/index-DHWeHJUN.js               97.72 kB │ gzip: 27.68 kB
+#26 11.23 dist/assets/vendor-CHeVoQBM.js             118.08 kB │ gzip: 41.81 kB
+#26 11.23 
+#26 11.23 [33m[PLUGIN_TIMINGS] [0mYour build spent significant time in plugins. Here is a breakdown:
+#26 11.23   - vite-plugin-svelte:load-custom (64%)
+#26 11.23   - vite-plugin-svelte:compile (33%)
+#26 11.23 See https://rolldown.rs/options/checks#plugintimings for more details.
+#26 11.23 
+#26 11.23 ✓ built in 9.67s
+#26 DONE 11.4s
+
+#27 [rust-builder 4/4] RUN --mount=type=cache,target=/usr/local/cargo/registry     --mount=type=cache,target=/usr/local/cargo/git     --mount=type=cache,target=/app/target     --mount=type=cache,target=/root/.cache/sccache     cargo build --release --bin bonsai --bin bonsai-routing --bin healthcheck     && cp /app/target/release/bonsai /app/bonsai     && cp /app/target/release/bonsai-routing /app/bonsai-routing     && cp /app/target/release/healthcheck /app/healthcheck     && find /app/target/release/build -name 'liblbug.so.0' -exec cp -L {} /app/liblbug.so.0 ;     && test -f /app/liblbug.so.0     && strip /app/bonsai     && strip /app/bonsai-routing     && strip /app/healthcheck     && strip --strip-debug /app/liblbug.so.0
+#27 ...
+
+#28 [bonpy-builder 4/7] RUN npm ci
+#28 CACHED
+
+#29 [bonpy-builder 2/7] WORKDIR /ui-bonpy
+#29 CACHED
+
+#30 [bonpy-builder 5/7] COPY ui-bonpy/index.html ui-bonpy/svelte.config.js ui-bonpy/vite.config.js ./
+#30 CACHED
+
+#31 [bonpy-builder 6/7] COPY ui-bonpy/src ./src
+#31 CACHED
+
+#32 [bonpy-builder 3/7] COPY ui-bonpy/package.json ui-bonpy/package-lock.json ./
+#32 CACHED
+
+#33 [bonpy-builder 7/7] RUN npm run build
+#33 CACHED
+
+#27 [rust-builder 4/4] RUN --mount=type=cache,target=/usr/local/cargo/registry     --mount=type=cache,target=/usr/local/cargo/git     --mount=type=cache,target=/app/target     --mount=type=cache,target=/root/.cache/sccache     cargo build --release --bin bonsai --bin bonsai-routing --bin healthcheck     && cp /app/target/release/bonsai /app/bonsai     && cp /app/target/release/bonsai-routing /app/bonsai-routing     && cp /app/target/release/healthcheck /app/healthcheck     && find /app/target/release/build -name 'liblbug.so.0' -exec cp -L {} /app/liblbug.so.0 ;     && test -f /app/liblbug.so.0     && strip /app/bonsai     && strip /app/bonsai-routing     && strip /app/healthcheck     && strip --strip-debug /app/liblbug.so.0
+#27 497.1     Finished `release` profile [optimized] target(s) in 8m 16s
+#27 DONE 498.0s
+
+#34 [runtime  2/10] WORKDIR /app
+#34 CACHED
+
+#35 [runtime  3/10] RUN apt-get update     && apt-get install -y --no-install-recommends         ca-certificates     && rm -rf /var/lib/apt/lists/*
+#35 CACHED
+
+#36 [runtime  4/10] RUN groupadd --gid 10001 bonsai     && useradd --uid 10001 --gid 10001 --no-create-home bonsai     && mkdir -p /app/runtime /app/bonsai-credentials     && chown -R bonsai:bonsai /app
+#36 CACHED
+
+#37 [runtime  5/10] COPY --from=rust-builder /app/bonsai         /usr/local/bin/bonsai
+#37 DONE 0.3s
+
+#38 [runtime  6/10] COPY --from=rust-builder /app/bonsai-routing /usr/local/bin/bonsai-routing
+#38 DONE 0.1s
+
+#39 [runtime  7/10] COPY --from=rust-builder /app/healthcheck    /usr/local/bin/healthcheck
+#39 DONE 0.1s
+
+#40 [runtime  8/10] COPY --from=rust-builder /app/liblbug.so.0   /usr/local/lib/liblbug.so.0
+#40 DONE 0.1s
+
+#41 [runtime  9/10] COPY --from=ui-builder   /ui/dist           /app/ui/dist
+#41 DONE 0.1s
+
+#42 [runtime 10/10] COPY --from=bonpy-builder /ui-bonpy/dist-bonpy /app/ui-bonpy/dist-bonpy
+#42 DONE 0.1s
+
+#43 exporting to image
+#43 exporting layers
+#43 exporting layers 0.5s done
+#43 writing image sha256:e5c32496c77ffa398bfd39dd5f00d6dd2d9b200bfeabd926f610ab5e85435d63 done
+#43 naming to docker.io/library/bonsai:latest done
+#43 DONE 0.5s
+
+#44 resolving provenance for metadata file
+#44 DONE 0.0s
+ Image bonsai:latest Built 
+
+[1m── Starting bonsai ──[0m
+ Container bn019inst-bonsai-routing-1 Recreate 
+ Container bn019inst-bonsai-routing-1 Recreated 
+ Container bn019inst-bonsai-standalone-1 Recreate 
+ Container bn019inst-bonsai-standalone-1 Recreated 
+ Container bn019inst-bonsai-routing-1 Starting 
+ Container bn019inst-bonsai-routing-1 Started 
+ Container bn019inst-bonsai-standalone-1 Starting 
+ Container bn019inst-bonsai-standalone-1 Started 
+
+[1m── Waiting for healthcheck ──[0m
+...
+
+[0;32m[1m────────────────────────────────────────────────────[0m
+[0;32m[1m  Bonsai is running![0m
+[0;32m[1m────────────────────────────────────────────────────[0m
+
+  UI:    http://localhost:3000
+  API:   http://localhost:3000/api
+  Docs:  http://localhost:3000/api/docs
+
+  Add your first device via the onboarding wizard.
+
+  Useful commands:
+    docker compose logs -f bonsai-standalone   # tail logs
+    docker compose --profile standalone stop    # stop
+    docker compose --profile standalone down    # stop + remove containers
+
