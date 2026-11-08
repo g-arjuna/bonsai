@@ -245,6 +245,7 @@ debug = 0              # no debug info in CI — smaller artifacts, faster link
 
 [profile.release]
 lto = "thin"           # thin LTO: ~80% of full-LTO benefit at ~30% of build time cost
-codegen-units = 1      # slower build, smaller + faster binary
+codegen-units = 16     # parallel codegen + parallel thin-LTO merge; cgu=1 made
+                       # the bonsai crate a single-threaded ~15-50 min bottleneck
 strip = "symbols"      # smaller binary for production
 incremental = false    # release builds don't benefit from incremental

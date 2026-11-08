@@ -107,6 +107,19 @@ devices); Splunk/Elastic/Kibana/Grafana/Prometheus confirmed up; stale clab
 containers removed. Evidence:
 [BN-003 VRF lab](merger/evidence/2026-11-08-bn003-vrf-lab/README.md).
 
+BN-019 packaged build + boot gate (8 November): `docker/Dockerfile.bonsai`
+now builds a working `bonsai:latest` image (added `protobuf-compiler`,
+`mold`, `sccache`; `CARGO_PROFILE_RELEASE_*` env pins so cargo-chef deps
+are reused — cook 12 s, bin step 9 m vs prior 15–47 min double compiles).
+Fixed container HEALTHCHECK (`/readyz`, was auth-gated `/api/readiness`)
+and gave `bonsai-routing` a token-authenticated probe. Standalone compose
+profile boots healthy; `/health` ok, UI served, all `/api/routing/v1/*`
+proxy endpoints 200 via JWT. Volume backup→restore drill passed after
+fixing project-prefix resolution in `backup_volumes.sh`/
+`restore_volumes.sh`. Install/upgrade, lab browser acceptance, soak and
+handoff reconciliation remain. Evidence:
+[packaged build](merger/evidence/2026-11-08-bn019-packaged-build/README.md).
+
 BN-019 link/provenance debt (8 November): scripted check of 164 relative links
 across 84 live docs found 4 dead links (absolute `file://`/machine paths, two
 pre-consolidation backlog paths, and a never-committed CV7 sprint doc in

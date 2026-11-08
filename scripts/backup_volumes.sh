@@ -7,6 +7,13 @@
 # Output directory defaults to ./backups/<timestamp>.
 # Each volume is written as a .tar.gz archive.
 # Restore with: scripts/restore_volumes.sh <backup-dir>
+#
+# Volume names: compose prefixes declared volumes with the project name
+# (e.g. bonsai_bonsai_graph_dev). This script resolves the logical volume
+# names below to the real Docker volume, trying in order:
+#   1. the literal name (unprefixed/custom-named volumes)
+#   2. <COMPOSE_PROJECT_NAME or cwd basename>_<name>
+#   3. a unique *_<name> suffix match across all volumes
 
 set -euo pipefail
 
@@ -14,17 +21,41 @@ TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
 OUTPUT_DIR="${1:-./backups/${TIMESTAMP}}"
 mkdir -p "${OUTPUT_DIR}"
 
-backup_volume() {
-    local volume="$1"
-    local out="${OUTPUT_DIR}/${volume}.tar.gz"
+resolve_volume() {
+    local logical="$1"
+    if docker volume inspect "${logical}" &>/dev/null; then
+        printf '%s\n' "${logical}"
+        return 0
+    fi
+    local project="${COMPOSE_PROJECT_NAME:-$(basename "$(pwd)")}"
+    local candidate="${project}_${logical}"
+    if docker volume inspect "${candidate}" &>/dev/null; then
+        printf '%s\n' "${candidate}"
+        return 0
+    fi
+    local match="" count=0 v
+    while IFS= read -r v; do
+        [[ -n "$v" ]] || continue
+        match="$v"
+        count=$((count + 1))
+    done < <(docker volume ls -q | grep -E "(^|_)${logical}\$" || true)
+    if [[ "${count}" -eq 1 ]]; then
+        printf '%s\n' "${match}"
+        return 0
+    fi
+    return 1
+}
 
-    # Check volume exists
-    if ! docker volume inspect "${volume}" &>/dev/null; then
-        echo "  [skip] volume '${volume}' does not exist"
+backup_volume() {
+    local logical="$1"
+    local volume
+    if ! volume="$(resolve_volume "${logical}")"; then
+        echo "  [skip] volume '${logical}' does not exist"
         return
     fi
+    local out="${OUTPUT_DIR}/${volume}.tar.gz"
 
-    echo "  Backing up ${volume} → ${out}"
+    echo "  Backing up ${volume} (logical: ${logical}) → ${out}"
     docker run --rm \
         -v "${volume}:/data:ro" \
         -v "$(realpath "${OUTPUT_DIR}"):/backup" \

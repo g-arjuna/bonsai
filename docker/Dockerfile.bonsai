@@ -10,14 +10,32 @@ RUN apt-get update \
         cmake \
         g++ \
         make \
+        mold \
         pkg-config \
+        protobuf-compiler \
+        sccache \
     && rm -rf /var/lib/apt/lists/*
 
 ENV CMAKE=/usr/bin/cmake \
     CMAKE_MAKE_PROGRAM=/usr/bin/make \
-    # sccache is not installed in the build container — explicitly unset so
-    # cargo does not try to call a missing binary.
-    RUSTC_WRAPPER=
+    # sccache caches crate compilations in a BuildKit cache mount so dep
+    # rebuilds across image builds are near-instant.
+    RUSTC_WRAPPER=sccache \
+    # Keep linker flags identical between `cargo chef cook` (which runs before
+    # .cargo/config.toml is copied) and `cargo build` so dep fingerprints match
+    # and cook artifacts are reused. Keep in sync with .cargo/config.toml.
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold -C link-arg=-Wl,--allow-multiple-definition" \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold -C link-arg=-Wl,--allow-multiple-definition" \
+    # cargo-chef's generated skeleton does NOT inherit workspace
+    # [profile.release] settings, so without these env overrides the cooked
+    # deps and the final `cargo build` have different fingerprints and EVERY
+    # dep compiles twice per image build. Keep in sync with Cargo.toml
+    # [profile.release].
+    CARGO_PROFILE_RELEASE_LTO="thin" \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS="16" \
+    CARGO_PROFILE_RELEASE_STRIP="symbols" \
+    CARGO_PROFILE_RELEASE_INCREMENTAL="false" \
+    CARGO_PROFILE_RELEASE_DEBUG="0"
 
 # ── Planner: only manifest files so source changes do not bust the cook cache ──
 FROM chef AS rust-planner
@@ -28,18 +46,19 @@ RUN cargo chef prepare --recipe-path recipe.json
 # ── Builder: cook deps (cache-stable), then compile the binaries ──────────────
 FROM chef AS rust-builder
 COPY --from=rust-planner /app/recipe.json recipe.json
-ENV RUSTC_WRAPPER=
 # Cook all dependencies. This layer only re-runs when Cargo.toml/Cargo.lock
 # changes — not on source or UI changes.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
+    --mount=type=cache,target=/root/.cache/sccache \
     cargo chef cook --release --recipe-path recipe.json
 # Now copy the full source tree and build the production binaries.
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
+    --mount=type=cache,target=/root/.cache/sccache \
     cargo build --release --bin bonsai --bin bonsai-routing --bin healthcheck \
     && cp /app/target/release/bonsai /app/bonsai \
     && cp /app/target/release/bonsai-routing /app/bonsai-routing \

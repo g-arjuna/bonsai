@@ -70,6 +70,11 @@ services:
       - BONSAI_ROUTING_BMP_JOURNAL=/app/runtime/routing-bmp.journal
       - BONSAI_ROUTING_EVENT_JOURNAL=/app/runtime/routing-events.jsonl
       - BONSAI_ROUTING_SERVICE_TOKEN=${BONSAI_ROUTING_SERVICE_TOKEN:?BONSAI_ROUTING_SERVICE_TOKEN is required — see .env.example}
+      # Container HEALTHCHECK probes this service's authenticated internal
+      # health endpoint (see src/bin/healthcheck.rs env overrides).
+      - BONSAI_HTTP_PORT=8081
+      - BONSAI_HEALTHCHECK_PATH=/internal/routing/v1/health
+      - BONSAI_HEALTHCHECK_TOKEN=${BONSAI_ROUTING_SERVICE_TOKEN}
     volumes:
       - bonsai_graph_dev:/app/runtime
     ports:
