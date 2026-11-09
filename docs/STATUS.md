@@ -143,6 +143,18 @@ exercise done same day (see above); remaining: restart/overload soak
 acceptance.
 Evidence: [BN-009 lifecycle](merger/evidence/2026-11-08-bn009-lifecycle/README.md).
 
+BN-013 first slice (9 November): traced one live incident journey on the
+packaged deployment. `/api/incidents` returns 2 grouped incidents with
+populated correlation chain/blast radius; `POST /api/investigations`
+creates a record (HTTP 200) but the AI investigation remains
+`status=running` with `tokens_used=0`/`tool_calls=[]` after ~55 s — likely
+no AI provider configured or a stalled spawn, and there is no
+failure/timeout transition. `completed_at_ns` equals `started_at_ns` while
+running; no incident→investigation automation exists. Break points
+recorded; next: adjudication/feedback endpoints and investigation
+lifecycle states. Evidence:
+[incident trace](merger/evidence/2026-11-09-bn013-incident-trace/README.md).
+
 BN-009 intake reconciliation (8 November): existing sidecar lifecycle
 surfaces inventoried — registry/heartbeat/stale-lost, `BONSAI_REQUIRE_SIDECAR`
 health gate, `/api/ml/{exports,schedules,jobs}` incl. cancel, job_engine
