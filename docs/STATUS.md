@@ -101,9 +101,13 @@ stale (~61 s) → lost (~125 s) → restart re-registered healthy with zero
 state durable); routing container restart replayed the journal to
 identical RIB state (`durable_sequence=297`, `peers_up=6`,
 `transport_gaps=1` unchanged — no synthesized withdrawals). Forward-queue
-overload unexercised (no detection source; device writes disabled);
-full-length soak window remains open. Evidence:
-[soak](merger/evidence/2026-11-09-bn009-soak/README.md).
+overload exercised same day via an env-gated synthetic detection injector
+(`BONSAI_TEST_DETECTION_COUNT`, off by default): with core unreachable the
+queue reached 946/1000, `queue_drops_today=549`, `priority_only_mode=true`,
+and graceful shutdown reported `drops=549` — no silent loss, drops are
+counted and surfaced. Full-length soak window remains open. Evidence:
+[soak](merger/evidence/2026-11-09-bn009-soak/README.md),
+[overload](merger/evidence/2026-11-09-bn009-forward-queue-overload/README.md).
 
 BN-009 graph snapshot slice (9 November): `/api/graph/snapshot` and the DB
 purge path were fixed by binding timestamps as Lbug `TimestampNs` parameters

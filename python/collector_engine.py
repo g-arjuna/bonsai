@@ -30,7 +30,7 @@ from typing import Generator, Optional
 sys.path.insert(0, str(Path(__file__).parent))
 
 from bonsai_sdk import BonsaiClient, RuleEngine
-from bonsai_sdk.detection import Detection
+from bonsai_sdk.detection import Detection, Features
 from generated import bonsai_service_pb2 as pb
 
 # Queue for forwarding detections to core
@@ -346,6 +346,43 @@ def on_detection(detection: Detection, local_client: BonsaiClient) -> None:
         print(f"[collector-engine] warning: forward queue full, dropping detection {detection.rule_id}")
 
 
+def _synthetic_detection_injector(local_addr: str) -> None:
+    """BN-009 test-only hook: fire synthetic detections through the real
+    on_detection() backpressure path. Disabled unless
+    BONSAI_TEST_DETECTION_COUNT > 0; used to exercise forward-queue
+    overload without device writes."""
+    count = int(os.environ.get("BONSAI_TEST_DETECTION_COUNT", "0"))
+    if count <= 0:
+        return
+    rate = float(os.environ.get("BONSAI_TEST_DETECTION_RATE", "0"))
+    severity = os.environ.get("BONSAI_TEST_DETECTION_SEVERITY", "info")
+    rule_id = os.environ.get("BONSAI_TEST_DETECTION_RULE", "bn009_overload_test")
+    interval = (1.0 / rate) if rate > 0 else 0.0
+    try:
+        client = BonsaiClient(local_addr)
+    except Exception:
+        client = None
+    for i in range(count):
+        det = Detection(
+            rule_id=rule_id,
+            severity=severity,
+            features=Features(
+                device_address="bn009-test.invalid",
+                event_type="bn009_synthetic",
+                detail={"seq": i},
+                occurred_at_ns=time.time_ns(),
+            ),
+            reason="BN-009 forward-queue overload test injection",
+        )
+        try:
+            on_detection(det, client)
+        except Exception as exc:
+            print(f"[collector-engine] injector detection {i} failed: {exc}")
+        if interval:
+            time.sleep(interval)
+    print(f"[collector-engine] injector complete: {count} detections fired")
+
+
 def _gather_capabilities() -> list[str]:
     """Best-effort list of rule_ids this sidecar will fire. Used as the
     `capabilities` field on RegisterSidecar so the bonpy UI knows what to
@@ -511,6 +548,16 @@ def main():
 
     # D4-9 T1: Start health HTTP endpoint (always reachable, even when disconnected)
     _start_health_server()
+
+    # BN-009 test hook: synthetic detection injector for forward-queue
+    # overload exercise. No-op unless BONSAI_TEST_DETECTION_COUNT is set.
+    if int(os.environ.get("BONSAI_TEST_DETECTION_COUNT", "0")) > 0:
+        threading.Thread(
+            target=_synthetic_detection_injector,
+            args=(local_addr,),
+            daemon=True,
+            name="bn009-test-injector",
+        ).start()
 
     # Start core forwarder in background (reconnects independently)
     threading.Thread(

@@ -1,0 +1,23 @@
+[collector-engine] queue >95% full — dropping info bn009_overload_test
+[collector-engine] queue >95% full — dropping info bn009_overload_test
+[collector-engine] queue >95% full — dropping info bn009_overload_test
+[collector-engine] queue >95% full — dropping info bn009_overload_test
+[collector-engine] queue >95% full — dropping info bn009_overload_test
+[collector-engine] queue >95% full — dropping info bn009_overload_test
+[collector-engine] queue >95% full — dropping info bn009_overload_test
+[collector-engine] queue >95% full — dropping info bn009_overload_test
+[collector-engine] queue >95% full — dropping info bn009_overload_test
+[collector-engine] queue >95% full — dropping info bn009_overload_test
+[collector-engine] queue >95% full — dropping info bn009_overload_test
+[collector-engine] queue >95% full — dropping info bn009_overload_test
+[collector-engine] queue >95% full — dropping info bn009_overload_test
+[collector-engine] queue >95% full — dropping info bn009_overload_test
+[collector-engine] queue >95% full — dropping info bn009_overload_test
+	debug_error_string = "UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:9: Failed to connect to remote host: Connection refused", grpc_status:14}"
+> -- reconnecting in 5s
+[engine] stream error: Not connected — use BonsaiClient as a context manager or call connect() -- reconnecting in 5s
+[collector-engine] shutdown: flushed 945 pending detections
+[collector-engine] snapshot buffer persisted
+[collector-engine] job engine stopped
+[collector-engine] graceful shutdown complete. drops=549
+2026-11-09 11:08:11,050 INFO apscheduler._schedulers.async_: Scheduler stopped
