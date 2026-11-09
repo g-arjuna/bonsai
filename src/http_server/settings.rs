@@ -786,10 +786,17 @@ pub struct LlmProviderEntry {
     pub active: bool,
     #[serde(default)]
     pub has_api_key: bool,
+    /// Gemini only: "interactions" (default) or "generate_content" (legacy).
+    #[serde(default = "default_gemini_api_style")]
+    pub api_style: String,
 }
 
 fn default_provider_active() -> bool {
     true
+}
+
+fn default_gemini_api_style() -> String {
+    "interactions".to_string()
 }
 
 fn llm_alias(name: &str) -> String {
@@ -833,6 +840,9 @@ pub struct UpsertAiProviderRequest {
     pub active: bool,
     #[serde(default)]
     pub api_key: String,
+    /// Gemini only: "interactions" (default) or "generate_content" (legacy).
+    #[serde(default)]
+    pub api_style: String,
 }
 
 pub async fn upsert_ai_provider_handler(
@@ -840,6 +850,16 @@ pub async fn upsert_ai_provider_handler(
     Json(body): Json<UpsertAiProviderRequest>,
 ) -> Result<Json<LlmProviderEntry>, (StatusCode, String)> {
     let alias = llm_alias(&body.name);
+    let api_style = if body.api_style.is_empty() {
+        default_gemini_api_style()
+    } else if body.api_style == "interactions" || body.api_style == "generate_content" {
+        body.api_style.clone()
+    } else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "api_style must be 'interactions' or 'generate_content'".to_string(),
+        ));
+    };
     let meta = LlmProviderEntry {
         name: body.name.clone(),
         provider: body.provider.clone(),
@@ -847,6 +867,7 @@ pub async fn upsert_ai_provider_handler(
         base_url: body.base_url.clone(),
         active: body.active,
         has_api_key: false,
+        api_style,
     };
     let username_json =
         serde_json::to_string(&meta).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
@@ -946,6 +967,7 @@ pub async fn test_ai_provider_handler(
         model: meta.model.clone(),
         api_key_env: tmp_env.clone(),
         base_url: meta.base_url.clone(),
+        gemini_api_style: meta.api_style.clone(),
         ..Default::default()
     };
     let result = match crate::ai_provider::build_provider(&cfg) {
@@ -1029,6 +1051,7 @@ pub async fn resolve_active_ai_provider(
                         model: meta.model,
                         base_url: meta.base_url,
                         api_key_env: String::new(),
+                        gemini_api_style: meta.api_style,
                         ..Default::default()
                     };
                     return Some((cfg, api_key));

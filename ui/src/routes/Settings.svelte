@@ -16,7 +16,7 @@
   // ── LLM Provider management (D4-3 T5) ─────────────────────────────────────
   let llmProviders = $state([]);
   let showProviderForm = $state(false);
-  let providerForm = $state({ name: '', provider: 'anthropic', model: '', base_url: '', api_key: '', active: true });
+  let providerForm = $state({ name: '', provider: 'anthropic', model: '', base_url: '', api_key: '', active: true, api_style: 'interactions' });
   let providerSaving = $state(false);
   let providerTesting = $state({});   // name → {loading, result}
   let activeProviderName = $state(null);  // vault-backed active provider name
@@ -198,7 +198,7 @@
       if (!r.ok) throw new Error(await r.text());
       toast('Provider saved', 'success');
       showProviderForm = false;
-      providerForm = { name: '', provider: 'anthropic', model: '', base_url: '', api_key: '', active: true };
+      providerForm = { name: '', provider: 'anthropic', model: '', base_url: '', api_key: '', active: true, api_style: 'interactions' };
       await loadProviders();
     } catch (e) {
       toast(`Save failed: ${e.message}`, 'error');
@@ -238,7 +238,7 @@
   }
 
   function editProvider(p) {
-    providerForm = { name: p.name, provider: p.provider, model: p.model, base_url: p.base_url || '', api_key: '', active: p.active };
+    providerForm = { name: p.name, provider: p.provider, model: p.model, base_url: p.base_url || '', api_key: '', active: p.active, api_style: p.api_style || 'interactions' };
     showProviderForm = true;
   }
 
@@ -467,6 +467,16 @@
           <label>Model<input type="text" bind:value={providerForm.model} placeholder="model name" /></label>
           <label>Base URL (optional)<input type="text" bind:value={providerForm.base_url} placeholder="https://..." /></label>
         </div>
+        {#if providerForm.provider === 'gemini'}
+          <div class="pf-row">
+            <label>Gemini API
+              <select bind:value={providerForm.api_style}>
+                <option value="interactions">Interactions API (recommended)</option>
+                <option value="generate_content">generateContent (legacy)</option>
+              </select>
+            </label>
+          </div>
+        {/if}
         <div class="pf-row">
           <label>API Key<input type="password" bind:value={providerForm.api_key} placeholder="leave blank to keep existing" /></label>
           <label class="toggle-label">

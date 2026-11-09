@@ -278,6 +278,10 @@ pub struct AiConfig {
     /// Leave empty for cloud providers (OpenAI/Anthropic/Gemini default endpoints).
     #[serde(default)]
     pub base_url: String,
+    /// Gemini API style: "interactions" (recommended) or "generate_content" (legacy).
+    /// Ignored by non-Gemini providers.
+    #[serde(default = "default_gemini_api_style")]
+    pub gemini_api_style: String,
 }
 
 impl Default for AiConfig {
@@ -290,8 +294,13 @@ impl Default for AiConfig {
             daily_budget_usd: default_ai_daily_budget(),
             auto_investigate_unmatched: false,
             base_url: String::new(),
+            gemini_api_style: default_gemini_api_style(),
         }
     }
+}
+
+fn default_gemini_api_style() -> String {
+    "interactions".to_string()
 }
 
 fn default_ai_provider() -> String {

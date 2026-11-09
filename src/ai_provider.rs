@@ -90,7 +90,11 @@ pub fn build_provider_with_key(
     api_key: String,
 ) -> Result<Box<dyn AiProvider>> {
     match cfg.provider.as_str() {
-        "gemini" => Ok(Box::new(GeminiProvider::new(cfg.model.clone(), api_key))),
+        "gemini" => Ok(Box::new(GeminiProvider::new(
+            cfg.model.clone(),
+            api_key,
+            cfg.gemini_api_style.clone(),
+        ))),
         "moonshot" => Ok(Box::new(MoonshotProvider::new(cfg.model.clone(), api_key))),
         "openai" => {
             let base = if cfg.base_url.is_empty() {
@@ -146,19 +150,158 @@ pub fn build_provider(cfg: &crate::config::AiConfig) -> Result<Box<dyn AiProvide
 pub struct GeminiProvider {
     model: String,
     api_key: String,
+    api_style: String,
     client: reqwest::Client,
 }
 
 impl GeminiProvider {
-    pub fn new(model: String, api_key: String) -> Self {
+    pub fn new(model: String, api_key: String, api_style: String) -> Self {
         Self {
             model,
             api_key,
+            api_style,
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
         }
+    }
+
+    /// Interactions API (POST /v1beta/interactions) — the current Gemini
+    /// interface. Stateless: full input timeline is sent each call with
+    /// store=false; function calls/results are mapped to typed input items.
+    async fn complete_interactions(
+        &self,
+        messages: Vec<AiMessage>,
+        tools: Vec<AiToolDef>,
+    ) -> Result<AiResponse> {
+        let url = "https://generativelanguage.googleapis.com/v1beta/interactions";
+
+        let mut input: Vec<serde_json::Value> = Vec::new();
+        for msg in &messages {
+            if msg.role == "system" {
+                input.push(serde_json::json!({
+                    "type": "text",
+                    "text": format!("System instructions:\n{}", msg.content.as_deref().unwrap_or(""))
+                }));
+                continue;
+            }
+            if !msg.tool_calls.is_empty() {
+                for tc in &msg.tool_calls {
+                    input.push(serde_json::json!({
+                        "type": "function_call",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "arguments": tc.arguments,
+                    }));
+                }
+                if let Some(c) = msg.content.as_deref() {
+                    if !c.is_empty() {
+                        input.push(serde_json::json!({"type": "text", "text": c}));
+                    }
+                }
+                continue;
+            }
+            if msg.role == "tool" {
+                input.push(serde_json::json!({
+                    "type": "function_result",
+                    "call_id": msg.tool_call_id.as_deref().unwrap_or(""),
+                    "name": "",
+                    "result": [{"type": "text", "text": msg.content.as_deref().unwrap_or("")}],
+                }));
+                continue;
+            }
+            input.push(serde_json::json!({
+                "type": "text",
+                "text": msg.content.as_deref().unwrap_or("")
+            }));
+        }
+
+        let mut body = serde_json::json!({
+            "model": self.model,
+            "store": false,
+            "input": input,
+        });
+        if !tools.is_empty() {
+            body["tools"] = serde_json::json!(tools
+                .iter()
+                .map(|t| serde_json::json!({
+                    "type": "function",
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                }))
+                .collect::<Vec<_>>());
+        }
+
+        let resp = self
+            .client
+            .post(url)
+            .header("x-goog-api-key", &self.api_key)
+            .header("Api-Revision", "2026-05-20")
+            .json(&body)
+            .send()
+            .await
+            .context("Gemini HTTP request failed")?;
+        let status = resp.status();
+        let text = resp.text().await.context("Gemini response read failed")?;
+        if !status.is_success() {
+            bail!("Gemini API error {}: {}", status, text);
+        }
+        let json: serde_json::Value =
+            serde_json::from_str(&text).context("Gemini response JSON parse failed")?;
+
+        let tokens_used = json["usage"]["total_tokens"]
+            .as_u64()
+            .or_else(|| json["usageMetadata"]["totalTokenCount"].as_u64())
+            .unwrap_or(0);
+        let cost_usd = gemini_cost_usd(&self.model, tokens_used);
+
+        let mut text_parts: Vec<String> = Vec::new();
+        let mut tool_calls: Vec<AiToolCall> = Vec::new();
+        if let Some(steps) = json["steps"].as_array() {
+            for step in steps {
+                match step["type"].as_str() {
+                    Some("model_output") => {
+                        if let Some(content) = step["content"].as_array() {
+                            for part in content {
+                                if part["type"].as_str() == Some("text") {
+                                    if let Some(t) = part["text"].as_str() {
+                                        text_parts.push(t.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Some("function_call") => {
+                        tool_calls.push(AiToolCall {
+                            id: step["id"].as_str().unwrap_or("").to_string(),
+                            name: step["name"].as_str().unwrap_or("").to_string(),
+                            arguments: step["arguments"].clone(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let stop_reason = if !tool_calls.is_empty() {
+            "tool_use".to_string()
+        } else {
+            "end_turn".to_string()
+        };
+        Ok(AiResponse {
+            content: if text_parts.is_empty() {
+                None
+            } else {
+                Some(text_parts.join("\n"))
+            },
+            tool_calls,
+            stop_reason,
+            tokens_used,
+            cost_usd,
+            raw_parts: None,
+        })
     }
 }
 
@@ -173,6 +316,9 @@ impl AiProvider for GeminiProvider {
         messages: Vec<AiMessage>,
         tools: Vec<AiToolDef>,
     ) -> Result<AiResponse> {
+        if self.api_style != "generate_content" {
+            return self.complete_interactions(messages, tools).await;
+        }
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
             self.model, self.api_key

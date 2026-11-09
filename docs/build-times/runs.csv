@@ -9,3 +9,4 @@ date,command,scope,wall_seconds,result,notes
 2026-11-09,cargo check -p bonsai --lib,bonsai --lib,10.51,pass,warm; sccache active
 2026-11-09,docker compose build bonsai-standalone bonsai-routing,bonsai,466.0,pass,bn020 provider timeout fix
 2026-11-09,cargo check -p bonsai --lib,bonsai --lib,8.40,pass,warm; sccache
+2026-11-09,cargo check -p bonsai --lib,bonsai --lib,17.25,pass,warm; sccache
