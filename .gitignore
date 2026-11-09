@@ -130,3 +130,9 @@ pre_cv5_freeze_*/
 pre_cv2_freeze_*/bonsai.db*
 pre_cv2_freeze_*/bonsai.db.wal*
 pre_cv2_freeze_*/local_runtime.tgz
+
+# Historical validation/test log dumps — kept locally, not for the public repo
+docs/test_results/
+logs/
+screenshots/
+*.log
