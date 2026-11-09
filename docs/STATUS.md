@@ -242,6 +242,15 @@ the admin shutdown did not surface in the BMP-fed routing view within
 propagation needs investigation before claiming detection coverage for
 this fault class. Evidence:
 [bn014c rehearsal](merger/evidence/2026-11-09-bn014c-rehearsal/README.md).
+BMP peer-down investigation same day: rbmp-rib PeerDown handling verified
+correct in code; across admin shutdown AND hard `clear bgp` resets,
+bonsai-routing logged zero peer events and peers stayed `up` while FRR's
+`show bmp` MonSent counter incremented ~2/flap — strong indication FRR
+10.6.2 does not emit BMP PeerUp/PeerDown on these transitions, but no
+wire capture was possible (no CAP_NET_RAW, no FRR bmp debug cmd).
+Documented next steps incl. privileged tcpdump and a hold-time/staleness
+fallback. Evidence:
+[bmp peerdown investigation](merger/evidence/2026-11-09-bmp-peerdown-investigation/README.md).
 
 BN-009 intake reconciliation (8 November): existing sidecar lifecycle
 surfaces inventoried — registry/heartbeat/stale-lost, `BONSAI_REQUIRE_SIDECAR`
