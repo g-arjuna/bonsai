@@ -105,7 +105,12 @@ overload exercised same day via an env-gated synthetic detection injector
 (`BONSAI_TEST_DETECTION_COUNT`, off by default): with core unreachable the
 queue reached 946/1000, `queue_drops_today=549`, `priority_only_mode=true`,
 and graceful shutdown reported `drops=549` — no silent loss, drops are
-counted and surfaced. Full-length soak window remains open. Evidence:
+counted and surfaced. Full-length soak window STARTED 9 Nov 05:48Z —
+detached 60 s sampler writing
+`docs/merger/evidence/2026-11-09-bn009-soak-full/soak-metrics.csv`
+(routing health, sidecar health, registry, container memory); finalize by
+reviewing the CSV for gaps/drops/memory growth.
+Evidence:
 [soak](merger/evidence/2026-11-09-bn009-soak/README.md),
 [overload](merger/evidence/2026-11-09-bn009-forward-queue-overload/README.md).
 

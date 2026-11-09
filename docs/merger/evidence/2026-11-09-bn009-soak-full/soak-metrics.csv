@@ -1,0 +1,2 @@
+ts,routing_peers_up,routing_routes,routing_gaps,routing_seq,routing_complete,routing_speakers,sc_queue,sc_drops,sc_priority,sc_jobs,sc_snap_buf,sc_snap_stale,sc_conn_core,sc_conn_local,sc_uptime,sidecars,mem
+2026-11-09T05:48:01Z,6,7,1,297,gap,2,0,0,False,True,7,False,True,True,584.2,bn009-api-auth=healthy,bonsai-bonsai-standalone-1 528MiB / 46.68GiB bonsai-bonsai-routing-1 10.44MiB / 46.68GiB
