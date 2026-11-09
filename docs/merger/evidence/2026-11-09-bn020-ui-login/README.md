@@ -32,6 +32,19 @@ browser returned 401 under `require_auth`.
 - New bundle `index-DmCc5FEd.js` served; `npm run build` clean (6.45 s,
   zero warnings).
 
+## Logout + credential-save verification (same day, second build 491 s)
+
+- Logout added: sidebar "Sign out" button → `POST /api/auth/logout`
+  (revokes JWT jti + clears cookie) → UI returns to login screen.
+- Post-lockout re-verification on rebuilt image:
+  - `admin` login → `success:true, role=admin` (`login-admin-success.json`)
+  - Cookie-session `POST /api/ai/providers` → `has_api_key:true`
+    (`save-provider.json`) — the exact call the Settings GUI makes; test
+    provider removed afterwards.
+  - `POST /api/auth/logout` → 204; subsequent API call → **401**.
+- Rate-limit lockout from earlier testing expired as designed (~30 min);
+  `admin`/`Bonsai2026!Admin` is the working lab login.
+
 ## Honest notes
 
 - **Rate limiting observed live**: after repeated login attempts during
@@ -39,11 +52,7 @@ browser returned 401 under `require_auth`.
   30 min lock). `login-admin-rate-limited.json` /
   `login-bad-rate-limited.json` show `"too many failed attempts — account
   temporarily locked"`. The env admin shares the username `admin`, so it
-  was locked too. Lock expires ~30 min after the last attempt; re-verify
-  the happy-path captures after expiry if needed — the successful login
-  + authed 200 were already observed before lockout.
-- Logout is not yet exposed in the UI (cookie persists until expiry or
-  `POST /api/auth/logout`); tracked as follow-up under BN-020.
+  was locked too. Lock expired ~30 min later; happy path re-verified above.
 - Viewer/api_readonly roles will see the login page then hit 403s on
   write endpoints — RBAC enforcement itself is unchanged and tested
   elsewhere.

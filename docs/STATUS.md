@@ -149,8 +149,10 @@ HttpOnly `bonsai_token` JWT cookie, no JS token storage). `admin` DB user
 created with policy-compliant lab password (literal admin/admin rejected
 by password policy). Verified live on rebuilt image: unauth 401 → login
 success (role=admin) → authed 200; wrong password rejected; brute-force
-rate-limit lockout observed live (3 attempts/5min → 30min). Logout UI and
-post-lockout evidence re-capture pending. Evidence:
+rate-limit lockout observed live (3 attempts/5min → 30min). Same day:
+logout added (sidebar Sign out → `POST /api/auth/logout` → 401 after);
+post-lockout re-verified — admin login success, cookie-session provider
+save `has_api_key:true`, logout→401. Evidence:
 [ui login](merger/evidence/2026-11-09-bn020-ui-login/README.md).
 
 BN-013 first slice (9 November): traced one live incident journey on the

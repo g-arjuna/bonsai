@@ -95,6 +95,17 @@
     await checkFirstRun();
   }
 
+  async function logout() {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (_) {
+      // non-fatal — cookie may already be invalid
+    }
+    sessionUser = '';
+    authState = 'anon';
+    isFirstRunChecked = false;
+  }
+
   import { onMount } from 'svelte';
   onMount(async () => {
     try {
@@ -197,6 +208,12 @@
       <a href="/bonpy/" class="ml-console-link" title="BonPy MLOps Console">
         <span class="nav-icon" aria-hidden="true">🤖</span> ML Console
       </a>
+      {#if authState === 'authed'}
+        <button class="logout-btn" onclick={logout} title="Sign out">
+          <span class="nav-icon" aria-hidden="true">⏻</span>
+          {sessionUser ? `Sign out (${sessionUser})` : 'Sign out'}
+        </button>
+      {/if}
       <div class="density-row">
         <DensityToggle />
       </div>
@@ -307,6 +324,26 @@
     transition: background 0.15s, color 0.15s;
   }
   .ml-console-link:hover {
+    background: var(--bg-hover, rgba(255,255,255,0.07));
+    color: var(--text-primary, #e5e7eb);
+  }
+  .logout-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    padding: 5px 8px;
+    border-radius: 4px;
+    border: none;
+    background: none;
+    font-size: 12px;
+    color: var(--text-secondary, #9ca3af);
+    cursor: pointer;
+    width: 100%;
+    text-align: left;
+    transition: background 0.15s, color 0.15s;
+  }
+  .logout-btn:hover {
     background: var(--bg-hover, rgba(255,255,255,0.07));
     color: var(--text-primary, #e5e7eb);
   }
