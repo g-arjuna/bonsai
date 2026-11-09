@@ -39,4 +39,10 @@
   not the hundreds of crate compilations — scope the test target instead.
 - For long compiles, run cargo in a background shell and poll rather than
   blocking; report test status honestly if still running at handoff.
+- Record build/check wall-times: after any verification command that takes
+  meaningful time (cargo check/test/build, just recipes, image builds,
+  large pytest runs), append a row to `docs/build-times/runs.csv`
+  (format in `docs/build-times/README.md`). This is how we verify sccache,
+  mold and codegen-units are actually helping rather than compilation
+  times silently growing.
 
