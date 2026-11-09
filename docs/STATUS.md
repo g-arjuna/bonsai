@@ -154,7 +154,16 @@ Gemini provider fixed same day: Interactions API implemented as primary
 generateContent preserved as user-selectable legacy (`api_style` per
 provider in vault + Settings UI); provider timeout raised to 120s for
 thinking models. Verified live: interactions ok 13.8s, legacy ok 39.5s
-on gemini-3.8-flash. BN-013b (9 November): adjudication + feedback + real-provider
+on gemini-3.8-flash. BN-014 intake (9 November): change-management machinery inventoried —
+change_management.rs (ServiceNow sync, webhook ingest, event/incident
+linking), /api/changes + context endpoints, governance.rs,
+scenario_pack.rs, approval.rs. Gaps: baseline/candidate capture,
+independent invariants, failure rehearsal, episode utility/failure
+taxonomy. Proposed slices BN-014a–d; first slice is read-only
+baseline/candidate capture on containerlab NOS instances. Evidence:
+[intake](merger/evidence/2026-11-09-bn014-intake/README.md).
+
+BN-013b (9 November): adjudication + feedback + real-provider
 investigation verified live — test-openapi (gpt-6-luna) ran the full
 agentic loop (8 tool calls, 61k tokens, terminal `budget_exhausted` at
 $0.10 cap); feedback persists FeedbackRecord, accuracy endpoint
