@@ -155,7 +155,7 @@ impl GeminiProvider {
             model,
             api_key,
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
         }
@@ -337,7 +337,7 @@ impl MoonshotProvider {
             model,
             api_key,
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
         }
@@ -479,7 +479,7 @@ impl OpenAiProvider {
             api_key,
             base_url,
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
         }
@@ -640,7 +640,7 @@ impl AnthropicProvider {
             api_key,
             base_url,
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
         }
@@ -822,7 +822,7 @@ impl OllamaProvider {
             model,
             base_url,
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
         }
