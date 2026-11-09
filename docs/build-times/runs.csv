@@ -19,3 +19,12 @@ date,command,scope,wall_seconds,result,notes
 2026-11-09,cargo check -p bonsai --lib,bonsai --lib,22.73,pass,warm; sccache
 2026-11-09,docker compose build bonsai-standalone bonsai-routing,bonsai,467.0,pass,bn014a change capture
 2026-11-09,cargo check -p bonsai --lib,bonsai --lib,9.89,pass,warm; sccache
+2026-11-09,docker compose build bonsai-standalone bonsai-routing,bonsai,475.0,pass,bn014a upsert fix
+2026-11-09,cargo check -p bonsai --lib,bonsai --lib,9.39,pass,warm; sccache; $desc param fix
+2026-11-09,cargo test -p bonsai --lib change_request_upsert,bonsai --lib,146.0,fail,test compile 2m26s; first run failed: 64MiB buffer pool too small for schema init (test bug, not product)
+2026-11-09,cargo test -p bonsai --lib change_request_upsert,bonsai --lib,157.0,pass,test compile 2m37s; upsert create+match verified
+2026-11-09,cargo test -p bonsai --lib change_request_upsert,bonsai --lib,121.0,pass,test compile 2m01s; + webhook ingest path incl. load_device_ci_map fix
+2026-11-09,docker compose build bonsai-standalone bonsai-routing,bonsai,570.0,pass,release bins 9m27s; $desc fix only (pre CI-map fix)
+2026-11-09,docker compose build bonsai-standalone bonsai-routing,bonsai,495.0,pass,release bins 8m13s; $desc + load_device_ci_map fixes
+2026-11-09,cargo check -p bonsai --lib,bonsai --lib,9.37,pass,warm; sccache; routing token header fix
+2026-11-09,docker compose build bonsai-standalone bonsai-routing,bonsai,498.0,pass,release bins 8m16s; x-bonsai-routing-token header fix

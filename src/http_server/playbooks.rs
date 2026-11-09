@@ -197,7 +197,7 @@ pub async fn create_playbook_handler(
             .unwrap_or_else(|| "[]".to_string());
         let enabled = if req.enabled.unwrap_or(true) { 1i64 } else { 0 };
         let mut stmt = conn.prepare(
-            "CREATE (:Playbook {id: $id, name: $name, description: $desc, \
+            "CREATE (:Playbook {id: $id, name: $name, description: $description, \
              rule_ids_json: $rij, vendor: $vendor, steps_json: $steps, \
              verify_graph: $vg, enabled: $en, version: 1, \
              created_at_ns: $now, updated_at_ns: $now, updated_by: 'api', \
@@ -208,7 +208,7 @@ pub async fn create_playbook_handler(
             vec![
                 ("id", Value::String(id.clone())),
                 ("name", Value::String(req.name)),
-                ("desc", Value::String(req.description.unwrap_or_default())),
+                ("description", Value::String(req.description.unwrap_or_default())),
                 ("rij", Value::String(rule_ids_json)),
                 ("vendor", Value::String(req.vendor.unwrap_or_default())),
                 ("steps", Value::String(req.steps_json)),
@@ -640,7 +640,7 @@ pub fn migrate_playbooks_from_yaml(conn: &Connection) -> anyhow::Result<usize> {
 
         let mut upsert_stmt = conn.prepare(
             "MERGE (p:Playbook {id: $id}) \
-             SET p.name = $name, p.description = $desc, \
+             SET p.name = $name, p.description = $description, \
                  p.rule_ids_json = '[]', p.vendor = '', \
                  p.steps_json = $steps, p.verify_graph = '', \
                  p.enabled = 1, p.version = 1, \
@@ -655,7 +655,7 @@ pub fn migrate_playbooks_from_yaml(conn: &Connection) -> anyhow::Result<usize> {
                 vec![
                     ("id", Value::String(id)),
                     ("name", Value::String(name)),
-                    ("desc", Value::String(format!("Migrated from {stem}.yaml"))),
+                    ("description", Value::String(format!("Migrated from {stem}.yaml"))),
                     ("steps", Value::String(content)),
                     ("now", Value::Int64(now)),
                 ],

@@ -359,7 +359,7 @@ async fn upsert_change_request(
                 "MERGE (c:ChangeRequest {id: $id}) \
                  ON CREATE SET \
                    c.number = $number, c.source = $source, c.snow_sys_id = $sys_id, \
-                   c.short_description = $desc, c.state = $state, c.change_type = $ctype, \
+                   c.short_description = $description, c.state = $state, c.change_type = $ctype, \
                    c.risk = $risk, c.assigned_to = $assigned_to, \
                    c.assignment_group = $ag, c.affected_cis_json = $cis, \
                    c.planned_start_ns = $pstart, c.planned_end_ns = $pend, \
@@ -368,7 +368,7 @@ async fn upsert_change_request(
                    c.updated_at = $updated_at \
                  ON MATCH SET \
                    c.number = $number, c.source = $source, c.snow_sys_id = $sys_id, \
-                   c.short_description = $desc, c.state = $state, c.change_type = $ctype, \
+                   c.short_description = $description, c.state = $state, c.change_type = $ctype, \
                    c.risk = $risk, c.assigned_to = $assigned_to, \
                    c.assignment_group = $ag, c.affected_cis_json = $cis, \
                    c.planned_start_ns = $pstart, c.planned_end_ns = $pend, \
@@ -384,7 +384,7 @@ async fn upsert_change_request(
                 ("number", Value::String(r.number)),
                 ("source", Value::String(r.source)),
                 ("sys_id", Value::String(r.snow_sys_id)),
-                ("desc", Value::String(r.short_description)),
+                ("description", Value::String(r.short_description)),
                 ("state", Value::String(r.state)),
                 ("ctype", Value::String(r.change_type)),
                 ("risk", Value::String(r.risk)),
@@ -450,25 +450,43 @@ async fn link_device_to_change(
 
 /// Load a map of CMDB CI sys_id → device_address for matching affected CIs.
 /// Also maps hostname → address and address → address for direct matches.
+/// Device nodes carry no snow_sys_id column; the ServiceNow enricher stores
+/// the CI sys_id as an EnrichmentProperty (`key='snow_ci_id'`, `value`=sys_id)
+/// whose `device_address` holds the device hostname.
 async fn load_device_ci_map(store: &Arc<GraphStore>) -> Result<HashMap<String, String>> {
     let db = store.db();
     tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).context("device CI map connection")?;
         let rows = conn
-            .query("MATCH (d:Device) RETURN d.address, d.hostname, d.snow_sys_id")
+            .query("MATCH (d:Device) RETURN d.address, d.hostname")
             .context("query device CI map")?;
         let mut map = HashMap::new();
         for row in rows {
             let addr = read_str(&row[0]);
             let hostname = read_str(&row[1]);
-            let sys_id = read_str(&row[2]);
             if !addr.is_empty() {
                 map.insert(addr.clone(), addr.clone());
             }
             if !hostname.is_empty() {
                 map.insert(hostname.to_lowercase(), addr.clone());
             }
-            if !sys_id.is_empty() {
+        }
+        let rows = conn
+            .query(
+                "MATCH (ep:EnrichmentProperty {key: 'snow_ci_id'}) \
+                 RETURN ep.device_address, ep.value",
+            )
+            .context("query snow CI map")?;
+        for row in rows {
+            let hostname = read_str(&row[0]);
+            let sys_id = read_str(&row[1]);
+            if sys_id.is_empty() {
+                continue;
+            }
+            if let Some(addr) = map
+                .get(&hostname.to_lowercase())
+                .or_else(|| map.get(&hostname))
+            {
                 map.insert(sys_id, addr.clone());
             }
         }
@@ -725,4 +743,121 @@ pub async fn ingest_webhook_change(
     );
 
     Ok(record)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_record() -> ChangeRequestRecord {
+        ChangeRequestRecord {
+            id: "manual:bn014a-test-001".to_string(),
+            number: "CHG-BN014A".to_string(),
+            source: "manual".to_string(),
+            snow_sys_id: String::new(),
+            short_description: "BN-014a regression".to_string(),
+            state: "implement".to_string(),
+            change_type: "normal".to_string(),
+            risk: "low".to_string(),
+            assigned_to: String::new(),
+            assignment_group: String::new(),
+            affected_cis: vec!["172.100.207.12".to_string()],
+            planned_start_ns: 0,
+            planned_end_ns: 0,
+            actual_start_ns: 0,
+            actual_end_ns: 0,
+            correlation_id: String::new(),
+            external_ref: String::new(),
+        }
+    }
+
+    /// Regression: lbug's Cypher lexer reserves DESC, so a `$desc` parameter
+    /// fails to parse ("expected rule oC_SingleQuery"). The upsert must use a
+    /// non-reserved parameter name and exercise both ON CREATE and ON MATCH.
+    #[tokio::test]
+    async fn change_request_upsert_creates_then_matches() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("chg").to_string_lossy().into_owned();
+        let store = Arc::new(GraphStore::open(&path, 256 * 1024 * 1024).expect("open store"));
+
+        let mut rec = sample_record();
+        upsert_change_request(&store, &rec)
+            .await
+            .expect("first upsert");
+
+        rec.state = "review".to_string();
+        rec.short_description = "updated description".to_string();
+        upsert_change_request(&store, &rec)
+            .await
+            .expect("second upsert");
+
+        let db = store.db();
+        let rows = tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).expect("conn");
+            let mut out = Vec::new();
+            for row in conn
+                .query(
+                    "MATCH (c:ChangeRequest {id: 'manual:bn014a-test-001'}) \
+                     RETURN c.number, c.state, c.short_description, c.affected_cis_json",
+                )
+                .expect("query")
+            {
+                out.push((
+                    read_str(&row[0]),
+                    read_str(&row[1]),
+                    read_str(&row[2]),
+                    read_str(&row[3]),
+                ));
+            }
+            out
+        })
+        .await
+        .expect("spawn_blocking");
+
+        assert_eq!(rows.len(), 1, "expected exactly one ChangeRequest node");
+        assert_eq!(rows[0].0, "CHG-BN014A");
+        assert_eq!(rows[0].1, "review", "ON MATCH SET must update state");
+        assert_eq!(rows[0].2, "updated description");
+        assert!(rows[0].3.contains("172.100.207.12"));
+
+        // Full webhook ingest path: upsert + device CI map + device linking.
+        // Regression: load_device_ci_map must not reference Device.snow_sys_id
+        // (no such column) — CI sys_ids live on EnrichmentProperty nodes.
+        let event = WebhookChangeEvent {
+            change_id: "bn014a-webhook-001".to_string(),
+            number: "CHG-WEBHOOK".to_string(),
+            source: "manual".to_string(),
+            description: "webhook ingest".to_string(),
+            state: "implement".to_string(),
+            change_type: "normal".to_string(),
+            risk: "low".to_string(),
+            affected_devices: vec!["172.100.207.12".to_string()],
+            planned_start_epoch: 0,
+            planned_end_epoch: 0,
+            correlation_id: String::new(),
+            external_ref: String::new(),
+            extra_json: String::new(),
+        };
+        let rec = ingest_webhook_change(&store, event)
+            .await
+            .expect("webhook ingest");
+        assert_eq!(rec.id, "manual:bn014a-webhook-001");
+
+        let db = store.db();
+        let count = tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).expect("conn");
+            let mut n = 0usize;
+            for row in conn
+                .query("MATCH (c:ChangeRequest) RETURN c.id")
+                .expect("query")
+            {
+                let _ = read_str(&row[0]);
+                n += 1;
+            }
+            n
+        })
+        .await
+        .expect("spawn_blocking");
+        assert_eq!(count, 2, "expected both ChangeRequest nodes");
+    }
 }

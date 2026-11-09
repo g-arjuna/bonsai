@@ -3749,7 +3749,7 @@ impl GraphStore {
             let now = ts(now_ns());
             let mut stmt = conn
                 .prepare(
-                    "CREATE (q:SavedQuery {id: $id, name: $name, description: $desc, \
+                    "CREATE (q:SavedQuery {id: $id, name: $name, description: $description, \
                      cypher: $cypher, created_at: $ts, last_run_at: $ts, \
                      last_result_count: 0})",
                 )
@@ -3759,7 +3759,7 @@ impl GraphStore {
                 vec![
                     ("id", Value::String(id.clone())),
                     ("name", Value::String(name.clone())),
-                    ("desc", Value::String(description.clone())),
+                    ("description", Value::String(description.clone())),
                     ("cypher", Value::String(cypher.clone())),
                     ("ts", now),
                 ],

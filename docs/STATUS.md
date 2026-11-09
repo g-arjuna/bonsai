@@ -201,6 +201,26 @@ This deployment has no AI provider configured, so grounded-RCA quality
 remains BN-004-blocked. Evidence:
 [investigation lifecycle](merger/evidence/2026-11-09-bn013-investigation-lifecycle/README.md).
 
+BN-014a baseline/candidate capture (9 November): the change webhook and
+capture path had three latent defects, all fixed and verified live on the
+packaged deployment. lbug's Cypher lexer reserves `DESC`, so the
+`$desc` query parameter failed to parse (`expected rule oC_SingleQuery`)
+— renamed to `$description` in the ChangeRequest upsert plus the
+identically broken SavedQuery create and both Playbook writes.
+`load_device_ci_map` selected nonexistent `Device.snow_sys_id`; CI
+sys_ids actually live on `EnrichmentProperty` (`key='snow_ci_id'`) and
+the map now resolves hostname→address from those. `change_capture`'s
+routing-service client used `Authorization: Bearer` while the service
+requires the `x-bonsai-routing-token` header (same as the
+`/api/routing/v1/*` proxy). Regression test
+`change_request_upsert_creates_then_matches` covers upsert create+match
+and full `ingest_webhook_change`. Live: webhook ingest 200 (twice —
+ON CREATE and ON MATCH), baseline+candidate captures returned real
+counts (route `10.10.1.0/24`, 2 peers up on 172.100.207.12), and
+`/api/changes/{id}/snapshots` reports `status=diffed` with honest zero
+deltas (no routing change was made between phases). Evidence:
+[bn014a lbug upsert](merger/evidence/2026-11-09-bn014a-lbug-upsert/README.md).
+
 BN-009 intake reconciliation (8 November): existing sidecar lifecycle
 surfaces inventoried — registry/heartbeat/stale-lost, `BONSAI_REQUIRE_SIDECAR`
 health gate, `/api/ml/{exports,schedules,jobs}` incl. cancel, job_engine

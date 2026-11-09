@@ -41,7 +41,7 @@ async fn routing_get(
         .map_err(|e| e.to_string())?;
     let mut req = client.get(&url);
     if let Some(t) = token {
-        req = req.bearer_auth(t);
+        req = req.header("x-bonsai-routing-token", t);
     }
     let resp = req.send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
