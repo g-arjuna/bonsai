@@ -149,7 +149,14 @@ HttpOnly `bonsai_token` JWT cookie, no JS token storage). `admin` DB user
 created with policy-compliant lab password (literal admin/admin rejected
 by password policy). Verified live on rebuilt image: unauth 401 → login
 success (role=admin) → authed 200; wrong password rejected; brute-force
-rate-limit lockout observed live (3 attempts/5min → 30min). Same day:
+Gemini provider fixed same day: Interactions API implemented as primary
+(`POST /v1beta/interactions`, store=false, typed function steps) with
+generateContent preserved as user-selectable legacy (`api_style` per
+provider in vault + Settings UI); provider timeout raised to 120s for
+thinking models. Verified live: interactions ok 13.8s, legacy ok 39.5s
+on gemini-3.8-flash. GitHub Actions workflows removed — account
+billing-locked, every job failed in ~2s and emailed on each push
+(evidence: [gemini interactions](merger/evidence/2026-11-09-bn020-gemini-interactions/README.md)). rate-limit lockout observed live (3 attempts/5min → 30min). Same day:
 logout added (sidebar Sign out → `POST /api/auth/logout` → 401 after);
 post-lockout re-verified — admin login success, cookie-session provider
 save `has_api_key:true`, logout→401. Evidence:
