@@ -692,6 +692,10 @@ impl AiProvider for OpenAiProvider {
                 "type": "function",
                 "function": { "name": t.name, "description": t.description, "parameters": t.parameters }
             })).collect::<Vec<_>>());
+            // Reasoning models (e.g. gpt-6-luna) reject function tools on
+            // /v1/chat/completions when reasoning is enabled — disable it
+            // for tool-calling turns only.
+            body["reasoning_effort"] = serde_json::json!("none");
         }
 
         let resp = self
