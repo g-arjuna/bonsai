@@ -1,0 +1,14 @@
+{
+  "note": "APScheduler 4.0.0a6 SQLAlchemyDataStore persisted schedules observed after the temporary '* * * * *' API schedule update was restored. Trigger blobs are pickled CronTrigger objects; cron fields decoded from the pickle payloads.",
+  "schedules": [
+    {"id": "gnn_snapshot", "cron_expr": "0 */4 * * *", "next_fire_time_utc": "2026-11-09T02:30:00Z", "paused": false},
+    {"id": "graph_snapshot", "cron_expr": "0 */4 * * *", "next_fire_time_utc": "2026-11-09T02:30:00Z", "paused": false},
+    {"id": "syslog_embedding", "cron_expr": "*/1 * * * *", "next_fire_time_utc": "2026-11-09T01:43:00Z", "paused": false},
+    {"id": "gnn_inference", "cron_expr": "*/5 * * * *", "next_fire_time_utc": "2026-11-09T01:45:00Z", "paused": false},
+    {"id": "config_embedding", "cron_expr": "0 */6 * * *", "paused": false},
+    {"id": "detection_clustering", "cron_expr": "0 3 * * 0", "paused": false},
+    {"id": "anomaly_export_daily", "paused": false},
+    {"id": "remediation_export_weekly", "cron_expr": "0 2 * * 0", "paused": false}
+  ],
+  "finding": "API schedule updates for graph_snapshot/gnn_snapshot were accepted (HTTP 200) but never replaced the persisted APScheduler triggers: _register_schedule passes conflict_policy=\"replace\" as a string while SQLAlchemyDataStore.add_schedule compares against the ConflictPolicy enum, so the IntegrityError replace branch never runs. The temporary every-minute cron therefore never fired; the store still shows the original 4-hour triggers."
+}

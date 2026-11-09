@@ -105,6 +105,22 @@ overload unexercised (no detection source; device writes disabled);
 full-length soak window remains open. Evidence:
 [soak](merger/evidence/2026-11-09-bn009-soak/README.md).
 
+BN-009 graph snapshot slice (9 November): `/api/graph/snapshot` and the DB
+purge path were fixed by binding timestamps as Lbug `TimestampNs` parameters
+instead of the unsupported DuckDB `TIMESTAMP_NS(...)` call. Verified on a
+rebuilt packaged deployment (`bonsai:latest`, image build 485.50 s): snapshot
+endpoint 500→200 with real topology (3 devices, 11 BGP sessions), and a
+disposable `GnnScore` purge deleted exactly 1 row while real counts stayed
+unchanged. `graph_snapshot`/`gnn_snapshot` job functions were run through the
+engine `_run_job` path and produced succeeded `MlJobRun` records, but
+scheduled-trigger acceptance is NOT proven: API schedule updates for those IDs
+are silently dropped because `_register_schedule` passes
+`conflict_policy="replace"` as a string while APScheduler 4.0.0a6 compares
+against the `ConflictPolicy` enum. A second defect was found: snapshot store
+Arrow writes fail on heterogeneous record-batch schemas, leaving unreadable
+files while health still reports `buffer_size=2`. Evidence:
+[graph snapshot](merger/evidence/2026-11-09-bn009-graph-snapshot/README.md).
+
 BN-009 lifecycle slice (8 November): `collector_engine.py` heartbeat
 `status_json` now reports uptime/cpu/rss/queue-depth/drops/rules-loaded
 (stdlib /proc, null-safe); Sidecars UI gained a gRPC-registry panel rendering

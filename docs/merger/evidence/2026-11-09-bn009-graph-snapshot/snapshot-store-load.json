@@ -1,0 +1,8 @@
+{
+  "snapshot_files": [
+    "2026-11-09T01-36-06Z_snapshot.arrow",
+    "2026-11-09T01-36-00Z_snapshot.arrow"
+  ],
+  "load_buffer_count": 0,
+  "buffer_health": "BufferHealth(buffer_size=2, oldest_ns=1794188166241220352, newest_ns=1794188166307204608, gap_seconds_max=0.065984256, is_stale=False, snapshot_paths=['runtime/parquet/gnn_snapshots/2026-11-09T01-36-06Z_snapshot.arrow', 'runtime/parquet/gnn_snapshots/2026-11-09T01-36-00Z_snapshot.arrow'])"
+}

@@ -1,0 +1,1 @@
+{"db_size_bytes":23662592,"node_counts":{"DetectionEvent":11,"Device":3,"DeviceAddress":7,"EntityIdentity":3,"GnnScore":1},"rel_counts":{"HAS_IDENTITY":3},"total_node_tables":25,"total_rel_tables":25}

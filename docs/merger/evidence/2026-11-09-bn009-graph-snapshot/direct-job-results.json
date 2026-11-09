@@ -1,0 +1,17 @@
+{
+  "marker_ns": 1794188160203649415,
+  "results": {
+    "graph_snapshot": {
+      "state": "succeeded",
+      "last_outcome": "succeeded",
+      "error_message": "",
+      "run_record_id": "6c1d60e6-c6f6-41df-940c-1c20cc7d8b17"
+    },
+    "gnn_snapshot": {
+      "state": "succeeded",
+      "last_outcome": "succeeded",
+      "error_message": "",
+      "run_record_id": "7b766ab1-6f8e-410b-ba78-492df87f1af0"
+    }
+  }
+}

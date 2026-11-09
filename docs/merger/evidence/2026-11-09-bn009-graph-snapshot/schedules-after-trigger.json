@@ -1,0 +1,84 @@
+{
+  "schedules": [
+    {
+      "cron_expr": "0 2 * * *",
+      "enabled": true,
+      "id": "sched-anomaly_export",
+      "job_id": "anomaly_export",
+      "last_modified_at_ns": 1794132119718284572,
+      "last_modified_by": "system"
+    },
+    {
+      "cron_expr": "0 2 * * *",
+      "enabled": true,
+      "id": "sched-anomaly_export_daily",
+      "job_id": "anomaly_export_daily",
+      "last_modified_at_ns": 1794182010986545829,
+      "last_modified_by": "api"
+    },
+    {
+      "cron_expr": "0 */6 * * *",
+      "enabled": true,
+      "id": "sched-config_embedding",
+      "job_id": "config_embedding",
+      "last_modified_at_ns": 1794182011054636453,
+      "last_modified_by": "api"
+    },
+    {
+      "cron_expr": "0 3 * * 0",
+      "enabled": true,
+      "id": "sched-detection_clustering",
+      "job_id": "detection_clustering",
+      "last_modified_at_ns": 1794182011044956904,
+      "last_modified_by": "api"
+    },
+    {
+      "cron_expr": "*/5 * * * *",
+      "enabled": true,
+      "id": "sched-gnn_inference",
+      "job_id": "gnn_inference",
+      "last_modified_at_ns": 1794182011014853486,
+      "last_modified_by": "api"
+    },
+    {
+      "cron_expr": "0 */4 * * *",
+      "enabled": true,
+      "id": "sched-gnn_snapshot",
+      "job_id": "gnn_snapshot",
+      "last_modified_at_ns": 1794187949786956932,
+      "last_modified_by": "api"
+    },
+    {
+      "cron_expr": "0 */4 * * *",
+      "enabled": true,
+      "id": "sched-graph_snapshot",
+      "job_id": "graph_snapshot",
+      "last_modified_at_ns": 1794187709274099236,
+      "last_modified_by": "api"
+    },
+    {
+      "cron_expr": "0 2 * * 0",
+      "enabled": true,
+      "id": "sched-remediation_export",
+      "job_id": "remediation_export",
+      "last_modified_at_ns": 1794132119718284572,
+      "last_modified_by": "system"
+    },
+    {
+      "cron_expr": "0 2 * * 0",
+      "enabled": true,
+      "id": "sched-remediation_export_weekly",
+      "job_id": "remediation_export_weekly",
+      "last_modified_at_ns": 1794182011004083786,
+      "last_modified_by": "api"
+    },
+    {
+      "cron_expr": "*/1 * * * *",
+      "enabled": true,
+      "id": "sched-syslog_embedding",
+      "job_id": "syslog_embedding",
+      "last_modified_at_ns": 1794182011024714928,
+      "last_modified_by": "api"
+    }
+  ]
+}
