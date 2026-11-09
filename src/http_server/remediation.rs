@@ -996,7 +996,7 @@ pub(super) async fn create_investigation_handler(
     }
     let detection_id = body.detection_id.clone();
     let device_address = body.device_address.clone();
-    let inv = state
+    let mut inv = state
         .store
         .create_investigation(body.detection_id, body.device_address, body.trigger)
         .await
@@ -1034,6 +1034,25 @@ pub(super) async fn create_investigation_handler(
                     }),
             },
         );
+    } else {
+        // No AI provider configured — record an explicit terminal state
+        // instead of leaving the investigation stuck "running" forever.
+        let _ = state
+            .store
+            .complete_investigation(
+                inv.id.clone(),
+                "failed".to_string(),
+                "STOP_REASON=no_ai_provider: no AI provider configured; \
+                 investigation cannot run."
+                    .to_string(),
+                "{}".to_string(),
+                0,
+                0.0,
+            )
+            .await;
+        if let Ok(Some(updated)) = state.store.get_investigation(inv.id.clone()).await {
+            inv = updated;
+        }
     }
 
     Ok(Json(inv))
