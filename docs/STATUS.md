@@ -154,7 +154,18 @@ Gemini provider fixed same day: Interactions API implemented as primary
 generateContent preserved as user-selectable legacy (`api_style` per
 provider in vault + Settings UI); provider timeout raised to 120s for
 thinking models. Verified live: interactions ok 13.8s, legacy ok 39.5s
-on gemini-3.8-flash. GitHub Actions workflows removed — account
+on gemini-3.8-flash. BN-013b (9 November): adjudication + feedback + real-provider
+investigation verified live — test-openapi (gpt-6-luna) ran the full
+agentic loop (8 tool calls, 61k tokens, terminal `budget_exhausted` at
+$0.10 cap); feedback persists FeedbackRecord, accuracy endpoint
+reflects it, adjudicate-prefix persists adjudication + accuracy.
+Provider fixes: Gemini Interactions API primary + legacy fallback +
+per-provider api_style, 300s timeout, function_result name fix, OpenAI
+reasoning_effort=none for tool turns. Gaps: no `complete` status yet
+(Gemini 503s + budget cap); Interactions tool-calling needs schema
+work. Evidence: [bn013 adjudication](merger/evidence/2026-11-09-bn013-adjudication-feedback/README.md).
+
+GitHub Actions workflows removed — account
 billing-locked, every job failed in ~2s and emailed on each push
 (evidence: [gemini interactions](merger/evidence/2026-11-09-bn020-gemini-interactions/README.md)). rate-limit lockout observed live (3 attempts/5min → 30min). Same day:
 logout added (sidebar Sign out → `POST /api/auth/logout` → 401 after);
