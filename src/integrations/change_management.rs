@@ -357,14 +357,24 @@ async fn upsert_change_request(
         let mut stmt = conn
             .prepare(
                 "MERGE (c:ChangeRequest {id: $id}) \
-                 SET c.number = $number, c.source = $source, c.snow_sys_id = $sys_id, \
-                     c.short_description = $desc, c.state = $state, c.change_type = $ctype, \
-                     c.risk = $risk, c.assigned_to = $assigned_to, \
-                     c.assignment_group = $ag, c.affected_cis_json = $cis, \
-                     c.planned_start_ns = $pstart, c.planned_end_ns = $pend, \
-                     c.actual_start_ns = $astart, c.actual_end_ns = $aend, \
-                     c.correlation_id = $corr, c.external_ref = $ext_ref, \
-                     c.updated_at = $updated_at",
+                 ON CREATE SET \
+                   c.number = $number, c.source = $source, c.snow_sys_id = $sys_id, \
+                   c.short_description = $desc, c.state = $state, c.change_type = $ctype, \
+                   c.risk = $risk, c.assigned_to = $assigned_to, \
+                   c.assignment_group = $ag, c.affected_cis_json = $cis, \
+                   c.planned_start_ns = $pstart, c.planned_end_ns = $pend, \
+                   c.actual_start_ns = $astart, c.actual_end_ns = $aend, \
+                   c.correlation_id = $corr, c.external_ref = $ext_ref, \
+                   c.updated_at = $updated_at \
+                 ON MATCH SET \
+                   c.number = $number, c.source = $source, c.snow_sys_id = $sys_id, \
+                   c.short_description = $desc, c.state = $state, c.change_type = $ctype, \
+                   c.risk = $risk, c.assigned_to = $assigned_to, \
+                   c.assignment_group = $ag, c.affected_cis_json = $cis, \
+                   c.planned_start_ns = $pstart, c.planned_end_ns = $pend, \
+                   c.actual_start_ns = $astart, c.actual_end_ns = $aend, \
+                   c.correlation_id = $corr, c.external_ref = $ext_ref, \
+                   c.updated_at = $updated_at",
             )
             .context("prepare ChangeRequest upsert")?;
         conn.execute(

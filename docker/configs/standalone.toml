@@ -24,3 +24,6 @@ routing_service_url = "http://bonsai-routing:8081"
 # No [[target]] blocks — devices are added via the UI onboarding wizard or
 # POST /api/devices after the container starts.
 # To pre-seed devices, add [[target]] blocks here following bonsai.toml.example.
+
+[integrations.servicenow.change_management]
+webhook_enabled = true
