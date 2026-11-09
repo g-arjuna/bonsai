@@ -192,31 +192,27 @@ class SnapshotStore:
     def _write_arrow(self, snapshot: Any, out_path: Path, timestamp_ns: int) -> None:
         """Serialise HeteroData to Arrow IPC format.
 
-        Each node type becomes a separate RecordBatch. Metadata contains
-        the timestamp_ns and node/edge type names.
+        The whole snapshot is encoded as one JSON payload row so the IPC
+        file has a single uniform schema — Arrow IPC files cannot contain
+        record batches with different schemas. File-level metadata carries
+        timestamp_ns and the format tag.
         """
         try:
+            import json
+
             import pyarrow as pa
 
-            batches: list[pa.RecordBatch] = []
-            schema_meta: dict[bytes, bytes] = {
-                b"timestamp_ns": str(timestamp_ns).encode(),
-                b"format": b"bonsai_hetero_snapshot_v1",
-            }
-
+            payload: dict[str, Any] = {"nodes": {}, "edges": {}}
             if hasattr(snapshot, "node_types"):
                 for ntype in snapshot.node_types:
                     try:
                         x = snapshot[ntype].x
                         if x is not None:
                             import torch
-                            arr = pa.array(x.numpy().flatten().tolist())
-                            shape_arr = pa.array(list(x.shape))
-                            batch = pa.record_batch(
-                                {"x_flat": arr, "shape": shape_arr},
-                                metadata={b"node_type": ntype.encode()},
-                            )
-                            batches.append(batch)
+                            payload["nodes"][ntype] = {
+                                "x_flat": x.numpy().flatten().tolist(),
+                                "shape": list(x.shape),
+                            }
                     except Exception:
                         pass
 
@@ -226,32 +222,29 @@ class SnapshotStore:
                         ei = snapshot[src, rel, dst].edge_index
                         if ei is not None:
                             import torch
-                            src_arr = pa.array(ei[0].numpy().tolist())
-                            dst_arr = pa.array(ei[1].numpy().tolist())
-                            batch = pa.record_batch(
-                                {"src": src_arr, "dst": dst_arr},
-                                metadata={
-                                    b"edge_type": f"{src}__{rel}__{dst}".encode()
-                                },
-                            )
-                            batches.append(batch)
+                            payload["edges"][f"{src}__{rel}__{dst}"] = {
+                                "src": ei[0].numpy().tolist(),
+                                "dst": ei[1].numpy().tolist(),
+                            }
                     except Exception:
                         pass
 
-            if not batches:
-                batches.append(
-                    pa.record_batch(
-                        {"placeholder": pa.array([timestamp_ns])},
-                        metadata={b"node_type": b"__empty__"},
-                    )
-                )
+            schema = pa.schema(
+                [("payload", pa.string())],
+                metadata={
+                    b"timestamp_ns": str(timestamp_ns).encode(),
+                    b"format": b"bonsai_hetero_snapshot_v2",
+                },
+            )
+            batch = pa.record_batch(
+                [pa.array([json.dumps(payload)], type=pa.string())],
+                schema=schema,
+            )
 
             import pyarrow.ipc as ipc
-            schema = batches[0].schema.with_metadata(schema_meta)
             with pa.OSFile(str(out_path), "wb") as sink:
                 writer = ipc.new_file(sink, schema)
-                for batch in batches:
-                    writer.write_batch(batch)
+                writer.write_batch(batch)
                 writer.close()
 
         except ImportError:
@@ -262,51 +255,44 @@ class SnapshotStore:
     def _read_arrow(self, path: Path) -> Optional[Any]:
         """Deserialise a snapshot from Arrow IPC. Returns HeteroData or None."""
         try:
+            import json
+
             import pyarrow.ipc as ipc
             import pyarrow as pa
 
             with pa.memory_map(str(path), "r") as source:
                 reader = ipc.open_file(source)
-                batches = [reader.get_batch(i) for i in range(reader.num_record_batches)]
+                if reader.num_record_batches == 0:
+                    return None
+                batch = reader.get_batch(0)
+            payload = json.loads(batch.column("payload")[0].as_py())
 
             try:
                 import torch
                 from torch_geometric.data import HeteroData
                 data = HeteroData()
 
-                node_batches: dict[str, Any] = {}
-                edge_batches: dict[str, Any] = {}
-
-                for batch in batches:
-                    meta = batch.schema.metadata or {}
-                    ntype_b = meta.get(b"node_type")
-                    etype_b = meta.get(b"edge_type")
-
-                    if ntype_b and ntype_b != b"__empty__":
-                        node_batches[ntype_b.decode()] = batch
-                    elif etype_b:
-                        edge_batches[etype_b.decode()] = batch
-
-                for ntype, batch in node_batches.items():
-                    x_flat = batch.column("x_flat").to_pylist()
-                    shape = batch.column("shape").to_pylist()
-                    if len(shape) == 2:
-                        x = torch.tensor(x_flat, dtype=torch.float32).reshape(shape)
+                for ntype, node in payload.get("nodes", {}).items():
+                    shape = node.get("shape")
+                    if isinstance(shape, list) and len(shape) == 2:
+                        x = torch.tensor(
+                            node["x_flat"], dtype=torch.float32
+                        ).reshape(shape)
                         data[ntype].x = x
 
-                for etype_str, batch in edge_batches.items():
+                for etype_str, edge in payload.get("edges", {}).items():
                     parts = etype_str.split("__")
                     if len(parts) == 3:
                         src_t, rel, dst_t = parts
-                        src_arr = batch.column("src").to_pylist()
-                        dst_arr = batch.column("dst").to_pylist()
-                        ei = torch.tensor([src_arr, dst_arr], dtype=torch.long)
+                        ei = torch.tensor(
+                            [edge["src"], edge["dst"]], dtype=torch.long
+                        )
                         data[src_t, rel, dst_t].edge_index = ei
 
                 return data
 
             except ImportError:
-                return batches
+                return payload
 
         except Exception as exc:
             log.debug("Could not read snapshot %s: %s", path, exc)
@@ -319,7 +305,7 @@ class SnapshotStore:
             import pyarrow.ipc as ipc
             with pa.memory_map(str(path), "r") as source:
                 reader = ipc.open_file(source)
-                meta = reader.schema_arrow.metadata or {}
+                meta = reader.schema.metadata or {}
                 ts_b = meta.get(b"timestamp_ns")
                 if ts_b:
                     return int(ts_b)

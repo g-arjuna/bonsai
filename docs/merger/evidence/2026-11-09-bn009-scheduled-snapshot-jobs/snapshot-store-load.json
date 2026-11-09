@@ -1,0 +1,19 @@
+{
+  "files": [
+    "2026-11-09T05-29-04Z_snapshot.arrow",
+    "2026-11-09T05-29-00Z_snapshot.arrow",
+    "2026-11-09T05-26-34Z_snapshot.arrow",
+    "2026-11-09T02-30-03Z_snapshot.arrow",
+    "2026-11-09T02-30-00Z_snapshot.arrow",
+    "2026-11-09T01-36-06Z_snapshot.arrow",
+    "2026-11-09T01-36-00Z_snapshot.arrow"
+  ],
+  "load_buffer_count": 3,
+  "health": {
+    "buffer_size": 7,
+    "oldest_ns": 1794188166241220352,
+    "newest_ns": 1794202144042192144,
+    "gap_seconds_max": 10590.394980822,
+    "is_stale": false
+  }
+}

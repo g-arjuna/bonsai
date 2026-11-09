@@ -358,6 +358,7 @@ class BonsaiJobEngine:
             return
 
         try:
+            from apscheduler import ConflictPolicy
             from apscheduler.triggers.cron import CronTrigger
             from apscheduler.triggers.interval import IntervalTrigger
 
@@ -372,7 +373,7 @@ class BonsaiJobEngine:
                 trigger,
                 id=job_id,
                 args=[job_id],
-                conflict_policy="replace",
+                conflict_policy=ConflictPolicy.replace,
             )
         except Exception as exc:
             log.warning("JobEngine: Could not register schedule for %s: %s", job_id, exc)
@@ -787,7 +788,7 @@ def build_default_engine(api_url: str = DEFAULT_API_URL) -> BonsaiJobEngine:
                 hetero = build_hetero_data(raw)
                 store = SnapshotStore()
                 store.write_snapshot(hetero, timestamp_ns=snap.snapshot_ns)
-                health = store.health()
+                health = store.get_buffer_health()
                 log.info(
                     "graph_snapshot: wrote snapshot to buffer (buffer_size=%d, stale=%s)",
                     health.buffer_size, health.is_stale,
