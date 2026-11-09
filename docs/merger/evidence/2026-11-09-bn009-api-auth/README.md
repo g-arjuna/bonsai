@@ -73,6 +73,24 @@ log preserved at `before-unauthenticated-401s.log` (21 × 401 across
    - Sidecar registered healthy at `/api/sidecars`
      (`1daf9aa0-e804-4460-aa7a-12d6b1ffdb76`), heartbeats advancing.
 
+### Follow-up fixes (same day, second commit)
+
+- `/api/graph/snapshot` 500 root-caused: `timestamp_ns(...)` is not a
+  valid function in the lbug query layer — the detections query (and the
+  identical pattern in the db-purge handler) now uses parameter binding
+  with `crate::graph::common::ts()` like every other timestamp
+  comparison. `cargo check -p bonsai --lib` still running at handoff —
+  Rust change left uncommitted until it passes.
+- `bonsai_sdk.training` import failure was `pandas` missing from the
+  venv — installed (`pandas 3.1.1`). Two latent export bugs then
+  surfaced and were fixed: `export_job._run_export` called the SDK
+  functions with an `api_url=` kwarg that doesn't exist (they take a
+  gRPC `BonsaiClient` + `output_path`); and `_parse_features` /
+  `_empty_features` leaked `dataclasses.MISSING` sentinels and `""`
+  into bool/list columns, breaking Arrow conversion. After fixes:
+  **live export produced 22 rows, `quality_passed=True`**, catalog
+  record `completed` with populated `quality_json`.
+
 ### Honest notes / remaining defects (not auth)
 
 - `GET /api/graph/snapshot` returns **500** for both the API key and the

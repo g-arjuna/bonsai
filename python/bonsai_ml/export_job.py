@@ -193,35 +193,32 @@ class ParquetExportJob:
                 export_training_set,
                 export_remediation_training_set,
             )
+            from bonsai_sdk.client import BonsaiClient
         except ImportError:
             log.warning("bonsai_sdk.training not available; writing empty parquet")
             self._write_empty_parquet(output_path, export_type)
             return 0
 
-        if export_type == "anomaly":
-            df = export_training_set(
-                api_url=self.api_url,
-                since_ns=since_ns,
-                until_ns=until_ns,
-            )
-        elif export_type == "remediation":
-            df = export_remediation_training_set(
-                api_url=self.api_url,
-                since_ns=since_ns,
-                until_ns=until_ns,
-            )
-        else:
+        grpc_addr = (
+            os.environ.get("BONSAI_LOCAL_ADDR")
+            or os.environ.get("BONSAI_GRPC_ADDR")
+            or "localhost:50051"
+        )
+        export_fn = (
+            export_training_set
+            if export_type == "anomaly"
+            else export_remediation_training_set
+        )
+        if export_type not in ("anomaly", "remediation"):
             raise ValueError(f"Unknown export_type: {export_type!r}")
 
-        try:
-            import pyarrow as pa
-            import pyarrow.parquet as pq
-            table = pa.Table.from_pandas(df)
-            pq.write_table(table, str(output_path))
-        except ImportError:
-            df.to_parquet(str(output_path), index=False)
-
-        return len(df)
+        with BonsaiClient(grpc_addr) as client:
+            return export_fn(
+                client,
+                str(output_path),
+                since_ns=since_ns or 0,
+                until_ns=until_ns,
+            )
 
     def _write_empty_parquet(self, output_path: Path, export_type: str) -> None:
         try:

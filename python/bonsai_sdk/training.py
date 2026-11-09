@@ -131,8 +131,12 @@ def _parse_features(features_json: str | None) -> dict:
         return _empty_features("", "", {}, 0)
     try:
         d = json.loads(features_json)
-        defaults = {f.name: f.default for f in fields(Features)
-                    if f.default is not f.default.__class__}
+        # Typed defaults per field annotation (same approach as
+        # _empty_features) — never leak dataclasses.MISSING sentinels.
+        import typing
+        hints = typing.get_type_hints(Features)
+        _TYPE_DEFAULTS: dict = {int: 0, float: 0.0, str: "", dict: "{}", bool: False, list: "[]"}
+        defaults = {name: _TYPE_DEFAULTS.get(hint, "") for name, hint in hints.items()}
         result = {col: d.get(col, defaults.get(col, "")) for col in _FEATURE_COLS}
         # Ensure `detail` is always a JSON string, not a dict
         if isinstance(result.get("detail"), dict):
@@ -149,7 +153,7 @@ def _empty_features(device_address: str, event_type: str, detail: dict, occurred
     # `from __future__ import annotations` to actual types.
     import typing
     hints = typing.get_type_hints(Features)
-    _TYPE_DEFAULTS: dict = {int: 0, float: 0.0, str: "", dict: "{}"}
+    _TYPE_DEFAULTS: dict = {int: 0, float: 0.0, str: "", dict: "{}", bool: False, list: "[]"}
     base = {name: _TYPE_DEFAULTS.get(hint, "") for name, hint in hints.items()}
     base.update({
         "device_address": device_address,
