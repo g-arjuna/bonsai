@@ -232,6 +232,17 @@ pair → overall `pass`; bogus expected prefix → overall `fail` with the
 missing prefix named; 3 unit tests pass. Evidence:
 [bn014b invariants](merger/evidence/2026-11-09-bn014b-invariants/README.md).
 
+BN-014c rehearsal (9 November): ran a controlled failure during an open
+change window on the packaged deployment — webhook change
+`manual:bn014c-rehearsal-001`, baseline capture, admin-down of frr2's
+eBGP session to frr1 via vtysh, candidate capture, invariant
+verification, restore, recovery re-capture (pass). Honest gap recorded:
+the admin shutdown did not surface in the BMP-fed routing view within
+~6 minutes (peer stayed `up`, no new `/events`) — peer-down/withdrawal
+propagation needs investigation before claiming detection coverage for
+this fault class. Evidence:
+[bn014c rehearsal](merger/evidence/2026-11-09-bn014c-rehearsal/README.md).
+
 BN-009 intake reconciliation (8 November): existing sidecar lifecycle
 surfaces inventoried — registry/heartbeat/stale-lost, `BONSAI_REQUIRE_SIDECAR`
 health gate, `/api/ml/{exports,schedules,jobs}` incl. cancel, job_engine
