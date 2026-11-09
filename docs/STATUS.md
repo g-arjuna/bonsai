@@ -143,6 +143,16 @@ exercise done same day (see above); remaining: restart/overload soak
 acceptance.
 Evidence: [BN-009 lifecycle](merger/evidence/2026-11-08-bn009-lifecycle/README.md).
 
+BN-020 first slice (9 November): UI login page added — `Login.svelte` +
+auth gate in `App.svelte` probing `/api/setup/status` (401 → login screen,
+HttpOnly `bonsai_token` JWT cookie, no JS token storage). `admin` DB user
+created with policy-compliant lab password (literal admin/admin rejected
+by password policy). Verified live on rebuilt image: unauth 401 → login
+success (role=admin) → authed 200; wrong password rejected; brute-force
+rate-limit lockout observed live (3 attempts/5min → 30min). Logout UI and
+post-lockout evidence re-capture pending. Evidence:
+[ui login](merger/evidence/2026-11-09-bn020-ui-login/README.md).
+
 BN-013 first slice (9 November): traced one live incident journey on the
 packaged deployment. `/api/incidents` returns 2 grouped incidents with
 populated correlation chain/blast radius; `POST /api/investigations`

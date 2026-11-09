@@ -36,6 +36,7 @@
   const loadCerts          = () => import('./routes/Certs.svelte');
   const loadStreamControl  = () => import('./routes/StreamControl.svelte');
   const loadRouting        = () => import('./routes/Routing.svelte');
+  const loadLogin          = () => import('./routes/Login.svelte');
 
   // Cmd-1..9 workspace shortcuts mirror CommandPalette WORKSPACE_SHORTCUTS
   const NAV = [
@@ -71,9 +72,10 @@
   let isFirstRunChecked = $state(false);
   let isFirstRun        = $state(false);
   let healthInfo        = $state(null);
+  let authState         = $state('checking'); // 'checking' | 'anon' | 'authed'
+  let sessionUser       = $state('');
 
-  import { onMount } from 'svelte';
-  onMount(async () => {
+  async function checkFirstRun() {
     try {
       const r = await fetch('/api/setup/status');
       if (r.ok) {
@@ -83,6 +85,34 @@
     } catch (_) {
       // non-fatal
     } finally {
+      isFirstRunChecked = true;
+    }
+  }
+
+  async function handleLogin(data) {
+    sessionUser = data.username || '';
+    authState = 'authed';
+    await checkFirstRun();
+  }
+
+  import { onMount } from 'svelte';
+  onMount(async () => {
+    try {
+      const r = await fetch('/api/setup/status');
+      if (r.status === 401 || r.status === 403) {
+        authState = 'anon';
+        return;
+      }
+      authState = 'authed';
+      if (r.ok) {
+        const data = await r.json();
+        isFirstRun = !!data.is_first_run;
+        isFirstRunChecked = true;
+      } else {
+        isFirstRunChecked = true;
+      }
+    } catch (_) {
+      authState = 'authed';
       isFirstRunChecked = true;
     }
 
@@ -180,7 +210,9 @@
   </aside>
 
   <main id="main-content" class="main-content" tabindex="-1">
-    {#if !isFirstRunChecked}
+    {#if authState === 'anon'}
+      <Lazy loader={loadLogin} onLogin={handleLogin} />
+    {:else if !isFirstRunChecked}
       <!-- wait for first-run check -->
     {:else if isFirstRun}
       <Lazy loader={loadOnboarding} first_run={true} onComplete={() => { isFirstRun = false; }} />

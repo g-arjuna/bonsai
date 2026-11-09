@@ -3,3 +3,4 @@ date,command,scope,wall_seconds,result,notes
 2026-11-09,docker compose build bonsai-standalone bonsai-routing,bonsai:latest packaged image,485.50,pass,release bins 7m56s; cook cached; sccache BuildKit cache; UI layers cached
 2026-11-09,cargo check -p bonsai --lib,bonsai --lib,9.66,pass,warm workspace; sccache active; lib target only
 2026-11-09,docker compose build bonsai-standalone bonsai-routing,bonsai,463.0,pass,bn013 remediation.rs fix
+2026-11-09,docker compose build bonsai-standalone bonsai-routing,bonsai,482.0,pass,bn020 ui login page
