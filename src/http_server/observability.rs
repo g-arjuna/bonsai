@@ -1932,27 +1932,31 @@ pub(super) async fn db_purge_handler(
         let conn = Connection::new(&db)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
 
+        let cutoff_ts = crate::graph::common::ts(cutoff_ns);
+
         // Count first
-        let count_q = format!(
-            "MATCH (n:{node_type}) WHERE n.{ts_col} < timestamp_ns({cutoff_ns}) RETURN count(n)"
-        );
+        let count_q = format!("MATCH (n:{node_type}) WHERE n.{ts_col} < $cutoff RETURN count(n)");
         let count: i64 = conn
-            .query(&count_q)
-            .and_then(|mut r| {
-                if let Some(row) = r.next() {
-                    Ok(read_i64(&row[0]))
-                } else {
-                    Ok(0)
-                }
+            .prepare(&count_q)
+            .and_then(|mut stmt| {
+                conn.execute(&mut stmt, vec![("cutoff", cutoff_ts.clone())])
+                    .and_then(|mut r| {
+                        if let Some(row) = r.next() {
+                            Ok(read_i64(&row[0]))
+                        } else {
+                            Ok(0)
+                        }
+                    })
             })
             .unwrap_or(0);
 
         if count > 0 {
             // Detach delete removes node and all connected edges
-            let del_q = format!(
-                "MATCH (n:{node_type}) WHERE n.{ts_col} < timestamp_ns({cutoff_ns}) DETACH DELETE n"
-            );
-            conn.query(&del_q)
+            let del_q = format!("MATCH (n:{node_type}) WHERE n.{ts_col} < $cutoff DETACH DELETE n");
+            let mut del_stmt = conn
+                .prepare(&del_q)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            conn.execute(&mut del_stmt, vec![("cutoff", cutoff_ts)])
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         }
 
@@ -2573,12 +2577,16 @@ pub(super) async fn graph_snapshot_handler(
 
         // Recent detections (last 30 min) for label context
         let cutoff_ns = now_ns() - 30 * 60 * 1_000_000_000i64;
-        let recent_detections: Vec<serde_json::Value> = conn
-            .query(&format!(
-                "MATCH (e:DetectionEvent) WHERE e.fired_at > timestamp_ns({cutoff_ns}) \
+        let cutoff_ts = crate::graph::common::ts(cutoff_ns);
+        let mut det_stmt = conn
+            .prepare(
+                "MATCH (e:DetectionEvent) WHERE e.fired_at > $since \
                  RETURN e.id, e.device_address, e.rule_id, e.severity, e.fired_at \
-                 ORDER BY e.fired_at DESC LIMIT 500"
-            ))
+                 ORDER BY e.fired_at DESC LIMIT 500",
+            )
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        let recent_detections: Vec<serde_json::Value> = conn
+            .execute(&mut det_stmt, vec![("since", cutoff_ts)])
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
             .map(|r| {
                 let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
