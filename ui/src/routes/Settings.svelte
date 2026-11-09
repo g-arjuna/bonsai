@@ -401,12 +401,14 @@
   {/if}
 
   {#if aiCfg}
-    <section class="section">
-      <h2>AI Investigations</h2>
-      <p class="section-desc">
-        Configure the AI provider used for automated investigation analysis.
-        Set <code>{aiCfg.api_key_env}</code> in the server environment to enable.
-      </p>
+    <details class="section ai-legacy">
+      <summary>
+        <h2 class="ai-legacy-title">Legacy env-based AI config (fallback)</h2>
+        <p class="section-desc">
+          Read-only view of server config-file/env AI settings. Manage providers
+          under "LLM Providers" above — an active vault provider overrides this.
+        </p>
+      </summary>
       <div class="ai-grid">
         <div class="ai-row"><span class="ai-label">Provider</span><span class="ai-value">{aiCfg.provider}</span></div>
         <div class="ai-row"><span class="ai-label">Model</span><span class="ai-value">{aiCfg.model}</span></div>
@@ -434,7 +436,7 @@
           </span>
         {/if}
       </div>
-    </section>
+    </details>
   {/if}
 
   <section class="section">
@@ -642,6 +644,24 @@
     color: var(--color-muted, #6b7280);
     margin: 0 0 16px;
   }
+
+  details.ai-legacy {
+    border: 1px solid var(--color-border, #2a3040);
+    border-radius: 8px;
+    padding: 12px 16px;
+  }
+  details.ai-legacy > summary {
+    cursor: pointer;
+    list-style: none;
+  }
+  details.ai-legacy > summary::-webkit-details-marker { display: none; }
+  details.ai-legacy > summary::before {
+    content: '▸ ';
+    color: var(--color-muted, #6b7280);
+  }
+  details.ai-legacy[open] > summary::before { content: '▾ '; }
+  .ai-legacy-title { display: inline; font-size: 0.95rem; font-weight: 600; margin: 0; }
+  details.ai-legacy[open] > summary .section-desc { margin-bottom: 12px; }
 
   .receiver-grid {
     display: grid;

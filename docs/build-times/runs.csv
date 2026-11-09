@@ -5,3 +5,4 @@ date,command,scope,wall_seconds,result,notes
 2026-11-09,docker compose build bonsai-standalone bonsai-routing,bonsai,463.0,pass,bn013 remediation.rs fix
 2026-11-09,docker compose build bonsai-standalone bonsai-routing,bonsai,482.0,pass,bn020 ui login page
 2026-11-09,docker compose build bonsai-standalone bonsai-routing,bonsai,491.0,pass,bn020 logout ui
+2026-11-09,docker compose build bonsai-standalone bonsai-routing,bonsai,481.0,pass,bn020 settings ai-legacy collapse
