@@ -177,6 +177,16 @@ impl GeminiProvider {
     ) -> Result<AiResponse> {
         let url = "https://generativelanguage.googleapis.com/v1beta/interactions";
 
+        // Map function_call id -> name so function_result items can carry
+        // the required tool name (Interactions API rejects empty names).
+        let mut call_names: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for msg in &messages {
+            for tc in &msg.tool_calls {
+                call_names.insert(tc.id.clone(), tc.name.clone());
+            }
+        }
+
         let mut input: Vec<serde_json::Value> = Vec::new();
         for msg in &messages {
             if msg.role == "system" {
@@ -203,10 +213,12 @@ impl GeminiProvider {
                 continue;
             }
             if msg.role == "tool" {
+                let call_id = msg.tool_call_id.as_deref().unwrap_or("").to_string();
+                let name = call_names.get(&call_id).cloned().unwrap_or_default();
                 input.push(serde_json::json!({
                     "type": "function_result",
-                    "call_id": msg.tool_call_id.as_deref().unwrap_or(""),
-                    "name": "",
+                    "call_id": call_id,
+                    "name": name,
                     "result": [{"type": "text", "text": msg.content.as_deref().unwrap_or("")}],
                 }));
                 continue;
