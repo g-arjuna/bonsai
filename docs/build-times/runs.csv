@@ -16,3 +16,4 @@ date,command,scope,wall_seconds,result,notes
 2026-11-09,cargo check -p bonsai --lib,bonsai --lib,7.63,pass,warm; sccache
 2026-11-09,docker compose build bonsai-standalone bonsai-routing,bonsai,359.0,pass,bn013 function_result name fix
 2026-11-09,docker compose build bonsai-standalone bonsai-routing,bonsai,465.0,pass,bn013 openai reasoning_effort fix
+2026-11-09,cargo check -p bonsai --lib,bonsai --lib,22.73,pass,warm; sccache

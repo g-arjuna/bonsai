@@ -45,6 +45,7 @@ use crate::{
 };
 
 pub mod auth;
+mod change_capture;
 mod ddos;
 mod device;
 mod governance;
@@ -1902,6 +1903,14 @@ fn remediation_routes() -> Router<AppState> {
             post(webhook_change_event_handler),
         )
         .route("/api/changes", get(list_changes_handler))
+        .route(
+            "/api/changes/{id}/capture",
+            post(change_capture::capture_change_snapshot_handler),
+        )
+        .route(
+            "/api/changes/{id}/snapshots",
+            get(change_capture::list_change_snapshots_handler),
+        )
         .route(
             "/api/changes/context/{device_address}",
             get(change_context_handler),
