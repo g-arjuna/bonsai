@@ -154,6 +154,13 @@ running; no incident→investigation automation exists. Break points
 recorded; next: adjudication/feedback endpoints and investigation
 lifecycle states. Evidence:
 [incident trace](merger/evidence/2026-11-09-bn013-incident-trace/README.md).
+BN-013a (9 November): fixed — investigations created with no AI provider
+configured now reach terminal `failed` with
+`STOP_REASON=no_ai_provider` and a real `completed_at_ns` instead of
+sticking `running` forever; verified live on rebuilt `bonsai:latest`.
+This deployment has no AI provider configured, so grounded-RCA quality
+remains BN-004-blocked. Evidence:
+[investigation lifecycle](merger/evidence/2026-11-09-bn013-investigation-lifecycle/README.md).
 
 BN-009 intake reconciliation (8 November): existing sidecar lifecycle
 surfaces inventoried — registry/heartbeat/stale-lost, `BONSAI_REQUIRE_SIDECAR`
