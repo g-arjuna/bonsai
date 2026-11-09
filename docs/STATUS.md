@@ -221,6 +221,17 @@ counts (route `10.10.1.0/24`, 2 peers up on 172.100.207.12), and
 deltas (no routing change was made between phases). Evidence:
 [bn014a lbug upsert](merger/evidence/2026-11-09-bn014a-lbug-upsert/README.md).
 
+BN-014b invariant checker (9 November): `POST
+/api/changes/{id}/verify-invariants` evaluates four independent
+invariants — `capture_complete`, `no_new_peer_downs`, `prefix_retention`,
+`expected_prefixes_present` (operator-supplied, `skipped` when absent) —
+purely from the persisted baseline/candidate snapshots, persisting
+per-device verdicts as `change_invariant_verdict` ConfigItems readable
+via `GET /api/changes/{id}/invariants`. Verified live: real snapshot
+pair → overall `pass`; bogus expected prefix → overall `fail` with the
+missing prefix named; 3 unit tests pass. Evidence:
+[bn014b invariants](merger/evidence/2026-11-09-bn014b-invariants/README.md).
+
 BN-009 intake reconciliation (8 November): existing sidecar lifecycle
 surfaces inventoried — registry/heartbeat/stale-lost, `BONSAI_REQUIRE_SIDECAR`
 health gate, `/api/ml/{exports,schedules,jobs}` incl. cancel, job_engine

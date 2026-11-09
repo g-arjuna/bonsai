@@ -1912,6 +1912,14 @@ fn remediation_routes() -> Router<AppState> {
             get(change_capture::list_change_snapshots_handler),
         )
         .route(
+            "/api/changes/{id}/verify-invariants",
+            post(change_capture::verify_change_invariants_handler),
+        )
+        .route(
+            "/api/changes/{id}/invariants",
+            get(change_capture::list_change_invariants_handler),
+        )
+        .route(
             "/api/changes/context/{device_address}",
             get(change_context_handler),
         )
