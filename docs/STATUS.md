@@ -280,6 +280,17 @@ secondary finding: docker-proxy masquerades clab BMP sources to
 `172.20.0.1`, collapsing frr1+frr2 under one speaker identity —
 follow-up: host-network mode or speaker disambiguation.
 
+BN-014 completed on live data (10 November): after the deployment fix,
+the full change-assurance cycle ran against real BMP state — webhook
+`manual:bn014-live-001` → baseline (5 peers, 6 routes under speaker
+`172.20.0.1`) → frr2 neighbor admin-down → candidate (4 routes) →
+`verify-invariants` returned a **genuine `fail`**
+(`no_new_peer_downs`: down peers 0→2) → restore → re-verify `pass`.
+First nonzero-diff, failing-invariant result on live data; all four
+BN-014 slices (capture, invariants, rehearsal, episode record) now
+verified end-to-end. Evidence:
+[bn014 live verification](merger/evidence/2026-11-10-bn014-live-verification/README.md).
+
 BN-009 intake reconciliation (8 November): existing sidecar lifecycle
 surfaces inventoried — registry/heartbeat/stale-lost, `BONSAI_REQUIRE_SIDECAR`
 health gate, `/api/ml/{exports,schedules,jobs}` incl. cancel, job_engine

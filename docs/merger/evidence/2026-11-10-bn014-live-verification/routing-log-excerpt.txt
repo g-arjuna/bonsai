@@ -1,0 +1,12 @@
+2026-11-10T04:08:18.026324Z  INFO bonsai::routing_service: bmp_frame speaker_ip=172.20.0.1 ver=3 mlen=51 mtype=2 head=030000003302000000000000000000000000000000000000000000000a6401000000fde9c00002016af298b1000afe6e
+2026-11-10T04:08:18.026334Z  INFO bonsai::routing_service: bmp_frame speaker_ip=172.20.0.1 ver=3 mlen=70 mtype=2 head=030000004602000000000000000000000000000000000000000000000a6401010000fdeac00002026af298b1000afe6f
+2026-11-10T04:08:18.039419Z  INFO rbmp_rib::manager: BGP peer down speaker=172.20.0.1 peer_addr=10.100.1.0 reason_str=LocalSystemClosed2
+2026-11-10T04:08:18.052655Z  INFO rbmp_rib::manager: BGP peer down speaker=172.20.0.1 peer_addr=10.100.1.1 reason_str=RemoteSystemClosed { notification: Some([255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 21, 3, 6, 2]) }
+2026-11-10T04:08:44.107764Z  INFO rbmp_rib::manager: BGP peer up speaker=172.20.0.1 peer_addr=10.100.1.0 peer_as=65001
+2026-11-10T04:08:44.120562Z  INFO rbmp_rib::manager: BGP peer up speaker=172.20.0.1 peer_addr=10.100.1.1 peer_as=65002
+2026-11-10T04:27:05.585519Z  INFO bonsai::routing_service: bmp_frame speaker_ip=172.20.0.1 ver=3 mlen=70 mtype=2 head=030000004602000000000000000000000000000000000000000000000a6401010000fdeac00002026af29d18000afe6f
+2026-11-10T04:27:05.585521Z  INFO bonsai::routing_service: bmp_frame speaker_ip=172.20.0.1 ver=3 mlen=51 mtype=2 head=030000003302000000000000000000000000000000000000000000000a6401000000fde9c00002016af29d18000afe6f
+2026-11-10T04:27:05.598295Z  INFO rbmp_rib::manager: BGP peer down speaker=172.20.0.1 peer_addr=10.100.1.1 reason_str=RemoteSystemClosed { notification: Some([255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 21, 3, 6, 2]) }
+2026-11-10T04:27:05.614608Z  INFO rbmp_rib::manager: BGP peer down speaker=172.20.0.1 peer_addr=10.100.1.0 reason_str=LocalSystemClosed2
+2026-11-10T04:27:38.740178Z  INFO rbmp_rib::manager: BGP peer up speaker=172.20.0.1 peer_addr=10.100.1.0 peer_as=65001
+2026-11-10T04:27:38.751908Z  INFO rbmp_rib::manager: BGP peer up speaker=172.20.0.1 peer_addr=10.100.1.1 peer_as=65002
