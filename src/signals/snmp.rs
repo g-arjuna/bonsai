@@ -55,6 +55,10 @@ pub struct SnmpTrapEvent {
     pub usm_security_name: String,
     /// SNMPv3 auth protocol used by the matched USM user. Empty for v1/v2c or unknown user.
     pub usm_auth_protocol: String,
+    /// SNMPv3 authoritative engine ID (hex) — self-reported engine identity
+    /// per RFC 3411; evidence for source attribution, not proof of device.
+    #[serde(default)]
+    pub engine_id: String,
 }
 
 /// A structured fact extracted from SNMP varbinds using an OID pattern.
@@ -363,6 +367,7 @@ pub async fn run_snmp_receiver(
                                 raw_len: n,
                                 usm_security_name: String::new(),
                                 usm_auth_protocol: String::new(),
+                                engine_id: String::new(),
                             });
 
                         // Dedup check: skip if same (device, trap_oid) seen within window.
@@ -594,27 +599,27 @@ pub fn parse_snmp_message(raw: &[u8], peer_addr: &str, timestamp_ns: i64) -> Res
     }
     .to_string();
 
-    let (community, pdu_tag, pdu_content) = match version {
+    let (engine_id_raw, community, pdu_tag, pdu_content) = match version {
         0 | 1 => {
             let community = msg_reader.read_octet_string_text()?;
             let (tag, pdu) = msg_reader.read_tlv()?;
-            (community, tag, pdu.to_vec())
+            (String::new(), community, tag, pdu.to_vec())
         }
         3 => {
             let _header = msg_reader.read_expected(0x30)?;
             // RFC 3412 §6.4: globalData (msgGlobalData) SEQUENCE
             // RFC 3414 §2.3: USM security parameters encoded as OCTET STRING wrapping SEQUENCE
             let usm_params_bytes = msg_reader.read_octet_string()?;
-            let usm_security_name = parse_usm_security_name(usm_params_bytes);
+            let (usm_engine_id, usm_security_name) = parse_usm_security_name(usm_params_bytes);
             let (scoped_tag, scoped_content) = msg_reader.read_tlv()?;
             if scoped_tag != 0x30 {
                 bail!("encrypted SNMPv3 scoped PDU (privProtocol != none) is not yet supported");
             }
             let mut scoped = BerReader::new(scoped_content);
-            let _context_engine_id = scoped.read_octet_string()?;
+            let context_engine_id = scoped.read_octet_string()?;
             let _context_name = scoped.read_octet_string()?;
             let (tag, pdu) = scoped.read_tlv()?;
-            (usm_security_name, tag, pdu.to_vec())
+            (format!("{}:{}", hex::encode(usm_engine_id), hex::encode(context_engine_id)), usm_security_name, tag, pdu.to_vec())
         }
         _ => bail!("unsupported snmp version {version}"),
     };
@@ -642,6 +647,7 @@ pub fn parse_snmp_message(raw: &[u8], peer_addr: &str, timestamp_ns: i64) -> Res
     if version == 3 {
         event.usm_security_name = event.community.clone();
         event.community = String::new();
+        event.engine_id = engine_id_raw;
     }
     Ok(event)
 }
@@ -655,18 +661,18 @@ pub fn parse_snmp_message(raw: &[u8], peer_addr: &str, timestamp_ns: i64) -> Res
 ///   msgAuthenticationParameters OCTET STRING,
 ///   msgPrivacyParameters      OCTET STRING
 /// }
-fn parse_usm_security_name(params: &[u8]) -> String {
+fn parse_usm_security_name(params: &[u8]) -> (String, String) {
     let mut r = BerReader::new(params);
     if let Ok(seq) = r.read_expected(0x30) {
         let mut sr = BerReader::new(seq);
-        let _ = sr.read_octet_string(); // engine id
+        let engine_id = sr.read_octet_string().unwrap_or_default();
         let _ = sr.read_tlv(); // engine boots (INTEGER)
         let _ = sr.read_tlv(); // engine time (INTEGER)
         if let Ok(name_bytes) = sr.read_octet_string() {
-            return String::from_utf8_lossy(name_bytes).to_string();
+            return (hex::encode(engine_id), String::from_utf8_lossy(name_bytes).to_string());
         }
     }
-    String::new()
+    (String::new(), String::new())
 }
 
 fn parse_v1_trap(
@@ -718,6 +724,7 @@ fn parse_v1_trap(
         raw_len: 0,
         usm_security_name: String::new(),
         usm_auth_protocol: String::new(),
+                                engine_id: String::new(),
     })
 }
 
@@ -765,6 +772,7 @@ fn parse_v2_trap(
         raw_len: 0,
         usm_security_name: String::new(),
         usm_auth_protocol: String::new(),
+                                engine_id: String::new(),
     })
 }
 
@@ -1116,6 +1124,7 @@ mod tests {
             raw_len: 4,
             usm_security_name: String::new(),
             usm_auth_protocol: String::new(),
+                                engine_id: String::new(),
         };
         archive.append(&event).await.unwrap();
         let contents = tokio::fs::read_to_string(&path).await.unwrap();
@@ -1227,6 +1236,7 @@ mod tests {
                 raw_len: 0,
                 usm_security_name: String::new(),
                 usm_auth_protocol: String::new(),
+                                engine_id: String::new(),
             },
         );
         assert_eq!(resolved.address, "192.0.2.44");
@@ -1271,6 +1281,7 @@ mod tests {
             raw_len: 0,
             usm_security_name: String::new(),
             usm_auth_protocol: String::new(),
+                                engine_id: String::new(),
         };
 
         let fact = extractor.extract(&event).expect("should extract fact");
