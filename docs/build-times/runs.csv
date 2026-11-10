@@ -32,3 +32,5 @@ date,command,scope,wall_seconds,result,notes
 2026-11-09,cargo test -p bonsai --lib change_capture,bonsai --lib,123.0,pass,test compile 2m03s; 3 invariant unit tests
 2026-11-09,docker compose build bonsai-standalone bonsai-routing,bonsai,~560,pass,release bins ~9m; bn014b verify-invariants
 2026-11-09,cargo check -p bonsai --bin bonsai-routing,bonsai-routing,8.81,pass,warm; sccache; BONSAI_BMP_TRACE instrumentation
+2026-11-10,cargo check -p bonsai --lib,bonsai --lib,8.98,pass,warm; sccache; append-only captures/verdicts
+2026-11-10,docker compose build bonsai-standalone bonsai-routing,bonsai,~560,pass,release bins ~9m; append-only captures

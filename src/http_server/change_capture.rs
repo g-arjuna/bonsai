@@ -189,15 +189,16 @@ pub(super) async fn capture_change_snapshot_handler(
             ),
         };
 
+        let captured_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0);
         let snapshot = serde_json::json!({
             "change_id": id,
             "change_number": number,
             "device": dev,
             "phase": phase,
-            "captured_at_ns": std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as i64)
-                .unwrap_or(0),
+            "captured_at_ns": captured_at,
             "routes_ok": routes_ok,
             "peers_ok": peers_ok,
             "route_count": route_count,
@@ -211,7 +212,9 @@ pub(super) async fn capture_change_snapshot_handler(
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == ':' { c } else { '_' })
             .collect();
-        let item_id = format!("css-{}-{}-{}", id, safe_dev, phase);
+        // Append-only: each capture gets a unique id so a later capture
+        // (e.g. post-recovery) never overwrites an earlier one.
+        let item_id = format!("css-{}-{}-{}-{}", id, safe_dev, phase, captured_at);
         let item = ConfigItemRecord {
             id: item_id.clone(),
             config_class: SNAPSHOT_CLASS.to_string(),
@@ -305,7 +308,11 @@ pub(super) async fn list_change_snapshots_handler(
         let entry = devices.entry(dev.clone()).or_insert_with(|| {
             serde_json::json!({"device": dev, "baseline": null, "candidate": null})
         });
-        entry[phase] = s.clone();
+        // Keep the newest snapshot per phase (append-only history).
+        let cur_ts = entry[phase.as_str()]["captured_at_ns"].as_i64().unwrap_or(0);
+        if entry[phase.as_str()].is_null() || cur_ts < s["captured_at_ns"].as_i64().unwrap_or(0) {
+            entry[phase.as_str()] = s.clone();
+        }
     }
 
     let mut diffs = Vec::new();
@@ -545,7 +552,11 @@ pub(super) async fn verify_change_invariants_handler(
         let entry = devices.entry(dev.clone()).or_insert_with(|| {
             serde_json::json!({"device": dev, "baseline": null, "candidate": null})
         });
-        entry[phase] = s.clone();
+        // Keep the newest snapshot per phase (append-only history).
+        let cur_ts = entry[phase.as_str()]["captured_at_ns"].as_i64().unwrap_or(0);
+        if entry[phase.as_str()].is_null() || cur_ts < s["captured_at_ns"].as_i64().unwrap_or(0) {
+            entry[phase.as_str()] = s.clone();
+        }
     }
 
     let mut results = Vec::new();
@@ -575,6 +586,10 @@ pub(super) async fn verify_change_invariants_handler(
             overall = "unknown";
         }
 
+        let evaluated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0);
         let record = serde_json::json!({
             "change_id": id,
             "device": dev,
@@ -582,14 +597,13 @@ pub(super) async fn verify_change_invariants_handler(
             "overall": dev_overall,
             "expected_prefixes": expected,
             "verdicts": verdicts,
-            "evaluated_at_ns": std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as i64)
-                .unwrap_or(0),
+            "evaluated_at_ns": evaluated_at,
         });
         let safe = safe_device(dev);
+        // Append-only: each evaluation gets a unique id so a later pass
+        // never overwrites an earlier fail verdict.
         let item = ConfigItemRecord {
-            id: format!("civ-{}-{}", id, safe),
+            id: format!("civ-{}-{}-{}", id, safe, evaluated_at),
             config_class: VERDICT_CLASS.to_string(),
             vendor: String::new(),
             name: format!("{}:{}", id, dev),

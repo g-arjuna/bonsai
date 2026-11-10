@@ -425,3 +425,18 @@ retained speaker/RD/role constraints and persisted admin restore switch.
 profile in the linked report. Native collection is operator-triggered; no scheduled
 polling is present. The test used isolated task-owned cEOS/SR Linux nodes and made
 no live configuration writes. BN-007 still owns the optional DuckDB EOR lifecycle gap.
+
+BN-021 source-identity workstream opened (10 November): architecture
+review extracted to backlog — canonical device/exporter/transport
+identity model, per-protocol attribution rules, P0–P2 stages. P0
+listener audit done ([audit](merger/evidence/2026-11-10-bn021-listener-audit/README.md)):
+sFlow already uses payload agent_address (reference pattern); BMP
+speaker still transport-IP keyed (Initiation sysName parsed but unused);
+NetFlow template cache keyed by socket peer; syslog/SNMP use transport
+peer_addr. Lab networking fixed via host-mode routing (speakers split
+to real IPs). Also landed: change captures + invariant verdicts are now
+append-only (`css-…-{phase}-{ts}`, `civ-…-{ts}`) — verified live, 3
+verdict records preserved where 1 previously overwrote; pairing selects
+newest per phase. Next slices: BMP exporter identity via Initiation,
+NetFlow template-cache isolation, syslog/SNMP identity split,
+monitoring-health state.
