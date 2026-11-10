@@ -157,6 +157,13 @@ impl ApiRegistry {
         })
     }
 
+    /// Direct access to the backing SQLite config store, when available.
+    /// Used by trusted-identity administration (BN-021b); `None` when the
+    /// store failed to open at startup.
+    pub fn sqlite_store(&self) -> Option<Arc<crate::sqlite_store::SqliteStore>> {
+        self.sqlite_store.clone()
+    }
+
     pub fn get_device(&self, address: &str) -> Result<Option<TargetConfig>> {
         let state = self
             .state

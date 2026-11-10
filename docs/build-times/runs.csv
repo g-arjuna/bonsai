@@ -47,3 +47,6 @@ date,command,scope,wall_seconds,result,notes
 2026-11-10,cargo test --test bn005_deployment_and_scope_hardening,bn005 test target,855+7,pass,test-binary build 14m15s; 13 tests pass in 6.76s
 2026-11-10,cargo test --test bn005_closeout,bn005_closeout target,31+10,pass,30s build; 11 tests pass in 9.63s
 2026-11-10,cargo clippy --lib,bonsai --lib,~200,fail,pre-existing never_loop error in src/http_server/device.rs:637 (untouched); 282 pre-existing warnings; no new warnings in changed files
+2026-11-10,cargo check --lib,bonsai --lib (cold worktree),~3300,pass,fresh worktree target; ~600 deps + lbug C++ cmake build; sccache ~53% hits
+2026-11-10,cargo test --test bn021b_trusted_identity,bn021b test target,2742+412,pass,test-profile dep codegen ~45m; 13/13 tests pass in 1.65s; lib rebuild after fmt 6m52s
+2026-11-10,cargo test --test bn022_graph_read_boundary,bn022 regression,aborted,disk-full,No space left on device writing liblbug rlib; incremental cache cleaned; rerun pending in main worktree
