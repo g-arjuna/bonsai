@@ -252,6 +252,20 @@ Documented next steps incl. privileged tcpdump and a hold-time/staleness
 fallback. Evidence:
 [bmp peerdown investigation](merger/evidence/2026-11-09-bmp-peerdown-investigation/README.md).
 
+Frame-level tracing (10 November): `BONSAI_BMP_TRACE=1` added to
+`run_bmp_listener` (commit f4f0363) logging every reconstructed BMP
+frame's type/peer header. Three controlled flaps (admin shutdown + hard
+clear, 45–60s windows) produced **zero BMP frames of any type** —
+no PeerDown (type 2), no PeerUp (type 3), not even route-monitoring —
+while the single verified BMP TCP session stayed ESTAB and the trace
+itself proved live on reconnect. Peer identity confirmed as the real
+type-0 neighbor (not a Loc-RIB virtual peer). Conclusion: the
+notification disappears **upstream of Bonsai's decoder** — no frame
+reaches the listener. Wire capture remains blocked (no CAP_NET_RAW); a
+TCP-proxy or privileged capture container is the recommended next step,
+plus FRR-side `debug bgp neighbor-events` logging. Consolidated record:
+[bmp peerdown full investigation](merger/evidence/2026-11-10-bmp-peerdown-full-investigation/README.md).
+
 BN-009 intake reconciliation (8 November): existing sidecar lifecycle
 surfaces inventoried — registry/heartbeat/stale-lost, `BONSAI_REQUIRE_SIDECAR`
 health gate, `/api/ml/{exports,schedules,jobs}` incl. cancel, job_engine
