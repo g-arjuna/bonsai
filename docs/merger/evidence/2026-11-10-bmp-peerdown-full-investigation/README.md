@@ -166,14 +166,36 @@ wrong one.**
   **container**, i.e. the stale instance. BN-014a captures therefore read
   replayed state, not live BMP.
 
-### Deployment fix required
+### Deployment fix applied and verified (10 Nov ~04:10 UTC)
 
-1. Stop PID 2633113 (stray debug process; journals persist on disk).
-2. Publish the container's BMP port on the clab gateway address:
-   `172.100.207.1:11019:11019` (or `0.0.0.0`) in the compose override —
-   the current `127.0.0.1:11019` mapping is unreachable from clab nodes.
-3. Recreate `bonsai-routing`, wait for FRR BMP reconnect, re-run one
-   flap to confirm PeerDown flows into the container and the app API.
+1. Stopped stray PID 2633113 (journals preserved at
+   `/tmp/bn003-journal-r07/`).
+2. Compose override now publishes `172.100.207.1:11019:11019`
+   (`/tmp/bn019-compose-override.yml`, `BONSAI_BMP_TRACE=1` retained).
+3. Recreated `bonsai-routing`; FRR reconnected — frame trace shows live
+   traffic: `mtype=0` RouteMonitoring ×17, `mtype=1` Stats ×22 (5s
+   interval), `mtype=3` PeerUp ×6, `mtype=4` Initiation ×3.
+4. **End-to-end PeerDown verified through the app API:**
+   - `neighbor 10.100.1.0 shutdown` → `mtype=2` PeerDown frames received
+     (len 51 + 70); manager logged `BGP peer down ... LocalSystemClosed2`
+     and `RemoteSystemClosed`; during the window
+     `GET /api/routing/v1/peers?speaker=172.20.0.1` returned
+     `10.100.1.0 down` and `10.100.1.1 down`.
+   - `no neighbor ... shutdown` → PeerUp frames; peers returned `up`;
+     `show bgp summary` Established.
+
+### New secondary finding: speaker identity collapse
+
+With the port published via docker-proxy, clab BMP sources are
+masqueraded to the docker gateway `172.20.0.1` — **both** frr1 and frr2
+sessions now appear under speaker `172.20.0.1`, merging their peer sets.
+The stale `172.100.207.11`/`.12` speakers remain in journal replay.
+Peer state transitions still work (PeerKey uses peer addr/AS/type), but
+per-router speaker attribution is lost. Follow-up options: run
+bonsai-routing with `network_mode: host` (requires repointing
+`BONSAI_ROUTING_SERVICE_URL` off the compose DNS name) or add BMP
+speaker disambiguation. Not blocking BN-014 correctness for the single
+speaker under test.
 
 ### Lessons
 

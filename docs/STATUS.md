@@ -266,15 +266,19 @@ TCP-proxy or privileged capture container is the recommended next step,
 plus FRR-side `debug bgp neighbor-events` logging. Consolidated record:
 [bmp peerdown full investigation](merger/evidence/2026-11-10-bmp-peerdown-full-investigation/README.md).
 
-**ROOT CAUSE (10 Nov ~04:05):** two `bonsai-routing` instances — a
-stray `nohup ./target/debug/bonsai-routing` on the host (PID 2633113,
-since 8 Nov) owns `172.100.207.1:11019` and receives ALL live BMP;
-the Docker container only has `127.0.0.1:11019` published, unreachable
-from clab nodes, serving stale replayed state to the app. The host
-instance's log shows perfect PeerDown (`LocalSystemClosed2`) / PeerUp
-pairs for every flap — FRR, transport, decoder, manager, and API are all
-correct. Fix: stop the stray process + publish container BMP on
-`172.100.207.1:11019`.
+**ROOT CAUSE (10 Nov ~04:05, FIXED ~04:10):** two `bonsai-routing`
+instances — a stray `nohup ./target/debug/bonsai-routing` on the host
+(PID 2633113, since 8 Nov) owned `172.100.207.1:11019` and received ALL
+live BMP; the Docker container only had `127.0.0.1:11019` published,
+unreachable from clab nodes, serving stale replayed state to the app.
+Stray process stopped; container now publishes
+`172.100.207.1:11019:11019`. **PeerDown verified end-to-end**: admin
+shutdown → `mtype=2` frames → `peer down LocalSystemClosed2` → API shows
+`10.100.1.0 down`/`10.100.1.1 down`; restore → PeerUp → `up`. FRR,
+transport, decoder, manager, and API were never defective. New
+secondary finding: docker-proxy masquerades clab BMP sources to
+`172.20.0.1`, collapsing frr1+frr2 under one speaker identity —
+follow-up: host-network mode or speaker disambiguation.
 
 BN-009 intake reconciliation (8 November): existing sidecar lifecycle
 surfaces inventoried — registry/heartbeat/stale-lost, `BONSAI_REQUIRE_SIDECAR`
