@@ -455,6 +455,26 @@ BN-021 slice 1 verified live (10 November): peers API now returns
 `exporter_address` identity collapse — deferred to the canonical
 exporter-identity layer rather than a format-breaking patch.
 
+BN-021b identity-resolver slice (10 November): the canonical identity
+contract now has a trusted-binding resolver and durable storage.
+`telemetry_identity.rs` gained protocol/scope/collector/session-epoch
+fields on the evidence envelope, `TrustedBinding` + `CanonicalDevice`
+types, and a stateless `IdentityResolver` (resolved / provisional /
+ambiguous / unknown / conflicting; only Resolved may drive
+authoritative state). SQLite schema v3 adds `canonical_devices`
+(opaque `dev-<uuid>` id stable across address changes) and
+`exporter_bindings` (scope+protocol+exporter → device, optional
+evidence pins, provenance, revoke-only invalidation) — additive, the
+address-keyed `devices` table is untouched. Bindings require an
+existing canonical device and reject overlapping claims at
+registration; admin-only `/api/identity/*` endpoints provision them
+(telemetry cannot mint bindings). `identity_from_bmp_observation`
+adapts `ObservationSource`+sysName into the envelope — NOT yet wired
+into ingestion; PeerKey/RIB/journal remain transport-IP keyed (that is
+BN-021c). Verified: `cargo check --lib` clean; 13/13 tests in
+`tests/bn021b_trusted_identity.rs` pass incl. v2→v3 migration on a
+populated DB; BN-022 read-boundary suite re-run as regression.
+
 BN-022 containment slice (10 November): ad-hoc graph reads are now
 denied-by-default for non-admin principals. `src/graph/explorer.rs`
 gained `GraphReadAccess` + `validate_query_for_access`: a positive

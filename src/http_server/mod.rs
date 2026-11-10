@@ -50,6 +50,7 @@ mod ddos;
 mod device;
 mod governance;
 mod ha;
+mod identity;
 mod managed_devices;
 mod mcp_routes;
 pub mod ml_jobs;
@@ -1080,6 +1081,7 @@ pub fn router_from_state(state: AppState) -> Router {
         .merge(ev1_playbook_routes())
         .merge(routing_v1_routes())
         .merge(ownership::routes())
+        .merge(identity::routes())
         .route("/api/routing/v1/native-bgp", post(native_bgp::collect))
         .route("/mcp", post(crate::mcp_server::mcp_handler))
         // Static JS/CSS assets for BonPy (SvelteKit puts them under /_app/)

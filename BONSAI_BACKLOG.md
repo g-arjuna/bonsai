@@ -75,13 +75,31 @@ before claiming equivalent history or enabling it as an authority.
 - Restrict management APIs independently from telemetry listeners.
 - Acceptance: two BMP exporters remain distinct across restart/redeploy.
 
-**BN-021b — Canonical identity contract** — OPEN.
-- Define transport endpoint, exporter identity and canonical device ID.
-- Inventory-backed, tenant/site-scoped exporter bindings.
-- Preserve reported identity separately from authenticated identity.
-- States: resolved / provisional / ambiguous / unknown / conflicting;
-  ambiguous sources must not modify authoritative device state.
-- Preserve compatibility with existing device-address consumers.
+**BN-021b — Canonical identity contract** — PARTIAL (resolver + persistence done; ingestion not wired).
+- Done (10 Nov): `src/telemetry_identity.rs` extended — envelope now carries
+  protocol, scope, collector_id and session_epoch alongside transport
+  endpoint, provisional exporter claim, reported identity and observation
+  domain. New `TrustedBinding` (scope+protocol+canonical exporter_id →
+  canonical device_id, optional exact-match evidence pins, provenance,
+  active/revoked), `CanonicalDevice` (opaque `dev-<uuid>` id surviving
+  address changes), and stateless `IdentityResolver` returning
+  resolved/provisional/ambiguous/unknown/conflicting with raw evidence
+  preserved. SQLite schema v3 adds `canonical_devices` +
+  `exporter_bindings` (additive; `devices` table and address-keyed
+  consumers untouched); bindings require an existing canonical device,
+  reject overlapping/conflicting claims at registration, are idempotent
+  per binding_id, and revoke explicitly. Admin-only HTTP API
+  `/api/identity/{devices,bindings,bindings/{id}/revoke,resolve}` writes
+  only `operator_provisioned` provenance — telemetry cannot mint bindings.
+  Narrow BMP adapter `identity_from_bmp_observation` maps
+  `ObservationSource`+Initiation sysName into the envelope (not wired
+  into ingestion). 13 integration tests cover NAT exporters, overlapping
+  site addresses, shared sysName, missing/conflicting bindings,
+  registration rejection, reopen persistence, ODID reuse, provenance and
+  the v2→v3 migration (`tests/bn021b_trusted_identity.rs`).
+- Open: wire resolution into live ingestion (BMP/NetFlow/syslog adapters),
+  PeerKey/RIB/journal re-keying (BN-021c), inventory import path,
+  device_id selector in routing APIs, alias reconciliation.
 
 **BN-021c — BMP exporter identity** — PARTIAL.
 - Done: Initiation sysName/sysDescr exposed in speakers/peers APIs;

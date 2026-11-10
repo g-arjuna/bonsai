@@ -18,7 +18,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 const DB_FILE: &str = "bonsai_config.db";
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 /// SQLite config store with versioned schema and audit trail.
 pub struct SqliteStore {
@@ -172,6 +172,57 @@ impl SqliteStore {
             let _ = db.execute("ALTER TABLE devices ADD COLUMN password TEXT", []);
 
             db.execute("PRAGMA user_version=2", [])
+                .context("failed to set schema version")?;
+        }
+
+        // Version 3: BN-021b canonical device identity + trusted exporter bindings.
+        // Additive only — existing `devices` rows and address-keyed consumers
+        // are untouched.
+        if user_version < 3 {
+            db.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS canonical_devices (
+                    device_id TEXT PRIMARY KEY,
+                    address TEXT NOT NULL,
+                    site TEXT,
+                    hostname TEXT,
+                    created_at_ns INTEGER,
+                    updated_at_ns INTEGER,
+                    created_by TEXT,
+                    updated_by TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_canonical_devices_address
+                    ON canonical_devices(address);
+
+                CREATE TABLE IF NOT EXISTS exporter_bindings (
+                    binding_id TEXT PRIMARY KEY,
+                    scope TEXT NOT NULL,
+                    protocol TEXT NOT NULL,
+                    exporter_id TEXT NOT NULL,
+                    device_id TEXT NOT NULL,
+                    match_transport TEXT,
+                    match_reported_identity TEXT,
+                    match_exporter_claim TEXT,
+                    match_observation_domain INTEGER,
+                    provenance TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at_ns INTEGER,
+                    updated_at_ns INTEGER,
+                    created_by TEXT,
+                    updated_by TEXT
+                );
+
+                -- One canonical exporter identity per (scope, protocol).
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_exporter_bindings_canonical
+                    ON exporter_bindings(scope, protocol, exporter_id);
+                CREATE INDEX IF NOT EXISTS idx_exporter_bindings_device
+                    ON exporter_bindings(device_id);
+            "#,
+            )
+            .context("failed to create schema v3")?;
+
+            db.execute("PRAGMA user_version=3", [])
                 .context("failed to set schema version")?;
         }
 
@@ -842,4 +893,482 @@ impl SqliteStore {
         )?;
         Ok(())
     }
+
+    // ── Canonical device identity (BN-021b) ─────────────────────────────────
+    //
+    // `canonical_devices` maps an opaque, stable `device_id` to the
+    // device's CURRENT address. The `devices` table remains address-keyed
+    // for existing consumers; these tables are additive and do not
+    // re-key it.
+
+    /// Generate a fresh canonical device id.
+    pub fn new_canonical_device_id() -> String {
+        format!("dev-{}", uuid::Uuid::new_v4())
+    }
+
+    /// Generate a fresh binding id.
+    pub fn new_binding_id() -> String {
+        format!("bind-{}", uuid::Uuid::new_v4())
+    }
+
+    /// Register or update a canonical device. `device_id` is the stable
+    /// key: re-upserting with the same `device_id` and a new `address`
+    /// models a management-address change — same canonical identity, no
+    /// duplicate device. An empty `device_id` mints a new one.
+    pub fn upsert_canonical_device(
+        &self,
+        device: &crate::telemetry_identity::CanonicalDevice,
+        actor: &str,
+    ) -> Result<crate::telemetry_identity::CanonicalDevice> {
+        use crate::telemetry_identity::CanonicalDevice;
+        let now = now_ns();
+        let existing = if device.device_id.is_empty() {
+            None
+        } else {
+            self.get_canonical_device(&device.device_id)?
+        };
+
+        let stored = CanonicalDevice {
+            device_id: if device.device_id.is_empty() {
+                Self::new_canonical_device_id()
+            } else {
+                device.device_id.clone()
+            },
+            address: device.address.trim().to_string(),
+            site: device.site.clone(),
+            hostname: device.hostname.clone(),
+            created_at_ns: existing.as_ref().map(|d| d.created_at_ns).unwrap_or(now),
+            updated_at_ns: now,
+            created_by: existing
+                .as_ref()
+                .map(|d| d.created_by.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| actor.to_string()),
+            updated_by: actor.to_string(),
+        };
+        if stored.address.is_empty() {
+            anyhow::bail!("canonical device address must not be empty");
+        }
+
+        let old = existing
+            .as_ref()
+            .map(|d| serde_json::to_string(d).unwrap_or_default());
+        let new = serde_json::to_string(&stored).unwrap_or_default();
+
+        {
+            let db = self.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO canonical_devices (device_id, address, site, hostname, created_at_ns, updated_at_ns, created_by, updated_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(device_id) DO UPDATE SET address=?2, site=?3, hostname=?4, updated_at_ns=?6, updated_by=?8",
+                params![
+                    stored.device_id,
+                    stored.address,
+                    stored.site,
+                    stored.hostname,
+                    stored.created_at_ns,
+                    stored.updated_at_ns,
+                    stored.created_by,
+                    stored.updated_by,
+                ],
+            )?;
+        }
+
+        self.audit(
+            "canonical_devices",
+            "UPSERT",
+            &stored.device_id,
+            actor,
+            "canonical_device_upsert",
+            old.as_deref(),
+            Some(&new),
+        )?;
+
+        Ok(stored)
+    }
+
+    pub fn get_canonical_device(
+        &self,
+        device_id: &str,
+    ) -> Result<Option<crate::telemetry_identity::CanonicalDevice>> {
+        use crate::telemetry_identity::CanonicalDevice;
+        let db = self.db.lock().unwrap();
+        let result = db.query_row(
+            "SELECT device_id, address, site, hostname, created_at_ns, updated_at_ns, created_by, updated_by FROM canonical_devices WHERE device_id = ?1",
+            params![device_id],
+            |row| {
+                Ok(CanonicalDevice {
+                    device_id: row.get(0)?,
+                    address: row.get(1)?,
+                    site: row.get(2)?,
+                    hostname: row.get(3)?,
+                    created_at_ns: row.get(4)?,
+                    updated_at_ns: row.get(5)?,
+                    created_by: row.get(6)?,
+                    updated_by: row.get(7)?,
+                })
+            },
+        );
+        match result {
+            Ok(d) => Ok(Some(d)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// All canonical devices currently registered at `address`. May
+    /// return multiple rows across scopes/sites — address is evidence,
+    /// not identity.
+    pub fn find_canonical_devices_by_address(
+        &self,
+        address: &str,
+    ) -> Result<Vec<crate::telemetry_identity::CanonicalDevice>> {
+        use crate::telemetry_identity::CanonicalDevice;
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT device_id, address, site, hostname, created_at_ns, updated_at_ns, created_by, updated_by FROM canonical_devices WHERE address = ?1",
+        )?;
+        let rows = stmt.query_map(params![address], |row| {
+            Ok(CanonicalDevice {
+                device_id: row.get(0)?,
+                address: row.get(1)?,
+                site: row.get(2)?,
+                hostname: row.get(3)?,
+                created_at_ns: row.get(4)?,
+                updated_at_ns: row.get(5)?,
+                created_by: row.get(6)?,
+                updated_by: row.get(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow!("failed to collect canonical devices: {e}"))
+    }
+
+    pub fn list_canonical_devices(
+        &self,
+    ) -> Result<Vec<crate::telemetry_identity::CanonicalDevice>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT device_id, address, site, hostname, created_at_ns, updated_at_ns, created_by, updated_by FROM canonical_devices",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(crate::telemetry_identity::CanonicalDevice {
+                device_id: row.get(0)?,
+                address: row.get(1)?,
+                site: row.get(2)?,
+                hostname: row.get(3)?,
+                created_at_ns: row.get(4)?,
+                updated_at_ns: row.get(5)?,
+                created_by: row.get(6)?,
+                updated_by: row.get(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow!("failed to collect canonical devices: {e}"))
+    }
+
+    // ── Trusted exporter bindings (BN-021b) ─────────────────────────────────
+    //
+    // Bindings are created ONLY through these provisioning methods
+    // (operator/inventory paths). Telemetry ingestion must never call
+    // them; there is no API that derives a binding from observed data.
+
+    /// Create or update a trusted exporter binding.
+    ///
+    /// Validation (fail-closed):
+    /// - scope/protocol/exporter_id/device_id must be non-empty;
+    /// - `device_id` must reference an existing canonical device;
+    /// - no other ACTIVE binding may already own (scope, protocol,
+    ///   exporter_id) — canonical exporter ids are unique per scope;
+    /// - the new binding must not overlap an existing ACTIVE binding
+    ///   that resolves to a different (device_id, exporter_id) pair —
+    ///   overlapping claims are rejected rather than arbitrarily
+    ///   first-match selected.
+    ///
+    /// Re-upserting the same `binding_id` updates match constraints
+    /// idempotently.
+    pub fn upsert_exporter_binding(
+        &self,
+        binding: &crate::telemetry_identity::TrustedBinding,
+        actor: &str,
+    ) -> Result<crate::telemetry_identity::TrustedBinding> {
+        use crate::telemetry_identity::{BindingStatus, TrustedBinding};
+
+        for (name, value) in [
+            ("scope", binding.scope.as_str()),
+            ("protocol", binding.protocol.as_str()),
+            ("exporter_id", binding.exporter_id.as_str()),
+            ("device_id", binding.device_id.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                anyhow::bail!("exporter binding {name} must not be empty");
+            }
+        }
+        if self.get_canonical_device(&binding.device_id)?.is_none() {
+            anyhow::bail!(
+                "exporter binding references unknown canonical device '{}'",
+                binding.device_id
+            );
+        }
+
+        let now = now_ns();
+        let existing = self.get_exporter_binding(&binding.binding_id)?;
+
+        let stored = TrustedBinding {
+            binding_id: binding.binding_id.clone(),
+            scope: binding.scope.trim().to_string(),
+            protocol: binding.protocol.trim().to_string(),
+            exporter_id: binding.exporter_id.trim().to_string(),
+            device_id: binding.device_id.trim().to_string(),
+            match_transport: binding.match_transport.clone(),
+            match_reported_identity: binding.match_reported_identity.clone(),
+            match_exporter_claim: binding.match_exporter_claim.clone(),
+            match_observation_domain: binding.match_observation_domain,
+            provenance: binding.provenance,
+            status: BindingStatus::Active,
+            created_at_ns: existing.as_ref().map(|b| b.created_at_ns).unwrap_or(now),
+            updated_at_ns: now,
+            created_by: existing
+                .as_ref()
+                .map(|b| b.created_by.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| actor.to_string()),
+            updated_by: actor.to_string(),
+        };
+
+        // Reject conflicting claims against other active bindings.
+        for other in
+            self.list_exporter_bindings(Some(&stored.scope), Some(&stored.protocol), true)?
+        {
+            if other.binding_id == stored.binding_id || !other.is_active() {
+                continue;
+            }
+            let same_canonical = other.scope == stored.scope
+                && other.protocol == stored.protocol
+                && other.exporter_id == stored.exporter_id;
+            if same_canonical {
+                anyhow::bail!(
+                    "exporter identity '{}'/{} is already bound by '{}'",
+                    stored.protocol,
+                    stored.exporter_id,
+                    other.binding_id
+                );
+            }
+            if crate::telemetry_identity::bindings_overlap(&stored, &other)
+                && (other.device_id != stored.device_id || other.exporter_id != stored.exporter_id)
+            {
+                anyhow::bail!(
+                    "binding overlaps active binding '{}' with a different canonical pair",
+                    other.binding_id
+                );
+            }
+        }
+
+        let old = existing
+            .as_ref()
+            .map(|b| serde_json::to_string(b).unwrap_or_default());
+        let new = serde_json::to_string(&stored).unwrap_or_default();
+
+        {
+            let db = self.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO exporter_bindings (binding_id, scope, protocol, exporter_id, device_id, match_transport, match_reported_identity, match_exporter_claim, match_observation_domain, provenance, status, created_at_ns, updated_at_ns, created_by, updated_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) ON CONFLICT(binding_id) DO UPDATE SET scope=?2, protocol=?3, exporter_id=?4, device_id=?5, match_transport=?6, match_reported_identity=?7, match_exporter_claim=?8, match_observation_domain=?9, provenance=?10, status=?11, updated_at_ns=?13, updated_by=?15",
+                params![
+                    stored.binding_id,
+                    stored.scope,
+                    stored.protocol,
+                    stored.exporter_id,
+                    stored.device_id,
+                    stored.match_transport,
+                    stored.match_reported_identity,
+                    stored.match_exporter_claim,
+                    stored.match_observation_domain.map(|d| d as i64),
+                    provenance_str(stored.provenance),
+                    status_str(stored.status),
+                    stored.created_at_ns,
+                    stored.updated_at_ns,
+                    stored.created_by,
+                    stored.updated_by,
+                ],
+            )?;
+        }
+
+        self.audit(
+            "exporter_bindings",
+            "UPSERT",
+            &stored.binding_id,
+            actor,
+            "exporter_binding_upsert",
+            old.as_deref(),
+            Some(&new),
+        )?;
+
+        Ok(stored)
+    }
+
+    pub fn get_exporter_binding(
+        &self,
+        binding_id: &str,
+    ) -> Result<Option<crate::telemetry_identity::TrustedBinding>> {
+        let db = self.db.lock().unwrap();
+        let result = db.query_row(
+            "SELECT binding_id, scope, protocol, exporter_id, device_id, match_transport, match_reported_identity, match_exporter_claim, match_observation_domain, provenance, status, created_at_ns, updated_at_ns, created_by, updated_by FROM exporter_bindings WHERE binding_id = ?1",
+            params![binding_id],
+            |row| binding_from_row(row),
+        );
+        match result {
+            Ok(b) => Ok(Some(b)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// List bindings, optionally filtered by scope/protocol. Revoked
+    /// bindings are excluded unless `include_revoked` is set — revoked
+    /// bindings must never claim observations.
+    pub fn list_exporter_bindings(
+        &self,
+        scope: Option<&str>,
+        protocol: Option<&str>,
+        include_revoked: bool,
+    ) -> Result<Vec<crate::telemetry_identity::TrustedBinding>> {
+        let db = self.db.lock().unwrap();
+        let mut sql = String::from(
+            "SELECT binding_id, scope, protocol, exporter_id, device_id, match_transport, match_reported_identity, match_exporter_claim, match_observation_domain, provenance, status, created_at_ns, updated_at_ns, created_by, updated_by FROM exporter_bindings WHERE 1=1",
+        );
+        if !include_revoked {
+            sql.push_str(" AND status != 'revoked'");
+        }
+        if scope.is_some() {
+            sql.push_str(" AND scope = ?1");
+        }
+        if protocol.is_some() {
+            sql.push_str(if scope.is_some() {
+                " AND protocol = ?2"
+            } else {
+                " AND protocol = ?1"
+            });
+        }
+        let mut stmt = db.prepare(&sql)?;
+        let params_vec: Vec<rusqlite::types::Value> = match (scope, protocol) {
+            (Some(s), Some(p)) => vec![
+                rusqlite::types::Value::Text(s.to_string()),
+                rusqlite::types::Value::Text(p.to_string()),
+            ],
+            (Some(s), None) => vec![rusqlite::types::Value::Text(s.to_string())],
+            (None, Some(p)) => vec![rusqlite::types::Value::Text(p.to_string())],
+            (None, None) => vec![],
+        };
+        let rows = stmt.query_map(rusqlite::params_from_iter(params_vec), |row| {
+            binding_from_row(row)
+        })?;
+        rows.collect::<Result<Vec<crate::telemetry_identity::TrustedBinding>, _>>()
+            .map_err(|e| anyhow!("failed to collect exporter bindings: {e}"))
+    }
+
+    /// Explicitly invalidate a binding. Revocation is the only supported
+    /// "unbind" operation — bindings are never silently deleted, keeping
+    /// the audit trail intact.
+    pub fn revoke_exporter_binding(
+        &self,
+        binding_id: &str,
+        actor: &str,
+    ) -> Result<crate::telemetry_identity::TrustedBinding> {
+        use crate::telemetry_identity::BindingStatus;
+        let existing = self
+            .get_exporter_binding(binding_id)?
+            .ok_or_else(|| anyhow!("exporter binding '{binding_id}' does not exist"))?;
+        let now = now_ns();
+        let mut updated = existing.clone();
+        updated.status = BindingStatus::Revoked;
+        updated.updated_at_ns = now;
+        updated.updated_by = actor.to_string();
+
+        {
+            let db = self.db.lock().unwrap();
+            db.execute(
+                "UPDATE exporter_bindings SET status = ?2, updated_at_ns = ?3, updated_by = ?4 WHERE binding_id = ?1",
+                params![
+                    binding_id,
+                    status_str(updated.status),
+                    updated.updated_at_ns,
+                    updated.updated_by,
+                ],
+            )?;
+        }
+
+        self.audit(
+            "exporter_bindings",
+            "REVOKE",
+            binding_id,
+            actor,
+            "exporter_binding_revoke",
+            Some(&serde_json::to_string(&existing).unwrap_or_default()),
+            Some(&serde_json::to_string(&updated).unwrap_or_default()),
+        )?;
+
+        Ok(updated)
+    }
+}
+
+fn now_ns() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
+fn provenance_str(p: crate::telemetry_identity::BindingProvenance) -> &'static str {
+    use crate::telemetry_identity::BindingProvenance::*;
+    match p {
+        OperatorProvisioned => "operator_provisioned",
+        InventoryImport => "inventory_import",
+        Migration => "migration",
+    }
+}
+
+fn provenance_from_str(s: &str) -> crate::telemetry_identity::BindingProvenance {
+    use crate::telemetry_identity::BindingProvenance::*;
+    match s {
+        "inventory_import" => InventoryImport,
+        "migration" => Migration,
+        _ => OperatorProvisioned,
+    }
+}
+
+fn status_str(s: crate::telemetry_identity::BindingStatus) -> &'static str {
+    use crate::telemetry_identity::BindingStatus::*;
+    match s {
+        Active => "active",
+        Revoked => "revoked",
+    }
+}
+
+fn status_from_str(s: &str) -> crate::telemetry_identity::BindingStatus {
+    use crate::telemetry_identity::BindingStatus::*;
+    match s {
+        "revoked" => Revoked,
+        _ => Active,
+    }
+}
+
+fn binding_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<crate::telemetry_identity::TrustedBinding> {
+    let domain: Option<i64> = row.get(8)?;
+    Ok(crate::telemetry_identity::TrustedBinding {
+        binding_id: row.get(0)?,
+        scope: row.get(1)?,
+        protocol: row.get(2)?,
+        exporter_id: row.get(3)?,
+        device_id: row.get(4)?,
+        match_transport: row.get(5)?,
+        match_reported_identity: row.get(6)?,
+        match_exporter_claim: row.get(7)?,
+        match_observation_domain: domain.map(|d| d as u32),
+        provenance: provenance_from_str(&row.get::<_, String>(9)?),
+        status: status_from_str(&row.get::<_, String>(10)?),
+        created_at_ns: row.get(11)?,
+        updated_at_ns: row.get(12)?,
+        created_by: row.get(13)?,
+        updated_by: row.get(14)?,
+    })
 }
