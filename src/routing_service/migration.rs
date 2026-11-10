@@ -184,7 +184,7 @@ pub fn migrate_routing_jsonl_file(path: &Path) -> anyhow::Result<MigrationReport
                             "collector_id": "legacy-migrated",
                             "exporter_id": speaker_str,
                             "exporter_addr": speaker_str,
-                            "exporter_instance": "legacy-default",
+                            "exporter_instance": "default",
                             "session_epoch": 0
                         },
                         "sequence": (idx as u64) + 1

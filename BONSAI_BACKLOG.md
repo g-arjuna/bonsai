@@ -101,14 +101,25 @@ before claiming equivalent history or enabling it as an authority.
   PeerKey/RIB/journal re-keying (BN-021c), inventory import path,
   device_id selector in routing APIs, alias reconciliation.
 
-**BN-021c — BMP exporter identity** — PARTIAL.
+**BN-021c — BMP exporter identity** — PARTIAL (core isolation done; live-containerlab + alias reconciliation open).
 - Done: Initiation sysName/sysDescr exposed in speakers/peers APIs;
   provisional `exporter_id` and `session_epoch` surfaced; `?exporter_id=`
   peer selector implemented. These are reported/context identities, not trusted
   inventory device bindings.
-- Pending: trusted scoped inventory resolution, separate connection/exporter
-  identity in RIB/PeerKey and journal/projections, device_id selector and
-  historical alias reconciliation.
+- Done (10 Nov): trusted resolver wired into the BMP listener — every
+  connection must open with Initiation, then resolves against
+  `bonsai_config.db` bindings (`BONSAI_ROUTING_IDENTITY_DB` override).
+  Resolved exporters share a stable `exp:{canonical}` speaker scope
+  (multi-instance association preserved); everything else gets an
+  isolated `conn:{id}` scope. `SpeakerKey`/`PeerKey.speaker_instance`
+  partition speakers, peers, RIBs, decode contexts, transport gaps,
+  journals, replay and projection/graph ids; `conn:*` state retires on
+  disconnect while `exp:*` keeps last-known routes under the gap.
+  `tests/bn021c_exporter_isolation.rs` proves NAT'd exporters never
+  merge (3/3) plus binding resolution and replay partitioning.
+- Pending: device_id selector verified end-to-end in deployed routing
+  API, historical alias reconciliation, live containerlab NAT
+  verification, NetFlow/syslog adapter wiring (BN-021d+).
 - Acceptance: independent BMP sessions sharing a NAT address never merge
   route/peer state, including when they claim the same sysName.
 

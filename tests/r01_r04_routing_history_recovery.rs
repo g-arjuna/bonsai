@@ -3,7 +3,7 @@ use bonsai::routing_service::{
 };
 use rbmp_core::bgp::types::{BgpUpdate, PathAttributes, Prefix};
 use rbmp_core::bmp::parser::{DEFAULT_MAX_FRAME, parse_bmp_message, parse_peer_header};
-use rbmp_core::bmp::types::{BmpMessage, BmpPayload, StatEntry};
+use rbmp_core::bmp::types::{BmpMessage, BmpPayload, SpeakerKey, StatEntry};
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -15,6 +15,7 @@ fn config(dir: &std::path::Path) -> RoutingServiceConfig {
         event_journal_path: Some(dir.join("events.jsonl")),
         max_frame_bytes: DEFAULT_MAX_FRAME,
         internal_service_token: None,
+        identity_db_path: None,
     }
 }
 
@@ -36,6 +37,9 @@ async fn accepted_raw_record_must_recover_event_history() {
         id: uuid::Uuid::new_v4(),
         received_at: chrono::Utc::now(),
         speaker_addr: speaker(),
+        exporter_instance: String::new(),
+        exporter_id: None,
+        device_id: None,
         payload: parse_bmp_message(&init, speaker(), DEFAULT_MAX_FRAME).unwrap(),
     };
     state.bmp_journal.append(&msg).await.unwrap();
@@ -104,7 +108,7 @@ async fn transport_gap_must_survive_restart() {
             .transport_gaps
             .read()
             .await
-            .contains_key(&speaker()),
+            .contains_key(&SpeakerKey::new(speaker(), "")),
         "Monitoring gap disappeared across restart"
     );
 }
@@ -140,6 +144,9 @@ async fn large_valid_update_must_preserve_all_route_events() {
                 id: uuid::Uuid::new_v4(),
                 received_at: chrono::Utc::now(),
                 speaker_addr: speaker(),
+                exporter_instance: String::new(),
+                exporter_id: None,
+                device_id: None,
                 payload,
             },
             Some(1),
@@ -177,6 +184,9 @@ async fn r02_second_restart_after_raw_recovery_is_idempotent_and_preserves_epoch
         id: uuid::Uuid::new_v4(),
         received_at: chrono::Utc::now(),
         speaker_addr: speaker(),
+        exporter_instance: String::new(),
+        exporter_id: None,
+        device_id: None,
         payload: parse_bmp_message(&route, speaker(), DEFAULT_MAX_FRAME).unwrap(),
     };
     state
@@ -266,6 +276,9 @@ async fn r04_epoch_fenced_disconnect_and_resync_completeness_rules() {
         id: uuid::Uuid::new_v4(),
         received_at: chrono::Utc::now(),
         speaker_addr: speaker(),
+        exporter_instance: String::new(),
+        exporter_id: None,
+        device_id: None,
         payload: BmpPayload::RouteMonitoring {
             peer_header: peer_hdr.clone(),
             update: BgpUpdate {
@@ -290,7 +303,13 @@ async fn r04_epoch_fenced_disconnect_and_resync_completeness_rules() {
     state
         .record_transport_disconnect_for_epoch(speaker(), Some(1), "stale_epoch_1_eof")
         .await;
-    assert!(!state.transport_gaps.read().await.contains_key(&speaker()));
+    assert!(
+        !state
+            .transport_gaps
+            .read()
+            .await
+            .contains_key(&SpeakerKey::new(speaker(), ""))
+    );
     assert_eq!(
         state.overall_completeness().await,
         "complete_for_observed_view"
@@ -307,6 +326,9 @@ async fn r04_epoch_fenced_disconnect_and_resync_completeness_rules() {
         id: uuid::Uuid::new_v4(),
         received_at: chrono::Utc::now(),
         speaker_addr: speaker(),
+        exporter_instance: String::new(),
+        exporter_id: None,
+        device_id: None,
         payload: BmpPayload::StatsReport {
             peer_header: peer_hdr,
             stats: vec![StatEntry {
@@ -329,7 +351,13 @@ async fn r04_epoch_fenced_disconnect_and_resync_completeness_rules() {
         .ingest_bmp_bytes(speaker(), Some(3), &init)
         .await
         .unwrap();
-    assert!(!state.transport_gaps.read().await.contains_key(&speaker()));
+    assert!(
+        !state
+            .transport_gaps
+            .read()
+            .await
+            .contains_key(&SpeakerKey::new(speaker(), ""))
+    );
     assert_eq!(
         state.overall_completeness().await,
         "syncing",

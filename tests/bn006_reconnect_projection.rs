@@ -70,6 +70,7 @@ async fn legacy_journal_and_checkpoint_rebuild_without_changing_sequences() {
         event_journal_path: Some(events.clone()),
         max_frame_bytes: DEFAULT_MAX_FRAME,
         internal_service_token: None,
+        identity_db_path: None,
     };
     let mut missing_raw = cfg.clone();
     missing_raw.bmp_journal_path = None;

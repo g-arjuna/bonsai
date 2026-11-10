@@ -146,6 +146,58 @@ pub struct PeerHeader {
 
 pub const EVENT_SCHEMA_VERSION: u16 = 2;
 
+/// Exporter-instance scope meaning "legacy / unspecified". Maps to
+/// speaker instance 0 so pre-BN-021c journal records and in-memory
+/// defaults keep their historical identity.
+pub const LEGACY_EXPORTER_INSTANCE: &str = "default";
+
+/// Deterministic 64-bit discriminator for a logical-exporter scope
+/// string (FNV-1a). Returns 0 for the empty/legacy scope. Two distinct
+/// scopes collide only on a 64-bit hash collision; the authoritative
+/// speaker key remains `(speaker_addr, exporter_instance)` — this value
+/// exists so `PeerKey` can stay `Copy` while carrying the same
+/// partitioning.
+pub fn exporter_instance_id(exporter_instance: &str) -> u64 {
+    let s = exporter_instance.trim();
+    if s.is_empty() || s == LEGACY_EXPORTER_INSTANCE {
+        return 0;
+    }
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &b in s.as_bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    if h == 0 { 1 } else { h }
+}
+
+/// Composite speaker identity: transport endpoint PLUS logical-exporter
+/// instance. Two BMP exporters sharing one NAT address have distinct
+/// `speaker_instance` values and therefore never share session, peer,
+/// RIB, decode-context, gap or projection state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SpeakerKey {
+    pub speaker_addr: IpAddr,
+    pub speaker_instance: u64,
+}
+
+impl SpeakerKey {
+    /// Build a speaker key from a transport address and an exporter
+    /// scope string (canonical `exp:*`, connection `conn:*`, or legacy
+    /// `""`/`"default"`).
+    pub fn new(speaker_addr: IpAddr, exporter_instance: &str) -> Self {
+        Self {
+            speaker_addr,
+            speaker_instance: exporter_instance_id(exporter_instance),
+        }
+    }
+
+    /// Speaker key for an `ObservationSource` (uses its
+    /// `exporter_instance` scope).
+    pub fn for_source(source: &ObservationSource) -> Self {
+        Self::new(source.exporter_addr, &source.exporter_instance)
+    }
+}
+
 /// Collector + exporter + instance + connection epoch identity.
 /// TCP source IP is retained as an attribute while `session_epoch` fences stale disconnects.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -153,8 +205,16 @@ pub struct ObservationSource {
     pub collector_id: String,
     pub exporter_id: String,
     pub exporter_addr: IpAddr,
+    /// Logical-exporter scope partitioning speaker state behind shared
+    /// transport addresses: `exp:{canonical_exporter_id}` when a trusted
+    /// binding resolved, `conn:{connection_id}` for isolated
+    /// connection-scoped exporters, `""`/`"default"` for legacy records.
     pub exporter_instance: String,
     pub session_epoch: u64,
+    /// Canonical inventory device id — only set via trusted binding
+    /// resolution; `None` for provisional/unresolved exporters.
+    #[serde(default)]
+    pub device_id: Option<String>,
 }
 
 impl ObservationSource {
@@ -163,8 +223,9 @@ impl ObservationSource {
             collector_id: "default".to_string(),
             exporter_id: exporter_addr.to_string(),
             exporter_addr,
-            exporter_instance: "default".to_string(),
+            exporter_instance: LEGACY_EXPORTER_INSTANCE.to_string(),
             session_epoch,
+            device_id: None,
         }
     }
 
@@ -181,14 +242,29 @@ impl ObservationSource {
             exporter_addr,
             exporter_instance: exporter_instance.into(),
             session_epoch,
+            device_id: None,
         }
+    }
+
+    /// Attach the canonical inventory device id resolved via a trusted
+    /// binding. `None` keeps the source provisional/unresolved.
+    pub fn with_device_id(mut self, device_id: Option<String>) -> Self {
+        self.device_id = device_id;
+        self
     }
 }
 
 /// Composite peer/instance identity preventing cross-exporter and cross-VRF collisions.
+/// `speaker_instance` partitions peers/VRFs/RIBs per logical exporter so
+/// two BMP exporters behind one NAT address can never share a `PeerKey`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PeerKey {
     pub speaker_addr: IpAddr,
+    /// Logical-exporter discriminator derived from the speaker's
+    /// `exporter_instance` scope (see [`exporter_instance_id`]).
+    /// `0` = legacy/unspecified scope.
+    #[serde(default)]
+    pub speaker_instance: u64,
     pub peer_type: PeerType,
     pub peer_distinguisher: [u8; 8],
     pub peer_address: IpAddr,
@@ -197,21 +273,31 @@ pub struct PeerKey {
 impl PeerKey {
     pub fn new(
         speaker_addr: IpAddr,
+        speaker_instance: u64,
         peer_type: PeerType,
         peer_distinguisher: [u8; 8],
         peer_address: IpAddr,
     ) -> Self {
         Self {
             speaker_addr,
+            speaker_instance,
             peer_type,
             peer_distinguisher,
             peer_address,
         }
     }
 
-    pub fn from_header(speaker_addr: IpAddr, hdr: &PeerHeader) -> Self {
+    /// Build a peer key from a transport address and an exporter scope
+    /// string (the speaker's `exporter_instance`).
+    pub fn from_header(speaker_addr: IpAddr, exporter_instance: &str, hdr: &PeerHeader) -> Self {
+        Self::from_instance(speaker_addr, exporter_instance_id(exporter_instance), hdr)
+    }
+
+    /// Build a peer key from an already-resolved speaker instance id.
+    pub fn from_instance(speaker_addr: IpAddr, speaker_instance: u64, hdr: &PeerHeader) -> Self {
         Self {
             speaker_addr,
+            speaker_instance,
             peer_type: hdr.peer_type,
             peer_distinguisher: hdr.peer_distinguisher,
             peer_address: hdr.peer_address,
@@ -517,6 +603,18 @@ pub struct BmpMessage {
     pub received_at: DateTime<Utc>,
     /// IP address of the BMP speaker (router) that sent this
     pub speaker_addr: IpAddr,
+    /// Logical-exporter scope this message was attributed to at ingest
+    /// (`exp:{canonical}` resolved, `conn:{id}` connection-isolated,
+    /// `""`/`"default"` legacy). Partitions all derived peer/RIB state
+    /// behind shared transport addresses. Empty = legacy/unspecified.
+    #[serde(default)]
+    pub exporter_instance: String,
+    /// Canonical exporter id resolved via a trusted binding, when known.
+    #[serde(default)]
+    pub exporter_id: Option<String>,
+    /// Canonical inventory device id resolved via a trusted binding.
+    #[serde(default)]
+    pub device_id: Option<String>,
     pub payload: BmpPayload,
 }
 

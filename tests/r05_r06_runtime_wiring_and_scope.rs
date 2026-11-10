@@ -168,6 +168,7 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
         event_journal_path: Some(dir.path().join("events.jsonl")),
         max_frame_bytes: DEFAULT_MAX_FRAME,
         internal_service_token: Some(token.to_string()),
+        identity_db_path: None,
     };
     let routing_state = RoutingServiceState::new(cfg)
         .await
@@ -233,6 +234,8 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
         &PeersQuery {
             speaker: Some("192.0.2.12".into()),
             exporter_id: None,
+            exporter_instance: None,
+            device_id: None,
             vrf_rd: Some("65000:20".into()),
             state: None,
             limit: Some(50),

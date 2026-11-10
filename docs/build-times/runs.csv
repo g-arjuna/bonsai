@@ -51,3 +51,9 @@ date,command,scope,wall_seconds,result,notes
 2026-11-10,cargo test --test bn021b_trusted_identity,bn021b test target,2742+412,pass,test-profile dep codegen ~45m; 13/13 tests pass in 1.65s; lib rebuild after fmt 6m52s
 2026-11-10,cargo test --test bn022_graph_read_boundary,bn022 regression,aborted,disk-full,No space left on device writing liblbug rlib; incremental cache cleaned; rerun pending in main worktree
 2026-11-10,cargo test --test bn022_graph_read_boundary,bn022 regression (main worktree, merged 842b737),586,pass,warm main target; 5/5 tests pass in 3.71s; earlier attempt aborted on disk-full in worktree
+2026-11-10,cargo check -p bonsai --lib,bonsai --lib,34,pass,incremental after rbmp crates; sccache warm
+2026-11-10,cargo check -p bonsai --all-targets,bonsai all targets,~900,pass,first full-target check incl. test targets; final incremental 0.7s
+2026-11-10,cargo test --test bn021c_exporter_isolation,bn021c regression,234+0.55,pass,test-profile compile 3m54s warm deps; 3/3 tests pass
+2026-11-10,cargo test -p rbmp-rib -p rbmp-store,rbmp crates,62+~1,pass,42+3 tests pass; cold-ish test profile for these crates
+2026-11-10,cargo test 6 integration targets,bn005/bn006/bn021b/r01/r05/ownership,924+~23,pass,15m24s test-profile compile; all listed suites pass
+2026-11-10,cargo clippy -p rbmp-core -p rbmp-rib -p rbmp-store,rbmp crates clippy,8,pass,no errors; ~30 pre-existing style warnings

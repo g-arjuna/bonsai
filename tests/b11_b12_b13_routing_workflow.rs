@@ -59,6 +59,7 @@ async fn b11_routing_api_contract_prefix_history_and_graceful_degradation() {
         event_journal_path: Some(event_journal_path),
         max_frame_bytes: 65535,
         internal_service_token: Some("test-internal-routing-secret-token".to_string()),
+        identity_db_path: None,
     };
     let routing_state = RoutingServiceState::new(routing_cfg).await.unwrap();
     let routing_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

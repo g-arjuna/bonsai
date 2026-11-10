@@ -17,7 +17,9 @@ use rusqlite::{Connection, params};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-const DB_FILE: &str = "bonsai_config.db";
+/// File name of the config database inside a runtime directory.
+pub const CONFIG_DB_FILE_NAME: &str = "bonsai_config.db";
+const DB_FILE: &str = CONFIG_DB_FILE_NAME;
 const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 /// SQLite config store with versioned schema and audit trail.
@@ -27,10 +29,12 @@ pub struct SqliteStore {
 }
 
 impl SqliteStore {
-    /// Open or create the config store, running migrations if needed.
-    pub fn open(runtime_dir: &Path) -> Result<Self> {
-        let db_path = runtime_dir.join(DB_FILE);
-        let db = Connection::open(&db_path)
+    /// Open or create the config store at an explicit database file path,
+    /// running migrations if needed. Used by the routing service to read
+    /// trusted exporter bindings from the management service's database
+    /// (BN-021c); callers must only read binding tables.
+    pub fn open_file(db_path: &Path) -> Result<Self> {
+        let db = Connection::open(db_path)
             .with_context(|| format!("failed to open SQLite DB at '{}'", db_path.display()))?;
 
         let store = Self {
@@ -42,6 +46,11 @@ impl SqliteStore {
         store.enable_wal()?;
 
         Ok(store)
+    }
+
+    /// Open or create the config store, running migrations if needed.
+    pub fn open(runtime_dir: &Path) -> Result<Self> {
+        Self::open_file(&runtime_dir.join(DB_FILE))
     }
 
     fn init_schema(&self) -> Result<()> {

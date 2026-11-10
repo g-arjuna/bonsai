@@ -475,6 +475,32 @@ BN-021c). Verified: `cargo check --lib` clean; 13/13 tests in
 `tests/bn021b_trusted_identity.rs` pass incl. v2→v3 migration on a
 populated DB; BN-022 read-boundary suite re-run as regression.
 
+BN-021c exporter-isolation slice (10 November): BMP ingestion, session,
+RIB, journal, replay and projection state are now keyed by logical
+exporter identity, not transport IP. `SpeakerKey{speaker_addr,
+speaker_instance}` partitions `RibManager.speakers`; `PeerKey` gained a
+`speaker_instance` discriminator (FNV-1a of the exporter scope, `Copy`
+preserved); `ObservationSource`/`BmpMessage` carry
+`exporter_instance`/`exporter_id`/`device_id` (serde-defaulted, legacy
+records map to instance 0). The listener now requires a BMP Initiation
+before creating state, resolves sysName evidence against the trusted
+binding store (`bonsai_config.db` beside the journals or
+`BONSAI_ROUTING_IDENTITY_DB`), and assigns `exp:{canonical}` scopes to
+resolved exporters (shared across connections = FRR global+VRF
+association preserved) or isolated `conn:{id}` scopes otherwise —
+unresolved/ambiguous/conflicting evidence fails closed and is never
+promoted to canonical device state. Disconnects, transport gaps, EOR
+clearing, decode contexts and `conn:*` retirement are all fenced per
+`SpeakerKey`. Journals/replay carry the scope end-to-end;
+`JournalTransportGap`/`PrefixHistoryItem` gained `exporter_instance`;
+projection/checkpoint/graph ids use `ip|instance`. Regression:
+`tests/bn021c_exporter_isolation.rs` (3 tests) proves two exporters on
+one NAT IP with identical peer/RD/prefix never merge live state,
+withdrawals, PeerDown, gaps, trusted-binding resolution or replay.
+Verified: `cargo check -p bonsai --all-targets` clean; rbmp-rib 42/42,
+rbmp-store 3/3, bn021c 3/3, bn021b 13/13, bn005_closeout 11/11,
+bn006_reconnect_projection 2/2, r01 7/7, r05 2/2, ownership 3/3.
+
 BN-022 containment slice (10 November): ad-hoc graph reads are now
 denied-by-default for non-admin principals. `src/graph/explorer.rs`
 gained `GraphReadAccess` + `validate_query_for_access`: a positive

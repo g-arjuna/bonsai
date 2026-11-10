@@ -34,7 +34,7 @@ use bonsai::routing_service::{
 use chrono::Utc;
 use rbmp_core::bmp::parser::DEFAULT_MAX_FRAME;
 use rbmp_core::bmp::parser::read_bmp_frame;
-use rbmp_core::bmp::types::{PeerType, RibType};
+use rbmp_core::bmp::types::{PeerType, RibType, SpeakerKey};
 use rbmp_rib::session::PeerState;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -146,10 +146,7 @@ struct ControlContext {
 }
 
 /// Returns true once every live BMP connection from `speaker` has drained.
-async fn speaker_connections_drained(
-    tracker: &Mutex<BmpConnTracker>,
-    speaker: IpAddr,
-) -> bool {
+async fn speaker_connections_drained(tracker: &Mutex<BmpConnTracker>, speaker: IpAddr) -> bool {
     let tr = tracker.lock().await;
     match tr.live.get(&speaker) {
         Some(&(_, count)) => count == 0,
@@ -295,6 +292,7 @@ async fn handle_routing_restart(AxumState(ctx): AxumState<Arc<ControlContext>>) 
         event_journal_path: Some(ctx.event_journal_path.clone()),
         max_frame_bytes: DEFAULT_MAX_FRAME,
         internal_service_token: Some("bn003-token".to_string()),
+        identity_db_path: None,
     };
 
     let new_state = match RoutingServiceState::new(config).await {
@@ -375,6 +373,7 @@ async fn test_bn003_live_routing_browser_acceptance() -> Result<()> {
         event_journal_path: Some(event_journal_path.clone()),
         max_frame_bytes: DEFAULT_MAX_FRAME,
         internal_service_token: Some("bn003-token".to_string()),
+        identity_db_path: None,
     };
 
     let routing_state = RoutingServiceState::new(routing_config)
@@ -510,7 +509,7 @@ async fn test_bn003_live_routing_browser_acceptance() -> Result<()> {
                             let ep = {
                                 let cur_state = state_holder.read().await.clone();
                                 let mut rib = cur_state.rib.write().await;
-                                rib.open_speaker_session(speaker, Utc::now())
+                                rib.open_speaker_session(speaker, "", None, None, Utc::now())
                             };
                             if tr.armed_reconnect {
                                 tr.armed_reconnect = false;
@@ -686,7 +685,7 @@ async fn test_bn003_live_routing_browser_acceptance() -> Result<()> {
     for _ in 0..120 {
         let rib = routing_state.rib.read().await;
         let peer_ready = rib
-            .speaker(frr1_ip)
+            .speaker(SpeakerKey::new(frr1_ip, ""))
             .map(|s| {
                 s.peers.iter().any(|(pk, p)| {
                     pk.distinguisher_string() == VRF_RD
@@ -696,7 +695,7 @@ async fn test_bn003_live_routing_browser_acceptance() -> Result<()> {
             })
             .unwrap_or(false);
         let route_ready = rib
-            .ribs_for_speaker(frr1_ip)
+            .ribs_for_speaker(SpeakerKey::new(frr1_ip, ""))
             .any(|(pk, table)| {
                 pk.distinguisher_string() == VRF_RD
                     && [
@@ -705,7 +704,11 @@ async fn test_bn003_live_routing_browser_acceptance() -> Result<()> {
                         RibType::LocRib,
                     ]
                     .iter()
-                    .any(|rt| table.iter_rib(*rt).any(|e| e.prefix.to_string() == VRF_PREFIX))
+                    .any(|rt| {
+                        table
+                            .iter_rib(*rt)
+                            .any(|e| e.prefix.to_string() == VRF_PREFIX)
+                    })
             });
         drop(rib);
         if peer_ready && route_ready {
@@ -772,12 +775,14 @@ async fn test_bn003_live_routing_browser_acceptance() -> Result<()> {
     let mut announced = false;
     for _ in 0..60 {
         let rib = routing_state.rib.read().await;
-        let found = rib.ribs_for_speaker(frr1_ip).any(|(pk, table)| {
-            pk.distinguisher_string() == "0:0"
-                && table
-                    .iter_rib(RibType::LocRib)
-                    .any(|e| e.prefix.to_string() == GLOBAL_PREFIX)
-        });
+        let found = rib
+            .ribs_for_speaker(SpeakerKey::new(frr1_ip, ""))
+            .any(|(pk, table)| {
+                pk.distinguisher_string() == "0:0"
+                    && table
+                        .iter_rib(RibType::LocRib)
+                        .any(|e| e.prefix.to_string() == GLOBAL_PREFIX)
+            });
         drop(rib);
         if found {
             announced = true;

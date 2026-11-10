@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use rbmp_core::bgp::types::{AfiSafi, BgpCapability};
-use rbmp_core::bmp::types::{ObservationSource, PeerHeader, PeerKey, PeerType, RibType};
+use rbmp_core::bmp::types::{
+    ObservationSource, PeerHeader, PeerKey, PeerType, RibType, SpeakerKey,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
@@ -47,12 +49,14 @@ pub struct PeerSession {
 
 impl PeerSession {
     pub fn new(hdr: &PeerHeader) -> Self {
-        Self::new_for_speaker(IpAddr::V4(Ipv4Addr::UNSPECIFIED), hdr)
+        Self::new_for_key(&SpeakerKey::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), ""), hdr)
     }
 
-    pub fn new_for_speaker(speaker_addr: IpAddr, hdr: &PeerHeader) -> Self {
+    /// Create a peer session scoped to a logical exporter (`SpeakerKey`),
+    /// so peers behind a shared NAT address never collide.
+    pub fn new_for_key(key: &SpeakerKey, hdr: &PeerHeader) -> Self {
         Self {
-            peer_key: PeerKey::from_header(speaker_addr, hdr),
+            peer_key: PeerKey::from_instance(key.speaker_addr, key.speaker_instance, hdr),
             peer_type: hdr.peer_type,
             peer_distinguisher: hdr.peer_distinguisher,
             peer_address: hdr.peer_address,
