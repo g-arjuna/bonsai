@@ -1102,6 +1102,8 @@ pub async fn build_peers_json(state: &RoutingServiceState, q: &PeersQuery) -> se
             };
             peers.push(serde_json::json!({
                 "speaker_addr": spk.speaker_addr,
+                "speaker_sys_name": spk.sys_name,
+                "speaker_sys_descr": spk.sys_descr,
                 "peer_key": peer_key,
                 "peer_type": peer.peer_type,
                 "peer_distinguisher": peer_key.distinguisher_string(),
