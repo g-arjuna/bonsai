@@ -103,6 +103,7 @@ fn parse_v9(
     let sys_uptime_ms = u32::from_be_bytes([pkt[4], pkt[5], pkt[6], pkt[7]]) as u64;
     let unix_secs = u32::from_be_bytes([pkt[8], pkt[9], pkt[10], pkt[11]]) as u64;
     let source_id = u32::from_be_bytes([pkt[16], pkt[17], pkt[18], pkt[19]]);
+    let exporter_id = format!("nf9:{}#sid={}", peer.ip(), source_id);
 
     let exporter_cache = templates.entry(peer).or_default();
     let source_cache = exporter_cache.entry(source_id).or_default();
@@ -135,6 +136,7 @@ fn parse_v9(
                         source_id,
                         bus,
                         exporter_ip,
+                        &exporter_id,
                     );
                 }
             }
@@ -172,6 +174,7 @@ fn emit_flows_v9(
     _source_id: u32,
     bus: &Arc<InProcessBus>,
     exporter_ip: &str,
+    exporter_id: &str,
 ) {
     let record_len: usize = fields.iter().map(|(_, l)| *l as usize).sum();
     if record_len == 0 {
@@ -181,7 +184,7 @@ fn emit_flows_v9(
     while offset + record_len <= data.len() {
         let record = &data[offset..offset + record_len];
         if let Some(flow) = decode_record(record, fields, sys_uptime_ms, unix_secs) {
-            publish_flow(flow, bus, exporter_ip);
+            publish_flow(flow, bus, exporter_ip, exporter_id);
         }
         offset += record_len;
     }
@@ -202,6 +205,7 @@ fn parse_ipfix(
     }
     let export_time = u32::from_be_bytes([pkt[4], pkt[5], pkt[6], pkt[7]]) as u64;
     let domain_id = u32::from_be_bytes([pkt[12], pkt[13], pkt[14], pkt[15]]);
+    let exporter_id = format!("ipfix:{}#dom={}", peer.ip(), domain_id);
 
     let exporter_cache = templates.entry(peer).or_default();
     let source_cache = exporter_cache.entry(domain_id).or_default();
@@ -234,6 +238,7 @@ fn parse_ipfix(
                         domain_id,
                         bus,
                         exporter_ip,
+                        &exporter_id,
                     );
                 }
             }
@@ -398,7 +403,7 @@ fn decode_record(
     })
 }
 
-fn publish_flow(flow: FlowRecord, bus: &Arc<InProcessBus>, exporter_ip: &str) {
+fn publish_flow(flow: FlowRecord, bus: &Arc<InProcessBus>, exporter_ip: &str, exporter_id: &str) {
     let duration_secs = {
         let dur = flow.flow_end_ns - flow.flow_start_ns;
         if dur <= 0 {
@@ -416,6 +421,7 @@ fn publish_flow(flow: FlowRecord, bus: &Arc<InProcessBus>, exporter_ip: &str) {
 
     let value = serde_json::json!({
         "exporter_address": exporter_ip,
+        "exporter_id": exporter_id,
         "src_address": flow.src_address,
         "dst_address": flow.dst_address,
         "src_port": flow.src_port,
