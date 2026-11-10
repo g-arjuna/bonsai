@@ -547,9 +547,19 @@ pub async fn run_bmp_listener(
                     let mut reader = BufReader::new(stream);
                     let hdr_timeout = Duration::from_secs(30);
                     let body_timeout = Duration::from_secs(10);
+                    let bmp_trace = std::env::var("BONSAI_BMP_TRACE").is_ok_and(|v| v == "1");
                     let disconnect_reason = loop {
                         match read_bmp_frame(&mut reader, st.config.max_frame_bytes, hdr_timeout, body_timeout).await {
                             Ok(Some(frame)) => {
+                                if bmp_trace {
+                                    // BMPv3 common header: ver(1) len(4) type(1);
+                                    // peer header follows for types 0-4.
+                                    let ver = frame.first().copied().unwrap_or(0);
+                                    let mlen = frame.get(1..5).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize).unwrap_or(0);
+                                    let mtype = frame.get(5).copied().unwrap_or(0);
+                                    let head_hex = frame.iter().take(48).map(|b| format!("{b:02x}")).collect::<String>();
+                                    tracing::info!(%speaker_ip, ver, mlen, mtype, head = %head_hex, "bmp_frame");
+                                }
                                 if let Err(e) = st.ingest_bmp_bytes(speaker_ip, Some(epoch), &frame).await {
                                     tracing::warn!(%speaker_ip, error = %e, "Rejected invalid BMP frame");
                                     break None;
