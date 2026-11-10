@@ -440,3 +440,11 @@ verdict records preserved where 1 previously overwrote; pairing selects
 newest per phase. Next slices: BMP exporter identity via Initiation,
 NetFlow template-cache isolation, syslog/SNMP identity split,
 monitoring-health state.
+
+BN-021 slice 1 verified live (10 November): peers API now returns
+`speaker_sys_name`/`speaker_sys_descr` from BMP Initiation — confirmed
+`frr1`/`frr2` per speaker on the packaged deployment. Slice 2
+(NetFlow/IPFIX) analyzed: template cache is already collision-safe
+(SocketAddr key incl. port); residual gap is downstream
+`exporter_address` identity collapse — deferred to the canonical
+exporter-identity layer rather than a format-breaking patch.
