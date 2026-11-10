@@ -266,6 +266,16 @@ TCP-proxy or privileged capture container is the recommended next step,
 plus FRR-side `debug bgp neighbor-events` logging. Consolidated record:
 [bmp peerdown full investigation](merger/evidence/2026-11-10-bmp-peerdown-full-investigation/README.md).
 
+**ROOT CAUSE (10 Nov ~04:05):** two `bonsai-routing` instances — a
+stray `nohup ./target/debug/bonsai-routing` on the host (PID 2633113,
+since 8 Nov) owns `172.100.207.1:11019` and receives ALL live BMP;
+the Docker container only has `127.0.0.1:11019` published, unreachable
+from clab nodes, serving stale replayed state to the app. The host
+instance's log shows perfect PeerDown (`LocalSystemClosed2`) / PeerUp
+pairs for every flap — FRR, transport, decoder, manager, and API are all
+correct. Fix: stop the stray process + publish container BMP on
+`172.100.207.1:11019`.
+
 BN-009 intake reconciliation (8 November): existing sidecar lifecycle
 surfaces inventoried — registry/heartbeat/stale-lost, `BONSAI_REQUIRE_SIDECAR`
 health gate, `/api/ml/{exports,schedules,jobs}` incl. cancel, job_engine

@@ -131,7 +131,59 @@ Remaining candidates, unranked:
 - FRR-side `debug bgp neighbor-events` output was not collected
   (logging not wired to a readable destination in the disposable lab).
 
-## 8. Recommended next actions
+## 8. ROOT CAUSE FOUND (10 Nov, ~04:05 UTC)
+
+**Two `bonsai-routing` instances were running; we were watching the
+wrong one.**
+
+- `ss -tlnp` on the host showed TWO listeners on port 11019:
+  - `127.0.0.1:11019` → docker-proxy → `bonsai-bonsai-routing-1`
+    (PID 1998556, bridge net `bonsai_bonsai-internal`) — the instance we
+    rebuilt, redeployed, and instrumented with `BONSAI_BMP_TRACE`.
+  - `172.100.207.1:11019` → **PID 2633113 = `./target/debug/bonsai-routing`**,
+    a `nohup`'d debug binary started 8 Nov 18:28 by an earlier session
+    (journals `/tmp/bn003-journal-r07/`, HTTP `127.0.0.1:18082`,
+    `BONSAI_ROUTING_BMP_ADDR=172.100.207.1:11019`).
+- FRR's BMP target is `172.100.207.1:11019` → **all live BMP traffic has
+  gone to the host debug process since 8 Nov**, not the container.
+- The container's peer/route state is stale journal/checkpoint replay —
+  which is why peers stayed `up` forever and zero frames arrived during
+  flaps. The "22 bmp_frame lines on reconnect" were the only live frames
+  the container ever saw.
+- **Proof:** `/tmp/bn003-journal-r07/service.log` shows clean
+  PeerDown/PeerUp pairs for every single flap:
+  - `03:34:39 BGP peer down speaker=172.100.207.12 peer_addr=10.100.1.0
+    reason_str=LocalSystemClosed2` → `03:35:48 peer up`
+  - `03:40:03 peer down LocalSystemClosed2` → `03:40:54 peer up`
+  - `04:02:56 peer down` → `04:03:34 peer up` (admin shutdown + restore)
+  - Remote-side closes logged as `RemoteSystemClosed` with notification
+    bytes on the frr1 speaker view.
+- FRR 10.6.2 emits PeerDown correctly (`LocalSystemClosed2` = reason for
+  admin shutdown); rbmp-rib handles it; journals persist it. **No defect
+  in FRR, BMP transport, decoder, peer identity, manager, or API.**
+- The Bonsai app (`bonsai-bonsai-standalone-1`) uses
+  `BONSAI_ROUTING_SERVICE_URL=http://bonsai-routing:8081` → the
+  **container**, i.e. the stale instance. BN-014a captures therefore read
+  replayed state, not live BMP.
+
+### Deployment fix required
+
+1. Stop PID 2633113 (stray debug process; journals persist on disk).
+2. Publish the container's BMP port on the clab gateway address:
+   `172.100.207.1:11019:11019` (or `0.0.0.0`) in the compose override —
+   the current `127.0.0.1:11019` mapping is unreachable from clab nodes.
+3. Recreate `bonsai-routing`, wait for FRR BMP reconnect, re-run one
+   flap to confirm PeerDown flows into the container and the app API.
+
+### Lessons
+
+- `docker logs` silence ≠ no traffic: verify *which process owns the
+  listener* (`ss -tlnp` + `/proc/<pid>/cgroup` + `docker inspect`
+  NetworkMode) before concluding a pipeline is broken.
+- A host-network or stray dev process can silently win a port race
+  against the compose deployment for weeks.
+
+## 9. Recommended next actions
 
 1. **Raw BMP byte capture without CAP_NET_RAW**: stand up a TCP proxy
    (e.g. socat or a small Rust forwarder) between frr2 and
