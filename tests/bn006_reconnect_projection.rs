@@ -71,6 +71,7 @@ async fn legacy_journal_and_checkpoint_rebuild_without_changing_sequences() {
         max_frame_bytes: DEFAULT_MAX_FRAME,
         internal_service_token: None,
         identity_db_path: None,
+        identity_scope: None,
     };
     let mut missing_raw = cfg.clone();
     missing_raw.bmp_journal_path = None;
@@ -90,6 +91,7 @@ async fn legacy_journal_and_checkpoint_rebuild_without_changing_sequences() {
             prefix: Some("10.77.1.0/24".into()),
             speaker: None,
             vrf_rd: None,
+            exporter_instance: None,
             limit: None,
         },
     )

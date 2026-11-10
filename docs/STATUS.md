@@ -485,21 +485,73 @@ preserved); `ObservationSource`/`BmpMessage` carry
 records map to instance 0). The listener now requires a BMP Initiation
 before creating state, resolves sysName evidence against the trusted
 binding store (`bonsai_config.db` beside the journals or
-`BONSAI_ROUTING_IDENTITY_DB`), and assigns `exp:{canonical}` scopes to
-resolved exporters (shared across connections = FRR global+VRF
-association preserved) or isolated `conn:{id}` scopes otherwise —
-unresolved/ambiguous/conflicting evidence fails closed and is never
-promoted to canonical device state. Disconnects, transport gaps, EOR
-clearing, decode contexts and `conn:*` retirement are all fenced per
-`SpeakerKey`. Journals/replay carry the scope end-to-end;
-`JournalTransportGap`/`PrefixHistoryItem` gained `exporter_instance`;
-projection/checkpoint/graph ids use `ip|instance`. Regression:
-`tests/bn021c_exporter_isolation.rs` (3 tests) proves two exporters on
-one NAT IP with identical peer/RD/prefix never merge live state,
-withdrawals, PeerDown, gaps, trusted-binding resolution or replay.
-Verified: `cargo check -p bonsai --all-targets` clean; rbmp-rib 42/42,
-rbmp-store 3/3, bn021c 3/3, bn021b 13/13, bn005_closeout 11/11,
-bn006_reconnect_projection 2/2, r01 7/7, r05 2/2, ownership 3/3.
+`BONSAI_ROUTING_IDENTITY_DB`), and assigns namespace-encoded `exp:*`
+scopes (binding scope+protocol+canonical id — identical canonical
+exporter ids in different sites cannot collide) to resolved exporters
+(shared across connections = FRR global+VRF association preserved) or
+isolated `conn:{id}` scopes otherwise — unresolved/ambiguous/
+conflicting evidence fails closed and is never promoted to canonical
+device state. Disconnects, transport gaps, EOR clearing, decode
+contexts and `conn:*` retirement are all fenced per `SpeakerKey`.
+Journals/replay carry the scope end-to-end; `JournalTransportGap`/
+`PrefixHistoryItem` gained `exporter_instance`; projection/checkpoint/
+graph ids use `ip|instance`.
+
+BN-021c hardening pass (10 November): audit found and fixed five
+defects — (1) replay recorded `conn:*` disconnect gaps but never
+retired the speakers, diverging from live state (now retires on the
+disconnect record and prunes gaps/decode contexts); (2)
+`process_for_epoch` fenced only stale Termination/EOR, letting stale
+PeerUp/PeerDown/RouteMonitoring mutate newer sessions (now all
+payloads fenced; stale EOR still reserves its event sequence for
+deterministic replay); (3) `exp:{canonical}` dropped the
+(scope, protocol) namespace — latent cross-site collision (now
+namespace-encoded); (4) routes/prefix-history/events APIs lacked
+exporter-instance selectors (added); (5) `conn:*` retirement was not
+gated on the disconnect actually being accepted (now gated).
+`tests/bn021c_exporter_isolation.rs` grew to 7 tests: cross-scope
+duplicate canonical ids, trusted bindings behind one NAT IP, stale
+epoch fencing, journal replay equivalence, and a real-TCP loopback
+listener test with two simultaneous exporters. Verified:
+`cargo check -p bonsai --all-targets` clean; bn021c 7/7, bn021b 13/13,
+bn005_closeout 11/11, rbmp-rib 42/42, rbmp-store 3/3,
+bn006_reconnect_projection, r01, r05, ownership and read-boundary
+suites pass. Known limitation: `conn:*` speakers with no disconnect
+record (SIGKILL) replay as live last-known state — the journal cannot
+distinguish them from live connections; deferred to BN-021f alias
+reconciliation.
+
+BN-021c review-findings pass + NAT acceptance (10–11 November): the
+published-commit review findings were reproduced and dispositioned.
+P0-A: `identity_from_bmp_observation` resolved only the default scope
+and `exp:{canonical}` dropped the (scope, protocol) namespace — fixed
+via `RoutingServiceConfig.identity_scope` and namespace-encoded
+`exp:{scope}:{canonical}` instances (default scope keeps legacy
+`exp:{canonical}` for journal continuity). P0-B: an invalid BMP frame
+broke the read loop without a disconnect reason — fixed; rejections
+record distinct `bmp_frame_rejected:*`/transport-error reasons and
+still run conn-scope retirement. P0-C: BMP Termination removed the
+whole `SpeakerKey` session, so one FRR connection's Termination could
+kill sibling state — fixed by deferring termination per sending
+connection. P0-D: identical self-reported sysName claims coalesce —
+confirmed as a trust assumption (lab-verified: an impostor claiming
+`frr-a` merged into `exp:exp-frr-a`); ambiguous/conflicting claims
+fail closed into `conn:*` isolation; authenticated ingress identity
+remains future work. P1: the routing service now opens the identity
+DB read-only (`open_file_readonly`) — no schema/WAL mutation. P2:
+FNV speaker-instance hashing documented as a bounded collision risk.
+`tests/bn021c_exporter_isolation.rs` is now 12 tests including real-TCP
+loopback coverage of invalid-frame lifecycle and Termination sibling
+isolation. Live containerlab NAT acceptance is DONE — three FRR
+exporters (AS 65001/2/3) behind one iptables SNAT source
+(10.240.0.200 → bonsai 10.240.0.20:11019) with a BGP route-server;
+scenarios A–G (isolation, withdrawal, PeerDown, disconnect/reconnect,
+unknown exporter, conflicting claims, SIGKILL replay) all verified
+against the deployed HTTP API — evidence in
+`docs/merger/evidence/2026-11-10-bn021c-nat-acceptance/`. BN-005
+kill/restart last-known-state semantics preserved: recorded
+disconnects replay as gaps, `conn:*` without a disconnect replays as
+live last-known (documented limitation).
 
 BN-022 containment slice (10 November): ad-hoc graph reads are now
 denied-by-default for non-admin principals. `src/graph/explorer.rs`

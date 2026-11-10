@@ -194,6 +194,7 @@ async fn execute_clean_frr_scenario_run(run_number: u32) -> serde_json::Value {
         max_frame_bytes: 65536,
         internal_service_token: None,
         identity_db_path: None,
+        identity_scope: None,
     };
     let state = RoutingServiceState::new(cfg).await.unwrap();
     let mut oracle = ExpectedRouteOracle::new();
@@ -482,6 +483,7 @@ async fn b19_deterministic_load_fault_injection_and_crash_replay_equivalence() {
         max_frame_bytes: 65536,
         internal_service_token: None,
         identity_db_path: None,
+        identity_scope: None,
     };
 
     let state = RoutingServiceState::new(cfg.clone()).await.unwrap();

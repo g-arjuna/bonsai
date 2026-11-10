@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::telemetry_identity::{IdentityResolver, identity_from_bmp_observation};
+use crate::telemetry_identity::{
+    DEFAULT_IDENTITY_SCOPE, IdentityResolver, identity_from_bmp_observation,
+};
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -53,6 +55,13 @@ pub struct RoutingServiceConfig {
     /// runtime volume) and uses it only if already present.
     #[serde(default)]
     pub identity_db_path: Option<PathBuf>,
+    /// Trusted ingress/collector identity scope this listener resolves
+    /// BMP exporters under (BN-021c). `None`/`"default"` resolves against
+    /// the default identity namespace only. Set this to a configured
+    /// site/ingress scope so site-scoped trusted bindings become
+    /// reachable; it is NEVER derived from self-reported BMP sysName.
+    #[serde(default)]
+    pub identity_scope: Option<String>,
     pub max_frame_bytes: u32,
     #[serde(skip_serializing)]
     pub internal_service_token: Option<String>,
@@ -74,6 +83,10 @@ impl Default for RoutingServiceConfig {
             identity_db_path: std::env::var("BONSAI_ROUTING_IDENTITY_DB")
                 .ok()
                 .map(PathBuf::from),
+            identity_scope: std::env::var("BONSAI_ROUTING_IDENTITY_SCOPE")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
             max_frame_bytes: DEFAULT_MAX_FRAME,
             internal_service_token: std::env::var("BONSAI_ROUTING_SERVICE_TOKEN")
                 .ok()
@@ -233,6 +246,21 @@ impl ExporterScope {
     }
 }
 
+/// Build the `exp:*` logical-exporter scope for a resolved canonical
+/// exporter id. Canonical exporter ids are unique per (scope, protocol),
+/// so the speaker partition must carry the identity namespace: the
+/// default scope keeps the historical `exp:{id}` form (journal and
+/// checkpoint continuity), while any other scope is encoded as
+/// `exp:{scope}:{id}` so site-scoped bindings can never collide with
+/// each other or with the default namespace behind a shared NAT address.
+pub fn resolved_exporter_instance(identity_scope: &str, canonical: &str) -> String {
+    if identity_scope == DEFAULT_IDENTITY_SCOPE {
+        format!("exp:{canonical}")
+    } else {
+        format!("exp:{identity_scope}:{canonical}")
+    }
+}
+
 /// Outcome of resolving a BMP connection's Initiation evidence against
 /// the trusted binding store.
 #[derive(Debug, Clone)]
@@ -349,11 +377,26 @@ impl RoutingServiceState {
                 dir.join(crate::sqlite_store::CONFIG_DB_FILE_NAME)
             }
         };
-        match crate::sqlite_store::SqliteStore::open_file(&db_path) {
-            Ok(store) => {
-                tracing::info!(path = %db_path.display(), "trusted exporter identity store loaded");
-                Some(Arc::new(store))
-            }
+        // Read-only open (BN-021c/P1): the routing service must never
+        // migrate, create tables, or switch journal mode on the shared
+        // management database. An older-schema DB simply yields no
+        // bindings and exporters stay connection-isolated (fail closed).
+        match crate::sqlite_store::SqliteStore::open_file_readonly(&db_path) {
+            Ok(store) => match store.schema_version() {
+                Ok(v) if v < crate::sqlite_store::CURRENT_SCHEMA_VERSION => {
+                    tracing::warn!(
+                        path = %db_path.display(),
+                        schema_version = v,
+                        required = crate::sqlite_store::CURRENT_SCHEMA_VERSION,
+                        "identity DB schema is older than required; trusted bindings unavailable, exporters stay connection-isolated"
+                    );
+                    Some(Arc::new(store))
+                }
+                _ => {
+                    tracing::info!(path = %db_path.display(), "trusted exporter identity store loaded");
+                    Some(Arc::new(store))
+                }
+            },
             Err(e) => {
                 tracing::warn!(path = %db_path.display(), error = %e,
                     "trusted exporter identity store unavailable; BMP exporters stay connection-isolated");
@@ -406,7 +449,10 @@ impl RoutingServiceState {
             "pending",
             0,
         );
-        let observed = identity_from_bmp_observation(&probe, sys_name, None);
+        // The scope is the operator-configured trusted ingress scope —
+        // never inferred from the self-reported sysName (BN-021c/P0-D).
+        let observed =
+            identity_from_bmp_observation(&probe, sys_name, self.config.identity_scope.clone());
         let _ = sys_descr;
         let bindings = self.trusted_bmp_bindings();
         let resolution = IdentityResolver::resolve(&observed, &bindings);
@@ -419,7 +465,18 @@ impl RoutingServiceState {
                     .unwrap_or_else(|| provisional_claim.clone());
                 SpeakerResolution {
                     scope: ExporterScope {
-                        exporter_instance: format!("exp:{canonical}"),
+                        // Canonical exporter ids are unique per
+                        // (scope, protocol) — NOT globally. The speaker
+                        // scope must encode that namespace or two sites
+                        // reusing the same exporter id behind one NAT
+                        // address would collide into one SpeakerKey.
+                        // The default scope keeps the legacy `exp:{id}`
+                        // form so pre-existing journals/checkpoints stay
+                        // continuous; any other scope is encoded.
+                        exporter_instance: resolved_exporter_instance(
+                            observed.resolution_scope(),
+                            &canonical,
+                        ),
                         exporter_id: Some(canonical),
                         device_id: resolution.device_id.clone(),
                     },
@@ -643,14 +700,16 @@ impl RoutingServiceState {
 
     /// Epoch-fenced disconnect recorder keyed by an explicit
     /// [`SpeakerKey`]. `exporter_instance` is the scope string recorded
-    /// into the durable journal gap.
+    /// into the durable journal gap. Returns `true` when the disconnect
+    /// was accepted (not fenced as stale) so callers can safely retire
+    /// connection-scoped state.
     pub async fn record_transport_disconnect_for_key(
         &self,
         speaker_key: SpeakerKey,
         exporter_instance: &str,
         session_epoch: Option<u64>,
         reason: impl Into<String>,
-    ) {
+    ) -> bool {
         let _ingestion = self.ingestion_lock.lock().await;
         let reason_str = reason.into();
         let effective_epoch = {
@@ -665,7 +724,7 @@ impl RoutingServiceState {
                         act_ep,
                         "Ignoring stale transport disconnect from older session epoch"
                     );
-                    return;
+                    return false;
                 }
             }
             rib.clear_speaker_eor(speaker_key);
@@ -692,17 +751,30 @@ impl RoutingServiceState {
             .append_transport_disconnect(&journal_gap)
             .await;
         self.transport_gaps.write().await.insert(speaker_key, gap);
+        true
     }
 
     /// Retire an isolated connection-scoped (`conn:*`) speaker after its
     /// TCP connection ended: drops its peer sessions and RIB tables
     /// without emitting withdrawals (the scope can never receive new
-    /// data; durable history remains in the journals). Returns whether a
+    /// data; durable history remains in the journals), prunes its
+    /// session-aware decode contexts, and clears its transport gap — a
+    /// retired scope holds no state under a gap, so keeping one would
+    /// pin global completeness to `"gap"` forever. Returns whether a
     /// speaker was retired. Canonical `exp:*` speakers are NEVER retired
     /// here — they keep last-known routes under the transport gap.
     pub async fn retire_connection_scoped_speaker(&self, speaker_key: SpeakerKey) -> bool {
         let mut rib = self.rib.write().await;
-        rib.retire_speaker(speaker_key)
+        let retired = rib.retire_speaker(speaker_key);
+        drop(rib);
+        if retired {
+            self.transport_gaps.write().await.remove(&speaker_key);
+            self.decode_contexts.write().await.retain(|k, _| {
+                !(k.speaker_addr == speaker_key.speaker_addr
+                    && k.speaker_instance == speaker_key.speaker_instance)
+            });
+        }
+        retired
     }
 
     /// Overall data-quality completeness state across observed speakers/peers.
@@ -789,6 +861,16 @@ pub async fn run_bmp_listener(
     // SpeakerKey -> (session_epoch, live connection count)
     let live_sessions: Arc<tokio::sync::Mutex<HashMap<SpeakerKey, (u64, usize)>>> =
         Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    // SpeakerKey -> raw BMP Termination frame deferred while sibling
+    // connections share the speaker scope (BN-021c/P0-C). A BMP
+    // Termination ends only the TCP session that sent it; with several
+    // live connections coalesced into one `exp:*` speaker, destroying
+    // the shared speaker state would drop siblings' routes. The frame
+    // is replayed through ingestion when the LAST connection closes so
+    // the speaker-wide teardown is applied exactly once, durably and
+    // in journal order.
+    let deferred_terminations: Arc<tokio::sync::Mutex<HashMap<SpeakerKey, Vec<u8>>>> =
+        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     loop {
         tokio::select! {
             _ = shutdown.changed() => {
@@ -801,6 +883,7 @@ pub async fn run_bmp_listener(
                 let speaker_ip = peer_sock.ip();
                 let st = Arc::clone(&state);
                 let sessions = Arc::clone(&live_sessions);
+                let deferred = Arc::clone(&deferred_terminations);
                 tokio::spawn(async move {
                     let mut reader = BufReader::new(stream);
                     let hdr_timeout = Duration::from_secs(30);
@@ -920,9 +1003,48 @@ pub async fn run_bmp_listener(
                             let head_hex = frame.iter().take(48).map(|b| format!("{b:02x}")).collect::<String>();
                             tracing::info!(%speaker_ip, %scope.exporter_instance, ver, mlen, mtype, head = %head_hex, "bmp_frame");
                         }
+                        // BMP Termination (v3 msg type 5) is scoped to the
+                        // connection that sent it. While sibling connections
+                        // share this SpeakerKey, defer the frame instead of
+                        // letting `RibManager` destroy shared speaker/RIB
+                        // state; it is applied when the last connection
+                        // closes (see teardown below).
+                        let is_termination =
+                            frame.len() >= 6 && frame[0] == 3 && frame[5] == 5;
+                        if is_termination {
+                            let live_count = sessions
+                                .lock()
+                                .await
+                                .get(&speaker_key)
+                                .map(|&(_, c)| c)
+                                .unwrap_or(0);
+                            if live_count > 1 {
+                                deferred
+                                    .lock()
+                                    .await
+                                    .insert(speaker_key, frame.clone());
+                                tracing::info!(
+                                    %speaker_ip,
+                                    exporter_instance = %scope.exporter_instance,
+                                    live_connections = live_count,
+                                    "BMP Termination deferred while sibling connections are live"
+                                );
+                                continue;
+                            }
+                            // This is the last live connection: any frame
+                            // deferred by a sibling is superseded by this
+                            // effective speaker-wide termination.
+                            deferred.lock().await.remove(&speaker_key);
+                        }
                         if let Err(e) = st.ingest_bmp_bytes_scoped(speaker_ip, &scope, Some(epoch), &frame).await {
+                            // A rejected frame still closes the connection,
+                            // so it MUST flow through the same disconnect
+                            // lifecycle as TCP EOF — otherwise valid routing
+                            // state would linger with no durable gap record
+                            // (BN-021c/P0-B). The reason is recorded
+                            // distinctly from transport errors and EOF.
                             tracing::warn!(%speaker_ip, exporter_instance = %scope.exporter_instance, error = %e, "Rejected invalid BMP frame");
-                            break None;
+                            break Some(format!("bmp_frame_rejected: {e}"));
                         }
                     };
                     // Release this connection's share of the speaker epoch before recording
@@ -943,17 +1065,40 @@ pub async fn run_bmp_listener(
                     };
                     if let Some(reason) = disconnect_reason {
                         if last_connection {
-                            st.record_transport_disconnect_for_key(
-                                speaker_key,
-                                &scope.exporter_instance,
-                                Some(epoch),
-                                reason,
-                            )
-                            .await;
+                            // A Termination deferred by a sibling becomes
+                            // effective now that no connections remain:
+                            // ingest it so the speaker teardown, SpeakerDown
+                            // event and journal record match a live inline
+                            // termination exactly (replay-consistent).
+                            if let Some(term_frame) = deferred.lock().await.remove(&speaker_key)
+                            {
+                                if let Err(e) = st
+                                    .ingest_bmp_bytes_scoped(
+                                        speaker_ip,
+                                        &scope,
+                                        Some(epoch),
+                                        &term_frame,
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(%speaker_ip, exporter_instance = %scope.exporter_instance, error = %e, "Failed to apply deferred BMP Termination");
+                                }
+                            }
+                            let recorded = st
+                                .record_transport_disconnect_for_key(
+                                    speaker_key,
+                                    &scope.exporter_instance,
+                                    Some(epoch),
+                                    reason,
+                                )
+                                .await;
                             // An isolated connection scope can never receive
                             // new data; retire its state instead of leaking
-                            // last-known routes per dead connection.
-                            if scope.exporter_instance.starts_with("conn:") {
+                            // last-known routes per dead connection. Only
+                            // retire when the disconnect was actually
+                            // accepted — a stale-fenced disconnect must not
+                            // drop a newer session's state.
+                            if recorded && scope.exporter_instance.starts_with("conn:") {
                                 st.retire_connection_scoped_speaker(speaker_key).await;
                             }
                         }
@@ -984,12 +1129,21 @@ pub struct PeersQuery {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct RoutesQuery {
+    /// Speaker transport address, or the exact `speaker_key` form
+    /// `"<addr>|<exporter_instance>"` emitted by `/speakers` — required
+    /// to select one exporter behind a shared NAT address.
     pub speaker: Option<String>,
     pub peer: Option<String>,
     pub view: Option<String>,
     pub vrf_rd: Option<String>,
     pub prefix: Option<String>,
     pub family: Option<String>,
+    /// Logical-exporter scope selector (`exp:*`/`conn:*`/legacy).
+    pub exporter_instance: Option<String>,
+    /// Canonical exporter id selector.
+    pub exporter_id: Option<String>,
+    /// Canonical inventory device id selector (resolved exporters only).
+    pub device_id: Option<String>,
     pub limit: Option<usize>,
     pub cursor: Option<usize>,
 }
@@ -997,16 +1151,22 @@ pub struct RoutesQuery {
 #[derive(Debug, Deserialize, Default)]
 pub struct PrefixHistoryQuery {
     pub prefix: Option<String>,
+    /// Speaker transport address or `"<addr>|<exporter_instance>"` key.
     pub speaker: Option<String>,
     pub vrf_rd: Option<String>,
+    /// Logical-exporter scope selector (`exp:*`/`conn:*`/legacy).
+    pub exporter_instance: Option<String>,
     pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 pub struct EventsQuery {
     pub after_seq: Option<u64>,
+    /// Speaker transport address or `"<addr>|<exporter_instance>"` key.
     pub speaker: Option<String>,
     pub vrf_rd: Option<String>,
+    /// Logical-exporter scope selector (`exp:*`/`conn:*`/legacy).
+    pub exporter_instance: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -1398,6 +1558,19 @@ pub async fn build_health_json(state: &RoutingServiceState) -> serde_json::Value
     })
 }
 
+/// Match a `speaker` query filter against a speaker transport address and
+/// its logical-exporter scope. Accepts either the bare address (matches
+/// every exporter instance on that address — legacy behavior) or the
+/// exact `"<addr>|<exporter_instance>"` speaker_key form emitted by
+/// `/speakers`, which selects one exporter behind a shared NAT address.
+fn speaker_matches_filter(speaker_addr: IpAddr, exporter_instance: &str, filter: &str) -> bool {
+    let addr_s = speaker_addr.to_string();
+    filter == addr_s
+        || filter
+            .strip_prefix(addr_s.as_str())
+            .is_some_and(|rest| rest.strip_prefix('|') == Some(exporter_instance))
+}
+
 /// Derive the attribution status of a speaker session for API output.
 /// `resolved` requires a trusted-binding device id or an `exp:*` scope;
 /// `conn:*` scopes are provisional connection-isolated exporters;
@@ -1483,7 +1656,8 @@ pub async fn build_peers_json(state: &RoutingServiceState, q: &PeersQuery) -> se
     let mut peers = Vec::new();
     for spk in rib.speakers() {
         if let Some(ref spk_filter) = q.speaker {
-            if spk.speaker_addr.to_string() != *spk_filter {
+            if !speaker_matches_filter(spk.speaker_addr, &spk.source.exporter_instance, spk_filter)
+            {
                 continue;
             }
         }
@@ -1614,7 +1788,23 @@ pub async fn build_routes_json(
     let mut all_matching = Vec::new();
     for spk in rib.speakers() {
         if let Some(ref spk_filter) = q.speaker {
-            if spk.speaker_addr.to_string() != *spk_filter {
+            if !speaker_matches_filter(spk.speaker_addr, &spk.source.exporter_instance, spk_filter)
+            {
+                continue;
+            }
+        }
+        if let Some(ref inst_filter) = q.exporter_instance {
+            if &spk.source.exporter_instance != inst_filter {
+                continue;
+            }
+        }
+        if let Some(ref exp_filter) = q.exporter_id {
+            if &spk.source.exporter_id != exp_filter {
+                continue;
+            }
+        }
+        if let Some(ref dev_filter) = q.device_id {
+            if spk.source.device_id.as_deref() != Some(dev_filter.as_str()) {
                 continue;
             }
         }
@@ -1733,7 +1923,13 @@ pub async fn build_prefix_history_json(
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
     let history: Vec<PrefixHistoryItem> = state
         .event_journal
-        .prefix_history_filtered(prefix, q.speaker.as_deref(), q.vrf_rd.as_deref(), limit)
+        .prefix_history_filtered(
+            prefix,
+            q.speaker.as_deref(),
+            q.vrf_rd.as_deref(),
+            q.exporter_instance.as_deref(),
+            limit,
+        )
         .await;
     let history_window = state
         .event_journal
@@ -1816,7 +2012,13 @@ pub async fn build_events_json(state: &RoutingServiceState, q: &EventsQuery) -> 
             scanned_to_seq = current_cursor;
 
             if let Some(ref spk) = q.speaker {
-                if ev.speaker.to_string() != *spk {
+                if !speaker_matches_filter(ev.speaker, &ev.event_key.source.exporter_instance, spk)
+                {
+                    continue;
+                }
+            }
+            if let Some(ref inst) = q.exporter_instance {
+                if &ev.event_key.source.exporter_instance != inst {
                     continue;
                 }
             }

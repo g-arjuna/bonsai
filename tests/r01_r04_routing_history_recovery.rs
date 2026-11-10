@@ -16,6 +16,7 @@ fn config(dir: &std::path::Path) -> RoutingServiceConfig {
         max_frame_bytes: DEFAULT_MAX_FRAME,
         internal_service_token: None,
         identity_db_path: None,
+        identity_scope: None,
     }
 }
 

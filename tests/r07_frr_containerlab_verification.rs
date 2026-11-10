@@ -135,6 +135,7 @@ async fn execute_clean_frr_nos_run(run_number: u32) -> Result<FrrRunEvidence> {
         max_frame_bytes: DEFAULT_MAX_FRAME,
         internal_service_token: None,
         identity_db_path: None,
+        identity_scope: None,
     };
     let state = RoutingServiceState::new(config).await?;
     let speaker_addr: IpAddr = SPEAKER_IP.parse().expect("parse speaker IP");

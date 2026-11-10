@@ -261,6 +261,31 @@ impl RibManager {
         let stale_epoch = session_epoch
             .zip(self.speakers.get(&key).map(|s| s.source.session_epoch))
             .is_some_and(|(incoming, active)| incoming < active);
+        if stale_epoch {
+            // Every payload from an older connection epoch is fenced:
+            // only Termination and End-of-RIB had explicit checks before,
+            // which let a stale PeerUp/PeerDown/RouteMonitoring mutate a
+            // newer session's peer/RIB state (BN-021c hardening).
+            // A stale EOR still reserves its event sequence so replay
+            // cannot renumber later durable events.
+            if let BmpPayload::RouteMonitoring { update, .. } = &msg.payload
+                && update.eor_afi_safi().is_some()
+            {
+                self.next_event_seq += 1;
+            }
+            debug!(
+                %speaker,
+                %exporter_instance,
+                incoming_epoch = session_epoch.unwrap_or(0),
+                active_epoch = self
+                    .speakers
+                    .get(&key)
+                    .map(|s| s.source.session_epoch)
+                    .unwrap_or(0),
+                "Ignoring stale BMP message from older session epoch"
+            );
+            return emitted;
+        }
         if matches!(msg.payload, BmpPayload::Termination { .. }) {
             if let (Some(incoming_epoch), Some(active_sess)) =
                 (session_epoch, self.speakers.get(&key))

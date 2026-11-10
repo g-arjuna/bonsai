@@ -293,6 +293,7 @@ async fn handle_routing_restart(AxumState(ctx): AxumState<Arc<ControlContext>>) 
         max_frame_bytes: DEFAULT_MAX_FRAME,
         internal_service_token: Some("bn003-token".to_string()),
         identity_db_path: None,
+        identity_scope: None,
     };
 
     let new_state = match RoutingServiceState::new(config).await {
@@ -374,6 +375,7 @@ async fn test_bn003_live_routing_browser_acceptance() -> Result<()> {
         max_frame_bytes: DEFAULT_MAX_FRAME,
         internal_service_token: Some("bn003-token".to_string()),
         identity_db_path: None,
+        identity_scope: None,
     };
 
     let routing_state = RoutingServiceState::new(routing_config)

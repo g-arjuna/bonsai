@@ -20,7 +20,10 @@ use std::sync::{Arc, Mutex};
 /// File name of the config database inside a runtime directory.
 pub const CONFIG_DB_FILE_NAME: &str = "bonsai_config.db";
 const DB_FILE: &str = CONFIG_DB_FILE_NAME;
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+/// Schema version the management service migrates to. Read-only
+/// consumers (routing service) compare against this and fail closed
+/// when the database is older.
+pub const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 /// SQLite config store with versioned schema and audit trail.
 pub struct SqliteStore {
@@ -30,9 +33,7 @@ pub struct SqliteStore {
 
 impl SqliteStore {
     /// Open or create the config store at an explicit database file path,
-    /// running migrations if needed. Used by the routing service to read
-    /// trusted exporter bindings from the management service's database
-    /// (BN-021c); callers must only read binding tables.
+    /// running migrations if needed. Used by the management service.
     pub fn open_file(db_path: &Path) -> Result<Self> {
         let db = Connection::open(db_path)
             .with_context(|| format!("failed to open SQLite DB at '{}'", db_path.display()))?;
@@ -46,6 +47,41 @@ impl SqliteStore {
         store.enable_wal()?;
 
         Ok(store)
+    }
+
+    /// Open the config store READ-ONLY for consumers that must never
+    /// mutate the shared management database (BN-021c routing service).
+    ///
+    /// Unlike [`Self::open_file`] this performs NO schema migration and
+    /// does NOT enable WAL — a read-only handle cannot create tables,
+    /// bump `user_version`, or change journal mode even accidentally.
+    /// The database is expected to already be at the current schema
+    /// (managed by the `bonsai` service); callers can inspect
+    /// [`Self::schema_version`] and must fail closed when binding
+    /// tables are absent. Deferred lifecycle limitation: binding
+    /// changes are only visible to NEW connections — an already
+    /// resolved `exp:*` speaker keeps its scope until reconnect.
+    pub fn open_file_readonly(db_path: &Path) -> Result<Self> {
+        let db = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| {
+            format!(
+                "failed to open SQLite DB read-only at '{}'",
+                db_path.display()
+            )
+        })?;
+
+        Ok(Self {
+            db: Arc::new(Mutex::new(db)),
+            config_replicator: None,
+        })
+    }
+
+    /// Current schema version recorded in the database (`user_version`).
+    /// Read-only safe; returns 0 for a pre-versioned/empty database.
+    pub fn schema_version(&self) -> Result<i64> {
+        let db = self.db.lock().unwrap();
+        db.query_row("PRAGMA user_version", [], |row| row.get(0))
+            .context("failed to read SQLite schema version")
     }
 
     /// Open or create the config store, running migrations if needed.

@@ -57,3 +57,13 @@ date,command,scope,wall_seconds,result,notes
 2026-11-10,cargo test -p rbmp-rib -p rbmp-store,rbmp crates,62+~1,pass,42+3 tests pass; cold-ish test profile for these crates
 2026-11-10,cargo test 6 integration targets,bn005/bn006/bn021b/r01/r05/ownership,924+~23,pass,15m24s test-profile compile; all listed suites pass
 2026-11-10,cargo clippy -p rbmp-core -p rbmp-rib -p rbmp-store,rbmp crates clippy,8,pass,no errors; ~30 pre-existing style warnings
+2026-11-10,cargo test --test bn021c_exporter_isolation --test bn005_closeout,bn021c+bn005 regression,688+10.5,pass,test-profile compile 11m28s; 7/7 bn021c, 11/11 bn005_closeout
+2026-11-10,cargo test --test bn021b_trusted_identity,bn021b regression,21+1.6,pass,13/13 tests pass
+2026-11-10,cargo test -p rbmp-rib -p rbmp-store,rbmp crates,15.4+~0.1,pass,42 rib + 3 store tests pass
+2026-11-10,cargo check -p bonsai --all-targets,bonsai all targets,21+17.2,pass,clean after BN-021c hardening edits
+2026-11-10,cargo clippy -p rbmp-core -p rbmp-rib -p rbmp-store --all-targets,rbmp crates clippy,9.1,pass,no errors; pre-existing style warnings only
+2026-11-11,cargo test --test bn021c_exporter_isolation,bn021c regression (12 tests),~600+~20,pass,test-profile compile several min; 12/12 pass incl. invalid-frame + Termination sibling TCP tests
+2026-11-11,cargo test 5 integration targets (bmp_rfc_contract bn006_collection_wiring bn006_reconnect_projection ownership_compatibility r01_r04_routing_history_recovery r05_r06_runtime_wiring_and_scope),regression batch,~900,pass,all listed suites pass; 1 ignored (dedicated SR Linux containerlab)
+2026-11-11,cargo build --bin bonsai-routing,bonsai-routing debug bin,~1115,pass,18m35s; sccache warm; needed for bn021c-routing:local lab image
+2026-11-11,docker build bn021c-routing:local,bn021c routing image,~60,pass,scratch image wrapping target/debug/bonsai-routing
+2026-11-11,lab/acceptance/bn021c-nat/up.sh,NAT acceptance bring-up,~120,pass,3 FRR exporters + peer + NAT + bonsai; BGP converged; scenarios A-G executed

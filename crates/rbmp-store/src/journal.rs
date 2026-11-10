@@ -370,6 +370,12 @@ impl BmpJournal {
             }
         }
 
+        // NOTE: conn:* speakers with no disconnect record are kept
+        // as-is. Their conn id cannot be reused, so they are provably
+        // dead — but BN-005 requires ungraceful-restart history to
+        // replay identically, and no journal record distinguishes
+        // "still connected" from "died with the old process". This is a
+        // documented BN-021c limitation (see docs/STATUS.md).
         Ok(ReplayOutcome {
             report: ReplayReport {
                 applied_messages,
@@ -471,12 +477,29 @@ impl BmpJournal {
                     speaker_key,
                     JournalTransportGap {
                         speaker_addr,
-                        exporter_instance,
+                        exporter_instance: exporter_instance.clone(),
                         session_epoch: effective_epoch,
                         disconnected_at,
                         reason,
                     },
                 );
+                // Mirror live disconnect handling (BN-021c): an isolated
+                // connection-scoped (`conn:*`) speaker can never receive
+                // new data, so replay must retire its peer/RIB state
+                // instead of resurrecting last-known routes. `exp:*`
+                // speakers keep last-known routes under the gap.
+                if exporter_instance.starts_with("conn:") {
+                    rib.retire_speaker(speaker_key);
+                    // A retired scope holds no state under a gap; drop the
+                    // in-memory gap so it cannot pin completeness forever.
+                    // The durable disconnect record remains in the journal.
+                    transport_gaps.remove(&speaker_key);
+                    let instance_id =
+                        rbmp_core::bmp::types::exporter_instance_id(&exporter_instance);
+                    decode_contexts.retain(|k, _| {
+                        !(k.speaker_addr == speaker_addr && k.speaker_instance == instance_id)
+                    });
+                }
             }
         }
     }
@@ -793,15 +816,21 @@ impl RibEventJournal {
     }
 
     pub async fn prefix_history(&self, prefix: &str, limit: usize) -> Vec<PrefixHistoryItem> {
-        self.prefix_history_filtered(prefix, None, None, limit)
+        self.prefix_history_filtered(prefix, None, None, None, limit)
             .await
     }
 
+    /// `speaker_filter` accepts a bare transport address (matches every
+    /// exporter instance on it) or the exact `"<addr>|<exporter_instance>"`
+    /// speaker key form. `exporter_instance_filter` selects one
+    /// logical-exporter scope (`exp:*`/`conn:*`/legacy) so exporters
+    /// sharing a NAT address never merge history (BN-021c).
     pub async fn prefix_history_filtered(
         &self,
         prefix: &str,
         speaker_filter: Option<&str>,
         vrf_rd_filter: Option<&str>,
+        exporter_instance_filter: Option<&str>,
         limit: usize,
     ) -> Vec<PrefixHistoryItem> {
         use rbmp_rib::event::{RibEventPayload, RouteAction};
@@ -813,10 +842,34 @@ impl RibEventJournal {
         > = HashMap::new();
         let mut items = Vec::new();
 
+        // Bare address matches every exporter instance on it; the
+        // `"<addr>|<exporter_instance>"` form selects exactly one scope.
+        let speaker_matches = |ev: &rbmp_rib::event::RibEvent| -> bool {
+            match speaker_filter {
+                None => true,
+                Some(spk) if spk.trim().is_empty() => true,
+                Some(spk) => {
+                    let addr_s = ev.speaker.to_string();
+                    spk == addr_s
+                        || spk
+                            .strip_prefix(addr_s.as_str())
+                            .and_then(|rest| rest.strip_prefix('|'))
+                            == Some(ev.event_key.source.exporter_instance.as_str())
+                }
+            }
+        };
+        let instance_matches = |ev: &rbmp_rib::event::RibEvent| -> bool {
+            exporter_instance_filter
+                .is_none_or(|inst| ev.event_key.source.exporter_instance == inst)
+        };
+
         for ev in guard
             .iter()
             .skip(guard.len().saturating_sub(HISTORY_SCAN_LIMIT))
         {
+            if !speaker_matches(ev) || !instance_matches(ev) {
+                continue;
+            }
             if let RibEventPayload::EndOfRib {
                 peer_header,
                 retired_routes,
@@ -826,7 +879,6 @@ impl RibEventJournal {
                 for retired in retired_routes {
                     let rd = retired.route_key.view.peer.distinguisher_string();
                     if retired.prefix.to_string() != prefix
-                        || speaker_filter.is_some_and(|spk| ev.speaker.to_string() != spk)
                         || vrf_rd_filter.is_some_and(|filter| rd != filter)
                     {
                         continue;
@@ -853,7 +905,6 @@ impl RibEventJournal {
             if let RibEventPayload::RouteChange(rc) = &ev.payload {
                 let pfx_str = rc.prefix.to_string();
                 if pfx_str != prefix
-                    || speaker_filter.is_some_and(|spk| ev.speaker.to_string() != spk)
                     || vrf_rd_filter.is_some_and(|rd| rc.peer_key.distinguisher_string() != rd)
                 {
                     continue;
@@ -867,11 +918,6 @@ impl RibEventJournal {
 
                 if pfx_str != prefix {
                     continue;
-                }
-                if let Some(spk) = speaker_filter {
-                    if !spk.trim().is_empty() && ev.speaker.to_string() != spk.trim() {
-                        continue;
-                    }
                 }
                 let rd_str = rc.peer_key.distinguisher_string();
                 if let Some(rd) = vrf_rd_filter {
