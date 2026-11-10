@@ -33,6 +33,8 @@ const FIELD_DIRECTION: u16 = 61;
 // IPFIX (v10) uses the same field IDs for the basic IPv4 5-tuple.
 
 const MAX_UDP_PAYLOAD: usize = 65535;
+/// Bound exporter-context cache growth (transport endpoints × protocol).
+const MAX_TEMPLATE_CONTEXTS: usize = 4096;
 
 /// Per-exporter template cache: source_id → (template_id → Vec<(field_type, field_len)>)
 type TemplateCache = HashMap<u32, HashMap<u16, Vec<(u16, u16)>>>;
@@ -46,7 +48,7 @@ pub async fn run_netflow_receiver(
     info!(addr = %cfg.udp_addr, "Netflow/IPFIX UDP receiver listening");
 
     let mut buf = vec![0u8; MAX_UDP_PAYLOAD];
-    let mut templates: HashMap<SocketAddr, TemplateCache> = HashMap::new();
+    let mut templates: HashMap<(SocketAddr, u16), TemplateCache> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -72,13 +74,16 @@ pub async fn run_netflow_receiver(
 fn handle_packet(
     pkt: &[u8],
     peer: SocketAddr,
-    templates: &mut HashMap<SocketAddr, TemplateCache>,
+    templates: &mut HashMap<(SocketAddr, u16), TemplateCache>,
     bus: &Arc<InProcessBus>,
 ) -> Result<()> {
     if pkt.len() < 4 {
         bail!("packet too short");
     }
     let version = u16::from_be_bytes([pkt[0], pkt[1]]);
+    if !templates.contains_key(&(peer, version)) && templates.len() >= MAX_TEMPLATE_CONTEXTS {
+        bail!("template cache limit reached");
+    }
     let exporter_ip = peer.ip().to_string();
     match version {
         9 => parse_v9(pkt, peer, templates, bus, &exporter_ip),
@@ -92,7 +97,7 @@ fn handle_packet(
 fn parse_v9(
     pkt: &[u8],
     peer: SocketAddr,
-    templates: &mut HashMap<SocketAddr, TemplateCache>,
+    templates: &mut HashMap<(SocketAddr, u16), TemplateCache>,
     bus: &Arc<InProcessBus>,
     exporter_ip: &str,
 ) -> Result<()> {
@@ -105,7 +110,7 @@ fn parse_v9(
     let source_id = u32::from_be_bytes([pkt[16], pkt[17], pkt[18], pkt[19]]);
     let exporter_id = format!("nf9:{}#sid={}", peer.ip(), source_id);
 
-    let exporter_cache = templates.entry(peer).or_default();
+    let exporter_cache = templates.entry((peer, 9)).or_default();
     let source_cache = exporter_cache.entry(source_id).or_default();
 
     let mut offset = 20usize;
@@ -195,7 +200,7 @@ fn emit_flows_v9(
 fn parse_ipfix(
     pkt: &[u8],
     peer: SocketAddr,
-    templates: &mut HashMap<SocketAddr, TemplateCache>,
+    templates: &mut HashMap<(SocketAddr, u16), TemplateCache>,
     bus: &Arc<InProcessBus>,
     exporter_ip: &str,
 ) -> Result<()> {
@@ -207,7 +212,7 @@ fn parse_ipfix(
     let domain_id = u32::from_be_bytes([pkt[12], pkt[13], pkt[14], pkt[15]]);
     let exporter_id = format!("ipfix:{}#dom={}", peer.ip(), domain_id);
 
-    let exporter_cache = templates.entry(peer).or_default();
+    let exporter_cache = templates.entry((peer, 10)).or_default();
     let source_cache = exporter_cache.entry(domain_id).or_default();
 
     let mut offset = 16usize;

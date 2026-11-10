@@ -1457,3 +1457,4 @@ ts,routing_peers_up,routing_routes,routing_gaps,routing_seq,routing_complete,rou
 2026-11-10T07:32:55Z,11,13,1,7012,gap,3,0,0,False,True,8,True,True,True,90863.9,bn009-api-auth=healthy,bonsai-bonsai-standalone-1 554.9MiB / 46.68GiB bonsai-bonsai-routing-1 35.83MiB / 46.68GiB
 2026-11-10T07:33:57Z,11,13,1,7044,gap,3,0,0,False,True,8,True,True,True,90925.9,bn009-api-auth=healthy,bonsai-bonsai-standalone-1 555.7MiB / 46.68GiB bonsai-bonsai-routing-1 36.45MiB / 46.68GiB
 2026-11-10T07:34:59Z,11,13,1,7078,gap,3,0,0,False,True,8,True,True,True,90988.0,bn009-api-auth=healthy,bonsai-bonsai-standalone-1 554.9MiB / 46.68GiB bonsai-bonsai-routing-1 36.01MiB / 46.68GiB
+2026-11-10T07:36:01Z,11,13,1,7110,gap,3,0,0,False,True,8,True,True,True,91050.0,bn009-api-auth=healthy,bonsai-bonsai-standalone-1 556.9MiB / 46.68GiB bonsai-bonsai-routing-1 36.1MiB / 46.68GiB
