@@ -437,9 +437,15 @@ peer_addr. Lab networking fixed via host-mode routing (speakers split
 to real IPs). Also landed: change captures + invariant verdicts are now
 append-only (`css-…-{phase}-{ts}`, `civ-…-{ts}`) — verified live, 3
 verdict records preserved where 1 previously overwrote; pairing selects
-newest per phase. Next slices: BMP exporter identity via Initiation,
-NetFlow template-cache isolation, syslog/SNMP identity split,
-monitoring-health state.
+newest per phase. Next BN-021 slices: (1) canonical exporter/device identity
+contract + inventory bindings; (2) BMP connection-scoped exporter
+resolution via Initiation; (3) NetFlow/IPFIX exporter provenance +
+protocol-scoped template-cache hardening; (4) syslog/SNMP/OTLP
+attribution + trust; (5) production acceptance, alias reconciliation,
+monitoring-health semantics. NetFlow template caches already separate
+by SocketAddr + source/domain ID — no NAT template collision
+demonstrated; confirmed gap is downstream `exporter_address` using
+bare transport IP.
 
 BN-021 slice 1 verified live (10 November): peers API now returns
 `speaker_sys_name`/`speaker_sys_descr` from BMP Initiation — confirmed
