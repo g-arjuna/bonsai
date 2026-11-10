@@ -600,6 +600,9 @@ pub async fn run_bmp_listener(
 #[derive(Debug, Deserialize, Default)]
 pub struct PeersQuery {
     pub speaker: Option<String>,
+    /// Canonical exporter selector (e.g. "bmp:frr2") — matches
+    /// ObservationSource.exporter_id, independent of transport IP.
+    pub exporter_id: Option<String>,
     pub vrf_rd: Option<String>,
     pub state: Option<String>,
     pub limit: Option<usize>,
@@ -1040,6 +1043,8 @@ pub async fn build_speakers_json(state: &RoutingServiceState) -> serde_json::Val
         };
         list.push(serde_json::json!({
             "speaker_addr": spk.speaker_addr,
+            "exporter_id": spk.source.exporter_id,
+            "session_epoch": spk.source.session_epoch,
             "source": spk.source,
             "sys_name": spk.sys_name,
             "sys_descr": spk.sys_descr,
@@ -1074,6 +1079,11 @@ pub async fn build_peers_json(state: &RoutingServiceState, q: &PeersQuery) -> se
                 continue;
             }
         }
+        if let Some(ref exp_filter) = q.exporter_id {
+            if &spk.source.exporter_id != exp_filter {
+                continue;
+            }
+        }
         let has_transport_gap = gaps.contains_key(&spk.speaker_addr);
         for (peer_key, peer) in &spk.peers {
             if let Some(ref rd_filter) = q.vrf_rd {
@@ -1102,6 +1112,8 @@ pub async fn build_peers_json(state: &RoutingServiceState, q: &PeersQuery) -> se
             };
             peers.push(serde_json::json!({
                 "speaker_addr": spk.speaker_addr,
+                "speaker_exporter_id": spk.source.exporter_id,
+                "speaker_session_epoch": spk.source.session_epoch,
                 "speaker_sys_name": spk.sys_name,
                 "speaker_sys_descr": spk.sys_descr,
                 "peer_key": peer_key,

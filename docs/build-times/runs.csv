@@ -38,3 +38,4 @@ date,command,scope,wall_seconds,result,notes
 2026-11-10,docker compose build bonsai-routing,bonsai-routing,~540,pass,release bins ~9m; peers exporter identity
 2026-11-10,cargo check -p bonsai --lib,bonsai --lib,9.21,pass,warm; sccache; SNMP engine_id field
 2026-11-10,cargo check -p rbmp-rib,rbmp-rib,8.04,pass,warm; sccache; exporter_id from Initiation sysName
+2026-11-10,cargo check -p bonsai --lib,bonsai --lib,10.41,pass,warm; sccache; exporter_id/session_epoch API + selector
