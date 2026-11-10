@@ -219,6 +219,12 @@ impl RibManager {
                 if let Some(session) = self.speakers.get_mut(&speaker) {
                     session.sys_name = sys_name.clone();
                     session.sys_descr = sys_descr.clone();
+                    // BN-021c: promote the protocol-reported sysName to the
+                    // logical exporter identity; exporter_addr stays the
+                    // observed transport endpoint.
+                    if let Some(name) = sys_name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                        session.source.exporter_id = format!("bmp:{name}");
+                    }
                 }
                 info!(%speaker, "BMP speaker connected");
                 self.emit_with_source(
