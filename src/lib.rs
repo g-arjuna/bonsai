@@ -56,6 +56,7 @@ pub mod subscriber;
 pub mod subscription_status;
 pub mod synthesizer;
 pub mod telemetry;
+pub mod telemetry_identity;
 pub mod tls_util;
 pub mod write_coordinator;
 pub mod yang;
