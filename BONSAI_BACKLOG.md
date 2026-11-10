@@ -62,7 +62,8 @@ before claiming equivalent history or enabling it as an authority.
 | BN-017 | P3 Deferred | DDoS observation-only slice: corroborated signal/graph/rule features, incident timeline, reproducible benign/fault scenarios and false-positive evaluation. Cloud sink/BGP/RTBH response is separately deferred behind BN-001/002/014 and authorized execution scope. | DS-1–DS-8, especially DS-4; BN-008/013/016 |
 | BN-018 | P3 Deferred | Routing security extensions: live RPKI ROA validation/cache lifecycle (fresh/stale/unavailable, RTR failure/reconnect), independent origin-validation cases and cache provenance. Keep RPKI origin validation distinct from BGPsec path-signature verification; BGPsec stays explicitly unverified until genuine wire/signature/trust-chain support and independent tests. | RustyBMP security roadmap; BN-003/007 |
 | BN-020 | P1 Partial | UI authentication: the SPA has no login page and no token handling — every `/api/*` call from the browser 401s under `require_auth` (observed live 9 Nov: Settings → LLM provider save failed with no way to authenticate). Add a username/password login page that POSTs `/api/auth/login` (JWT cookie `bonsai_token`), gate the app shell on an auth probe, surface role/401 states honestly, and cover logout. 9 Nov FIRST SLICE DONE: `Login.svelte` + auth gate in `App.svelte` (probe `/api/setup/status`, 401→login, HttpOnly `bonsai_token` cookie, no JS token storage); `admin` DB user created (policy-compliant lab password — literal admin/admin rejected by 16-char policy); verified live on rebuilt image — unauth 401, login success role=admin, authed 200, wrong-pass rejected, rate-limit lockout observed live; logout UI added same day (sidebar Sign out → `POST /api/auth/logout` → 401 after); post-lockout re-verified — admin login success, cookie-session provider save `has_api_key:true`, logout→401 ([evidence](docs/merger/evidence/2026-11-09-bn020-ui-login/README.md)). | D4-7 auth/RBAC; BN-003 browser acceptance, BN-019 packaged browser |
-| BN-021 | P0 Partial — production attribution gate | Telemetry source identity and ingress correctness. Observed transport IP must not be treated as authoritative device identity. Distinguish transport endpoint, logical exporter/observation domain, and canonical inventory device ID. 10 Nov: listener audit DONE; host-network BMP ingestion lab-verified with distinct FRR source IPs (temporary Compose override, not a validated production deployment). BMP Initiation sysName/sysDescr parsed and exposed via speakers API AND peers API (`speaker_sys_name`/`speaker_sys_descr`, commit 9ba5b52, live-verified); inventory-backed exporter resolution OPEN. NetFlow v9/IPFIX template caches already isolate by UDP SocketAddr + source/domain ID — no NAT template-collision demonstrated; downstream `exporter_address`/`target` still collapse to bare `peer.ip()` — canonical `exporter_id` alongside (not inside) the IP field is the fix. Ambiguous/conflicting identities must not silently update authoritative device state; preserve transport provenance, API compatibility, immutable history. Slices BN-021a–f below. | BN-014/015/016/019; listener audit + host-network lab evidence (10 Nov 2026) |
+| BN-021 | P0 Partial — production attribution gate | Telemetry source identity/ingress correctness: transport IP is evidence, not authoritative device identity. 10 Nov: listener audit and host-network BMP source-IP preservation LAB VERIFIED (temporary Compose override; packaged production configuration OPEN). BMP Initiation sysName/sysDescr surfaced in speakers/peers APIs (live verified), provisional `exporter_id` from untrusted sysName and `session_epoch` exposed, peers `?exporter_id=` filter added; inventory-backed device binding and RIB/PeerKey isolation from translated source IP OPEN. NetFlow/IPFIX template caches now separated by (SocketAddr, protocol version, source/domain ID, template ID) with 4096 outer-context cap; flow payload includes a provisional IP-derived `exporter_id`. Downstream `exporter_address` and `TelemetryUpdate.target` remain bare `peer.ip()`, so NAT identity collision is unresolved; cap is not template expiry/restart handling. P0 acceptance: two simultaneous exporters behind one NAT address cannot merge authoritative RIB or graph/flow identity; unknown/conflicting sources are isolated. Remaining detailed slices BN-021a–f below. | BN-014/015/016/019; [listener audit](docs/merger/evidence/2026-11-10-bn021-listener-audit/README.md), [host-network lab proof](docs/merger/evidence/2026-11-10-bn021-source-identity/README.md); code `src/routing_service/mod.rs` and `src/streaming/netflow.rs` |
+| BN-022 | P0 Ready — credential storage / graph read boundary | Security finding confirmed by code inspection: auth signing secret, password verifiers and hashed API-key records are persisted in graph `ConfigItem` records; existing read-only Cypher validates mutation safety but does not restrict access to credential rows. Restrict ad-hoc graph reads (MCP, Explorer, NL queries, investigations and export) using an audited positive table/property allowlist, with non-disclosing regression tests for Viewer/Operator/agent surfaces. Move JWT signing secret to protected vault/secret store and auth verifiers to isolated restricted storage; use atomic race-safe init, durable migration, restart tests and revocation/rotation hygiene; never log credential material. Review process-wide AI test `set_var`, secure cookie flags for trusted TLS, Swagger asset self-hosting, and CSPRNG-generated JWT key. Acceptance: no credential bytes accessible via lower-privilege graph interfaces or model tools; legacy auth data migrated without silently resetting sessions or leaking plaintext. Code finding verified, exploit NOT exercised. | BN-005/015/020; `src/http_server/auth.rs`, `src/mcp_server.rs`, `src/graph/explorer.rs`, `src/http_server/settings.rs` |
 | BN-019 | P1 Partial | Operational/release proof: install and upgrade, reproducible packaged build, dedicated lab browser acceptance, backups/recovery, collector limits/observability and sidecar soak. Reconcile legacy clean-slate and seven-day handoff criteria to the read-only prototype boundary. UI accessibility/bundle warnings resolved 8 Nov (zero-warning build, route-level code splitting; [evidence](docs/merger/evidence/2026-11-08-bn019-ui-warnings/README.md)); documentation link/provenance debt reviewed same day — 4 dead live-doc links fixed, 0 remaining ([evidence](docs/merger/evidence/2026-11-08-bn019-link-debt/README.md)). Remaining: the install/lab/soak gates. 8 Nov intake triage: Dockerfile/compose stack, backup/restore scripts, `bonsai-migrate`, `just verify-release` inventoried — gaps are executed install/upgrade, image build+boot, restore drill, soak (shared with BN-009); first slice proposed: packaged build + boot gate ([intake](docs/merger/evidence/2026-11-08-bn019-intake/README.md)). 8 Nov: packaged build + boot gate EXECUTED — image builds (Dockerfile fixed: protoc/mold/sccache, `CARGO_PROFILE_RELEASE_*` env so cook deps are reused: cook 12 s + bins 9 m vs prior 15–47 min double compiles), standalone profile boots both containers healthy, `/health` ok + all `/api/routing/v1/*` proxy 200 via JWT; container HEALTHCHECK fixed (`/readyz`, token probe for bonsai-routing). Backup→restore volume drill passed (project-prefix resolution fixed in both scripts). All planned BN-019 gates now have executed evidence; only the full-length soak window remains open (shared with BN-009). ([evidence](docs/merger/evidence/2026-11-08-bn019-packaged-build/README.md)). Same day: install-from-package + upgrade-in-place drill PASS — `scripts/install.sh` run end-to-end in an isolated Compose project (fresh clone @ `ec50410`, remapped ports, generated `.env`): image build → both containers healthy → JWT + all routing proxy endpoints 200; idempotent re-run is a no-op; forced-image upgrade recreates containers with graph-volume sentinel, admin login and routing API verified post-upgrade ([evidence](docs/merger/evidence/2026-11-08-bn019-install/README.md)). Same day: `bonsai-migrate` live drill PASS host-side — backup/migrate-jsonl/migrate-toml/rollback SHA-verified on a real lab FRR journal snapshot (2,890 v2 records, semantically-identical rewrite noted), synthetic v1 fixture (2 migrations, 2 `legacy_identity_incomplete` flags, 1 corrupt line skipped), legacy TOML vendor aliases, and corrupted-backup rollback fails closed; binary stays out of the image, quiesced-copy procedure documented ([evidence](docs/merger/evidence/2026-11-08-bn019-migrate/README.md)). Same day: packaged-deployment browser acceptance PASS — all 12 BN-003 Playwright journeys against `bonsai:latest` compose deployment with genuine FRR BMP (host-network routing for real exporter IPs; two defects handled: bridge SNAT speaker misattribution documented, first-run onboarding gate cleared via admin API) ([evidence](docs/merger/evidence/2026-11-08-bn019-packaged-browser/README.md)). Bounded 12-min packaged soak PASS (24/24 samples complete, 0 gaps/restarts, stable memory) + shared BN-009/BN-019 soak design; full-length soak still open ([evidence](docs/merger/evidence/2026-11-08-bn019-soak/README.md)). Legacy clean-slate/7-day handoff criteria reconciled to read-only prototype boundary — install/upgrade/backup/browser/migrate gates done; unattended-proof/chaos/governor criteria explicitly deferred to BN-009/014/016 ([evidence](docs/merger/evidence/2026-11-08-bn019-handoff/README.md)). | B16–B20, A20, D3-1/7/10, D4-19/21/22/23; BN-003/005–009 |
 
 ### BN-021 — Telemetry source identity and ingress correctness
@@ -83,22 +84,28 @@ before claiming equivalent history or enabling it as an authority.
 - Preserve compatibility with existing device-address consumers.
 
 **BN-021c — BMP exporter identity** — PARTIAL.
-- Done: Initiation sysName/sysDescr in speaker state + speakers/peers API.
-- Pending: trusted inventory binding resolution; connection-scoped
-  exporter identity separate from translated source IP; PeerKey/RIB keyed
-  by logical exporter context; device_id/exporter_id API selectors;
-  historical alias reconciliation without guessing.
-- Acceptance: independent BMP speakers behind NAT cannot merge state.
+- Done: Initiation sysName/sysDescr exposed in speakers/peers APIs;
+  provisional `exporter_id` and `session_epoch` surfaced; `?exporter_id=`
+  peer selector implemented. These are reported/context identities, not trusted
+  inventory device bindings.
+- Pending: trusted scoped inventory resolution, separate connection/exporter
+  identity in RIB/PeerKey and journal/projections, device_id selector and
+  historical alias reconciliation.
+- Acceptance: independent BMP sessions sharing a NAT address never merge
+  route/peer state, including when they claim the same sysName.
 
-**BN-021d — NetFlow v9/IPFIX identity and template lifecycle** — OPEN.
-- Keep `exporter_address` IP-valued for compatibility; add explicit
-  `exporter_id` + transport source + observation-domain metadata.
-- Source ID / ODID are exporting contexts, not globally unique devices.
-- Template caches isolated by protocol, exporter context, observation
-  domain, session/lifecycle and template ID; add expiry/restart/
-  withdrawal/bounded-retention controls.
-- Acceptance: NAT collisions, template-ID reuse, port changes and
-  exporter restart cannot cause cross-exporter contamination.
+**BN-021d — NetFlow v9/IPFIX identity and template lifecycle** — PARTIAL.
+- Done: template cache keyed by UDP SocketAddr + protocol version +
+  Source ID/ODID + template ID, with 4096 outer-context guard; flow payload
+  now includes provisional `exporter_id` alongside IP-valued
+  `exporter_address`.
+- Pending: inventory-backed exporter/device binding; distinct transport
+  provenance, downstream `TelemetryUpdate.target` and graph association;
+  template expiry, withdrawals, exporter restart/port changes and
+  per-context size limits. Source ID/ODID are NOT globally unique, and an
+  IP-derived provisional exporter ID still collides under shared NAT.
+- Acceptance: NAT collision, protocol/template-ID reuse, source-port
+  changes and restart cannot cross-contaminate decoding or attribution.
 
 **BN-021e — Remaining protocol adapters** — OPEN.
 - Syslog: relay transport identity vs claimed originator (trust levels).
@@ -110,6 +117,67 @@ before claiming equivalent history or enabling it as an authority.
 - Cross-protocol identity regression tests; multi-site overlapping
   addresses; unknown/conflicting handling; collector restart/failover;
   source-alias migration + journal replay; identity metrics/diagnostics.
+
+### Source-audited correctness refinements (existing BN ownership)
+
+These are code-grounded acceptance additions, **not** a replacement
+roadmap. Work proceeds in bounded slices; completed or lab-verified features
+are not reclassified as absent.
+
+- **BN-003 / BN-008 — gNMI state and provenance:** `src/subscriber.rs`
+  currently ignores `Notification.delete`, logs `SyncResponse` without
+  tracking per-device/path synchronization, and maps unsupported
+  TypedValue variants to null. Require delete/tombstone semantics,
+  reconnect sync/absence reconciliation, per-path coverage/freshness,
+  source and collector timestamps, subscriber ID/sequence, complete
+  typed-value fixture coverage, and vendor-backed BGP peer/LLDP link
+  deletion tests. Validate duplicate subscriptions, network-instance
+  scoping, jittered backoff and concurrency limits before expanding
+  platform coverage.
+
+- **BN-003 / BN-007 — BMP fail-closed transport and journal:** In
+  `src/routing_service/mod.rs`, an `ingest_bmp_bytes` error currently
+  breaks without marking a transport gap, and a transport-gap journal
+  append error is ignored. In `crates/rbmp-store/src/journal.rs`,
+  `RibEventJournal::open` reads an existing journal with
+  `unwrap_or_default()`; I/O failure must never be treated as empty
+  history. Test malformed frames, unreadable/corrupt journal, failed gap
+  persistence, half-open/idle connections, connection limits, speaker
+  allowlist and epoch-fenced reconnect. Transport failure means
+  monitoring unavailable, not an inferred BGP PeerDown.
+
+- **BN-008 / BN-009 — delivery correctness:** `InProcessBus::publish`
+  returns `()` and drops when its router queue fills, while a broadcast
+  send result is ignored. Define durable acceptance vs best-effort
+  delivery, explicit queue/lag loss metrics, backpressure/spill behavior,
+  commit-before-event and retry/idempotency semantics. Provide fault
+  tests with no *unaccounted* loss; a lossless guarantee is not yet proved.
+
+- **BN-007 / BN-013 / BN-014 — projection and agent truthfulness:**
+  retire legacy BMP graph writers only after routing projection parity;
+  do not advance projection checkpoint on failed writes. Define core
+  entity schema/freshness and graph-derived as-of/diff APIs only after
+  source provenance and projection correctness. Restrict external
+  ad-hoc graph queries until BN-022 closes; favor curated, scoped tools.
+  Preserve completed BN-014 live change-assurance evidence rather than
+  reopening it as never implemented.
+
+- **BN-019 — reproducible verification and repository hygiene:**
+  `justfile` has `check-fast`, `test-replay`, `verify-release` but
+  no unified `just ci` gate. Add fmt, scoped clippy, fast checks,
+  replay/security regression and UI build on a working runner; capture
+  revision and green CI before merges. Record a clean-tree prototype
+  tag only after a reviewed release gate. Audit root artifacts and
+  referenced evidence before archiving/removing large files; preserve
+  reproducibility. Optional Cargo feature gating needs measured
+  compile-time/binary-size effects and dependency review first.
+
+- **BN-015 — control-plane storage design:** explicitly document
+  inventory/config/auth/application state ownership across graph,
+  restricted SQLite and vault, including backup/restore and migrations.
+  Record the supported tenant/deployment scope in DECISIONS.md; do not
+  silently relax an existing auth/ownership policy or assert a new
+  product scope merely from a proposed plan.
 
 ## Verified foundation, not a new queue
 
