@@ -50,3 +50,4 @@ date,command,scope,wall_seconds,result,notes
 2026-11-10,cargo check --lib,bonsai --lib (cold worktree),~3300,pass,fresh worktree target; ~600 deps + lbug C++ cmake build; sccache ~53% hits
 2026-11-10,cargo test --test bn021b_trusted_identity,bn021b test target,2742+412,pass,test-profile dep codegen ~45m; 13/13 tests pass in 1.65s; lib rebuild after fmt 6m52s
 2026-11-10,cargo test --test bn022_graph_read_boundary,bn022 regression,aborted,disk-full,No space left on device writing liblbug rlib; incremental cache cleaned; rerun pending in main worktree
+2026-11-10,cargo test --test bn022_graph_read_boundary,bn022 regression (main worktree, merged 842b737),586,pass,warm main target; 5/5 tests pass in 3.71s; earlier attempt aborted on disk-full in worktree
