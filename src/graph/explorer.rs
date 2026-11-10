@@ -238,6 +238,434 @@ fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
+// ─── BN-022: principal-scoped read policy ────────────────────────────────────
+
+/// Access tier for ad-hoc read-only graph queries.
+///
+/// `Standard` applies to every non-admin principal — Viewer, Operator,
+/// ApiReadonly, scoped API keys, and unauthenticated callers when auth is
+/// disabled. Only positively allowlisted node labels may be referenced and
+/// every node pattern must be label-bound; anything else fails closed before
+/// the query reaches the engine. `Admin` retains unrestricted read access
+/// (queries remain mutation-safe via [`validate_query`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphReadAccess {
+    Standard,
+    Admin,
+}
+
+/// Node labels non-admin principals may reference in ad-hoc queries.
+///
+/// Positive allowlist audited against the `GraphStore` schema (BN-022).
+/// Excluded on purpose:
+/// - `ConfigItem` — stores credential material (JWT signing secret, user
+///   password verifiers, API-key hashes, sessions, revocation markers).
+/// - `ConfigSnapshot` / `ConfigChange` — captured device configuration can
+///   embed device credentials (SNMP communities, keys, passwords).
+///
+/// New node tables are denied by default until audited and added here.
+const ADHOC_ALLOWED_LABELS: &[&str] = &[
+    "AclSummary",
+    "AffectedPrefix",
+    "AgentToolCall",
+    "AppFlow",
+    "Application",
+    "AttackVector",
+    "BfdSession",
+    "BgpLsLink",
+    "BgpLsNode",
+    "BgpNeighbor",
+    "BgpRibEntry",
+    "BmpSession",
+    "ChangeRequest",
+    "ComputeNode",
+    "DdosEvent",
+    "DdosRouteEvent",
+    "DdosScope",
+    "DetectionEvent",
+    "Device",
+    "DeviceAddress",
+    "DeviceConfigEmbedding",
+    "DeviceEmbedding",
+    "EnrichmentProperty",
+    "EntityIdentity",
+    "Environment",
+    "EventEmbedding",
+    "GnmiReadiness",
+    "GnnAttentionSnapshot",
+    "GnnInferenceResult",
+    "GnnScore",
+    "HostEndpoint",
+    "Incident",
+    "Interface",
+    "Investigation",
+    "InvestigationFeedback",
+    "IsisAdjacency",
+    "LldpNeighbor",
+    "Location",
+    "MigrationMarker",
+    "MitigationAction",
+    "MlJobRun",
+    "MlJobSchedule",
+    "ModelArtifact",
+    "MplsLsp",
+    "NtpPeer",
+    "OpticalChannel",
+    "OpticsTelemetry",
+    "OspfNeighbor",
+    "OwnershipBinding",
+    "ParquetExport",
+    "PerformanceBaseline",
+    "Playbook",
+    "PlaybookExecution",
+    "PowerUnit",
+    "Prefix",
+    "PropertyProvenance",
+    "QoSPolicy",
+    "Rack",
+    "RedundancyGroup",
+    "Remediation",
+    "RemediationProposal",
+    "RemediationTrustMark",
+    "SavedQuery",
+    "SecurityIncident",
+    "SecurityPolicy",
+    "SecurityPosture",
+    "SensorReading",
+    "ServiceEndpoint",
+    "ShunRule",
+    "SignalPolicy",
+    "Site",
+    "SrPolicy",
+    "StateChangeEvent",
+    "StpInstance",
+    "StreamingReadiness",
+    "SubscriptionStatus",
+    "TrafficBaseline",
+    "VLAN",
+    "Vrf",
+    "Vulnerability",
+];
+
+/// Validate a read-only query for the given access tier.
+///
+/// In addition to the mutation checks in [`validate_query`], `Standard`
+/// access requires every node pattern to reference only allowlisted labels.
+/// Unlabeled node patterns are rejected unless the variable was bound by an
+/// earlier labeled pattern in the same query scope (a bound-variable
+/// reference filters an existing node; it does not scan every table).
+pub fn validate_query_for_access(cypher: &str, access: GraphReadAccess) -> Result<(), String> {
+    validate_query(cypher)?;
+    if access == GraphReadAccess::Admin {
+        return Ok(());
+    }
+    let sanitized = sanitize_cypher_for_validation(cypher);
+    // UNION starts an independent query scope: variables bound in one branch
+    // do not carry into the next, so bound-variable tracking resets.
+    // Scanned on the sanitized bytes (ASCII case-insensitive) so positions
+    // stay aligned with node_patterns output.
+    let mut union_positions: Vec<usize> = Vec::new();
+    let san_bytes = sanitized.as_bytes();
+    let mut i = 0;
+    while i + 5 <= san_bytes.len() {
+        if san_bytes[i..i + 5].eq_ignore_ascii_case(b"union")
+            && (i == 0 || !is_ident_byte(san_bytes[i - 1]))
+            && (i + 5 == san_bytes.len() || !is_ident_byte(san_bytes[i + 5]))
+        {
+            union_positions.push(i);
+            i += 5;
+        } else {
+            i += 1;
+        }
+    }
+
+    let mut bound: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut union_idx = 0;
+    for pattern in node_patterns(&sanitized) {
+        while union_idx < union_positions.len() && pattern.pos > union_positions[union_idx] {
+            bound.clear();
+            union_idx += 1;
+        }
+        if pattern.labels.is_empty() {
+            let is_bound_ref = pattern.var.as_ref().is_some_and(|v| bound.contains(v));
+            if !is_bound_ref {
+                return Err(
+                    "unlabeled node patterns are not permitted for this principal — \
+                     every node must declare an allowlisted label"
+                        .to_string(),
+                );
+            }
+            continue;
+        }
+        for label in &pattern.labels {
+            if !ADHOC_ALLOWED_LABELS.contains(&label.as_str()) {
+                return Err(format!(
+                    "node label '{label}' is not available to this principal"
+                ));
+            }
+        }
+        if let Some(v) = pattern.var {
+            bound.insert(v);
+        }
+    }
+    Ok(())
+}
+
+/// One parenthesized node pattern found in sanitized Cypher.
+struct NodePattern {
+    /// Byte offset in the sanitized query (used for UNION scope resets).
+    pos: usize,
+    /// Variable name when the pattern binds one.
+    var: Option<String>,
+    /// Labels declared on the pattern (`:`-prefixed idents before `{`).
+    labels: Vec<String>,
+}
+
+/// Scan sanitized Cypher for parenthesized node patterns.
+///
+/// Sanitization has already masked string contents and removed comments, so
+/// parentheses inside literals cannot evade the scan. Backtick-quoted
+/// identifiers are preserved verbatim and parsed as idents.
+fn node_patterns(sanitized: &str) -> Vec<NodePattern> {
+    let bytes = sanitized.as_bytes();
+    let len = bytes.len();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < len {
+        match bytes[i] {
+            b'\'' | b'"' | b'`' => i = skip_quoted(bytes, i),
+            b'(' => {
+                // A '(' that is part of a function call (e.g. labels(n),
+                // size(x)) has arguments, not node patterns. Detect this by
+                // the word preceding the paren: clause keywords (MATCH,
+                // WHERE, RETURN, ...) mean a pattern may follow; anything
+                // else is a function name. Inner parens are still visited
+                // on their own '(' so nested patterns like exists((n)-->())
+                // are examined.
+                if preceded_by_function_call(bytes, i) {
+                    i += 1;
+                    continue;
+                }
+                let close = matching_paren(bytes, i);
+                let inner = &sanitized[i + 1..close.saturating_sub(1).min(len)];
+                if let Some((var, labels)) = classify_node_pattern(inner) {
+                    out.push(NodePattern {
+                        pos: i,
+                        var,
+                        labels,
+                    });
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// Clause/expression keywords after which a parenthesized node pattern (or
+/// pattern-bearing expression) may legally appear. If the word before '('
+/// is one of these, the group is classified; otherwise it is treated as a
+/// function call and skipped.
+const PRECEDING_KEYWORDS: &[&str] = &[
+    "ALL",
+    "AND",
+    "AS",
+    "ASC",
+    "ASCENDING",
+    "BY",
+    "CASE",
+    "CONTAINS",
+    "DESC",
+    "DESCENDING",
+    "DISTINCT",
+    "ELSE",
+    "END",
+    "ENDS",
+    "EXISTS",
+    "IN",
+    "IS",
+    "LIMIT",
+    "MATCH",
+    "NOT",
+    "NULL",
+    "OR",
+    "ORDER",
+    "RETURN",
+    "SKIP",
+    "STARTS",
+    "THEN",
+    "TRUE",
+    "FALSE",
+    "UNION",
+    "UNWIND",
+    "WHEN",
+    "WHERE",
+    "WITH",
+    "XOR",
+];
+
+/// True when the '(' at `pos` is the argument list of a function call —
+/// i.e. the word immediately before it is an identifier that is not a
+/// Cypher clause keyword.
+fn preceded_by_function_call(bytes: &[u8], pos: usize) -> bool {
+    // Find the end of the preceding word: the last non-ws byte before pos.
+    let mut i = pos;
+    while i > 0 {
+        i -= 1;
+        if !bytes[i].is_ascii_whitespace() {
+            break;
+        }
+        if i == 0 {
+            return false;
+        }
+    }
+    if i == 0 && bytes[0].is_ascii_whitespace() {
+        return false;
+    }
+    if !is_ident_byte(bytes[i]) {
+        return false;
+    }
+    // Scan back to the start of the identifier.
+    let mut start = i;
+    while start > 0 && is_ident_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    let word = &bytes[start..=i];
+    let word_upper = word.to_ascii_uppercase();
+    let word_str = String::from_utf8_lossy(&word_upper);
+    !PRECEDING_KEYWORDS.contains(&word_str.as_ref())
+}
+
+/// Skip a quoted section starting at `start` (a quote byte). Returns the
+/// index just past the closing quote. Handles backslash escapes and doubled
+/// quote escapes. Unterminated quotes consume the rest of input.
+fn skip_quoted(bytes: &[u8], start: usize) -> usize {
+    let quote = bytes[start];
+    let mut i = start + 1;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == quote {
+            if i + 1 < bytes.len() && bytes[i + 1] == quote {
+                i += 2;
+                continue;
+            }
+            return i + 1;
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
+/// Index of the `)` matching the `(` at `start`, accounting for nesting and
+/// quoted sections. Returns `bytes.len()` when unterminated.
+fn matching_paren(bytes: &[u8], start: usize) -> usize {
+    let mut depth = 1usize;
+    let mut i = start + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' | b'`' => i = skip_quoted(bytes, i),
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth -= 1;
+                i += 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    bytes.len()
+}
+
+/// Parse a paren group's contents as a node pattern head.
+///
+/// Returns `Some((var, labels))` when the head (the text before the first
+/// `{` property map) has the shape `[var] (:Label)*` — including the empty
+/// shape `()` / `({props})`, which is an anonymous unlabeled pattern.
+/// Returns `None` for anything else (function arguments, expressions),
+/// which cannot introduce a node binding.
+fn classify_node_pattern(inner: &str) -> Option<(Option<String>, Vec<String>)> {
+    let head_end = inner.find('{').unwrap_or(inner.len());
+    let head = inner[..head_end].trim();
+    let bytes = head.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    let mut var = None;
+    if i < len && (is_ident_start(bytes[i]) || bytes[i] == b'`') {
+        let (name, next) = parse_ident(head, i);
+        var = Some(name);
+        i = next;
+        i = skip_ws(bytes, i);
+    }
+
+    let mut labels = Vec::new();
+    while i < len {
+        if bytes[i] != b':' {
+            return None;
+        }
+        i += 1;
+        i = skip_ws(bytes, i);
+        if i >= len || !(is_ident_start(bytes[i]) || bytes[i] == b'`') {
+            return None;
+        }
+        let (label, next) = parse_ident(head, i);
+        labels.push(label);
+        i = skip_ws(bytes, next);
+    }
+    Some((var, labels))
+}
+
+fn is_ident_start(b: u8) -> bool {
+    b.is_ascii_alphabetic() || b == b'_'
+}
+
+fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+/// Parse a bare or backtick-quoted identifier starting at `i`.
+/// Backtick escapes are doubled backticks (```` `` ````).
+fn parse_ident(s: &str, i: usize) -> (String, usize) {
+    let bytes = s.as_bytes();
+    if bytes[i] == b'`' {
+        let mut j = i + 1;
+        let mut name = String::new();
+        while j < bytes.len() {
+            if bytes[j] == b'`' {
+                if j + 1 < bytes.len() && bytes[j + 1] == b'`' {
+                    name.push('`');
+                    j += 2;
+                } else {
+                    return (name, j + 1);
+                }
+            } else {
+                // Idents are ASCII in practice; collect the raw byte span.
+                name.push(bytes[j] as char);
+                j += 1;
+            }
+        }
+        return (name, j);
+    }
+    let start = i;
+    let mut j = i;
+    while j < bytes.len() && is_ident_byte(bytes[j]) {
+        j += 1;
+    }
+    (s[start..j].to_string(), j)
+}
+
 // ─── column name extraction ───────────────────────────────────────────────────
 
 /// Extract column names from the RETURN clause.
@@ -616,6 +1044,103 @@ mod tests {
         );
         assert!(
             validate_query("MATCH (d:Device) WHERE d.role = \"DELETE\" RETURN d.address").is_ok()
+        );
+    }
+
+    #[test]
+    fn standard_access_allows_labeled_safe_query() {
+        assert!(
+            validate_query_for_access(
+                "MATCH (d:Device)-[:HAS_INTERFACE]->(i:Interface) RETURN d.address, i.name",
+                GraphReadAccess::Standard,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn standard_access_rejects_configitem_direct() {
+        for q in [
+            "MATCH (c:ConfigItem) RETURN c.content_json",
+            "MATCH (c:ConfigItem {config_class: 'user'}) RETURN c",
+            "MATCH (d:Device) OPTIONAL MATCH (c:ConfigItem) RETURN d, c",
+            "MATCH (d:Device) RETURN d UNION MATCH (c:ConfigItem) RETURN c",
+            "MATCH (c:`ConfigItem`) RETURN c",
+        ] {
+            assert!(
+                validate_query_for_access(q, GraphReadAccess::Standard).is_err(),
+                "expected rejection: {q}"
+            );
+        }
+    }
+
+    #[test]
+    fn standard_access_rejects_unlabeled_and_anonymous_patterns() {
+        for q in [
+            "MATCH (n) RETURN n",
+            "MATCH () RETURN 1",
+            "MATCH (d:Device)-[:CONNECTED_TO]->(i) RETURN d, i",
+            "MATCH (d:Device) WHERE EXISTS { MATCH ()-->() } RETURN d",
+        ] {
+            assert!(
+                validate_query_for_access(q, GraphReadAccess::Standard).is_err(),
+                "expected rejection: {q}"
+            );
+        }
+    }
+
+    #[test]
+    fn standard_access_allows_bound_variable_references() {
+        // (de) inside the EXISTS subquery refers to the already-bound node;
+        // it filters rather than scans, so it must remain permitted.
+        assert!(
+            validate_query_for_access(
+                "MATCH (d:Device)-[:TRIGGERED]->(de:DetectionEvent) \
+                 WHERE NOT EXISTS { MATCH (r:Remediation)-[:RESOLVES]->(de) } \
+                 RETURN d.hostname, de.rule_id",
+                GraphReadAccess::Standard,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn standard_access_union_resets_bound_variables() {
+        // The second UNION branch rebinds d with an unlabeled pattern —
+        // must be rejected even though d was bound in the first branch.
+        assert!(
+            validate_query_for_access(
+                "MATCH (d:Device) RETURN d.address UNION MATCH (d) RETURN d",
+                GraphReadAccess::Standard,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn admin_access_keeps_full_read_scope() {
+        assert!(
+            validate_query_for_access(
+                "MATCH (c:ConfigItem) RETURN c.content_json",
+                GraphReadAccess::Admin,
+            )
+            .is_ok()
+        );
+        // Mutation safety still applies to admins.
+        assert!(
+            validate_query_for_access("MATCH (c:ConfigItem) DELETE c", GraphReadAccess::Admin)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn standard_access_function_calls_are_not_patterns() {
+        assert!(
+            validate_query_for_access(
+                "MATCH (d:Device) RETURN labels(d), size(d.address), count(d)",
+                GraphReadAccess::Standard,
+            )
+            .is_ok()
         );
     }
 

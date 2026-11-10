@@ -240,6 +240,26 @@ pub struct ConfigItemRecord {
     pub created_by: String,
 }
 
+/// BN-022: ConfigItem classes that store credential or auth-internal material.
+/// These must never be exposed through lower-privilege read surfaces
+/// (`/api/config-items`, ad-hoc graph queries) or written by non-admin
+/// principals. Until the protected-storage migration lands, this list is
+/// the containment boundary — keep it in sync with auth.rs, settings.rs and
+/// remediation.rs writers.
+pub const SENSITIVE_CONFIG_CLASSES: &[&str] = &[
+    "user",
+    "session",
+    "api_key",
+    "jwt_secret",
+    "jwt_revoked",
+    "cert_config",
+];
+
+/// True when a ConfigItem `config_class` carries credential/auth material.
+pub fn is_sensitive_config_class(config_class: &str) -> bool {
+    SENSITIVE_CONFIG_CLASSES.contains(&config_class)
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct EnvironmentWithCounts {
     pub id: String,

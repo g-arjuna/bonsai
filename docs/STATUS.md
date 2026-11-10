@@ -454,3 +454,20 @@ BN-021 slice 1 verified live (10 November): peers API now returns
 (SocketAddr key incl. port); residual gap is downstream
 `exporter_address` identity collapse — deferred to the canonical
 exporter-identity layer rather than a format-breaking patch.
+
+BN-022 containment slice (10 November): ad-hoc graph reads are now
+denied-by-default for non-admin principals. `src/graph/explorer.rs`
+gained `GraphReadAccess` + `validate_query_for_access`: a positive
+node-label allowlist (all schema tables except `ConfigItem`,
+`ConfigSnapshot`, `ConfigChange`) enforced before execution; unlabeled
+node patterns rejected unless they are bound-variable references;
+UNION resets binding scope. Wired into MCP `query_graph` (role-aware),
+HTTP Explorer (role extension; missing role ⇒ Standard), NL
+`run_cypher` (always Standard — model output is untrusted), and
+`verify_graph_state` proposal queries. `/api/config-items` GET filters
+and POST rejects credential classes (`user`, `session`, `api_key`,
+`jwt_secret`, `jwt_revoked`, `cert_config`) below Admin;
+`/api/db/backup` is now Admin-only. Verified: 5 new integration tests
+(`tests/bn022_graph_read_boundary.rs`, synthetic markers only), 8 new
+explorer/nl_query unit tests, bn005 suites 24/24 — all pass. Storage
+migration (JWT secret/verifiers out of the graph) remains open.

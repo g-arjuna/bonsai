@@ -734,6 +734,14 @@ pub(super) async fn verify_graph_state(
     if cypher.trim().is_empty() {
         return Ok(());
     }
+    // BN-022: proposal verify queries are stored cypher executed without a
+    // caller role — apply the Standard label allowlist and read-only checks
+    // so they cannot be used as a credential oracle.
+    crate::graph::explorer::validate_query_for_access(
+        cypher,
+        crate::graph::explorer::GraphReadAccess::Standard,
+    )
+    .map_err(|e| format!("invalid verify_graph cypher: {e}"))?;
     let deadline =
         std::time::Instant::now() + std::time::Duration::from_secs(wait_seconds.clamp(1, 300));
     loop {
@@ -1590,14 +1598,36 @@ pub(super) struct ConfigItemsParams {
 
 pub(super) async fn list_config_items_handler(
     State(state): State<AppState>,
+    role: Option<axum::Extension<crate::http_server::auth::Role>>,
     axum::extract::Query(params): axum::extract::Query<ConfigItemsParams>,
 ) -> Result<Json<Vec<crate::graph::ConfigItemRecord>>, (StatusCode, String)> {
-    state
+    // BN-022: credential-bearing config classes are admin-only. Non-admin
+    // principals get an explicit denial for a sensitive class filter and a
+    // filtered list otherwise — never credential bytes.
+    let is_admin = matches!(
+        role,
+        Some(axum::Extension(crate::http_server::auth::Role::Admin))
+    );
+    if !is_admin
+        && params
+            .class
+            .as_deref()
+            .is_some_and(crate::graph::is_sensitive_config_class)
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "config class is restricted to admin principals".to_string(),
+        ));
+    }
+    let mut items = state
         .store
         .list_config_items(params.class)
         .await
-        .map(Json)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    if !is_admin {
+        items.retain(|i| !crate::graph::is_sensitive_config_class(&i.config_class));
+    }
+    Ok(Json(items))
 }
 
 /// D4-7 T1: POST /api/config-items — upsert a single ConfigItem.
@@ -1621,8 +1651,21 @@ const ALLOWED_CONFIG_CLASSES: &[&str] = &[
 
 pub(super) async fn upsert_config_item_handler(
     State(state): State<AppState>,
+    role: Option<axum::Extension<crate::http_server::auth::Role>>,
     Json(item): Json<crate::graph::ConfigItemRecord>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    // BN-022: writing credential-bearing classes (users, API keys, JWT
+    // material) is admin-only; otherwise an Operator could mint credentials.
+    let is_admin = matches!(
+        role,
+        Some(axum::Extension(crate::http_server::auth::Role::Admin))
+    );
+    if !is_admin && crate::graph::is_sensitive_config_class(&item.config_class) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "config class is restricted to admin principals".to_string(),
+        ));
+    }
     if item.id.is_empty() || item.id.len() > 256 {
         return Err((
             StatusCode::BAD_REQUEST,

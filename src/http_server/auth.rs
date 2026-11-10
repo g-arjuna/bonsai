@@ -939,6 +939,7 @@ fn required_role(method: &str, path: &str) -> Role {
         || path.starts_with("/api/auth/users")
         || path.starts_with("/api/vault")
         || path == "/api/db/purge"
+        || path == "/api/db/backup"
         || path == "/api/restart"
     {
         return Role::Admin;

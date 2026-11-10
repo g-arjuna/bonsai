@@ -852,11 +852,19 @@ pub fn enforce_tool_output_bounds(mut payload: JsonValue) -> JsonValue {
 async fn tool_query_graph_with_store(
     store: &std::sync::Arc<crate::graph::GraphStore>,
     args: &JsonValue,
+    role: crate::http_server::auth::Role,
 ) -> Result<JsonValue, String> {
     let cypher = args["cypher"].as_str().ok_or("missing argument: cypher")?;
 
-    if !is_readonly_cypher(cypher) {
-        return Err("mutation keywords not permitted in read-only query_graph tool".to_string());
+    // BN-022: non-admin principals may only reference allowlisted node
+    // labels; ConfigItem and other credential-bearing tables fail closed.
+    let access = if role == crate::http_server::auth::Role::Admin {
+        crate::graph::explorer::GraphReadAccess::Admin
+    } else {
+        crate::graph::explorer::GraphReadAccess::Standard
+    };
+    if let Err(e) = crate::graph::explorer::validate_query_for_access(cypher, access) {
+        return Err(format!("query_graph rejected: {e}"));
     }
 
     let result = crate::graph::explorer::execute_query_with_deadline(
@@ -1040,7 +1048,8 @@ pub async fn call_tool_with_store_and_routing(
         Some(&context.role),
         mode,
     )?;
-    let mut result = dispatch_authorized_tool(store, routing, name, &scoped_args).await?;
+    let mut result =
+        dispatch_authorized_tool(store, routing, name, &scoped_args, context.role).await?;
     if mode == crate::graph::ownership::OwnershipAccessMode::AuditOnly
         && context
             .scope
@@ -1065,6 +1074,7 @@ async fn dispatch_authorized_tool(
     routing: Option<&std::sync::Arc<crate::routing_service::RoutingServiceState>>,
     name: &str,
     args: &JsonValue,
+    role: crate::http_server::auth::Role,
 ) -> Result<JsonValue, String> {
     use crate::routing_service::{
         CompareSnapshotsQuery, EvidenceCoverageQuery, ExplainPrefixQuery, PeerTimelineQuery,
@@ -1112,7 +1122,7 @@ async fn dispatch_authorized_tool(
         "list_active_detections" => tool_list_active_detections(store, args)
             .await
             .map(enforce_tool_output_bounds),
-        "query_graph" => tool_query_graph_with_store(store, args).await,
+        "query_graph" => tool_query_graph_with_store(store, args, role).await,
         "get_changes" => tool_get_changes_with_store(store, args).await,
         "get_prefix_journey" => {
             let prefix = args["prefix"]

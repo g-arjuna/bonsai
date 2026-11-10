@@ -40,3 +40,10 @@ date,command,scope,wall_seconds,result,notes
 2026-11-10,cargo check -p rbmp-rib,rbmp-rib,8.04,pass,warm; sccache; exporter_id from Initiation sysName
 2026-11-10,cargo check -p bonsai --lib,bonsai --lib,10.41,pass,warm; sccache; exporter_id/session_epoch API + selector
 2026-11-10,cargo check -p bonsai --lib,bonsai --lib,9.85+11.11,pass,warm; sccache; netflow version-scoped cache + bound
+2026-11-10,cargo check --lib --tests,bonsai lib+tests,~60+0.89,pass,first run compiled dev-deps; second run warm 0.89s; sccache active
+2026-11-10,cargo test --lib graph::explorer,bonsai --lib,153,pass,test profile link 2m33s; 26 tests pass
+2026-11-10,cargo test --test bn022_graph_read_boundary,bn022 test target,581+27,pass,first test-binary build 9m41s; rerun relink 27s; 5 tests pass
+2026-11-10,cargo test --lib http_server::nl_query,bonsai --lib,92+82,pass,relinks after nl_query edits; 2 tests pass
+2026-11-10,cargo test --test bn005_deployment_and_scope_hardening,bn005 test target,855+7,pass,test-binary build 14m15s; 13 tests pass in 6.76s
+2026-11-10,cargo test --test bn005_closeout,bn005_closeout target,31+10,pass,30s build; 11 tests pass in 9.63s
+2026-11-10,cargo clippy --lib,bonsai --lib,~200,fail,pre-existing never_loop error in src/http_server/device.rs:637 (untouched); 282 pre-existing warnings; no new warnings in changed files

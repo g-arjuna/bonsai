@@ -232,6 +232,7 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
         &routing_state,
         &PeersQuery {
             speaker: Some("192.0.2.12".into()),
+            exporter_id: None,
             vrf_rd: Some("65000:20".into()),
             state: None,
             limit: Some(50),

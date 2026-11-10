@@ -408,9 +408,17 @@ fn execute_tool(
             if cypher.is_empty() {
                 return ("Error: empty cypher query".to_string(), None);
             }
-            if !crate::mcp_server::is_readonly_cypher(cypher) {
+            // BN-022: LLM-generated Cypher is untrusted input — always apply
+            // the Standard (non-admin) label allowlist so model context can
+            // never pull credential-bearing tables such as ConfigItem.
+            if crate::graph::explorer::validate_query_for_access(
+                cypher,
+                crate::graph::explorer::GraphReadAccess::Standard,
+            )
+            .is_err()
+            {
                 return (
-                    "Error: mutation queries are not allowed. Use read-only MATCH...RETURN only."
+                    "Error: query rejected. Use read-only MATCH...RETURN only over allowlisted node labels."
                         .to_string(),
                     None,
                 );
@@ -722,5 +730,32 @@ mod tests {
         roll_day_if_needed();
         let today = today_epoch();
         assert_eq!(BUDGET_DAY_EPOCH.load(Ordering::Relaxed), today);
+    }
+
+    /// BN-022: LLM-generated Cypher must never reach credential tables.
+    #[test]
+    fn run_cypher_rejects_configitem_for_model_context() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = crate::graph::GraphStore::open(
+            dir.path().join("graph.db").to_str().unwrap(),
+            256 * 1024 * 1024,
+        )
+        .expect("open graph");
+        let db = store.db();
+        let (out, result) = execute_tool(
+            &db,
+            "run_cypher",
+            &serde_json::json!({"cypher": "MATCH (c:ConfigItem) RETURN c.content_json"}),
+        );
+        assert!(result.is_none());
+        assert!(out.contains("rejected"), "unexpected output: {out}");
+
+        // A permitted labeled query still executes.
+        let (out2, result2) = execute_tool(
+            &db,
+            "run_cypher",
+            &serde_json::json!({"cypher": "MATCH (d:Device) RETURN count(d)"}),
+        );
+        assert!(result2.is_some(), "legit query must run: {out2}");
     }
 }

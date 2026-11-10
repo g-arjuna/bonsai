@@ -1,5 +1,5 @@
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{
@@ -1432,11 +1432,24 @@ pub(super) async fn flows_live_handler(
 
 pub(super) async fn explorer_query_handler(
     State(state): State<AppState>,
+    role: Option<Extension<crate::http_server::auth::Role>>,
     Json(body): Json<ExplorerQueryBody>,
 ) -> Result<Json<crate::graph::explorer::ExplorerResult>, (StatusCode, String)> {
     let cypher = body.cypher.clone();
     let saved_query_id = body.saved_query_id.clone();
     let db = state.store.db();
+
+    // BN-022: non-admin principals are restricted to allowlisted node
+    // labels; credential-bearing tables (ConfigItem et al.) fail closed.
+    // Missing role (auth disabled) is treated as Standard — fail closed.
+    let access = match role {
+        Some(Extension(crate::http_server::auth::Role::Admin)) => {
+            crate::graph::explorer::GraphReadAccess::Admin
+        }
+        _ => crate::graph::explorer::GraphReadAccess::Standard,
+    };
+    crate::graph::explorer::validate_query_for_access(&cypher, access)
+        .map_err(|e| (StatusCode::FORBIDDEN, e))?;
 
     let result = crate::graph::explorer::execute_query_with_deadline(
         db,
