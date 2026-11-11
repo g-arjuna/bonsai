@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::telemetry_identity::{
-    DEFAULT_IDENTITY_SCOPE, IdentityResolver, IngressAuthMethod, VerifiedIngressPrincipal,
-    identity_from_bmp_observation,
+    DEFAULT_IDENTITY_SCOPE, IdentityResolver, IdentityStatus, IngressAuthMethod,
+    TelemetrySourceIdentity, VerifiedIngressPrincipal, identity_from_bmp_observation,
 };
 use axum::{
     Json, Router,
@@ -108,9 +108,19 @@ impl Default for RoutingServiceConfig {
                 _ => BmpIdentityMode::Verified,
             },
             bmp_mtls: {
-                let cert = std::env::var("BONSAI_ROUTING_BMP_TLS_CERT").ok();
-                let key = std::env::var("BONSAI_ROUTING_BMP_TLS_KEY").ok();
-                let ca = std::env::var("BONSAI_ROUTING_BMP_TLS_CLIENT_CA").ok();
+                // Empty values (e.g. `${VAR:-}` compose expansion) count
+                // as unset — a partially-empty TLS configuration must
+                // surface as "no mTLS", never as a broken acceptor.
+                let env_path = |name: &str| {
+                    std::env::var(name)
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .map(PathBuf::from)
+                };
+                let cert = env_path("BONSAI_ROUTING_BMP_TLS_CERT");
+                let key = env_path("BONSAI_ROUTING_BMP_TLS_KEY");
+                let ca = env_path("BONSAI_ROUTING_BMP_TLS_CLIENT_CA");
                 let paths = [
                     cert.as_ref().map(PathBuf::from),
                     key.as_ref().map(PathBuf::from),
@@ -205,19 +215,25 @@ impl RoutingServiceConfig {
         Ok(())
     }
 
-    /// Validates production deployment settings, ensuring fail-closed security for binaries and services.
+    /// Validates production deployment settings, enforcing fail-closed
+    /// security for binaries and services. Reads the explicit dev
+    /// override environment variables once, then delegates to
+    /// [`Self::validate_deployment_with`].
     pub fn validate_deployment(&self) -> Result<(), String> {
+        self.validate_deployment_with(&DeploymentSecurityOverrides::from_env())
+    }
+
+    /// Deployment validation against explicit security overrides.
+    /// Split from the environment read so tests can exercise every
+    /// policy branch deterministically.
+    pub fn validate_deployment_with(
+        &self,
+        overrides: &DeploymentSecurityOverrides,
+    ) -> Result<(), String> {
         self.validate()?;
 
-        let allow_insecure = std::env::var("BONSAI_ROUTING_ALLOW_INSECURE_NO_TOKEN")
-            .or_else(|_| std::env::var("BONSAI_ALLOW_INSECURE_DEV"))
-            .map(|v| v == "1" || v == "true")
-            .unwrap_or(false);
-
-        let allow_ephemeral = std::env::var("BONSAI_ROUTING_ALLOW_EPHEMERAL")
-            .or_else(|_| std::env::var("BONSAI_ALLOW_INSECURE_DEV"))
-            .map(|v| v == "1" || v == "true")
-            .unwrap_or(false);
+        let allow_insecure = overrides.allow_insecure_no_token;
+        let allow_ephemeral = overrides.allow_ephemeral;
 
         // Fail closed if internal token is missing
         if self
@@ -297,7 +313,99 @@ impl RoutingServiceConfig {
             }
         }
 
+        // ── BMP ingress production policy (BN-021f hardening) ──
+        //
+        // Verified mode alone is not sufficient: without mTLS there is
+        // no verified principal, so every connection is permanently
+        // connection-isolated. That is safe but almost certainly not
+        // the intended deployment, so an unauthenticated BMP listener
+        // on a non-loopback address must be an explicit choice.
+        if self.bmp_identity_mode == BmpIdentityMode::ClaimCompatible
+            && !overrides.allow_claim_compatible
+        {
+            return Err(
+                "BONSAI_ROUTING_BMP_IDENTITY_MODE=claim_compat disables verified exporter \
+                 attribution (self-reported sysName may claim canonical identity) and is \
+                 unsafe for production; set BONSAI_ROUTING_ALLOW_CLAIM_COMPATIBLE=1 or \
+                 BONSAI_ALLOW_INSECURE_DEV=1 to acknowledge the risk explicitly"
+                    .to_string(),
+            );
+        }
+        match &self.bmp_mtls {
+            Some(mtls) => {
+                // Fail fast at startup rather than at first connection:
+                // the certificate chain, key and client CA must all
+                // parse and the verifier must build.
+                build_bmp_mtls_acceptor(mtls)
+                    .map_err(|e| format!("invalid BMP mutual-TLS configuration: {e}"))?;
+            }
+            None => {
+                let bmp_loopback = self
+                    .bmp_listen_addr
+                    .parse::<std::net::SocketAddr>()
+                    .map(|a| a.ip().is_loopback())
+                    .unwrap_or(false);
+                if !bmp_loopback && !overrides.allow_bmp_plaintext {
+                    return Err(
+                        "BMP listener is not loopback-only and has no mutual-TLS ingress \
+                         (BONSAI_ROUTING_BMP_TLS_CERT/_KEY/_CLIENT_CA unset): verified \
+                         exporter attribution requires authenticated transport. For \
+                         plaintext development collection set \
+                         BONSAI_ROUTING_ALLOW_BMP_PLAINTEXT=1 or \
+                         BONSAI_ALLOW_INSECURE_DEV=1"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+
         Ok(())
+    }
+}
+
+/// Explicit insecure-development opt-ins for
+/// [`RoutingServiceConfig::validate_deployment_with`]. Each flag must
+/// be set deliberately; they are never implied by each other except
+/// that the umbrella `BONSAI_ALLOW_INSECURE_DEV`/`..._INSECURE_DEV`
+/// variables enable all of them.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeploymentSecurityOverrides {
+    /// `BONSAI_ROUTING_ALLOW_INSECURE_NO_TOKEN` or dev umbrella.
+    pub allow_insecure_no_token: bool,
+    /// `BONSAI_ROUTING_ALLOW_EPHEMERAL` or dev umbrella.
+    pub allow_ephemeral: bool,
+    /// `BONSAI_ALLOW_INSECURE_DEV`/`BONSAI_ROUTING_ALLOW_INSECURE_DEV`.
+    pub allow_insecure_dev: bool,
+    /// `BONSAI_ROUTING_ALLOW_BMP_PLAINTEXT` or dev umbrella: permits a
+    /// non-loopback plaintext BMP listener (all connections remain
+    /// non-authoritative under Verified mode).
+    pub allow_bmp_plaintext: bool,
+    /// `BONSAI_ROUTING_ALLOW_CLAIM_COMPATIBLE` or dev umbrella:
+    /// permits `BmpIdentityMode::ClaimCompatible`.
+    pub allow_claim_compatible: bool,
+}
+
+impl DeploymentSecurityOverrides {
+    /// Read the override environment once.
+    pub fn from_env() -> Self {
+        let flag = |names: &[&str]| {
+            names.iter().any(|n| {
+                std::env::var(n)
+                    .map(|v| v == "1" || v == "true")
+                    .unwrap_or(false)
+            })
+        };
+        let dev = flag(&[
+            "BONSAI_ROUTING_ALLOW_INSECURE_DEV",
+            "BONSAI_ALLOW_INSECURE_DEV",
+        ]);
+        Self {
+            allow_insecure_no_token: flag(&["BONSAI_ROUTING_ALLOW_INSECURE_NO_TOKEN"]) || dev,
+            allow_ephemeral: flag(&["BONSAI_ROUTING_ALLOW_EPHEMERAL"]) || dev,
+            allow_insecure_dev: dev,
+            allow_bmp_plaintext: flag(&["BONSAI_ROUTING_ALLOW_BMP_PLAINTEXT"]) || dev,
+            allow_claim_compatible: flag(&["BONSAI_ROUTING_ALLOW_CLAIM_COMPATIBLE"]) || dev,
+        }
     }
 }
 
@@ -501,6 +609,28 @@ pub struct SpeakerResolution {
     /// `resolved` | `provisional` | `ambiguous` | `unknown` | `conflicting`
     pub status: &'static str,
     pub binding_id: Option<String>,
+    /// Present only when the resolution is authoritative (`Resolved`):
+    /// everything the periodic revalidation loop needs to re-check that
+    /// this session's authorization still holds (BN-021f hardening).
+    pub authorization: Option<SessionAuthorization>,
+}
+
+/// Authorization evidence for one live authoritative BMP session.
+/// Retained in memory only — never journaled — so the revalidation
+/// loop can re-run the exact same resolution against fresh bindings.
+#[derive(Debug, Clone)]
+pub struct SessionAuthorization {
+    pub binding_id: String,
+    pub canonical_exporter_id: String,
+    pub device_id: Option<String>,
+    /// Verified credential fingerprint for verified-ingress sessions;
+    /// `None` for claim-compatible sessions.
+    pub credential_fingerprint: Option<String>,
+    /// The observed evidence envelope used for the original
+    /// resolution, replayed verbatim on revalidation.
+    pub observed: TelemetrySourceIdentity,
+    /// The transport-attested principal (verified mode only).
+    pub principal: Option<VerifiedIngressPrincipal>,
 }
 
 /// Shared state of the reduced routing service.
@@ -641,15 +771,24 @@ impl RoutingServiceState {
     /// set when no identity store is configured — every exporter then
     /// stays connection-isolated (fail closed).
     fn trusted_bmp_bindings(&self) -> Vec<crate::telemetry_identity::TrustedBinding> {
+        self.try_trusted_bmp_bindings().unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to load trusted exporter bindings");
+            Vec::new()
+        })
+    }
+
+    /// Fallible variant of [`Self::trusted_bmp_bindings`] for the
+    /// revocation revalidation loop, which must distinguish "no
+    /// bindings" from "store unreadable" (fail closed vs. tolerate).
+    fn try_trusted_bmp_bindings(
+        &self,
+    ) -> Result<Vec<crate::telemetry_identity::TrustedBinding>, String> {
         let Some(store) = &self.identity_store else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         store
             .list_exporter_bindings(None, Some("bmp"), false)
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "failed to load trusted exporter bindings");
-                Vec::new()
-            })
+            .map_err(|e| e.to_string())
     }
 
     /// Resolve a BMP connection's Initiation evidence against trusted
@@ -731,6 +870,7 @@ impl RoutingServiceState {
                     },
                     status: "unauthenticated",
                     binding_id: None,
+                    authorization: None,
                 };
             };
             observed = observed.with_verified_ingress(principal.clone());
@@ -748,11 +888,21 @@ impl RoutingServiceState {
                                 observed.resolution_scope(),
                                 &canonical,
                             ),
-                            exporter_id: Some(canonical),
+                            exporter_id: Some(canonical.clone()),
                             device_id: resolution.device_id.clone(),
                         },
                         status: "resolved",
                         binding_id: resolution.binding_id.clone(),
+                        authorization: Some(SessionAuthorization {
+                            binding_id: resolution.binding_id.clone().unwrap_or_default(),
+                            canonical_exporter_id: canonical,
+                            device_id: resolution.device_id.clone(),
+                            credential_fingerprint: Some(
+                                principal.credential_fingerprint().to_string(),
+                            ),
+                            observed: observed.clone(),
+                            principal: Some(principal.clone()),
+                        }),
                     }
                 }
                 status => {
@@ -764,7 +914,7 @@ impl RoutingServiceState {
                         tracing::warn!(
                             %speaker_addr,
                             ?status,
-                            credential = %principal.credential_fingerprint,
+                            credential = %principal.credential_fingerprint(),
                             "verified BMP credential failed binding resolution; isolating connection scope"
                         );
                     }
@@ -784,6 +934,7 @@ impl RoutingServiceState {
                             _ => "unknown",
                         },
                         binding_id: None,
+                        authorization: None,
                     }
                 }
             };
@@ -812,11 +963,19 @@ impl RoutingServiceState {
                             observed.resolution_scope(),
                             &canonical,
                         ),
-                        exporter_id: Some(canonical),
+                        exporter_id: Some(canonical.clone()),
                         device_id: resolution.device_id.clone(),
                     },
                     status: "resolved",
                     binding_id: resolution.binding_id.clone(),
+                    authorization: Some(SessionAuthorization {
+                        binding_id: resolution.binding_id.clone().unwrap_or_default(),
+                        canonical_exporter_id: canonical,
+                        device_id: resolution.device_id.clone(),
+                        credential_fingerprint: None,
+                        observed: observed.clone(),
+                        principal: None,
+                    }),
                 }
             }
             status => {
@@ -848,6 +1007,7 @@ impl RoutingServiceState {
                         _ => "unknown",
                     },
                     binding_id: None,
+                    authorization: None,
                 }
             }
         }
@@ -1261,10 +1421,10 @@ fn mtls_peer_principal(
     let (_, conn) = tls.get_ref();
     let leaf = conn.peer_certificates()?.first()?;
     let digest = Sha256::digest(leaf.as_ref());
-    Some(VerifiedIngressPrincipal {
-        method: IngressAuthMethod::MutualTls,
-        credential_fingerprint: format!("sha256:{digest:x}"),
-    })
+    Some(VerifiedIngressPrincipal::from_transport_attestation(
+        IngressAuthMethod::MutualTls,
+        format!("sha256:{digest:x}"),
+    ))
 }
 
 /// Spawn a bounded BMP listener that feeds accepted frames into `RoutingServiceState`.
@@ -1290,346 +1450,640 @@ fn mtls_peer_principal(
 /// scope closes, its speaker state is retired (the scope can never
 /// receive new data); `exp:*` speakers keep last-known routes under the
 /// transport gap as before.
+/// TLS handshake timeout for BMP mTLS connections
+/// (`BONSAI_ROUTING_BMP_TLS_HANDSHAKE_TIMEOUT_SECS`, seconds, default 10).
+fn bmp_tls_handshake_timeout() -> Duration {
+    std::env::var("BONSAI_ROUTING_BMP_TLS_HANDSHAKE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .map(Duration::from_secs_f64)
+        .unwrap_or(Duration::from_secs(10))
+}
+
+/// Maximum concurrent in-flight TLS handshakes
+/// (`BONSAI_ROUTING_BMP_TLS_MAX_HANDSHAKES`, default 64, clamped 1..=4096).
+/// Excess TCP connections are dropped predictably at accept time rather
+/// than queued without bound.
+fn bmp_tls_max_handshakes() -> usize {
+    std::env::var("BONSAI_ROUTING_BMP_TLS_MAX_HANDSHAKES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(64)
+        .clamp(1, 4096)
+}
+
+/// Interval between batched trusted-binding revalidations of live
+/// authoritative BMP sessions (`BONSAI_ROUTING_BMP_RECHECK_INTERVAL_MS`,
+/// milliseconds, default 5000, clamped 50..=3_600_000). `0` disables
+/// active-session revocation (documented unsafe for production).
+fn bmp_binding_recheck_interval() -> Duration {
+    std::env::var("BONSAI_ROUTING_BMP_RECHECK_INTERVAL_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|ms| {
+            if ms == 0 {
+                Duration::from_secs(86_400)
+            } else {
+                Duration::from_millis(ms.clamp(50, 3_600_000))
+            }
+        })
+        .unwrap_or(Duration::from_secs(5))
+}
+
+/// Resolves only when the shutdown watch value becomes `true`. If the
+/// sender is dropped without signalling (test fixtures do this while
+/// expecting the listener to keep running), the future parks forever
+/// instead of busy-looping on `RecvError`.
+async fn wait_shutdown(mut rx: tokio::sync::watch::Receiver<bool>) {
+    loop {
+        if *rx.borrow() {
+            return;
+        }
+        if rx.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// One live authoritative BMP session tracked for credential/binding
+/// revalidation (BN-021f hardening). Holds identifiers and evidence
+/// only — never key or certificate material.
+#[derive(Debug)]
+struct ActiveBmpSession {
+    connection_id: String,
+    speaker_key: SpeakerKey,
+    session_epoch: u64,
+    binding_id: String,
+    canonical_exporter_id: String,
+    device_id: Option<String>,
+    credential_fingerprint: Option<String>,
+    /// Evidence envelope replayed verbatim on revalidation.
+    observed: TelemetrySourceIdentity,
+    /// Transport-attested principal (verified mode only).
+    principal: Option<VerifiedIngressPrincipal>,
+    /// Signalled to terminate the session's ingestion loop.
+    revoke_tx: tokio::sync::watch::Sender<bool>,
+}
+
+/// Shared per-listener state: service state plus the session/lifecycle
+/// registries every connection task and the revalidation monitor use.
+#[derive(Clone)]
+struct BmpListenerShared {
+    state: Arc<RoutingServiceState>,
+    /// SpeakerKey -> (session_epoch, live connection count)
+    live_sessions: Arc<tokio::sync::Mutex<HashMap<SpeakerKey, (u64, usize)>>>,
+    /// SpeakerKey -> raw BMP Termination frame deferred while sibling
+    /// connections share the speaker scope (BN-021c/P0-C).
+    deferred_terminations: Arc<tokio::sync::Mutex<HashMap<SpeakerKey, Vec<u8>>>>,
+    /// connection_id -> authorized session awaiting revalidation.
+    active_sessions: Arc<tokio::sync::Mutex<HashMap<String, ActiveBmpSession>>>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+}
+
+/// Periodically re-resolve every authorized BMP session against a
+/// fresh binding snapshot. A session whose binding was revoked,
+/// re-pinned, or otherwise no longer resolves to the SAME canonical
+/// (binding, exporter, device) triple is signalled to terminate —
+/// revocation never requires a service restart and never touches
+/// unaffected exporters.
+async fn bmp_binding_revalidation_loop(shared: BmpListenerShared) {
+    let mut consecutive_failures: u32 = 0;
+    loop {
+        tokio::select! {
+            _ = wait_shutdown(shared.shutdown.clone()) => break,
+            _ = tokio::time::sleep(bmp_binding_recheck_interval()) => {}
+        }
+        let bindings = match shared.state.try_trusted_bmp_bindings() {
+            Ok(b) => {
+                consecutive_failures = 0;
+                b
+            }
+            Err(e) => {
+                consecutive_failures += 1;
+                tracing::warn!(
+                    error = %e,
+                    consecutive_failures,
+                    "BMP binding revalidation failed; authorized sessions retain authority until the store is readable again"
+                );
+                if consecutive_failures >= 3 {
+                    // Fail closed: inability to establish that active
+                    // credentials remain authorized must not grant
+                    // indefinite authority. Three consecutive failures
+                    // (~15s at the default interval) is the bounded
+                    // tolerance for transient store unavailability.
+                    let sessions = shared.active_sessions.lock().await;
+                    for sess in sessions.values() {
+                        tracing::warn!(
+                            connection_id = %sess.connection_id,
+                            binding_id = %sess.binding_id,
+                            credential = ?sess.credential_fingerprint,
+                            "revoking BMP session: identity store unreadable"
+                        );
+                        let _ = sess.revoke_tx.send(true);
+                    }
+                }
+                continue;
+            }
+        };
+        let sessions = shared.active_sessions.lock().await;
+        for sess in sessions.values() {
+            let resolution = match &sess.principal {
+                Some(p) => IdentityResolver::resolve_verified_ingress(&sess.observed, &bindings, p),
+                None => IdentityResolver::resolve(&sess.observed, &bindings),
+            };
+            let still_authorized = resolution.status == IdentityStatus::Resolved
+                && resolution.binding_id.as_deref() == Some(sess.binding_id.as_str())
+                && resolution.canonical_exporter_id.as_deref()
+                    == Some(sess.canonical_exporter_id.as_str())
+                && resolution.device_id == sess.device_id;
+            if !still_authorized {
+                tracing::warn!(
+                    connection_id = %sess.connection_id,
+                    speaker_key = ?sess.speaker_key,
+                    session_epoch = sess.session_epoch,
+                    binding_id = %sess.binding_id,
+                    credential = ?sess.credential_fingerprint,
+                    status = ?resolution.status,
+                    "revoking BMP session: authorization no longer valid"
+                );
+                let _ = sess.revoke_tx.send(true);
+            }
+        }
+    }
+}
+
+/// Spawn a bounded BMP listener that feeds accepted frames into `RoutingServiceState`.
+///
+/// `mtls_acceptor`: when `Some`, every accepted TCP connection must
+/// complete a mutual-TLS handshake (client certificate chaining to the
+/// configured CA) before any BMP byte is read. The verified credential
+/// fingerprint is passed to identity resolution; plaintext or
+/// unauthenticated connections can never obtain canonical attribution
+/// under [`BmpIdentityMode::Verified`].
+///
+/// Handshakes run in per-connection tasks bounded by a semaphore
+/// ([`bmp_tls_max_handshakes`]) with [`bmp_tls_handshake_timeout`]; the
+/// accept loop never waits on an individual handshake, so stalled
+/// clients cannot serialize legitimate exporters. Excess connections
+/// beyond the handshake limit are dropped at accept time.
+///
+/// - `Resolved` → the connection joins the stable `vexp:{exporter_id}`
+///   (verified) or `exp:{exporter_id}` (claim-compatible) speaker
+///   scope. Verified connections presenting the SAME credential may
+///   share the speaker (FRR global+VRF sessions); claim-resolved
+///   scopes admit at most one live connection.
+/// - Anything else → the connection gets an isolated `conn:{id}`
+///   speaker scope that can never merge route, peer, session, decode or
+///   gap state with another exporter behind the same NAT address.
+///
+/// Authorized sessions are revalidated against the identity store every
+/// [`bmp_binding_recheck_interval`]; a revoked credential/binding
+/// terminates the session's ingestion without a service restart.
+///
+/// Epoch fencing is per [`SpeakerKey`]: a stale connection cannot clear
+/// a newer session, and a disconnect cannot touch another exporter's
+/// EOR/completeness state. When the last connection of a `conn:*`
+/// scope closes, its speaker state is retired (the scope can never
+/// receive new data); `vexp:*`/`exp:*` speakers keep last-known routes
+/// under the transport gap as before.
 pub async fn run_bmp_listener(
     listener: TcpListener,
     mtls_acceptor: Option<TlsAcceptor>,
     state: Arc<RoutingServiceState>,
-    mut shutdown: tokio::sync::watch::Receiver<bool>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
-    // SpeakerKey -> (session_epoch, live connection count)
-    let live_sessions: Arc<tokio::sync::Mutex<HashMap<SpeakerKey, (u64, usize)>>> =
-        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-    // SpeakerKey -> raw BMP Termination frame deferred while sibling
-    // connections share the speaker scope (BN-021c/P0-C). A BMP
-    // Termination ends only the TCP session that sent it; with several
-    // live connections coalesced into one `exp:*` speaker, destroying
-    // the shared speaker state would drop siblings' routes. The frame
-    // is replayed through ingestion when the LAST connection closes so
-    // the speaker-wide teardown is applied exactly once, durably and
-    // in journal order.
-    let deferred_terminations: Arc<tokio::sync::Mutex<HashMap<SpeakerKey, Vec<u8>>>> =
-        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let shared = BmpListenerShared {
+        state,
+        live_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        deferred_terminations: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        active_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        shutdown: shutdown.clone(),
+    };
+    {
+        let monitor = shared.clone();
+        tokio::spawn(async move { bmp_binding_revalidation_loop(monitor).await });
+    }
+    let handshake_permits = mtls_acceptor
+        .as_ref()
+        .map(|_| Arc::new(tokio::sync::Semaphore::new(bmp_tls_max_handshakes())));
+    let handshake_timeout = bmp_tls_handshake_timeout();
     loop {
         tokio::select! {
-            _ = shutdown.changed() => {
-                if *shutdown.borrow() {
-                    break;
-                }
-            }
+            _ = wait_shutdown(shutdown.clone()) => break,
             accept_res = listener.accept() => {
                 let Ok((stream, peer_sock)) = accept_res else { continue; };
                 let speaker_ip = peer_sock.ip();
-                // ── Transport authentication (BN-021f) ──
-                // mTLS termination happens BEFORE any BMP byte is
-                // read: a failed or timed-out handshake yields no
-                // verified principal and no state. The principal is
-                // derived solely from the peer certificate.
-                let (io, verified) = match &mtls_acceptor {
-                    Some(acceptor) => {
-                        match tokio::time::timeout(
-                            Duration::from_secs(10),
-                            acceptor.accept(stream),
-                        )
-                        .await
-                        {
-                            Ok(Ok(tls)) => {
-                                let principal = mtls_peer_principal(&tls);
-                                (BmpIo::Tls(tls), principal)
-                            }
-                            Ok(Err(e)) => {
-                                tracing::debug!(%speaker_ip, error = %e, "BMP mTLS handshake rejected");
-                                continue;
-                            }
-                            Err(_) => {
-                                tracing::debug!(%speaker_ip, "BMP mTLS handshake timed out");
-                                continue;
-                            }
+                // ── Bounded handshake admission ──
+                // The accept loop must never serialize on a stalled
+                // handshake: acquire a permit WITHOUT awaiting (excess
+                // connections are dropped predictably), then let the
+                // spawned task perform the handshake concurrently.
+                let permit = match &handshake_permits {
+                    Some(sem) => match sem.clone().try_acquire_owned() {
+                        Ok(p) => Some(p),
+                        Err(_) => {
+                            tracing::warn!(
+                                %speaker_ip,
+                                max_handshakes = bmp_tls_max_handshakes(),
+                                "BMP TLS handshake capacity exhausted; dropping connection"
+                            );
+                            continue;
                         }
-                    }
-                    None => (BmpIo::Plain(stream), None),
+                    },
+                    None => None,
                 };
-                let st = Arc::clone(&state);
-                let sessions = Arc::clone(&live_sessions);
-                let deferred = Arc::clone(&deferred_terminations);
+                let ctx = shared.clone();
+                let acceptor = mtls_acceptor.clone();
+                let conn_shutdown = shutdown.clone();
                 tokio::spawn(async move {
-                    let mut reader = BufReader::new(io);
-                    let hdr_timeout = Duration::from_secs(30);
-                    let body_timeout = Duration::from_secs(10);
-                    let bmp_trace = std::env::var("BONSAI_BMP_TRACE").is_ok_and(|v| v == "1");
-
-                    // ── Phase 1: BMP Initiation gates identity resolution ──
-                    // TCP open is not session start; the first BMP message
-                    // must be Initiation so exporter evidence exists before
-                    // any authoritative state is created (fail closed).
-                    let first_frame = match read_bmp_frame(&mut reader, st.config.max_frame_bytes, hdr_timeout, body_timeout).await {
-                        Ok(Some(frame)) => frame,
-                        Ok(None) => return,
-                        Err(e) => {
-                            tracing::debug!(%speaker_ip, error = %e, "BMP connection closed before Initiation");
-                            return;
-                        }
-                    };
-                    let is_initiation = first_frame.len() >= 6
-                        && first_frame[0] == 3
-                        && first_frame[5] == 4;
-                    if !is_initiation {
-                        tracing::warn!(%speaker_ip, "BMP connection did not open with Initiation; closing without creating state");
-                        return;
-                    }
-                    let (sys_name, sys_descr) =
-                        match parse_bmp_message_with_context(
-                            &first_frame,
-                            speaker_ip,
-                            st.config.max_frame_bytes,
-                            &BgpDecodeContext::default(),
-                        ) {
-                            Ok(payload) => match payload {
-                                BmpPayload::Initiation {
-                                    sys_name,
-                                    sys_descr,
-                                    ..
-                                } => (sys_name, sys_descr),
-                                _ => (None, None),
-                            },
-                            Err(e) => {
-                                tracing::warn!(%speaker_ip, error = %e, "unparseable BMP Initiation; using connection-isolated scope");
-                                (None, None)
-                            }
-                        };
-
-                    let connection_id = Uuid::new_v4().simple().to_string();
-                    let resolution = st.resolve_bmp_exporter_with_ingress(
-                        speaker_ip,
-                        &connection_id,
-                        sys_name.as_deref(),
-                        sys_descr.as_deref(),
-                        verified.as_ref(),
-                    );
-                    let mut scope = resolution.scope;
-
-                    // ── Phase 2: epoch allocation per SpeakerKey ──
-                    let epoch = {
-                        // Lock ordering: `sessions` is only ever acquired before `rib`
-                        // (never the reverse), so holding it across the rib write is safe.
-                        let mut live = sessions.lock().await;
-                        // P0-1/BN-021f hardening: at most ONE live
-                        // connection may hold a CLAIM-resolved `exp:*`
-                        // speaker scope. BMP sysName is a
-                        // self-reported claim — a second simultaneous
-                        // connection presenting the same claim
-                        // (impostor or legitimate multi-session
-                        // exporter) cannot be proven to share exporter
-                        // ownership in claim-compatible mode, so it is
-                        // isolated into its own `conn:*` scope instead
-                        // of merging authoritative speaker/RIB state.
-                        // `vexp:*` verified scopes are exempt: multiple
-                        // connections presenting the SAME verified
-                        // credential legitimately share the authorized
-                        // exporter (FRR global+VRF sessions). Isolated
-                        // `conn:*` scopes NEVER carry device
-                        // attribution — the claim remains evidence-only.
-                        if scope.exporter_instance.starts_with("exp:") {
-                            let claimed = scope.speaker_key(speaker_ip);
-                            if live.get(&claimed).is_some_and(|&(_, c)| c > 0) {
-                                tracing::warn!(
-                                    %speaker_ip,
-                                    exporter_instance = %scope.exporter_instance,
-                                    device_id = ?scope.device_id,
-                                    "Concurrent BMP connection claims an already-live \
-                                     exporter scope; isolating to conn:* (same-claim \
-                                     connections cannot be proven to share ownership)"
-                                );
-                                scope = ExporterScope {
-                                    exporter_instance: format!("conn:{connection_id}"),
-                                    exporter_id: scope.exporter_id.clone(),
-                                    device_id: None,
-                                };
-                            }
-                        }
-                        let speaker_key = scope.speaker_key(speaker_ip);
-                        match live.get(&speaker_key) {
-                            Some(&(epoch, count)) if count > 0 => {
-                                if let Some(entry) = live.get_mut(&speaker_key) {
-                                    entry.1 += 1;
+                    // ── Transport authentication (BN-021f) ──
+                    // mTLS termination happens BEFORE any BMP byte is
+                    // read: a failed or timed-out handshake yields no
+                    // verified principal and no state. The principal is
+                    // derived solely from the peer certificate.
+                    let (io, verified) = match &acceptor {
+                        Some(acc) => {
+                            let hs = tokio::select! {
+                                _ = wait_shutdown(conn_shutdown) => return,
+                                res = tokio::time::timeout(
+                                    handshake_timeout,
+                                    acc.accept(stream),
+                                ) => res,
+                            };
+                            match hs {
+                                Ok(Ok(tls)) => {
+                                    let principal = mtls_peer_principal(&tls);
+                                    (BmpIo::Tls(tls), principal)
                                 }
-                                epoch
-                            }
-                            _ => {
-                                let epoch = {
-                                    let mut rib = st.rib.write().await;
-                                    rib.open_speaker_session(
-                                        speaker_ip,
-                                        &scope.exporter_instance,
-                                        scope.exporter_id.as_deref(),
-                                        scope.device_id.as_deref(),
-                                        Utc::now(),
-                                    )
-                                };
-                                live.insert(speaker_key, (epoch, 1));
-                                epoch
-                            }
-                        }
-                    };
-                    let speaker_key = scope.speaker_key(speaker_ip);
-                    tracing::info!(
-                        %speaker_ip,
-                        exporter_instance = %scope.exporter_instance,
-                        status = resolution.status,
-                        device_id = ?scope.device_id,
-                        binding_id = ?resolution.binding_id,
-                        "BMP exporter identity resolved"
-                    );
-
-                    // ── Phase 3: stream frames under the resolved scope ──
-                    let mut pending_first = Some(first_frame);
-                    let disconnect_reason = loop {
-                        let frame = match pending_first.take() {
-                            Some(f) => Some(f),
-                            None => match read_bmp_frame(&mut reader, st.config.max_frame_bytes, hdr_timeout, body_timeout).await {
-                                Ok(Some(f)) => Some(f),
-                                Ok(None) => None,
-                                Err(e) => {
-                                    break Some(format!("bmp_transport_error: {e}"));
+                                Ok(Err(e)) => {
+                                    tracing::debug!(%speaker_ip, error = %e, "BMP mTLS handshake rejected");
+                                    return;
                                 }
-                            },
-                        };
-                        let Some(frame) = frame else {
-                            // TCP EOF without BMP Termination = observation gap, not BGP withdraw
-                            break Some("bmp_tcp_eof".to_string());
-                        };
-                        if bmp_trace {
-                            // BMPv3 common header: ver(1) len(4) type(1);
-                            // peer header follows for types 0-4.
-                            let ver = frame.first().copied().unwrap_or(0);
-                            let mlen = frame.get(1..5).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize).unwrap_or(0);
-                            let mtype = frame.get(5).copied().unwrap_or(0);
-                            let head_hex = frame.iter().take(48).map(|b| format!("{b:02x}")).collect::<String>();
-                            tracing::info!(%speaker_ip, %scope.exporter_instance, ver, mlen, mtype, head = %head_hex, "bmp_frame");
-                        }
-                        // BMP Termination (v3 msg type 5) ends THIS
-                        // connection's BMP session — RFC 7854 §4.5. While
-                        // sibling connections share this SpeakerKey, defer
-                        // the frame instead of letting `RibManager` destroy
-                        // shared speaker/RIB state; it is applied when the
-                        // LAST connection closes (see teardown below). In
-                        // every case this connection stops reading
-                        // immediately: frames received after Termination
-                        // must never mutate RIB state (a terminated BMP
-                        // session accepts no further observations), and a
-                        // deferred Termination still applies at teardown if
-                        // this connection turns out to be the last one.
-                        let is_termination =
-                            frame.len() >= 6 && frame[0] == 3 && frame[5] == 5;
-                        if is_termination {
-                            let live_count = sessions
-                                .lock()
-                                .await
-                                .get(&speaker_key)
-                                .map(|&(_, c)| c)
-                                .unwrap_or(0);
-                            if live_count > 1 {
-                                deferred
-                                    .lock()
-                                    .await
-                                    .insert(speaker_key, frame.clone());
-                                tracing::info!(
-                                    %speaker_ip,
-                                    exporter_instance = %scope.exporter_instance,
-                                    live_connections = live_count,
-                                    "BMP Termination deferred while sibling connections are live"
-                                );
-                                break Some("bmp_termination".to_string());
-                            }
-                            // This is the last live connection: any frame
-                            // deferred by a sibling is superseded by this
-                            // effective speaker-wide termination.
-                            deferred.lock().await.remove(&speaker_key);
-                        }
-                        if let Err(e) = st.ingest_bmp_bytes_scoped(speaker_ip, &scope, Some(epoch), &frame).await {
-                            // A rejected frame still closes the connection,
-                            // so it MUST flow through the same disconnect
-                            // lifecycle as TCP EOF — otherwise valid routing
-                            // state would linger with no durable gap record
-                            // (BN-021c/P0-B). The reason is recorded
-                            // distinctly from transport errors and EOF.
-                            tracing::warn!(%speaker_ip, exporter_instance = %scope.exporter_instance, error = %e, "Rejected invalid BMP frame");
-                            break Some(format!("bmp_frame_rejected: {e}"));
-                        }
-                        if is_termination {
-                            // Session terminated cleanly: no further frames
-                            // are accepted on this connection.
-                            break Some("bmp_termination".to_string());
-                        }
-                    };
-                    // Release this connection's share of the speaker epoch before recording
-                    // the disconnect so a fast reconnect opens a fresh epoch.
-                    let last_connection = {
-                        let mut live = sessions.lock().await;
-                        if let Some(entry) = live.get_mut(&speaker_key) {
-                            entry.1 = entry.1.saturating_sub(1);
-                            if entry.1 == 0 {
-                                live.remove(&speaker_key);
-                                true
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        }
-                    };
-                    if let Some(reason) = disconnect_reason {
-                        if last_connection {
-                            // A Termination deferred by a sibling becomes
-                            // effective now that no connections remain:
-                            // ingest it so the speaker teardown, SpeakerDown
-                            // event and journal record match a live inline
-                            // termination exactly (replay-consistent).
-                            if let Some(term_frame) = deferred.lock().await.remove(&speaker_key)
-                            {
-                                if let Err(e) = st
-                                    .ingest_bmp_bytes_scoped(
-                                        speaker_ip,
-                                        &scope,
-                                        Some(epoch),
-                                        &term_frame,
-                                    )
-                                    .await
-                                {
-                                    tracing::warn!(%speaker_ip, exporter_instance = %scope.exporter_instance, error = %e, "Failed to apply deferred BMP Termination");
+                                Err(_) => {
+                                    tracing::debug!(%speaker_ip, "BMP mTLS handshake timed out");
+                                    return;
                                 }
                             }
-                            let outcome = st
-                                .record_transport_disconnect_for_key(
-                                    speaker_key,
-                                    &scope.exporter_instance,
-                                    Some(epoch),
-                                    reason,
-                                )
-                                .await;
-                            // An isolated connection scope can never receive
-                            // new data; retire its state instead of leaking
-                            // last-known routes per dead connection. Retire
-                            // only when the durable lifecycle requirement is
-                            // satisfied: Recorded (gap journaled) or
-                            // NoActiveSession (session already ended via
-                            // Termination — nothing to gap). A stale-fenced
-                            // or persistence-failed disconnect must NOT
-                            // retire state: the former belongs to a newer
-                            // session, the latter would diverge live view
-                            // from journal replay (P0-2).
-                            if matches!(
-                                outcome,
-                                TransportDisconnectOutcome::Recorded
-                                    | TransportDisconnectOutcome::NoActiveSession
-                            ) && scope.exporter_instance.starts_with("conn:")
-                            {
-                                st.retire_connection_scoped_speaker(speaker_key).await;
-                            }
                         }
-                    }
+                        None => (BmpIo::Plain(stream), None),
+                    };
+                    // The handshake slot is freed once the transport is
+                    // authenticated — it must not cap live sessions.
+                    drop(permit);
+                    handle_bmp_connection(io, verified, speaker_ip, ctx).await;
                 });
             }
         }
+    }
+}
+
+/// Per-connection BMP session: read Initiation, resolve identity,
+/// allocate the speaker epoch, then stream frames until EOF,
+/// Termination, invalid frame, authorization revocation, or transport
+/// error — always flowing through the durable disconnect lifecycle.
+async fn handle_bmp_connection(
+    io: BmpIo,
+    verified: Option<VerifiedIngressPrincipal>,
+    speaker_ip: IpAddr,
+    ctx: BmpListenerShared,
+) {
+    let st = ctx.state.clone();
+    let sessions = ctx.live_sessions.clone();
+    let deferred = ctx.deferred_terminations.clone();
+    {
+        let mut reader = BufReader::new(io);
+        let hdr_timeout = Duration::from_secs(30);
+        let body_timeout = Duration::from_secs(10);
+        let bmp_trace = std::env::var("BONSAI_BMP_TRACE").is_ok_and(|v| v == "1");
+
+        // ── Phase 1: BMP Initiation gates identity resolution ──
+        // TCP open is not session start; the first BMP message
+        // must be Initiation so exporter evidence exists before
+        // any authoritative state is created (fail closed).
+        let first_frame = match read_bmp_frame(
+            &mut reader,
+            st.config.max_frame_bytes,
+            hdr_timeout,
+            body_timeout,
+        )
+        .await
+        {
+            Ok(Some(frame)) => frame,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::debug!(%speaker_ip, error = %e, "BMP connection closed before Initiation");
+                return;
+            }
+        };
+        let is_initiation = first_frame.len() >= 6 && first_frame[0] == 3 && first_frame[5] == 4;
+        if !is_initiation {
+            tracing::warn!(%speaker_ip, "BMP connection did not open with Initiation; closing without creating state");
+            return;
+        }
+        let (sys_name, sys_descr) = match parse_bmp_message_with_context(
+            &first_frame,
+            speaker_ip,
+            st.config.max_frame_bytes,
+            &BgpDecodeContext::default(),
+        ) {
+            Ok(payload) => match payload {
+                BmpPayload::Initiation {
+                    sys_name,
+                    sys_descr,
+                    ..
+                } => (sys_name, sys_descr),
+                _ => (None, None),
+            },
+            Err(e) => {
+                tracing::warn!(%speaker_ip, error = %e, "unparseable BMP Initiation; using connection-isolated scope");
+                (None, None)
+            }
+        };
+
+        let connection_id = Uuid::new_v4().simple().to_string();
+        let resolution = st.resolve_bmp_exporter_with_ingress(
+            speaker_ip,
+            &connection_id,
+            sys_name.as_deref(),
+            sys_descr.as_deref(),
+            verified.as_ref(),
+        );
+        let mut scope = resolution.scope;
+
+        // ── Phase 2: epoch allocation per SpeakerKey ──
+        let epoch = {
+            // Lock ordering: `sessions` is only ever acquired before `rib`
+            // (never the reverse), so holding it across the rib write is safe.
+            let mut live = sessions.lock().await;
+            // P0-1/BN-021f hardening: at most ONE live
+            // connection may hold a CLAIM-resolved `exp:*`
+            // speaker scope. BMP sysName is a
+            // self-reported claim — a second simultaneous
+            // connection presenting the same claim
+            // (impostor or legitimate multi-session
+            // exporter) cannot be proven to share exporter
+            // ownership in claim-compatible mode, so it is
+            // isolated into its own `conn:*` scope instead
+            // of merging authoritative speaker/RIB state.
+            // `vexp:*` verified scopes are exempt: multiple
+            // connections presenting the SAME verified
+            // credential legitimately share the authorized
+            // exporter (FRR global+VRF sessions). Isolated
+            // `conn:*` scopes NEVER carry device
+            // attribution — the claim remains evidence-only.
+            if scope.exporter_instance.starts_with("exp:") {
+                let claimed = scope.speaker_key(speaker_ip);
+                if live.get(&claimed).is_some_and(|&(_, c)| c > 0) {
+                    tracing::warn!(
+                        %speaker_ip,
+                        exporter_instance = %scope.exporter_instance,
+                        device_id = ?scope.device_id,
+                        "Concurrent BMP connection claims an already-live \
+                         exporter scope; isolating to conn:* (same-claim \
+                         connections cannot be proven to share ownership)"
+                    );
+                    scope = ExporterScope {
+                        exporter_instance: format!("conn:{connection_id}"),
+                        exporter_id: scope.exporter_id.clone(),
+                        device_id: None,
+                    };
+                }
+            }
+            let speaker_key = scope.speaker_key(speaker_ip);
+            match live.get(&speaker_key) {
+                Some(&(epoch, count)) if count > 0 => {
+                    if let Some(entry) = live.get_mut(&speaker_key) {
+                        entry.1 += 1;
+                    }
+                    epoch
+                }
+                _ => {
+                    let epoch = {
+                        let mut rib = st.rib.write().await;
+                        rib.open_speaker_session(
+                            speaker_ip,
+                            &scope.exporter_instance,
+                            scope.exporter_id.as_deref(),
+                            scope.device_id.as_deref(),
+                            Utc::now(),
+                        )
+                    };
+                    live.insert(speaker_key, (epoch, 1));
+                    epoch
+                }
+            }
+        };
+        let speaker_key = scope.speaker_key(speaker_ip);
+        tracing::info!(
+            %speaker_ip,
+            exporter_instance = %scope.exporter_instance,
+            status = resolution.status,
+            device_id = ?scope.device_id,
+            binding_id = ?resolution.binding_id,
+            "BMP exporter identity resolved"
+        );
+
+        // ── Register authorized session for revocation ──
+        // Only binding-resolved sessions carry authority;
+        // conn:*-isolated connections are never registered.
+        // The revalidation monitor re-resolves `observed`
+        // against fresh bindings and signals `revoke_tx`.
+        let mut revoke_rx = match resolution.authorization.clone() {
+            Some(auth) => {
+                let (tx, rx) = tokio::sync::watch::channel(false);
+                ctx.active_sessions.lock().await.insert(
+                    connection_id.clone(),
+                    ActiveBmpSession {
+                        connection_id: connection_id.clone(),
+                        speaker_key,
+                        session_epoch: epoch,
+                        binding_id: auth.binding_id,
+                        canonical_exporter_id: auth.canonical_exporter_id,
+                        device_id: auth.device_id,
+                        credential_fingerprint: auth.credential_fingerprint,
+                        observed: auth.observed,
+                        principal: auth.principal,
+                        revoke_tx: tx,
+                    },
+                );
+                Some(rx)
+            }
+            None => None,
+        };
+
+        // ── Phase 3: stream frames under the resolved scope ──
+        let mut pending_first = Some(first_frame);
+        let disconnect_reason = loop {
+            let frame = match pending_first.take() {
+                Some(f) => Some(f),
+                None => {
+                    let read = read_bmp_frame(
+                        &mut reader,
+                        st.config.max_frame_bytes,
+                        hdr_timeout,
+                        body_timeout,
+                    );
+                    let frame_res = match revoke_rx.as_mut() {
+                        Some(rx) => tokio::select! {
+                            // Only `true` is ever sent, and
+                            // sender drop means the registry
+                            // entry is gone — either way
+                            // authorization is no longer
+                            // provable: fail closed.
+                            _ = rx.changed() => {
+                                break Some("bmp_authorization_revoked".to_string());
+                            }
+                            res = read => res,
+                        },
+                        None => read.await,
+                    };
+                    match frame_res {
+                        Ok(Some(f)) => Some(f),
+                        Ok(None) => None,
+                        Err(e) => {
+                            break Some(format!("bmp_transport_error: {e}"));
+                        }
+                    }
+                }
+            };
+            let Some(frame) = frame else {
+                // TCP EOF without BMP Termination = observation gap, not BGP withdraw
+                break Some("bmp_tcp_eof".to_string());
+            };
+            if bmp_trace {
+                // BMPv3 common header: ver(1) len(4) type(1);
+                // peer header follows for types 0-4.
+                let ver = frame.first().copied().unwrap_or(0);
+                let mlen = frame
+                    .get(1..5)
+                    .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize)
+                    .unwrap_or(0);
+                let mtype = frame.get(5).copied().unwrap_or(0);
+                let head_hex = frame
+                    .iter()
+                    .take(48)
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>();
+                tracing::info!(%speaker_ip, %scope.exporter_instance, ver, mlen, mtype, head = %head_hex, "bmp_frame");
+            }
+            // BMP Termination (v3 msg type 5) ends THIS
+            // connection's BMP session — RFC 7854 §4.5. While
+            // sibling connections share this SpeakerKey, defer
+            // the frame instead of letting `RibManager` destroy
+            // shared speaker/RIB state; it is applied when the
+            // LAST connection closes (see teardown below). In
+            // every case this connection stops reading
+            // immediately: frames received after Termination
+            // must never mutate RIB state (a terminated BMP
+            // session accepts no further observations), and a
+            // deferred Termination still applies at teardown if
+            // this connection turns out to be the last one.
+            let is_termination = frame.len() >= 6 && frame[0] == 3 && frame[5] == 5;
+            if is_termination {
+                let live_count = sessions
+                    .lock()
+                    .await
+                    .get(&speaker_key)
+                    .map(|&(_, c)| c)
+                    .unwrap_or(0);
+                if live_count > 1 {
+                    deferred.lock().await.insert(speaker_key, frame.clone());
+                    tracing::info!(
+                        %speaker_ip,
+                        exporter_instance = %scope.exporter_instance,
+                        live_connections = live_count,
+                        "BMP Termination deferred while sibling connections are live"
+                    );
+                    break Some("bmp_termination".to_string());
+                }
+                // This is the last live connection: any frame
+                // deferred by a sibling is superseded by this
+                // effective speaker-wide termination.
+                deferred.lock().await.remove(&speaker_key);
+            }
+            if let Err(e) = st
+                .ingest_bmp_bytes_scoped(speaker_ip, &scope, Some(epoch), &frame)
+                .await
+            {
+                // A rejected frame still closes the connection,
+                // so it MUST flow through the same disconnect
+                // lifecycle as TCP EOF — otherwise valid routing
+                // state would linger with no durable gap record
+                // (BN-021c/P0-B). The reason is recorded
+                // distinctly from transport errors and EOF.
+                tracing::warn!(%speaker_ip, exporter_instance = %scope.exporter_instance, error = %e, "Rejected invalid BMP frame");
+                break Some(format!("bmp_frame_rejected: {e}"));
+            }
+            if is_termination {
+                // Session terminated cleanly: no further frames
+                // are accepted on this connection.
+                break Some("bmp_termination".to_string());
+            }
+        };
+        // Release this connection's share of the speaker epoch before recording
+        // the disconnect so a fast reconnect opens a fresh epoch.
+        let last_connection = {
+            let mut live = sessions.lock().await;
+            if let Some(entry) = live.get_mut(&speaker_key) {
+                entry.1 = entry.1.saturating_sub(1);
+                if entry.1 == 0 {
+                    live.remove(&speaker_key);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+        if let Some(reason) = disconnect_reason {
+            if last_connection {
+                // A Termination deferred by a sibling becomes
+                // effective now that no connections remain:
+                // ingest it so the speaker teardown, SpeakerDown
+                // event and journal record match a live inline
+                // termination exactly (replay-consistent).
+                if let Some(term_frame) = deferred.lock().await.remove(&speaker_key) {
+                    if let Err(e) = st
+                        .ingest_bmp_bytes_scoped(speaker_ip, &scope, Some(epoch), &term_frame)
+                        .await
+                    {
+                        tracing::warn!(%speaker_ip, exporter_instance = %scope.exporter_instance, error = %e, "Failed to apply deferred BMP Termination");
+                    }
+                }
+                let outcome = st
+                    .record_transport_disconnect_for_key(
+                        speaker_key,
+                        &scope.exporter_instance,
+                        Some(epoch),
+                        reason,
+                    )
+                    .await;
+                // An isolated connection scope can never receive
+                // new data; retire its state instead of leaking
+                // last-known routes per dead connection. Retire
+                // only when the durable lifecycle requirement is
+                // satisfied: Recorded (gap journaled) or
+                // NoActiveSession (session already ended via
+                // Termination — nothing to gap). A stale-fenced
+                // or persistence-failed disconnect must NOT
+                // retire state: the former belongs to a newer
+                // session, the latter would diverge live view
+                // from journal replay (P0-2).
+                if matches!(
+                    outcome,
+                    TransportDisconnectOutcome::Recorded
+                        | TransportDisconnectOutcome::NoActiveSession
+                ) && scope.exporter_instance.starts_with("conn:")
+                {
+                    st.retire_connection_scoped_speaker(speaker_key).await;
+                }
+            }
+        }
+        // Session ended (EOF/Termination/revocation/transport
+        // error): drop its revalidation registration.
+        ctx.active_sessions.lock().await.remove(&connection_id);
     }
 }
 

@@ -70,14 +70,83 @@ pub enum IngressAuthMethod {
 /// fields, headers, PROXY metadata, or any other client-supplied data.
 /// It is the sole input allowed to promote an observation to canonical
 /// device attribution.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Trust boundary (BN-021f hardening): fields are private and the only
+/// constructor is crate-internal, so ordinary application code cannot
+/// mint a principal. `transport_attested` is NEVER serialized — a
+/// principal restored from JSON/journal data deserializes with
+/// `transport_attested = false` and is rejected by
+/// [`IdentityResolver::resolve_verified_ingress`]. Journals may carry
+/// the credential fingerprint as provenance evidence, but replayed or
+/// API-supplied data can never re-authorize a connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VerifiedIngressPrincipal {
-    pub method: IngressAuthMethod,
+    method: IngressAuthMethod,
     /// Cryptographic credential identifier: `"sha256:<hex>"` of the
     /// DER-encoded client certificate leaf presented during the mTLS
     /// handshake. Exact fingerprint matching makes credential rotation
     /// an explicit binding update, never an implicit trust change.
-    pub credential_fingerprint: String,
+    credential_fingerprint: String,
+    /// Set only by [`Self::from_transport_attestation`]; skipped by
+    /// serde so deserialized values are always unattested.
+    #[serde(skip)]
+    transport_attested: bool,
+}
+
+impl VerifiedIngressPrincipal {
+    /// Construct a principal from a completed transport authentication
+    /// handshake. Crate-internal: only the authenticating ingress layer
+    /// (`routing_service`) may call this.
+    pub(crate) fn from_transport_attestation(
+        method: IngressAuthMethod,
+        credential_fingerprint: String,
+    ) -> Self {
+        Self {
+            method,
+            credential_fingerprint,
+            transport_attested: true,
+        }
+    }
+
+    /// The transport authentication mechanism that established this
+    /// principal.
+    pub fn method(&self) -> IngressAuthMethod {
+        self.method
+    }
+
+    /// The verified credential identifier (`"sha256:<hex>"`).
+    pub fn credential_fingerprint(&self) -> &str {
+        &self.credential_fingerprint
+    }
+
+    /// Whether this principal was produced by a live transport
+    /// authentication handshake in this process. Always `false` for
+    /// values deserialized from journals/API payloads.
+    pub fn is_transport_attested(&self) -> bool {
+        self.transport_attested
+    }
+}
+
+impl<'de> Deserialize<'de> for VerifiedIngressPrincipal {
+    /// Deserialization preserves the credential evidence but NEVER the
+    /// attestation — a principal loaded from stored data cannot
+    /// authorize verified-ingress resolution.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Repr {
+            method: IngressAuthMethod,
+            credential_fingerprint: String,
+        }
+        let repr = Repr::deserialize(deserializer)?;
+        Ok(Self {
+            method: repr.method,
+            credential_fingerprint: repr.credential_fingerprint,
+            transport_attested: false,
+        })
+    }
 }
 
 /// Protocol-agnostic identity envelope carried by ingestion adapters.
@@ -383,7 +452,13 @@ impl IdentityResolver {
         bindings: &[TrustedBinding],
         principal: &VerifiedIngressPrincipal,
     ) -> IdentityResolution {
-        let fp = principal.credential_fingerprint.as_str();
+        // Fail closed on unattested principals: values deserialized
+        // from journals, API payloads, or any non-transport source can
+        // never authorize canonical attribution.
+        if !principal.is_transport_attested() {
+            return Self::resolve_against(observed, std::iter::empty());
+        }
+        let fp = principal.credential_fingerprint();
         Self::resolve_against(
             observed,
             bindings

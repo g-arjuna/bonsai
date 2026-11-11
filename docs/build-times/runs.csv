@@ -78,3 +78,11 @@ date,command,scope,wall_seconds,result,notes
 2026-11-11,docker build bn021c-routing:local (BN-021f binary),bn021c routing image,~15,pass,scratch image wrapping refreshed target/debug/bonsai-routing
 2026-11-11,BN021C_RESET=1 up.sh (BN-021f mTLS lab),NAT acceptance bring-up,~120,pass,v3 client certs; vexp:exp-frr-{a,b} resolved, frr-c conn:* isolated; BGP converged
 2026-11-11,cargo test regression batch (bn021b bn005 rbmp-rib rbmp-store bn006_epoch bn006_reconnect r01_r04 r05_r06 bn022),regression batch,~1200,pass,all suites 0 failures after bn021c fixture updates (schema v4 + device_id-null assertion per BN-021f spec)
+2026-11-11,cargo check -p bonsai --all-targets,bonsai check all-targets,~1100,pass,warm sccache; clean
+2026-11-11,cargo test --test bn021f_hardening,bn021f hardening suite,~320,pass,9/9: TLS nonblocking+limit+recovery+shutdown, active+multi-session revocation, rotation, deployment policy, principal boundary
+2026-11-11,cargo test --test bn021f_authenticated_ingress,bn021f auth ingress suite,~30,pass,9/9 unchanged contract after listener/registry refactor
+2026-11-11,cargo test regression batch (bn021c bn021b bn005 rbmp-rib rbmp-store bn006 r01_r04 r05_r06 bn022 bn005_deployment),regression batch,~1500,pass,all suites 0 failures
+2026-11-11,cargo clippy -p bonsai --all-targets,clippy bonsai,~240,fail,1 error = pre-existing never_loop in src/http_server/device.rs; reproduced on baseline stash; 296 warnings all pre-existing
+2026-11-11,cargo build --bin bonsai-routing + docker build bn021c-routing:local,bonsai-routing debug bin+image,~300,pass,hardening binary for lab
+2026-11-11,BN021C_RESET=1 up.sh + R1-R5 NAT scenarios,NAT acceptance hardening,~900,pass,revocation/multi-session/rotation/TLS-saturation/restart-replay all verified live
+2026-11-11,docker builder prune -af + df, disk maintenance,5,pass,freed ~50G build cache after ENOSPC during test compile

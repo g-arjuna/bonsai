@@ -198,20 +198,39 @@ before claiming equivalent history or enabling it as an authority.
   never carry `device_id`; live NAT lab with per-exporter client certs
   behind one translated source — sequential same-claim impersonation
   rejected, legitimate reconnect/multi-connection/replay verified.
-- Pending: active-session revocation for already-connected exporters
-  (bindings re-read per NEW connection only); certificate-rotation
-  runbook; production exporter mTLS support or equivalent authenticated
+- Pending: production exporter mTLS support or equivalent authenticated
   sidecar (lab uses `bmp_tls_proxy.py`); cross-protocol identity
-  regression for NetFlow/IPFIX (BN-021d gate).
+  regression for NetFlow/IPFIX (BN-021d gate). Simultaneous
+  old+new credential authorization during rotation (credential-list
+  schema) is a deferred enhancement — sequential re-pin procedure
+  documented.
 - Evidence: `docs/merger/evidence/2026-11-11-bn021f-authenticated-bmp/`;
   tests `tests/bn021f_authenticated_ingress.rs` 9/9.
+
+**BN-021f hardening — revocation & TLS availability** — IMPLEMENTED +
+LAB VERIFIED (11 November).
+- Done: TLS handshakes moved off the accept loop into bounded
+  per-connection tasks (semaphore `MAX_HANDSHAKES`=64, 10 s timeout,
+  shutdown-aware); active-session registry + periodic batched
+  binding revalidation (`RECHECK_INTERVAL_MS`=5000) revokes live
+  sessions on binding/credential/device change with durable
+  `bmp_authorization_revoked` gap and last-known preservation;
+  credential rotation = binding re-pin preserving canonical identity;
+  production deployment policy requires mTLS off-loopback, Verified
+  mode, and explicit dev overrides for plaintext/claim_compat;
+  `VerifiedIngressPrincipal` fields private + transport-only
+  constructor + fail-closed deserialization.
+- Verified: `tests/bn021f_hardening.rs` 9/9; live NAT R1–R5 (active
+  revocation, multi-session revocation, rotation, 64-permit TLS
+  saturation + recovery, SIGKILL restart/replay).
+- Evidence: `docs/merger/evidence/2026-11-11-bn021f-revocation-hardening/`.
 
 **BN-021g — Production acceptance** — OPEN (renamed from BN-021f slot;
 see above for the implemented slice).
 - Cross-protocol identity regression tests; multi-site overlapping
   addresses; unknown/conflicting handling; collector restart/failover;
   source-alias migration + journal replay; identity metrics/diagnostics;
-  active-session credential/binding revocation design.
+  simultaneous credential-authorization rotation (schema v5 candidate).
 
 ### Source-audited correctness refinements (existing BN ownership)
 

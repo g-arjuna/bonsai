@@ -605,10 +605,39 @@ replay preserves verified provenance. Verified: bn021f suite 9/9,
 bn021c 17/17, bn021b 13/13, bn005_closeout 11/11, rbmp-rib/rbmp-store,
 bn006, r01_r04, r05_r06, bn022 — 0 failures; clippy warnings only
 plus one pre-existing `never_loop` error in untouched
-`src/http_server/device.rs`. Remaining: active-session revocation for
-already-connected exporters, cert-rotation runbook, production
-exporter mTLS story. Evidence:
+`src/http_server/device.rs` (reproduced on baseline). Remaining:
+production exporter mTLS story; simultaneous old+new credential
+authorization during rotation (sequential re-pin documented).
+Evidence:
 `docs/merger/evidence/2026-11-11-bn021f-authenticated-bmp/`.
+
+BN-021f hardening pass (11 November): the four remaining security/
+lifecycle findings from the PR #2 review are resolved. TLS
+handshakes no longer serialize the BMP accept loop — they run in
+per-connection tasks bounded by a semaphore (default 64 concurrent,
+10 s timeout, excess dropped, shutdown-aware). An active-session
+registry plus periodic batched binding revalidation
+(`BONSAI_ROUTING_BMP_RECHECK_INTERVAL_MS`, default 5000) revokes live
+sessions when a binding/credential/device mapping changes: ingestion
+stops, the transport closes through the durable disconnect path with
+a `bmp_authorization_revoked` gap, last-known routes are preserved,
+and unauthorized reconnects isolate to `conn:*`. Multiple sessions
+sharing one verified principal are all invalidated by one revocation.
+Credential rotation is a documented sequential re-pin that preserves
+canonical exporter/device identity and `vexp:*` scope; simultaneous
+overlap authorization is deferred (schema v5 candidate). Production
+deployment policy now refuses non-loopback plaintext BMP and
+claim-compatible mode unless explicit dev overrides are set, and
+fully validates mTLS material at startup; compose exposes the TLS env
+contract. `VerifiedIngressPrincipal` can no longer be minted outside
+the transport layer — private fields, `pub(crate)` attestation
+constructor, and deserialization always yields an unattested value
+that fails closed. Live NAT R1–R5 verified revocation, multi-session
+revocation, rotation, TLS saturation/recovery, and SIGKILL
+restart/replay. Verified: bn021f_hardening 9/9,
+bn021f_authenticated_ingress 9/9, all prior regression suites 0
+failures. Evidence:
+`docs/merger/evidence/2026-11-11-bn021f-revocation-hardening/`.
 
 BN-022 containment slice (10 November): ad-hoc graph reads are now
 denied-by-default for non-admin principals. `src/graph/explorer.rs`

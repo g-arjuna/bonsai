@@ -203,6 +203,7 @@ docker run -d --name $PFX-bonsai --network $PFX-pub --ip 10.240.0.20 \
   -e BONSAI_ROUTING_BMP_TLS_CERT=/app/runtime/tls/server.crt \
   -e BONSAI_ROUTING_BMP_TLS_KEY=/app/runtime/tls/server.key \
   -e BONSAI_ROUTING_BMP_TLS_CLIENT_CA=/app/runtime/tls/ca.crt \
+  -e BONSAI_ROUTING_BMP_RECHECK_INTERVAL_MS=1000 \
   -e RUST_LOG=info,bonsai=debug \
   -p 127.0.0.1:18099:8081 \
   --entrypoint /usr/local/bin/bonsai-routing bn021c-routing:local
