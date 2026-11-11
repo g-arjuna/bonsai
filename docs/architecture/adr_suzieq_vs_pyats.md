@@ -1,5 +1,8 @@
 # ADR: Parsing Strategy for Redundancy Discovery & Operational Data
 
+> **11 November 2026 scope note:** This historical decision still defers **running SuzieQ as Bonsai's primary collector**. The newer [Bonsai-native network intelligence ADR](ADR_NATIVE_NETWORK_INTELLIGENCE_2026-11-11.md) adopts **selective SuzieQ OSS algorithm/mapping reuse in native Rust**, not SuzieQ as a mandatory runtime. The [design](NATIVE_NETWORK_INTELLIGENCE_DESIGN_2026-11-11.md) and **BN-024** backlog define parity, config semantics, SONiC extension and rollout gates; PyATS/Genie/TextFSM are not retired by the documentation decision. The legacy parser bridge has an independently identified request/selector mismatch that BN-024-01 must repair and test before parity claims.
+
+
 **Status**: Accepted (Revised)  
 **Date**: 2026-05-23 (original) / 2026-05-23 (revised)  
 **Author**: Bonsai Engineering  

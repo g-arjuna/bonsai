@@ -1,5 +1,8 @@
 # Config-State Lane Architecture
 
+> **11 November 2026 architectural scope note:** This earlier document focuses on gNMI config **change events** and describes some tasks as pending at that historical snapshot. Current `src/config_store.rs` and `src/change_detection.rs` already contain encrypted config snapshots and hash/text-diff functionality. Neither amounts to a verified multi-NOS effective-configuration compiler. The [Native Network Intelligence ADR](ADR_NATIVE_NETWORK_INTELLIGENCE_2026-11-11.md), [technical design](NATIVE_NETWORK_INTELLIGENCE_DESIGN_2026-11-11.md) and **BN-024** backlog now own proposed typed configuration semantics and reconciliation; do not infer deployed completion from either document alone.
+
+
 > D2-4 — 2026-05-17. Describes the design for ingesting configuration changes
 > as first-class signals, storing them as graph nodes, and correlating them with
 > operational faults.
