@@ -1,0 +1,85 @@
+{
+  "columns": [
+    "id",
+    "exporter_address",
+    "exporter_id",
+    "identity_status",
+    "src",
+    "dst",
+    "dport",
+    "proto"
+  ],
+  "row_count": 7,
+  "rows": [
+    {
+      "id": "flowsrc/bn021d-nat-lab/ipfix/10.241.0.200:28277/odid7:203.0.113.2:198.51.100.1:443:tcp",
+      "exporter_address": "10.241.0.200",
+      "exporter_id": "flowsrc/bn021d-nat-lab/ipfix/10.241.0.200:28277/odid7",
+      "identity_status": "provisional",
+      "src": "203.0.113.2",
+      "dst": "198.51.100.1",
+      "dport": 443,
+      "proto": "tcp"
+    },
+    {
+      "id": "flowsrc/bn021d-nat-lab/ipfix/10.241.0.200:49152/odid7:192.0.2.11:198.51.100.1:443:tcp",
+      "exporter_address": "10.241.0.200",
+      "exporter_id": "flowsrc/bn021d-nat-lab/ipfix/10.241.0.200:49152/odid7",
+      "identity_status": "provisional",
+      "src": "192.0.2.11",
+      "dst": "198.51.100.1",
+      "dport": 443,
+      "proto": "tcp"
+    },
+    {
+      "id": "flowsrc/bn021d-nat-lab/nf9/10.241.0.200:28277/sid7:203.0.113.1:198.51.100.1:8443:udp",
+      "exporter_address": "10.241.0.200",
+      "exporter_id": "flowsrc/bn021d-nat-lab/nf9/10.241.0.200:28277/sid7",
+      "identity_status": "provisional",
+      "src": "203.0.113.1",
+      "dst": "198.51.100.1",
+      "dport": 8443,
+      "proto": "udp"
+    },
+    {
+      "id": "flowsrc/bn021d-nat-lab/nf9/10.241.0.200:49152/sid7:192.0.2.1:198.51.100.1:443:tcp",
+      "exporter_address": "10.241.0.200",
+      "exporter_id": "flowsrc/bn021d-nat-lab/nf9/10.241.0.200:49152/sid7",
+      "identity_status": "provisional",
+      "src": "192.0.2.1",
+      "dst": "198.51.100.1",
+      "dport": 443,
+      "proto": "tcp"
+    },
+    {
+      "id": "flowsrc/bn021d-nat-lab/nf9/10.241.0.200:49153/sid7:192.0.2.1:198.51.100.1:443:tcp",
+      "exporter_address": "10.241.0.200",
+      "exporter_id": "flowsrc/bn021d-nat-lab/nf9/10.241.0.200:49153/sid7",
+      "identity_status": "provisional",
+      "src": "192.0.2.1",
+      "dst": "198.51.100.1",
+      "dport": 443,
+      "proto": "tcp"
+    },
+    {
+      "id": "flowsrc/bn021d-nat-lab/nf9/10.241.0.200:4983/sid99:198.51.100.9:198.51.100.1:22:tcp",
+      "exporter_address": "10.241.0.200",
+      "exporter_id": "flowsrc/bn021d-nat-lab/nf9/10.241.0.200:4983/sid99",
+      "identity_status": "provisional",
+      "src": "198.51.100.9",
+      "dst": "198.51.100.1",
+      "dport": 22,
+      "proto": "tcp"
+    },
+    {
+      "id": "flowsrc/bn021d-nat-lab/nf9/10.241.0.200:49999/sid99:192.0.2.55:198.51.100.1:22:tcp",
+      "exporter_address": "10.241.0.200",
+      "exporter_id": "flowsrc/bn021d-nat-lab/nf9/10.241.0.200:49999/sid99",
+      "identity_status": "provisional",
+      "src": "192.0.2.55",
+      "dst": "198.51.100.1",
+      "dport": 22,
+      "proto": "tcp"
+    }
+  ]
+}

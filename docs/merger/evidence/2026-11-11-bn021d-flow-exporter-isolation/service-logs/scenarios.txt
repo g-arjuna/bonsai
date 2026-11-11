@@ -1,0 +1,31 @@
+[10:45:54] === phase 1: concurrent exporters behind shared NAT ===
+[10:45:54] exec bn021d-exp-c scenario=unbound --sport 49152 --src-ip 198.51.100.9
+[10:45:54] exec bn021d-exp-a scenario=nat-a --sport 49152 --src-ip 192.0.2.1
+[10:45:54] exec bn021d-exp-b scenario=collide --sport 49152 --src-ip 203.0.113.1
+sent v9 tmpl+data sid=7 tid=400B -> ('10.241.0.10', 2055)
+sent ipfix tmpl+data odid=7 tid=600B -> ('10.241.0.10', 2055)
+sent v9 data-only on NEW port (expect drop)B -> ('10.241.0.10', 2055)
+sent v9 unbound sid=99 tid=777B -> ('10.241.0.10', 2055)
+sent v9 collide tmpl+data sid=7 tid=400 alt-fieldsB -> ('10.241.0.10', 2055)
+sent ipfix collide tmpl+data odid=7 tid=950B -> ('10.241.0.10', 2055)
+sent v9 tmpl+data on NEW portB -> ('10.241.0.10', 2055)
+sent v9 data after uptime restart (expect drop)B -> ('10.241.0.10', 2055)
+sent v9 tmpl+data after restartB -> ('10.241.0.10', 2055)
+[10:45:55] === phase 2: settle, then malformed flood from exp-b ===
+[10:45:56] === phase 3: collector restart — stale templates must not decode ===
+[10:45:58] bonsai readiness: {"ready":true,"reason":"ready"}
+[10:45:58] exec bn021d-exp-a scenario=data-only --sport 49152
+sent v9 data-only sid=7 tid=400B -> ('10.241.0.10', 2055)
+[10:45:59] exec bn021d-exp-a scenario=template --sport 49152
+sent v9 template-only sid=7 tid=400B -> ('10.241.0.10', 2055)
+[10:45:59] exec bn021d-exp-a scenario=data-only --sport 49152
+sent v9 data-only sid=7 tid=400B -> ('10.241.0.10', 2055)
+[10:46:00] === done ===
+malformed packets sent
+malformed batch sent (debug logging enabled)
+[2m2026-11-11T11:04:05.408505Z[0m [34mDEBUG[0m [2mbonsai::streaming::netflow[0m[2m:[0m netflow parse error [3mpeer[0m[2m=[0m10.241.0.200:49997 [3merror[0m[2m=[0mpacket too short
+[2m2026-11-11T11:04:25.346607Z[0m [34mDEBUG[0m [2mbonsai::streaming::netflow[0m[2m:[0m netflow parse error [3mpeer[0m[2m=[0m10.241.0.200:49153 [3merror[0m[2m=[0mpacket too short
+[2m2026-11-11T11:04:25.396914Z[0m [34mDEBUG[0m [2mbonsai::streaming::netflow[0m[2m:[0m netflow parse error [3mpeer[0m[2m=[0m10.241.0.200:49153 [3merror[0m[2m=[0munsupported netflow version 11
+[2m2026-11-11T11:04:25.447309Z[0m [34mDEBUG[0m [2mbonsai::streaming::netflow[0m[2m:[0m netflow parse error [3mpeer[0m[2m=[0m10.241.0.200:49153 [3merror[0m[2m=[0mmalformed v9 flowset at offset 20
+[2m2026-11-11T11:04:25.497402Z[0m [34mDEBUG[0m [2mbonsai::streaming::netflow[0m[2m:[0m netflow parse error [3mpeer[0m[2m=[0m10.241.0.200:49153 [3merror[0m[2m=[0mIPFIX message length 65535 invalid for datagram 104
+[2m2026-11-11T11:04:25.547537Z[0m [34mDEBUG[0m [2mbonsai::streaming::netflow[0m[2m:[0m netflow parse error [3mpeer[0m[2m=[0m10.241.0.200:49153 [3merror[0m[2m=[0munsupported netflow version 1

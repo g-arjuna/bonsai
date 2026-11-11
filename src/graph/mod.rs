@@ -2173,6 +2173,14 @@ impl GraphStore {
         let _ = conn.query("ALTER TABLE AppFlow ADD icmp_type INT64 DEFAULT 0");
         let _ = conn.query("ALTER TABLE AppFlow ADD icmp_code INT64 DEFAULT 0");
 
+        // BN-021d: per-source exporter attribution on AppFlow nodes.
+        // exporter_id is the provisional flow source key
+        // (flowsrc/collector/proto/ip:port/domain); identity_status is
+        // "provisional" for plain UDP and "resolved" only via verified
+        // ingress. Neither is a canonical device id.
+        let _ = conn.query("ALTER TABLE AppFlow ADD exporter_id STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE AppFlow ADD identity_status STRING DEFAULT ''");
+
         // ── EV1-2: Parquet pipeline catalog ──────────────────────────────────
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS ParquetExport(\
@@ -5030,6 +5038,7 @@ fn write_blocking(
         ),
         TelemetryEvent::NetflowRecord {
             exporter_address,
+            exporter_id,
             src_address,
             dst_address,
             dst_port,
@@ -5040,6 +5049,7 @@ fn write_blocking(
             conn,
             update,
             &exporter_address,
+            &exporter_id,
             &src_address,
             &dst_address,
             dst_port,
@@ -5608,6 +5618,7 @@ fn write_netflow_record(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     exporter_address: &str,
+    exporter_id: &str,
     src_address: &str,
     dst_address: &str,
     dst_port: i64,
@@ -5618,7 +5629,11 @@ fn write_netflow_record(
     corr_buf: &CorrelationBuffer,
     ddos_cfg: &DdosConfig,
 ) -> Result<()> {
-    let id = format!("{src_address}:{dst_address}:{dst_port}:{protocol}");
+    // BN-021d: the AppFlow id includes the provisional exporter source
+    // key so NAT-shared exporters reporting identical 5-tuples remain
+    // distinct, independently queryable flow records instead of
+    // collapsing into one node.
+    let id = format!("{exporter_id}:{src_address}:{dst_address}:{dst_port}:{protocol}");
     let v = &update.value;
     let ddos = AppFlowDdosFields {
         tcp_flags: json_f64(v, "tcp_flags") as u8,
@@ -5653,28 +5668,67 @@ fn write_netflow_record(
         &ddos,
     )?;
 
+    // BN-021d: record the provisional exporter source key and identity
+    // status on the AppFlow node so per-source attribution survives
+    // queries. `exporter_address` remains the observed transport IP.
+    {
+        let identity_status = v
+            .get("identity_status")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mut stmt = conn.prepare(
+            "MATCH (f:AppFlow {id: $fid}) \
+             SET f.exporter_id = $eid, f.identity_status = $istatus",
+        )?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("fid", Value::String(id.clone())),
+                ("eid", Value::String(exporter_id.to_string())),
+                ("istatus", Value::String(identity_status)),
+            ],
+        )?;
+    }
+
     // Register exporter IP as DeviceAddress so it resolves to any Device node
     // whose primary bare IP matches — covers gNMI-registered devices.
+    // This is evidence registration only: it creates no Device node and
+    // no ownership edge.
     let exporter_bare = crate::registry::strip_port(exporter_address);
     let _ = upsert_device_address(conn, exporter_bare, "netflow", ts(update.timestamp_ns));
 
     // Track A2: CARRIES_FLOW — link the exporting Device to this AppFlow.
-    // Now uses exact bare-IP match since Device.address is always the bare IP.
-    // Silent no-op if the Device node doesn't exist yet (collector-only mode).
-    let mut carries = conn
-        .prepare(
-            "MATCH (d:Device {address: $addr}), (f:AppFlow {id: $fid}) \
-             MERGE (d)-[:CARRIES_FLOW]->(f)",
+    // BN-021d: gated on verified identity. Plain UDP flow observations
+    // are provisional — the observed transport IP is not proof that a
+    // canonical Device with that address is the exporter, so unverified
+    // sources must NOT be merged into the canonical device inventory.
+    // A future authenticated flow ingress populates `device_address`
+    // (canonical address) + `identity_status == "resolved"`.
+    let canonical_device_address = v
+        .get("device_address")
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
+    let identity_status_str = v
+        .get("identity_status")
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
+    if identity_status_str == "resolved" && !canonical_device_address.is_empty() {
+        let mut carries = conn
+            .prepare(
+                "MATCH (d:Device {address: $addr}), (f:AppFlow {id: $fid}) \
+                 MERGE (d)-[:CARRIES_FLOW]->(f)",
+            )
+            .context("prepare CARRIES_FLOW merge")?;
+        conn.execute(
+            &mut carries,
+            vec![
+                ("addr", Value::String(canonical_device_address.to_string())),
+                ("fid", Value::String(id.clone())),
+            ],
         )
-        .context("prepare CARRIES_FLOW merge")?;
-    conn.execute(
-        &mut carries,
-        vec![
-            ("addr", Value::String(exporter_bare.to_string())),
-            ("fid", Value::String(id.clone())),
-        ],
-    )
-    .context("execute CARRIES_FLOW merge")?;
+        .context("execute CARRIES_FLOW merge")?;
+    }
 
     // Track C1: SRC_HOST / DST_HOST — link AppFlow to HostEndpoints if they exist.
     // Completely silent when no HostEndpoint nodes are present (SP deployments).
@@ -5731,11 +5785,13 @@ fn write_netflow_record(
     );
 
     let evt = BonsaiEvent {
-        device_address: exporter_address.to_string(),
+        device_address: exporter_id.to_string(),
         event_type: "app_flow_event".to_string(),
         detail_json: serde_json::json!({
             "flow_id": id,
             "exporter_address": exporter_address,
+            "exporter_id": exporter_id,
+            "identity_status": identity_status_str,
             "src_address": src_address,
             "dst_address": dst_address,
             "dst_port": dst_port,

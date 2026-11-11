@@ -86,3 +86,12 @@ date,command,scope,wall_seconds,result,notes
 2026-11-11,cargo build --bin bonsai-routing + docker build bn021c-routing:local,bonsai-routing debug bin+image,~300,pass,hardening binary for lab
 2026-11-11,BN021C_RESET=1 up.sh + R1-R5 NAT scenarios,NAT acceptance hardening,~900,pass,revocation/multi-session/rotation/TLS-saturation/restart-replay all verified live
 2026-11-11,docker builder prune -af + df, disk maintenance,5,pass,freed ~50G build cache after ENOSPC during test compile
+2026-11-11,cargo clean (user-requested full clean),workspace target/,~60,pass,removed 72663 files / 220.9GiB; disk 90%->44%
+2026-11-11,cargo test --test bn021d_flow_exporter_isolation (first compile),bn021d suite cold build,~370,pass,lib rebuild 6m13s post-clean + test link; 6 test-source errors fixed iteratively
+2026-11-11,cargo test --test bn021d_flow_exporter_isolation,bn021d suite,~35,pass,11/11 integration tests over real UDP sockets
+2026-11-11,cargo test -p bonsai --lib streaming::netflow,bn021d unit tests,~190,pass,3/3 identity-resolution unit tests
+2026-11-11,cargo check -p bonsai --all-targets,bonsai check all-targets,~16,pass,warm; clean no warnings
+2026-11-11,cargo test regression batch (bn021f x2 bn021c bn021b bn005 bn006 r01_r04 r05_r06 bn022 rbmp-rib rbmp-store),regression batch,~1500,pass,all suites 0 failures; 10 test binaries linked post-clean
+2026-11-11,cargo build --bin bonsai,bonsai debug bin,345,pass,5m45s for lab image (960MB binary)
+2026-11-11,cargo clippy -p bonsai --all-targets,clippy bonsai,~600,fail,1 error = same pre-existing never_loop device.rs; 296 warnings baseline-equal after fixing new netflow lints
+2026-11-11,bn021d-flow-nat up.sh + run_scenarios.sh + verify.sh,NAT acceptance,~600,pass,first topology (multi-net) unreachable -> rebuilt single-net router-on-a-stick; 7 AppFlow rows all provisional, 0 CARRIES_FLOW, 0 Devices, malformed rejected

@@ -115,6 +115,10 @@ pub enum TelemetryEvent {
     },
     NetflowRecord {
         exporter_address: String,
+        /// BN-021d: provisional per-source exporter key
+        /// (`flowsrc/...`) — unique per collector/transport endpoint/
+        /// protocol/observation-domain, never a canonical device id.
+        exporter_id: String,
         src_address: String,
         dst_address: String,
         dst_port: i64,
@@ -544,8 +548,15 @@ impl TelemetryUpdate {
                 .get("packets_per_sec")
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0);
+            let exporter_id = self
+                .value
+                .get("exporter_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or(exporter_address.as_str())
+                .to_string();
             return TelemetryEvent::NetflowRecord {
                 exporter_address,
+                exporter_id,
                 src_address,
                 dst_address,
                 dst_port,

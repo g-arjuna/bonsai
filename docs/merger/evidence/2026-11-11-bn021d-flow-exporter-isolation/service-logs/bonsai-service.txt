@@ -1,0 +1,246 @@
+[2m2026-11-11T10:45:14.955875Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m bonsai starting [3mprotocol_version[0m[2m=[0m1
+[2m2026-11-11T10:45:14.955942Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m startup [3mphase[0m[2m=[0m"config_load" [3melapsed_ms[0m[2m=[0m0
+[2m2026-11-11T10:45:14.956094Z[0m [32m INFO[0m [2mbonsai::resource_profile[0m[2m:[0m resource profile selected [3mprofile[0m[2m=[0m"xlarge" [3mram_gb[0m[2m=[0m46 [3meffective_ram_gb[0m[2m=[0m46 [3mcpu_cores[0m[2m=[0m8 [3mdisk_free_gb[0m[2m=[0m206 [3min_container[0m[2m=[0mtrue [3mmemory_budget_mb[0m[2m=[0m4096
+[2m2026-11-11T10:45:14.956107Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m runtime mode selected [3mmode[0m[2m=[0mAll [3mrun_core[0m[2m=[0mtrue [3mrun_collector[0m[2m=[0mtrue
+[2m2026-11-11T10:45:14.972246Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LadybugDB opened [3mpath[0m[2m=[0m"/app/runtime/bonsai.db" [3mbuffer_pool_mib[0m[2m=[0m2048
+[2m2026-11-11T10:45:17.386425Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph schema initialised
+[2m2026-11-11T10:45:17.386437Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"schema_init" [3melapsed_ms[0m[2m=[0m2414
+[2m2026-11-11T10:45:17.393921Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"backfill" [3melapsed_ms[0m[2m=[0m7
+[2m2026-11-11T10:45:17.393934Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph store opened [3mpath[0m[2m=[0m"/app/runtime/bonsai.db"
+[2m2026-11-11T10:45:17.393968Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m startup [3mphase[0m[2m=[0m"graph_open" [3melapsed_ms[0m[2m=[0m2437
+[2m2026-11-11T10:45:17.394065Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor started
+[2m2026-11-11T10:45:17.394069Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor started [3mbudget_mb[0m[2m=[0m4096 [3msoft_mb[0m[2m=[0m3276 [3mhard_mb[0m[2m=[0m3891
+[2m2026-11-11T10:45:17.394085Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop started [3mbudget_eps[0m[2m=[0m200000
+[2m2026-11-11T10:45:17.402953Z[0m [33m WARN[0m [2mbonsai::signals::snmp[0m[2m:[0m snmp_oid_patterns dir not readable; fact extraction disabled [3mdir[0m[2m=[0m"config/snmp_oid_patterns" [3merror[0m[2m=[0mNo such file or directory (os error 2)
+[2m2026-11-11T10:45:17.403035Z[0m [32m INFO[0m [2mbonsai::write_coordinator[0m[2m:[0m write coordinator started [3mbatch_size[0m[2m=[0m256 [3mflush_interval[0m[2m=[0m1s
+[2m2026-11-11T10:45:17.405018Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m syslog shun rules loaded [3mcount[0m[2m=[0m0
+[2m2026-11-11T10:45:17.405044Z[0m [32m INFO[0m [2mbonsai::shun[0m[2m:[0m shun rules reloaded [3mcount[0m[2m=[0m0
+[2m2026-11-11T10:45:17.405096Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m opening API registry [3mpath[0m[2m=[0m/app/runtime/bonsai-registry.json
+[2m2026-11-11T10:45:17.405110Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler started [3minterval_secs[0m[2m=[0m60 [3moutput_path[0m[2m=[0m"none"
+[2m2026-11-11T10:45:17.405138Z[0m [32m INFO[0m [2mbonsai::streaming::netflow[0m[2m:[0m Netflow/IPFIX UDP receiver listening [3maddr[0m[2m=[0m0.0.0.0:2055
+[2m2026-11-11T10:45:17.405128Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard started [3mcheck_interval_secs[0m[2m=[0m300 [3mmax_archive_gb[0m[2m=[0m10 [3mmax_graph_gb[0m[2m=[0m5 [3mwarn_threshold_pct[0m[2m=[0m80
+[2m2026-11-11T10:45:17.405351Z[0m [32m INFO[0m [2mbonsai::sqlite_store[0m[2m:[0m migrating config store schema [3mfrom[0m[2m=[0m0 [3mto[0m[2m=[0m4
+[2m2026-11-11T10:45:17.406219Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m archive disk check [3mpct[0m[2m=[0m0 [3marchive_gb[0m[2m=[0m"0.00"
+[2m2026-11-11T10:45:17.406276Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m486 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m1 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T10:45:17.776207Z[0m [32m INFO[0m [2mbonsai::sqlite_store[0m[2m:[0m migrating JSON files to SQLite config store
+[2m2026-11-11T10:45:17.776307Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m API registry opened [3mpath[0m[2m=[0m/app/runtime/bonsai-registry.json
+[2m2026-11-11T10:45:17.776315Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m opening credential vault [3mpath[0m[2m=[0m/app/runtime/credentials [3mpassphrase_env[0m[2m=[0mBONSAI_VAULT_PASSPHRASE
+[2m2026-11-11T10:45:17.776346Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m credential vault open complete [3mpath[0m[2m=[0m/app/runtime/credentials
+[2m2026-11-11T10:45:17.776359Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m credential vault unlocked [3mpath[0m[2m=[0m/app/runtime/credentials
+[2m2026-11-11T10:45:17.776363Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m syncing registry site labels into graph
+[2m2026-11-11T10:45:17.776425Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m registry site labels synced into graph
+[2m2026-11-11T10:45:17.811292Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m mode=all: auto-registering local in-process collector [3mlocal_id[0m[2m=[0mlocal
+[2m2026-11-11T10:45:17.811358Z[0m [32m INFO[0m [2mbonsai::assignment[0m[2m:[0m collector registered, initial assignments sent [3mcollector_id[0m[2m=[0mlocal
+[2m2026-11-11T10:45:17.811364Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m local in-process collector registered
+[2m2026-11-11T10:45:17.811367Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m seeding assignment site cache
+[2m2026-11-11T10:45:17.814195Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m starting subscriber manager
+[2m2026-11-11T10:45:17.814614Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m gRPC API and telemetry ingest server listening [3mapi_addr[0m[2m=[0m[::]:50051 [3mingest_compression[0m[2m=[0m"zstd" [3mmtls[0m[2m=[0mfalse
+[2m2026-11-11T10:45:17.814631Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m HTTP UI server listening [3mhttp_addr[0m[2m=[0m0.0.0.0:8080
+[2m2026-11-11T10:45:17.815846Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m runtime/ directory mode is 755, enforcing 0700
+[2m2026-11-11T10:45:17.817032Z[0m [32m INFO[0m [2mbonsai::sqlite_store[0m[2m:[0m migrating config store schema [3mfrom[0m[2m=[0m0 [3mto[0m[2m=[0m4
+[2m2026-11-11T10:45:18.154421Z[0m [32m INFO[0m [2mbonsai::ha_coordinator[0m[2m:[0m HA mode: standalone, assumed leader
+[2m2026-11-11T10:45:18.154748Z[0m [32m INFO[0m [2mbonsai::sqlite_store[0m[2m:[0m migrating JSON files to SQLite config store
+[2m2026-11-11T10:45:18.154819Z[0m [32m INFO[0m [2mbonsai::enrichment[0m[2m:[0m enricher configs loaded [3mcount[0m[2m=[0m0 [3msource[0m[2m=[0m"sqlite"
+[2m2026-11-11T10:45:18.155004Z[0m [32m INFO[0m [2mbonsai::output::traits[0m[2m:[0m output adapter configs loaded [3mcount[0m[2m=[0m0 [3msource[0m[2m=[0m"sqlite"
+[2m2026-11-11T10:45:18.155018Z[0m [32m INFO[0m [2mbonsai::remediation::trust[0m[2m:[0m trust state records loaded [3mcount[0m[2m=[0m0
+[2m2026-11-11T10:45:18.156021Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m HTTP listener bound [3maddr[0m[2m=[0m0.0.0.0:8080
+[2m2026-11-11T10:45:18.156045Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Initializing security module with selective feature enablement
+[2m2026-11-11T10:45:18.156049Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Database security disabled
+[2m2026-11-11T10:45:18.156051Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m MFA disabled
+[2m2026-11-11T10:45:18.156053Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Session management disabled
+[2m2026-11-11T10:45:18.156055Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Threat intelligence disabled
+[2m2026-11-11T10:45:18.156058Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Incident response disabled
+[2m2026-11-11T10:45:18.156060Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Anomaly detection disabled
+[2m2026-11-11T10:45:18.156063Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Security module initialization completed
+[2m2026-11-11T10:45:18.156174Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m startup [3mphase[0m[2m=[0m"ready" [3melapsed_ms[0m[2m=[0m3200
+[2m2026-11-11T10:45:18.156177Z[0m [32m INFO[0m [2mbonsai::reconciler[0m[2m:[0m entity reconciler started (60s poll interval)
+[2m2026-11-11T10:45:18.156208Z[0m [32m INFO[0m [2mbonsai::investigation_trigger[0m[2m:[0m investigation auto-trigger disabled (no ANTHROPIC_API_KEY or config)
+[2m2026-11-11T10:45:18.161080Z[0m [32m INFO[0m [2mbonsai::retention[0m[2m:[0m retention: pruned StateChangeEvents by age [3mdeleted[0m[2m=[0m0
+[2m2026-11-11T10:45:18.179251Z[0m [32m INFO[0m [2mbonsai::http_server::ml_jobs[0m[2m:[0m seed_default_ml_schedules: cleaned up stale running/pending jobs
+[2m2026-11-11T10:45:18.193061Z[0m [32m INFO[0m [2mbonsai::http_server::ml_jobs[0m[2m:[0m seeded default ML schedule: id=sched-anomaly_export cron=0 2 * * *
+[2m2026-11-11T10:45:18.205554Z[0m [32m INFO[0m [2mbonsai::http_server::ml_jobs[0m[2m:[0m seeded default ML schedule: id=sched-remediation_export cron=0 2 * * 0
+[2m2026-11-11T10:45:18.222811Z[0m [32m INFO[0m [2mbonsai::http_server::ml_jobs[0m[2m:[0m seeded default ML schedule: id=sched-gnn_snapshot cron=0 */4 * * *
+[2m2026-11-11T10:45:18.242967Z[0m [32m INFO[0m [2mbonsai::http_server::ml_jobs[0m[2m:[0m seeded default ML schedule: id=sched-graph_snapshot cron=0 */1 * * *
+[2m2026-11-11T10:45:18.255897Z[0m [32m INFO[0m [2mbonsai::http_server::ml_jobs[0m[2m:[0m seeded default ML schedule: id=sched-gnn_inference cron=0 */4 * * *
+[2m2026-11-11T10:45:18.269201Z[0m [32m INFO[0m [2mbonsai::http_server::ml_jobs[0m[2m:[0m seeded default ML schedule: id=sched-syslog_embedding cron=0 */1 * * *
+[2m2026-11-11T10:45:18.281910Z[0m [32m INFO[0m [2mbonsai::http_server::ml_jobs[0m[2m:[0m seeded default ML schedule: id=sched-config_embedding cron=0 */6 * * *
+[2m2026-11-11T10:45:33.498727Z[0m [33m WARN[0m [2mbonsai::graph[0m[2m:[0m batch transaction failed; retrying updates individually [3merror[0m[2m=[0mcommit batch transaction [3mbatch_len[0m[2m=[0m2 [3merrors[0m[2m=[0m0
+[2m2026-11-11T10:45:34.484277Z[0m [33m WARN[0m [2mbonsai::graph[0m[2m:[0m batch transaction failed; retrying updates individually [3merror[0m[2m=[0mcommit batch transaction [3mbatch_len[0m[2m=[0m2 [3merrors[0m[2m=[0m0
+[2m2026-11-11T10:45:55.843991Z[0m [33m WARN[0m [2mbonsai::graph[0m[2m:[0m batch transaction failed; retrying updates individually [3merror[0m[2m=[0mcommit batch transaction [3mbatch_len[0m[2m=[0m7 [3merrors[0m[2m=[0m0
+[2m2026-11-11T10:45:56.065489Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m SIGTERM received — shutting down
+[2m2026-11-11T10:45:56.065521Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m subscriber manager received shutdown
+[2m2026-11-11T10:45:56.065529Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler stopped
+[2m2026-11-11T10:45:56.065543Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop stopped
+[2m2026-11-11T10:45:56.065547Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard stopped
+[2m2026-11-11T10:45:56.065551Z[0m [32m INFO[0m [2mbonsai::http_server::ml_jobs[0m[2m:[0m ml_schedule_tick: shutdown received
+[2m2026-11-11T10:45:56.065550Z[0m [32m INFO[0m [2mbonsai::subscription_status[0m[2m:[0m subscription verifier received shutdown
+[2m2026-11-11T10:45:56.065556Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor stopped
+[2m2026-11-11T10:45:56.065554Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor stopped
+[2m2026-11-11T10:45:56.067162Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"devices" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T10:45:56.067635Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"interfaces" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T10:45:56.068466Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bgp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T10:45:56.075912Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bfd-sessions" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T10:45:56.076457Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"lldp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T10:45:56.100543Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"connected-to" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T10:45:56.113106Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"state-change-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T10:45:56.119588Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"detection-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T10:45:56.120158Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediations" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T10:45:56.126161Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediation-trust-marks" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T10:45:56.126609Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"subscription-status" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T10:45:56.126622Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m bonsai stopped
+[2m2026-11-11T10:45:56.876332Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m bonsai starting [3mprotocol_version[0m[2m=[0m1
+[2m2026-11-11T10:45:56.876405Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m startup [3mphase[0m[2m=[0m"config_load" [3melapsed_ms[0m[2m=[0m0
+[2m2026-11-11T10:45:56.876505Z[0m [32m INFO[0m [2mbonsai::resource_profile[0m[2m:[0m resource profile selected [3mprofile[0m[2m=[0m"xlarge" [3mram_gb[0m[2m=[0m46 [3meffective_ram_gb[0m[2m=[0m46 [3mcpu_cores[0m[2m=[0m8 [3mdisk_free_gb[0m[2m=[0m206 [3min_container[0m[2m=[0mtrue [3mmemory_budget_mb[0m[2m=[0m4096
+[2m2026-11-11T10:45:56.876517Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m runtime mode selected [3mmode[0m[2m=[0mAll [3mrun_core[0m[2m=[0mtrue [3mrun_collector[0m[2m=[0mtrue
+[2m2026-11-11T10:45:57.228221Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LadybugDB opened [3mpath[0m[2m=[0m"/app/runtime/bonsai.db" [3mbuffer_pool_mib[0m[2m=[0m2048
+[2m2026-11-11T10:45:58.539162Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph schema initialised
+[2m2026-11-11T10:45:58.539177Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"schema_init" [3melapsed_ms[0m[2m=[0m1310
+[2m2026-11-11T10:45:58.547338Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"backfill" [3melapsed_ms[0m[2m=[0m8
+[2m2026-11-11T10:45:58.547353Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph store opened [3mpath[0m[2m=[0m"/app/runtime/bonsai.db"
+[2m2026-11-11T10:45:58.547408Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m startup [3mphase[0m[2m=[0m"graph_open" [3melapsed_ms[0m[2m=[0m1670
+[2m2026-11-11T10:45:58.547485Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor started [3mbudget_mb[0m[2m=[0m4096 [3msoft_mb[0m[2m=[0m3276 [3mhard_mb[0m[2m=[0m3891
+[2m2026-11-11T10:45:58.547492Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor started
+[2m2026-11-11T10:45:58.547531Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop started [3mbudget_eps[0m[2m=[0m200000
+[2m2026-11-11T10:45:58.557419Z[0m [33m WARN[0m [2mbonsai::signals::snmp[0m[2m:[0m snmp_oid_patterns dir not readable; fact extraction disabled [3mdir[0m[2m=[0m"config/snmp_oid_patterns" [3merror[0m[2m=[0mNo such file or directory (os error 2)
+[2m2026-11-11T10:45:58.557515Z[0m [32m INFO[0m [2mbonsai::write_coordinator[0m[2m:[0m write coordinator started [3mbatch_size[0m[2m=[0m256 [3mflush_interval[0m[2m=[0m1s
+[2m2026-11-11T10:45:58.559856Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m syslog shun rules loaded [3mcount[0m[2m=[0m0
+[2m2026-11-11T10:45:58.559882Z[0m [32m INFO[0m [2mbonsai::shun[0m[2m:[0m shun rules reloaded [3mcount[0m[2m=[0m0
+[2m2026-11-11T10:45:58.559999Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m opening API registry [3mpath[0m[2m=[0m/app/runtime/bonsai-registry.json
+[2m2026-11-11T10:45:58.560016Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler started [3minterval_secs[0m[2m=[0m60 [3moutput_path[0m[2m=[0m"none"
+[2m2026-11-11T10:45:58.560060Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard started [3mcheck_interval_secs[0m[2m=[0m300 [3mmax_archive_gb[0m[2m=[0m10 [3mmax_graph_gb[0m[2m=[0m5 [3mwarn_threshold_pct[0m[2m=[0m80
+[2m2026-11-11T10:45:58.560101Z[0m [32m INFO[0m [2mbonsai::streaming::netflow[0m[2m:[0m Netflow/IPFIX UDP receiver listening [3maddr[0m[2m=[0m0.0.0.0:2055
+[2m2026-11-11T10:45:58.560941Z[0m [32m INFO[0m [2mbonsai::sqlite_store[0m[2m:[0m migrating JSON files to SQLite config store
+[2m2026-11-11T10:45:58.561067Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m API registry opened [3mpath[0m[2m=[0m/app/runtime/bonsai-registry.json
+[2m2026-11-11T10:45:58.561075Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m opening credential vault [3mpath[0m[2m=[0m/app/runtime/credentials [3mpassphrase_env[0m[2m=[0mBONSAI_VAULT_PASSPHRASE
+[2m2026-11-11T10:45:58.561111Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m credential vault open complete [3mpath[0m[2m=[0m/app/runtime/credentials
+[2m2026-11-11T10:45:58.561131Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m credential vault unlocked [3mpath[0m[2m=[0m/app/runtime/credentials
+[2m2026-11-11T10:45:58.561135Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m syncing registry site labels into graph
+[2m2026-11-11T10:45:58.561349Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m registry site labels synced into graph
+[2m2026-11-11T10:45:58.561668Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m archive disk check [3mpct[0m[2m=[0m0 [3marchive_gb[0m[2m=[0m"0.00"
+[2m2026-11-11T10:45:58.561842Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m493 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m1 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T10:45:58.598146Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m mode=all: auto-registering local in-process collector [3mlocal_id[0m[2m=[0mlocal
+[2m2026-11-11T10:45:58.598199Z[0m [32m INFO[0m [2mbonsai::assignment[0m[2m:[0m collector registered, initial assignments sent [3mcollector_id[0m[2m=[0mlocal
+[2m2026-11-11T10:45:58.598205Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m local in-process collector registered
+[2m2026-11-11T10:45:58.598210Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m seeding assignment site cache
+[2m2026-11-11T10:45:58.600746Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m starting subscriber manager
+[2m2026-11-11T10:45:58.601065Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m gRPC API and telemetry ingest server listening [3mapi_addr[0m[2m=[0m[::]:50051 [3mingest_compression[0m[2m=[0m"zstd" [3mmtls[0m[2m=[0mfalse
+[2m2026-11-11T10:45:58.601086Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m HTTP UI server listening [3mhttp_addr[0m[2m=[0m0.0.0.0:8080
+[2m2026-11-11T10:45:58.603651Z[0m [32m INFO[0m [2mbonsai::ha_coordinator[0m[2m:[0m HA mode: standalone, assumed leader
+[2m2026-11-11T10:45:58.603904Z[0m [32m INFO[0m [2mbonsai::sqlite_store[0m[2m:[0m migrating JSON files to SQLite config store
+[2m2026-11-11T10:45:58.603963Z[0m [32m INFO[0m [2mbonsai::enrichment[0m[2m:[0m enricher configs loaded [3mcount[0m[2m=[0m0 [3msource[0m[2m=[0m"sqlite"
+[2m2026-11-11T10:45:58.604233Z[0m [32m INFO[0m [2mbonsai::output::traits[0m[2m:[0m output adapter configs loaded [3mcount[0m[2m=[0m0 [3msource[0m[2m=[0m"sqlite"
+[2m2026-11-11T10:45:58.604247Z[0m [32m INFO[0m [2mbonsai::remediation::trust[0m[2m:[0m trust state records loaded [3mcount[0m[2m=[0m0
+[2m2026-11-11T10:45:58.605308Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m HTTP listener bound [3maddr[0m[2m=[0m0.0.0.0:8080
+[2m2026-11-11T10:45:58.605324Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Initializing security module with selective feature enablement
+[2m2026-11-11T10:45:58.605327Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Database security disabled
+[2m2026-11-11T10:45:58.605329Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m MFA disabled
+[2m2026-11-11T10:45:58.605331Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Session management disabled
+[2m2026-11-11T10:45:58.605332Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Threat intelligence disabled
+[2m2026-11-11T10:45:58.605334Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Incident response disabled
+[2m2026-11-11T10:45:58.605336Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Anomaly detection disabled
+[2m2026-11-11T10:45:58.605339Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Security module initialization completed
+[2m2026-11-11T10:45:58.605491Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m startup [3mphase[0m[2m=[0m"ready" [3melapsed_ms[0m[2m=[0m1729
+[2m2026-11-11T10:45:58.605495Z[0m [32m INFO[0m [2mbonsai::reconciler[0m[2m:[0m entity reconciler started (60s poll interval)
+[2m2026-11-11T10:45:58.605502Z[0m [32m INFO[0m [2mbonsai::investigation_trigger[0m[2m:[0m investigation auto-trigger disabled (no ANTHROPIC_API_KEY or config)
+[2m2026-11-11T10:45:58.625070Z[0m [32m INFO[0m [2mbonsai::http_server::ml_jobs[0m[2m:[0m seed_default_ml_schedules: cleaned up stale running/pending jobs
+[2m2026-11-11T10:45:58.625142Z[0m [32m INFO[0m [2mbonsai::retention[0m[2m:[0m retention: pruned StateChangeEvents by age [3mdeleted[0m[2m=[0m0
+[2m2026-11-11T10:46:58.561571Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m517 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T10:47:58.561544Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m516 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T10:48:58.561592Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m516 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T10:49:58.561615Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m516 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T10:50:58.560694Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m archive disk check [3mpct[0m[2m=[0m0 [3marchive_gb[0m[2m=[0m"0.00"
+[2m2026-11-11T10:50:58.560735Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m516 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T10:51:58.561571Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m516 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T10:52:58.561477Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m516 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T10:53:58.561471Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m516 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T10:54:58.561492Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m516 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T10:55:58.561472Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m archive disk check [3mpct[0m[2m=[0m0 [3marchive_gb[0m[2m=[0m"0.00"
+[2m2026-11-11T10:55:58.561501Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m517 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T10:56:58.561590Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m517 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T10:57:58.561457Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m517 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T10:58:58.561596Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m517 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T10:59:58.561529Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m517 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T11:00:58.561483Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m517 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T11:00:58.561539Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m archive disk check [3mpct[0m[2m=[0m0 [3marchive_gb[0m[2m=[0m"0.00"
+[2m2026-11-11T11:01:58.561616Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m517 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T11:02:58.561416Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m517 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T11:03:25.584515Z[0m [33m WARN[0m [2mbonsai::graph[0m[2m:[0m batch transaction failed; retrying updates individually [3merror[0m[2m=[0mcommit batch transaction [3mbatch_len[0m[2m=[0m1 [3merrors[0m[2m=[0m0
+[2m2026-11-11T11:03:58.560881Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m523 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T11:03:58.715551Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m SIGTERM received — shutting down
+[2m2026-11-11T11:03:58.715619Z[0m [32m INFO[0m [2mbonsai::http_server::ml_jobs[0m[2m:[0m ml_schedule_tick: shutdown received
+[2m2026-11-11T11:03:58.715635Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor stopped
+[2m2026-11-11T11:03:58.715635Z[0m [32m INFO[0m [2mbonsai::subscription_status[0m[2m:[0m subscription verifier received shutdown
+[2m2026-11-11T11:03:58.715650Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler stopped
+[2m2026-11-11T11:03:58.715654Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard stopped
+[2m2026-11-11T11:03:58.715658Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor stopped
+[2m2026-11-11T11:03:58.715665Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop stopped
+[2m2026-11-11T11:03:58.715656Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m subscriber manager received shutdown
+[2m2026-11-11T11:03:58.717134Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"devices" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T11:03:58.717949Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"interfaces" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T11:03:58.718567Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bgp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T11:03:58.719213Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bfd-sessions" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T11:03:58.719910Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"lldp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T11:03:58.752939Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"connected-to" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T11:03:58.756277Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"state-change-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T11:03:58.757058Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"detection-events" [3mcount[0m[2m=[0mInt64(3)
+[2m2026-11-11T11:03:58.757749Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediations" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T11:03:58.758254Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediation-trust-marks" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T11:03:58.758770Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"subscription-status" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-11T11:03:58.758788Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m bonsai stopped
+[2m2026-11-11T11:03:59.286263Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m bonsai starting [3mprotocol_version[0m[2m=[0m1
+[2m2026-11-11T11:03:59.286450Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m startup [3mphase[0m[2m=[0m"config_load" [3melapsed_ms[0m[2m=[0m0
+[2m2026-11-11T11:03:59.286736Z[0m [32m INFO[0m [2mbonsai::resource_profile[0m[2m:[0m resource profile selected [3mprofile[0m[2m=[0m"xlarge" [3mram_gb[0m[2m=[0m46 [3meffective_ram_gb[0m[2m=[0m46 [3mcpu_cores[0m[2m=[0m8 [3mdisk_free_gb[0m[2m=[0m206 [3min_container[0m[2m=[0mtrue [3mmemory_budget_mb[0m[2m=[0m4096
+[2m2026-11-11T11:03:59.286752Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m runtime mode selected [3mmode[0m[2m=[0mAll [3mrun_core[0m[2m=[0mtrue [3mrun_collector[0m[2m=[0mtrue
+[2m2026-11-11T11:03:59.747247Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LadybugDB opened [3mpath[0m[2m=[0m"/app/runtime/bonsai.db" [3mbuffer_pool_mib[0m[2m=[0m2048
+[2m2026-11-11T11:04:01.008614Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph schema initialised
+[2m2026-11-11T11:04:01.008635Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"schema_init" [3melapsed_ms[0m[2m=[0m1261
+[2m2026-11-11T11:04:01.022172Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"backfill" [3melapsed_ms[0m[2m=[0m13
+[2m2026-11-11T11:04:01.022197Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph store opened [3mpath[0m[2m=[0m"/app/runtime/bonsai.db"
+[2m2026-11-11T11:04:01.022396Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m startup [3mphase[0m[2m=[0m"graph_open" [3melapsed_ms[0m[2m=[0m1735
+[2m2026-11-11T11:04:01.022501Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor started [3mbudget_mb[0m[2m=[0m4096 [3msoft_mb[0m[2m=[0m3276 [3mhard_mb[0m[2m=[0m3891
+[2m2026-11-11T11:04:01.022555Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor started
+[2m2026-11-11T11:04:01.022585Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop started [3mbudget_eps[0m[2m=[0m200000
+[2m2026-11-11T11:04:01.037884Z[0m [33m WARN[0m [2mbonsai::signals::snmp[0m[2m:[0m snmp_oid_patterns dir not readable; fact extraction disabled [3mdir[0m[2m=[0m"config/snmp_oid_patterns" [3merror[0m[2m=[0mNo such file or directory (os error 2)
+[2m2026-11-11T11:04:01.038011Z[0m [32m INFO[0m [2mbonsai::write_coordinator[0m[2m:[0m write coordinator started [3mbatch_size[0m[2m=[0m256 [3mflush_interval[0m[2m=[0m1s
+[2m2026-11-11T11:04:01.040916Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m syslog shun rules loaded [3mcount[0m[2m=[0m0
+[2m2026-11-11T11:04:01.040937Z[0m [32m INFO[0m [2mbonsai::shun[0m[2m:[0m shun rules reloaded [3mcount[0m[2m=[0m0
+[2m2026-11-11T11:04:01.041048Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m opening API registry [3mpath[0m[2m=[0m/app/runtime/bonsai-registry.json
+[2m2026-11-11T11:04:01.041100Z[0m [32m INFO[0m [2mbonsai::streaming::netflow[0m[2m:[0m Netflow/IPFIX UDP receiver listening [3maddr[0m[2m=[0m0.0.0.0:2055
+[2m2026-11-11T11:04:01.041140Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler started [3minterval_secs[0m[2m=[0m60 [3moutput_path[0m[2m=[0m"none"
+[2m2026-11-11T11:04:01.041155Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard started [3mcheck_interval_secs[0m[2m=[0m300 [3mmax_archive_gb[0m[2m=[0m10 [3mmax_graph_gb[0m[2m=[0m5 [3mwarn_threshold_pct[0m[2m=[0m80
+[2m2026-11-11T11:04:01.042448Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m493 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m1 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-11T11:04:01.042495Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m archive disk check [3mpct[0m[2m=[0m0 [3marchive_gb[0m[2m=[0m"0.00"
+[2m2026-11-11T11:04:01.042810Z[0m [32m INFO[0m [2mbonsai::sqlite_store[0m[2m:[0m migrating JSON files to SQLite config store
+[2m2026-11-11T11:04:01.042933Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m API registry opened [3mpath[0m[2m=[0m/app/runtime/bonsai-registry.json
+[2m2026-11-11T11:04:01.042947Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m opening credential vault [3mpath[0m[2m=[0m/app/runtime/credentials [3mpassphrase_env[0m[2m=[0mBONSAI_VAULT_PASSPHRASE
+[2m2026-11-11T11:04:01.042980Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m credential vault open complete [3mpath[0m[2m=[0m/app/runtime/credentials
+[2m2026-11-11T11:04:01.042996Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m credential vault unlocked [3mpath[0m[2m=[0m/app/runtime/credentials
+[2m2026-11-11T11:04:01.043002Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m syncing registry site labels into graph
+[2m2026-11-11T11:04:01.060052Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m registry site labels synced into graph
+[2m2026-11-11T11:04:01.097425Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m mode=all: auto-registering local in-process collector [3mlocal_id[0m[2m=[0mlocal
+[2m2026-11-11T11:04:01.097547Z[0m [32m INFO[0m [2mbonsai::assignment[0m[2m:[0m collector registered, initial assignments sent [3mcollector_id[0m[2m=[0mlocal
+[2m2026-11-11T11:04:01.097643Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m local in-process collector registered
+[2m2026-11-11T11:04:01.097654Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m seeding assignment site cache
+[2m2026-11-11T11:04:01.100779Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m starting subscriber manager
+[2m2026-11-11T11:04:01.101253Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m gRPC API and telemetry ingest server listening [3mapi_addr[0m[2m=[0m[::]:50051 [3mingest_compression[0m[2m=[0m"zstd" [3mmtls[0m[2m=[0mfalse
+[2m2026-11-11T11:04:01.101281Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m HTTP UI server listening [3mhttp_addr[0m[2m=[0m0.0.0.0:8080
+[2m2026-11-11T11:04:01.104686Z[0m [32m INFO[0m [2mbonsai::ha_coordinator[0m[2m:[0m HA mode: standalone, assumed leader
+[2m2026-11-11T11:04:01.105013Z[0m [32m INFO[0m [2mbonsai::sqlite_store[0m[2m:[0m migrating JSON files to SQLite config store
+[2m2026-11-11T11:04:01.105172Z[0m [32m INFO[0m [2mbonsai::enrichment[0m[2m:[0m enricher configs loaded [3mcount[0m[2m=[0m0 [3msource[0m[2m=[0m"sqlite"
+[2m2026-11-11T11:04:01.105510Z[0m [32m INFO[0m [2mbonsai::output::traits[0m[2m:[0m output adapter configs loaded [3mcount[0m[2m=[0m0 [3msource[0m[2m=[0m"sqlite"
+[2m2026-11-11T11:04:01.105538Z[0m [32m INFO[0m [2mbonsai::remediation::trust[0m[2m:[0m trust state records loaded [3mcount[0m[2m=[0m0
+[2m2026-11-11T11:04:01.107041Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m HTTP listener bound [3maddr[0m[2m=[0m0.0.0.0:8080
+[2m2026-11-11T11:04:01.107062Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Initializing security module with selective feature enablement
+[2m2026-11-11T11:04:01.107066Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Database security disabled
+[2m2026-11-11T11:04:01.107069Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m MFA disabled
+[2m2026-11-11T11:04:01.107071Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Session management disabled
+[2m2026-11-11T11:04:01.107073Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Threat intelligence disabled
+[2m2026-11-11T11:04:01.107075Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Incident response disabled
+[2m2026-11-11T11:04:01.107078Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Anomaly detection disabled
+[2m2026-11-11T11:04:01.107081Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Security module initialization completed
+[2m2026-11-11T11:04:01.107242Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m startup [3mphase[0m[2m=[0m"ready" [3melapsed_ms[0m[2m=[0m1820
+[2m2026-11-11T11:04:01.107248Z[0m [32m INFO[0m [2mbonsai::investigation_trigger[0m[2m:[0m investigation auto-trigger disabled (no ANTHROPIC_API_KEY or config)
+[2m2026-11-11T11:04:01.107289Z[0m [32m INFO[0m [2mbonsai::reconciler[0m[2m:[0m entity reconciler started (60s poll interval)
+[2m2026-11-11T11:04:01.115216Z[0m [32m INFO[0m [2mbonsai::retention[0m[2m:[0m retention: pruned StateChangeEvents by age [3mdeleted[0m[2m=[0m0
+[2m2026-11-11T11:04:01.129596Z[0m [32m INFO[0m [2mbonsai::http_server::ml_jobs[0m[2m:[0m seed_default_ml_schedules: cleaned up stale running/pending jobs
+[2m2026-11-11T11:04:05.408505Z[0m [34mDEBUG[0m [2mbonsai::streaming::netflow[0m[2m:[0m netflow parse error [3mpeer[0m[2m=[0m10.241.0.200:49997 [3merror[0m[2m=[0mpacket too short

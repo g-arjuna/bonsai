@@ -1,0 +1,3 @@
+# Local build artifact copied from target/debug/ for `docker build`.
+# Never commit the ~1 GB dev binary.
+bonsai

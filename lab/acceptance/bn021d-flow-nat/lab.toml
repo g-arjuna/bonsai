@@ -1,0 +1,26 @@
+# BN-021d flow-exporter NAT lab — minimal Bonsai config (mode "all" so the
+# core GraphStore consumes TelemetryEvent::NetflowRecord; collector mode
+# uses CollectorGraphStore which does not model AppFlow).
+graph_path = "/app/runtime/bonsai.db"
+http_addr = "0.0.0.0:8080"
+api_addr = "[::]:50051"
+metrics_addr = ""
+
+[runtime]
+mode = "all"
+
+[credentials]
+path = "/app/runtime/credentials"
+passphrase_env = "BONSAI_VAULT_PASSPHRASE"
+
+[logging]
+level = "info"
+[logging.targets]
+"bonsai::streaming::netflow" = "debug"
+
+[streaming.netflow]
+enabled = true
+udp_addr = "0.0.0.0:2055"
+collector_id = "bn021d-nat-lab"
+flow_template_ttl_secs = 120
+flow_context_idle_secs = 300
