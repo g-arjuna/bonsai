@@ -69,7 +69,10 @@ merges on a shared IP or an engine-ID claim.
 - Raw forensic archive (`SnmpArchive`, JSONL) — verbatim event incl.
   community string and `raw_hex`; archive append now `flush()`es before
   returning (same tokio `fs::File` write-buffering fix as the syslog
-  slice) so published updates never precede durable bytes.
+  slice). **`flush()` drains tokio's pending blocking write so readers
+  observe the bytes — it is NOT an `fsync` durability guarantee**; a
+  host crash can still lose the tail of the archive. Periodic/explicit
+  `sync_all` policy is a documented follow-up, not claimed here.
 - Trap parsing for v1/v2c/v3-plaintext; OID-pattern fact extraction;
   Nokia TIMETRA-BGP-MIB peer-address index-suffix parsing.
 - Community/USM filtering, dedup (now post-filter, bounded, metric'd),
@@ -128,6 +131,24 @@ merges on a shared IP or an engine-ID claim.
 - Simulated/synthetic transport only (loopback UDP); no live SNMP
   agent/lab run — live verification remains under BN-021g.
 
+## Credential exposure review
+
+- Published `TelemetryUpdate.value` redacts `community` and `raw_hex`
+  (`community_redacted`/`raw_hex_redacted` flags); the strings survive
+  only in the JSONL archive.
+- Graph `StateChangeEvent.detail` for SNMP carries the *published*
+  (redacted) value; `SnmpFactEventDetail` contains only parsed fact
+  fields — no community, auth material or packet hex.
+- `BonsaiEvent.detail_json` inherits the same redacted payload; SSE/API
+  surfaces therefore never see community strings.
+- Logs record peer IP, version and event type only — never the
+  community, USM names are not logged either.
+- The archive lives at `runtime/signals/snmp.jsonl` (umask-dependent
+  permissions, same as the syslog archive) and is not exposed by any
+  HTTP/API route; it must be treated as a restricted forensic store
+  because it intentionally retains community strings and raw packets.
+  Tightening to `0600` is a reasonable follow-up shared with syslog.
+
 ## Remaining limitations
 
 - Canonical SNMP attribution disabled until authenticated ingress
@@ -135,6 +156,8 @@ merges on a shared IP or an engine-ID claim.
 - No durable provisional SNMP fact store — `snmp_fact_candidate` events
   are `StateChangeEvent`s in the graph; bounded-history follow-up may be
   needed.
+- Archive crash durability relies on filesystem flush semantics (see
+  above); no `fsync` per line.
 - UDP source-IP spoofing is a transport limitation: a forged identical
   `ip:port` is indistinguishable at this layer (documented in
   `SnmpDedup`).
