@@ -171,18 +171,45 @@ before claiming equivalent history or enabling it as an authority.
   (sequential same-claim now fails closed into `conn:*`; verified
   live in the mTLS NAT lab).
 
-**BN-021d — NetFlow v9/IPFIX identity and template lifecycle** — PARTIAL.
-- Done: template cache keyed by UDP SocketAddr + protocol version +
-  Source ID/ODID + template ID, with 4096 outer-context guard; flow payload
-  now includes provisional `exporter_id` alongside IP-valued
-  `exporter_address`.
-- Pending: inventory-backed exporter/device binding; distinct transport
-  provenance, downstream `TelemetryUpdate.target` and graph association;
-  template expiry, withdrawals, exporter restart/port changes and
-  per-context size limits. Source ID/ODID are NOT globally unique, and an
-  IP-derived provisional exporter ID still collides under shared NAT.
+**BN-021d — NetFlow v9/IPFIX identity and template lifecycle** — IMPLEMENTED + LAB VERIFIED (11 November).
+- Done: collision-resistant provisional source key
+  `flowsrc/{collector}/{proto}/{ip}:{port}/{sid|odid}{id}` carried by
+  `TelemetryUpdate.target`, `TelemetryEvent::NetflowRecord.exporter_id`,
+  AppFlow node id and `BonsaiEvent.device_address`; `exporter_address`
+  kept as transport evidence only. Strict IPFIX template parser
+  (per-specifier bounds, enterprise PEN preserved, varlen →
+  non-decodable, message-length/padding validation). Bounded
+  `FlowTemplateCache`: (collector, SocketAddr, version) → domain →
+  template with caps on every dimension, TTL expiry, idle-context
+  eviction, global count/byte budgets, v9 uptime + IPFIX export-time
+  restart clearing, port-change isolation, RFC 7011 §8.4 UDP withdrawal
+  ignore. Packet handling is transactional — all set boundaries are
+  validated before any cache mutation, so rejected packets cannot alter
+  template/restart state. Independent-review hardening (11 Nov):
+  NetFlow graph projection fails closed for every flow update — no
+  `DeviceAddress` refresh, `CARRIES_FLOW`, or `SRC_HOST`/`DST_HOST`
+  edges — because no authenticated flow ingress exists yet and even a
+  serialized `identity_resolution` is self-asserted msgpack evidence.
+  Flow-derived utilization/DDoS device alerts are likewise disabled
+  until verified ingress exists. AppFlow id is the full 5-tuple
+  including `src_port`. Plain UDP
+  stays `provisional` with `device_id = null`; `resolve_flow_identity`
+  is the verified-ingress extension point.
+- Verified: `tests/bn021d_flow_exporter_isolation.rs` 15/15 + 3 unit
+  tests (incl. canonical-collision, forged-claim, transactional
+  malformed-packet and src_port AppFlow regressions); live docker NAT
+  lab (3 exporters → one SNAT source) — 7
+  distinct provisional AppFlow identities, zero canonical Device
+  attribution, template-id/protocol collisions decoded independently,
+  malformed flood rejected, collector restart safe.
+- Pending: authenticated flow transport (TLS relay / TCP-SCTP IPFIX)
+  to populate `device_id`; TCP/SCTP withdrawal semantics.
+- Evidence: `docs/merger/evidence/2026-11-11-bn021d-flow-exporter-isolation/`;
+  lab `lab/acceptance/bn021d-flow-nat/`.
 - Acceptance: NAT collision, protocol/template-ID reuse, source-port
-  changes and restart cannot cross-contaminate decoding or attribution.
+  changes and restart cannot cross-contaminate decoding or attribution
+  — VERIFIED for observational separation; canonical attribution
+  remains gated on verified ingress by design.
 
 **BN-021e — Remaining protocol adapters** — OPEN.
 - Syslog: relay transport identity vs claimed originator (trust levels).

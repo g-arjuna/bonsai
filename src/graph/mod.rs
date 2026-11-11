@@ -1298,6 +1298,7 @@ impl GraphStore {
                 src_address       STRING,\
                 dst_address       STRING,\
                 dst_port          INT64,\
+                src_port          INT64 DEFAULT 0,\
                 protocol          STRING,\
                 bytes_per_sec     DOUBLE,\
                 packets_per_sec   DOUBLE,\
@@ -2172,6 +2173,17 @@ impl GraphStore {
         let _ = conn.query("ALTER TABLE AppFlow ADD amplification_vector STRING DEFAULT ''");
         let _ = conn.query("ALTER TABLE AppFlow ADD icmp_type INT64 DEFAULT 0");
         let _ = conn.query("ALTER TABLE AppFlow ADD icmp_code INT64 DEFAULT 0");
+
+        // BN-021d: per-source exporter attribution on AppFlow nodes.
+        // exporter_id is the provisional flow source key
+        // (flowsrc/collector/proto/ip:port/domain); identity_status is
+        // "provisional" for plain UDP and "resolved" only via verified
+        // ingress. Neither is a canonical device id.
+        let _ = conn.query("ALTER TABLE AppFlow ADD exporter_id STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE AppFlow ADD identity_status STRING DEFAULT ''");
+        // BN-021d review: AppFlow id now includes src_port (full 5-tuple);
+        // store it as a queryable property as well.
+        let _ = conn.query("ALTER TABLE AppFlow ADD src_port INT64 DEFAULT 0");
 
         // ── EV1-2: Parquet pipeline catalog ──────────────────────────────────
         conn.query(
@@ -5030,7 +5042,9 @@ fn write_blocking(
         ),
         TelemetryEvent::NetflowRecord {
             exporter_address,
+            exporter_id,
             src_address,
+            src_port,
             dst_address,
             dst_port,
             protocol,
@@ -5040,15 +5054,15 @@ fn write_blocking(
             conn,
             update,
             &exporter_address,
+            &exporter_id,
             &src_address,
+            src_port,
             &dst_address,
             dst_port,
             &protocol,
             bytes_per_sec,
             packets_per_sec,
             event_tx,
-            corr_buf,
-            ddos_cfg,
         ),
         TelemetryEvent::SflowRecord {
             exporter_address,
@@ -5608,17 +5622,24 @@ fn write_netflow_record(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     exporter_address: &str,
+    exporter_id: &str,
     src_address: &str,
+    src_port: i64,
     dst_address: &str,
     dst_port: i64,
     protocol: &str,
     bytes_per_sec: f64,
     packets_per_sec: f64,
     event_tx: &broadcast::Sender<BonsaiEvent>,
-    corr_buf: &CorrelationBuffer,
-    ddos_cfg: &DdosConfig,
 ) -> Result<()> {
-    let id = format!("{src_address}:{dst_address}:{dst_port}:{protocol}");
+    // BN-021d: the AppFlow id includes the provisional exporter source
+    // key AND the full 5-tuple (source port included) so NAT-shared
+    // exporters reporting identical tuples — and distinct flows from
+    // one exporter differing only in source port — remain distinct,
+    // independently queryable flow records instead of collapsing.
+    let id = format!(
+        "{exporter_id}:{src_address}:{src_port}:{dst_address}:{dst_port}:{protocol}"
+    );
     let v = &update.value;
     let ddos = AppFlowDdosFields {
         tcp_flags: json_f64(v, "tcp_flags") as u8,
@@ -5653,89 +5674,64 @@ fn write_netflow_record(
         &ddos,
     )?;
 
-    // Register exporter IP as DeviceAddress so it resolves to any Device node
-    // whose primary bare IP matches — covers gNMI-registered devices.
-    let exporter_bare = crate::registry::strip_port(exporter_address);
-    let _ = upsert_device_address(conn, exporter_bare, "netflow", ts(update.timestamp_ns));
+    // BN-021d: record the provisional exporter source key and identity
+    // status on the AppFlow node so per-source attribution survives
+    // queries. `exporter_address` remains the observed transport IP.
+    {
+        let identity_status = v
+            .get("identity_status")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mut stmt = conn.prepare(
+            "MATCH (f:AppFlow {id: $fid}) \
+             SET f.exporter_id = $eid, f.identity_status = $istatus, f.src_port = $sport",
+        )?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("fid", Value::String(id.clone())),
+                ("eid", Value::String(exporter_id.to_string())),
+                ("istatus", Value::String(identity_status)),
+                ("sport", Value::Int64(src_port)),
+            ],
+        )?;
+    }
 
-    // Track A2: CARRIES_FLOW — link the exporting Device to this AppFlow.
-    // Now uses exact bare-IP match since Device.address is always the bare IP.
-    // Silent no-op if the Device node doesn't exist yet (collector-only mode).
-    let mut carries = conn
-        .prepare(
-            "MATCH (d:Device {address: $addr}), (f:AppFlow {id: $fid}) \
-             MERGE (d)-[:CARRIES_FLOW]->(f)",
-        )
-        .context("prepare CARRIES_FLOW merge")?;
-    conn.execute(
-        &mut carries,
-        vec![
-            ("addr", Value::String(exporter_bare.to_string())),
-            ("fid", Value::String(id.clone())),
-        ],
-    )
-    .context("execute CARRIES_FLOW merge")?;
+    // BN-021d review (finding F): NetFlow/IPFIX has no authenticated
+    // ingress yet, so this projection boundary must fail closed for ALL
+    // flow updates. `identity_status`, `device_id`, `device_address`,
+    // and even a serialized `identity_resolution` are self-asserted
+    // telemetry-payload fields — collector ingest carries msgpack values
+    // that a compromised or buggy producer can forge. Canonical
+    // attribution therefore requires a future typed, transport-attested
+    // verification path checked here, not JSON evidence.
+    //
+    // Until that path exists:
+    // - no DeviceAddress alias is created/refreshed from flow evidence;
+    // - no CARRIES_FLOW edge is projected;
+    // - no SRC_HOST/DST_HOST edge enters HostEndpoint inventory.
+    // The AppFlow node and operational events above remain the
+    // source-scoped visibility surface (`exporter_id`/`exporter_address`).
+    let identity_status_str = v
+        .get("identity_status")
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
 
-    // Track C1: SRC_HOST / DST_HOST — link AppFlow to HostEndpoints if they exist.
-    // Completely silent when no HostEndpoint nodes are present (SP deployments).
-    let mut src_host = conn
-        .prepare(
-            "MATCH (h:HostEndpoint {ip: $ip}), (f:AppFlow {id: $fid}) \
-             MERGE (f)-[:SRC_HOST]->(h)",
-        )
-        .context("prepare SRC_HOST merge")?;
-    conn.execute(
-        &mut src_host,
-        vec![
-            ("ip", Value::String(src_address.to_string())),
-            ("fid", Value::String(id.clone())),
-        ],
-    )
-    .context("execute SRC_HOST merge")?;
-
-    let mut dst_host = conn
-        .prepare(
-            "MATCH (h:HostEndpoint {ip: $ip}), (f:AppFlow {id: $fid}) \
-             MERGE (f)-[:DST_HOST]->(h)",
-        )
-        .context("prepare DST_HOST merge")?;
-    conn.execute(
-        &mut dst_host,
-        vec![
-            ("ip", Value::String(dst_address.to_string())),
-            ("fid", Value::String(id.clone())),
-        ],
-    )
-    .context("execute DST_HOST merge")?;
-
-    emit_flow_utilization_event(
-        conn,
-        update,
-        exporter_address,
-        &id,
-        bytes_per_sec,
-        event_tx,
-        corr_buf,
-    );
-    emit_ddos_pps_spike_event(
-        conn,
-        update,
-        exporter_address,
-        protocol,
-        packets_per_sec,
-        &ddos.amplification_vector,
-        &ddos.tcp_flags_pattern,
-        event_tx,
-        corr_buf,
-        ddos_cfg,
-    );
+    // Flow-derived device alerts are disabled for the same reason: the
+    // utilization/DDoS emitters key off the observed exporter address and
+    // would attach StateChangeEvents to a colliding canonical Device.
+    // They remain wired for sFlow only until BN-021e applies the same
+    // identity boundary there.
 
     let evt = BonsaiEvent {
-        device_address: exporter_address.to_string(),
+        device_address: exporter_id.to_string(),
         event_type: "app_flow_event".to_string(),
         detail_json: serde_json::json!({
             "flow_id": id,
             "exporter_address": exporter_address,
+            "exporter_id": exporter_id,
+            "identity_status": identity_status_str,
             "src_address": src_address,
             "dst_address": dst_address,
             "dst_port": dst_port,

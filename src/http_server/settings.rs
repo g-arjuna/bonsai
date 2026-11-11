@@ -577,6 +577,7 @@ pub async fn patch_streaming_settings_handler(
         .then(|| crate::config::NetflowConfig {
             enabled: new_nf_enabled,
             udp_addr: new_nf_addr.clone(),
+            ..state.streaming.netflow.clone()
         });
     let sflow_to_restart = patch.sflow.is_some().then(|| crate::config::SflowConfig {
         enabled: new_sf_enabled,

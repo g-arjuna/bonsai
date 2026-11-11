@@ -694,6 +694,39 @@ pub struct NetflowConfig {
     pub enabled: bool,
     #[serde(default = "default_netflow_udp_addr")]
     pub udp_addr: String,
+    /// Collector/ingress namespace included in provisional flow source
+    /// keys. Distinguishes observations received by different collectors
+    /// or trusted relays. Defaults to "default".
+    #[serde(default = "default_flow_collector_id")]
+    pub collector_id: String,
+    /// Seconds a cached flow template may decode data without refresh
+    /// (NetFlow v9 / IPFIX-over-UDP template lifetime, RFC 7011 §8.4).
+    #[serde(default = "default_flow_template_ttl_secs")]
+    pub flow_template_ttl_secs: u64,
+    /// Seconds an idle transport context (exporter endpoint + protocol)
+    /// is retained before eviction.
+    #[serde(default = "default_flow_context_idle_secs")]
+    pub flow_context_idle_secs: u64,
+    /// Maximum (collector, transport endpoint, protocol) template
+    /// contexts retained.
+    #[serde(default = "default_flow_max_contexts")]
+    pub max_flow_contexts: usize,
+    /// Maximum observation domains (NetFlow source-id / IPFIX ODID) per
+    /// transport context.
+    #[serde(default = "default_flow_max_domains")]
+    pub max_flow_domains_per_context: usize,
+    /// Maximum template definitions per observation domain.
+    #[serde(default = "default_flow_max_templates")]
+    pub max_flow_templates_per_domain: usize,
+    /// Maximum field specifiers accepted in a single template.
+    #[serde(default = "default_flow_max_fields")]
+    pub max_flow_fields_per_template: usize,
+    /// Maximum total cached template definitions across all contexts.
+    #[serde(default = "default_flow_max_total_templates")]
+    pub max_flow_total_templates: usize,
+    /// Approximate total template-cache memory budget in bytes.
+    #[serde(default = "default_flow_max_cache_bytes")]
+    pub max_flow_cache_bytes: usize,
 }
 
 impl Default for NetflowConfig {
@@ -701,8 +734,45 @@ impl Default for NetflowConfig {
         Self {
             enabled: false,
             udp_addr: default_netflow_udp_addr(),
+            collector_id: default_flow_collector_id(),
+            flow_template_ttl_secs: default_flow_template_ttl_secs(),
+            flow_context_idle_secs: default_flow_context_idle_secs(),
+            max_flow_contexts: default_flow_max_contexts(),
+            max_flow_domains_per_context: default_flow_max_domains(),
+            max_flow_templates_per_domain: default_flow_max_templates(),
+            max_flow_fields_per_template: default_flow_max_fields(),
+            max_flow_total_templates: default_flow_max_total_templates(),
+            max_flow_cache_bytes: default_flow_max_cache_bytes(),
         }
     }
+}
+
+fn default_flow_collector_id() -> String {
+    "default".to_string()
+}
+fn default_flow_template_ttl_secs() -> u64 {
+    1800
+}
+fn default_flow_context_idle_secs() -> u64 {
+    3600
+}
+fn default_flow_max_contexts() -> usize {
+    4096
+}
+fn default_flow_max_domains() -> usize {
+    64
+}
+fn default_flow_max_templates() -> usize {
+    512
+}
+fn default_flow_max_fields() -> usize {
+    256
+}
+fn default_flow_max_total_templates() -> usize {
+    65_536
+}
+fn default_flow_max_cache_bytes() -> usize {
+    64 * 1024 * 1024
 }
 
 fn default_otlp_http_addr() -> String {

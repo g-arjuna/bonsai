@@ -639,6 +639,40 @@ bn021f_authenticated_ingress 9/9, all prior regression suites 0
 failures. Evidence:
 `docs/merger/evidence/2026-11-11-bn021f-revocation-hardening/`.
 
+BN-021d NetFlow/IPFIX identity isolation (11 November): the flow
+receiver now separates observed transport evidence from provisional
+exporter identity and verified ingress. `TelemetryUpdate.target`, the
+bus event and the AppFlow node id all carry a collision-resistant
+`flowsrc/{collector}/{proto}/{ip}:{port}/{sid|odid}{id}` key, so
+NAT-shared exporters no longer collapse downstream; `exporter_address`
+remains as bare-IP evidence. The IPFIX template parser is strict
+(per-specifier bounds, enterprise PEN preserved, varlen fields marked
+non-decodable, RFC 7011 message-length/padding validation) and the
+template cache is bounded on every dimension (contexts, domains,
+templates, fields, total count, bytes) with TTL expiry, idle eviction,
+v9/IPFIX restart clearing and source-port-change isolation; UDP template
+withdrawals are ignored per RFC 7011 §8.4. Packet handling is
+transactional: every flowset/set boundary is validated before any cache
+mutation, so a rejected packet cannot alter template or restart state.
+Independent-review hardening: NetFlow graph projection fails closed
+for every flow update — no `DeviceAddress` freshness updates, no
+`CARRIES_FLOW`, and no `SRC_HOST`/`DST_HOST` endpoint edges — because
+no authenticated flow ingress exists yet and even a serialized
+`identity_resolution` is self-asserted msgpack evidence, not proof of
+a transport-attested resolver; flow-derived utilization/DDoS device
+alerts are disabled for the same reason. The AppFlow id is the full
+5-tuple including `src_port`. Plain UDP flows stay `provisional` with
+`device_id = null` — a matching operator binding or transport address
+can never confer canonical device identity. `resolve_flow_identity` is
+the extension point for a future authenticated flow ingress. Verified: bn021d suite
+15/15 + 3 unit tests, all BN-005/BN-021b/c/f and routing regressions
+0 failures, and a
+live docker NAT lab (3 exporters SNAT'd to one source) producing 7
+distinct provisional AppFlow identities with zero Device attribution
+and clean malformed-packet rejection. Evidence:
+`docs/merger/evidence/2026-11-11-bn021d-flow-exporter-isolation/`;
+lab `lab/acceptance/bn021d-flow-nat/`.
+
 BN-022 containment slice (10 November): ad-hoc graph reads are now
 denied-by-default for non-admin principals. `src/graph/explorer.rs`
 gained `GraphReadAccess` + `validate_query_for_access`: a positive
