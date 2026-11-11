@@ -66,8 +66,8 @@ cargo test -p rbmp-core --lib --offline
 
 # For main Bonsai code: typecheck first; one explicitly named integration target.
 cargo check -p bonsai --lib --offline
-cargo test -p bonsai --test bn021d_flow_exporter_isolation --no-run --timings --offline
-cargo test -p bonsai --test bn021d_flow_exporter_isolation --offline
+cargo test -p bonsai --test bn021f_hardening --no-run --timings --offline
+cargo test -p bonsai --test bn021f_hardening --offline
 
 # For a code change touching several regression suites, batch *only* those suites
 # in ONE cargo invocation to avoid multiple Cargo startup/build graph passes.
