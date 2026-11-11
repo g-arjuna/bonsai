@@ -27,27 +27,69 @@ This installs:
 - `dev` extras for test tooling
 - `ml` extras for Parquet export and training scripts
 
-## Daily Commands
+## Daily Commands — fast feedback first
 
-From Linux:
+The **current development contract** is [AGENTS.md](../AGENTS.md), with a
+measured, task-by-task [build acceleration playbook](BUILD_ACCELERATION_PLAYBOOK_2026-11-11.md).
+The historical release-build commands below are **not** the daily edit loop.
+Existing Rust 1.95, sccache and mold are already configured.
+
+From the primary Linux checkout, after verifying no other agent owns a
+heavy build and preserving any local/soak work:
 
 ```bash
 cd /home/arjuna/Desktop/bonsai
-source .venv/bin/activate
-python scripts/chaos_runner.py chaos_plans/baseline_mix.yaml --duration-hours 0.03
-python python/inject_fault.py bgp-flap srl-spine1 10.0.12.1 --hold 10
-cargo build --release
-cargo test --release
-cargo clippy --release -- -D warnings
+git status --short
+git worktree list
+df -h .
+sccache --show-stats
+
+# First feedback: no full link.
+cargo fmt --all -- --check
+cargo check -p rbmp-core --offline        # when editing the protocol crate
+cargo check -p bonsai --lib --offline     # when editing the main application
+
+# Execute a specific owning test; first invocation may link the full lib/test binary.
+cargo test -p rbmp-core --lib --offline
+cargo test -p bonsai --test bn021f_hardening --offline
+
+# Existing verification recipes; select based on changed semantics.
+just check-fast
+just test-protocol
+just test-replay
 ```
+
+Use the **smallest correct command**, not every line each time. Running a
+`cargo test` filter narrows *execution*, but a first test binary compile/link
+can still take many minutes. Keep the same `target`, toolchain, profile and
+compile flags for incremental edits. Use the playbook's L0–L4 ladder to
+escalate verification; don't confuse `cargo check` with a passing test.
 
 Set `BONSAI_CONFIG` to point a process at a non-default config file. This is
 useful for distributed validation where a core and collector run side by side
 with separate working directories and separate `bonsai.toml` files.
 
-The repo-local `.cargo/config.toml` may use `sccache` as a Rust wrapper for
-faster rebuilds. If `sccache` is unavailable in your environment, temporarily
-clear it for a command with `RUSTC_WRAPPER= cargo ...`.
+The checked-in `.cargo/config.toml` **does configure** `sccache` as the Rust
+wrapper. Do not bypass it with `RUSTC_WRAPPER= cargo ...`: that contradicts
+`AGENTS.md`, changes compiler fingerprints and may cause another expensive
+build. If sccache is broken, diagnose and repair it per the agent contract,
+then report if unresolved. Its cache is complementary to Cargo incremental
+objects; neither skips final binary linking.
+
+For release/promotion evidence, run the full **relevant** release/profile,
+integration and UI/lab checks from `justfile` and the owning BN acceptance.
+Examples, **not** every-day edit commands:
+
+```bash
+just verify-release
+cargo build --release --bin bonsai-routing --locked
+# cargo test --release --workspace --locked  # only when this exact expensive gate is required
+```
+
+Do not blindly invoke `make build-time` in the shared checkout: that target
+calls `cargo clean`. Do not treat `make test-all` as a trustworthy hard
+gate: it currently has `|| true` paths masking failures. The playbook
+documents the planned BN-019 fixes and safer measurement procedure.
 
 ## Canonical Local Helpers
 
@@ -111,4 +153,4 @@ instead of assuming `127.0.0.1` will cross container boundaries.
 
 - Native Linux keeps `clab`, `netem`, Rust, and Python in one environment with fewer path and socket surprises.
 - A repo-local `.venv/` keeps Python packages reproducible and isolated from machine-global interpreters.
-- The documented release build flow remains `cargo build --release`, `cargo test --release`, and `cargo clippy --release -- -D warnings`.
+- Full release builds and applicable lint/test gates remain separate, explicit promotion work. Normal development uses the focused, cache-aware commands above; see `AGENTS.md` and `docs/BUILD_ACCELERATION_PLAYBOOK_2026-11-11.md`.

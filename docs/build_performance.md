@@ -1,6 +1,9 @@
 
 # Bonsai Build Performance Baseline
 
+> **11 November 2026 current-use note:** The values below are **historical** benchmarks and estimates from April and earlier development snapshots; they must not be used as current wait-time promises or evidence that all dependency compilation is cached. The present `docs/build-times/runs.csv` documents multiple 9–25 minute test/release compiles, a ~55-minute cold worktree and disk exhaustion in another build. For active agent policy, workflow, controlled Cargo profile/cache experiments, and BN-019-B1…B8 implementation gates use [Build Acceleration Playbook](BUILD_ACCELERATION_PLAYBOOK_2026-11-11.md) and [Build-time recording](build-times/README.md). No global profile/mold/sccache settings were changed by the documentation review.
+
+
 This document tracks build times and binary/image sizes to monitor the impact of Tier 1 build optimisations.
 
 ## Baseline (v5 Sprint 1)
