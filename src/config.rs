@@ -531,6 +531,11 @@ pub struct SyslogConfig {
     /// Maximum accepted syslog frame size. Default: 8192 bytes.
     #[serde(default = "default_syslog_max_frame_bytes")]
     pub max_frame_bytes: usize,
+    /// Collector/ingress namespace included in provisional syslog source
+    /// keys (BN-021e). Distinguishes observations received by different
+    /// collectors or trusted relays. Defaults to "default".
+    #[serde(default = "default_flow_collector_id")]
+    pub collector_id: String,
 }
 
 impl Default for SyslogConfig {
@@ -541,6 +546,7 @@ impl Default for SyslogConfig {
             tcp_addr: default_syslog_tcp_addr(),
             archive_path: default_syslog_archive_path(),
             max_frame_bytes: default_syslog_max_frame_bytes(),
+            collector_id: default_flow_collector_id(),
         }
     }
 }

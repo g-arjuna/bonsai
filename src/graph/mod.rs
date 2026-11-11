@@ -6802,6 +6802,63 @@ fn get_bfd_state(conn: &Connection<'_>, id: &str) -> Result<Option<String>> {
     }))
 }
 
+/// BN-021e: persist a source-scoped `StateChangeEvent` for unauthenticated
+/// telemetry (syslog today). The `device_address` field carries the
+/// provisional `syslogsrc/...` source key verbatim — it is NOT stripped
+/// (the key legitimately contains `ip:port` and `/connN` segments) and it
+/// is never matched against `Device` nodes, so no `REPORTED_BY` edge or
+/// canonical join can form. The event remains durable investigation
+/// evidence queryable by `source_type`.
+#[allow(clippy::too_many_arguments)]
+fn write_provisional_state_change_event(
+    conn: &Connection<'_>,
+    source_key: &str,
+    event_type: &str,
+    detail: &str,
+    source_type: &str,
+    now: Value,
+    timestamp_ns: i64,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+) -> Result<String> {
+    metrics::counter!("bonsai_graph_state_change_write_total", "event_type" => event_type.to_string(), "source" => source_type.to_string()).increment(1);
+
+    let id = Uuid::new_v4().to_string();
+    let mut stmt = conn
+        .prepare(
+            "CREATE (e:StateChangeEvent {\
+                id: $id, device_address: $addr, event_type: $etype, \
+                detail: $detail, source_type: $src, occurred_at: $ts})",
+        )
+        .context("prepare provisional StateChangeEvent insert")?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(id.clone())),
+            ("addr", Value::String(source_key.to_string())),
+            ("etype", Value::String(event_type.to_string())),
+            ("detail", Value::String(detail.to_string())),
+            ("src", Value::String(source_type.to_string())),
+            ("ts", now),
+        ],
+    )
+    .context("execute provisional StateChangeEvent insert")?;
+
+    if event_tx
+        .send(BonsaiEvent {
+            device_address: source_key.to_string(),
+            event_type: event_type.to_string(),
+            detail_json: detail.to_string(),
+            occurred_at_ns: timestamp_ns,
+            state_change_event_id: id.clone(),
+            source_type: source_type.to_string(),
+        })
+        .is_err()
+    {
+        metrics::counter!("bonsai_broadcast_drops_total").increment(1);
+    }
+    Ok(id)
+}
+
 fn write_state_change_event(
     conn: &Connection<'_>,
     device_address: &str,
@@ -6891,21 +6948,35 @@ fn write_state_change_event(
     Ok(id)
 }
 
+/// BN-021e: syslog category events fail closed.
+///
+/// Syslog has no authenticated ingress — the transport endpoint, the
+/// claimed hostname, and every serialized field in `update.value` are
+/// self-asserted evidence. This projection therefore never calls
+/// `upsert_device`, never writes a `REPORTED_BY` edge, and never lets a
+/// message mutate canonical device state. The observation is preserved
+/// as a `StateChangeEvent` scoped to the provisional `syslogsrc/...`
+/// source key plus a source-scoped `BonsaiEvent`, so investigation
+/// evidence survives without impersonating a device.
 fn write_syslog_state_change_event(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     category: &str,
     event_tx: &broadcast::Sender<BonsaiEvent>,
-    corr_buf: &CorrelationBuffer,
+    _corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
-    write_signal_state_change_event(
+    let detail = serde_json::to_string(&update.value).context("serialize syslog event detail")?;
+    write_provisional_state_change_event(
         conn,
-        update,
+        &update.target,
         &format!("syslog_{category}"),
+        &detail,
         "syslog",
+        ts(update.timestamp_ns),
+        update.timestamp_ns,
         event_tx,
-        corr_buf,
-    )
+    )?;
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -6923,33 +6994,40 @@ struct SyslogFactEventDetail {
     join: JsonValue,
 }
 
+/// BN-021e: syslog facts fail closed.
+///
+/// A syslog fact is self-reported message content delivered over an
+/// unauthenticated transport. This projection therefore:
+/// - never calls `upsert_device` (no Device node is created or refreshed);
+/// - never runs the mutating joiners (`join_bfd_fact`, `join_ospf_fact`,
+///   `join_isis_fact` — which writes `IsisAdjacency` — `join_service_process_fact`,
+///   `join_qos_policy_fact`, `join_connection_anomaly_fact`);
+/// - only performs READ-ONLY probes against a *candidate* device address
+///   carried as an explicit hypothesis in the payload, so deterministic
+///   correlation stays visible without becoming authoritative.
+///
+/// The fact is persisted as a `StateChangeEvent` scoped to the
+/// provisional `syslogsrc/...` source key with event types
+/// `syslog_fact_candidate` / `syslog_fact_unresolved` — `joined` semantics
+/// return only when a transport-attested ingress path exists (BN-021g).
 fn write_syslog_fact_event(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     fact_type: &str,
     event_tx: &broadcast::Sender<BonsaiEvent>,
-    corr_buf: &CorrelationBuffer,
+    _corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
     let fact: SyslogFact =
         serde_json::from_value(update.value.clone()).context("parse syslog fact event")?;
-    upsert_device(
-        conn,
-        &update.target,
-        &update.vendor,
-        &update.hostname,
-        &update.role,
-        &update.site,
-        ts(update.timestamp_ns),
-    )?;
-    let join = join_syslog_fact(conn, update, &fact, event_tx, corr_buf)?;
+    let join = probe_syslog_fact(conn, update, &fact)?;
     let join_status = join
         .get("status")
         .and_then(JsonValue::as_str)
-        .unwrap_or("orphan");
-    let event_type = if join_status == "joined" {
-        "syslog_fact_joined"
+        .unwrap_or("unresolved");
+    let event_type = if join_status == "candidate" {
+        "syslog_fact_candidate"
     } else {
-        "syslog_fact_orphan"
+        "syslog_fact_unresolved"
     };
     metrics::counter!(
         "bonsai_syslog_fact_join_total",
@@ -6957,7 +7035,6 @@ fn write_syslog_fact_event(
         "status" => join_status.to_string(),
     )
     .increment(1);
-    let bare_target = crate::registry::strip_port(&update.target).to_string();
     let detail = SyslogFactEventDetail {
         fact_type: fact_type.to_string(),
         category: fact.category,
@@ -6969,116 +7046,222 @@ fn write_syslog_fact_event(
         field_schema: fact.field_schema,
         fields: fact.fields,
         device_context: json!({
-            "device_address": bare_target,
+            "device_address": update.target,
             "vendor": update.vendor,
             "hostname": update.hostname,
             "role": update.role,
             "site": update.site,
+            "identity_status": "provisional",
         }),
         join,
     };
     let detail_json = serde_json::to_string(&detail).context("serialize syslog fact detail")?;
-    let _ = write_state_change_event(
+    write_provisional_state_change_event(
         conn,
-        &bare_target,
+        &update.target,
         event_type,
         &detail_json,
         "syslog",
         ts(update.timestamp_ns),
         update.timestamp_ns,
         event_tx,
-        corr_buf,
     )?;
     Ok(())
 }
 
-fn join_syslog_fact(
+/// Read-only candidate probe for a provisional syslog fact.
+///
+/// The candidate device address comes from the payload's `candidate`
+/// hypothesis (unique hostname match only). Even a forged candidate can
+/// only cause read-only graph lookups — no node or edge is ever written
+/// from syslog evidence. Returns explicit `ambiguous`/`unresolved`
+/// statuses rather than guessing.
+fn probe_syslog_fact(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     fact: &SyslogFact,
-    event_tx: &broadcast::Sender<BonsaiEvent>,
-    corr_buf: &CorrelationBuffer,
 ) -> Result<JsonValue> {
-    // Route by fact_type before reaching generic field-based branches to prevent
-    // ospf/isis/bfd facts from accidentally joining to Interface or BgpNeighbor nodes.
-    if fact.fact_type == "bfd_session" {
-        return join_bfd_fact(conn, update, fact);
+    let candidate = update
+        .value
+        .get("candidate")
+        .cloned()
+        .unwrap_or(JsonValue::Null);
+    let candidate_status = candidate
+        .get("status")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("");
+    let candidate_addr = candidate
+        .get("device_address")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("");
+
+    if candidate_status == "ambiguous_hostname_match" {
+        return Ok(json!({
+            "status": "ambiguous",
+            "authority": "unverified",
+            "candidate": candidate,
+            "reason": "duplicate_hostname_across_targets",
+        }));
     }
-    if fact.fact_type == "ospf_neighbor" {
-        return join_ospf_fact(conn, update, fact);
-    }
-    if fact.fact_type == "isis_adjacency" {
-        return join_isis_fact(conn, update, fact, event_tx, corr_buf);
+    if candidate_status != "unique_hostname_match" || candidate_addr.is_empty() {
+        return Ok(json!({
+            "status": "unresolved",
+            "authority": "unverified",
+            "candidate": candidate,
+            "reason": "no_unique_hostname_candidate",
+        }));
     }
 
-    // Service process syslog facts - create ServiceEndpoint nodes
-    if fact.fact_type == "service_process" {
-        return join_service_process_fact(conn, update, fact);
-    }
+    // Unique candidate: run read-only probes only. Fact types whose
+    // legacy joiners WRITe graph nodes (isis_adjacency, service_process,
+    // qos_policy_change, connection_anomaly) get existence probes at most.
+    let probe = match fact.fact_type.as_str() {
+        "bfd_session" => probe_bfd_fact(conn, candidate_addr, fact)?,
+        "ospf_neighbor" => probe_ospf_fact(conn, candidate_addr, fact)?,
+        "isis_adjacency" => probe_isis_fact(conn, candidate_addr, fact)?,
+        "service_process" | "qos_policy_change" | "connection_anomaly" => json!({
+            "kind": fact.fact_type,
+            "graph_probe": "write_projection_disabled",
+        }),
+        _ => probe_generic_fact(conn, candidate_addr, fact)?,
+    };
 
-    // QoS policy change syslog facts - create QoSPolicy nodes
-    if fact.fact_type == "qos_policy_change" {
-        return join_qos_policy_fact(conn, update, fact);
-    }
+    Ok(json!({
+        "status": "candidate",
+        "authority": "unverified",
+        "candidate_device_address": candidate_addr,
+        "graph_probe": probe,
+    }))
+}
 
-    // Connection anomaly syslog facts - update ServiceEndpoint health
-    if fact.fact_type == "connection_anomaly" {
-        return join_connection_anomaly_fact(conn, update, fact);
+fn probe_bfd_fact(
+    conn: &Connection<'_>,
+    device_address: &str,
+    fact: &SyslogFact,
+) -> Result<JsonValue> {
+    let if_name = fact.fields.get("if_name");
+    let remote_address = fact.fields.get("remote_address");
+    if let Some(if_name) = if_name
+        && let Some(graph_state) = lookup_bfd_session_by_interface(conn, device_address, if_name)?
+    {
+        return Ok(json!({
+            "kind": "bfd_session",
+            "matched": true,
+            "key": if_name,
+            "graph_state": graph_state,
+        }));
     }
+    if let Some(remote_addr) = remote_address
+        && let Some(graph_state) = lookup_bfd_session_by_remote(conn, device_address, remote_addr)?
+    {
+        return Ok(json!({
+            "kind": "bfd_session",
+            "matched": true,
+            "key": remote_addr,
+            "graph_state": graph_state,
+        }));
+    }
+    Ok(json!({
+        "kind": "bfd_session",
+        "matched": false,
+        "reason": "no_bfd_session_match",
+    }))
+}
 
+fn probe_ospf_fact(
+    conn: &Connection<'_>,
+    device_address: &str,
+    fact: &SyslogFact,
+) -> Result<JsonValue> {
+    let neighbor_address = fact
+        .fields
+        .get("neighbor_address")
+        .or_else(|| fact.fields.get("neighbor"));
+    if let Some(addr) = neighbor_address
+        && let Some(graph_state) = lookup_ospf_neighbor_state(conn, device_address, addr)?
+    {
+        return Ok(json!({
+            "kind": "ospf_neighbor",
+            "matched": true,
+            "key": addr,
+            "graph_state": graph_state,
+        }));
+    }
+    Ok(json!({
+        "kind": "ospf_neighbor",
+        "matched": false,
+        "reason": "no_ospf_neighbor_match",
+    }))
+}
+
+fn probe_isis_fact(
+    conn: &Connection<'_>,
+    device_address: &str,
+    fact: &SyslogFact,
+) -> Result<JsonValue> {
+    let neighbor_id = fact
+        .fields
+        .get("neighbor_id")
+        .or_else(|| fact.fields.get("system_id"));
+    if let Some(nid) = neighbor_id
+        && let Some(graph_state) = lookup_isis_adjacency_state(conn, device_address, nid)?
+    {
+        return Ok(json!({
+            "kind": "isis_adjacency",
+            "matched": true,
+            "key": nid,
+            "graph_state": graph_state,
+        }));
+    }
+    Ok(json!({
+        "kind": "isis_adjacency",
+        "matched": false,
+        "reason": "no_isis_adjacency_match",
+    }))
+}
+
+fn probe_generic_fact(
+    conn: &Connection<'_>,
+    device_address: &str,
+    fact: &SyslogFact,
+) -> Result<JsonValue> {
     if let Some(peer_address) = fact
         .fields
         .get("peer_address")
         .or_else(|| fact.fields.get("peer"))
-        && let Some(graph_state) = lookup_bgp_neighbor_state(conn, &update.target, peer_address)?
+        && let Some(graph_state) = lookup_bgp_neighbor_state(conn, device_address, peer_address)?
     {
         return Ok(json!({
-            "status": "joined",
             "kind": "bgp_neighbor",
+            "matched": true,
             "key": peer_address,
             "graph_state": graph_state,
         }));
     }
-
     if let Some(if_name) = fact
         .fields
         .get("if_name")
         .or_else(|| fact.fields.get("interface"))
         .or_else(|| fact.fields.get("interface_name"))
     {
-        if let Some(graph_state) = lookup_interface_state(conn, &update.target, if_name)? {
+        if let Some(graph_state) = lookup_interface_state(conn, device_address, if_name)? {
             return Ok(json!({
-                "status": "joined",
                 "kind": "interface",
+                "matched": true,
                 "key": if_name,
                 "graph_state": graph_state,
             }));
         }
         return Ok(json!({
-            "status": "orphan",
             "kind": "interface",
+            "matched": false,
             "key": if_name,
             "reason": "no_interface_match",
         }));
     }
-
-    if fact.fields.contains_key("peer_address") || fact.fields.contains_key("peer") {
-        return Ok(json!({
-            "status": "orphan",
-            "kind": "bgp_neighbor",
-            "key": fact
-                .fields
-                .get("peer_address")
-                .or_else(|| fact.fields.get("peer"))
-                .cloned()
-                .unwrap_or_default(),
-            "reason": "no_bgp_neighbor_match",
-        }));
-    }
-
     Ok(json!({
-        "status": "orphan",
         "kind": "unknown",
+        "matched": false,
         "reason": "no_cross_source_match_key",
     }))
 }
@@ -7226,45 +7409,6 @@ fn join_snmp_fact(
     }))
 }
 
-fn join_bfd_fact(
-    conn: &Connection<'_>,
-    update: &TelemetryUpdate,
-    fact: &SyslogFact,
-) -> Result<JsonValue> {
-    let if_name = fact.fields.get("if_name");
-    let remote_address = fact.fields.get("remote_address");
-
-    if let Some(if_name) = if_name
-        && let Some(graph_state) = lookup_bfd_session_by_interface(conn, &update.target, if_name)?
-    {
-        return Ok(json!({
-            "status": "joined",
-            "kind": "bfd_session",
-            "key": if_name,
-            "graph_state": graph_state,
-        }));
-    }
-
-    if let Some(remote_addr) = remote_address
-        && let Some(graph_state) = lookup_bfd_session_by_remote(conn, &update.target, remote_addr)?
-    {
-        return Ok(json!({
-            "status": "joined",
-            "kind": "bfd_session",
-            "key": remote_addr,
-            "graph_state": graph_state,
-        }));
-    }
-
-    let key = if_name.or(remote_address).cloned().unwrap_or_default();
-    Ok(json!({
-        "status": "orphan",
-        "kind": "bfd_session",
-        "key": key,
-        "reason": "no_bfd_session_match",
-    }))
-}
-
 fn lookup_bgp_neighbor_state(
     conn: &Connection<'_>,
     device_address: &str,
@@ -7382,78 +7526,6 @@ fn lookup_bfd_session_by_remote(
         "if_name": read_str(&row[1]),
         "local_discriminator": read_str(&row[2]),
     })))
-}
-
-fn join_ospf_fact(
-    conn: &Connection<'_>,
-    update: &TelemetryUpdate,
-    fact: &SyslogFact,
-) -> Result<JsonValue> {
-    let neighbor_address = fact
-        .fields
-        .get("neighbor_address")
-        .or_else(|| fact.fields.get("neighbor"));
-    let if_name = fact.fields.get("if_name");
-
-    if let Some(addr) = neighbor_address
-        && let Some(graph_state) = lookup_ospf_neighbor_state(conn, &update.target, addr)?
-    {
-        return Ok(json!({
-            "status": "joined",
-            "kind": "ospf_neighbor",
-            "key": addr,
-            "graph_state": graph_state,
-        }));
-    }
-
-    let key = neighbor_address.or(if_name).cloned().unwrap_or_default();
-    Ok(json!({
-        "status": "orphan",
-        "kind": "ospf_neighbor",
-        "key": key,
-        "reason": "no_ospf_neighbor_match",
-    }))
-}
-
-fn join_isis_fact(
-    conn: &Connection<'_>,
-    update: &TelemetryUpdate,
-    fact: &SyslogFact,
-    event_tx: &broadcast::Sender<BonsaiEvent>,
-    corr_buf: &CorrelationBuffer,
-) -> Result<JsonValue> {
-    let neighbor_id = fact
-        .fields
-        .get("neighbor_id")
-        .or_else(|| fact.fields.get("system_id"));
-    let if_name = fact.fields.get("if_name");
-    let new_state = fact.fields.get("new_state");
-
-    // Write the adjacency node from syslog if we have enough fields.
-    // Any source writes — gNMI is preferred but syslog is equally valid.
-    if let (Some(nid), Some(iface), Some(state)) = (neighbor_id, if_name, new_state) {
-        let val = serde_json::json!({ "adjacency-state": state });
-        let _ = write_isis_adjacency(conn, update, nid, iface, &val, "syslog", event_tx, corr_buf);
-    }
-
-    if let Some(nid) = neighbor_id
-        && let Some(graph_state) = lookup_isis_adjacency_state(conn, &update.target, nid)?
-    {
-        return Ok(json!({
-            "status": "joined",
-            "kind": "isis_adjacency",
-            "key": nid,
-            "graph_state": graph_state,
-        }));
-    }
-
-    let key = neighbor_id.or(if_name).cloned().unwrap_or_default();
-    Ok(json!({
-        "status": "orphan",
-        "kind": "isis_adjacency",
-        "key": key,
-        "reason": "no_isis_adjacency_match",
-    }))
 }
 
 fn lookup_ospf_neighbor_state(
@@ -9350,8 +9422,37 @@ mod tests {
             .into_owned()
     }
 
+    /// BN-021e helper: serialize a SyslogFact and attach the provisional
+    /// identity/candidate envelope exactly as the receiver publishes it.
+    fn provisional_fact_value(fact: SyslogFact, candidate: serde_json::Value) -> serde_json::Value {
+        let mut value = serde_json::to_value(&fact).expect("serialize syslog fact");
+        if let serde_json::Value::Object(map) = &mut value {
+            map.insert(
+                "source_key".to_string(),
+                serde_json::json!("syslogsrc/default/udp/127.0.0.1:5514"),
+            );
+            map.insert(
+                "identity_status".to_string(),
+                serde_json::json!("provisional"),
+            );
+            map.insert("device_id".to_string(), serde_json::Value::Null);
+            map.insert("candidate".to_string(), candidate);
+        }
+        value
+    }
+
+    fn unique_candidate(device_address: &str) -> serde_json::Value {
+        serde_json::json!({
+            "status": "unique_hostname_match",
+            "device_address": device_address,
+            "hostname": "claimed-host",
+        })
+    }
+
+    const SYSLOG_SRC_KEY: &str = "syslogsrc/default/udp/127.0.0.1:5514";
+
     #[tokio::test]
-    async fn syslog_fact_joined_event_is_emitted_for_known_bgp_neighbor() {
+    async fn syslog_fact_candidate_probe_finds_known_bgp_neighbor_without_joining() {
         let path = temp_graph_path("syslog-fact-bgp");
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
         store
@@ -9377,105 +9478,129 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
-                target: "leaf1".to_string(),
+                target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf1".to_string(),
                 role: "leaf".to_string(),
                 site: "dc-a".to_string(),
                 timestamp_ns: 11,
                 path: "signals/syslog_fact/bgp_neighbor".to_string(),
-                value: serde_json::to_value(SyslogFact {
-                    timestamp_ns: 11,
-                    fact_type: "bgp_neighbor".to_string(),
-                    category: "protocol".to_string(),
-                    hostname: "leaf1".to_string(),
-                    source_vendor: "nokia_srl".to_string(),
-                    message: "BGP neighbor 10.1.0.1 down".to_string(),
-                    raw: "raw".to_string(),
-                    transport: "udp".to_string(),
-                    peer_addr: "127.0.0.1:5514".to_string(),
-                    field_schema: std::collections::BTreeMap::from([
-                        ("peer_address".to_string(), "string".to_string()),
-                        ("new_state".to_string(), "string".to_string()),
-                    ]),
-                    fields: std::collections::BTreeMap::from([
-                        ("peer_address".to_string(), "10.1.0.1".to_string()),
-                        ("new_state".to_string(), "down".to_string()),
-                    ]),
-                })
-                .expect("serialize syslog fact"),
+                value: provisional_fact_value(
+                    SyslogFact {
+                        timestamp_ns: 11,
+                        fact_type: "bgp_neighbor".to_string(),
+                        category: "protocol".to_string(),
+                        hostname: "leaf1".to_string(),
+                        source_vendor: "nokia_srl".to_string(),
+                        message: "BGP neighbor 10.1.0.1 down".to_string(),
+                        raw: "raw".to_string(),
+                        transport: "udp".to_string(),
+                        peer_addr: "127.0.0.1:5514".to_string(),
+                        field_schema: std::collections::BTreeMap::from([
+                            ("peer_address".to_string(), "string".to_string()),
+                            ("new_state".to_string(), "string".to_string()),
+                        ]),
+                        fields: std::collections::BTreeMap::from([
+                            ("peer_address".to_string(), "10.1.0.1".to_string()),
+                            ("new_state".to_string(), "down".to_string()),
+                        ]),
+                    },
+                    unique_candidate("leaf1"),
+                ),
             })
             .await
             .expect("write syslog fact");
 
         let event = timeout(Duration::from_secs(1), rx.recv())
             .await
-            .expect("timed out waiting for joined syslog fact")
-            .expect("receive joined syslog fact event");
-        assert_eq!(event.event_type, "syslog_fact_joined");
+            .expect("timed out waiting for candidate syslog fact")
+            .expect("receive candidate syslog fact event");
+        assert_eq!(event.event_type, "syslog_fact_candidate");
+        assert_eq!(event.device_address, SYSLOG_SRC_KEY);
         let detail: serde_json::Value =
             serde_json::from_str(&event.detail_json).expect("detail json");
         assert_eq!(detail["fact_type"], "bgp_neighbor");
-        assert_eq!(detail["join"]["status"], "joined");
-        assert_eq!(detail["join"]["kind"], "bgp_neighbor");
+        assert_eq!(detail["join"]["status"], "candidate");
+        assert_eq!(detail["join"]["authority"], "unverified");
+        assert_eq!(detail["join"]["candidate_device_address"], "leaf1");
+        assert_eq!(detail["join"]["graph_probe"]["kind"], "bgp_neighbor");
+        assert_eq!(detail["join"]["graph_probe"]["matched"], true);
         assert_eq!(
-            detail["join"]["graph_state"]["session_state"],
+            detail["join"]["graph_probe"]["graph_state"]["session_state"],
             "established"
         );
+
+        // No canonical mutation: the provisional source key must not have
+        // created a Device node.
+        let conn = Connection::new(&store.db).expect("verify connection");
+        let mut stmt = conn
+            .prepare("MATCH (d:Device {address: $k}) RETURN count(d)")
+            .expect("prepare device count");
+        let mut res = conn
+            .execute(
+                &mut stmt,
+                vec![("k", Value::String(SYSLOG_SRC_KEY.to_string()))],
+            )
+            .expect("count devices for source key");
+        let row = res.next().expect("count row");
+        assert_eq!(row[0].to_string(), "0");
     }
 
     #[tokio::test]
-    async fn syslog_fact_orphan_event_is_emitted_for_unknown_interface() {
+    async fn syslog_fact_unresolved_event_is_emitted_without_candidate() {
         let path = temp_graph_path("syslog-fact-orphan");
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
-                target: "leaf2".to_string(),
+                target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf2".to_string(),
                 role: "leaf".to_string(),
                 site: "dc-a".to_string(),
                 timestamp_ns: 12,
                 path: "signals/syslog_fact/interface_state".to_string(),
-                value: serde_json::to_value(SyslogFact {
-                    timestamp_ns: 12,
-                    fact_type: "interface_state".to_string(),
-                    category: "protocol".to_string(),
-                    hostname: "leaf2".to_string(),
-                    source_vendor: "nokia_srl".to_string(),
-                    message: "Interface ethernet-1/99 changed state to down".to_string(),
-                    raw: "raw".to_string(),
-                    transport: "udp".to_string(),
-                    peer_addr: "127.0.0.1:5514".to_string(),
-                    field_schema: std::collections::BTreeMap::from([
-                        ("if_name".to_string(), "string".to_string()),
-                        ("new_state".to_string(), "string".to_string()),
-                    ]),
-                    fields: std::collections::BTreeMap::from([
-                        ("if_name".to_string(), "ethernet-1/99".to_string()),
-                        ("new_state".to_string(), "down".to_string()),
-                    ]),
-                })
-                .expect("serialize syslog fact"),
+                value: provisional_fact_value(
+                    SyslogFact {
+                        timestamp_ns: 12,
+                        fact_type: "interface_state".to_string(),
+                        category: "protocol".to_string(),
+                        hostname: "leaf2".to_string(),
+                        source_vendor: "nokia_srl".to_string(),
+                        message: "Interface ethernet-1/99 changed state to down".to_string(),
+                        raw: "raw".to_string(),
+                        transport: "udp".to_string(),
+                        peer_addr: "127.0.0.1:5514".to_string(),
+                        field_schema: std::collections::BTreeMap::from([
+                            ("if_name".to_string(), "string".to_string()),
+                            ("new_state".to_string(), "string".to_string()),
+                        ]),
+                        fields: std::collections::BTreeMap::from([
+                            ("if_name".to_string(), "ethernet-1/99".to_string()),
+                            ("new_state".to_string(), "down".to_string()),
+                        ]),
+                    },
+                    serde_json::json!({"status": "unresolved", "hostname": "leaf2"}),
+                ),
             })
             .await
             .expect("write syslog fact");
 
         let event = timeout(Duration::from_secs(1), rx.recv())
             .await
-            .expect("timed out waiting for orphan syslog fact")
-            .expect("receive orphan syslog fact event");
-        assert_eq!(event.event_type, "syslog_fact_orphan");
+            .expect("timed out waiting for unresolved syslog fact")
+            .expect("receive unresolved syslog fact event");
+        assert_eq!(event.event_type, "syslog_fact_unresolved");
         let detail: serde_json::Value =
             serde_json::from_str(&event.detail_json).expect("detail json");
         assert_eq!(detail["fact_type"], "interface_state");
-        assert_eq!(detail["join"]["status"], "orphan");
-        assert_eq!(detail["join"]["reason"], "no_interface_match");
+        assert_eq!(detail["join"]["status"], "unresolved");
+        assert_eq!(detail["join"]["authority"], "unverified");
+        assert_eq!(detail["join"]["reason"], "no_unique_hostname_candidate");
     }
 
     #[tokio::test]
-    async fn syslog_bfd_fact_joins_to_known_bfd_session_by_interface() {
+    async fn syslog_bfd_fact_candidate_probe_matches_session_without_mutation() {
         let path = temp_graph_path("syslog-fact-bfd-join");
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
 
@@ -9501,33 +9626,35 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
-                target: "leaf3".to_string(),
+                target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf3".to_string(),
                 role: "leaf".to_string(),
                 site: "dc-a".to_string(),
                 timestamp_ns: 21,
                 path: "signals/syslog_fact/bfd_session".to_string(),
-                value: serde_json::to_value(SyslogFact {
-                    timestamp_ns: 21,
-                    fact_type: "bfd_session".to_string(),
-                    category: "protocol".to_string(),
-                    hostname: "leaf3".to_string(),
-                    source_vendor: "nokia_srl".to_string(),
-                    message: "BFD session on interface ethernet-1/1 went to down".to_string(),
-                    raw: "raw".to_string(),
-                    transport: "udp".to_string(),
-                    peer_addr: "127.0.0.1:5514".to_string(),
-                    field_schema: std::collections::BTreeMap::from([
-                        ("if_name".to_string(), "string".to_string()),
-                        ("new_state".to_string(), "string".to_string()),
-                    ]),
-                    fields: std::collections::BTreeMap::from([
-                        ("if_name".to_string(), "ethernet-1/1".to_string()),
-                        ("new_state".to_string(), "down".to_string()),
-                    ]),
-                })
-                .expect("serialize bfd syslog fact"),
+                value: provisional_fact_value(
+                    SyslogFact {
+                        timestamp_ns: 21,
+                        fact_type: "bfd_session".to_string(),
+                        category: "protocol".to_string(),
+                        hostname: "leaf3".to_string(),
+                        source_vendor: "nokia_srl".to_string(),
+                        message: "BFD session on interface ethernet-1/1 went to down".to_string(),
+                        raw: "raw".to_string(),
+                        transport: "udp".to_string(),
+                        peer_addr: "127.0.0.1:5514".to_string(),
+                        field_schema: std::collections::BTreeMap::from([
+                            ("if_name".to_string(), "string".to_string()),
+                            ("new_state".to_string(), "string".to_string()),
+                        ]),
+                        fields: std::collections::BTreeMap::from([
+                            ("if_name".to_string(), "ethernet-1/1".to_string()),
+                            ("new_state".to_string(), "down".to_string()),
+                        ]),
+                    },
+                    unique_candidate("leaf3"),
+                ),
             })
             .await
             .expect("write bfd syslog fact");
@@ -9536,178 +9663,204 @@ mod tests {
             .await
             .expect("timed out waiting for BFD syslog fact event")
             .expect("receive BFD syslog fact event");
-        assert_eq!(event.event_type, "syslog_fact_joined");
+        assert_eq!(event.event_type, "syslog_fact_candidate");
         let detail: serde_json::Value =
             serde_json::from_str(&event.detail_json).expect("detail json");
         assert_eq!(detail["fact_type"], "bfd_session");
-        assert_eq!(detail["join"]["status"], "joined");
-        assert_eq!(detail["join"]["kind"], "bfd_session");
-        assert_eq!(detail["join"]["graph_state"]["session_state"], "up");
-        assert_eq!(detail["join"]["graph_state"]["remote_address"], "10.2.0.1");
+        assert_eq!(detail["join"]["status"], "candidate");
+        assert_eq!(detail["join"]["graph_probe"]["kind"], "bfd_session");
+        assert_eq!(detail["join"]["graph_probe"]["matched"], true);
+        assert_eq!(
+            detail["join"]["graph_probe"]["graph_state"]["session_state"],
+            "up"
+        );
+
+        // The claimed "down" must NOT have mutated the canonical BFD state.
+        let conn = Connection::new(&store.db).expect("verify connection");
+        let mut stmt = conn
+            .prepare("MATCH (b:BfdSession) RETURN b.session_state")
+            .expect("prepare bfd state query");
+        let mut res = conn.execute(&mut stmt, vec![]).expect("query bfd state");
+        let row = res.next().expect("bfd row");
+        assert_eq!(read_str(&row[0]), "up");
     }
 
     #[tokio::test]
-    async fn syslog_bfd_fact_orphan_for_unknown_session() {
+    async fn syslog_bfd_fact_candidate_without_graph_match_stays_candidate() {
         let path = temp_graph_path("syslog-fact-bfd-orphan");
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
-                target: "leaf4".to_string(),
+                target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf4".to_string(),
                 role: "leaf".to_string(),
                 site: "dc-a".to_string(),
                 timestamp_ns: 30,
                 path: "signals/syslog_fact/bfd_session".to_string(),
-                value: serde_json::to_value(SyslogFact {
-                    timestamp_ns: 30,
-                    fact_type: "bfd_session".to_string(),
-                    category: "protocol".to_string(),
-                    hostname: "leaf4".to_string(),
-                    source_vendor: "arista".to_string(),
-                    message: "BFD peer 10.99.0.1 changed state to down".to_string(),
-                    raw: "raw".to_string(),
-                    transport: "udp".to_string(),
-                    peer_addr: "127.0.0.1:5514".to_string(),
-                    field_schema: std::collections::BTreeMap::from([
-                        ("remote_address".to_string(), "string".to_string()),
-                        ("new_state".to_string(), "string".to_string()),
-                    ]),
-                    fields: std::collections::BTreeMap::from([
-                        ("remote_address".to_string(), "10.99.0.1".to_string()),
-                        ("new_state".to_string(), "down".to_string()),
-                    ]),
-                })
-                .expect("serialize bfd orphan syslog fact"),
+                value: provisional_fact_value(
+                    SyslogFact {
+                        timestamp_ns: 30,
+                        fact_type: "bfd_session".to_string(),
+                        category: "protocol".to_string(),
+                        hostname: "leaf4".to_string(),
+                        source_vendor: "arista".to_string(),
+                        message: "BFD peer 10.99.0.1 changed state to down".to_string(),
+                        raw: "raw".to_string(),
+                        transport: "udp".to_string(),
+                        peer_addr: "127.0.0.1:5514".to_string(),
+                        field_schema: std::collections::BTreeMap::from([
+                            ("remote_address".to_string(), "string".to_string()),
+                            ("new_state".to_string(), "string".to_string()),
+                        ]),
+                        fields: std::collections::BTreeMap::from([
+                            ("remote_address".to_string(), "10.99.0.1".to_string()),
+                            ("new_state".to_string(), "down".to_string()),
+                        ]),
+                    },
+                    unique_candidate("leaf4"),
+                ),
             })
             .await
             .expect("write bfd orphan syslog fact");
 
         let event = timeout(Duration::from_secs(1), rx.recv())
             .await
-            .expect("timed out waiting for BFD orphan event")
-            .expect("receive BFD orphan event");
-        assert_eq!(event.event_type, "syslog_fact_orphan");
+            .expect("timed out waiting for BFD candidate event")
+            .expect("receive BFD candidate event");
+        assert_eq!(event.event_type, "syslog_fact_candidate");
         let detail: serde_json::Value =
             serde_json::from_str(&event.detail_json).expect("detail json");
         assert_eq!(detail["fact_type"], "bfd_session");
-        assert_eq!(detail["join"]["status"], "orphan");
-        assert_eq!(detail["join"]["kind"], "bfd_session");
-        assert_eq!(detail["join"]["reason"], "no_bfd_session_match");
+        assert_eq!(detail["join"]["status"], "candidate");
+        assert_eq!(detail["join"]["graph_probe"]["matched"], false);
+        assert_eq!(
+            detail["join"]["graph_probe"]["reason"],
+            "no_bfd_session_match"
+        );
     }
 
     #[tokio::test]
-    async fn syslog_ospf_fact_orphans_when_no_ospf_neighbor_in_graph() {
+    async fn syslog_ospf_fact_is_unresolved_without_candidate() {
         let path = temp_graph_path("syslog-fact-ospf-orphan");
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
-                target: "spine1".to_string(),
+                target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "cisco_iosxr".to_string(),
                 hostname: "spine1".to_string(),
                 role: "spine".to_string(),
                 site: "dc-a".to_string(),
                 timestamp_ns: 40,
                 path: "signals/syslog_fact/ospf_neighbor".to_string(),
-                value: serde_json::to_value(SyslogFact {
-                    timestamp_ns: 40,
-                    fact_type: "ospf_neighbor".to_string(),
-                    category: "protocol".to_string(),
-                    hostname: "spine1".to_string(),
-                    source_vendor: "cisco_iosxr".to_string(),
-                    message:
-                        "OSPF neighbor 10.0.0.2 on interface GigabitEthernet0/0/0 changed to down"
-                            .to_string(),
-                    raw: "raw".to_string(),
-                    transport: "udp".to_string(),
-                    peer_addr: "127.0.0.1:5514".to_string(),
-                    field_schema: std::collections::BTreeMap::from([
-                        ("neighbor_address".to_string(), "string".to_string()),
-                        ("if_name".to_string(), "string".to_string()),
-                        ("new_state".to_string(), "string".to_string()),
-                    ]),
-                    fields: std::collections::BTreeMap::from([
-                        ("neighbor_address".to_string(), "10.0.0.2".to_string()),
-                        ("if_name".to_string(), "GigabitEthernet0/0/0".to_string()),
-                        ("new_state".to_string(), "down".to_string()),
-                    ]),
-                })
-                .expect("serialize ospf syslog fact"),
+                value: provisional_fact_value(
+                    SyslogFact {
+                        timestamp_ns: 40,
+                        fact_type: "ospf_neighbor".to_string(),
+                        category: "protocol".to_string(),
+                        hostname: "spine1".to_string(),
+                        source_vendor: "cisco_iosxr".to_string(),
+                        message:
+                            "OSPF neighbor 10.0.0.2 on interface GigabitEthernet0/0/0 changed to down"
+                                .to_string(),
+                        raw: "raw".to_string(),
+                        transport: "udp".to_string(),
+                        peer_addr: "127.0.0.1:5514".to_string(),
+                        field_schema: std::collections::BTreeMap::from([
+                            ("neighbor_address".to_string(), "string".to_string()),
+                            ("if_name".to_string(), "string".to_string()),
+                            ("new_state".to_string(), "string".to_string()),
+                        ]),
+                        fields: std::collections::BTreeMap::from([
+                            ("neighbor_address".to_string(), "10.0.0.2".to_string()),
+                            ("if_name".to_string(), "GigabitEthernet0/0/0".to_string()),
+                            ("new_state".to_string(), "down".to_string()),
+                        ]),
+                    },
+                    serde_json::json!({"status": "unresolved", "hostname": "spine1"}),
+                ),
             })
             .await
             .expect("write ospf syslog fact");
 
         let event = timeout(Duration::from_secs(1), rx.recv())
             .await
-            .expect("timed out waiting for OSPF orphan event")
-            .expect("receive OSPF orphan event");
-        assert_eq!(event.event_type, "syslog_fact_orphan");
+            .expect("timed out waiting for OSPF unresolved event")
+            .expect("receive OSPF unresolved event");
+        assert_eq!(event.event_type, "syslog_fact_unresolved");
         let detail: serde_json::Value =
             serde_json::from_str(&event.detail_json).expect("detail json");
         assert_eq!(detail["fact_type"], "ospf_neighbor");
-        assert_eq!(detail["join"]["status"], "orphan");
-        assert_eq!(detail["join"]["kind"], "ospf_neighbor");
-        assert_eq!(detail["join"]["reason"], "no_ospf_neighbor_match");
-        // Confirm if_name did NOT trigger an Interface join — ospf is routed before generic if_name branch
-        assert_ne!(detail["join"]["kind"], "interface");
+        assert_eq!(detail["join"]["status"], "unresolved");
     }
 
     #[tokio::test]
-    async fn syslog_isis_fact_orphans_when_no_isis_adjacency_in_graph() {
+    async fn syslog_isis_fact_never_writes_adjacency() {
         let path = temp_graph_path("syslog-fact-isis-orphan");
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
-                target: "spine2".to_string(),
+                target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "juniper".to_string(),
                 hostname: "spine2".to_string(),
                 role: "spine".to_string(),
                 site: "dc-a".to_string(),
                 timestamp_ns: 50,
                 path: "signals/syslog_fact/isis_adjacency".to_string(),
-                value: serde_json::to_value(SyslogFact {
-                    timestamp_ns: 50,
-                    fact_type: "isis_adjacency".to_string(),
-                    category: "protocol".to_string(),
-                    hostname: "spine2".to_string(),
-                    source_vendor: "juniper".to_string(),
-                    message: "IS-IS adjacency with 0000.0000.0001 on ge-0/0/0 went down"
-                        .to_string(),
-                    raw: "raw".to_string(),
-                    transport: "udp".to_string(),
-                    peer_addr: "127.0.0.1:5514".to_string(),
-                    field_schema: std::collections::BTreeMap::from([
-                        ("neighbor_id".to_string(), "string".to_string()),
-                        ("if_name".to_string(), "string".to_string()),
-                        ("new_state".to_string(), "string".to_string()),
-                    ]),
-                    fields: std::collections::BTreeMap::from([
-                        ("neighbor_id".to_string(), "0000.0000.0001".to_string()),
-                        ("if_name".to_string(), "ge-0/0/0".to_string()),
-                        ("new_state".to_string(), "down".to_string()),
-                    ]),
-                })
-                .expect("serialize isis syslog fact"),
+                value: provisional_fact_value(
+                    SyslogFact {
+                        timestamp_ns: 50,
+                        fact_type: "isis_adjacency".to_string(),
+                        category: "protocol".to_string(),
+                        hostname: "spine2".to_string(),
+                        source_vendor: "juniper".to_string(),
+                        message: "IS-IS adjacency with 0000.0000.0001 on ge-0/0/0 went down"
+                            .to_string(),
+                        raw: "raw".to_string(),
+                        transport: "udp".to_string(),
+                        peer_addr: "127.0.0.1:5514".to_string(),
+                        field_schema: std::collections::BTreeMap::from([
+                            ("neighbor_id".to_string(), "string".to_string()),
+                            ("if_name".to_string(), "string".to_string()),
+                            ("new_state".to_string(), "string".to_string()),
+                        ]),
+                        fields: std::collections::BTreeMap::from([
+                            ("neighbor_id".to_string(), "0000.0000.0001".to_string()),
+                            ("if_name".to_string(), "ge-0/0/0".to_string()),
+                            ("new_state".to_string(), "down".to_string()),
+                        ]),
+                    },
+                    unique_candidate("spine2"),
+                ),
             })
             .await
             .expect("write isis syslog fact");
 
         let event = timeout(Duration::from_secs(1), rx.recv())
             .await
-            .expect("timed out waiting for IS-IS orphan event")
-            .expect("receive IS-IS orphan event");
-        assert_eq!(event.event_type, "syslog_fact_orphan");
+            .expect("timed out waiting for IS-IS event")
+            .expect("receive IS-IS event");
+        assert_eq!(event.event_type, "syslog_fact_candidate");
         let detail: serde_json::Value =
             serde_json::from_str(&event.detail_json).expect("detail json");
         assert_eq!(detail["fact_type"], "isis_adjacency");
-        assert_eq!(detail["join"]["status"], "orphan");
-        assert_eq!(detail["join"]["kind"], "isis_adjacency");
-        assert_eq!(detail["join"]["reason"], "no_isis_adjacency_match");
-        // Confirm if_name did NOT trigger an Interface join
-        assert_ne!(detail["join"]["kind"], "interface");
+        assert_eq!(detail["join"]["status"], "candidate");
+        assert_eq!(detail["join"]["graph_probe"]["matched"], false);
+
+        // The legacy joiner used to WRITE an IsisAdjacency node from this
+        // fact; the provisional path must never do that.
+        let conn = Connection::new(&store.db).expect("verify connection");
+        let mut stmt = conn
+            .prepare("MATCH (a:IsisAdjacency) RETURN count(a)")
+            .expect("prepare isis count");
+        let mut res = conn
+            .execute(&mut stmt, vec![])
+            .expect("count isis adjacencies");
+        let row = res.next().expect("isis count row");
+        assert_eq!(row[0].to_string(), "0");
     }
 
     #[test]
@@ -10434,253 +10587,4 @@ fn write_qos_policy_change(
     }
 
     Ok(())
-}
-
-// ─── Syslog Fact Join Handlers for Immediate Wins ─────────────────────────────
-
-/// Join service process syslog facts to create ServiceEndpoint nodes
-fn join_service_process_fact(
-    conn: &Connection<'_>,
-    update: &TelemetryUpdate,
-    fact: &SyslogFact,
-) -> Result<JsonValue> {
-    let service_name = fact
-        .fields
-        .get("service_name")
-        .map(String::as_str)
-        .unwrap_or("unknown");
-    let action = fact
-        .fields
-        .get("action")
-        .map(String::as_str)
-        .unwrap_or("unknown");
-
-    // Determine service type from service name
-    let service_type = if service_name.contains("nginx")
-        || service_name.contains("haproxy")
-        || service_name.contains("envoy")
-    {
-        "load_balancer"
-    } else if service_name.contains("postgres")
-        || service_name.contains("mysql")
-        || service_name.contains("mongodb")
-    {
-        "database"
-    } else if service_name.contains("redis") || service_name.contains("memcached") {
-        "cache"
-    } else if service_name.contains("kafka") || service_name.contains("rabbitmq") {
-        "message_queue"
-    } else if service_name.contains("elasticsearch") || service_name.contains("solr") {
-        "search_engine"
-    } else if service_name.contains("istio") || service_name.contains("consul") {
-        "service_mesh"
-    } else {
-        "application_server"
-    };
-
-    // Create ServiceEndpoint node
-    let svc_bare = crate::registry::strip_port(&update.target);
-    let endpoint_id = format!("service-{}-{}-{}", svc_bare, service_name, service_type);
-
-    let mut stmt = conn
-        .prepare(
-            "MERGE (se:ServiceEndpoint {id: $endpoint_id}) \
-         SET se.device_address = $device_address, \
-             se.service_name = $service_name, \
-             se.service_type = $service_type, \
-             se.endpoint_type = $endpoint_type, \
-             se.discovered_via = $discovered_via, \
-             se.confidence_score = $confidence_score, \
-             se.updated_at_ns = $updated_at_ns",
-        )
-        .context("prepare create service endpoint from syslog")?;
-    conn.execute(
-        &mut stmt,
-        vec![
-            ("endpoint_id", Value::String(endpoint_id.clone())),
-            ("device_address", Value::String(svc_bare.to_string())),
-            ("service_name", Value::String(service_name.to_string())),
-            ("service_type", Value::String(service_type.to_string())),
-            ("endpoint_type", Value::String("internal".to_string())),
-            ("discovered_via", Value::String("syslog".to_string())),
-            ("confidence_score", Value::Double(0.8)),
-            ("updated_at_ns", Value::Int64(update.timestamp_ns)),
-        ],
-    )
-    .context("create service endpoint from syslog")?;
-
-    // Create relationship to device
-    let mut stmt = conn
-        .prepare(
-            "MATCH (d:Device {address: $device_address}), (se:ServiceEndpoint {id: $endpoint_id}) \
-         MERGE (d)-[:HOSTS_SERVICE {role: $endpoint_type, updated_at: $updated_at}]->(se)",
-        )
-        .context("prepare service endpoint relationship")?;
-    conn.execute(
-        &mut stmt,
-        vec![
-            ("device_address", Value::String(svc_bare.to_string())),
-            ("endpoint_id", Value::String(endpoint_id)),
-            ("endpoint_type", Value::String("internal".to_string())),
-            ("updated_at", Value::Int64(update.timestamp_ns)),
-        ],
-    )
-    .context("create service endpoint relationship")?;
-
-    Ok(json!({
-        "status": "joined",
-        "kind": "service_endpoint",
-        "service_name": service_name,
-        "service_type": service_type,
-        "action": action
-    }))
-}
-
-/// Join QoS policy change syslog facts to create QoSPolicy nodes
-fn join_qos_policy_fact(
-    conn: &Connection<'_>,
-    update: &TelemetryUpdate,
-    fact: &SyslogFact,
-) -> Result<JsonValue> {
-    let policy_name = fact
-        .fields
-        .get("policy_name")
-        .map(String::as_str)
-        .unwrap_or("unknown");
-    let action = fact
-        .fields
-        .get("action")
-        .map(String::as_str)
-        .unwrap_or("unknown");
-    let interface_name = fact.fields.get("interface_name").cloned();
-
-    // Create QoSPolicy node
-    let qos_bare = crate::registry::strip_port(&update.target);
-    let policy_id = format!("qos-{}-{}", qos_bare, policy_name);
-
-    let mut stmt = conn
-        .prepare(
-            "MERGE (qp:QoSPolicy {id: $policy_id}) \
-         SET qp.device_address = $device_address, \
-             qp.policy_name = $policy_name, \
-             qp.policy_type = $policy_type, \
-             qp.updated_at_ns = $updated_at_ns",
-        )
-        .context("prepare create qos policy from syslog")?;
-    conn.execute(
-        &mut stmt,
-        vec![
-            ("policy_id", Value::String(policy_id.clone())),
-            ("device_address", Value::String(qos_bare.to_string())),
-            ("policy_name", Value::String(policy_name.to_string())),
-            ("policy_type", Value::String("syslog_triggered".to_string())),
-            ("updated_at_ns", Value::Int64(update.timestamp_ns)),
-        ],
-    )
-    .context("create qos policy from syslog")?;
-
-    // If interface is specified, create relationship
-    if let Some(if_name) = &interface_name {
-        let mut stmt = conn
-            .prepare(
-                "MATCH (i:Interface {name: $if_name}), (qp:QoSPolicy {id: $policy_id}) \
-             WHERE i.device_address = $device_address \
-             MERGE (i)-[:APPLIES_QOS {direction: $direction, updated_at: $updated_at}]->(qp)",
-            )
-            .context("prepare qos interface relationship")?;
-        conn.execute(
-            &mut stmt,
-            vec![
-                ("if_name", Value::String(if_name.clone())),
-                ("policy_id", Value::String(policy_id)),
-                ("device_address", Value::String(qos_bare.to_string())),
-                ("direction", Value::String("ingress".to_string())),
-                ("updated_at", Value::Int64(update.timestamp_ns)),
-            ],
-        )
-        .context("create qos interface relationship")?;
-    }
-
-    Ok(json!({
-        "status": "joined",
-        "kind": "qos_policy",
-        "policy_name": policy_name,
-        "action": action,
-        "interface_name": interface_name
-    }))
-}
-
-/// Join connection anomaly syslog facts to update ServiceEndpoint health
-fn join_connection_anomaly_fact(
-    conn: &Connection<'_>,
-    update: &TelemetryUpdate,
-    fact: &SyslogFact,
-) -> Result<JsonValue> {
-    let service_type = fact
-        .fields
-        .get("service_type")
-        .map(String::as_str)
-        .unwrap_or("unknown");
-    let anomaly_type = fact
-        .fields
-        .get("anomaly_type")
-        .map(String::as_str)
-        .unwrap_or("unknown");
-
-    // Look for existing ServiceEndpoint nodes of this type on the device
-    let mut stmt = conn
-        .prepare(
-            "MATCH (d:Device {address: $device_address})-[:HOSTS_SERVICE]->(se:ServiceEndpoint) \
-         WHERE se.service_type = $service_type \
-         RETURN se.id, se.service_name",
-        )
-        .context("prepare find service endpoints for anomaly")?;
-    let rows: Vec<Vec<Value>> = conn
-        .execute(
-            &mut stmt,
-            vec![
-                (
-                    "device_address",
-                    Value::String(crate::registry::strip_port(&update.target).to_string()),
-                ),
-                ("service_type", Value::String(service_type.to_string())),
-            ],
-        )
-        .context("find service endpoints for anomaly")?
-        .collect();
-    let affected_count = rows.len();
-
-    for row in rows {
-        let endpoint_id = read_str(&row[0]);
-
-        // Update ServiceEndpoint with anomaly information
-        let mut stmt = conn
-            .prepare(
-                "MATCH (se:ServiceEndpoint {id: $endpoint_id}) \
-             SET se.last_anomaly_type = $anomaly_type, \
-                 se.last_anomaly_at_ns = $timestamp_ns, \
-                 se.health_status = $health_status, \
-                 se.updated_at_ns = $updated_at_ns",
-            )
-            .context("prepare update service endpoint health")?;
-        conn.execute(
-            &mut stmt,
-            vec![
-                ("endpoint_id", Value::String(endpoint_id)),
-                ("anomaly_type", Value::String(anomaly_type.to_string())),
-                ("timestamp_ns", Value::Int64(update.timestamp_ns)),
-                ("health_status", Value::String("degraded".to_string())),
-                ("updated_at_ns", Value::Int64(update.timestamp_ns)),
-            ],
-        )
-        .context("update service endpoint health")?;
-    }
-
-    Ok(json!({
-        "status": "joined",
-        "kind": "connection_anomaly",
-        "service_type": service_type,
-        "anomaly_type": anomaly_type,
-        "affected_endpoints": affected_count
-    }))
 }

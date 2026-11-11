@@ -17,7 +17,9 @@ use crate::event_bus::InProcessBus;
 use crate::receiver_supervisor::SharedReceiverSupervisor;
 use crate::resource_governor::GovernorHandle;
 use crate::shun::{ShunEngine, ShunOutcome};
+use crate::streaming::netflow::{encode_key_component, resolve_flow_identity};
 use crate::telemetry::TelemetryUpdate;
+use crate::telemetry_identity::{IdentityResolution, TelemetrySourceIdentity};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -103,6 +105,7 @@ pub async fn run_syslog_receiver(
     let archive = SyslogArchive::open(&cfg.archive_path).await?;
     let fact_extractor = Arc::new(SyslogFactExtractor::load_from_dir(&pattern_dir));
     let target_map = Arc::new(SyslogTargetMap::new(&targets));
+    let collector_id = cfg.collector_id.clone();
     let governor = governor.map(Arc::new);
     let shun_engine: Option<Arc<ShunEngine>> = shun_engine;
     let mut tasks = Vec::new();
@@ -118,6 +121,7 @@ pub async fn run_syslog_receiver(
             archive.clone(),
             Arc::clone(&fact_extractor),
             Arc::clone(&target_map),
+            collector_id.clone(),
             cfg.max_frame_bytes,
             shutdown.clone(),
             governor.clone(),
@@ -138,6 +142,7 @@ pub async fn run_syslog_receiver(
             archive.clone(),
             Arc::clone(&fact_extractor),
             Arc::clone(&target_map),
+            collector_id,
             cfg.max_frame_bytes,
             shutdown.clone(),
             governor.clone(),
@@ -159,6 +164,77 @@ pub async fn run_syslog_receiver(
     Ok(())
 }
 
+/// BN-021e: per-source provisional identity context for syslog.
+///
+/// Syslog has no authenticated ingress: the observed transport endpoint
+/// (UDP packet sender / TCP connection peer) is evidence only, and the
+/// hostname/structured-data claims inside the message are self-reported.
+/// Neither can mint a canonical `device_id`. The provisional
+/// `syslogsrc/...` key scopes source-level correlation without ever
+/// collapsing unrelated exporters.
+#[derive(Clone)]
+struct SyslogSource {
+    /// Collision-resistant provisional key:
+    /// `syslogsrc/{collector}/{transport}/{peer}[/conn{id}]`.
+    source_key: String,
+    /// "udp" | "tcp" — observed transport protocol.
+    transport: &'static str,
+    /// Observed transport endpoint `ip:port`, evidence only.
+    peer_endpoint: String,
+    collector_id: String,
+    /// Per-connection discriminator for TCP (None for UDP).
+    connection_id: Option<u64>,
+}
+
+impl SyslogSource {
+    fn udp(peer: &str, collector_id: &str) -> Self {
+        Self::build("udp", peer, collector_id, None)
+    }
+
+    fn tcp(peer: &str, collector_id: &str, connection_id: u64) -> Self {
+        Self::build("tcp", peer, collector_id, Some(connection_id))
+    }
+
+    fn build(
+        transport: &'static str,
+        peer_endpoint: &str,
+        collector_id: &str,
+        connection_id: Option<u64>,
+    ) -> Self {
+        let mut key = format!(
+            "syslogsrc/{}/{}/{}",
+            encode_key_component(collector_id),
+            transport,
+            peer_endpoint
+        );
+        if let Some(conn) = connection_id {
+            key.push_str(&format!("/conn{conn}"));
+        }
+        Self {
+            source_key: key,
+            transport,
+            peer_endpoint: peer_endpoint.to_string(),
+            collector_id: collector_id.to_string(),
+            connection_id,
+        }
+    }
+
+    /// Provisional identity envelope. Plain syslog transports can never
+    /// produce a transport-attested `VerifiedIngressPrincipal`, so
+    /// resolution is always provisional — bindings cannot claim this
+    /// observation.
+    fn identity(&self, reported_hostname: &str) -> TelemetrySourceIdentity {
+        let mut identity = TelemetrySourceIdentity::observed(self.peer_endpoint.clone())
+            .with_protocol("syslog")
+            .with_exporter(self.source_key.clone())
+            .with_collector(self.collector_id.clone());
+        if !reported_hostname.trim().is_empty() {
+            identity = identity.with_reported(reported_hostname);
+        }
+        identity
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_udp(
     socket: UdpSocket,
@@ -166,6 +242,7 @@ async fn run_udp(
     archive: SyslogArchive,
     mut fact_extractor: Arc<SyslogFactExtractor>,
     target_map: Arc<SyslogTargetMap>,
+    collector_id: String,
     max_frame_bytes: usize,
     mut shutdown: watch::Receiver<bool>,
     governor: Option<Arc<GovernorHandle>>,
@@ -204,10 +281,10 @@ async fn run_udp(
                             }
                         }
                         let raw = String::from_utf8_lossy(&buf[..n]).trim_end().to_string();
+                        let src = SyslogSource::udp(&peer.to_string(), &collector_id);
                         handle_frame(
                             raw,
-                            "udp",
-                            peer.to_string(),
+                            &src,
                             &bus,
                             &archive,
                             &fact_extractor,
@@ -234,12 +311,16 @@ async fn run_tcp(
     archive: SyslogArchive,
     fact_extractor: Arc<SyslogFactExtractor>,
     target_map: Arc<SyslogTargetMap>,
+    collector_id: String,
     max_frame_bytes: usize,
     mut shutdown: watch::Receiver<bool>,
     governor: Option<Arc<GovernorHandle>>,
     shun_engine: Option<Arc<ShunEngine>>,
 ) {
     let conn_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // BN-021e: monotonically increasing per-connection discriminator so
+    // sequential TCP sessions from one peer never share a source key.
+    let conn_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     loop {
         tokio::select! {
@@ -267,12 +348,16 @@ async fn run_tcp(
                         let governor = governor.clone();
                         let shun_engine = shun_engine.clone();
                         let conn_count = Arc::clone(&conn_count);
+                        let conn_seq = Arc::clone(&conn_seq);
+                        let collector_id = collector_id.clone();
                         tokio::spawn(async move {
                             // D4-1 T9: RFC 6587 dual-mode TCP framing.
                             // Auto-detect: if stream starts with an ASCII digit, use
                             // octet-counting (e.g. "128 <pri>..."). Otherwise newline framing.
                             let mut reader = BufReader::new(stream);
                             let peer_str = peer.to_string();
+                            let connection_id = conn_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let src = SyslogSource::tcp(&peer_str, &collector_id, connection_id);
 
                             // Peek first byte to detect framing mode.
                             let octet_counting = match reader.fill_buf().await {
@@ -282,13 +367,13 @@ async fn run_tcp(
 
                             if octet_counting {
                                 run_tcp_octet_counting(
-                                    &mut reader, max_frame_bytes, &peer_str,
+                                    &mut reader, max_frame_bytes, &src,
                                     &bus, &archive, &fact_extractor, &target_map,
                                     governor.as_deref(), shun_engine.as_deref(),
                                 ).await;
                             } else {
                                 run_tcp_newline(
-                                    &mut reader, max_frame_bytes, &peer_str,
+                                    &mut reader, max_frame_bytes, &src,
                                     &bus, &archive, &fact_extractor, &target_map,
                                     governor.as_deref(), shun_engine.as_deref(),
                                 ).await;
@@ -310,7 +395,7 @@ async fn run_tcp(
 async fn run_tcp_newline<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
     max_frame_bytes: usize,
-    peer_str: &str,
+    src: &SyslogSource,
     bus: &Arc<InProcessBus>,
     archive: &SyslogArchive,
     fact_extractor: &SyslogFactExtractor,
@@ -324,14 +409,13 @@ async fn run_tcp_newline<R: tokio::io::AsyncBufRead + Unpin>(
         match reader.read_line(&mut line).await {
             Ok(0) => break,
             Ok(n) if n > max_frame_bytes => {
-                warn!(peer = %peer_str, bytes = n, "syslog TCP frame exceeded limit");
+                warn!(peer = %src.peer_endpoint, bytes = n, "syslog TCP frame exceeded limit");
                 break;
             }
             Ok(_) => {
                 handle_frame(
                     line.trim_end().to_string(),
-                    "tcp",
-                    peer_str.to_string(),
+                    src,
                     bus,
                     archive,
                     fact_extractor,
@@ -342,7 +426,7 @@ async fn run_tcp_newline<R: tokio::io::AsyncBufRead + Unpin>(
                 .await;
             }
             Err(error) => {
-                warn!(%error, peer = %peer_str, "syslog TCP read failed");
+                warn!(%error, peer = %src.peer_endpoint, "syslog TCP read failed");
                 break;
             }
         }
@@ -356,7 +440,7 @@ async fn run_tcp_newline<R: tokio::io::AsyncBufRead + Unpin>(
 async fn run_tcp_octet_counting<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
     max_frame_bytes: usize,
-    peer_str: &str,
+    src: &SyslogSource,
     bus: &Arc<InProcessBus>,
     archive: &SyslogArchive,
     fact_extractor: &SyslogFactExtractor,
@@ -374,7 +458,7 @@ async fn run_tcp_octet_counting<R: tokio::io::AsyncBufRead + Unpin>(
                 Ok(buf) if buf.is_empty() => return, // EOF
                 Ok(buf) => buf,
                 Err(error) => {
-                    warn!(%error, peer = %peer_str, "syslog TCP octet-counting read failed");
+                    warn!(%error, peer = %src.peer_endpoint, "syslog TCP octet-counting read failed");
                     return;
                 }
             };
@@ -388,7 +472,7 @@ async fn run_tcp_octet_counting<R: tokio::io::AsyncBufRead + Unpin>(
                 }
                 if !b.is_ascii_digit() || len_buf.len() > 7 {
                     // Not a valid octet-counting length; abort.
-                    warn!(peer = %peer_str, "syslog TCP octet-counting: invalid length prefix");
+                    warn!(peer = %src.peer_endpoint, "syslog TCP octet-counting: invalid length prefix");
                     return;
                 }
                 len_buf.push(b as char);
@@ -402,11 +486,11 @@ async fn run_tcp_octet_counting<R: tokio::io::AsyncBufRead + Unpin>(
         let msg_len: usize = match len_buf.parse() {
             Ok(n) if n <= max_frame_bytes => n,
             Ok(n) => {
-                warn!(peer = %peer_str, bytes = n, "syslog TCP octet-counted frame exceeded limit");
+                warn!(peer = %src.peer_endpoint, bytes = n, "syslog TCP octet-counted frame exceeded limit");
                 return;
             }
             Err(_) => {
-                warn!(peer = %peer_str, len = %len_buf, "syslog TCP octet-counting: invalid length");
+                warn!(peer = %src.peer_endpoint, len = %len_buf, "syslog TCP octet-counting: invalid length");
                 return;
             }
         };
@@ -414,15 +498,14 @@ async fn run_tcp_octet_counting<R: tokio::io::AsyncBufRead + Unpin>(
         // Read exactly msg_len bytes.
         let mut msg_buf = vec![0u8; msg_len];
         if let Err(error) = reader.read_exact(&mut msg_buf).await {
-            warn!(%error, peer = %peer_str, "syslog TCP octet-counting: incomplete frame");
+            warn!(%error, peer = %src.peer_endpoint, "syslog TCP octet-counting: incomplete frame");
             return;
         }
 
         let raw = String::from_utf8_lossy(&msg_buf).trim_end().to_string();
         handle_frame(
             raw,
-            "tcp",
-            peer_str.to_string(),
+            src,
             bus,
             archive,
             fact_extractor,
@@ -437,8 +520,7 @@ async fn run_tcp_octet_counting<R: tokio::io::AsyncBufRead + Unpin>(
 #[allow(clippy::too_many_arguments)]
 async fn handle_frame(
     raw: String,
-    transport: &str,
-    peer_addr: String,
+    src: &SyslogSource,
     bus: &Arc<InProcessBus>,
     archive: &SyslogArchive,
     fact_extractor: &SyslogFactExtractor,
@@ -450,11 +532,11 @@ async fn handle_frame(
         return;
     }
 
-    let event = parse_syslog(&raw, transport, &peer_addr, now_ns());
+    let event = parse_syslog(&raw, src.transport, &src.peer_endpoint, now_ns());
     metrics::counter!(
         "bonsai_syslog_events_total",
         "category" => event.category.as_str(),
-        "transport" => transport.to_string()
+        "transport" => src.transport.to_string()
     )
     .increment(1);
 
@@ -463,13 +545,14 @@ async fn handle_frame(
         metrics::counter!("bonsai_syslog_archive_errors_total").increment(1);
     }
 
+    // BN-021e: hostname→target matching is a *candidate hypothesis* only.
+    // A syslog hostname is self-reported message content — it can select
+    // vendor patterns and annotate evidence, but it can never authorize
+    // canonical device attribution.
     let target = target_map.resolve(&event);
-    let facts = fact_extractor.extract(&event, &target.vendor);
-    let target_address = target.address.clone();
-    let target_vendor = target.vendor.clone();
-    let target_hostname = target.hostname.clone();
-    let target_role = target.role.clone();
-    let target_site = target.site.clone();
+    let facts = fact_extractor.extract(&event, &target.candidate_vendor());
+    let resolution = resolve_flow_identity(&src.identity(&event.hostname), &[], None);
+    let identity_json = provisional_identity_json(src, &target, &resolution, &event.hostname);
 
     // Suppress SRL infrastructure noise apps that produce no routing-relevant events.
     // These apps (e.g. sr_grpc_server TLS profile chatter) can account for 90%+ of
@@ -481,10 +564,17 @@ async fn handle_frame(
     }
 
     // Shun evaluation (D4-2 T2): drop or rate-limit before bus publish.
-    // Archive write above is intentionally before this check.
+    // Archive write above is intentionally before this check. Device-
+    // scoped rules match the unique candidate address (same semantics as
+    // before — the hostname claim was always self-reported); otherwise
+    // the provisional source key is used so global rules still apply.
     if let Some(engine) = shun_engine {
         let fact_type_refs: Vec<&str> = facts.iter().map(|f| f.fact_type.as_str()).collect();
-        match engine.evaluate(&target_address, &event.message, &fact_type_refs) {
+        let shun_scope = match target.candidate_status {
+            SyslogCandidateStatus::Unique => target.address.clone(),
+            _ => src.source_key.clone(),
+        };
+        match engine.evaluate(&shun_scope, &event.message, &fact_type_refs) {
             ShunOutcome::Dropped { rule_id } => {
                 metrics::counter!("bonsai_syslog_shunned_total", "action" => "drop").increment(1);
                 tracing::debug!(rule_id, "syslog event dropped by shun rule");
@@ -510,30 +600,101 @@ async fn handle_frame(
         return;
     }
 
+    // Publish under the provisional source key. `target` is never a
+    // canonical device address; candidate attributes ride inside `value`
+    // as an explicit hypothesis for downstream read-only correlation.
     bus.publish(TelemetryUpdate {
-        target: target_address.clone(),
-        vendor: target_vendor.clone(),
-        hostname: target_hostname.clone(),
-        role: target_role.clone(),
-        site: target_site.clone(),
+        target: src.source_key.clone(),
+        vendor: target.candidate_vendor().to_string(),
+        hostname: event.hostname.clone(),
+        role: target.candidate_role().to_string(),
+        site: target.candidate_site().to_string(),
         timestamp_ns: event.timestamp_ns,
         path: format!("signals/syslog/{}", event.category.as_str()),
-        value: serde_json::to_value(&event).unwrap_or_else(|_| json!({ "raw": raw })),
+        value: with_identity(
+            serde_json::to_value(&event).unwrap_or_else(|_| json!({ "raw": raw })),
+            &identity_json,
+        ),
     });
 
     for fact in facts {
         bus.publish(TelemetryUpdate {
-            target: target_address.clone(),
-            vendor: target_vendor.clone(),
-            hostname: target_hostname.clone(),
-            role: target_role.clone(),
-            site: target_site.clone(),
+            target: src.source_key.clone(),
+            vendor: target.candidate_vendor().to_string(),
+            hostname: fact.hostname.clone(),
+            role: target.candidate_role().to_string(),
+            site: target.candidate_site().to_string(),
             timestamp_ns: fact.timestamp_ns,
             path: format!("signals/syslog_fact/{}", fact.fact_type),
-            value: serde_json::to_value(&fact)
-                .unwrap_or_else(|_| json!({ "message": event.message, "raw": raw })),
+            value: with_identity(
+                serde_json::to_value(&fact)
+                    .unwrap_or_else(|_| json!({ "message": event.message, "raw": raw })),
+                &identity_json,
+            ),
         });
     }
+}
+
+/// Merge the provisional identity envelope into a serialized
+/// SyslogEvent/SyslogFact payload. All identity fields are evidence —
+/// the graph projection treats them as hints for read-only probes only.
+fn with_identity(mut value: serde_json::Value, identity: &serde_json::Value) -> serde_json::Value {
+    if let serde_json::Value::Object(map) = &mut value {
+        if let serde_json::Value::Object(id_map) = identity {
+            for (k, v) in id_map {
+                map.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    value
+}
+
+/// Build the provisional identity evidence object carried by every
+/// published syslog update. `candidate` records the deterministic
+/// hostname-match hypothesis (unique / ambiguous / unresolved) — it is
+/// never an authoritative join.
+fn provisional_identity_json(
+    src: &SyslogSource,
+    target: &ResolvedTarget,
+    resolution: &IdentityResolution,
+    reported_hostname: &str,
+) -> serde_json::Value {
+    let candidate = match target.candidate_status {
+        SyslogCandidateStatus::Unique => json!({
+            "status": "unique_hostname_match",
+            "device_address": target.address,
+            "hostname": target.hostname,
+            "vendor": target.vendor,
+            "role": target.role,
+            "site": target.site,
+        }),
+        SyslogCandidateStatus::Ambiguous => json!({
+            "status": "ambiguous_hostname_match",
+            "hostname": reported_hostname,
+            "alternatives": target.candidate_addresses,
+        }),
+        SyslogCandidateStatus::Unresolved => json!({
+            "status": "unresolved",
+            "hostname": reported_hostname,
+        }),
+    };
+    json!({
+        "source_key": src.source_key,
+        "exporter_id": src.source_key,
+        "identity_status": serde_json::to_value(resolution.status)
+            .unwrap_or(serde_json::Value::Null),
+        "device_id": resolution.device_id,
+        "canonical_exporter_id": resolution.canonical_exporter_id,
+        "identity_resolution": serde_json::to_value(resolution)
+            .unwrap_or(serde_json::Value::Null),
+        "transport_source": src.peer_endpoint,
+        "transport_protocol": src.transport,
+        "collector_id": src.collector_id,
+        "connection_id": src.connection_id,
+        "reported_hostname": reported_hostname,
+        "candidate": candidate,
+        "authority": "unverified",
+    })
 }
 
 #[derive(Clone)]
@@ -555,13 +716,56 @@ struct SyslogTargetEntry {
     site: String,
 }
 
+/// How the self-reported syslog hostname relates to configured targets.
+/// This is a *hypothesis* for evidence annotation and read-only graph
+/// probes — never authorization for canonical device state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyslogCandidateStatus {
+    /// Exactly one configured target claims this hostname.
+    Unique,
+    /// Multiple configured targets share the hostname (e.g. same name in
+    /// different sites/tenants) — no arbitrary selection is permitted.
+    Ambiguous,
+    /// No configured target matches; the hostname is unknown.
+    Unresolved,
+}
+
 #[derive(Clone)]
 struct ResolvedTarget {
+    /// Candidate device address — populated only for `Unique` matches.
     address: String,
     hostname: String,
     vendor: String,
     role: String,
     site: String,
+    candidate_status: SyslogCandidateStatus,
+    /// All matching configured addresses — populated for `Ambiguous`.
+    candidate_addresses: Vec<String>,
+}
+
+impl ResolvedTarget {
+    /// Vendor used for fact-pattern selection. Only a unique hostname
+    /// match may steer pattern choice; ambiguous/unresolved stay empty.
+    fn candidate_vendor(&self) -> &str {
+        match self.candidate_status {
+            SyslogCandidateStatus::Unique => &self.vendor,
+            _ => "",
+        }
+    }
+
+    fn candidate_role(&self) -> &str {
+        match self.candidate_status {
+            SyslogCandidateStatus::Unique => &self.role,
+            _ => "",
+        }
+    }
+
+    fn candidate_site(&self) -> &str {
+        match self.candidate_status {
+            SyslogCandidateStatus::Unique => &self.site,
+            _ => "",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -636,6 +840,13 @@ impl SyslogArchive {
         file.write_all(&line)
             .await
             .context("write syslog archive line")?;
+        // tokio::fs::File::write_all returns once bytes are accepted into its
+        // internal buffer — the blocking write(2) may still be in flight.
+        // flush() drains the pending operation so a returned Ok means the
+        // line is actually in the file (forensic archive ordering).
+        file.flush()
+            .await
+            .context("flush syslog archive line")?;
         Ok(())
     }
 }
@@ -661,32 +872,55 @@ impl SyslogTargetMap {
         Self { entries }
     }
 
+    /// Resolve the *claimed* hostname against configured targets.
+    ///
+    /// BN-021e: this is candidate correlation, not identity resolution.
+    /// The returned fields annotate evidence and steer fact-pattern
+    /// selection; they must never be treated as canonical device
+    /// attribution. Ambiguous hostname claims (e.g. the same hostname in
+    /// two sites) resolve to `Ambiguous` with no single candidate rather
+    /// than silently picking the first entry.
     fn resolve(&self, event: &SyslogEvent) -> ResolvedTarget {
         let hostname = event.hostname.trim().to_ascii_lowercase();
-        if let Some(entry) = self.entries.iter().find(|entry| entry.hostname == hostname) {
-            return ResolvedTarget {
-                // Use bare IP as canonical identity — strip any gNMI port from the
-                // registered address so syslog events land on the same Device node as gNMI.
+        let matches: Vec<&SyslogTargetEntry> = self
+            .entries
+            .iter()
+            .filter(|entry| entry.hostname == hostname)
+            .collect();
+
+        match matches.as_slice() {
+            [entry] => ResolvedTarget {
+                // Bare IP candidate — strip any gNMI port so a future
+                // verified binding lands on the same Device node.
                 address: crate::registry::strip_port(&entry.address).to_string(),
                 hostname: entry.hostname.clone(),
                 vendor: entry.vendor.clone(),
                 role: entry.role.clone(),
                 site: entry.site.clone(),
-            };
-        }
-        // Fallback: strip ephemeral source port from peer_addr (e.g. "10.0.0.1:38421" → "10.0.0.1").
-        let fallback_ip = crate::registry::strip_port(if hostname.is_empty() {
-            &event.peer_addr
-        } else {
-            &event.hostname
-        })
-        .to_string();
-        ResolvedTarget {
-            address: fallback_ip,
-            hostname: event.hostname.clone(),
-            vendor: String::new(),
-            role: String::new(),
-            site: String::new(),
+                candidate_status: SyslogCandidateStatus::Unique,
+                candidate_addresses: Vec::new(),
+            },
+            [] => ResolvedTarget {
+                address: String::new(),
+                hostname: event.hostname.clone(),
+                vendor: String::new(),
+                role: String::new(),
+                site: String::new(),
+                candidate_status: SyslogCandidateStatus::Unresolved,
+                candidate_addresses: Vec::new(),
+            },
+            many => ResolvedTarget {
+                address: String::new(),
+                hostname: event.hostname.clone(),
+                vendor: String::new(),
+                role: String::new(),
+                site: String::new(),
+                candidate_status: SyslogCandidateStatus::Ambiguous,
+                candidate_addresses: many
+                    .iter()
+                    .map(|entry| crate::registry::strip_port(&entry.address).to_string())
+                    .collect(),
+            },
         }
     }
 }
