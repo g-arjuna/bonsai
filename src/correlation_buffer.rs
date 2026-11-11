@@ -412,8 +412,11 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
                 None
             }
         }
-        // SNMP fact events: direction from fact_type, interface from fields.interface_name
-        "snmp_fact_joined" | "snmp_fact_orphan" => {
+        // SNMP fact events: direction from fact_type, interface from fields.interface_name.
+        // BN-021e renamed the event types to candidate/unresolved; the detail
+        // schema is unchanged, so provisional facts keep contributing
+        // correlation evidence (scoped to their source key, never canonical).
+        "snmp_fact_candidate" | "snmp_fact_unresolved" => {
             let fact_type = detail
                 .get("fact_type")
                 .and_then(|v| v.as_str())

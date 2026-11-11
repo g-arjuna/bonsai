@@ -735,3 +735,40 @@ scoped to the source key. Verified:
 `tests/bn021e_syslog_source_identity.rs` 10/10 + 13 lib tests incl.
 the 44-fixture corpus. SNMP/OTLP adapters remain open under BN-021e;
 canonical attribution awaits BN-021g verified ingress.
+
+BN-021e SNMP trap identity isolation (11 November, third adapter
+slice): the SNMP trap receiver no longer treats the transport source
+IP as device identity. Every accepted trap now yields a provisional
+`snmpsrc/{collector}/udp/{peer_ip}:{peer_port}` source key covering
+the observed UDP endpoint and collector namespace
+(`SnmpConfig.collector_id`, default `default`). The configured polling
+target match is demoted to an explicit candidate hypothesis:
+`unique_target_match` / `ambiguous_target_match` (duplicate IPs across
+tenants — no arbitrary selection, no vendor steering) /
+`unresolved`. All self-reported claims stay separate evidence:
+v1 `agent-addr` → `reported_agent_address`, v3 USM engine/context
+engine IDs → `reported_engine_id`, `usm_security_name` with
+`usm_auth_status: "unverified"`, community presence only
+(`community_present`; the string itself and `raw_hex` are redacted
+from published values and retained solely in the restricted forensic
+archive, which now flushes before publish like the syslog fix).
+SNMPv3 message authentication is NOT verified — a recognized security
+name is not authentication; encrypted scoped PDUs are rejected with an
+explicit parse error. Community/USM filtering now runs BEFORE dedup
+(re-keyed to `(trust domain, source key, trap OID)`, bounded), so a
+rejected packet cannot suppress a later accepted observation; a
+configured allowlist rejects empty/missing/malformed communities.
+The graph projection fails closed: provisional `StateChangeEvent`s
+scoped to the source key plus read-only candidate probes
+(Interface/BgpNeighbor/OspfNeighbor/IsisAdjacency) — no `Device`
+upsert, `DeviceAddress` refresh, `REPORTED_BY`, or canonical
+Interface/BGP/BFD/ISIS/OSPF/service mutation from trap claims, and no
+detection/remediation under trap-claimed identity. Fact events are
+now `snmp_fact_candidate`/`snmp_fact_unresolved` (the mutating
+`join_snmp_fact` was removed); `correlation_buffer` accepts the new
+type names so SNMP facts keep contributing correlation keys. Forged
+serialized `identity_resolution`/`device_id`/`verified_ingress`
+fields cannot authorize anything. Verified:
+`tests/bn021e_snmp_source_identity.rs` 11/11 + lib SNMP parser/target
+tests + BN-021/022 regression batch. OTLP remains the open BN-021e
+adapter; canonical SNMP attribution awaits BN-021g verified ingress.

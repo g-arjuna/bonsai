@@ -111,3 +111,8 @@ date,command,scope,wall_seconds,result,notes
 2026-11-11,cargo test -j 1 --test bn021b_trusted_identity --test bn021c_exporter_isolation --test bn021d_flow_exporter_isolation --test bn021e_sflow_exporter_isolation --test bn021f_hardening --test bn021f_authenticated_ingress --test bn022_graph_read_boundary,bn021/022 regression batch post-syslog,209,pass,75/75 (13+17+15+7+9+9+5); -j1 sequential links
 2026-11-11,cargo test -j 1 -p bonsai --lib syslog,bn021e syslog unit+fixture tests post-fmt,105,pass,13/13
 2026-11-11,cargo test -j 1 --test bn021e_syslog_source_identity,bn021e syslog suite post-fmt,317,pass,10/10
+2026-11-11,cargo test -j 1 --test bn021e_snmp_source_identity,bn021e snmp suite attempt1,220,fail,compile error E0308 in test (fixed); no tests ran
+2026-11-11,cargo test -j 1 --test bn021e_snmp_source_identity,bn021e snmp suite attempt2,354,fail,9/11; engine_id double-hex bug + archive TempDir ordering found
+2026-11-11,cargo test -j 1 --test bn021e_snmp_source_identity,bn021e snmp suite final,407,pass,11/11; lib recompile after snmp.rs+correlation_buffer edits
+2026-11-11,cargo test -j 1 --lib snmp --test bn021b..bn022 batch,bn021/022 regression compile+lib,692,partial,11m31s compile; lib snmp 11/11 pass; integration targets accidentally name-filtered (0 ran) — rerun required
+2026-11-11,cargo test -j 1 --test bn021b_trusted_identity --test bn021c_exporter_isolation --test bn021d_flow_exporter_isolation --test bn021e_sflow_exporter_isolation --test bn021e_syslog_source_identity --test bn021f_authenticated_ingress --test bn021f_hardening --test bn022_graph_read_boundary,bn021/022 regression batch post-snmp,24,pass,85/85 (13+17+15+7+10+9+9+5); warm binaries
