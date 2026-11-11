@@ -15,6 +15,10 @@ fn conflicting_journals_rejected_before_open() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = bonsai::routing_service::RoutingServiceConfig {
         internal_service_token: Some("closure-token".into()),
+        identity_db_path: None,
+        identity_scope: None,
+        bmp_identity_mode: bonsai::routing_service::BmpIdentityMode::Verified,
+        bmp_mtls: None,
         bmp_journal_path: Some(dir.path().join("shared")),
         event_journal_path: Some(dir.path().join("shared")),
         ..Default::default()
@@ -350,12 +354,16 @@ async fn actual_binary_kill_restart_preserves_history_and_accepts_new_ingest() {
     let socket2 = send_route(&bmp2, 250).await;
     let updated = wait_route(&http2, 250).await;
     assert!(updated["durable_sequence"].as_u64().unwrap() > seq);
-    assert!(
-        updated["routes"][0]["source"]["session_epoch"]
-            .as_u64()
-            .unwrap()
-            > epoch
-    );
+    // BN-021c: the restarted connection is a new conn:* speaker, so the
+    // response can also contain the replayed previous speaker's route.
+    // Assert on the NEW route's epoch, not routes[0] ordering.
+    let new_route = updated["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["local_pref"] == 250)
+        .expect("route with local_pref=250");
+    assert!(new_route["source"]["session_epoch"].as_u64().unwrap() > epoch);
     let history2 = wait_history(&http2, 250).await;
     assert_eq!(history2["events"][0]["after_attributes"]["local_pref"], 250);
     assert!(
@@ -449,6 +457,10 @@ async fn sparse_late_scoped_history_is_bounded_pageable_and_restart_stable() {
         bmp_journal_path: Some(dir.path().join("bmp.bin")),
         event_journal_path: Some(dir.path().join("events.jsonl")),
         internal_service_token: Some("late-history".into()),
+        identity_db_path: None,
+        identity_scope: None,
+        bmp_identity_mode: bonsai::routing_service::BmpIdentityMode::Verified,
+        bmp_mtls: None,
         ..Default::default()
     };
     let state = RoutingServiceState::new(cfg.clone()).await.unwrap();
@@ -481,7 +493,7 @@ async fn sparse_late_scoped_history_is_bounded_pageable_and_restart_stable() {
             } else {
                 [0; 8]
             };
-            rc.peer_key = rbmp_core::bmp::types::PeerKey::from_header(speaker, &rc.peer_header);
+            rc.peer_key = rbmp_core::bmp::types::PeerKey::from_header(speaker, "", &rc.peer_header);
             rc.view_key.peer = rc.peer_key.clone();
             rc.route_key.view = rc.view_key.clone();
             rc.attributes.as_mut().unwrap().local_pref = Some(seq as u32);
@@ -492,6 +504,7 @@ async fn sparse_late_scoped_history_is_bounded_pageable_and_restart_stable() {
     let query = EventsQuery {
         speaker: Some(own.to_string()),
         vrf_rd: Some("65000:100".into()),
+        exporter_instance: None,
         limit: Some(1),
         after_seq: Some(3),
     };
@@ -512,6 +525,7 @@ async fn sparse_late_scoped_history_is_bounded_pageable_and_restart_stable() {
     let third_q = EventsQuery {
         speaker: Some(own.to_string()),
         vrf_rd: Some("65000:100".into()),
+        exporter_instance: None,
         limit: Some(1),
         after_seq: second["next_after_seq"].as_u64(),
     };
@@ -543,6 +557,7 @@ async fn sparse_late_scoped_history_is_bounded_pageable_and_restart_stable() {
             speaker: Some(own.to_string()),
             vrf_rd: Some("65000:100".into()),
             prefix: Some("10.88.1.0/24".into()),
+            exporter_instance: None,
             limit: Some(1),
         },
     )
@@ -559,6 +574,7 @@ async fn sparse_late_scoped_history_is_bounded_pageable_and_restart_stable() {
         &EventsQuery {
             speaker: Some(own.to_string()),
             vrf_rd: Some("65000:100".into()),
+            exporter_instance: None,
             limit: Some(1),
             after_seq: Some(12_500),
         },

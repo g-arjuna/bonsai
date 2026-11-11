@@ -51,3 +51,38 @@ date,command,scope,wall_seconds,result,notes
 2026-11-10,cargo test --test bn021b_trusted_identity,bn021b test target,2742+412,pass,test-profile dep codegen ~45m; 13/13 tests pass in 1.65s; lib rebuild after fmt 6m52s
 2026-11-10,cargo test --test bn022_graph_read_boundary,bn022 regression,aborted,disk-full,No space left on device writing liblbug rlib; incremental cache cleaned; rerun pending in main worktree
 2026-11-10,cargo test --test bn022_graph_read_boundary,bn022 regression (main worktree, merged 842b737),586,pass,warm main target; 5/5 tests pass in 3.71s; earlier attempt aborted on disk-full in worktree
+2026-11-10,cargo check -p bonsai --lib,bonsai --lib,34,pass,incremental after rbmp crates; sccache warm
+2026-11-10,cargo check -p bonsai --all-targets,bonsai all targets,~900,pass,first full-target check incl. test targets; final incremental 0.7s
+2026-11-10,cargo test --test bn021c_exporter_isolation,bn021c regression,234+0.55,pass,test-profile compile 3m54s warm deps; 3/3 tests pass
+2026-11-10,cargo test -p rbmp-rib -p rbmp-store,rbmp crates,62+~1,pass,42+3 tests pass; cold-ish test profile for these crates
+2026-11-10,cargo test 6 integration targets,bn005/bn006/bn021b/r01/r05/ownership,924+~23,pass,15m24s test-profile compile; all listed suites pass
+2026-11-10,cargo clippy -p rbmp-core -p rbmp-rib -p rbmp-store,rbmp crates clippy,8,pass,no errors; ~30 pre-existing style warnings
+2026-11-10,cargo test --test bn021c_exporter_isolation --test bn005_closeout,bn021c+bn005 regression,688+10.5,pass,test-profile compile 11m28s; 7/7 bn021c, 11/11 bn005_closeout
+2026-11-10,cargo test --test bn021b_trusted_identity,bn021b regression,21+1.6,pass,13/13 tests pass
+2026-11-10,cargo test -p rbmp-rib -p rbmp-store,rbmp crates,15.4+~0.1,pass,42 rib + 3 store tests pass
+2026-11-10,cargo check -p bonsai --all-targets,bonsai all targets,21+17.2,pass,clean after BN-021c hardening edits
+2026-11-10,cargo clippy -p rbmp-core -p rbmp-rib -p rbmp-store --all-targets,rbmp crates clippy,9.1,pass,no errors; pre-existing style warnings only
+2026-11-11,cargo test --test bn021c_exporter_isolation,bn021c regression (12 tests),~600+~20,pass,test-profile compile several min; 12/12 pass incl. invalid-frame + Termination sibling TCP tests
+2026-11-11,cargo test 5 integration targets (bmp_rfc_contract bn006_collection_wiring bn006_reconnect_projection ownership_compatibility r01_r04_routing_history_recovery r05_r06_runtime_wiring_and_scope),regression batch,~900,pass,all listed suites pass; 1 ignored (dedicated SR Linux containerlab)
+2026-11-11,cargo build --bin bonsai-routing,bonsai-routing debug bin,~1115,pass,18m35s; sccache warm; needed for bn021c-routing:local lab image
+2026-11-11,docker build bn021c-routing:local,bn021c routing image,~60,pass,scratch image wrapping target/debug/bonsai-routing
+2026-11-11,lab/acceptance/bn021c-nat/up.sh,NAT acceptance bring-up,~120,pass,3 FRR exporters + peer + NAT + bonsai; BGP converged; scenarios A-G executed
+2026-11-11,cargo test --test bn021c_exporter_isolation (post-hardening),bn021c regression (17 tests),~900,pass,17/17 incl. same-claim conn isolation, post-Termination fencing, journal-failure outcomes, scope encoding
+2026-11-11,cargo check/test batch (bn021b bn005 rbmp-rib rbmp-store bn006_epoch_resync bn006_reconnect_projection r01_r04 r05_r06 bn022_graph_read_boundary),regression batch,~900,pass,all suites pass 0 failures; fmt --check fails only on pre-existing unrelated drift + fixed hunks in touched files
+2026-11-11,cargo clippy -p rbmp-core -p rbmp-rib -p rbmp-store --all-targets,clippy,~5,pass,warnings only all pre-existing style lints
+2026-11-11,cargo build --bin bonsai-routing,bonsai-routing debug bin,~285,pass,4m45s warm sccache after rustfmt touch of mod.rs
+2026-11-11,docker build bn021c-routing:local + BN021C_RESET=1 up.sh,NAT re-verification bring-up,~180,pass,lab rebuilt; runtime archived to _archive; concurrent same-claim now conn-isolated; sequential same-claim still merges (documented OPEN)
+2026-11-11,cargo test --test bn021f_authenticated_ingress (initial),bn021f auth ingress suite,~890,fail,first compile+link of rcgen/rustls test deps; CryptoProvider panic + identity-store ordering bugs found
+2026-11-11,cargo test --test bn021f_authenticated_ingress (final),bn021f auth ingress suite,~45,pass,9/9 tests A-I: verified vexp resolution, sequential+conflicting claim rejection, unauth transport, revoked binding, reconnect, multi-conn, replay provenance
+2026-11-11,cargo build --bin bonsai-routing (BN-021f mTLS),bonsai-routing debug bin,245,pass,4m07s warm sccache; needed for bn021c-routing:local lab image
+2026-11-11,docker build bn021c-routing:local (BN-021f binary),bn021c routing image,~15,pass,scratch image wrapping refreshed target/debug/bonsai-routing
+2026-11-11,BN021C_RESET=1 up.sh (BN-021f mTLS lab),NAT acceptance bring-up,~120,pass,v3 client certs; vexp:exp-frr-{a,b} resolved, frr-c conn:* isolated; BGP converged
+2026-11-11,cargo test regression batch (bn021b bn005 rbmp-rib rbmp-store bn006_epoch bn006_reconnect r01_r04 r05_r06 bn022),regression batch,~1200,pass,all suites 0 failures after bn021c fixture updates (schema v4 + device_id-null assertion per BN-021f spec)
+2026-11-11,cargo check -p bonsai --all-targets,bonsai check all-targets,~1100,pass,warm sccache; clean
+2026-11-11,cargo test --test bn021f_hardening,bn021f hardening suite,~320,pass,9/9: TLS nonblocking+limit+recovery+shutdown, active+multi-session revocation, rotation, deployment policy, principal boundary
+2026-11-11,cargo test --test bn021f_authenticated_ingress,bn021f auth ingress suite,~30,pass,9/9 unchanged contract after listener/registry refactor
+2026-11-11,cargo test regression batch (bn021c bn021b bn005 rbmp-rib rbmp-store bn006 r01_r04 r05_r06 bn022 bn005_deployment),regression batch,~1500,pass,all suites 0 failures
+2026-11-11,cargo clippy -p bonsai --all-targets,clippy bonsai,~240,fail,1 error = pre-existing never_loop in src/http_server/device.rs; reproduced on baseline stash; 296 warnings all pre-existing
+2026-11-11,cargo build --bin bonsai-routing + docker build bn021c-routing:local,bonsai-routing debug bin+image,~300,pass,hardening binary for lab
+2026-11-11,BN021C_RESET=1 up.sh + R1-R5 NAT scenarios,NAT acceptance hardening,~900,pass,revocation/multi-session/rotation/TLS-saturation/restart-replay all verified live
+2026-11-11,docker builder prune -af + df, disk maintenance,5,pass,freed ~50G build cache after ENOSPC during test compile

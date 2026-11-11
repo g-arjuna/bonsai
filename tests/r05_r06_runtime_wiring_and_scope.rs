@@ -168,6 +168,10 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
         event_journal_path: Some(dir.path().join("events.jsonl")),
         max_frame_bytes: DEFAULT_MAX_FRAME,
         internal_service_token: Some(token.to_string()),
+        identity_db_path: None,
+        identity_scope: None,
+        bmp_identity_mode: bonsai::routing_service::BmpIdentityMode::Verified,
+        bmp_mtls: None,
     };
     let routing_state = RoutingServiceState::new(cfg)
         .await
@@ -215,6 +219,7 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
             prefix: Some("10.99.0.0/24".into()),
             speaker: Some("192.0.2.11".into()),
             vrf_rd: Some("65000:10".into()),
+            exporter_instance: None,
             limit: Some(50),
         },
     )
@@ -233,6 +238,8 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
         &PeersQuery {
             speaker: Some("192.0.2.12".into()),
             exporter_id: None,
+            exporter_instance: None,
+            device_id: None,
             vrf_rd: Some("65000:20".into()),
             state: None,
             limit: Some(50),
@@ -250,6 +257,7 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
             after_seq: Some(0),
             speaker: Some("192.0.2.11".into()),
             vrf_rd: Some("65000:10".into()),
+            exporter_instance: None,
             limit: Some(50),
         },
     )

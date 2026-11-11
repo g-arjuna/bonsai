@@ -144,7 +144,7 @@ impl ObservationEnvelope {
         let seq = ev.event_key.sequence;
         let epoch = ev.event_key.source.session_epoch;
         let collector_id = ev.event_key.source.collector_id.clone();
-        let speaker_str = ev.speaker.to_string();
+        let speaker_str = super::speaker_projection_id(ev);
         let obs_id = format!("obs-bmp-seq-{seq}-{}", ev.id);
 
         let (entity_refs, event_time, clock_quality, semantics, payload, missing_fields) =
@@ -212,7 +212,11 @@ impl ObservationEnvelope {
                     remote_asn,
                     ..
                 } => {
-                    let pk = PeerKey::from_header(ev.speaker, peer_header);
+                    let pk = PeerKey::from_header(
+                        ev.speaker,
+                        &ev.event_key.source.exporter_instance,
+                        peer_header,
+                    );
                     let vrf_rd = pk.distinguisher_string();
                     let peer_str = peer_header.peer_address.to_string();
                     let view_str = format!("{:?}", peer_header.rib_type);
@@ -243,7 +247,11 @@ impl ObservationEnvelope {
                     peer_header,
                     reason,
                 } => {
-                    let pk = PeerKey::from_header(ev.speaker, peer_header);
+                    let pk = PeerKey::from_header(
+                        ev.speaker,
+                        &ev.event_key.source.exporter_instance,
+                        peer_header,
+                    );
                     let vrf_rd = pk.distinguisher_string();
                     let peer_str = peer_header.peer_address.to_string();
                     let view_str = format!("{:?}", peer_header.rib_type);
@@ -275,7 +283,11 @@ impl ObservationEnvelope {
                     afi_safi,
                     ..
                 } => {
-                    let pk = PeerKey::from_header(ev.speaker, peer_header);
+                    let pk = PeerKey::from_header(
+                        ev.speaker,
+                        &ev.event_key.source.exporter_instance,
+                        peer_header,
+                    );
                     let vrf_rd = pk.distinguisher_string();
                     let peer_str = peer_header.peer_address.to_string();
                     let view_str = format!("{:?}", peer_header.rib_type);
@@ -339,7 +351,11 @@ impl ObservationEnvelope {
                     Vec::new(),
                 ),
                 RibEventPayload::Stats { peer_header, .. } => {
-                    let pk = PeerKey::from_header(ev.speaker, peer_header);
+                    let pk = PeerKey::from_header(
+                        ev.speaker,
+                        &ev.event_key.source.exporter_instance,
+                        peer_header,
+                    );
                     let vrf_rd = pk.distinguisher_string();
                     (
                         vec![format!("device:{speaker_str}"), format!("vrf:{vrf_rd}")],
@@ -459,7 +475,7 @@ pub async fn build_evidence_coverage_json(
             }
         }
         target_speaker_found = true;
-        if let Some(g) = gaps.get(&spk.speaker_addr) {
+        if let Some(g) = gaps.get(&rbmp_core::bmp::types::SpeakerKey::for_source(&spk.source)) {
             matching_transport_gap = Some(g.clone());
         }
         for (peer_key, peer_sess) in &spk.peers {
@@ -478,7 +494,9 @@ pub async fn build_evidence_coverage_json(
                 eor_views.insert(view_name);
             }
         }
-        for (peer_key, table) in rib.ribs_for_speaker(spk.speaker_addr) {
+        for (peer_key, table) in
+            rib.ribs_for_speaker(rbmp_core::bmp::types::SpeakerKey::for_source(&spk.source))
+        {
             if let Some(ref rd_filter) = q.vrf_rd {
                 if peer_key.distinguisher_string() != *rd_filter {
                     continue;
@@ -518,7 +536,11 @@ pub async fn build_evidence_coverage_json(
             RibEventPayload::EndOfRib { peer_header, .. }
             | RibEventPayload::PeerUp { peer_header, .. }
             | RibEventPayload::PeerDown { peer_header, .. } => {
-                let pk = PeerKey::from_header(ev.speaker, peer_header);
+                let pk = PeerKey::from_header(
+                    ev.speaker,
+                    &ev.event_key.source.exporter_instance,
+                    peer_header,
+                );
                 if let Some(ref rd_filter) = q.vrf_rd {
                     if pk.distinguisher_string() != *rd_filter {
                         continue;
@@ -659,8 +681,11 @@ pub async fn build_prefix_journey_json(
                 continue;
             }
         }
-        let spk_gap = gaps.contains_key(&spk.speaker_addr);
-        for (peer_key, table) in rib.ribs_for_speaker(spk.speaker_addr) {
+        let spk_gap =
+            gaps.contains_key(&rbmp_core::bmp::types::SpeakerKey::for_source(&spk.source));
+        for (peer_key, table) in
+            rib.ribs_for_speaker(rbmp_core::bmp::types::SpeakerKey::for_source(&spk.source))
+        {
             if let Some(ref rd_filter) = q.vrf_rd {
                 if peer_key.distinguisher_string() != *rd_filter {
                     continue;
@@ -771,7 +796,10 @@ pub async fn build_prefix_journey_json(
                     withdraw_count += 1;
                 }
             }
-            let has_gap = gaps.contains_key(&ev.speaker);
+            let has_gap = gaps.contains_key(&rbmp_core::bmp::types::SpeakerKey::new(
+                ev.speaker,
+                &ev.event_key.source.exporter_instance,
+            ));
             let env = ObservationEnvelope::from_rib_event(ev, tenant_id, has_gap);
             observation_ids.push(env.observation_id.clone());
             envelopes.push(env);
@@ -876,7 +904,10 @@ pub async fn build_peer_timeline_json(
             }
         }
         session_epochs.insert(ev.event_key.source.session_epoch);
-        let has_gap = gaps.contains_key(&ev.speaker);
+        let has_gap = gaps.contains_key(&rbmp_core::bmp::types::SpeakerKey::new(
+            ev.speaker,
+            &ev.event_key.source.exporter_instance,
+        ));
 
         match &ev.payload {
             RibEventPayload::SpeakerUp { .. } | RibEventPayload::SpeakerDown { .. } => {
@@ -895,7 +926,11 @@ pub async fn build_peer_timeline_json(
                         continue;
                     }
                 }
-                let pk = PeerKey::from_header(ev.speaker, peer_header);
+                let pk = PeerKey::from_header(
+                    ev.speaker,
+                    &ev.event_key.source.exporter_instance,
+                    peer_header,
+                );
                 if let Some(ref rd_filter) = q.vrf_rd {
                     if pk.distinguisher_string() != *rd_filter {
                         continue;
@@ -928,7 +963,7 @@ pub async fn build_peer_timeline_json(
     let mut active_transport_gaps = Vec::new();
     for (spk_ip, gap) in gaps.iter() {
         if let Some(ref spk_filter) = q.speaker {
-            if spk_ip.to_string() != *spk_filter {
+            if spk_ip.speaker_addr.to_string() != *spk_filter {
                 continue;
             }
         }
@@ -1082,7 +1117,11 @@ pub async fn build_compare_snapshots_json(
                     }
                 }
                 RibEventPayload::PeerDown { peer_header, .. } => {
-                    let pk = PeerKey::from_header(ev.speaker, peer_header);
+                    let pk = PeerKey::from_header(
+                        ev.speaker,
+                        &ev.event_key.source.exporter_instance,
+                        peer_header,
+                    );
                     let vrf_rd = pk.distinguisher_string();
                     if let Some(ref rd_filter) = q.vrf_rd {
                         if vrf_rd != *rd_filter {

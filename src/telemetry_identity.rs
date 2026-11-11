@@ -52,6 +52,103 @@ impl IdentityStatus {
 /// match bindings in the `"default"` scope — never a site/tenant scope.
 pub const DEFAULT_IDENTITY_SCOPE: &str = "default";
 
+/// How a [`VerifiedIngressPrincipal`] was established. Only transport
+/// mechanisms that cryptographically authenticate the peer may appear
+/// here — self-reported protocol fields are never a method.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IngressAuthMethod {
+    /// Mutual TLS: the client presented a certificate chaining to a
+    /// configured trusted CA and the handshake completed.
+    MutualTls,
+}
+
+/// A transport-authenticated exporter principal (BN-021f).
+///
+/// This value is constructed ONLY by the ingress authentication layer
+/// after a successful transport handshake — never from BMP payload
+/// fields, headers, PROXY metadata, or any other client-supplied data.
+/// It is the sole input allowed to promote an observation to canonical
+/// device attribution.
+///
+/// Trust boundary (BN-021f hardening): fields are private and the only
+/// constructor is crate-internal, so ordinary application code cannot
+/// mint a principal. `transport_attested` is NEVER serialized — a
+/// principal restored from JSON/journal data deserializes with
+/// `transport_attested = false` and is rejected by
+/// [`IdentityResolver::resolve_verified_ingress`]. Journals may carry
+/// the credential fingerprint as provenance evidence, but replayed or
+/// API-supplied data can never re-authorize a connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VerifiedIngressPrincipal {
+    method: IngressAuthMethod,
+    /// Cryptographic credential identifier: `"sha256:<hex>"` of the
+    /// DER-encoded client certificate leaf presented during the mTLS
+    /// handshake. Exact fingerprint matching makes credential rotation
+    /// an explicit binding update, never an implicit trust change.
+    credential_fingerprint: String,
+    /// Set only by [`Self::from_transport_attestation`]; skipped by
+    /// serde so deserialized values are always unattested.
+    #[serde(skip)]
+    transport_attested: bool,
+}
+
+impl VerifiedIngressPrincipal {
+    /// Construct a principal from a completed transport authentication
+    /// handshake. Crate-internal: only the authenticating ingress layer
+    /// (`routing_service`) may call this.
+    pub(crate) fn from_transport_attestation(
+        method: IngressAuthMethod,
+        credential_fingerprint: String,
+    ) -> Self {
+        Self {
+            method,
+            credential_fingerprint,
+            transport_attested: true,
+        }
+    }
+
+    /// The transport authentication mechanism that established this
+    /// principal.
+    pub fn method(&self) -> IngressAuthMethod {
+        self.method
+    }
+
+    /// The verified credential identifier (`"sha256:<hex>"`).
+    pub fn credential_fingerprint(&self) -> &str {
+        &self.credential_fingerprint
+    }
+
+    /// Whether this principal was produced by a live transport
+    /// authentication handshake in this process. Always `false` for
+    /// values deserialized from journals/API payloads.
+    pub fn is_transport_attested(&self) -> bool {
+        self.transport_attested
+    }
+}
+
+impl<'de> Deserialize<'de> for VerifiedIngressPrincipal {
+    /// Deserialization preserves the credential evidence but NEVER the
+    /// attestation — a principal loaded from stored data cannot
+    /// authorize verified-ingress resolution.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Repr {
+            method: IngressAuthMethod,
+            credential_fingerprint: String,
+        }
+        let repr = Repr::deserialize(deserializer)?;
+        Ok(Self {
+            method: repr.method,
+            credential_fingerprint: repr.credential_fingerprint,
+            transport_attested: false,
+        })
+    }
+}
+
 /// Protocol-agnostic identity envelope carried by ingestion adapters.
 /// All fields are evidence, not conclusions: `exporter_id` and
 /// `device_id` are `None` until a trusted binding resolves them.
@@ -88,6 +185,12 @@ pub struct TelemetrySourceIdentity {
     pub session_epoch: Option<u64>,
     /// Resolution confidence.
     pub identity_status: IdentityStatus,
+    /// Transport-authenticated principal established by the ingress
+    /// layer (BN-021f). `None` for unauthenticated/plaintext transports
+    /// and for envelopes that never crossed an authenticating listener.
+    /// Never populated from protocol-reported fields.
+    #[serde(default)]
+    pub verified_ingress: Option<VerifiedIngressPrincipal>,
 }
 
 impl TelemetrySourceIdentity {
@@ -104,6 +207,7 @@ impl TelemetrySourceIdentity {
             collector_id: None,
             session_epoch: None,
             identity_status: IdentityStatus::Unknown,
+            verified_ingress: None,
         }
     }
 
@@ -146,6 +250,14 @@ impl TelemetrySourceIdentity {
     /// Attach a connection/session generation.
     pub fn with_session_epoch(mut self, epoch: u64) -> Self {
         self.session_epoch = Some(epoch);
+        self
+    }
+
+    /// Attach a transport-verified ingress principal. Only the
+    /// authenticating transport layer may call this — the value is
+    /// never derived from observation content.
+    pub fn with_verified_ingress(mut self, principal: VerifiedIngressPrincipal) -> Self {
+        self.verified_ingress = Some(principal);
         self
     }
 
@@ -213,6 +325,16 @@ pub struct TrustedBinding {
     pub match_exporter_claim: Option<String>,
     #[serde(default)]
     pub match_observation_domain: Option<u32>,
+    /// Optional exact-match constraint on the VERIFIED transport
+    /// credential (`"sha256:<hex>"` client-certificate fingerprint,
+    /// BN-021f). When set, the binding can only claim observations that
+    /// arrived over a transport-authenticated connection presenting
+    /// this exact credential — self-reported BMP fields can never
+    /// satisfy it. A binding WITHOUT this pin can never authorize a
+    /// verified-ingress resolution (see
+    /// [`IdentityResolver::resolve_verified_ingress`]).
+    #[serde(default)]
+    pub match_ingress_credential: Option<String>,
     /// Trusted origin of this binding.
     pub provenance: BindingProvenance,
     pub status: BindingStatus,
@@ -299,13 +421,63 @@ impl IdentityResolver {
         observed: &TelemetrySourceIdentity,
         bindings: &[TrustedBinding],
     ) -> IdentityResolution {
+        Self::resolve_against(
+            observed,
+            bindings.iter().filter(|b| {
+                // Credential-pinned bindings can only be claimed through the
+                // verified-ingress path; the claim-based resolver must never
+                // satisfy them from self-reported evidence alone.
+                b.match_ingress_credential.is_none()
+            }),
+        )
+    }
+
+    /// Resolve `observed` for a transport-authenticated connection
+    /// (BN-021f).
+    ///
+    /// Authorization rule: a binding may claim the observation ONLY when
+    /// it pins `match_ingress_credential` to the exact verified
+    /// credential fingerprint presented by the transport. Certificate
+    /// validity alone is never sufficient — the credential must map to
+    /// an explicitly provisioned binding. Bindings without a credential
+    /// pin are invisible to this path.
+    ///
+    /// Once the credential matches, the remaining pinned evidence
+    /// dimensions (transport, reported identity, exporter claim,
+    /// observation domain) are evaluated exactly as in [`Self::resolve`]:
+    /// contradictions fail closed, multiple distinct canonical pairs are
+    /// ambiguous, and exactly one claimant resolves.
+    pub fn resolve_verified_ingress(
+        observed: &TelemetrySourceIdentity,
+        bindings: &[TrustedBinding],
+        principal: &VerifiedIngressPrincipal,
+    ) -> IdentityResolution {
+        // Fail closed on unattested principals: values deserialized
+        // from journals, API payloads, or any non-transport source can
+        // never authorize canonical attribution.
+        if !principal.is_transport_attested() {
+            return Self::resolve_against(observed, std::iter::empty());
+        }
+        let fp = principal.credential_fingerprint();
+        Self::resolve_against(
+            observed,
+            bindings
+                .iter()
+                .filter(|b| b.match_ingress_credential.as_deref() == Some(fp)),
+        )
+    }
+
+    fn resolve_against<'a>(
+        observed: &TelemetrySourceIdentity,
+        bindings: impl Iterator<Item = &'a TrustedBinding>,
+    ) -> IdentityResolution {
         let scope = observed.resolution_scope();
         let protocol = observed.protocol.as_deref();
 
         let mut claimants: Vec<&TrustedBinding> = Vec::new();
         let mut contradictions = false;
 
-        for binding in bindings.iter().filter(|b| b.is_active()) {
+        for binding in bindings.filter(|b| b.is_active()) {
             // Scope and protocol must match before any evidence check.
             if binding.scope != scope || Some(binding.protocol.as_str()) != protocol {
                 continue;
@@ -444,6 +616,10 @@ pub fn bindings_overlap(a: &TrustedBinding, b: &TrustedBinding) -> bool {
         (
             a.match_exporter_claim.as_ref(),
             b.match_exporter_claim.as_ref(),
+        ),
+        (
+            a.match_ingress_credential.as_ref(),
+            b.match_ingress_credential.as_ref(),
         ),
     ];
     str_dims

@@ -10,8 +10,8 @@ use chrono::{DateTime, Utc};
 use metrics::counter;
 use rbmp_core::bgp::types::BgpCapability;
 use rbmp_core::bmp::types::{
-    BmpMessage, BmpPayload, CanonicalNlri, EVENT_SCHEMA_VERSION, EventKey, ObservationSource,
-    PeerKey, RouteKey, ViewKey,
+    BmpMessage, BmpPayload, CanonicalNlri, EVENT_SCHEMA_VERSION, EventKey,
+    LEGACY_EXPORTER_INSTANCE, ObservationSource, PeerKey, RouteKey, SpeakerKey, ViewKey,
 };
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -20,8 +20,13 @@ use tracing::{debug, info};
 
 /// Central RIB manager: owns all per-speaker sessions and per-(speaker, peer_type, distinguisher, peer_addr) route tables.
 /// Driven by BmpMessage from the receiver; emits versioned RibEvents to subscribers.
+///
+/// BN-021c: speakers and peer/RIB state are keyed by [`SpeakerKey`]
+/// (transport address + logical-exporter instance), never by transport
+/// IP alone, so independent BMP exporters behind one NAT address keep
+/// fully isolated session, peer, route, decode-context and gap state.
 pub struct RibManager {
-    speakers: HashMap<IpAddr, BmpSession>,
+    speakers: HashMap<SpeakerKey, BmpSession>,
     /// Typed `PeerKey` → RIB table (isolates multiple exporters and multiple VRF distinguishers).
     ribs: HashMap<PeerKey, RibTable>,
     next_session_epoch: u64,
@@ -72,11 +77,29 @@ impl RibManager {
 
     /// Allocate a new session epoch when a BMP speaker establishes a TCP connection.
     /// Older epochs closing later will be fenced and cannot clear this session's state.
-    pub fn open_speaker_session(&mut self, speaker: IpAddr, at: DateTime<Utc>) -> u64 {
+    ///
+    /// `exporter_instance` is the logical-exporter scope (`exp:*` resolved,
+    /// `conn:*` connection-isolated, `""`/`"default"` legacy); `exporter_id`
+    /// and `device_id` carry trusted-binding resolution when known.
+    pub fn open_speaker_session(
+        &mut self,
+        speaker_addr: IpAddr,
+        exporter_instance: &str,
+        exporter_id: Option<&str>,
+        device_id: Option<&str>,
+        at: DateTime<Utc>,
+    ) -> u64 {
         let epoch = self.next_session_epoch;
         self.next_session_epoch += 1;
-        let source = ObservationSource::new(speaker, epoch);
-        match self.speakers.get_mut(&speaker) {
+        let key = SpeakerKey::new(speaker_addr, exporter_instance);
+        let source = Self::source_for(
+            speaker_addr,
+            exporter_instance,
+            exporter_id,
+            device_id,
+            epoch,
+        );
+        match self.speakers.get_mut(&key) {
             Some(sess) => {
                 sess.source = source;
                 sess.connected_at = at;
@@ -86,10 +109,38 @@ impl RibManager {
             }
             None => {
                 self.speakers
-                    .insert(speaker, BmpSession::with_source(source, at));
+                    .insert(key, BmpSession::with_source(source, at));
             }
         }
         epoch
+    }
+
+    /// Build the `ObservationSource` for a speaker scope. `exporter_id`
+    /// falls back to the transport address when no canonical/provisional
+    /// exporter id is known; `device_id` stays `None` unless a trusted
+    /// binding resolved it.
+    fn source_for(
+        speaker_addr: IpAddr,
+        exporter_instance: &str,
+        exporter_id: Option<&str>,
+        device_id: Option<&str>,
+        session_epoch: u64,
+    ) -> ObservationSource {
+        let instance = if exporter_instance.trim().is_empty() {
+            LEGACY_EXPORTER_INSTANCE
+        } else {
+            exporter_instance
+        };
+        ObservationSource::with_ids(
+            "default",
+            exporter_id
+                .map(str::to_string)
+                .unwrap_or_else(|| speaker_addr.to_string()),
+            speaker_addr,
+            instance,
+            session_epoch,
+        )
+        .with_device_id(device_id.map(str::to_string))
     }
 
     /// Ensure the next emitted `RibEvent` sequence is at least `min_next_seq`.
@@ -99,10 +150,29 @@ impl RibManager {
         }
     }
 
-    /// Clear End-of-RIB markers for all peers of `speaker` (used on BMP transport disconnect
+    /// Retire a speaker scope entirely: removes the session and all of
+    /// its `PeerKey` RIB tables without emitting withdrawals. Used for
+    /// isolated connection-scoped (`conn:*`) exporters whose TCP
+    /// connection ended — the scope can never receive new data, so
+    /// retaining last-known state would leak unboundedly. Durable
+    /// history remains in the journals.
+    pub fn retire_speaker(&mut self, key: SpeakerKey) -> bool {
+        let Some(sess) = self.speakers.remove(&key) else {
+            return false;
+        };
+        for peer_key in sess.peers.keys() {
+            self.ribs.remove(peer_key);
+        }
+        self.ribs.retain(|k, _| {
+            !(k.speaker_addr == key.speaker_addr && k.speaker_instance == key.speaker_instance)
+        });
+        true
+    }
+
+    /// Clear End-of-RIB markers for all peers of `key` (used on BMP transport disconnect
     /// so that a subsequent reconnect requires fresh synchronization before reporting complete).
-    pub fn clear_speaker_eor(&mut self, speaker: IpAddr) {
-        if let Some(sess) = self.speakers.get_mut(&speaker) {
+    pub fn clear_speaker_eor(&mut self, key: SpeakerKey) {
+        if let Some(sess) = self.speakers.get_mut(&key) {
             for peer in sess.peers.values_mut() {
                 peer.eor_families.clear();
             }
@@ -134,15 +204,22 @@ impl RibManager {
             .sum()
     }
 
-    fn ensure_speaker_source(&mut self, speaker: IpAddr, now: DateTime<Utc>) -> ObservationSource {
-        if let Some(sess) = self.speakers.get(&speaker) {
+    fn ensure_speaker_source(&mut self, msg: &BmpMessage, now: DateTime<Utc>) -> ObservationSource {
+        let key = SpeakerKey::new(msg.speaker_addr, &msg.exporter_instance);
+        if let Some(sess) = self.speakers.get(&key) {
             return sess.source.clone();
         }
         let epoch = self.next_session_epoch;
         self.next_session_epoch += 1;
-        let source = ObservationSource::new(speaker, epoch);
+        let source = Self::source_for(
+            msg.speaker_addr,
+            &msg.exporter_instance,
+            msg.exporter_id.as_deref(),
+            msg.device_id.as_deref(),
+            epoch,
+        );
         self.speakers
-            .insert(speaker, BmpSession::with_source(source.clone(), now));
+            .insert(key, BmpSession::with_source(source.clone(), now));
         source
     }
 
@@ -152,7 +229,11 @@ impl RibManager {
             .get(peer_key)
             .map(|r| r.rib_counts())
             .unwrap_or_default();
-        if let Some(sess) = self.speakers.get_mut(&peer_key.speaker_addr) {
+        let key = SpeakerKey {
+            speaker_addr: peer_key.speaker_addr,
+            speaker_instance: peer_key.speaker_instance,
+        };
+        if let Some(sess) = self.speakers.get_mut(&key) {
             if let Some(peer) = sess.peers.get_mut(peer_key) {
                 peer.route_counts = counts;
             }
@@ -168,19 +249,51 @@ impl RibManager {
     ) -> Vec<RibEvent> {
         let msg_id = msg.id;
         let speaker = msg.speaker_addr;
+        // Logical-exporter scope carried on the message: resolved
+        // canonical (`exp:*`), connection-isolated (`conn:*`), or legacy.
+        // `""` maps to speaker instance 0 — the pre-BN-021c identity.
+        let exporter_instance = msg.exporter_instance.clone();
+        let key = SpeakerKey::new(speaker, &exporter_instance);
+        let speaker_instance = key.speaker_instance;
         let now = msg.received_at;
         let mut emitted = Vec::new();
 
         let stale_epoch = session_epoch
-            .zip(self.speakers.get(&speaker).map(|s| s.source.session_epoch))
+            .zip(self.speakers.get(&key).map(|s| s.source.session_epoch))
             .is_some_and(|(incoming, active)| incoming < active);
+        if stale_epoch {
+            // Every payload from an older connection epoch is fenced:
+            // only Termination and End-of-RIB had explicit checks before,
+            // which let a stale PeerUp/PeerDown/RouteMonitoring mutate a
+            // newer session's peer/RIB state (BN-021c hardening).
+            // A stale EOR still reserves its event sequence so replay
+            // cannot renumber later durable events.
+            if let BmpPayload::RouteMonitoring { update, .. } = &msg.payload
+                && update.eor_afi_safi().is_some()
+            {
+                self.next_event_seq += 1;
+            }
+            debug!(
+                %speaker,
+                %exporter_instance,
+                incoming_epoch = session_epoch.unwrap_or(0),
+                active_epoch = self
+                    .speakers
+                    .get(&key)
+                    .map(|s| s.source.session_epoch)
+                    .unwrap_or(0),
+                "Ignoring stale BMP message from older session epoch"
+            );
+            return emitted;
+        }
         if matches!(msg.payload, BmpPayload::Termination { .. }) {
             if let (Some(incoming_epoch), Some(active_sess)) =
-                (session_epoch, self.speakers.get(&speaker))
+                (session_epoch, self.speakers.get(&key))
             {
                 if incoming_epoch < active_sess.source.session_epoch {
                     debug!(
                         %speaker,
+                        %exporter_instance,
                         incoming_epoch,
                         active_epoch = active_sess.source.session_epoch,
                         "Ignoring stale BMP Termination from older session epoch"
@@ -195,8 +308,17 @@ impl RibManager {
                 if epoch >= self.next_session_epoch {
                     self.next_session_epoch = epoch + 1;
                 }
-                let sess = self.speakers.entry(speaker).or_insert_with(|| {
-                    BmpSession::with_source(ObservationSource::new(speaker, epoch), now)
+                let sess = self.speakers.entry(key).or_insert_with(|| {
+                    BmpSession::with_source(
+                        Self::source_for(
+                            speaker,
+                            &exporter_instance,
+                            msg.exporter_id.as_deref(),
+                            msg.device_id.as_deref(),
+                            epoch,
+                        ),
+                        now,
+                    )
                 });
                 if epoch > sess.source.session_epoch {
                     sess.source.session_epoch = epoch;
@@ -205,9 +327,12 @@ impl RibManager {
                         peer.eor_families.clear();
                     }
                 }
+                if sess.source.device_id.is_none() {
+                    sess.source.device_id = msg.device_id.clone();
+                }
                 sess.source.clone()
             }
-            None => self.ensure_speaker_source(speaker, now),
+            None => self.ensure_speaker_source(&msg, now),
         };
 
         match msg.payload {
@@ -216,14 +341,22 @@ impl RibManager {
                 sys_descr,
                 ..
             } => {
-                if let Some(session) = self.speakers.get_mut(&speaker) {
+                if let Some(session) = self.speakers.get_mut(&key) {
                     session.sys_name = sys_name.clone();
                     session.sys_descr = sys_descr.clone();
                     // BN-021c: promote the protocol-reported sysName to the
-                    // logical exporter identity; exporter_addr stays the
-                    // observed transport endpoint.
-                    if let Some(name) = sys_name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                        session.source.exporter_id = format!("bmp:{name}");
+                    // provisional logical exporter identity ONLY while the
+                    // source still carries the bare transport address —
+                    // trusted-binding resolutions (`exp:*`) and explicit
+                    // connection scopes keep their assigned identity.
+                    if session.source.device_id.is_none()
+                        && session.source.exporter_id == session.speaker_addr.to_string()
+                    {
+                        if let Some(name) =
+                            sys_name.as_deref().map(str::trim).filter(|s| !s.is_empty())
+                        {
+                            session.source.exporter_id = format!("bmp:{name}");
+                        }
                     }
                 }
                 info!(%speaker, "BMP speaker connected");
@@ -243,15 +376,17 @@ impl RibManager {
                 reason_code,
                 reason_text,
             } => {
-                if let Some(sess) = self.speakers.remove(&speaker) {
+                if let Some(sess) = self.speakers.remove(&key) {
                     // Clear only this speaker's PeerKey RIB tables; never touch other speakers
                     for peer_key in sess.peers.keys() {
                         self.ribs.remove(peer_key);
                     }
-                    info!(%speaker, %reason_code, "BMP speaker disconnected");
+                    info!(%speaker, %exporter_instance, %reason_code, "BMP speaker disconnected");
                 }
                 // Also remove any RIB tables created directly by RouteMonitoring before PeerUp for this speaker
-                self.ribs.retain(|k, _| k.speaker_addr != speaker);
+                self.ribs.retain(|k, _| {
+                    !(k.speaker_addr == speaker && k.speaker_instance == speaker_instance)
+                });
                 let reason = reason_text.unwrap_or_else(|| format!("code={reason_code}"));
                 self.emit_with_source(
                     msg_id,
@@ -264,7 +399,7 @@ impl RibManager {
             }
             BmpPayload::PeerUp(pu) => {
                 let peer_addr = pu.peer_header.peer_address;
-                let peer_key = PeerKey::from_header(speaker, &pu.peer_header);
+                let peer_key = PeerKey::from_header(speaker, &exporter_instance, &pu.peer_header);
                 let mut caps: Vec<BgpCapability> = pu.recv_open.capabilities.clone();
                 for sc in &pu.sent_open.capabilities {
                     if !caps.contains(sc) {
@@ -274,11 +409,11 @@ impl RibManager {
                 let cap_names: Vec<String> =
                     caps.iter().map(|c| format!("{:?}", c.code())).collect();
 
-                if let Some(speaker_sess) = self.speakers.get_mut(&speaker) {
+                if let Some(speaker_sess) = self.speakers.get_mut(&key) {
                     let peer = speaker_sess
                         .peers
                         .entry(peer_key)
-                        .or_insert_with(|| PeerSession::new_for_speaker(speaker, &pu.peer_header));
+                        .or_insert_with(|| PeerSession::new_for_key(&key, &pu.peer_header));
                     peer.on_up_with_header(
                         &pu.peer_header,
                         pu.sent_open.asn,
@@ -310,17 +445,17 @@ impl RibManager {
                 reason,
             } => {
                 let peer_addr = peer_header.peer_address;
-                let peer_key = PeerKey::from_header(speaker, &peer_header);
+                let peer_key = PeerKey::from_header(speaker, &exporter_instance, &peer_header);
                 let reason_str = format!("{:?}", reason);
 
                 let llgr_stale_secs = self
                     .speakers
-                    .get(&speaker)
+                    .get(&key)
                     .and_then(|s| s.peers.get(&peer_key))
                     .filter(|p| p.llgr_active)
                     .map(|p| p.llgr_stale_secs);
 
-                if let Some(sess) = self.speakers.get_mut(&speaker) {
+                if let Some(sess) = self.speakers.get_mut(&key) {
                     if let Some(peer) = sess.peers.get_mut(&peer_key) {
                         peer.on_down(now);
                     }
@@ -357,14 +492,14 @@ impl RibManager {
             } => {
                 let peer_addr = peer_header.peer_address;
                 let rib_type = peer_header.rib_type;
-                let peer_key = PeerKey::from_header(speaker, &peer_header);
+                let peer_key = PeerKey::from_header(speaker, &exporter_instance, &peer_header);
 
                 // Ensure peer session exists so speaker.peers tracks all active PeerKeys
-                if let Some(speaker_sess) = self.speakers.get_mut(&speaker) {
+                if let Some(speaker_sess) = self.speakers.get_mut(&key) {
                     speaker_sess
                         .peers
                         .entry(peer_key)
-                        .or_insert_with(|| PeerSession::new_for_speaker(speaker, &peer_header));
+                        .or_insert_with(|| PeerSession::new_for_key(&key, &peer_header));
                 }
 
                 // Check for End-of-RIB (RFC 4724 §2)
@@ -398,7 +533,7 @@ impl RibManager {
                         })
                         .collect();
                     self.sync_peer_route_counts(&peer_key);
-                    if let Some(speaker_sess) = self.speakers.get_mut(&speaker) {
+                    if let Some(speaker_sess) = self.speakers.get_mut(&key) {
                         if let Some(peer) = speaker_sess.peers.get_mut(&peer_key) {
                             peer.mark_eor(rib_type, eor_family);
                         }
@@ -602,15 +737,31 @@ impl RibManager {
         self.speakers.values().collect()
     }
 
-    pub fn speaker(&self, addr: IpAddr) -> Option<&BmpSession> {
-        self.speakers.get(&addr)
+    pub fn speaker(&self, key: SpeakerKey) -> Option<&BmpSession> {
+        self.speakers.get(&key)
+    }
+
+    /// Look up a speaker session by transport address alone. Only valid
+    /// when at most one exporter instance exists for that address —
+    /// prefer [`RibManager::speaker`] with an explicit [`SpeakerKey`]
+    /// when NAT-shared exporters are possible.
+    pub fn speaker_by_addr(&self, addr: IpAddr) -> Option<&BmpSession> {
+        self.speakers.values().find(|s| s.speaker_addr == addr)
     }
 
     pub fn rib_for_peer_key(&self, peer_key: &PeerKey) -> Option<&RibTable> {
         self.ribs.get(peer_key)
     }
 
-    pub fn ribs_for_speaker(&self, speaker: IpAddr) -> impl Iterator<Item = (&PeerKey, &RibTable)> {
+    pub fn ribs_for_speaker(&self, key: SpeakerKey) -> impl Iterator<Item = (&PeerKey, &RibTable)> {
+        self.ribs.iter().filter(move |(k, _)| {
+            k.speaker_addr == key.speaker_addr && k.speaker_instance == key.speaker_instance
+        })
+    }
+
+    /// All RIB tables for a transport address across every exporter
+    /// instance. Prefer `ribs_for_speaker` with an explicit `SpeakerKey`.
+    pub fn ribs_for_addr(&self, speaker: IpAddr) -> impl Iterator<Item = (&PeerKey, &RibTable)> {
         self.ribs
             .iter()
             .filter(move |(k, _)| k.speaker_addr == speaker)
@@ -697,6 +848,9 @@ mod tests {
             id: uuid::Uuid::new_v4(),
             received_at: Utc::now(),
             speaker_addr: speaker,
+            exporter_instance: String::new(),
+            exporter_id: None,
+            device_id: None,
             payload: BmpPayload::PeerUp(PeerUpMessage {
                 peer_header: hdr,
                 local_addr: speaker,
@@ -733,6 +887,9 @@ mod tests {
             id: uuid::Uuid::new_v4(),
             received_at: Utc::now(),
             speaker_addr: speaker,
+            exporter_instance: String::new(),
+            exporter_id: None,
+            device_id: None,
             payload: BmpPayload::RouteMonitoring {
                 peer_header: hdr,
                 update: BgpUpdate {
@@ -763,7 +920,7 @@ mod tests {
         other_rd.peer_distinguisher[7] = 1;
         let v4 = Prefix::V4("203.0.113.0/24".parse().unwrap());
         let v6 = Prefix::V6("2001:db8::/32".parse().unwrap());
-        let old = mgr.open_speaker_session(speaker, Utc::now());
+        let old = mgr.open_speaker_session(speaker, "", None, None, Utc::now());
         for (header, prefix, id) in [
             (&hdr, &v4, 1),
             (&hdr, &v4, 2),
@@ -776,7 +933,7 @@ mod tests {
                 Some(old),
             );
         }
-        let new = mgr.open_speaker_session(speaker, Utc::now());
+        let new = mgr.open_speaker_session(speaker, "", None, None, Utc::now());
         mgr.process_for_epoch(
             route_announce_msg(speaker, hdr.clone(), v4.clone(), Some(2), 200),
             Some(new),
@@ -790,6 +947,9 @@ mod tests {
             id: uuid::Uuid::new_v4(),
             received_at: Utc::now(),
             speaker_addr: speaker,
+            exporter_instance: String::new(),
+            exporter_id: None,
+            device_id: None,
             payload: BmpPayload::RouteMonitoring {
                 peer_header: hdr.clone(),
                 update: BgpUpdate {
@@ -820,7 +980,7 @@ mod tests {
             matches!(&events[0].payload, RibEventPayload::EndOfRib { retired_routes, .. } if retired_routes.len() == 1 && retired_routes[0].route_key.path_id == Some(1))
         );
         let rib = mgr
-            .rib_for_peer_key(&PeerKey::from_header(speaker, &hdr))
+            .rib_for_peer_key(&PeerKey::from_header(speaker, "", &hdr))
             .unwrap();
         assert!(rib.get_with_path_id(hdr.rib_type, &v4, Some(2)).is_some());
         assert!(rib.get_with_path_id(hdr.rib_type, &v6, Some(3)).is_some());
@@ -829,7 +989,7 @@ mod tests {
                 .is_some()
         );
         assert!(
-            mgr.rib_for_peer_key(&PeerKey::from_header(speaker, &other_rd))
+            mgr.rib_for_peer_key(&PeerKey::from_header(speaker, "", &other_rd))
                 .unwrap()
                 .get_with_path_id(hdr.rib_type, &v4, Some(5))
                 .is_some()
@@ -873,8 +1033,8 @@ mod tests {
             2,
             "two exporters monitoring same peer IP must not overwrite each other"
         );
-        let key_a = PeerKey::from_header(exporter_a, &hdr);
-        let key_b = PeerKey::from_header(exporter_b, &hdr);
+        let key_a = PeerKey::from_header(exporter_a, "", &hdr);
+        let key_b = PeerKey::from_header(exporter_b, "", &hdr);
         assert_eq!(
             mgr.rib_for_peer_key(&key_a)
                 .unwrap()
@@ -899,6 +1059,9 @@ mod tests {
             id: uuid::Uuid::new_v4(),
             received_at: Utc::now(),
             speaker_addr: exporter_b,
+            exporter_instance: String::new(),
+            exporter_id: None,
+            device_id: None,
             payload: BmpPayload::PeerDown {
                 peer_header: hdr.clone(),
                 reason: PeerDownReason::RemoteSystemClosed2,
@@ -935,6 +1098,9 @@ mod tests {
             id: uuid::Uuid::new_v4(),
             received_at: Utc::now(),
             speaker_addr: exporter_b,
+            exporter_instance: String::new(),
+            exporter_id: None,
+            device_id: None,
             payload: BmpPayload::Termination {
                 reason_code: 0,
                 reason_text: Some("admin".into()),
@@ -974,7 +1140,12 @@ mod tests {
 
         mgr.process(peer_up_msg(exporter, hdr_vrf_a.clone()));
         mgr.process(peer_up_msg(exporter, hdr_vrf_b.clone()));
-        assert_eq!(mgr.speaker(exporter).unwrap().peer_count(), 2);
+        assert_eq!(
+            mgr.speaker(SpeakerKey::new(exporter, ""))
+                .unwrap()
+                .peer_count(),
+            2
+        );
 
         mgr.process(route_announce_msg(
             exporter,
@@ -991,20 +1162,28 @@ mod tests {
             220,
         ));
         assert_eq!(mgr.total_routes(), 2);
-        assert_eq!(mgr.speaker(exporter).unwrap().total_routes(), 2);
+        assert_eq!(
+            mgr.speaker(SpeakerKey::new(exporter, ""))
+                .unwrap()
+                .total_routes(),
+            2
+        );
 
         // PeerDown in VRF A leaves VRF B intact
         mgr.process(BmpMessage {
             id: uuid::Uuid::new_v4(),
             received_at: Utc::now(),
             speaker_addr: exporter,
+            exporter_instance: String::new(),
+            exporter_id: None,
+            device_id: None,
             payload: BmpPayload::PeerDown {
                 peer_header: hdr_vrf_a,
                 reason: PeerDownReason::VrfDown,
             },
         });
         assert_eq!(mgr.total_routes(), 1);
-        let key_vrf_b = PeerKey::from_header(exporter, &hdr_vrf_b);
+        let key_vrf_b = PeerKey::from_header(exporter, "", &hdr_vrf_b);
         let surviving = mgr
             .rib_for_peer_key(&key_vrf_b)
             .unwrap()
@@ -1026,7 +1205,7 @@ mod tests {
             RibType::AdjRibInPrePolicy,
         );
 
-        let old_epoch = mgr.open_speaker_session(exporter, Utc::now());
+        let old_epoch = mgr.open_speaker_session(exporter, "", None, None, Utc::now());
         mgr.process_for_epoch(peer_up_msg(exporter, hdr.clone()), Some(old_epoch));
         mgr.process_for_epoch(
             route_announce_msg(exporter, hdr.clone(), pfx.clone(), None, 100),
@@ -1034,7 +1213,7 @@ mod tests {
         );
 
         // Reconnect arrives before old socket teardown finishes
-        let new_epoch = mgr.open_speaker_session(exporter, Utc::now());
+        let new_epoch = mgr.open_speaker_session(exporter, "", None, None, Utc::now());
         assert!(new_epoch > old_epoch);
         mgr.process_for_epoch(peer_up_msg(exporter, hdr.clone()), Some(new_epoch));
         mgr.process_for_epoch(
@@ -1048,6 +1227,9 @@ mod tests {
                 id: uuid::Uuid::new_v4(),
                 received_at: Utc::now(),
                 speaker_addr: exporter,
+                exporter_instance: String::new(),
+                exporter_id: None,
+                device_id: None,
                 payload: BmpPayload::Termination {
                     reason_code: 3,
                     reason_text: Some("redundant".into()),
@@ -1056,7 +1238,7 @@ mod tests {
             Some(old_epoch),
         );
         assert_eq!(mgr.total_routes(), 1);
-        assert!(mgr.speaker(exporter).is_some());
+        assert!(mgr.speaker(SpeakerKey::new(exporter, "")).is_some());
     }
 
     #[test]

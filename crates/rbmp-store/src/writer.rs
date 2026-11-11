@@ -532,7 +532,7 @@ mod tests {
     };
     use rbmp_core::bmp::types::{
         BgpOpenInfo, BmpMessage, BmpPayload, EVENT_SCHEMA_VERSION, EventKey, ObservationSource,
-        PeerFlags, PeerHeader, PeerKey, PeerType, PeerUpMessage, RibType, StatEntry,
+        PeerFlags, PeerHeader, PeerKey, PeerType, PeerUpMessage, RibType, SpeakerKey, StatEntry,
     };
     use rbmp_rib::RibManager;
     use std::io::Write;
@@ -648,7 +648,7 @@ mod tests {
 
         let speaker = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
         let hdr = sample_peer_header();
-        let peer_key = PeerKey::from_header(speaker, &hdr);
+        let peer_key = PeerKey::from_header(speaker, "", &hdr);
         let now = Utc::now();
 
         let mut attrs = PathAttributes::default();
@@ -664,6 +664,9 @@ mod tests {
                 id: Uuid::new_v4(),
                 received_at: now,
                 speaker_addr: speaker,
+                exporter_instance: String::new(),
+                exporter_id: None,
+                device_id: None,
                 payload: BmpPayload::Initiation {
                     sys_name: Some("router-1".to_string()),
                     sys_descr: Some("FRR 9.1".to_string()),
@@ -674,6 +677,9 @@ mod tests {
                 id: Uuid::new_v4(),
                 received_at: now,
                 speaker_addr: speaker,
+                exporter_instance: String::new(),
+                exporter_id: None,
+                device_id: None,
                 payload: BmpPayload::PeerUp(PeerUpMessage {
                     peer_header: hdr.clone(),
                     local_addr: speaker,
@@ -699,6 +705,9 @@ mod tests {
                 id: Uuid::new_v4(),
                 received_at: now,
                 speaker_addr: speaker,
+                exporter_instance: String::new(),
+                exporter_id: None,
+                device_id: None,
                 payload: BmpPayload::RouteMonitoring {
                     peer_header: hdr.clone(),
                     update: BgpUpdate {
@@ -714,6 +723,9 @@ mod tests {
                 id: Uuid::new_v4(),
                 received_at: now,
                 speaker_addr: speaker,
+                exporter_instance: String::new(),
+                exporter_id: None,
+                device_id: None,
                 payload: BmpPayload::RouteMonitoring {
                     peer_header: hdr.clone(),
                     update: BgpUpdate {
@@ -729,6 +741,9 @@ mod tests {
                 id: Uuid::new_v4(),
                 received_at: now,
                 speaker_addr: speaker,
+                exporter_instance: String::new(),
+                exporter_id: None,
+                device_id: None,
                 payload: BmpPayload::RouteMonitoring {
                     peer_header: hdr.clone(),
                     update: BgpUpdate {
@@ -743,7 +758,7 @@ mod tests {
         ];
 
         let (mut rib_live, _rx_live) = RibManager::new(64);
-        rib_live.open_speaker_session(speaker, now);
+        rib_live.open_speaker_session(speaker, "", None, None, now);
         for msg in &messages {
             journal.append(msg).await.unwrap();
             rib_live.process(msg.clone());
@@ -784,7 +799,7 @@ mod tests {
         );
 
         let replayed_sess = rib_replayed
-            .speaker(speaker)
+            .speaker(SpeakerKey::new(speaker, ""))
             .unwrap()
             .peer_by_key(&peer_key)
             .unwrap();

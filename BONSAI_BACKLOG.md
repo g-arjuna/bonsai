@@ -101,16 +101,72 @@ before claiming equivalent history or enabling it as an authority.
   PeerKey/RIB/journal re-keying (BN-021c), inventory import path,
   device_id selector in routing APIs, alias reconciliation.
 
-**BN-021c — BMP exporter identity** — PARTIAL.
+**BN-021c — BMP exporter identity** — PARTIAL (core isolation done; live-containerlab + alias reconciliation open).
 - Done: Initiation sysName/sysDescr exposed in speakers/peers APIs;
   provisional `exporter_id` and `session_epoch` surfaced; `?exporter_id=`
   peer selector implemented. These are reported/context identities, not trusted
   inventory device bindings.
-- Pending: trusted scoped inventory resolution, separate connection/exporter
-  identity in RIB/PeerKey and journal/projections, device_id selector and
-  historical alias reconciliation.
+- Done (10 Nov): trusted resolver wired into the BMP listener — every
+  connection must open with Initiation, then resolves against
+  `bonsai_config.db` bindings (`BONSAI_ROUTING_IDENTITY_DB` override).
+  Resolved exporters share a stable namespace-encoded `exp:*` speaker
+  scope (binding scope+protocol+canonical id, so identical canonical
+  exporter ids in different sites cannot collide; multi-instance
+  association preserved); everything else gets an isolated `conn:{id}`
+  scope. `SpeakerKey`/`PeerKey.speaker_instance` partition speakers,
+  peers, RIBs, decode contexts, transport gaps, journals, replay and
+  projection/graph ids; `conn:*` state retires on disconnect while
+  `exp:*` keeps last-known routes under the gap.
+- Done (10 Nov, hardening pass): stale-epoch fencing now covers ALL
+  payload types (PeerUp/PeerDown/RouteMonitoring, not just
+  Termination/EOR) so a stale connection cannot mutate a newer
+  session; replay retires `conn:*` speakers on their disconnect
+  records and prunes their gaps/decode contexts so live and replay
+  agree; disconnect retirement is gated on the gap record actually
+  being accepted; routes/prefix-history/events APIs accept
+  `exporter_instance` selectors so NAT-shared exporters stay
+  individually queryable. Known limitation: `conn:*` speakers with no
+  disconnect record (SIGKILL) replay as live last-known state — the
+  journal cannot distinguish them from live connections; documented,
+  deferred to alias reconciliation.
+  `tests/bn021c_exporter_isolation.rs` proves NAT'd exporters never
+  merge (7/7) plus binding resolution, stale-epoch fencing, live TCP
+  NAT isolation and replay/live equivalence.
+- Done (11 Nov, review-findings pass + NAT acceptance): P0-A scope
+  namespace encoded via configurable `identity_scope`
+  (`exp:{scope}:{canonical}`, default scope keeps legacy
+  `exp:{canonical}`); P0-B invalid BMP frames record distinct
+  `bmp_frame_rejected:*` disconnects and still retire conn scopes;
+  P0-C BMP Termination is per-connection deferred so siblings are
+  unaffected; P0-D ambiguous claims fail closed into `conn:*`
+  (sysName coalescing documented as a trust assumption, lab-verified);
+  P1 identity DB opened read-only by the routing service; P2 FNV
+  partitioning risk documented. Live containerlab NAT acceptance
+  EXECUTED: three FRR exporters behind one SNAT source
+  (10.240.0.200), scenarios A–G pass — evidence in
+  `docs/merger/evidence/2026-11-10-bn021c-nat-acceptance/`;
+  `tests/bn021c_exporter_isolation.rs` is 12/12 including real-TCP
+  loopback lifecycle tests.
+- Done (11 Nov, independent PR review + hardening): concurrent
+  same-claim connections can no longer merge — one live connection per
+  `exp:*` scope, extras `conn:*`-isolated; disconnect journal failures
+  return `TransportDisconnectOutcome` and block retirement instead of
+  diverging live/replay; post-Termination frames rejected; clean
+  Termination leaves no transport gap; `exp:*` scope components
+  percent-encoded. Scenario F reclassified FAIL/OPEN — sequential
+  same-claim impersonation and claim-based device attribution still
+  require authenticated ingress. Evidence:
+  `docs/merger/evidence/2026-11-11-bn021c-pr2-review/`;
+  `tests/bn021c_exporter_isolation.rs` is 17/17.
+- Pending: historical alias reconciliation, authenticated ingress
+  exporter identity (sysName claims are self-reported), NetFlow/syslog
+  adapter wiring (BN-021d+).
 - Acceptance: independent BMP sessions sharing a NAT address never merge
-  route/peer state, including when they claim the same sysName.
+  route/peer state — PARTIAL: verified for distinct claims and
+  concurrent identical claims (post-hardening); sequential identical
+  claims still coalesce — RESOLVED by BN-021f authenticated ingress
+  (sequential same-claim now fails closed into `conn:*`; verified
+  live in the mTLS NAT lab).
 
 **BN-021d — NetFlow v9/IPFIX identity and template lifecycle** — PARTIAL.
 - Done: template cache keyed by UDP SocketAddr + protocol version +
@@ -131,10 +187,50 @@ before claiming equivalent history or enabling it as an authority.
 - OTLP: trusted resource/service identity, not collector IP.
 - sFlow: keep payload agent address; validate trust/binding.
 
-**BN-021f — Production acceptance** — OPEN.
+**BN-021f — Authenticated BMP ingress** — IMPLEMENTED + LAB VERIFIED (11 November).
+- Done: mutual-TLS BMP ingress terminated in `bonsai-routing`
+  (`bmp_mtls` config; `BONSAI_ROUTING_BMP_TLS_{CERT,KEY,CLIENT_CA}`);
+  verified principal = SHA-256 of the client-cert DER, produced only
+  by the TLS layer; `match_ingress_credential` binding pin (schema v4,
+  additive/idempotent migration); `vexp:*` verified scope namespace
+  fencing legacy claim-based `exp:*` journals; `BmpIdentityMode`
+  Verified (default) vs explicit unsafe ClaimCompatible; conn:* scopes
+  never carry `device_id`; live NAT lab with per-exporter client certs
+  behind one translated source — sequential same-claim impersonation
+  rejected, legitimate reconnect/multi-connection/replay verified.
+- Pending: production exporter mTLS support or equivalent authenticated
+  sidecar (lab uses `bmp_tls_proxy.py`); cross-protocol identity
+  regression for NetFlow/IPFIX (BN-021d gate). Simultaneous
+  old+new credential authorization during rotation (credential-list
+  schema) is a deferred enhancement — sequential re-pin procedure
+  documented.
+- Evidence: `docs/merger/evidence/2026-11-11-bn021f-authenticated-bmp/`;
+  tests `tests/bn021f_authenticated_ingress.rs` 9/9.
+
+**BN-021f hardening — revocation & TLS availability** — IMPLEMENTED +
+LAB VERIFIED (11 November).
+- Done: TLS handshakes moved off the accept loop into bounded
+  per-connection tasks (semaphore `MAX_HANDSHAKES`=64, 10 s timeout,
+  shutdown-aware); active-session registry + periodic batched
+  binding revalidation (`RECHECK_INTERVAL_MS`=5000) revokes live
+  sessions on binding/credential/device change with durable
+  `bmp_authorization_revoked` gap and last-known preservation;
+  credential rotation = binding re-pin preserving canonical identity;
+  production deployment policy requires mTLS off-loopback, Verified
+  mode, and explicit dev overrides for plaintext/claim_compat;
+  `VerifiedIngressPrincipal` fields private + transport-only
+  constructor + fail-closed deserialization.
+- Verified: `tests/bn021f_hardening.rs` 9/9; live NAT R1–R5 (active
+  revocation, multi-session revocation, rotation, 64-permit TLS
+  saturation + recovery, SIGKILL restart/replay).
+- Evidence: `docs/merger/evidence/2026-11-11-bn021f-revocation-hardening/`.
+
+**BN-021g — Production acceptance** — OPEN (renamed from BN-021f slot;
+see above for the implemented slice).
 - Cross-protocol identity regression tests; multi-site overlapping
   addresses; unknown/conflicting handling; collector restart/failover;
-  source-alias migration + journal replay; identity metrics/diagnostics.
+  source-alias migration + journal replay; identity metrics/diagnostics;
+  simultaneous credential-authorization rotation (schema v5 candidate).
 
 ### Source-audited correctness refinements (existing BN ownership)
 

@@ -1,0 +1,319 @@
+2026-11-11T07:23:25.374794Z  INFO bonsai::routing_service: trusted exporter identity store loaded path=/app/runtime/bonsai_config.db
+2026-11-11T07:23:25.374820Z  INFO bonsai_routing: BMP mutual-TLS ingress enabled
+2026-11-11T07:23:25.375080Z  INFO bonsai_routing: Started reduced bonsai-routing service bmp_addr=0.0.0.0:11019 http_addr=0.0.0.0:8081
+2026-11-11T07:23:27.420241Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-a status="resolved" device_id=Some("dev-frr-a") binding_id=Some("bind-frr-a")
+2026-11-11T07:23:27.434754Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:23:27.445834Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:23:27.458767Z  INFO rbmp_rib::manager: BGP peer down speaker=10.240.0.200 peer_addr=10.240.0.50 reason_str=LocalSystemClosed2
+2026-11-11T07:23:27.739143Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-b status="resolved" device_id=Some("dev-frr-b") binding_id=Some("bind-frr-b")
+2026-11-11T07:23:27.752311Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:23:27.764116Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:23:27.775713Z  INFO rbmp_rib::manager: BGP peer down speaker=10.240.0.200 peer_addr=10.240.0.50 reason_str=LocalSystemClosed2
+2026-11-11T07:23:37.433398Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:23:37.749463Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:23:38.083292Z DEBUG bonsai::routing_service: BMP connection closed before Initiation speaker_ip=10.240.0.200 error=I/O error: cannot decrypt peer's message
+2026-11-11T07:23:39.087580Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=conn:8593d7373a9a492a9cb85fd8a1153aec status="provisional" device_id=None binding_id=None
+2026-11-11T07:23:39.095860Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:23:39.108149Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:23:39.120403Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:23:43.439652Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-a status="resolved" device_id=Some("dev-frr-a") binding_id=Some("bind-frr-a")
+2026-11-11T07:23:43.452615Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:23:43.464883Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:23:43.476145Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:23:43.758675Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-b status="resolved" device_id=Some("dev-frr-b") binding_id=Some("bind-frr-b")
+2026-11-11T07:23:43.772778Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:23:43.786125Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:23:43.798373Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:23:55.116381Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=conn:33648418590142399985301ab5f20824 status="provisional" device_id=None binding_id=None
+2026-11-11T07:23:55.130397Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:23:55.146056Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:23:55.158861Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:23:59.458548Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-a status="resolved" device_id=Some("dev-frr-a") binding_id=Some("bind-frr-a")
+2026-11-11T07:23:59.471807Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:23:59.484908Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:23:59.497167Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:23:59.778808Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-b status="resolved" device_id=Some("dev-frr-b") binding_id=Some("bind-frr-b")
+2026-11-11T07:23:59.787556Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:23:59.813021Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:23:59.825698Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:24:11.134634Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=conn:404cbccab4ee4016be617af431db965b status="provisional" device_id=None binding_id=None
+2026-11-11T07:24:11.148445Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:24:11.161360Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:24:11.175316Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:24:15.476458Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-a status="resolved" device_id=Some("dev-frr-a") binding_id=Some("bind-frr-a")
+2026-11-11T07:24:15.489533Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:24:15.509045Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:24:15.521754Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:24:15.798437Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-b status="resolved" device_id=Some("dev-frr-b") binding_id=Some("bind-frr-b")
+2026-11-11T07:24:15.811515Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:24:15.825178Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:24:15.838225Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:24:24.167011Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=conn:a95a68de806d4676832f6565125a0094 status="provisional" device_id=None binding_id=None
+2026-11-11T07:24:24.180284Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:24:24.192093Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:24:24.204259Z  INFO rbmp_rib::manager: BGP peer down speaker=10.240.0.200 peer_addr=10.240.0.50 reason_str=LocalSystemClosed2
+2026-11-11T07:24:24.215967Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:24:31.817786Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-b status="resolved" device_id=Some("dev-frr-b") binding_id=Some("bind-frr-b")
+2026-11-11T07:24:31.832629Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:24:31.845949Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:24:31.859169Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:24:47.835998Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-b status="resolved" device_id=Some("dev-frr-b") binding_id=Some("bind-frr-b")
+2026-11-11T07:24:47.844263Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:24:47.857037Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:24:47.871083Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:24:53.161615Z DEBUG bonsai::routing_service: BMP connection closed before Initiation speaker_ip=10.240.0.200 error=I/O error: cannot decrypt peer's message
+2026-11-11T07:24:54.166301Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=conn:d0d8be72cead4bfa86acbfc1d3e41b20 status="provisional" device_id=None binding_id=None
+2026-11-11T07:24:54.181237Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:24:54.194402Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:24:54.205469Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:25:03.854481Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-b status="resolved" device_id=Some("dev-frr-b") binding_id=Some("bind-frr-b")
+2026-11-11T07:25:03.860525Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:25:03.873904Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:25:03.886530Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:25:19.873972Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-b status="resolved" device_id=Some("dev-frr-b") binding_id=Some("bind-frr-b")
+2026-11-11T07:25:19.887205Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:25:19.904492Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:25:19.916986Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:25:23.162634Z DEBUG bonsai::routing_service: BMP connection closed before Initiation speaker_ip=10.240.0.200 error=I/O error: cannot decrypt peer's message
+2026-11-11T07:25:24.166732Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=conn:d74eec6ae9da482788c192f5ad575b8a status="provisional" device_id=None binding_id=None
+2026-11-11T07:25:24.180244Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:25:24.193711Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:25:24.206801Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:25:35.893862Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-b status="resolved" device_id=Some("dev-frr-b") binding_id=Some("bind-frr-b")
+2026-11-11T07:25:35.907456Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:25:35.919466Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:25:35.933053Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:25:40.187524Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=conn:938c6f42b53b40bdaa9f205baa811ff4 status="provisional" device_id=None binding_id=None
+2026-11-11T07:25:40.195420Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:25:40.207208Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:25:40.219199Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:25:43.072805Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-a status="resolved" device_id=Some("dev-frr-a") binding_id=Some("bind-frr-a")
+2026-11-11T07:25:43.086840Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:25:43.099470Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:25:43.112909Z  INFO rbmp_rib::manager: BGP peer down speaker=10.240.0.200 peer_addr=10.240.0.50 reason_str=LocalSystemClosed2
+2026-11-11T07:25:43.125612Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:25:43.297612Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=conn:ccbda649b77b4a01b26eddbcaabfe52d status="provisional" device_id=None binding_id=None
+2026-11-11T07:25:43.306155Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:25:43.319133Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:25:43.331730Z  INFO rbmp_rib::manager: BGP peer down speaker=10.240.0.200 peer_addr=10.240.0.50 reason_str=LocalSystemClosed2
+2026-11-11T07:25:43.345817Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:25:51.912896Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-b status="resolved" device_id=Some("dev-frr-b") binding_id=Some("bind-frr-b")
+2026-11-11T07:25:51.922197Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:25:51.934906Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:25:51.948903Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:25:59.093249Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-a status="resolved" device_id=Some("dev-frr-a") binding_id=Some("bind-frr-a")
+2026-11-11T07:25:59.105527Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:25:59.119694Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:25:59.132907Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:07.931300Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-b status="resolved" device_id=Some("dev-frr-b") binding_id=Some("bind-frr-b")
+2026-11-11T07:26:07.944377Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:07.960047Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:07.975392Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:12.290595Z DEBUG bonsai::routing_service: BMP connection closed before Initiation speaker_ip=10.240.0.200 error=I/O error: cannot decrypt peer's message
+2026-11-11T07:26:13.294675Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=conn:813796441704452e8c88c8b44fb6c2ba status="provisional" device_id=None binding_id=None
+2026-11-11T07:26:13.302681Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:13.316503Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:13.329526Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:15.113543Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-a status="resolved" device_id=Some("dev-frr-a") binding_id=Some("bind-frr-a")
+2026-11-11T07:26:15.121756Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:15.136150Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:26:15.149446Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.779451Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.779522Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:26:21.779543Z  INFO rbmp_rib::manager: BGP peer down speaker=10.240.0.200 peer_addr=10.240.0.50 reason_str=LocalSystemClosed2
+2026-11-11T07:26:21.779555Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.779605Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.779622Z  INFO rbmp_rib::manager: BGP peer down speaker=10.240.0.200 peer_addr=10.240.0.50 reason_str=LocalSystemClosed2
+2026-11-11T07:26:21.779686Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.779758Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.780117Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.780160Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.780232Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.780477Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.780536Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:26:21.780614Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.780918Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.780972Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.781156Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.781461Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.781526Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.781590Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.781848Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.781890Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:26:21.781954Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.782159Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.782203Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.782253Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.782453Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.782495Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.782552Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.782721Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.782766Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:26:21.782820Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.783021Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.783078Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.783162Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.783466Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.783548Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.783602Z  INFO rbmp_rib::manager: BGP peer down speaker=10.240.0.200 peer_addr=10.240.0.50 reason_str=LocalSystemClosed2
+2026-11-11T07:26:21.783680Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.783887Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.783971Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.784074Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.784501Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.784550Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.784618Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.784845Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.784895Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.784955Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.785150Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.785204Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.785283Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.785503Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.785561Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.785636Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.785826Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.785871Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.785927Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.786128Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.786175Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.786233Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.786425Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.786469Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.786527Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.786684Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.786732Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:26:21.786758Z  INFO rbmp_rib::manager: BGP peer down speaker=10.240.0.200 peer_addr=10.240.0.50 reason_str=LocalSystemClosed2
+2026-11-11T07:26:21.786821Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.786842Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.786882Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.786907Z  INFO rbmp_rib::manager: BGP peer down speaker=10.240.0.200 peer_addr=10.240.0.50 reason_str=LocalSystemClosed2
+2026-11-11T07:26:21.786961Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.787221Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.787268Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.787328Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.787558Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.787606Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:26:21.787664Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.787861Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.787906Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.787965Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.788206Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.788262Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.788324Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.788693Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.788746Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:26:21.788813Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.789482Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.789558Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:26:21.789623Z  INFO rbmp_rib::manager: BGP peer down speaker=10.240.0.200 peer_addr=10.240.0.50 reason_str=LocalSystemClosed2
+2026-11-11T07:26:21.789666Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.789719Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.789744Z  INFO rbmp_rib::manager: BGP peer down speaker=10.240.0.200 peer_addr=10.240.0.50 reason_str=LocalSystemClosed2
+2026-11-11T07:26:21.789796Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.789843Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.790164Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.790202Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.790249Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.790395Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.790434Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:26:21.790481Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.790673Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.790709Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.790758Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.790936Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.790972Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.791020Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.791252Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.791290Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:26:21.791338Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.791585Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.791643Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.791719Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.791988Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.792064Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.792138Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.792347Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.792405Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:26:21.792485Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.792695Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.792733Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.792782Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.792961Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.792999Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.793017Z  INFO rbmp_rib::manager: BGP peer down speaker=10.240.0.200 peer_addr=10.240.0.50 reason_str=LocalSystemClosed2
+2026-11-11T07:26:21.793085Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.793216Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.793253Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.793303Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.793491Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.793528Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.793578Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.793749Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.793785Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.793834Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.793993Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.794038Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.794092Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.794272Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.794310Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.794362Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.794532Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.794569Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.794637Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.794807Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.794846Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.794900Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.795099Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.795140Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.795194Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.795333Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.795373Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:26:21.795393Z  INFO rbmp_rib::manager: BGP peer down speaker=10.240.0.200 peer_addr=10.240.0.50 reason_str=LocalSystemClosed2
+2026-11-11T07:26:21.795444Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.795460Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.795495Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.795513Z  INFO rbmp_rib::manager: BGP peer down speaker=10.240.0.200 peer_addr=10.240.0.50 reason_str=LocalSystemClosed2
+2026-11-11T07:26:21.795562Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.795859Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.795901Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.795952Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.796185Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.796226Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:26:21.796279Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.796509Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.796550Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:21.796601Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.796826Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.796862Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:21.796911Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.797125Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:21.797186Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:26:21.797259Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:21.798067Z  INFO bonsai::routing_service: trusted exporter identity store loaded path=/app/runtime/bonsai_config.db
+2026-11-11T07:26:21.798223Z  INFO bonsai_routing: BMP mutual-TLS ingress enabled
+2026-11-11T07:26:21.798531Z  INFO bonsai_routing: Started reduced bonsai-routing service bmp_addr=0.0.0.0:11019 http_addr=0.0.0.0:8081
+2026-11-11T07:26:22.444163Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-a status="resolved" device_id=Some("dev-frr-a") binding_id=Some("bind-frr-a")
+2026-11-11T07:26:22.446058Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=conn:8421a8118b0244cdb1470f8fd9220db8 status="provisional" device_id=None binding_id=None
+2026-11-11T07:26:22.448212Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-b status="resolved" device_id=Some("dev-frr-b") binding_id=Some("bind-frr-b")
+2026-11-11T07:26:22.458721Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:22.472119Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:22.483308Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:22.495468Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:26:22.516130Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:22.536642Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:22.549302Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:22.563589Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:22.576968Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:38.462868Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-a status="resolved" device_id=Some("dev-frr-a") binding_id=Some("bind-frr-a")
+2026-11-11T07:26:38.465944Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=conn:18c4d27cde594347a173a1dc44f194ff status="provisional" device_id=None binding_id=None
+2026-11-11T07:26:38.467703Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=vexp:exp-frr-b status="resolved" device_id=Some("dev-frr-b") binding_id=Some("bind-frr-b")
+2026-11-11T07:26:38.475581Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:38.487981Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:38.501708Z  INFO rbmp_rib::manager: BMP speaker connected speaker=10.240.0.200
+2026-11-11T07:26:38.514017Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65001
+2026-11-11T07:26:38.527101Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65003
+2026-11-11T07:26:38.538990Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=0.0.0.0 peer_as=65002
+2026-11-11T07:26:38.553389Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:38.567263Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000
+2026-11-11T07:26:38.581297Z  INFO rbmp_rib::manager: BGP peer up speaker=10.240.0.200 peer_addr=10.240.0.50 peer_as=65000

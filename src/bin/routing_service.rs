@@ -44,6 +44,17 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let state = RoutingServiceState::new(cfg.clone()).await?;
+    // BN-021f: when mTLS is configured, BMP connections must complete a
+    // mutual-TLS handshake (mandatory client certificate) before any
+    // BMP byte is read; the verified credential fingerprint feeds
+    // authoritative identity resolution.
+    let mtls_acceptor = match &cfg.bmp_mtls {
+        Some(mtls) => {
+            info!("BMP mutual-TLS ingress enabled");
+            Some(bonsai::routing_service::build_bmp_mtls_acceptor(mtls)?)
+        }
+        None => None,
+    };
     let bmp_listener = TcpListener::bind(&cfg.bmp_listen_addr).await?;
     let http_listener = TcpListener::bind(&cfg.http_listen_addr).await?;
 
@@ -56,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let bmp_state = std::sync::Arc::clone(&state);
     let bmp_handle = tokio::spawn(async move {
-        run_bmp_listener(bmp_listener, bmp_state, shutdown_rx).await;
+        run_bmp_listener(bmp_listener, mtls_acceptor, bmp_state, shutdown_rx).await;
     });
 
     let app = build_internal_routing_router(state);

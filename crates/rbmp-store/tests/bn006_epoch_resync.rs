@@ -1,4 +1,5 @@
 //! Regression extracted from an actual EOS reconnect, not generated BMP fixtures.
+use rbmp_core::bmp::types::SpeakerKey;
 use rbmp_rib::RibManager;
 use rbmp_rib::event::RibEventPayload;
 use rbmp_store::BmpJournal;
@@ -22,7 +23,7 @@ fn eos_reconnect_retires_unrefreshed_local_path_ids_at_eor() {
     );
     let speaker = "172.31.217.11".parse().unwrap();
     let mut actual = std::collections::BTreeSet::new();
-    for (peer, table) in rib.ribs_for_speaker(speaker) {
+    for (peer, table) in rib.ribs_for_speaker(SpeakerKey::new(speaker, "")) {
         for view in [
             rbmp_core::bmp::types::RibType::LocRib,
             rbmp_core::bmp::types::RibType::AdjRibInPostPolicy,

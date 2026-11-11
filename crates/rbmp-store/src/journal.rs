@@ -3,7 +3,7 @@ use rbmp_core::bgp::types::BgpDecodeContext;
 use rbmp_core::bmp::parser::{
     DEFAULT_MAX_FRAME, parse_bmp_message_with_context, parse_peer_header,
 };
-use rbmp_core::bmp::types::{BmpMessage, BmpPayload, PeerKey};
+use rbmp_core::bmp::types::{BmpMessage, BmpPayload, PeerKey, SpeakerKey};
 use rbmp_rib::RibManager;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
@@ -23,10 +23,21 @@ pub struct ReplayReport {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct JournalTransportGap {
     pub speaker_addr: IpAddr,
+    /// Logical-exporter scope (`exp:*`/`conn:*`/legacy) the gap belongs
+    /// to. Empty = legacy/unspecified (pre-BN-021c records).
+    #[serde(default)]
+    pub exporter_instance: String,
     #[serde(default)]
     pub session_epoch: Option<u64>,
     pub disconnected_at: chrono::DateTime<chrono::Utc>,
     pub reason: String,
+}
+
+impl JournalTransportGap {
+    /// Composite speaker identity this gap is fenced to.
+    pub fn speaker_key(&self) -> SpeakerKey {
+        SpeakerKey::new(self.speaker_addr, &self.exporter_instance)
+    }
 }
 
 /// Rich replay outcome returning the report, all deterministically emitted `RibEvent`s,
@@ -35,7 +46,7 @@ pub struct JournalTransportGap {
 pub struct ReplayOutcome {
     pub report: ReplayReport,
     pub emitted_events: Vec<rbmp_rib::event::RibEvent>,
-    pub transport_gaps: HashMap<IpAddr, JournalTransportGap>,
+    pub transport_gaps: HashMap<SpeakerKey, JournalTransportGap>,
     pub decode_contexts: HashMap<PeerKey, BgpDecodeContext>,
 }
 
@@ -56,6 +67,10 @@ pub struct BmpJournalObservation {
 pub enum BmpJournalControlRecord {
     TransportDisconnect {
         speaker_addr: IpAddr,
+        /// Logical-exporter scope the disconnect is fenced to
+        /// (`exp:*`/`conn:*`); empty = legacy/unspecified.
+        #[serde(default)]
+        exporter_instance: String,
         #[serde(default)]
         session_epoch: Option<u64>,
         disconnected_at: chrono::DateTime<chrono::Utc>,
@@ -163,6 +178,11 @@ fn append_newline_and_sync(path: &Path) -> Result<()> {
 pub struct BmpJournal {
     path: Option<PathBuf>,
     file: Option<Arc<Mutex<tokio::fs::File>>>,
+    /// Test hook: when set, every append fails deterministically so
+    /// callers' persistence-failure paths can be exercised without
+    /// filling the disk or touching production evidence files.
+    #[doc(hidden)]
+    pub fail_writes: std::sync::atomic::AtomicBool,
 }
 
 impl BmpJournal {
@@ -171,6 +191,7 @@ impl BmpJournal {
             None => Ok(Self {
                 path: None,
                 file: None,
+                fail_writes: std::sync::atomic::AtomicBool::new(false),
             }),
             Some(p) => {
                 let pb = p.as_ref().to_path_buf();
@@ -191,6 +212,7 @@ impl BmpJournal {
                 Ok(Self {
                     path: Some(pb),
                     file: Some(Arc::new(Mutex::new(f))),
+                    fail_writes: std::sync::atomic::AtomicBool::new(false),
                 })
             }
         }
@@ -212,6 +234,9 @@ impl BmpJournal {
         session_epoch: Option<u64>,
         raw_frame: Option<&[u8]>,
     ) -> Result<()> {
+        if self.fail_writes.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(anyhow!("injected BMP journal write failure"));
+        }
         if let Some(file) = &self.file {
             let record = BmpJournalObservation {
                 message: msg.clone(),
@@ -230,9 +255,13 @@ impl BmpJournal {
 
     /// Durably record a BMP transport disconnect so monitoring gaps survive restarts (R04).
     pub async fn append_transport_disconnect(&self, gap: &JournalTransportGap) -> Result<()> {
+        if self.fail_writes.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(anyhow!("injected BMP journal write failure"));
+        }
         if let Some(file) = &self.file {
             let record = BmpJournalControlRecord::TransportDisconnect {
                 speaker_addr: gap.speaker_addr,
+                exporter_instance: gap.exporter_instance.clone(),
                 session_epoch: gap.session_epoch,
                 disconnected_at: gap.disconnected_at,
                 reason: gap.reason.clone(),
@@ -279,7 +308,7 @@ impl BmpJournal {
         let mut applied_messages = 0usize;
         let mut skipped_truncated_tail = 0usize;
         let mut emitted_events = Vec::new();
-        let mut transport_gaps: HashMap<IpAddr, JournalTransportGap> = HashMap::new();
+        let mut transport_gaps: HashMap<SpeakerKey, JournalTransportGap> = HashMap::new();
         let mut decode_contexts: HashMap<PeerKey, BgpDecodeContext> = HashMap::new();
 
         let mut cursor = 0usize;
@@ -354,6 +383,12 @@ impl BmpJournal {
             }
         }
 
+        // NOTE: conn:* speakers with no disconnect record are kept
+        // as-is. Their conn id cannot be reused, so they are provably
+        // dead — but BN-005 requires ungraceful-restart history to
+        // replay identically, and no journal record distinguishes
+        // "still connected" from "died with the old process". This is a
+        // documented BN-021c limitation (see docs/STATUS.md).
         Ok(ReplayOutcome {
             report: ReplayReport {
                 applied_messages,
@@ -370,12 +405,16 @@ impl BmpJournal {
         rib: &mut RibManager,
         applied_messages: &mut usize,
         emitted_events: &mut Vec<rbmp_rib::event::RibEvent>,
-        transport_gaps: &mut HashMap<IpAddr, JournalTransportGap>,
+        transport_gaps: &mut HashMap<SpeakerKey, JournalTransportGap>,
         decode_contexts: &mut HashMap<PeerKey, BgpDecodeContext>,
     ) {
         match parsed {
             ParsedBmpJournalLine::Observation(obs) => {
                 let speaker = obs.message.speaker_addr;
+                // Logical-exporter scope recorded at ingest; empty on
+                // legacy records maps to speaker instance 0.
+                let exporter_instance = obs.message.exporter_instance.clone();
+                let speaker_key = SpeakerKey::new(speaker, &exporter_instance);
                 let mut msg = obs.message;
 
                 // If raw wire bytes were captured, re-verify/decode with session-aware context when possible
@@ -383,7 +422,8 @@ impl BmpJournal {
                     if let Some(frame) = hex_to_bytes(hex_str) {
                         let ctx = if frame.len() >= 48 && frame[0] == 3 && frame[5] == 0 {
                             if let Ok((peer_hdr, _)) = parse_peer_header(&frame[6..]) {
-                                let pk = PeerKey::from_header(speaker, &peer_hdr);
+                                let pk =
+                                    PeerKey::from_header(speaker, &exporter_instance, &peer_hdr);
                                 decode_contexts.get(&pk).cloned().unwrap_or_else(|| {
                                     BgpDecodeContext::new(peer_hdr.peer_flags.four_byte_asn())
                                 })
@@ -402,7 +442,8 @@ impl BmpJournal {
                 }
 
                 if let BmpPayload::PeerUp(ref pu) = msg.payload {
-                    let peer_key = PeerKey::from_header(speaker, &pu.peer_header);
+                    let peer_key =
+                        PeerKey::from_header(speaker, &exporter_instance, &pu.peer_header);
                     let ctx = BgpDecodeContext::from_negotiated_open(
                         pu.peer_header.peer_flags.four_byte_asn(),
                         &pu.sent_open.capabilities,
@@ -413,15 +454,15 @@ impl BmpJournal {
 
                 let effective_epoch = obs
                     .session_epoch
-                    .or_else(|| rib.speaker(speaker).map(|s| s.source.session_epoch));
+                    .or_else(|| rib.speaker(speaker_key).map(|s| s.source.session_epoch));
 
-                if let Some(existing_gap) = transport_gaps.get(&speaker) {
+                if let Some(existing_gap) = transport_gaps.get(&speaker_key) {
                     if should_clear_transport_gap(
                         existing_gap.session_epoch,
                         effective_epoch,
                         &msg.payload,
                     ) {
-                        transport_gaps.remove(&speaker);
+                        transport_gaps.remove(&speaker_key);
                     }
                 }
 
@@ -431,27 +472,47 @@ impl BmpJournal {
             }
             ParsedBmpJournalLine::Control(BmpJournalControlRecord::TransportDisconnect {
                 speaker_addr,
+                exporter_instance,
                 session_epoch,
                 disconnected_at,
                 reason,
             }) => {
-                let active_epoch = rib.speaker(speaker_addr).map(|s| s.source.session_epoch);
+                let speaker_key = SpeakerKey::new(speaker_addr, &exporter_instance);
+                let active_epoch = rib.speaker(speaker_key).map(|s| s.source.session_epoch);
                 if let (Some(disc_ep), Some(act_ep)) = (session_epoch, active_epoch) {
                     if disc_ep < act_ep {
                         return;
                     }
                 }
                 let effective_epoch = session_epoch.or(active_epoch);
-                rib.clear_speaker_eor(speaker_addr);
+                rib.clear_speaker_eor(speaker_key);
                 transport_gaps.insert(
-                    speaker_addr,
+                    speaker_key,
                     JournalTransportGap {
                         speaker_addr,
+                        exporter_instance: exporter_instance.clone(),
                         session_epoch: effective_epoch,
                         disconnected_at,
                         reason,
                     },
                 );
+                // Mirror live disconnect handling (BN-021c): an isolated
+                // connection-scoped (`conn:*`) speaker can never receive
+                // new data, so replay must retire its peer/RIB state
+                // instead of resurrecting last-known routes. `exp:*`
+                // speakers keep last-known routes under the gap.
+                if exporter_instance.starts_with("conn:") {
+                    rib.retire_speaker(speaker_key);
+                    // A retired scope holds no state under a gap; drop the
+                    // in-memory gap so it cannot pin completeness forever.
+                    // The durable disconnect record remains in the journal.
+                    transport_gaps.remove(&speaker_key);
+                    let instance_id =
+                        rbmp_core::bmp::types::exporter_instance_id(&exporter_instance);
+                    decode_contexts.retain(|k, _| {
+                        !(k.speaker_addr == speaker_addr && k.speaker_instance == instance_id)
+                    });
+                }
             }
         }
     }
@@ -464,6 +525,10 @@ pub struct PrefixHistoryItem {
     pub event_id: uuid::Uuid,
     pub occurred_at: chrono::DateTime<chrono::Utc>,
     pub speaker_addr: IpAddr,
+    /// Logical-exporter scope of the emitting speaker
+    /// (`exp:*`/`conn:*`/legacy). Empty = legacy/unspecified.
+    #[serde(default)]
+    pub exporter_instance: String,
     pub peer_addr: IpAddr,
     pub peer_as: u32,
     #[serde(default)]
@@ -764,15 +829,21 @@ impl RibEventJournal {
     }
 
     pub async fn prefix_history(&self, prefix: &str, limit: usize) -> Vec<PrefixHistoryItem> {
-        self.prefix_history_filtered(prefix, None, None, limit)
+        self.prefix_history_filtered(prefix, None, None, None, limit)
             .await
     }
 
+    /// `speaker_filter` accepts a bare transport address (matches every
+    /// exporter instance on it) or the exact `"<addr>|<exporter_instance>"`
+    /// speaker key form. `exporter_instance_filter` selects one
+    /// logical-exporter scope (`exp:*`/`conn:*`/legacy) so exporters
+    /// sharing a NAT address never merge history (BN-021c).
     pub async fn prefix_history_filtered(
         &self,
         prefix: &str,
         speaker_filter: Option<&str>,
         vrf_rd_filter: Option<&str>,
+        exporter_instance_filter: Option<&str>,
         limit: usize,
     ) -> Vec<PrefixHistoryItem> {
         use rbmp_rib::event::{RibEventPayload, RouteAction};
@@ -784,10 +855,34 @@ impl RibEventJournal {
         > = HashMap::new();
         let mut items = Vec::new();
 
+        // Bare address matches every exporter instance on it; the
+        // `"<addr>|<exporter_instance>"` form selects exactly one scope.
+        let speaker_matches = |ev: &rbmp_rib::event::RibEvent| -> bool {
+            match speaker_filter {
+                None => true,
+                Some(spk) if spk.trim().is_empty() => true,
+                Some(spk) => {
+                    let addr_s = ev.speaker.to_string();
+                    spk == addr_s
+                        || spk
+                            .strip_prefix(addr_s.as_str())
+                            .and_then(|rest| rest.strip_prefix('|'))
+                            == Some(ev.event_key.source.exporter_instance.as_str())
+                }
+            }
+        };
+        let instance_matches = |ev: &rbmp_rib::event::RibEvent| -> bool {
+            exporter_instance_filter
+                .is_none_or(|inst| ev.event_key.source.exporter_instance == inst)
+        };
+
         for ev in guard
             .iter()
             .skip(guard.len().saturating_sub(HISTORY_SCAN_LIMIT))
         {
+            if !speaker_matches(ev) || !instance_matches(ev) {
+                continue;
+            }
             if let RibEventPayload::EndOfRib {
                 peer_header,
                 retired_routes,
@@ -797,7 +892,6 @@ impl RibEventJournal {
                 for retired in retired_routes {
                     let rd = retired.route_key.view.peer.distinguisher_string();
                     if retired.prefix.to_string() != prefix
-                        || speaker_filter.is_some_and(|spk| ev.speaker.to_string() != spk)
                         || vrf_rd_filter.is_some_and(|filter| rd != filter)
                     {
                         continue;
@@ -808,6 +902,7 @@ impl RibEventJournal {
                         event_id: ev.id,
                         occurred_at: ev.occurred_at,
                         speaker_addr: ev.speaker,
+                        exporter_instance: ev.event_key.source.exporter_instance.clone(),
                         peer_addr: peer_header.peer_address,
                         peer_as: peer_header.peer_as,
                         peer_distinguisher: rd,
@@ -823,7 +918,6 @@ impl RibEventJournal {
             if let RibEventPayload::RouteChange(rc) = &ev.payload {
                 let pfx_str = rc.prefix.to_string();
                 if pfx_str != prefix
-                    || speaker_filter.is_some_and(|spk| ev.speaker.to_string() != spk)
                     || vrf_rd_filter.is_some_and(|rd| rc.peer_key.distinguisher_string() != rd)
                 {
                     continue;
@@ -838,11 +932,6 @@ impl RibEventJournal {
                 if pfx_str != prefix {
                     continue;
                 }
-                if let Some(spk) = speaker_filter {
-                    if !spk.trim().is_empty() && ev.speaker.to_string() != spk.trim() {
-                        continue;
-                    }
-                }
                 let rd_str = rc.peer_key.distinguisher_string();
                 if let Some(rd) = vrf_rd_filter {
                     if !rd.trim().is_empty() && rd_str != rd.trim() {
@@ -855,6 +944,7 @@ impl RibEventJournal {
                     event_id: ev.id,
                     occurred_at: ev.occurred_at,
                     speaker_addr: ev.speaker,
+                    exporter_instance: ev.event_key.source.exporter_instance.clone(),
                     peer_addr: rc.peer_header.peer_address,
                     peer_as: rc.peer_header.peer_as,
                     peer_distinguisher: rd_str,
@@ -917,7 +1007,7 @@ mod tests {
 
         let speaker = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
         let hdr = sample_peer_header();
-        let peer_key = PeerKey::from_header(speaker, &hdr);
+        let peer_key = PeerKey::from_header(speaker, "", &hdr);
         let now = Utc::now();
 
         let mut attrs = PathAttributes::default();
@@ -933,6 +1023,9 @@ mod tests {
                 id: Uuid::new_v4(),
                 received_at: now,
                 speaker_addr: speaker,
+                exporter_instance: String::new(),
+                exporter_id: None,
+                device_id: None,
                 payload: BmpPayload::Initiation {
                     sys_name: Some("router-1".to_string()),
                     sys_descr: Some("FRR 9.1".to_string()),
@@ -943,6 +1036,9 @@ mod tests {
                 id: Uuid::new_v4(),
                 received_at: now,
                 speaker_addr: speaker,
+                exporter_instance: String::new(),
+                exporter_id: None,
+                device_id: None,
                 payload: BmpPayload::PeerUp(PeerUpMessage {
                     peer_header: hdr.clone(),
                     local_addr: speaker,
@@ -968,6 +1064,9 @@ mod tests {
                 id: Uuid::new_v4(),
                 received_at: now,
                 speaker_addr: speaker,
+                exporter_instance: String::new(),
+                exporter_id: None,
+                device_id: None,
                 payload: BmpPayload::RouteMonitoring {
                     peer_header: hdr.clone(),
                     update: BgpUpdate {
@@ -983,6 +1082,9 @@ mod tests {
                 id: Uuid::new_v4(),
                 received_at: now,
                 speaker_addr: speaker,
+                exporter_instance: String::new(),
+                exporter_id: None,
+                device_id: None,
                 payload: BmpPayload::RouteMonitoring {
                     peer_header: hdr.clone(),
                     update: BgpUpdate {
@@ -998,6 +1100,9 @@ mod tests {
                 id: Uuid::new_v4(),
                 received_at: now,
                 speaker_addr: speaker,
+                exporter_instance: String::new(),
+                exporter_id: None,
+                device_id: None,
                 payload: BmpPayload::RouteMonitoring {
                     peer_header: hdr.clone(),
                     update: BgpUpdate {
@@ -1012,7 +1117,7 @@ mod tests {
         ];
 
         let (mut rib_live, _rx_live) = RibManager::new(64);
-        rib_live.open_speaker_session(speaker, now);
+        rib_live.open_speaker_session(speaker, "", None, None, now);
         for msg in &messages {
             journal.append(msg).await.unwrap();
             rib_live.process(msg.clone());
@@ -1052,7 +1157,7 @@ mod tests {
         );
 
         let replayed_sess = rib_replayed
-            .speaker(speaker)
+            .speaker(SpeakerKey::new(speaker, ""))
             .unwrap()
             .peer_by_key(&peer_key)
             .unwrap();

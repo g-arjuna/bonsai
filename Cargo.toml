@@ -84,7 +84,7 @@ tokio = { version = "1", features = ["full"] }
 
 # gRPC transport
 tonic = { version = "0.13", features = ["tls-ring", "zstd"] }
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
 
 # Protobuf serialization
 prost = "0.13"
@@ -201,6 +201,7 @@ protoc-bin-vendored = "3"
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"
+rcgen = "0.13"
 
 [profile.dev]
 # Optimised for fast incremental builds on Ubuntu Linux.

@@ -475,6 +475,170 @@ BN-021c). Verified: `cargo check --lib` clean; 13/13 tests in
 `tests/bn021b_trusted_identity.rs` pass incl. v2→v3 migration on a
 populated DB; BN-022 read-boundary suite re-run as regression.
 
+BN-021c exporter-isolation slice (10 November): BMP ingestion, session,
+RIB, journal, replay and projection state are now keyed by logical
+exporter identity, not transport IP. `SpeakerKey{speaker_addr,
+speaker_instance}` partitions `RibManager.speakers`; `PeerKey` gained a
+`speaker_instance` discriminator (FNV-1a of the exporter scope, `Copy`
+preserved); `ObservationSource`/`BmpMessage` carry
+`exporter_instance`/`exporter_id`/`device_id` (serde-defaulted, legacy
+records map to instance 0). The listener now requires a BMP Initiation
+before creating state, resolves sysName evidence against the trusted
+binding store (`bonsai_config.db` beside the journals or
+`BONSAI_ROUTING_IDENTITY_DB`), and assigns namespace-encoded `exp:*`
+scopes (binding scope+protocol+canonical id — identical canonical
+exporter ids in different sites cannot collide) to resolved exporters
+(shared across connections = FRR global+VRF association preserved) or
+isolated `conn:{id}` scopes otherwise — unresolved/ambiguous/
+conflicting evidence fails closed and is never promoted to canonical
+device state. Disconnects, transport gaps, EOR clearing, decode
+contexts and `conn:*` retirement are all fenced per `SpeakerKey`.
+Journals/replay carry the scope end-to-end; `JournalTransportGap`/
+`PrefixHistoryItem` gained `exporter_instance`; projection/checkpoint/
+graph ids use `ip|instance`.
+
+BN-021c hardening pass (10 November): audit found and fixed five
+defects — (1) replay recorded `conn:*` disconnect gaps but never
+retired the speakers, diverging from live state (now retires on the
+disconnect record and prunes gaps/decode contexts); (2)
+`process_for_epoch` fenced only stale Termination/EOR, letting stale
+PeerUp/PeerDown/RouteMonitoring mutate newer sessions (now all
+payloads fenced; stale EOR still reserves its event sequence for
+deterministic replay); (3) `exp:{canonical}` dropped the
+(scope, protocol) namespace — latent cross-site collision (now
+namespace-encoded); (4) routes/prefix-history/events APIs lacked
+exporter-instance selectors (added); (5) `conn:*` retirement was not
+gated on the disconnect actually being accepted (now gated).
+`tests/bn021c_exporter_isolation.rs` grew to 7 tests: cross-scope
+duplicate canonical ids, trusted bindings behind one NAT IP, stale
+epoch fencing, journal replay equivalence, and a real-TCP loopback
+listener test with two simultaneous exporters. Verified:
+`cargo check -p bonsai --all-targets` clean; bn021c 7/7, bn021b 13/13,
+bn005_closeout 11/11, rbmp-rib 42/42, rbmp-store 3/3,
+bn006_reconnect_projection, r01, r05, ownership and read-boundary
+suites pass. Known limitation: `conn:*` speakers with no disconnect
+record (SIGKILL) replay as live last-known state — the journal cannot
+distinguish them from live connections; deferred to BN-021f alias
+reconciliation.
+
+BN-021c review-findings pass + NAT acceptance (10–11 November): the
+published-commit review findings were reproduced and dispositioned.
+P0-A: `identity_from_bmp_observation` resolved only the default scope
+and `exp:{canonical}` dropped the (scope, protocol) namespace — fixed
+via `RoutingServiceConfig.identity_scope` and namespace-encoded
+`exp:{scope}:{canonical}` instances (default scope keeps legacy
+`exp:{canonical}` for journal continuity). P0-B: an invalid BMP frame
+broke the read loop without a disconnect reason — fixed; rejections
+record distinct `bmp_frame_rejected:*`/transport-error reasons and
+still run conn-scope retirement. P0-C: BMP Termination removed the
+whole `SpeakerKey` session, so one FRR connection's Termination could
+kill sibling state — fixed by deferring termination per sending
+connection. P0-D: identical self-reported sysName claims coalesce —
+confirmed as a trust assumption (lab-verified: an impostor claiming
+`frr-a` merged into `exp:exp-frr-a`); ambiguous/conflicting claims
+fail closed into `conn:*` isolation; authenticated ingress identity
+remains future work. P1: the routing service now opens the identity
+DB read-only (`open_file_readonly`) — no schema/WAL mutation. P2:
+FNV speaker-instance hashing documented as a bounded collision risk.
+`tests/bn021c_exporter_isolation.rs` is now 12 tests including real-TCP
+loopback coverage of invalid-frame lifecycle and Termination sibling
+isolation. Live containerlab NAT acceptance is DONE — three FRR
+exporters (AS 65001/2/3) behind one iptables SNAT source
+(10.240.0.200 → bonsai 10.240.0.20:11019) with a BGP route-server;
+scenarios A–G (isolation, withdrawal, PeerDown, disconnect/reconnect,
+unknown exporter, conflicting claims, SIGKILL replay) all verified
+against the deployed HTTP API — evidence in
+`docs/merger/evidence/2026-11-10-bn021c-nat-acceptance/`. BN-005
+kill/restart last-known-state semantics preserved: recorded
+disconnects replay as gaps, `conn:*` without a disconnect replays as
+live last-known (documented limitation).
+
+BN-021c independent PR review + hardening (11 November): a second
+review pass over PR #2 (`d19394c`) confirmed and fixed three defect
+classes. P0-1: concurrent same-claim connections could merge into one
+`exp:*` speaker — the listener now admits at most ONE live connection
+per resolved scope; additional simultaneous same-claim connections are
+`conn:*`-isolated with attribution preserved. Sequential same-claim
+rejoins and claim-matched `device_id` attribution remain spoofable —
+P0 production attribution gate stays OPEN pending authenticated
+ingress (BN-021f). P0-2: `record_transport_disconnect_for_key`
+ignored journal append failures and still retired `conn:*` state —
+now returns `TransportDisconnectOutcome` (Stale/NoActiveSession/
+Recorded/PersistenceFailed), appends durably BEFORE mutating memory,
+and retirement is gated on durable success; failed persistence is
+logged and leaves live state identical to replay. P0-3: a connection
+that sends BMP Termination no longer accepts further frames; a clean
+Termination + EOF no longer leaves a meaningless transport gap
+(`NoActiveSession`). P1-2: `exp:{scope}:{canonical}` components are
+percent-encoded (separator injection impossible); FNV-64 speaker
+partitioning documented honestly as a hash, not the scope string.
+`tests/bn021c_exporter_isolation.rs` is now 17 tests. NAT Scenario F
+reclassified FAIL/OPEN in the acceptance README; `runtime/` journal
+artifacts confirmed local-only (gitignored), `up.sh` now derives paths
+and refuses silent lab destruction without `BN021C_RESET=1`. Review
+evidence: `docs/merger/evidence/2026-11-11-bn021c-pr2-review/`.
+Merge recommendation: Outcome B — mergeable as restricted partial
+capability with explicit acceptance of the same-claim limitation.
+
+BN-021f authenticated BMP ingress (11 November): the BN-021c P0
+identity-attribution gate is now closed for the default deployment
+mode. `bonsai-routing` can terminate mutual TLS on the BMP listener
+(`bmp_mtls`; env `BONSAI_ROUTING_BMP_TLS_{CERT,KEY,CLIENT_CA}`); the
+verified principal is the SHA-256 of the client-certificate DER,
+produced only by the TLS layer — never from BMP payload fields.
+Trusted bindings gained `match_ingress_credential` (schema v4,
+additive migration); `IdentityResolver::resolve_verified_ingress`
+authorizes only credential-pinned bindings, with the existing
+evidence/contradiction rules. Verified resolutions get the
+provenance-fenced `vexp:*` scope namespace — legacy claim-based `exp:*`
+journal records stay readable but can never be joined by new
+connections, and replay never upgrades unverified provenance.
+`BmpIdentityMode::Verified` is the default; plaintext/unauthenticated
+or unbound-credential connections always isolate into `conn:*` with
+`device_id = None` (also fixing the BN-021c defect where an isolated
+same-claim sibling retained `device_id`). `ClaimCompatible` remains an
+explicit, unsafe opt-in. Live NAT lab (`lab/acceptance/bn021c-nat`)
+now runs FRR → per-exporter mTLS shim → shared SNAT source → Bonsai:
+sequential same-claim impersonation (the exact BN-021c P0 repro) is
+rejected, legitimate reconnects keep canonical identity, SIGKILL
+replay preserves verified provenance. Verified: bn021f suite 9/9,
+bn021c 17/17, bn021b 13/13, bn005_closeout 11/11, rbmp-rib/rbmp-store,
+bn006, r01_r04, r05_r06, bn022 — 0 failures; clippy warnings only
+plus one pre-existing `never_loop` error in untouched
+`src/http_server/device.rs` (reproduced on baseline). Remaining:
+production exporter mTLS story; simultaneous old+new credential
+authorization during rotation (sequential re-pin documented).
+Evidence:
+`docs/merger/evidence/2026-11-11-bn021f-authenticated-bmp/`.
+
+BN-021f hardening pass (11 November): the four remaining security/
+lifecycle findings from the PR #2 review are resolved. TLS
+handshakes no longer serialize the BMP accept loop — they run in
+per-connection tasks bounded by a semaphore (default 64 concurrent,
+10 s timeout, excess dropped, shutdown-aware). An active-session
+registry plus periodic batched binding revalidation
+(`BONSAI_ROUTING_BMP_RECHECK_INTERVAL_MS`, default 5000) revokes live
+sessions when a binding/credential/device mapping changes: ingestion
+stops, the transport closes through the durable disconnect path with
+a `bmp_authorization_revoked` gap, last-known routes are preserved,
+and unauthorized reconnects isolate to `conn:*`. Multiple sessions
+sharing one verified principal are all invalidated by one revocation.
+Credential rotation is a documented sequential re-pin that preserves
+canonical exporter/device identity and `vexp:*` scope; simultaneous
+overlap authorization is deferred (schema v5 candidate). Production
+deployment policy now refuses non-loopback plaintext BMP and
+claim-compatible mode unless explicit dev overrides are set, and
+fully validates mTLS material at startup; compose exposes the TLS env
+contract. `VerifiedIngressPrincipal` can no longer be minted outside
+the transport layer — private fields, `pub(crate)` attestation
+constructor, and deserialization always yields an unattested value
+that fails closed. Live NAT R1–R5 verified revocation, multi-session
+revocation, rotation, TLS saturation/recovery, and SIGKILL
+restart/replay. Verified: bn021f_hardening 9/9,
+bn021f_authenticated_ingress 9/9, all prior regression suites 0
+failures. Evidence:
+`docs/merger/evidence/2026-11-11-bn021f-revocation-hardening/`.
+
 BN-022 containment slice (10 November): ad-hoc graph reads are now
 denied-by-default for non-admin principals. `src/graph/explorer.rs`
 gained `GraphReadAccess` + `validate_query_for_access`: a positive

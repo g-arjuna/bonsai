@@ -70,6 +70,23 @@ services:
       - BONSAI_ROUTING_BMP_JOURNAL=/app/runtime/routing-bmp.journal
       - BONSAI_ROUTING_EVENT_JOURNAL=/app/runtime/routing-events.jsonl
       - BONSAI_ROUTING_SERVICE_TOKEN=${BONSAI_ROUTING_SERVICE_TOKEN:?BONSAI_ROUTING_SERVICE_TOKEN is required — see .env.example}
+      # BN-021f authenticated BMP ingress. Point these at mounted
+      # read-only certificate material (e.g. a Docker secret or a
+      # :ro bind mount) to enable mutual TLS: every BMP exporter must
+      # then present a client certificate chaining to CLIENT_CA, and
+      # canonical exporter/device attribution additionally requires a
+      # credential-pinned trusted binding in bonsai_config.db.
+      # Without these, the non-loopback listener refuses to start in
+      # production unless BONSAI_ROUTING_ALLOW_BMP_PLAINTEXT=1 is set
+      # explicitly (plaintext stays non-authoritative under Verified).
+      - BONSAI_ROUTING_BMP_TLS_CERT=${BONSAI_ROUTING_BMP_TLS_CERT:-}
+      - BONSAI_ROUTING_BMP_TLS_KEY=${BONSAI_ROUTING_BMP_TLS_KEY:-}
+      - BONSAI_ROUTING_BMP_TLS_CLIENT_CA=${BONSAI_ROUTING_BMP_TLS_CLIENT_CA:-}
+      - BONSAI_ROUTING_BMP_IDENTITY_MODE=${BONSAI_ROUTING_BMP_IDENTITY_MODE:-verified}
+      - BONSAI_ROUTING_ALLOW_BMP_PLAINTEXT=${BONSAI_ROUTING_ALLOW_BMP_PLAINTEXT:-}
+      - BONSAI_ROUTING_ALLOW_CLAIM_COMPATIBLE=${BONSAI_ROUTING_ALLOW_CLAIM_COMPATIBLE:-}
+      # Active-session revocation revalidation interval (ms).
+      - BONSAI_ROUTING_BMP_RECHECK_INTERVAL_MS=${BONSAI_ROUTING_BMP_RECHECK_INTERVAL_MS:-5000}
       # Container HEALTHCHECK probes this service's authenticated internal
       # health endpoint (see src/bin/healthcheck.rs env overrides).
       - BONSAI_HTTP_PORT=8081
