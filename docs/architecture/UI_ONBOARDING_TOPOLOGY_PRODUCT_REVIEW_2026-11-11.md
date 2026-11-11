@@ -132,6 +132,9 @@ This comparison is **capability positioning from official documentation**, not a
 
 ### Existing SuzieQ decision must be respected
 
+**Subsequent decision on 11 November:** [Native Network Intelligence ADR](ADR_NATIVE_NETWORK_INTELLIGENCE_2026-11-11.md) and [design](NATIVE_NETWORK_INTELLIGENCE_DESIGN_2026-11-11.md) select **Rust-native reuse/port of selected SuzieQ OSS normalization and test knowledge** rather than a required SuzieQ deployment. The optional SuzieQ read-adapter suggestion in this earlier audit is now a comparative/test-oracle option; **BN-024** owns the new implementation program, while existing BN-015/016 UI correctness gates are unchanged. This historical source audit is retained intact.
+
+
 `docs/architecture/adr_suzieq_vs_pyats.md` already evaluated SuzieQ versus Genie/TextFSM and decided SuzieQ **deferred** as a primary collector. The new action is a timeboxed **read-only adapter and side-by-side evaluation**, not a reversal of that ADR or a full SuzieQ deployment. First determine whether its vendor/namespace/time schema materially fills a demonstrated collection gap better than the current sidecar.
 
 **Differentiation cannot be a slogan.** The measurable product promise should be:
