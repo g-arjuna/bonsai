@@ -845,7 +845,6 @@ fn handle_packet(
     };
     let now = Instant::now();
     let key = cache.context_key(peer, version);
-    cache.ensure_context(&key, now);
 
     match proto {
         FlowProtocol::NetflowV9 => parse_v9(pkt, peer, &key, cache, bus, now),
@@ -872,6 +871,25 @@ fn parse_v9(
     let seq = u32::from_be_bytes([pkt[12], pkt[13], pkt[14], pkt[15]]);
     let source_id = u32::from_be_bytes([pkt[16], pkt[17], pkt[18], pkt[19]]);
 
+    // Transactional safety: validate EVERY flowset boundary before any
+    // cache mutation. A packet that fails validation must not create a
+    // transport context, update restart/sequence state, clear templates,
+    // or install partial template definitions.
+    let mut check = 20usize;
+    while check + 4 <= pkt.len() {
+        let set_len = u16::from_be_bytes([pkt[check + 2], pkt[check + 3]]) as usize;
+        if set_len < 4 || check + set_len > pkt.len() {
+            counter!("bonsai_netflow_malformed_packet_total", "version" => "9").increment(1);
+            bail!("malformed v9 flowset at offset {check}");
+        }
+        check += set_len;
+    }
+    if check != pkt.len() {
+        counter!("bonsai_netflow_malformed_packet_total", "version" => "9").increment(1);
+        bail!("malformed v9 flowset: {} trailing bytes", pkt.len() - check);
+    }
+
+    cache.ensure_context(key, now);
     cache.note_packet(key, source_id, now, Some(sys_uptime_ms), None, Some(seq));
     let src = FlowSourceCtx::build(cache, key, FlowProtocol::NetflowV9, peer, source_id);
     let observed = src.observed_identity();
@@ -1032,6 +1050,23 @@ fn parse_ipfix(
     let seq = u32::from_be_bytes([pkt[8], pkt[9], pkt[10], pkt[11]]);
     let domain_id = u32::from_be_bytes([pkt[12], pkt[13], pkt[14], pkt[15]]);
 
+    // Transactional safety: validate EVERY set boundary inside the
+    // declared message before any cache mutation (same rule as v9).
+    let mut check = 16usize;
+    while check + 4 <= msg_end {
+        let set_len = u16::from_be_bytes([pkt[check + 2], pkt[check + 3]]) as usize;
+        if set_len < 4 || check + set_len > msg_end {
+            counter!("bonsai_netflow_malformed_packet_total", "version" => "10").increment(1);
+            bail!("malformed IPFIX set at offset {check}");
+        }
+        check += set_len;
+    }
+    if check != msg_end {
+        counter!("bonsai_netflow_malformed_packet_total", "version" => "10").increment(1);
+        bail!("malformed IPFIX set: {} trailing bytes", msg_end - check);
+    }
+
+    cache.ensure_context(key, now);
     cache.note_packet(key, domain_id, now, None, Some(export_time), Some(seq));
     let src = FlowSourceCtx::build(cache, key, FlowProtocol::Ipfix, peer, domain_id);
     let observed = src.observed_identity();

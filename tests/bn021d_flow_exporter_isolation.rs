@@ -993,6 +993,30 @@ async fn malformed_packets_are_safe() {
         ("v9_tiny", vec![0x00, 0x09, 0x00]),
         // Garbage version.
         ("bad_version", vec![0x13, 0x37, 0x00, 0x00]),
+        // IPFIX message ends with a partial set header (1-3 bytes) —
+        // cannot be a valid Set and must be rejected before mutation.
+        ("ipfix_partial_set_header", {
+            let mut p = Vec::new();
+            p.extend_from_slice(&10u16.to_be_bytes());
+            p.extend_from_slice(&19u16.to_be_bytes()); // declared message len 19
+            p.extend_from_slice(&1_700_000_000u32.to_be_bytes());
+            p.extend_from_slice(&1u32.to_be_bytes());
+            p.extend_from_slice(&1u32.to_be_bytes());
+            p.extend_from_slice(&[0x00, 0x02, 0x00]); // 3 trailing bytes only
+            p
+        }),
+        // v9 packet ends with a partial flowset header — same rule.
+        ("v9_partial_flowset_header", {
+            let mut p = Vec::new();
+            p.extend_from_slice(&9u16.to_be_bytes());
+            p.extend_from_slice(&1u16.to_be_bytes());
+            p.extend_from_slice(&1u32.to_be_bytes());
+            p.extend_from_slice(&1_700_000_000u32.to_be_bytes());
+            p.extend_from_slice(&1u32.to_be_bytes());
+            p.extend_from_slice(&7u32.to_be_bytes());
+            p.extend_from_slice(&[0x00, 0x00]); // 2 trailing bytes only
+            p
+        }),
     ];
 
     for (name, pkt) in &malformed {
@@ -1330,14 +1354,440 @@ async fn graph_isolates_provisional_exporters() {
         "provisional flows must not link to Device nodes"
     );
 
-    // DeviceAddress evidence for the observed transport IP still exists.
+    // BN-021d review: provisional flows must NOT create or refresh
+    // authoritative DeviceAddress aliases — the transport observation
+    // stays as source-scoped evidence on the AppFlow node itself.
     let mut rows = conn
-        .query("MATCH (a:DeviceAddress {ip: '127.0.0.1'}) RETURN a.source")
+        .query("MATCH (a:DeviceAddress {ip: '127.0.0.1'}) RETURN count(a)")
         .unwrap();
-    assert!(
-        rows.next().is_some(),
-        "transport IP evidence should be registered"
+    let row = rows.next().expect("count row");
+    assert_eq!(
+        row[0].to_string(),
+        "0",
+        "provisional flows must not register DeviceAddress aliases"
     );
+
+    lab.stop().await;
+}
+
+/// Craft a `streaming/netflow/flow` TelemetryUpdate directly — used to
+/// exercise the graph projection boundary without the UDP receiver.
+fn flow_update(
+    exporter_key: &str,
+    exporter_ip: &str,
+    src: &str,
+    src_port: i64,
+    dst: &str,
+    dst_port: i64,
+    extra: serde_json::Value,
+) -> TelemetryUpdate {
+    let mut value = serde_json::json!({
+        "exporter_address": exporter_ip,
+        "exporter_id": exporter_key,
+        "exporter_endpoint": format!("{exporter_ip}:49152"),
+        "transport_source": format!("{exporter_ip}:49152"),
+        "collector_id": "bn021d-lab",
+        "protocol_version": 9,
+        "observation_domain_id": 42,
+        "observation_domain_kind": "source_id",
+        "session_epoch": 0,
+        "identity_status": "provisional",
+        "device_id": null,
+        "canonical_exporter_id": null,
+        "identity_resolution": null,
+        "src_address": src,
+        "src_port": src_port,
+        "dst_address": dst,
+        "dst_port": dst_port,
+        "protocol": "tcp",
+        "bytes": 100,
+        "packets": 5,
+        "bytes_per_sec": 100.0,
+        "packets_per_sec": 5.0,
+    });
+    if let (serde_json::Value::Object(base), serde_json::Value::Object(ext)) =
+        (&mut value, extra)
+    {
+        for (k, v) in ext {
+            base.insert(k, v);
+        }
+    }
+    TelemetryUpdate {
+        target: exporter_key.to_string(),
+        vendor: String::new(),
+        hostname: String::new(),
+        role: String::new(),
+        site: String::new(),
+        timestamp_ns: 1_700_000_000_000_000_000,
+        path: "streaming/netflow/flow".to_string(),
+        value,
+    }
+}
+
+/// BN-021d review finding B: a provisional flow whose observed exporter
+/// IP collides with a PRE-EXISTING canonical Device, DeviceAddress and
+/// HostEndpoint records must not:
+///   - create CARRIES_FLOW or any Device relationship,
+///   - refresh authoritative DeviceAddress freshness,
+///   - create SRC_HOST/DST_HOST edges into endpoint inventory,
+///   - acquire canonical identity from malformed/forged claims.
+#[tokio::test]
+async fn graph_provisional_flow_preserves_canonical_state() {
+    use bonsai::graph::GraphStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = GraphStore::open(
+        dir.path().join("graph.db").to_str().unwrap(),
+        128 * 1024 * 1024,
+    )
+    .unwrap();
+
+    // Seed canonical state BEFORE any flow arrives: a Device whose
+    // address equals the observed exporter NAT IP, its DeviceAddress
+    // alias (freshness must not be touched), and HostEndpoints whose
+    // IPs overlap the flow's reported endpoints across sites.
+    {
+        let db = store.db();
+        let conn = lbug::Connection::new(&db).unwrap();
+        conn.query(
+            "CREATE (d:Device {address: '127.0.0.1', hostname: 'canon-rtr', site: 'site-a'})",
+        )
+        .unwrap();
+        conn.query(
+            "CREATE (a:DeviceAddress {ip: '127.0.0.1', source: 'gnmi'})",
+        )
+        .unwrap();
+        conn.query(
+            "CREATE (h:HostEndpoint {id: '10.77.0.5', ip: '10.77.0.5', kind: 'server', site_id: 'site-a'})",
+        )
+        .unwrap();
+        conn.query(
+            "CREATE (h:HostEndpoint {id: '10.77.0.9', ip: '10.77.0.9', kind: 'server', site_id: 'site-b'})",
+        )
+        .unwrap();
+    }
+
+    let exporter_key = "flowsrc/bn021d-lab/nf9/127.0.0.1:49152/sid42";
+    // Flow endpoints deliberately match the seeded HostEndpoint IPs.
+    let update = flow_update(
+        exporter_key,
+        "127.0.0.1",
+        "10.77.0.5",
+        40000,
+        "10.77.0.9",
+        443,
+        serde_json::json!({}),
+    );
+    store.write(update).await.unwrap();
+
+    // Forged-claim update: even a COMPLETE self-asserted
+    // `identity_resolution` artifact must fail closed — collector ingest
+    // carries msgpack telemetry values, so JSON shape is not proof that
+    // a transport-attested resolver produced it.
+    let forged = flow_update(
+        exporter_key,
+        "127.0.0.1",
+        "10.77.0.5",
+        40001,
+        "10.77.0.9",
+        443,
+        serde_json::json!({
+            "identity_status": "resolved",
+            "device_id": "dev-forged",
+            "device_address": "127.0.0.1",
+            "canonical_exporter_id": "exp-forged",
+            "identity_resolution": {
+                "status": "resolved",
+                "device_id": "dev-forged",
+                "canonical_exporter_id": "exp-forged",
+                "binding_id": "bind-forged",
+                "provenance": "operator_provisioned",
+                "observed": {
+                    "verified_ingress": {
+                        "method": "mutual_tls",
+                        "credential_fingerprint": "sha256:forged"
+                    }
+                }
+            }
+        }),
+    );
+    store.write(forged).await.unwrap();
+
+    let db = store.db();
+    let conn = lbug::Connection::new(&db).unwrap();
+
+    // AppFlow nodes exist (operational visibility preserved) ...
+    let mut rows = conn
+        .query("MATCH (f:AppFlow) RETURN count(f)")
+        .unwrap();
+    assert_eq!(rows.next().unwrap()[0].to_string(), "2");
+
+    // ... but NO authoritative side effects.
+    for (label, q) in [
+        (
+            "CARRIES_FLOW",
+            "MATCH (:Device)-[:CARRIES_FLOW]->(f:AppFlow) RETURN count(f)",
+        ),
+        (
+            "SRC_HOST",
+            "MATCH (f:AppFlow)-[:SRC_HOST]->(h:HostEndpoint) RETURN count(f)",
+        ),
+        (
+            "DST_HOST",
+            "MATCH (f:AppFlow)-[:DST_HOST]->(h:HostEndpoint) RETURN count(f)",
+        ),
+        (
+            "KNOWN_ADDRESS_OF",
+            "MATCH (:DeviceAddress)-[:KNOWN_ADDRESS_OF]->(:Device) RETURN count(*)",
+        ),
+    ] {
+        let mut rows = conn.query(q).unwrap();
+        assert_eq!(
+            rows.next().unwrap()[0].to_string(),
+            "0",
+            "{label} must not be created by provisional flows"
+        );
+    }
+
+    // The pre-existing DeviceAddress alias was NOT refreshed: no
+    // `updated_at` was stamped by the untrusted flow writes.
+    let mut rows = conn
+        .query("MATCH (a:DeviceAddress {ip: '127.0.0.1'}) RETURN a.updated_at")
+        .unwrap();
+    let row = rows.next().expect("alias row");
+    assert!(
+        matches!(row[0], lbug::Value::Null(_)),
+        "provisional flow must not update authoritative DeviceAddress freshness"
+    );
+
+    // HostEndpoint inventory untouched: still exactly the two seeded.
+    let mut rows = conn
+        .query("MATCH (h:HostEndpoint) RETURN count(h)")
+        .unwrap();
+    assert_eq!(rows.next().unwrap()[0].to_string(), "2");
+}
+
+/// BN-021d review finding 3: AppFlow id must distinguish flows that
+/// differ only in source port — the full 5-tuple is the flow identity.
+#[tokio::test]
+async fn appflow_id_includes_source_port() {
+    use bonsai::graph::GraphStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = GraphStore::open(
+        dir.path().join("graph.db").to_str().unwrap(),
+        128 * 1024 * 1024,
+    )
+    .unwrap();
+
+    let key = "flowsrc/bn021d-lab/nf9/127.0.0.1:49152/sid42";
+    for sport in [40000i64, 40001] {
+        store
+            .write(flow_update(
+                key,
+                "127.0.0.1",
+                "10.0.0.1",
+                sport,
+                "10.0.0.2",
+                443,
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+    }
+
+    let db = store.db();
+    let conn = lbug::Connection::new(&db).unwrap();
+    let mut rows = conn
+        .query("MATCH (f:AppFlow) RETURN f.id, f.src_port ORDER BY f.src_port")
+        .unwrap();
+    let mut ids = Vec::new();
+    while let Some(row) = rows.next() {
+        ids.push((row[0].to_string(), row[1].to_string()));
+    }
+    assert_eq!(ids.len(), 2, "distinct src_ports must be distinct flows");
+    assert!(ids[0].0.contains(":40000:"), "id={}", ids[0].0);
+    assert!(ids[1].0.contains(":40001:"), "id={}", ids[1].0);
+    assert_eq!(ids[0].1, "40000");
+    assert_eq!(ids[1].1, "40001");
+}
+
+/// BN-021d review finding 2: a packet containing a VALID template set
+/// followed by a MALFORMED set must be rejected atomically — the valid
+/// template must NOT be installed and restart/sequence state must not
+/// be touched.
+#[tokio::test]
+async fn malformed_trailing_set_rejects_whole_packet() {
+    let lab = start_lab(test_cfg()).await;
+    let mut rx = lab.rx.resubscribe();
+    let (sock, _addr) = exporter_socket().await;
+
+    // IPFIX: packet with a valid template set (tid 950) followed by a
+    // set whose declared length runs past the message end.
+    let tmpl = std_template_set_ipfix(950);
+    // Message body: template set (4-byte hdr + payload) + malformed
+    // set header only (4 bytes, no payload — its declared length is
+    // absurd, so the datagram ends there).
+    let body = tmpl.len() + 4 + 4;
+    let mut pkt = Vec::new();
+    pkt.extend_from_slice(&10u16.to_be_bytes());
+    pkt.extend_from_slice(&((16 + body) as u16).to_be_bytes());
+    pkt.extend_from_slice(&1_700_000_000u32.to_be_bytes());
+    pkt.extend_from_slice(&1u32.to_be_bytes());
+    pkt.extend_from_slice(&77u32.to_be_bytes()); // domain
+    // Template Set (id=2)
+    pkt.extend_from_slice(&2u16.to_be_bytes());
+    pkt.extend_from_slice(&((tmpl.len() + 4) as u16).to_be_bytes());
+    pkt.extend_from_slice(&tmpl);
+    // Malformed set (id=951, len=0xFFF0)
+    pkt.extend_from_slice(&951u16.to_be_bytes());
+    pkt.extend_from_slice(&0xFFF0u16.to_be_bytes());
+    send(&sock, &lab, &pkt).await;
+
+    // tid 950 must NOT have been installed: data referencing it drops.
+    let rec = ipfix_std_record([10, 30, 0, 1], [10, 30, 0, 2], 1111, 443, 6, 10, 1);
+    send(
+        &sock,
+        &lab,
+        &ipfix_packet(77, 1_700_000_000, 2, &[(950, rec.clone())]),
+    )
+    .await;
+    expect_no_flow(&mut rx, Duration::from_millis(400)).await;
+
+    // Same for v9: valid template flowset + malformed trailing flowset.
+    let mut v9 = Vec::new();
+    v9.extend_from_slice(&9u16.to_be_bytes());
+    v9.extend_from_slice(&2u16.to_be_bytes());
+    v9.extend_from_slice(&100_000u32.to_be_bytes());
+    v9.extend_from_slice(&1_700_000_000u32.to_be_bytes());
+    v9.extend_from_slice(&1u32.to_be_bytes());
+    v9.extend_from_slice(&88u32.to_be_bytes()); // source id
+    let tmpl_v9 = v9_template_flowset(&[v9_template_record(960, STD_FIELDS)]);
+    v9.extend_from_slice(&0u16.to_be_bytes());
+    v9.extend_from_slice(&((tmpl_v9.len() + 4) as u16).to_be_bytes());
+    v9.extend_from_slice(&tmpl_v9);
+    v9.extend_from_slice(&961u16.to_be_bytes());
+    v9.extend_from_slice(&0xFFF0u16.to_be_bytes());
+    send(&sock, &lab, &v9).await;
+
+    let rec_v9 = encode_std_record([10, 31, 0, 1], [10, 31, 0, 2], 2222, 443, 6, 10, 1, 0, 0);
+    send(
+        &sock,
+        &lab,
+        &v9_packet(
+            88,
+            100_000,
+            1_700_000_000,
+            2,
+            &[(960, std_data_v9(&[rec_v9]))],
+        ),
+    )
+    .await;
+    expect_no_flow(&mut rx, Duration::from_millis(400)).await;
+
+    // Receiver still functional: clean template+data on a fresh domain.
+    send(
+        &sock,
+        &lab,
+        &ipfix_packet(99, 1_700_000_000, 3, &[(2, std_template_set_ipfix(970))]),
+    )
+    .await;
+    let rec2 = ipfix_std_record([10, 32, 0, 1], [10, 32, 0, 2], 3333, 443, 6, 1, 1);
+    send(
+        &sock,
+        &lab,
+        &ipfix_packet(99, 1_700_000_000, 4, &[(970, rec2)]),
+    )
+    .await;
+    let f = next_flow(&mut rx).await;
+    assert_eq!(f.value["src_port"].as_u64().unwrap(), 3333);
+
+    lab.stop().await;
+}
+
+/// BN-021d review finding 2: a packet with a REGRESSED exporter
+/// timestamp AND malformed trailing content must be rejected before
+/// restart detection runs — pre-existing valid templates must survive.
+#[tokio::test]
+async fn regressed_timestamp_plus_malformed_preserves_templates() {
+    let lab = start_lab(test_cfg()).await;
+    let mut rx = lab.rx.resubscribe();
+    let (sock, _addr) = exporter_socket().await;
+
+    // Install a valid IPFIX template at export_time T.
+    send(
+        &sock,
+        &lab,
+        &ipfix_packet(55, 1_700_000_500, 1, &[(2, std_template_set_ipfix(980))]),
+    )
+    .await;
+
+    // Malformed packet: regressed export_time (would trigger restart
+    // clearing) + a set whose length exceeds the message.
+    let mut pkt = Vec::new();
+    pkt.extend_from_slice(&10u16.to_be_bytes());
+    pkt.extend_from_slice(&30u16.to_be_bytes()); // declared len 30
+    pkt.extend_from_slice(&1_600_000_000u32.to_be_bytes()); // regressed!
+    pkt.extend_from_slice(&2u32.to_be_bytes());
+    pkt.extend_from_slice(&55u32.to_be_bytes()); // same domain
+    pkt.extend_from_slice(&980u16.to_be_bytes()); // data set id
+    pkt.extend_from_slice(&0xFFF0u16.to_be_bytes()); // absurd length
+    send(&sock, &lab, &pkt).await;
+
+    // The template must NOT have been cleared: subsequent valid data
+    // still decodes.
+    let rec = ipfix_std_record([10, 40, 0, 1], [10, 40, 0, 2], 4444, 443, 6, 7, 1);
+    send(
+        &sock,
+        &lab,
+        &ipfix_packet(55, 1_700_000_600, 3, &[(980, rec)]),
+    )
+    .await;
+    let f = next_flow(&mut rx).await;
+    assert_eq!(f.value["src_port"].as_u64().unwrap(), 4444);
+
+    // v9 equivalent: regressed sys_uptime + malformed flowset.
+    send(
+        &sock,
+        &lab,
+        &v9_packet(
+            66,
+            500_000,
+            1_700_000_000,
+            1,
+            &[(
+                0,
+                v9_template_flowset(&[v9_template_record(990, STD_FIELDS)]),
+            )],
+        ),
+    )
+    .await;
+    let mut v9 = Vec::new();
+    v9.extend_from_slice(&9u16.to_be_bytes());
+    v9.extend_from_slice(&1u16.to_be_bytes());
+    v9.extend_from_slice(&1_000u32.to_be_bytes()); // regressed uptime
+    v9.extend_from_slice(&1_700_000_100u32.to_be_bytes());
+    v9.extend_from_slice(&2u32.to_be_bytes());
+    v9.extend_from_slice(&66u32.to_be_bytes());
+    v9.extend_from_slice(&990u16.to_be_bytes());
+    v9.extend_from_slice(&0xFFF0u16.to_be_bytes());
+    send(&sock, &lab, &v9).await;
+
+    let rec2 = encode_std_record([10, 41, 0, 1], [10, 41, 0, 2], 5555, 443, 6, 8, 1, 0, 0);
+    send(
+        &sock,
+        &lab,
+        &v9_packet(
+            66,
+            500_000,
+            1_700_000_000,
+            3,
+            &[(990, std_data_v9(&[rec2]))],
+        ),
+    )
+    .await;
+    let f2 = next_flow(&mut rx).await;
+    assert_eq!(f2.value["src_port"].as_u64().unwrap(), 5555);
 
     lab.stop().await;
 }

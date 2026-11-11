@@ -651,13 +651,22 @@ non-decodable, RFC 7011 message-length/padding validation) and the
 template cache is bounded on every dimension (contexts, domains,
 templates, fields, total count, bytes) with TTL expiry, idle eviction,
 v9/IPFIX restart clearing and source-port-change isolation; UDP template
-withdrawals are ignored per RFC 7011 §8.4. Downstream, `CARRIES_FLOW`
-is gated on `identity_status == "resolved"`: plain UDP flows stay
-`provisional` with `device_id = null` — a matching operator binding or
-transport address can never confer canonical device identity.
-`resolve_flow_identity` is the extension point for a future
-authenticated flow ingress. Verified: bn021d suite 11/11 + 3 unit
-tests, all BN-005/BN-021b/c/f and routing regressions 0 failures, and a
+withdrawals are ignored per RFC 7011 §8.4. Packet handling is
+transactional: every flowset/set boundary is validated before any cache
+mutation, so a rejected packet cannot alter template or restart state.
+Independent-review hardening: NetFlow graph projection fails closed
+for every flow update — no `DeviceAddress` freshness updates, no
+`CARRIES_FLOW`, and no `SRC_HOST`/`DST_HOST` endpoint edges — because
+no authenticated flow ingress exists yet and even a serialized
+`identity_resolution` is self-asserted msgpack evidence, not proof of
+a transport-attested resolver; flow-derived utilization/DDoS device
+alerts are disabled for the same reason. The AppFlow id is the full
+5-tuple including `src_port`. Plain UDP flows stay `provisional` with
+`device_id = null` — a matching operator binding or transport address
+can never confer canonical device identity. `resolve_flow_identity` is
+the extension point for a future authenticated flow ingress. Verified: bn021d suite
+15/15 + 3 unit tests, all BN-005/BN-021b/c/f and routing regressions
+0 failures, and a
 live docker NAT lab (3 exporters SNAT'd to one source) producing 7
 distinct provisional AppFlow identities with zero Device attribution
 and clean malformed-packet rejection. Evidence:

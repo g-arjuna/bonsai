@@ -15,7 +15,7 @@ plain UDP.
 | B | IPFIX enterprise-IE parser advanced 8 bytes per field after only a 4-byte minimum check — malformed input could read past the buffer | P0 parser safety | `parse_ipfix_template_set` bounds-checks every specifier before reading; enterprise bit consumes the 4-byte PEN and stores `pen = Some(p)` so enterprise IEs are never decoded with standard IANA definitions; variable-length fields mark the template non-decodable; a truncated specifier discards the whole pending set. IPFIX message `Length` is validated against datagram length with zero-padding rule (RFC 7011 §3.1). |
 | C | Template cache bounded only at the outer context (4096); nested domain/template maps unbounded; no expiry, no restart handling, no port-change isolation | P0/P1 lifecycle | `FlowTemplateCache` keyed by `(collector_id, SocketAddr, version)`; per-context domain cap, per-domain template cap, per-template field cap, global template-count and byte budgets; TTL expiry (`flow_template_ttl_secs`, default 1800); idle-context eviction; v9 `sys_uptime` decrease and IPFIX `export_time` regression clear the domain's templates (generation bump → `session_epoch`); source port is part of the context key so port changes cannot inherit templates. |
 | D | IPFIX UDP template withdrawals would have been ambiguous vs TCP semantics | Spec compliance | RFC 7011 §8.4: UDP withdrawals (Field Count = 0) are ignored — counted via `bonsai_netflow_udp_withdrawal_ignored_total`, never delete state. TCP/SCTP withdrawal semantics documented as future work. |
-| E | Graph `CARRIES_FLOW` linked any Device whose address matched the observed transport IP — unverified UDP could merge into canonical inventory | Trust boundary | `write_netflow_record` now gates `CARRIES_FLOW` on `identity_status == "resolved"` + explicit `device_address` in the payload. Plain UDP always resolves `Provisional`/`Unknown` with `device_id = null`; `resolve_flow_identity` only reaches `IdentityResolver::resolve_verified_ingress` when a transport-attested `VerifiedIngressPrincipal` is supplied (impossible from UDP today). |
+| E | Graph `CARRIES_FLOW` linked any Device whose address matched the observed transport IP — unverified UDP could merge into canonical inventory | Trust boundary | `write_netflow_record` now fails closed for every flow update: no `DeviceAddress` refresh, no `CARRIES_FLOW`, no `SRC_HOST`/`DST_HOST`, and no flow-derived device alerts. Plain UDP always resolves `Provisional`/`Unknown` with `device_id = null`; `resolve_flow_identity` only reaches `IdentityResolver::resolve_verified_ingress` when a transport-attested `VerifiedIngressPrincipal` is supplied (impossible from UDP today), and no JSON artifact can substitute for that boundary. |
 
 ## Identity architecture
 
@@ -146,9 +146,50 @@ Every row: `exporter_address = "10.241.0.200"` (the single NAT IP),
 - Template TTL/idle/context bounds are configurable but conservative
   defaults; very high-rate multi-domain exporters may evict early
   (fail-safe: drops, never mis-decodes).
-- The `exporter_address`-keyed `DeviceAddress` registration is kept
-  for compatibility but is evidence-only — it creates no Device node
-  and no ownership edge.
+
+## Independent-review hardening (11 November, post-review)
+
+The independent review of PR #5 confirmed and fixed four defects; the
+claims above are updated accordingly:
+
+- **Untrusted graph side effects removed.** Provisional UDP flows no
+  longer call `upsert_device_address` (previously every flow refreshed
+  the shared IP-keyed `DeviceAddress.updated_at`, including aliases of
+  pre-existing canonical Devices), and no longer create
+  `SRC_HOST`/`DST_HOST` edges into `HostEndpoint` inventory. Because no
+  authenticated NetFlow/IPFIX ingress exists yet, the graph writer now
+  fails closed for EVERY `streaming/netflow/flow` update: no
+  `CARRIES_FLOW`, no `DeviceAddress` freshness update, and no
+  `HostEndpoint` edges. Even a complete serialized
+  `identity_resolution` object is self-asserted msgpack evidence —
+  collector ingest can carry forged payloads — so JSON shape alone can
+  never authorize canonical state. Flow-derived utilization/DDoS
+  StateChangeEvents are disabled for the same reason (they key off the
+  observed exporter address and could attach to a colliding Device).
+  Transport observations remain
+  visible as source-scoped evidence on the AppFlow node
+  (`exporter_id` = `flowsrc/...`, `exporter_address`).
+- **Packet handling is transactional.** `parse_v9`/`parse_ipfix`
+  validate every flowset/set boundary BEFORE any cache mutation
+  (context creation, restart/sequence notes, template clearing,
+  template insertion). A rejected packet can no longer modify template
+  state — verified by `malformed_trailing_set_rejects_whole_packet` and
+  `regressed_timestamp_plus_malformed_preserves_templates`. The earlier
+  "all-or-nothing" wording is now actually enforced.
+- **AppFlow id is the full 5-tuple.** It now includes `src_port`
+  (`{exporter_id}:{src}:{sport}:{dst}:{dport}:{proto}`), so two flows
+  differing only in source port no longer merge. `AppFlow.src_port`
+  was added (schema + idempotent ALTER). Pre-existing AppFlow nodes
+  written under the old id format are stale flow records, not
+  correctness state; they are superseded by new writes.
+- **New regression coverage** (`tests/bn021d_flow_exporter_isolation.rs`,
+  now 15 integration tests): `graph_provisional_flow_preserves_canonical_state`
+  seeds a colliding canonical Device + DeviceAddress + cross-site
+  HostEndpoints and asserts zero authoritative edges/freshness updates,
+  including a forged update carrying a complete self-asserted
+  `identity_resolution`; `appflow_id_includes_source_port`; the two
+  transactional-malformed tests above; and partial set-header
+  regressions in `malformed_packets_are_safe`.
 
 ## Files
 
@@ -161,5 +202,5 @@ Every row: `exporter_address = "10.241.0.200"` (the single NAT IP),
   reproducible via the lab scripts below.
 - Lab scripts: `lab/acceptance/bn021d-flow-nat/{up,run_scenarios,verify}.sh`,
   `flow_exporter.py`, `bonsai.toml`, `image/`.
-- Tests: `tests/bn021d_flow_exporter_isolation.rs` (11 integration +
+- Tests: `tests/bn021d_flow_exporter_isolation.rs` (15 integration +
   3 unit tests in `src/streaming/netflow.rs`).

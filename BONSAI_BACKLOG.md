@@ -183,11 +183,22 @@ before claiming equivalent history or enabling it as an authority.
   template with caps on every dimension, TTL expiry, idle-context
   eviction, global count/byte budgets, v9 uptime + IPFIX export-time
   restart clearing, port-change isolation, RFC 7011 §8.4 UDP withdrawal
-  ignore. Graph `CARRIES_FLOW` gated on verified identity — plain UDP
+  ignore. Packet handling is transactional — all set boundaries are
+  validated before any cache mutation, so rejected packets cannot alter
+  template/restart state. Independent-review hardening (11 Nov):
+  NetFlow graph projection fails closed for every flow update — no
+  `DeviceAddress` refresh, `CARRIES_FLOW`, or `SRC_HOST`/`DST_HOST`
+  edges — because no authenticated flow ingress exists yet and even a
+  serialized `identity_resolution` is self-asserted msgpack evidence.
+  Flow-derived utilization/DDoS device alerts are likewise disabled
+  until verified ingress exists. AppFlow id is the full 5-tuple
+  including `src_port`. Plain UDP
   stays `provisional` with `device_id = null`; `resolve_flow_identity`
   is the verified-ingress extension point.
-- Verified: `tests/bn021d_flow_exporter_isolation.rs` 11/11 + 3 unit
-  tests; live docker NAT lab (3 exporters → one SNAT source) — 7
+- Verified: `tests/bn021d_flow_exporter_isolation.rs` 15/15 + 3 unit
+  tests (incl. canonical-collision, forged-claim, transactional
+  malformed-packet and src_port AppFlow regressions); live docker NAT
+  lab (3 exporters → one SNAT source) — 7
   distinct provisional AppFlow identities, zero canonical Device
   attribution, template-id/protocol collisions decoded independently,
   malformed flood rejected, collector restart safe.

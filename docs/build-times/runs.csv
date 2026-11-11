@@ -95,3 +95,8 @@ date,command,scope,wall_seconds,result,notes
 2026-11-11,cargo build --bin bonsai,bonsai debug bin,345,pass,5m45s for lab image (960MB binary)
 2026-11-11,cargo clippy -p bonsai --all-targets,clippy bonsai,~600,fail,1 error = same pre-existing never_loop device.rs; 296 warnings baseline-equal after fixing new netflow lints
 2026-11-11,bn021d-flow-nat up.sh + run_scenarios.sh + verify.sh,NAT acceptance,~600,pass,first topology (multi-net) unreachable -> rebuilt single-net router-on-a-stick; 7 AppFlow rows all provisional, 0 CARRIES_FLOW, 0 Devices, malformed rejected
+2026-11-11,cargo test -j 1 --test bn021d_flow_exporter_isolation,bn021d suite post-review,348,pass,15/15; -j1 after killing 4 concurrent ld.mold links; sccache warm
+2026-11-11,cargo test -j 1 -p bonsai --lib streaming::netflow,bn021d unit tests post-review,118,pass,3/3 identity-resolution unit tests; lib test variant rebuilt
+2026-11-11,cargo check -p bonsai --all-targets,bonsai check all-targets post-review,19,pass,warm; clean
+2026-11-11,cargo test -j 1 --test bn021f_hardening --test bn021f_authenticated_ingress --test bn021c_exporter_isolation --test bn021b_trusted_identity --test bn022_graph_read_boundary,identity+graph regression batch,170,pass,53/53 (13+17+9+9+5); -j1 sequential links
+2026-11-11,cargo test -j 1 --test r01_r04_routing_history_recovery --test r05_r06_runtime_wiring_and_scope --test bn006_reconnect_projection --test bn005_closeout --test bn005_deployment_and_scope_hardening --test bn006_collection_wiring,BN-005/006+routing recovery batch,199,pass,36 pass + 1 ignored (containerlab-gated live native collection); -j1 sequential links
