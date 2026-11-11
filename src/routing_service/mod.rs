@@ -11,24 +11,24 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::telemetry_identity::{
-    DEFAULT_IDENTITY_SCOPE, IdentityResolver, identity_from_bmp_observation,
+    identity_from_bmp_observation, IdentityResolver, DEFAULT_IDENTITY_SCOPE,
 };
 use axum::{
-    Json, Router,
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
+    Json, Router,
 };
 use chrono::{DateTime, Utc};
 use rbmp_core::bgp::types::{AfiSafi, BgpDecodeContext, FamilySupportStatus};
 use rbmp_core::bmp::parser::{
-    DEFAULT_MAX_FRAME, parse_bmp_message_with_context, parse_peer_header, read_bmp_frame,
+    parse_bmp_message_with_context, parse_peer_header, read_bmp_frame, DEFAULT_MAX_FRAME,
 };
 use rbmp_core::bmp::types::{BmpMessage, BmpPayload, PeerKey, RibType, SpeakerKey};
-use rbmp_rib::RibManager;
 use rbmp_rib::event::{RibEventPayload, RouteAction};
 use rbmp_rib::session::PeerState;
+use rbmp_rib::RibManager;
 use rbmp_store::{BmpJournal, PrefixHistoryItem, RibEventJournal};
 use serde::{Deserialize, Serialize};
 use tokio::io::BufReader;
@@ -222,13 +222,40 @@ pub struct TransportGapRecord {
     pub reason: String,
 }
 
+/// Result of a durable transport-disconnect record attempt
+/// (BN-021c review P0-2). Callers must only perform irreversible
+/// retirement when the outcome proves the durable lifecycle record
+/// exists (or none is needed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportDisconnectOutcome {
+    /// Fenced as stale: a newer session epoch owns the speaker. Nothing
+    /// was recorded and live state is untouched.
+    Stale,
+    /// No live speaker session exists for this scope (e.g. a clean BMP
+    /// Termination was already applied). A transport gap would be
+    /// meaningless — the session ended deliberately, not by transport
+    /// loss — so nothing was journaled or recorded.
+    NoActiveSession,
+    /// The gap was durably appended to `BmpJournal` and recorded in
+    /// memory. Safe to retire connection-scoped state.
+    Recorded,
+    /// The durable journal append failed. In-memory/RIB state was left
+    /// untouched so the live view stays consistent with what replay
+    /// will reconstruct; the failure is logged at error level. Callers
+    /// must NOT retire connection-scoped state — doing so would create
+    /// a live/replay divergence (replay sees the earlier route
+    /// observations but no disconnect record).
+    PersistenceFailed,
+}
+
 /// Logical-exporter attribution applied to one BMP speaker scope at
 /// ingest. `exporter_instance` partitions all derived state; the
 /// `exporter_id`/`device_id` fields carry trusted-binding resolution.
 #[derive(Debug, Clone, Default)]
 pub struct ExporterScope {
-    /// `exp:{canonical_exporter_id}` when resolved, `conn:{id}` for
-    /// isolated connection-scoped exporters, `""` for legacy/shared.
+    /// `exp:{canonical_exporter_id}` (namespace-encoded for non-default
+    /// identity scopes) when resolved, `conn:{id}` for isolated
+    /// connection-scoped exporters, `""` for legacy/shared.
     pub exporter_instance: String,
     pub exporter_id: Option<String>,
     pub device_id: Option<String>,
@@ -246,6 +273,25 @@ impl ExporterScope {
     }
 }
 
+/// Percent-encode one component of a composite exporter-instance
+/// identifier. Only `[A-Za-z0-9._-]` pass through unchanged, so typical
+/// canonical exporter ids and scope names keep their historical
+/// human-readable form while `:`/`%`/whitespace can never make two
+/// distinct `(scope, canonical)` pairs serialize identically.
+fn encode_exporter_component(component: &str) -> String {
+    let mut out = String::with_capacity(component.len());
+    for b in component.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-' => out.push(b as char),
+            _ => {
+                use std::fmt::Write;
+                let _ = write!(out, "%{b:02X}");
+            }
+        }
+    }
+    out
+}
+
 /// Build the `exp:*` logical-exporter scope for a resolved canonical
 /// exporter id. Canonical exporter ids are unique per (scope, protocol),
 /// so the speaker partition must carry the identity namespace: the
@@ -253,11 +299,17 @@ impl ExporterScope {
 /// checkpoint continuity), while any other scope is encoded as
 /// `exp:{scope}:{id}` so site-scoped bindings can never collide with
 /// each other or with the default namespace behind a shared NAT address.
+/// Both components are percent-encoded so separators inside operator-
+/// or binding-provided strings cannot produce ambiguous composite ids.
 pub fn resolved_exporter_instance(identity_scope: &str, canonical: &str) -> String {
     if identity_scope == DEFAULT_IDENTITY_SCOPE {
-        format!("exp:{canonical}")
+        format!("exp:{}", encode_exporter_component(canonical))
     } else {
-        format!("exp:{identity_scope}:{canonical}")
+        format!(
+            "exp:{}:{}",
+            encode_exporter_component(identity_scope),
+            encode_exporter_component(canonical)
+        )
     }
 }
 
@@ -649,14 +701,14 @@ impl RoutingServiceState {
         &self,
         speaker_addr: IpAddr,
         reason: impl Into<String>,
-    ) {
+    ) -> TransportDisconnectOutcome {
         self.record_transport_disconnect_scoped(
             speaker_addr,
             &ExporterScope::legacy(),
             None,
             reason,
         )
-        .await;
+        .await
     }
 
     /// Legacy epoch-fenced disconnect entry point attributing the
@@ -666,14 +718,14 @@ impl RoutingServiceState {
         speaker_addr: IpAddr,
         session_epoch: Option<u64>,
         reason: impl Into<String>,
-    ) {
+    ) -> TransportDisconnectOutcome {
         self.record_transport_disconnect_scoped(
             speaker_addr,
             &ExporterScope::legacy(),
             session_epoch,
             reason,
         )
-        .await;
+        .await
     }
 
     /// Epoch-fenced BMP transport disconnect recorder (R04).
@@ -688,33 +740,40 @@ impl RoutingServiceState {
         scope: &ExporterScope,
         session_epoch: Option<u64>,
         reason: impl Into<String>,
-    ) {
+    ) -> TransportDisconnectOutcome {
         self.record_transport_disconnect_for_key(
             scope.speaker_key(speaker_addr),
             &scope.exporter_instance,
             session_epoch,
             reason,
         )
-        .await;
+        .await
     }
 
     /// Epoch-fenced disconnect recorder keyed by an explicit
     /// [`SpeakerKey`]. `exporter_instance` is the scope string recorded
-    /// into the durable journal gap. Returns `true` when the disconnect
-    /// was accepted (not fenced as stale) so callers can safely retire
-    /// connection-scoped state.
+    /// into the durable journal gap.
+    ///
+    /// Ordering guarantee (BN-021c review P0-2): the durable journal
+    /// append happens BEFORE any in-memory mutation, and a failed
+    /// append mutates nothing — the live view then matches what replay
+    /// will reconstruct (route observations with no disconnect record).
+    /// Callers must only retire connection-scoped state when the
+    /// outcome is [`TransportDisconnectOutcome::Recorded`] or
+    /// [`TransportDisconnectOutcome::NoActiveSession`].
     pub async fn record_transport_disconnect_for_key(
         &self,
         speaker_key: SpeakerKey,
         exporter_instance: &str,
         session_epoch: Option<u64>,
         reason: impl Into<String>,
-    ) -> bool {
+    ) -> TransportDisconnectOutcome {
         let _ingestion = self.ingestion_lock.lock().await;
         let reason_str = reason.into();
         let effective_epoch = {
-            let mut rib = self.rib.write().await;
-            let active_epoch = rib.speaker(speaker_key).map(|s| s.source.session_epoch);
+            let rib = self.rib.read().await;
+            let speaker = rib.speaker(speaker_key);
+            let active_epoch = speaker.map(|s| s.source.session_epoch);
             if let (Some(disc_ep), Some(act_ep)) = (session_epoch, active_epoch) {
                 if disc_ep < act_ep {
                     tracing::debug!(
@@ -724,10 +783,19 @@ impl RoutingServiceState {
                         act_ep,
                         "Ignoring stale transport disconnect from older session epoch"
                     );
-                    return false;
+                    return TransportDisconnectOutcome::Stale;
                 }
             }
-            rib.clear_speaker_eor(speaker_key);
+            // A scoped disconnect for a speaker that no longer exists
+            // means the session already ended deliberately (clean BMP
+            // Termination). Recording a transport gap here would pin
+            // completeness to "gap" forever for a dead speaker and
+            // diverge from replay, which has no speaker to gap either.
+            // Legacy callers (no session epoch) keep the historical
+            // behavior of recording the gap unconditionally.
+            if session_epoch.is_some() && speaker.is_none() {
+                return TransportDisconnectOutcome::NoActiveSession;
+            }
             session_epoch.or(active_epoch)
         };
 
@@ -746,12 +814,27 @@ impl RoutingServiceState {
             disconnected_at,
             reason: reason_str,
         };
-        let _ = self
+        if let Err(e) = self
             .bmp_journal
             .append_transport_disconnect(&journal_gap)
-            .await;
+            .await
+        {
+            // Persistence failed: leave RIB EOR markers, the in-memory
+            // gap map and conn:* retirement decisions untouched so the
+            // live view stays identical to journal replay. This is an
+            // operational durability error — surface it loudly.
+            tracing::error!(
+                speaker = %speaker_key.speaker_addr,
+                instance = speaker_key.speaker_instance,
+                error = %e,
+                "BMP transport disconnect could not be durably journaled; \
+                 live state left unchanged (no gap recorded, no retirement)"
+            );
+            return TransportDisconnectOutcome::PersistenceFailed;
+        }
+        self.rib.write().await.clear_speaker_eor(speaker_key);
         self.transport_gaps.write().await.insert(speaker_key, gap);
-        true
+        TransportDisconnectOutcome::Recorded
     }
 
     /// Retire an isolated connection-scoped (`conn:*`) speaker after its
@@ -760,20 +843,20 @@ impl RoutingServiceState {
     /// data; durable history remains in the journals), prunes its
     /// session-aware decode contexts, and clears its transport gap — a
     /// retired scope holds no state under a gap, so keeping one would
-    /// pin global completeness to `"gap"` forever. Returns whether a
-    /// speaker was retired. Canonical `exp:*` speakers are NEVER retired
-    /// here — they keep last-known routes under the transport gap.
+    /// pin global completeness to `"gap"` forever. Context pruning and
+    /// gap removal run even when the speaker was already removed (e.g.
+    /// by a clean BMP Termination). Returns whether a speaker was
+    /// retired. Canonical `exp:*` speakers are NEVER retired here —
+    /// they keep last-known routes under the transport gap.
     pub async fn retire_connection_scoped_speaker(&self, speaker_key: SpeakerKey) -> bool {
         let mut rib = self.rib.write().await;
         let retired = rib.retire_speaker(speaker_key);
         drop(rib);
-        if retired {
-            self.transport_gaps.write().await.remove(&speaker_key);
-            self.decode_contexts.write().await.retain(|k, _| {
-                !(k.speaker_addr == speaker_key.speaker_addr
-                    && k.speaker_instance == speaker_key.speaker_instance)
-            });
-        }
+        self.transport_gaps.write().await.remove(&speaker_key);
+        self.decode_contexts.write().await.retain(|k, _| {
+            !(k.speaker_addr == speaker_key.speaker_addr
+                && k.speaker_instance == speaker_key.speaker_instance)
+        });
         retired
     }
 
@@ -937,22 +1020,46 @@ pub async fn run_bmp_listener(
                         sys_name.as_deref(),
                         sys_descr.as_deref(),
                     );
-                    let scope = resolution.scope;
-                    let speaker_key = scope.speaker_key(speaker_ip);
-                    tracing::info!(
-                        %speaker_ip,
-                        exporter_instance = %scope.exporter_instance,
-                        status = resolution.status,
-                        device_id = ?scope.device_id,
-                        binding_id = ?resolution.binding_id,
-                        "BMP exporter identity resolved"
-                    );
+                    let mut scope = resolution.scope;
 
                     // ── Phase 2: epoch allocation per SpeakerKey ──
                     let epoch = {
                         // Lock ordering: `sessions` is only ever acquired before `rib`
                         // (never the reverse), so holding it across the rib write is safe.
                         let mut live = sessions.lock().await;
+                        // P0-1 hardening: at most ONE live connection may
+                        // hold a resolved `exp:*` speaker scope. BMP
+                        // sysName is a self-reported claim — a second
+                        // simultaneous connection presenting the same
+                        // claim (impostor or legitimate multi-session
+                        // exporter) cannot be proven to share exporter
+                        // ownership, so it is isolated into its own
+                        // `conn:*` scope instead of merging authoritative
+                        // speaker/RIB state. Resolved attribution fields
+                        // are preserved; only the shared speaker state is
+                        // denied. Sequential same-claim connections still
+                        // rejoin the persistent `exp:*` scope (indistin-
+                        // guishable from a legitimate reconnect) — full
+                        // resolution requires authenticated ingress.
+                        if scope.exporter_instance.starts_with("exp:") {
+                            let claimed = scope.speaker_key(speaker_ip);
+                            if live.get(&claimed).is_some_and(|&(_, c)| c > 0) {
+                                tracing::warn!(
+                                    %speaker_ip,
+                                    exporter_instance = %scope.exporter_instance,
+                                    device_id = ?scope.device_id,
+                                    "Concurrent BMP connection claims an already-live \
+                                     exporter scope; isolating to conn:* (same-claim \
+                                     connections cannot be proven to share ownership)"
+                                );
+                                scope = ExporterScope {
+                                    exporter_instance: format!("conn:{connection_id}"),
+                                    exporter_id: scope.exporter_id.clone(),
+                                    device_id: scope.device_id.clone(),
+                                };
+                            }
+                        }
+                        let speaker_key = scope.speaker_key(speaker_ip);
                         match live.get(&speaker_key) {
                             Some(&(epoch, count)) if count > 0 => {
                                 if let Some(entry) = live.get_mut(&speaker_key) {
@@ -976,6 +1083,15 @@ pub async fn run_bmp_listener(
                             }
                         }
                     };
+                    let speaker_key = scope.speaker_key(speaker_ip);
+                    tracing::info!(
+                        %speaker_ip,
+                        exporter_instance = %scope.exporter_instance,
+                        status = resolution.status,
+                        device_id = ?scope.device_id,
+                        binding_id = ?resolution.binding_id,
+                        "BMP exporter identity resolved"
+                    );
 
                     // ── Phase 3: stream frames under the resolved scope ──
                     let mut pending_first = Some(first_frame);
@@ -1003,12 +1119,18 @@ pub async fn run_bmp_listener(
                             let head_hex = frame.iter().take(48).map(|b| format!("{b:02x}")).collect::<String>();
                             tracing::info!(%speaker_ip, %scope.exporter_instance, ver, mlen, mtype, head = %head_hex, "bmp_frame");
                         }
-                        // BMP Termination (v3 msg type 5) is scoped to the
-                        // connection that sent it. While sibling connections
-                        // share this SpeakerKey, defer the frame instead of
-                        // letting `RibManager` destroy shared speaker/RIB
-                        // state; it is applied when the last connection
-                        // closes (see teardown below).
+                        // BMP Termination (v3 msg type 5) ends THIS
+                        // connection's BMP session — RFC 7854 §4.5. While
+                        // sibling connections share this SpeakerKey, defer
+                        // the frame instead of letting `RibManager` destroy
+                        // shared speaker/RIB state; it is applied when the
+                        // LAST connection closes (see teardown below). In
+                        // every case this connection stops reading
+                        // immediately: frames received after Termination
+                        // must never mutate RIB state (a terminated BMP
+                        // session accepts no further observations), and a
+                        // deferred Termination still applies at teardown if
+                        // this connection turns out to be the last one.
                         let is_termination =
                             frame.len() >= 6 && frame[0] == 3 && frame[5] == 5;
                         if is_termination {
@@ -1029,7 +1151,7 @@ pub async fn run_bmp_listener(
                                     live_connections = live_count,
                                     "BMP Termination deferred while sibling connections are live"
                                 );
-                                continue;
+                                break Some("bmp_termination".to_string());
                             }
                             // This is the last live connection: any frame
                             // deferred by a sibling is superseded by this
@@ -1045,6 +1167,11 @@ pub async fn run_bmp_listener(
                             // distinctly from transport errors and EOF.
                             tracing::warn!(%speaker_ip, exporter_instance = %scope.exporter_instance, error = %e, "Rejected invalid BMP frame");
                             break Some(format!("bmp_frame_rejected: {e}"));
+                        }
+                        if is_termination {
+                            // Session terminated cleanly: no further frames
+                            // are accepted on this connection.
+                            break Some("bmp_termination".to_string());
                         }
                     };
                     // Release this connection's share of the speaker epoch before recording
@@ -1084,7 +1211,7 @@ pub async fn run_bmp_listener(
                                     tracing::warn!(%speaker_ip, exporter_instance = %scope.exporter_instance, error = %e, "Failed to apply deferred BMP Termination");
                                 }
                             }
-                            let recorded = st
+                            let outcome = st
                                 .record_transport_disconnect_for_key(
                                     speaker_key,
                                     &scope.exporter_instance,
@@ -1094,11 +1221,21 @@ pub async fn run_bmp_listener(
                                 .await;
                             // An isolated connection scope can never receive
                             // new data; retire its state instead of leaking
-                            // last-known routes per dead connection. Only
-                            // retire when the disconnect was actually
-                            // accepted — a stale-fenced disconnect must not
-                            // drop a newer session's state.
-                            if recorded && scope.exporter_instance.starts_with("conn:") {
+                            // last-known routes per dead connection. Retire
+                            // only when the durable lifecycle requirement is
+                            // satisfied: Recorded (gap journaled) or
+                            // NoActiveSession (session already ended via
+                            // Termination — nothing to gap). A stale-fenced
+                            // or persistence-failed disconnect must NOT
+                            // retire state: the former belongs to a newer
+                            // session, the latter would diverge live view
+                            // from journal replay (P0-2).
+                            if matches!(
+                                outcome,
+                                TransportDisconnectOutcome::Recorded
+                                    | TransportDisconnectOutcome::NoActiveSession
+                            ) && scope.exporter_instance.starts_with("conn:")
+                            {
                                 st.retire_connection_scoped_speaker(speaker_key).await;
                             }
                         }
@@ -1696,7 +1833,11 @@ pub async fn build_peers_json(state: &RoutingServiceState, q: &PeersQuery) -> se
             let completeness = if has_transport_gap {
                 "gap"
             } else if peer.state == PeerState::Down {
-                if peer.llgr_active { "stale" } else { "gap" }
+                if peer.llgr_active {
+                    "stale"
+                } else {
+                    "gap"
+                }
             } else if !peer.eor_families.is_empty() {
                 "complete_for_observed_view"
             } else {

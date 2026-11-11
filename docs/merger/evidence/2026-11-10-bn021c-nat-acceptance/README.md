@@ -93,22 +93,42 @@ Unbound exporter (originally `frr-c`, later `frr-d`) resolves to
 `device_id = null`, `exporter_id = bmp:<sysName>`. It never acquires an
 authoritative device association (`api/18-speakers-final.json`).
 
-### F — Conflicting / indistinguishable identity claims — CONFIRMED LIMITATION
+### F — Conflicting / indistinguishable identity claims — FAIL / OPEN (acceptance gate remains open)
 
 Recreated the site-C exporter with `--hostname frr-a` while the real frr-a
-was still connected. Bonsai resolved the new connection to the same
-`exp:exp-frr-a` scope and merged its state: `total_routes` went 4→6 and
-`192.0.2.0/24` (the impostor's prefix) appeared in A's route list
-(`api/15/16/17`). The peer list shows the impostor's Loc-Rib peer
-(`0.0.0.0`, peer_as 65003) folded into the same speaker.
+was still connected. On the reviewed commit (`d19394c`) Bonsai resolved
+the new connection to the same `exp:exp-frr-a` scope and merged its
+state: `total_routes` went 4→6 and `192.0.2.0/24` (the impostor's prefix)
+appeared in A's route list (`api/15/16/17`). The peer list shows the
+impostor's Loc-Rib peer (`0.0.0.0`, peer_as 65003) folded into the same
+speaker.
 
-This is the documented trust assumption: a BMP `sysName` is a
-self-reported claim, not authenticated identity. Two exporters presenting
-the same claim behind the same NAT source are indistinguishable and
-coalesce. Operators must treat trusted sysName bindings as an
-administrative mapping provisioned out-of-band; reliable disambiguation
-requires a future authenticated-ingress mechanism (deferred). Unbound or
-ambiguous claims fail closed into per-connection `conn:*` isolation.
+This is a reproduced attribution collision, NOT a passing exporter
+isolation result. The original BN-021c acceptance invariant — independent
+exporters sharing a NAT address must not merge, including exporters
+presenting identical `sysName` claims — is therefore **not satisfied**
+for the published commit. The P0 production attribution gate stays OPEN.
+
+Trust-boundary analysis (see the 2026-11-11 PR review evidence):
+
+- BMP `sysName`/`sysDescr` are self-reported claims. Two exporters
+  presenting identical claims from the same NAT-translated source are
+  indistinguishable at the BMP layer; no binding field can separate
+  them because `match_transport` sees only the shared translated IP.
+- Hardening added in review: only ONE live connection may hold a
+  resolved `exp:*` scope — a second SIMULTANEOUS same-claim connection
+  is admitted as `conn:*` (attribution preserved, speaker/RIB state
+  isolated). This prevents the concurrent merge demonstrated above.
+- Remaining gap: a SEQUENTIAL same-claim connection (impostor connects
+  after the legitimate exporter disconnects, or while it holds only a
+  gap-retained speaker) still rejoins the persistent `exp:*` scope —
+  indistinguishable from a legitimate reconnect — and inherits
+  last-known state. Likewise, claim-matched `device_id` attribution is
+  inherently spoofable by any exporter copying the sysName. Robust
+  resolution requires authenticated ingress (BN-021f) or per-exporter
+  credentials; it cannot be solved by claim matching alone.
+- Unbound or ambiguous claims fail closed into per-connection `conn:*`
+  isolation.
 
 ### G — Restart and replay — PASS (BN-005 contract preserved)
 
@@ -156,13 +176,25 @@ Post-restart (`replay/speakers-post-restart.json`,
 
 ## Files
 
+Committed to the PR (this directory, tracked in git):
+
+- `README.md` — this document.
 - `api/` — sanitized API responses per scenario (JSON only, no secrets;
   the lab service token `bn021c-lab-token` is a throwaway test credential).
 - `replay/` — pre/post restart snapshots and route comparisons.
-- `runtime/` — `nat-rules.txt` (iptables POSTROUTING), `bmp.journal`,
-  `events.jsonl`, `bonsai_config.db` (lab identity DB, no secrets).
-- Topology/commands/configs: `lab/acceptance/bn021c-nat/` (`up.sh`,
-  `make_identity_db.py`, `configs/`).
+
+Present on the development machine but NOT committed (`runtime/` is
+.gitignore'd — regenerate via `lab/acceptance/bn021c-nat/up.sh`):
+
+- `runtime/nat-rules.txt` — iptables POSTROUTING rules.
+- `runtime/bmp.journal`, `runtime/events.jsonl` — durable journals.
+- `runtime/bonsai_config.db` — lab identity DB (no secrets).
+
+Topology/commands/configs: `lab/acceptance/bn021c-nat/` (`up.sh`,
+`make_identity_db.py`, `configs/`, `image/Dockerfile`). `up.sh` derives
+all paths from its own location, refuses to destroy pre-existing lab
+resources or runtime evidence unless `BN021C_RESET=1` is set, and
+archives prior runtime artifacts before rebuilding.
 
 ## Confirmed defects corrected during hardening (covered by
 `tests/bn021c_exporter_isolation.rs`, 12 tests)
@@ -176,6 +208,12 @@ Post-restart (`replay/speakers-post-restart.json`,
   conn-scope retirement — verified over real TCP in the loopback test.
 - P0-C: BMP Termination is deferred per sending connection; it retires
   only that connection's session and cannot remove sibling state.
+  Review pass (2026-11-11) additionally: the connection that sent
+  Termination stops reading immediately (post-Termination frames can no
+  longer mutate RIB state), a clean Termination no longer leaves a
+  meaningless transport-gap record, and only ONE live connection may
+  hold a resolved `exp:*` scope (concurrent same-claim connections are
+  `conn:*`-isolated).
 - P0-D: ambiguous/conflicting claims fail closed into `conn:*`
   isolation; only `Resolved` bindings produce `exp:*`/`device_id`.
 - P1: routing service opens the identity DB read-only
@@ -184,8 +222,14 @@ Post-restart (`replay/speakers-post-restart.json`,
 
 ## Remaining limitations
 
-- sysName-based coalescing (Scenario F) is a trust assumption, not
-  authentication; ingress-authenticated exporter identity is future work.
+- Same-claim impersonation (Scenario F) is FAIL / OPEN: concurrent
+  same-claim connections are now isolated, but sequential same-claim
+  connections still rejoin the persistent `exp:*` scope and
+  claim-matched `device_id` attribution remains spoofable. Reliable
+  disambiguation requires authenticated ingress — deferred to BN-021f.
+- Binding revocation is only visible to NEW BMP connections; an active
+  resolved connection keeps its `exp:*` scope and attribution until it
+  reconnects (documented lifecycle limitation).
 - `conn:*` speakers replayed without a disconnect record retain
   last-known state indefinitely (BN-005 contract); distinguishing dead
   vs. silently-alive unclean connections is not possible from the journal

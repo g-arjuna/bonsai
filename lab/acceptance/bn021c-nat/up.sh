@@ -12,19 +12,83 @@
 # NAT translations (on bn021c-nat, pub iface):
 #   tcp dport 11019 (BMP)  -> 10.240.0.200  (ALL exporters share this source)
 #   tcp dport 179  (BGP)   -> 10.240.0.20X  (per-site, so peer sees distinct neighbors)
+#
+# Prerequisites:
+#   - docker with bridge networking
+#   - python3 (identity DB generation only; no third-party modules)
+#   - images: quay.io/frrouting/frr:10.6.1, frrouting/frr:v8.4.1,
+#     and local image bn021c-routing:local built from this repo
+#     (see image/Dockerfile; rebuild after code changes)
+#
+# Safety: this script NEVER silently destroys existing lab state.
+#   - If any bn021c-* container/network or runtime journal/evidence
+#     files already exist, it refuses to run unless BN021C_RESET=1.
+#   - With BN021C_RESET=1, existing runtime artifacts (journals, event
+#     log, identity DB, nat-rules) are first archived under
+#     runtime/_archive/<name>.<utc-timestamp> so prior evidence is not
+#     lost, then the lab is rebuilt from scratch (old journals are
+#     never reused).
+#
+# Generated artifacts (all under the gitignored runtime/ dir):
+#   runtime/bmp.journal, runtime/events.jsonl, runtime/bonsai_config.db,
+#   runtime/nat-rules.txt, runtime/_archive/*
 set -euo pipefail
-cd "$(dirname "$0")"
-LAB=/home/arjuna/Desktop/bonsai/lab/acceptance/bn021c-nat
-RT=/home/arjuna/Desktop/bonsai/docs/merger/evidence/2026-11-10-bn021c-nat-acceptance/runtime
+
+LAB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$LAB_DIR/../../.." && pwd)"
+RT="$ROOT/docs/merger/evidence/2026-11-10-bn021c-nat-acceptance/runtime"
 FRR=quay.io/frrouting/frr:10.6.1
 NATIMG=frrouting/frr:v8.4.1
 PFX=bn021c
+RESET="${BN021C_RESET:-0}"
+
+existing_resources() {
+  {
+    docker ps -a --format '{{.Names}}' | grep "^${PFX}-" || true
+    docker network ls --format '{{.Name}}' | grep "^${PFX}-" || true
+  } | sort -u
+}
+
+existing_runtime_files() {
+  local f
+  for f in bmp.journal events.jsonl bonsai_config.db nat-rules.txt; do
+    [ -e "$RT/$f" ] && echo "$f"
+  done
+}
 
 cleanup() {
   for n in nat bonsai peer frr-a frr-b frr-c; do docker rm -f "$PFX-$n" >/dev/null 2>&1 || true; done
   for n in pub sitea siteb sitec; do docker network rm "$PFX-$n" >/dev/null 2>&1 || true; done
 }
-cleanup
+
+RESOURCES="$(existing_resources || true)"
+RUNTIME_FILES="$(existing_runtime_files || true)"
+if [ "$RESET" != "1" ] && { [ -n "$RESOURCES" ] || [ -n "$RUNTIME_FILES" ]; }; then
+  {
+    echo "bn021c-nat: refusing to run — lab resources or runtime evidence already exist."
+    [ -n "$RESOURCES" ] && echo "  docker resources: $(echo "$RESOURCES" | tr '\n' ' ')"
+    [ -n "$RUNTIME_FILES" ] && echo "  runtime files:    $(echo "$RUNTIME_FILES" | tr '\n' ' ')"
+    echo "Re-run with BN021C_RESET=1 to archive runtime artifacts and rebuild the lab."
+  } >&2
+  exit 1
+fi
+
+if [ "$RESET" = "1" ]; then
+  # Archive prior runtime evidence before teardown so journals and the
+  # identity DB from earlier runs are never silently destroyed.
+  if [ -d "$RT" ]; then
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    for f in "$RT"/*; do
+      [ -f "$f" ] || continue
+      mkdir -p "$RT/_archive"
+      mv "$f" "$RT/_archive/$(basename "$f").$stamp"
+      echo "archived $f -> runtime/_archive/$(basename "$f").$stamp"
+    done
+  fi
+  cleanup
+fi
+
+mkdir -p "$RT"
 
 docker network create --subnet 10.240.0.0/24 $PFX-pub
 docker network create --subnet 10.240.1.0/24 $PFX-sitea
@@ -71,7 +135,7 @@ EOF
 docker exec $PFX-nat sh -c "$NATSETUP" | tee "$RT/nat-rules.txt"
 
 # ── Bonsai routing service ────────────────────────────────────────────────
-python3 "$LAB/make_identity_db.py" "$RT/bonsai_config.db"
+python3 "$LAB_DIR/make_identity_db.py" "$RT/bonsai_config.db"
 docker run -d --name $PFX-bonsai --network $PFX-pub --ip 10.240.0.20 \
   -v "$RT:/app/runtime" \
   -e BONSAI_ROUTING_BMP_ADDR=0.0.0.0:11019 \
@@ -87,19 +151,19 @@ docker run -d --name $PFX-bonsai --network $PFX-pub --ip 10.240.0.20 \
 # ── BGP route-server peer ─────────────────────────────────────────────────
 docker run -d --name $PFX-peer --network $PFX-pub --ip 10.240.0.50 \
   --cap-add NET_ADMIN --cap-add SYS_ADMIN \
-  -v "$LAB/configs/peer:/etc/frr" \
+  -v "$LAB_DIR/configs/peer:/etc/frr" \
   "$FRR"
 
 # ── Exporters ─────────────────────────────────────────────────────────────
 docker run -d --name $PFX-frr-a --hostname frr-a --network $PFX-sitea --ip 10.240.1.11 \
   --cap-add NET_ADMIN --cap-add SYS_ADMIN \
-  -v "$LAB/configs/frr-a:/etc/frr" "$FRR"
+  -v "$LAB_DIR/configs/frr-a:/etc/frr" "$FRR"
 docker run -d --name $PFX-frr-b --hostname frr-b --network $PFX-siteb --ip 10.240.2.12 \
   --cap-add NET_ADMIN --cap-add SYS_ADMIN \
-  -v "$LAB/configs/frr-b:/etc/frr" "$FRR"
+  -v "$LAB_DIR/configs/frr-b:/etc/frr" "$FRR"
 docker run -d --name $PFX-frr-c --hostname frr-c --network $PFX-sitec --ip 10.240.3.13 \
   --cap-add NET_ADMIN --cap-add SYS_ADMIN \
-  -v "$LAB/configs/frr-c:/etc/frr" "$FRR"
+  -v "$LAB_DIR/configs/frr-c:/etc/frr" "$FRR"
 
 # Default routes for exporters (via their NAT gateway).
 docker exec $PFX-frr-a ip route replace default via 10.240.1.2

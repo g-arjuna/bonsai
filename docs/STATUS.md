@@ -553,6 +553,33 @@ kill/restart last-known-state semantics preserved: recorded
 disconnects replay as gaps, `conn:*` without a disconnect replays as
 live last-known (documented limitation).
 
+BN-021c independent PR review + hardening (11 November): a second
+review pass over PR #2 (`d19394c`) confirmed and fixed three defect
+classes. P0-1: concurrent same-claim connections could merge into one
+`exp:*` speaker — the listener now admits at most ONE live connection
+per resolved scope; additional simultaneous same-claim connections are
+`conn:*`-isolated with attribution preserved. Sequential same-claim
+rejoins and claim-matched `device_id` attribution remain spoofable —
+P0 production attribution gate stays OPEN pending authenticated
+ingress (BN-021f). P0-2: `record_transport_disconnect_for_key`
+ignored journal append failures and still retired `conn:*` state —
+now returns `TransportDisconnectOutcome` (Stale/NoActiveSession/
+Recorded/PersistenceFailed), appends durably BEFORE mutating memory,
+and retirement is gated on durable success; failed persistence is
+logged and leaves live state identical to replay. P0-3: a connection
+that sends BMP Termination no longer accepts further frames; a clean
+Termination + EOF no longer leaves a meaningless transport gap
+(`NoActiveSession`). P1-2: `exp:{scope}:{canonical}` components are
+percent-encoded (separator injection impossible); FNV-64 speaker
+partitioning documented honestly as a hash, not the scope string.
+`tests/bn021c_exporter_isolation.rs` is now 17 tests. NAT Scenario F
+reclassified FAIL/OPEN in the acceptance README; `runtime/` journal
+artifacts confirmed local-only (gitignored), `up.sh` now derives paths
+and refuses silent lab destruction without `BN021C_RESET=1`. Review
+evidence: `docs/merger/evidence/2026-11-11-bn021c-pr2-review/`.
+Merge recommendation: Outcome B — mergeable as restricted partial
+capability with explicit acceptance of the same-claim limitation.
+
 BN-022 containment slice (10 November): ad-hoc graph reads are now
 denied-by-default for non-admin principals. `src/graph/explorer.rs`
 gained `GraphReadAccess` + `validate_query_for_access`: a positive

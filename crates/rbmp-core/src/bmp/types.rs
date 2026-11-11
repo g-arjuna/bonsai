@@ -152,11 +152,18 @@ pub const EVENT_SCHEMA_VERSION: u16 = 2;
 pub const LEGACY_EXPORTER_INSTANCE: &str = "default";
 
 /// Deterministic 64-bit discriminator for a logical-exporter scope
-/// string (FNV-1a). Returns 0 for the empty/legacy scope. Two distinct
-/// scopes collide only on a 64-bit hash collision; the authoritative
-/// speaker key remains `(speaker_addr, exporter_instance)` — this value
-/// exists so `PeerKey` can stay `Copy` while carrying the same
-/// partitioning.
+/// string (FNV-1a). Returns 0 for the empty/legacy scope.
+///
+/// IMPORTANT: this is a HASH, not the scope string itself. Two distinct
+/// scope strings that collide on this 64-bit value map to the same
+/// `SpeakerKey`/`PeerKey` and would share authoritative state. Scope
+/// strings reaching this function are server-generated (`conn:{uuid}`,
+/// `exp:{percent-encoded canonical}`) or legacy constants, so an
+/// attacker cannot choose them; residual risk is a hash collision or a
+/// malicious/corrupted identity store — accepted as a documented
+/// limitation (BN-021c review P1-2), not a supported isolation
+/// mechanism. Callers that need the exact scope must keep the string
+/// (e.g. `ObservationSource.exporter_instance`, journal records).
 pub fn exporter_instance_id(exporter_instance: &str) -> u64 {
     let s = exporter_instance.trim();
     if s.is_empty() || s == LEGACY_EXPORTER_INSTANCE {
@@ -171,9 +178,13 @@ pub fn exporter_instance_id(exporter_instance: &str) -> u64 {
 }
 
 /// Composite speaker identity: transport endpoint PLUS logical-exporter
-/// instance. Two BMP exporters sharing one NAT address have distinct
-/// `speaker_instance` values and therefore never share session, peer,
-/// RIB, decode-context, gap or projection state.
+/// instance discriminator. Two BMP exporters sharing one NAT address
+/// have distinct `speaker_instance` values and therefore never share
+/// session, peer, RIB, decode-context, gap or projection state.
+///
+/// `speaker_instance` is `exporter_instance_id(scope)` — a 64-bit FNV-1a
+/// hash of the scope STRING, not the string itself (see
+/// [`exporter_instance_id`] for the collision caveat).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SpeakerKey {
     pub speaker_addr: IpAddr,

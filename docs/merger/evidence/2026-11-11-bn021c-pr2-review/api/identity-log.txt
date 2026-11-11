@@ -1,0 +1,11 @@
+2026-11-11T05:48:42.072648Z  INFO bonsai::routing_service: trusted exporter identity store loaded path=/app/runtime/bonsai_config.db
+2026-11-11T05:48:44.252191Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=exp:exp-frr-a status="resolved" device_id=Some("dev-frr-a") binding_id=Some("bind-frr-a")
+2026-11-11T05:48:44.678080Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=exp:exp-frr-b status="resolved" device_id=Some("dev-frr-b") binding_id=Some("bind-frr-b")
+2026-11-11T05:48:45.004209Z  WARN bonsai::routing_service: BMP exporter identity ambiguous/conflicting; isolating connection scope speaker_addr=10.240.0.200 status=Conflicting
+2026-11-11T05:48:45.004232Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=conn:6734bb49ad2c4c54aaf7f289131a5b8f status="conflicting" device_id=None binding_id=None
+2026-11-11T05:49:32.278629Z  WARN bonsai::routing_service: Concurrent BMP connection claims an already-live exporter scope; isolating to conn:* (same-claim connections cannot be proven to share ownership) speaker_ip=10.240.0.200 exporter_instance=exp:exp-frr-a device_id=Some("dev-frr-a")
+2026-11-11T05:49:32.278647Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=conn:076e82d35ad846d49061ae53ab439d57 status="resolved" device_id=Some("dev-frr-a") binding_id=Some("bind-frr-a")
+2026-11-11T05:52:36.679991Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=exp:exp-frr-a status="resolved" device_id=Some("dev-frr-a") binding_id=Some("bind-frr-a")
+2026-11-11T05:53:09.000917Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=exp:exp-frr-a status="resolved" device_id=Some("dev-frr-a") binding_id=Some("bind-frr-a")
+2026-11-11T05:53:50.628263Z  WARN bonsai::routing_service: BMP exporter identity ambiguous/conflicting; isolating connection scope speaker_addr=10.240.0.200 status=Conflicting
+2026-11-11T05:53:50.628291Z  INFO bonsai::routing_service: BMP exporter identity resolved speaker_ip=10.240.0.200 exporter_instance=conn:63b79b5935584740a5c9dd168ac9613f status="conflicting" device_id=None binding_id=None

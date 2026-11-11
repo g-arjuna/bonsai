@@ -147,13 +147,24 @@ before claiming equivalent history or enabling it as an authority.
   `docs/merger/evidence/2026-11-10-bn021c-nat-acceptance/`;
   `tests/bn021c_exporter_isolation.rs` is 12/12 including real-TCP
   loopback lifecycle tests.
+- Done (11 Nov, independent PR review + hardening): concurrent
+  same-claim connections can no longer merge — one live connection per
+  `exp:*` scope, extras `conn:*`-isolated; disconnect journal failures
+  return `TransportDisconnectOutcome` and block retirement instead of
+  diverging live/replay; post-Termination frames rejected; clean
+  Termination leaves no transport gap; `exp:*` scope components
+  percent-encoded. Scenario F reclassified FAIL/OPEN — sequential
+  same-claim impersonation and claim-based device attribution still
+  require authenticated ingress. Evidence:
+  `docs/merger/evidence/2026-11-11-bn021c-pr2-review/`;
+  `tests/bn021c_exporter_isolation.rs` is 17/17.
 - Pending: historical alias reconciliation, authenticated ingress
   exporter identity (sysName claims are self-reported), NetFlow/syslog
   adapter wiring (BN-021d+).
 - Acceptance: independent BMP sessions sharing a NAT address never merge
-  route/peer state — VERIFIED in containerlab for distinct and
-  conflicting claims (conflicting identical claims coalesce by design
-  of the trust model; see evidence README Scenario F).
+  route/peer state — PARTIAL: verified for distinct claims and
+  concurrent identical claims (post-hardening); sequential identical
+  claims still coalesce — OPEN pending BN-021f authenticated ingress.
 
 **BN-021d — NetFlow v9/IPFIX identity and template lifecycle** — PARTIAL.
 - Done: template cache keyed by UDP SocketAddr + protocol version +

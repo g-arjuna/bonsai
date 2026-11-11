@@ -178,6 +178,11 @@ fn append_newline_and_sync(path: &Path) -> Result<()> {
 pub struct BmpJournal {
     path: Option<PathBuf>,
     file: Option<Arc<Mutex<tokio::fs::File>>>,
+    /// Test hook: when set, every append fails deterministically so
+    /// callers' persistence-failure paths can be exercised without
+    /// filling the disk or touching production evidence files.
+    #[doc(hidden)]
+    pub fail_writes: std::sync::atomic::AtomicBool,
 }
 
 impl BmpJournal {
@@ -186,6 +191,7 @@ impl BmpJournal {
             None => Ok(Self {
                 path: None,
                 file: None,
+                fail_writes: std::sync::atomic::AtomicBool::new(false),
             }),
             Some(p) => {
                 let pb = p.as_ref().to_path_buf();
@@ -206,6 +212,7 @@ impl BmpJournal {
                 Ok(Self {
                     path: Some(pb),
                     file: Some(Arc::new(Mutex::new(f))),
+                    fail_writes: std::sync::atomic::AtomicBool::new(false),
                 })
             }
         }
@@ -227,6 +234,9 @@ impl BmpJournal {
         session_epoch: Option<u64>,
         raw_frame: Option<&[u8]>,
     ) -> Result<()> {
+        if self.fail_writes.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(anyhow!("injected BMP journal write failure"));
+        }
         if let Some(file) = &self.file {
             let record = BmpJournalObservation {
                 message: msg.clone(),
@@ -245,6 +255,9 @@ impl BmpJournal {
 
     /// Durably record a BMP transport disconnect so monitoring gaps survive restarts (R04).
     pub async fn append_transport_disconnect(&self, gap: &JournalTransportGap) -> Result<()> {
+        if self.fail_writes.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(anyhow!("injected BMP journal write failure"));
+        }
         if let Some(file) = &self.file {
             let record = BmpJournalControlRecord::TransportDisconnect {
                 speaker_addr: gap.speaker_addr,

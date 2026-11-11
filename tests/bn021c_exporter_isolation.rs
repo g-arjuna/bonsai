@@ -10,10 +10,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bonsai::routing_service::{
-    RoutingServiceConfig, RoutingServiceState, build_internal_routing_router,
-    resolved_exporter_instance, run_bmp_listener,
+    build_internal_routing_router, resolved_exporter_instance, run_bmp_listener,
+    RoutingServiceConfig, RoutingServiceState, TransportDisconnectOutcome,
 };
-use bonsai::sqlite_store::{CONFIG_DB_FILE_NAME, SqliteStore};
+use bonsai::sqlite_store::{SqliteStore, CONFIG_DB_FILE_NAME};
 use bonsai::telemetry_identity::{
     BindingProvenance, BindingStatus, CanonicalDevice, TrustedBinding,
 };
@@ -661,16 +661,18 @@ async fn replay_retires_connection_scoped_speakers_like_live() {
     }
 
     // Simulate the listener teardown path for conn:a and exp:e.
-    assert!(
+    assert_eq!(
         state
             .record_transport_disconnect_for_key(key_a, scope_a, Some(31), "tcp eof")
-            .await
+            .await,
+        TransportDisconnectOutcome::Recorded
     );
     state.retire_connection_scoped_speaker(key_a).await;
-    assert!(
+    assert_eq!(
         state
             .record_transport_disconnect_for_key(key_e, scope_e, Some(33), "tcp eof")
-            .await
+            .await,
+        TransportDisconnectOutcome::Recorded
     );
     // exp:* speakers are NEVER retired — last-known routes persist under gap.
 
@@ -726,12 +728,10 @@ async fn replay_retires_connection_scoped_speakers_like_live() {
 
     // Decode contexts for the retired conn:a peer must not survive replay.
     let a_instance = rbmp_core::bmp::types::exporter_instance_id(scope_a);
-    assert!(
-        outcome
-            .decode_contexts
-            .keys()
-            .all(|k| !(k.speaker_addr == nat_addr() && k.speaker_instance == a_instance))
-    );
+    assert!(outcome
+        .decode_contexts
+        .keys()
+        .all(|k| !(k.speaker_addr == nat_addr() && k.speaker_instance == a_instance)));
 }
 
 // ── G. Real-TCP NAT acceptance: two exporters, one visible source IP ─────────
@@ -1049,13 +1049,11 @@ async fn live_tcp_nat_two_exporters_stay_isolated() {
         &format!("{base}/routes?exporter_instance={conn_inst}"),
     )
     .await;
-    assert!(
-        routes_x["routes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["prefix"] == pfx_b_str)
-    );
+    assert!(routes_x["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["prefix"] == pfx_b_str));
 
     // 4: withdraw A's route — B unaffected.
     let withdraw_a = bonsai::routing_service::sample_bmp_withdraw_frame(peer_ip, peer_as, pfx_a);
@@ -1078,13 +1076,11 @@ async fn live_tcp_nat_two_exporters_stay_isolated() {
         &format!("{base}/routes?exporter_instance=exp:exp-rtr-b"),
     )
     .await;
-    assert!(
-        routes_b2["routes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["prefix"] == pfx_b_str)
-    );
+    assert!(routes_b2["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["prefix"] == pfx_b_str));
 
     // 5: PeerDown on A does not affect B's peer/RIB.
     write_frame(&mut conn_a, &peer_down_frame(peer_ip, peer_as)).await;
@@ -1098,13 +1094,11 @@ async fn live_tcp_nat_two_exporters_stay_isolated() {
         &format!("{base}/routes?exporter_instance=exp:exp-rtr-b"),
     )
     .await;
-    assert!(
-        routes_b3["routes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["prefix"] == pfx_b_str)
-    );
+    assert!(routes_b3["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["prefix"] == pfx_b_str));
 
     // 6: disconnecting A does not affect B's active session.
     drop(conn_a);
@@ -1120,12 +1114,9 @@ async fn live_tcp_nat_two_exporters_stay_isolated() {
     .await;
     let speakers2 = get_json(&client, &format!("{base}/speakers")).await;
     let list2 = speakers2["speakers"].as_array().unwrap();
-    assert!(
-        list2
-            .iter()
-            .any(|s| s["exporter_instance"] == "exp:exp-rtr-b"
-                && s["peer_count"].as_u64() == Some(1))
-    );
+    assert!(list2
+        .iter()
+        .any(|s| s["exporter_instance"] == "exp:exp-rtr-b" && s["peer_count"].as_u64() == Some(1)));
     let spk_a2 = list2
         .iter()
         .find(|s| s["exporter_instance"] == "exp:exp-rtr-a")
@@ -1133,15 +1124,13 @@ async fn live_tcp_nat_two_exporters_stay_isolated() {
     assert_eq!(spk_a2["completeness_state"], "gap");
 
     // 10 (partial): the unknown conn:* exporter fails closed — no device id.
-    assert!(
-        list2
-            .iter()
-            .filter(|s| s["exporter_instance"]
-                .as_str()
-                .unwrap()
-                .starts_with("conn:"))
-            .all(|s| s["device_id"].is_null())
-    );
+    assert!(list2
+        .iter()
+        .filter(|s| s["exporter_instance"]
+            .as_str()
+            .unwrap()
+            .starts_with("conn:"))
+        .all(|s| s["device_id"].is_null()));
 
     // Disconnect the unknown exporter: its conn:* speaker must retire.
     drop(conn_x);
@@ -1157,13 +1146,11 @@ async fn live_tcp_nat_two_exporters_stay_isolated() {
     .await;
     // B is still fully alive.
     let speakers3 = get_json(&client, &format!("{base}/speakers")).await;
-    assert!(
-        speakers3["speakers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|s| s["exporter_instance"] == "exp:exp-rtr-b")
-    );
+    assert!(speakers3["speakers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["exporter_instance"] == "exp:exp-rtr-b"));
 
     // 8: journal replay reconstructs the same effective state.
     drop(conn_b);
@@ -1191,11 +1178,10 @@ async fn live_tcp_nat_two_exporters_stay_isolated() {
         .sum();
     assert_eq!(replay_routes_b, 1, "replay keeps B's route");
     // No conn:* speaker may survive replay.
-    assert!(
-        rib.speakers()
-            .iter()
-            .all(|s| !s.source.exporter_instance.starts_with("conn:"))
-    );
+    assert!(rib
+        .speakers()
+        .iter()
+        .all(|s| !s.source.exporter_instance.starts_with("conn:")));
     // Both disconnects are fenced to their own speaker keys.
     assert!(outcome.transport_gaps.contains_key(&key_b));
     assert!(outcome.transport_gaps.contains_key(&key_a));
@@ -1278,18 +1264,16 @@ async fn identity_store_is_opened_read_only() {
     let ro = SqliteStore::open_file_readonly(&db_file).unwrap();
     assert_eq!(ro.schema_version().unwrap(), 3);
     // Reads still work.
-    assert!(
-        ro.list_canonical_devices()
-            .unwrap()
-            .iter()
-            .any(|d| d.address == "10.30.0.1")
-    );
+    assert!(ro
+        .list_canonical_devices()
+        .unwrap()
+        .iter()
+        .any(|d| d.address == "10.30.0.1"));
     // Writes must fail — the routing service can never mutate the
     // shared management database.
-    assert!(
-        ro.upsert_canonical_device(&canonical_device("10.30.0.2"), "test")
-            .is_err()
-    );
+    assert!(ro
+        .upsert_canonical_device(&canonical_device("10.30.0.2"), "test")
+        .is_err());
 
     // A missing database must NOT be created (previous open_file would
     // have created an empty schema-bearing file).
@@ -1550,24 +1534,31 @@ async fn invalid_frame_records_disconnect_and_retires_conn_scope() {
             .all(|s| !s.source.exporter_instance.starts_with("conn:")),
         "replay must not resurrect retired conn:* speaker"
     );
-    assert!(
-        outcome
-            .transport_gaps
-            .values()
-            .all(|g| !g.exporter_instance.starts_with("conn:"))
-    );
+    assert!(outcome
+        .transport_gaps
+        .values()
+        .all(|g| !g.exporter_instance.starts_with("conn:")));
 
     let _ = svc.shutdown.send(true);
 }
 
-// ── M. P0-C: BMP Termination is connection-scoped, not speaker-scoped ────────
+// ── M. P0-1/P0-C: same-claim concurrent connections cannot merge ────────────
+//
+// BMP sysName is a self-reported claim, not authenticated identity. A
+// second SIMULTANEOUS connection presenting an identical claim cannot be
+// proven to share exporter ownership, so the listener admits only ONE
+// live connection per resolved `exp:*` scope; extras are isolated into
+// `conn:*` speaker state (resolved attribution fields preserved).
+// Sequential same-claim reconnects still rejoin the persistent `exp:*`
+// scope — indistinguishable from a legitimate reconnect — which remains
+// a documented limitation pending authenticated ingress (BN-021f).
 
 #[tokio::test]
-async fn termination_from_one_connection_preserves_sibling_state() {
+async fn same_claim_concurrent_connections_stay_isolated() {
     let dir = tempfile::tempdir().unwrap();
     let bmp_path = dir.path().join("bmp.jsonl");
     let db_path = dir.path().join(CONFIG_DB_FILE_NAME);
-    {
+    let dev_id = {
         let store = SqliteStore::open(dir.path()).unwrap();
         let d = store
             .upsert_canonical_device(&canonical_device("10.50.0.9"), "test")
@@ -1578,147 +1569,419 @@ async fn termination_from_one_connection_preserves_sibling_state() {
                 "test",
             )
             .unwrap();
-    }
+        d.device_id
+    };
     let state = test_state(&dir, Some(db_path)).await;
     let svc = start_tcp_services(&state).await;
     let client = reqwest::Client::new();
 
-    // Two simultaneous connections, identical trusted claim -> ONE
-    // exp:* speaker with two live BMP sessions (FRR multi-instance).
-    let mut conn1 = TcpStream::connect(svc.bmp_addr).await.unwrap();
-    let mut conn2 = TcpStream::connect(svc.bmp_addr).await.unwrap();
-    for c in [&mut conn1, &mut conn2] {
-        write_frame(c, &initiation_frame("frr-shared")).await;
-    }
-    let (_i1, up1, ann1) = bonsai::routing_service::sample_bmp_session_frames(
-        Ipv4Addr::new(192, 0, 2, 1),
-        65001,
-        [203, 0, 113],
-        100,
-    );
-    let (_i2, up2, ann2) = bonsai::routing_service::sample_bmp_session_frames(
-        Ipv4Addr::new(192, 0, 2, 2),
-        65002,
-        [198, 18, 0],
-        200,
-    );
-    for (c, up, ann) in [(&mut conn1, &up1, &ann1), (&mut conn2, &up2, &ann2)] {
-        write_frame(c, up).await;
-        write_frame(c, ann).await;
-    }
+    let peer_ip1 = Ipv4Addr::new(192, 0, 2, 1);
+    let peer_ip2 = Ipv4Addr::new(192, 0, 2, 2);
+    let (_i1, up1, ann1) =
+        bonsai::routing_service::sample_bmp_session_frames(peer_ip1, 65001, [203, 0, 113], 100);
+    let (_i2, up2, ann2) =
+        bonsai::routing_service::sample_bmp_session_frames(peer_ip2, 65002, [198, 18, 0], 200);
 
-    let speaker_key = "127.0.0.1|exp:exp-shared".to_string();
-    wait_for("shared speaker with 2 peers", || async {
+    // conn1 establishes the exp:* speaker first.
+    let mut conn1 = TcpStream::connect(svc.bmp_addr).await.unwrap();
+    write_frame(&mut conn1, &initiation_frame("frr-shared")).await;
+    write_frame(&mut conn1, &up1).await;
+    write_frame(&mut conn1, &ann1).await;
+    wait_for("exp speaker with 1 peer", || async {
         let v = get_json(&client, &format!("{}/speakers", svc.base)).await;
         v["speakers"].as_array().unwrap().iter().any(|s| {
-            s["exporter_instance"] == "exp:exp-shared" && s["peer_count"].as_u64() == Some(2)
+            s["exporter_instance"] == "exp:exp-shared" && s["peer_count"].as_u64() == Some(1)
         })
     })
     .await;
 
-    // ── Order 1: conn1 terminates while conn2 stays live ──
-    write_frame(&mut conn1, &termination_frame()).await;
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    // conn2 presents the IDENTICAL claim while conn1 is live. It must
+    // NOT merge into exp:exp-shared — it is admitted as conn:* with
+    // resolved attribution preserved.
+    let mut conn2 = TcpStream::connect(svc.bmp_addr).await.unwrap();
+    write_frame(&mut conn2, &initiation_frame("frr-shared")).await;
+    write_frame(&mut conn2, &up2).await;
+    write_frame(&mut conn2, &ann2).await;
+    wait_for("conn-isolated sibling speaker", || async {
+        let v = get_json(&client, &format!("{}/speakers", svc.base)).await;
+        v["speakers"].as_array().unwrap().iter().any(|s| {
+            s["exporter_instance"]
+                .as_str()
+                .unwrap()
+                .starts_with("conn:")
+                && s["peer_count"].as_u64() == Some(1)
+        })
+    })
+    .await;
 
-    // Sibling state MUST survive: both peers and both routes remain.
-    let routes = get_json(
+    let speakers = get_json(&client, &format!("{}/speakers", svc.base)).await;
+    let list = speakers["speakers"].as_array().unwrap();
+    let exp_spk = list
+        .iter()
+        .find(|s| s["exporter_instance"] == "exp:exp-shared")
+        .expect("exp speaker");
+    assert_eq!(exp_spk["peer_count"].as_u64(), Some(1));
+    assert_eq!(exp_spk["total_routes"].as_u64(), Some(1));
+    let conn_spk = list
+        .iter()
+        .find(|s| {
+            s["exporter_instance"]
+                .as_str()
+                .unwrap()
+                .starts_with("conn:")
+        })
+        .expect("conn speaker");
+    assert_eq!(conn_spk["peer_count"].as_u64(), Some(1));
+    assert_eq!(conn_spk["total_routes"].as_u64(), Some(1));
+    // Attribution is preserved even though speaker state is isolated.
+    assert_eq!(conn_spk["device_id"], dev_id);
+    let conn_inst = conn_spk["exporter_instance"].as_str().unwrap().to_string();
+
+    // conn2's prefix must be visible ONLY under its conn scope.
+    wait_for("conn route visible", || async {
+        let v = get_json(
+            &client,
+            &format!("{}/routes?exporter_instance={conn_inst}", svc.base),
+        )
+        .await;
+        v["routes"].as_array().unwrap().len() == 1
+    })
+    .await;
+    let exp_routes = get_json(
         &client,
-        &format!("{}/routes?speaker={speaker_key}", svc.base),
+        &format!("{}/routes?exporter_instance=exp:exp-shared", svc.base),
     )
     .await;
-    let pfxs: Vec<&str> = routes["routes"]
+    let pfxs: Vec<&str> = exp_routes["routes"]
         .as_array()
         .unwrap()
         .iter()
         .filter_map(|r| r["prefix"].as_str())
         .collect();
-    assert!(pfxs.contains(&"203.0.113.0/24"), "routes: {pfxs:?}");
-    assert!(pfxs.contains(&"198.18.0.0/24"), "routes: {pfxs:?}");
-    let speakers = get_json(&client, &format!("{}/speakers", svc.base)).await;
-    assert!(
-        speakers["speakers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|s| s["exporter_instance"] == "exp:exp-shared"),
-        "speaker must survive sibling Termination"
+    assert_eq!(
+        pfxs,
+        vec!["203.0.113.0/24"],
+        "exp scope must not contain sibling routes: {pfxs:?}"
     );
 
+    // conn1 Termination tears down ONLY the exp speaker; conn2 is a
+    // different SpeakerKey and is completely unaffected.
+    write_frame(&mut conn1, &termination_frame()).await;
     drop(conn1);
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    // Still intact after conn1's TCP close.
-    let routes2 = get_json(
-        &client,
-        &format!("{}/routes?speaker={speaker_key}", svc.base),
-    )
-    .await;
-    assert_eq!(routes2["routes"].as_array().unwrap().len(), 2);
-
-    // conn2 now terminates as the LAST connection: the deferred
-    // conn1 Termination plus conn2's own effective termination must
-    // tear down the speaker exactly once.
-    write_frame(&mut conn2, &termination_frame()).await;
-    drop(conn2);
-    wait_for("speaker torn down after last termination", || async {
+    wait_for("exp speaker torn down", || async {
         let insts = speaker_instances(&client, &svc.base).await;
         !insts.iter().any(|i| i == "exp:exp-shared")
     })
     .await;
-
-    // ── Order 2 (reversed): conn4 terminates first, conn3 closes last ──
-    let mut conn3 = TcpStream::connect(svc.bmp_addr).await.unwrap();
-    let mut conn4 = TcpStream::connect(svc.bmp_addr).await.unwrap();
-    for c in [&mut conn3, &mut conn4] {
-        write_frame(c, &initiation_frame("frr-shared")).await;
-    }
-    for (c, up, ann) in [(&mut conn3, &up1, &ann1), (&mut conn4, &up2, &ann2)] {
-        write_frame(c, up).await;
-        write_frame(c, ann).await;
-    }
-    wait_for("shared speaker re-established", || async {
-        let v = get_json(&client, &format!("{}/speakers", svc.base)).await;
-        v["speakers"].as_array().unwrap().iter().any(|s| {
-            s["exporter_instance"] == "exp:exp-shared" && s["peer_count"].as_u64() == Some(2)
-        })
-    })
-    .await;
-
-    // conn4 terminates first (deferred), then conn3 closes WITHOUT a
-    // Termination — the deferred frame must still apply at teardown.
-    write_frame(&mut conn4, &termination_frame()).await;
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    let routes3 = get_json(
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let conn_routes = get_json(
         &client,
-        &format!("{}/routes?speaker={speaker_key}", svc.base),
+        &format!("{}/routes?exporter_instance={conn_inst}", svc.base),
     )
     .await;
     assert_eq!(
-        routes3["routes"].as_array().unwrap().len(),
-        2,
-        "deferred Termination must not destroy sibling state"
+        conn_routes["routes"].as_array().unwrap().len(),
+        1,
+        "conn:* sibling state must survive exp:* Termination"
     );
-    drop(conn4);
-    drop(conn3); // EOF, no Termination — last connection consumes deferred frame
-    wait_for("speaker torn down via deferred termination", || async {
+
+    // conn2 terminates as the last connection of ITS scope.
+    write_frame(&mut conn2, &termination_frame()).await;
+    drop(conn2);
+    wait_for("conn speaker torn down", || async {
         let insts = speaker_instances(&client, &svc.base).await;
-        !insts.iter().any(|i| i == "exp:exp-shared")
+        insts.iter().all(|i| !i.starts_with("conn:"))
     })
     .await;
 
-    // Journal replay sees the same effective lifecycle: the Termination
-    // observations are durable and replay applies them — the speaker is
-    // gone after replay (no re-announcement follows).
+    // Replay reconstructs the same effective lifecycle.
     drop(state);
     let mut rib = RibManager::new(128).0;
     BmpJournal::replay_into_with_state(&bmp_path, &mut rib).unwrap();
     assert!(
-        rib.speaker(SpeakerKey::new(
-            "127.0.0.1".parse().unwrap(),
-            "exp:exp-shared"
-        ))
-        .is_none(),
-        "replay must apply effective Termination"
+        rib.speakers().iter().all(|s| {
+            !(s.source.exporter_instance == "exp:exp-shared"
+                || s.source.exporter_instance.starts_with("conn:"))
+        }),
+        "replay must not resurrect either terminated scope"
     );
 
     let _ = svc.shutdown.send(true);
+}
+
+// ── N. P0-3 Case A: frames after BMP Termination must not mutate state ───────
+
+#[tokio::test]
+async fn post_termination_frames_cannot_mutate_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = test_state(&dir, None).await;
+    let svc = start_tcp_services(&state).await;
+    let client = reqwest::Client::new();
+
+    let peer_ip = Ipv4Addr::new(192, 0, 2, 77);
+    let peer_as = 65077u32;
+    let (_i, up, ann) =
+        bonsai::routing_service::sample_bmp_session_frames(peer_ip, peer_as, [203, 0, 113], 100);
+    let (_i2, up2, ann2) =
+        bonsai::routing_service::sample_bmp_session_frames(peer_ip, peer_as, [198, 18, 0], 200);
+
+    let mut conn = TcpStream::connect(svc.bmp_addr).await.unwrap();
+    write_frame(&mut conn, &initiation_frame("frr-term")).await;
+    write_frame(&mut conn, &up).await;
+    write_frame(&mut conn, &ann).await;
+    wait_for("pre-termination route", || async {
+        speaker_instances(&client, &svc.base)
+            .await
+            .iter()
+            .any(|i| i.starts_with("conn:"))
+    })
+    .await;
+
+    // Terminate, then keep writing on the same TCP connection. A
+    // terminated BMP session accepts no further observations.
+    write_frame(&mut conn, &termination_frame()).await;
+    write_frame(&mut conn, &up2).await;
+    write_frame(&mut conn, &ann2).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let insts = speaker_instances(&client, &svc.base).await;
+    assert!(
+        insts.iter().all(|i| !i.starts_with("conn:")),
+        "speaker must stay terminated; post-Termination frames resurrected state: {insts:?}"
+    );
+    let speakers = get_json(&client, &format!("{}/speakers", svc.base)).await;
+    assert_eq!(speakers["speakers"].as_array().unwrap().len(), 0);
+
+    let _ = svc.shutdown.send(true);
+}
+
+// ── O. P0-3 Case D: clean Termination records no transport gap ───────────────
+
+#[tokio::test]
+async fn clean_termination_records_no_transport_gap() {
+    let dir = tempfile::tempdir().unwrap();
+    let bmp_path = dir.path().join("bmp.jsonl");
+    let db_path = dir.path().join(CONFIG_DB_FILE_NAME);
+    let dev_id = {
+        let store = SqliteStore::open(dir.path()).unwrap();
+        let d = store
+            .upsert_canonical_device(&canonical_device("10.60.0.9"), "test")
+            .unwrap();
+        store
+            .upsert_exporter_binding(
+                &loopback_binding("frr-clean", "exp-clean", &d.device_id),
+                "test",
+            )
+            .unwrap();
+        d.device_id
+    };
+    let _ = dev_id;
+    let state = test_state(&dir, Some(db_path)).await;
+    let svc = start_tcp_services(&state).await;
+    let client = reqwest::Client::new();
+
+    let (_i, up, ann) = bonsai::routing_service::sample_bmp_session_frames(
+        Ipv4Addr::new(192, 0, 2, 1),
+        65001,
+        [203, 0, 113],
+        100,
+    );
+    let mut conn = TcpStream::connect(svc.bmp_addr).await.unwrap();
+    write_frame(&mut conn, &initiation_frame("frr-clean")).await;
+    write_frame(&mut conn, &up).await;
+    write_frame(&mut conn, &ann).await;
+    wait_for("exp speaker live", || async {
+        speaker_instances(&client, &svc.base)
+            .await
+            .iter()
+            .any(|i| i == "exp:exp-clean")
+    })
+    .await;
+
+    // Clean BMP Termination followed by TCP close must NOT leave a
+    // transport-gap record: the session ended deliberately. Previously
+    // the trailing EOF was journaled as bmp_tcp_eof and pinned global
+    // completeness to "gap" for a dead speaker.
+    write_frame(&mut conn, &termination_frame()).await;
+    drop(conn);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let key = SpeakerKey::new("127.0.0.1".parse().unwrap(), "exp:exp-clean");
+    assert!(
+        !state.transport_gaps.read().await.contains_key(&key),
+        "clean Termination must not record a transport gap"
+    );
+    let health = get_json(&client, &format!("{}/health", svc.base)).await;
+    assert_ne!(
+        health["completeness_state"].as_str().unwrap_or(""),
+        "gap",
+        "dead speaker must not pin completeness to gap: {health}"
+    );
+
+    // Replay agrees: no gap record exists for the terminated speaker.
+    drop(state);
+    let mut rib = RibManager::new(128).0;
+    let outcome = BmpJournal::replay_into_with_state(&bmp_path, &mut rib).unwrap();
+    assert!(
+        outcome.transport_gaps.values().all(|g| {
+            !(g.speaker_addr == IpAddr::from([127, 0, 0, 1])
+                && g.exporter_instance == "exp:exp-clean")
+        }),
+        "replay must not surface a gap for the cleanly terminated speaker"
+    );
+
+    let _ = svc.shutdown.send(true);
+}
+
+// ── P. P0-2: journal write failure is observable and blocks retirement ───────
+
+#[tokio::test]
+async fn disconnect_journal_failure_is_observable_and_blocks_retirement() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = test_state(&dir, None).await;
+    let scope = "conn:exporter-fail".to_string();
+    let speaker = nat_addr();
+
+    // Establish a conn-scoped speaker with a route.
+    state
+        .ingest_bmp_message(initiation_msg(&scope, "frr-fail"), Some(7))
+        .await
+        .unwrap();
+    state
+        .ingest_bmp_message(peer_up_msg(&scope), Some(7))
+        .await
+        .unwrap();
+    state
+        .ingest_bmp_message(announce_msg(&scope, 100), Some(7))
+        .await
+        .unwrap();
+    let key = SpeakerKey::new(speaker, &scope);
+    assert!(state.rib.read().await.speaker(key).is_some());
+
+    // Inject a durable-write failure: the recorder must report it and
+    // mutate NOTHING (no in-memory gap, EOR state untouched).
+    state
+        .bmp_journal
+        .fail_writes
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let outcome = state
+        .record_transport_disconnect_for_key(key, &scope, Some(7), "tcp eof")
+        .await;
+    assert_eq!(outcome, TransportDisconnectOutcome::PersistenceFailed);
+    assert!(
+        !state.transport_gaps.read().await.contains_key(&key),
+        "failed persistence must not record an in-memory gap"
+    );
+    assert!(
+        state.rib.read().await.speaker(key).is_some(),
+        "live state must be left untouched on persistence failure"
+    );
+
+    // Recovery: with writes restored the same disconnect records durably.
+    state
+        .bmp_journal
+        .fail_writes
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    let outcome = state
+        .record_transport_disconnect_for_key(key, &scope, Some(7), "tcp eof")
+        .await;
+    assert_eq!(outcome, TransportDisconnectOutcome::Recorded);
+    assert!(state.transport_gaps.read().await.contains_key(&key));
+}
+
+// ── Q. P0-2/P0-3: disconnect recorder outcome matrix ─────────────────────────
+
+#[tokio::test]
+async fn disconnect_recorder_distinguishes_stale_recorded_no_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = test_state(&dir, None).await;
+    let scope = "exp:exp-matrix".to_string();
+    let speaker = nat_addr();
+    let key = SpeakerKey::new(speaker, &scope);
+
+    state
+        .ingest_bmp_message(initiation_msg(&scope, "frr-m"), Some(11))
+        .await
+        .unwrap();
+    state
+        .ingest_bmp_message(peer_up_msg(&scope), Some(11))
+        .await
+        .unwrap();
+
+    // Stale epoch: an older connection's disconnect cannot touch the
+    // newer session (Case C fencing primitive).
+    let out = state
+        .record_transport_disconnect_for_key(key, &scope, Some(10), "old eof")
+        .await;
+    assert_eq!(out, TransportDisconnectOutcome::Stale);
+    assert!(!state.transport_gaps.read().await.contains_key(&key));
+
+    // Active epoch: durably recorded.
+    let out = state
+        .record_transport_disconnect_for_key(key, &scope, Some(11), "tcp eof")
+        .await;
+    assert_eq!(out, TransportDisconnectOutcome::Recorded);
+    assert!(state.transport_gaps.read().await.contains_key(&key));
+
+    // Clean Termination removes the speaker AND clears the gap; a
+    // subsequent disconnect for the dead session is NoActiveSession —
+    // no meaningless gap is re-recorded (Case D).
+    state
+        .ingest_bmp_message(
+            bmp_msg(
+                &scope,
+                BmpPayload::Termination {
+                    reason_code: 0,
+                    reason_text: None,
+                },
+            ),
+            Some(11),
+        )
+        .await
+        .unwrap();
+    assert!(state.rib.read().await.speaker(key).is_none());
+    assert!(!state.transport_gaps.read().await.contains_key(&key));
+    let out = state
+        .record_transport_disconnect_for_key(key, &scope, Some(11), "tcp eof")
+        .await;
+    assert_eq!(out, TransportDisconnectOutcome::NoActiveSession);
+    assert!(!state.transport_gaps.read().await.contains_key(&key));
+}
+
+// ── R. P1-2: exporter-instance encoding cannot produce ambiguous ids ────────
+
+#[test]
+fn exporter_instance_encoding_is_unambiguous() {
+    // Typical values keep the historical readable form.
+    assert_eq!(
+        resolved_exporter_instance("default", "exp-frr-a"),
+        "exp:exp-frr-a"
+    );
+    assert_eq!(
+        resolved_exporter_instance("site-a", "router-01"),
+        "exp:site-a:router-01"
+    );
+
+    // Separator-bearing components must never serialize two distinct
+    // (scope, canonical) pairs to the same composite id.
+    let a = resolved_exporter_instance("a:b", "c");
+    let b = resolved_exporter_instance("a", "b:c");
+    assert_ne!(a, b, "ambiguous composite ids: {a} vs {b}");
+    let c = resolved_exporter_instance("a%3Ab", "c");
+    assert_ne!(a, c, "percent must itself be encoded: {a} vs {c}");
+
+    // And the composite ids must hash to distinct SpeakerKeys.
+    let addr: IpAddr = "10.0.0.1".parse().unwrap();
+    assert_ne!(
+        SpeakerKey::new(addr, &a),
+        SpeakerKey::new(addr, &b),
+        "distinct logical exporters must not share a SpeakerKey"
+    );
+
+    // A default-scope canonical id containing ':' cannot collide with a
+    // namespaced (scope, canonical) pair either.
+    let d = resolved_exporter_instance("default", "x:y");
+    let e = resolved_exporter_instance("x", "y");
+    assert_ne!(d, e);
+    assert_ne!(SpeakerKey::new(addr, &d), SpeakerKey::new(addr, &e));
 }

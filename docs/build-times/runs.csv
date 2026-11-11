@@ -67,3 +67,8 @@ date,command,scope,wall_seconds,result,notes
 2026-11-11,cargo build --bin bonsai-routing,bonsai-routing debug bin,~1115,pass,18m35s; sccache warm; needed for bn021c-routing:local lab image
 2026-11-11,docker build bn021c-routing:local,bn021c routing image,~60,pass,scratch image wrapping target/debug/bonsai-routing
 2026-11-11,lab/acceptance/bn021c-nat/up.sh,NAT acceptance bring-up,~120,pass,3 FRR exporters + peer + NAT + bonsai; BGP converged; scenarios A-G executed
+2026-11-11,cargo test --test bn021c_exporter_isolation (post-hardening),bn021c regression (17 tests),~900,pass,17/17 incl. same-claim conn isolation, post-Termination fencing, journal-failure outcomes, scope encoding
+2026-11-11,cargo check/test batch (bn021b bn005 rbmp-rib rbmp-store bn006_epoch_resync bn006_reconnect_projection r01_r04 r05_r06 bn022_graph_read_boundary),regression batch,~900,pass,all suites pass 0 failures; fmt --check fails only on pre-existing unrelated drift + fixed hunks in touched files
+2026-11-11,cargo clippy -p rbmp-core -p rbmp-rib -p rbmp-store --all-targets,clippy,~5,pass,warnings only all pre-existing style lints
+2026-11-11,cargo build --bin bonsai-routing,bonsai-routing debug bin,~285,pass,4m45s warm sccache after rustfmt touch of mod.rs
+2026-11-11,docker build bn021c-routing:local + BN021C_RESET=1 up.sh,NAT re-verification bring-up,~180,pass,lab rebuilt; runtime archived to _archive; concurrent same-claim now conn-isolated; sequential same-claim still merges (documented OPEN)
