@@ -17,6 +17,8 @@ fn config(dir: &std::path::Path) -> RoutingServiceConfig {
         internal_service_token: None,
         identity_db_path: None,
         identity_scope: None,
+        bmp_identity_mode: bonsai::routing_service::BmpIdentityMode::Verified,
+        bmp_mtls: None,
     }
 }
 

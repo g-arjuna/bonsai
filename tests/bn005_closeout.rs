@@ -17,6 +17,8 @@ fn conflicting_journals_rejected_before_open() {
         internal_service_token: Some("closure-token".into()),
         identity_db_path: None,
         identity_scope: None,
+        bmp_identity_mode: bonsai::routing_service::BmpIdentityMode::Verified,
+        bmp_mtls: None,
         bmp_journal_path: Some(dir.path().join("shared")),
         event_journal_path: Some(dir.path().join("shared")),
         ..Default::default()
@@ -457,6 +459,8 @@ async fn sparse_late_scoped_history_is_bounded_pageable_and_restart_stable() {
         internal_service_token: Some("late-history".into()),
         identity_db_path: None,
         identity_scope: None,
+        bmp_identity_mode: bonsai::routing_service::BmpIdentityMode::Verified,
+        bmp_mtls: None,
         ..Default::default()
     };
     let state = RoutingServiceState::new(cfg.clone()).await.unwrap();

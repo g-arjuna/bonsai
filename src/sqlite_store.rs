@@ -23,7 +23,7 @@ const DB_FILE: &str = CONFIG_DB_FILE_NAME;
 /// Schema version the management service migrates to. Read-only
 /// consumers (routing service) compare against this and fail closed
 /// when the database is older.
-pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 /// SQLite config store with versioned schema and audit trail.
 pub struct SqliteStore {
@@ -268,6 +268,22 @@ impl SqliteStore {
             .context("failed to create schema v3")?;
 
             db.execute("PRAGMA user_version=3", [])
+                .context("failed to set schema version")?;
+        }
+
+        // Version 4: BN-021f verified-ingress credential pinning.
+        // Additive only — `match_ingress_credential` stores the
+        // "sha256:<hex>" fingerprint of the authorized mTLS client
+        // certificate. NULL means the binding can never authorize a
+        // verified-ingress resolution (and remains claim-matchable in
+        // legacy compatibility mode).
+        if user_version < 4 {
+            let _ = db.execute(
+                "ALTER TABLE exporter_bindings ADD COLUMN match_ingress_credential TEXT",
+                [],
+            );
+
+            db.execute("PRAGMA user_version=4", [])
                 .context("failed to set schema version")?;
         }
 
@@ -1167,6 +1183,7 @@ impl SqliteStore {
             match_reported_identity: binding.match_reported_identity.clone(),
             match_exporter_claim: binding.match_exporter_claim.clone(),
             match_observation_domain: binding.match_observation_domain,
+            match_ingress_credential: binding.match_ingress_credential.clone(),
             provenance: binding.provenance,
             status: BindingStatus::Active,
             created_at_ns: existing.as_ref().map(|b| b.created_at_ns).unwrap_or(now),
@@ -1215,7 +1232,7 @@ impl SqliteStore {
         {
             let db = self.db.lock().unwrap();
             db.execute(
-                "INSERT INTO exporter_bindings (binding_id, scope, protocol, exporter_id, device_id, match_transport, match_reported_identity, match_exporter_claim, match_observation_domain, provenance, status, created_at_ns, updated_at_ns, created_by, updated_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) ON CONFLICT(binding_id) DO UPDATE SET scope=?2, protocol=?3, exporter_id=?4, device_id=?5, match_transport=?6, match_reported_identity=?7, match_exporter_claim=?8, match_observation_domain=?9, provenance=?10, status=?11, updated_at_ns=?13, updated_by=?15",
+                "INSERT INTO exporter_bindings (binding_id, scope, protocol, exporter_id, device_id, match_transport, match_reported_identity, match_exporter_claim, match_observation_domain, match_ingress_credential, provenance, status, created_at_ns, updated_at_ns, created_by, updated_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) ON CONFLICT(binding_id) DO UPDATE SET scope=?2, protocol=?3, exporter_id=?4, device_id=?5, match_transport=?6, match_reported_identity=?7, match_exporter_claim=?8, match_observation_domain=?9, match_ingress_credential=?10, provenance=?11, status=?12, updated_at_ns=?14, updated_by=?16",
                 params![
                     stored.binding_id,
                     stored.scope,
@@ -1226,6 +1243,7 @@ impl SqliteStore {
                     stored.match_reported_identity,
                     stored.match_exporter_claim,
                     stored.match_observation_domain.map(|d| d as i64),
+                    stored.match_ingress_credential,
                     provenance_str(stored.provenance),
                     status_str(stored.status),
                     stored.created_at_ns,
@@ -1255,7 +1273,7 @@ impl SqliteStore {
     ) -> Result<Option<crate::telemetry_identity::TrustedBinding>> {
         let db = self.db.lock().unwrap();
         let result = db.query_row(
-            "SELECT binding_id, scope, protocol, exporter_id, device_id, match_transport, match_reported_identity, match_exporter_claim, match_observation_domain, provenance, status, created_at_ns, updated_at_ns, created_by, updated_by FROM exporter_bindings WHERE binding_id = ?1",
+            "SELECT binding_id, scope, protocol, exporter_id, device_id, match_transport, match_reported_identity, match_exporter_claim, match_observation_domain, match_ingress_credential, provenance, status, created_at_ns, updated_at_ns, created_by, updated_by FROM exporter_bindings WHERE binding_id = ?1",
             params![binding_id],
             |row| binding_from_row(row),
         );
@@ -1277,7 +1295,7 @@ impl SqliteStore {
     ) -> Result<Vec<crate::telemetry_identity::TrustedBinding>> {
         let db = self.db.lock().unwrap();
         let mut sql = String::from(
-            "SELECT binding_id, scope, protocol, exporter_id, device_id, match_transport, match_reported_identity, match_exporter_claim, match_observation_domain, provenance, status, created_at_ns, updated_at_ns, created_by, updated_by FROM exporter_bindings WHERE 1=1",
+            "SELECT binding_id, scope, protocol, exporter_id, device_id, match_transport, match_reported_identity, match_exporter_claim, match_observation_domain, match_ingress_credential, provenance, status, created_at_ns, updated_at_ns, created_by, updated_by FROM exporter_bindings WHERE 1=1",
         );
         if !include_revoked {
             sql.push_str(" AND status != 'revoked'");
@@ -1409,11 +1427,12 @@ fn binding_from_row(
         match_reported_identity: row.get(6)?,
         match_exporter_claim: row.get(7)?,
         match_observation_domain: domain.map(|d| d as u32),
-        provenance: provenance_from_str(&row.get::<_, String>(9)?),
-        status: status_from_str(&row.get::<_, String>(10)?),
-        created_at_ns: row.get(11)?,
-        updated_at_ns: row.get(12)?,
-        created_by: row.get(13)?,
-        updated_by: row.get(14)?,
+        match_ingress_credential: row.get(9)?,
+        provenance: provenance_from_str(&row.get::<_, String>(10)?),
+        status: status_from_str(&row.get::<_, String>(11)?),
+        created_at_ns: row.get(12)?,
+        updated_at_ns: row.get(13)?,
+        created_by: row.get(14)?,
+        updated_by: row.get(15)?,
     })
 }

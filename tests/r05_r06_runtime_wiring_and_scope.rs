@@ -170,6 +170,8 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
         internal_service_token: Some(token.to_string()),
         identity_db_path: None,
         identity_scope: None,
+        bmp_identity_mode: bonsai::routing_service::BmpIdentityMode::Verified,
+        bmp_mtls: None,
     };
     let routing_state = RoutingServiceState::new(cfg)
         .await

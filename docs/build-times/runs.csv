@@ -72,3 +72,9 @@ date,command,scope,wall_seconds,result,notes
 2026-11-11,cargo clippy -p rbmp-core -p rbmp-rib -p rbmp-store --all-targets,clippy,~5,pass,warnings only all pre-existing style lints
 2026-11-11,cargo build --bin bonsai-routing,bonsai-routing debug bin,~285,pass,4m45s warm sccache after rustfmt touch of mod.rs
 2026-11-11,docker build bn021c-routing:local + BN021C_RESET=1 up.sh,NAT re-verification bring-up,~180,pass,lab rebuilt; runtime archived to _archive; concurrent same-claim now conn-isolated; sequential same-claim still merges (documented OPEN)
+2026-11-11,cargo test --test bn021f_authenticated_ingress (initial),bn021f auth ingress suite,~890,fail,first compile+link of rcgen/rustls test deps; CryptoProvider panic + identity-store ordering bugs found
+2026-11-11,cargo test --test bn021f_authenticated_ingress (final),bn021f auth ingress suite,~45,pass,9/9 tests A-I: verified vexp resolution, sequential+conflicting claim rejection, unauth transport, revoked binding, reconnect, multi-conn, replay provenance
+2026-11-11,cargo build --bin bonsai-routing (BN-021f mTLS),bonsai-routing debug bin,245,pass,4m07s warm sccache; needed for bn021c-routing:local lab image
+2026-11-11,docker build bn021c-routing:local (BN-021f binary),bn021c routing image,~15,pass,scratch image wrapping refreshed target/debug/bonsai-routing
+2026-11-11,BN021C_RESET=1 up.sh (BN-021f mTLS lab),NAT acceptance bring-up,~120,pass,v3 client certs; vexp:exp-frr-{a,b} resolved, frr-c conn:* isolated; BGP converged
+2026-11-11,cargo test regression batch (bn021b bn005 rbmp-rib rbmp-store bn006_epoch bn006_reconnect r01_r04 r05_r06 bn022),regression batch,~1200,pass,all suites 0 failures after bn021c fixture updates (schema v4 + device_id-null assertion per BN-021f spec)

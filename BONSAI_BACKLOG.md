@@ -164,7 +164,9 @@ before claiming equivalent history or enabling it as an authority.
 - Acceptance: independent BMP sessions sharing a NAT address never merge
   route/peer state — PARTIAL: verified for distinct claims and
   concurrent identical claims (post-hardening); sequential identical
-  claims still coalesce — OPEN pending BN-021f authenticated ingress.
+  claims still coalesce — RESOLVED by BN-021f authenticated ingress
+  (sequential same-claim now fails closed into `conn:*`; verified
+  live in the mTLS NAT lab).
 
 **BN-021d — NetFlow v9/IPFIX identity and template lifecycle** — PARTIAL.
 - Done: template cache keyed by UDP SocketAddr + protocol version +
@@ -185,10 +187,31 @@ before claiming equivalent history or enabling it as an authority.
 - OTLP: trusted resource/service identity, not collector IP.
 - sFlow: keep payload agent address; validate trust/binding.
 
-**BN-021f — Production acceptance** — OPEN.
+**BN-021f — Authenticated BMP ingress** — IMPLEMENTED + LAB VERIFIED (11 November).
+- Done: mutual-TLS BMP ingress terminated in `bonsai-routing`
+  (`bmp_mtls` config; `BONSAI_ROUTING_BMP_TLS_{CERT,KEY,CLIENT_CA}`);
+  verified principal = SHA-256 of the client-cert DER, produced only
+  by the TLS layer; `match_ingress_credential` binding pin (schema v4,
+  additive/idempotent migration); `vexp:*` verified scope namespace
+  fencing legacy claim-based `exp:*` journals; `BmpIdentityMode`
+  Verified (default) vs explicit unsafe ClaimCompatible; conn:* scopes
+  never carry `device_id`; live NAT lab with per-exporter client certs
+  behind one translated source — sequential same-claim impersonation
+  rejected, legitimate reconnect/multi-connection/replay verified.
+- Pending: active-session revocation for already-connected exporters
+  (bindings re-read per NEW connection only); certificate-rotation
+  runbook; production exporter mTLS support or equivalent authenticated
+  sidecar (lab uses `bmp_tls_proxy.py`); cross-protocol identity
+  regression for NetFlow/IPFIX (BN-021d gate).
+- Evidence: `docs/merger/evidence/2026-11-11-bn021f-authenticated-bmp/`;
+  tests `tests/bn021f_authenticated_ingress.rs` 9/9.
+
+**BN-021g — Production acceptance** — OPEN (renamed from BN-021f slot;
+see above for the implemented slice).
 - Cross-protocol identity regression tests; multi-site overlapping
   addresses; unknown/conflicting handling; collector restart/failover;
-  source-alias migration + journal replay; identity metrics/diagnostics.
+  source-alias migration + journal replay; identity metrics/diagnostics;
+  active-session credential/binding revocation design.
 
 ### Source-audited correctness refinements (existing BN ownership)
 

@@ -72,6 +72,8 @@ async fn legacy_journal_and_checkpoint_rebuild_without_changing_sequences() {
         internal_service_token: None,
         identity_db_path: None,
         identity_scope: None,
+        bmp_identity_mode: bonsai::routing_service::BmpIdentityMode::Verified,
+        bmp_mtls: None,
     };
     let mut missing_raw = cfg.clone();
     missing_raw.bmp_journal_path = None;

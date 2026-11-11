@@ -294,6 +294,8 @@ async fn handle_routing_restart(AxumState(ctx): AxumState<Arc<ControlContext>>) 
         internal_service_token: Some("bn003-token".to_string()),
         identity_db_path: None,
         identity_scope: None,
+        bmp_identity_mode: bonsai::routing_service::BmpIdentityMode::Verified,
+        bmp_mtls: None,
     };
 
     let new_state = match RoutingServiceState::new(config).await {
@@ -376,6 +378,8 @@ async fn test_bn003_live_routing_browser_acceptance() -> Result<()> {
         internal_service_token: Some("bn003-token".to_string()),
         identity_db_path: None,
         identity_scope: None,
+        bmp_identity_mode: bonsai::routing_service::BmpIdentityMode::Verified,
+        bmp_mtls: None,
     };
 
     let routing_state = RoutingServiceState::new(routing_config)

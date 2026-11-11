@@ -39,6 +39,7 @@ fn binding(scope: &str, protocol: &str, exporter_id: &str, device_id: &str) -> T
         match_reported_identity: None,
         match_exporter_claim: None,
         match_observation_domain: None,
+        match_ingress_credential: None,
         provenance: BindingProvenance::OperatorProvisioned,
         status: BindingStatus::Active,
         created_at_ns: 0,

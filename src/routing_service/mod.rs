@@ -11,29 +11,32 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::telemetry_identity::{
-    identity_from_bmp_observation, IdentityResolver, DEFAULT_IDENTITY_SCOPE,
+    DEFAULT_IDENTITY_SCOPE, IdentityResolver, IngressAuthMethod, VerifiedIngressPrincipal,
+    identity_from_bmp_observation,
 };
 use axum::{
+    Json, Router,
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
 use chrono::{DateTime, Utc};
 use rbmp_core::bgp::types::{AfiSafi, BgpDecodeContext, FamilySupportStatus};
 use rbmp_core::bmp::parser::{
-    parse_bmp_message_with_context, parse_peer_header, read_bmp_frame, DEFAULT_MAX_FRAME,
+    DEFAULT_MAX_FRAME, parse_bmp_message_with_context, parse_peer_header, read_bmp_frame,
 };
 use rbmp_core::bmp::types::{BmpMessage, BmpPayload, PeerKey, RibType, SpeakerKey};
+use rbmp_rib::RibManager;
 use rbmp_rib::event::{RibEventPayload, RouteAction};
 use rbmp_rib::session::PeerState;
-use rbmp_rib::RibManager;
 use rbmp_store::{BmpJournal, PrefixHistoryItem, RibEventJournal};
 use serde::{Deserialize, Serialize};
-use tokio::io::BufReader;
-use tokio::net::TcpListener;
+use sha2::{Digest, Sha256};
+use tokio::io::{AsyncRead, AsyncWrite, BufReader, ReadBuf};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
+use tokio_rustls::TlsAcceptor;
 use uuid::Uuid;
 
 pub const ROUTING_API_VERSION: &str = "v1";
@@ -62,6 +65,16 @@ pub struct RoutingServiceConfig {
     /// reachable; it is NEVER derived from self-reported BMP sysName.
     #[serde(default)]
     pub identity_scope: Option<String>,
+    /// Identity resolution policy for the BMP listener (BN-021f).
+    /// Defaults to [`BmpIdentityMode::Verified`] — the secure mode.
+    #[serde(default)]
+    pub bmp_identity_mode: BmpIdentityMode,
+    /// Optional mutual-TLS termination for the BMP listener (BN-021f).
+    /// When set, every BMP connection must complete a client-certificate
+    /// handshake against `client_ca_path`; the verified credential
+    /// fingerprint feeds authoritative identity resolution.
+    #[serde(default)]
+    pub bmp_mtls: Option<BmpMtlsConfig>,
     pub max_frame_bytes: u32,
     #[serde(skip_serializing)]
     pub internal_service_token: Option<String>,
@@ -87,12 +100,78 @@ impl Default for RoutingServiceConfig {
                 .ok()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
+            bmp_identity_mode: match std::env::var("BONSAI_ROUTING_BMP_IDENTITY_MODE")
+                .ok()
+                .as_deref()
+            {
+                Some("claim_compat") | Some("claim-compatible") => BmpIdentityMode::ClaimCompatible,
+                _ => BmpIdentityMode::Verified,
+            },
+            bmp_mtls: {
+                let cert = std::env::var("BONSAI_ROUTING_BMP_TLS_CERT").ok();
+                let key = std::env::var("BONSAI_ROUTING_BMP_TLS_KEY").ok();
+                let ca = std::env::var("BONSAI_ROUTING_BMP_TLS_CLIENT_CA").ok();
+                let paths = [
+                    cert.as_ref().map(PathBuf::from),
+                    key.as_ref().map(PathBuf::from),
+                    ca.as_ref().map(PathBuf::from),
+                ];
+                if paths.iter().all(Option::is_some) {
+                    Some(BmpMtlsConfig {
+                        cert_path: paths[0].clone().unwrap(),
+                        key_path: paths[1].clone().unwrap(),
+                        client_ca_path: paths[2].clone().unwrap(),
+                    })
+                } else if paths.iter().all(Option::is_none) {
+                    None
+                } else {
+                    // Partial configuration is a deployment error;
+                    // surface it via validate() with empty paths.
+                    Some(BmpMtlsConfig {
+                        cert_path: paths[0].clone().unwrap_or_default(),
+                        key_path: paths[1].clone().unwrap_or_default(),
+                        client_ca_path: paths[2].clone().unwrap_or_default(),
+                    })
+                }
+            },
             max_frame_bytes: DEFAULT_MAX_FRAME,
             internal_service_token: std::env::var("BONSAI_ROUTING_SERVICE_TOKEN")
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
         }
     }
+}
+
+/// BMP listener identity-resolution policy (BN-021f).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BmpIdentityMode {
+    /// Secure default: canonical `vexp:*` attribution requires a
+    /// transport-verified principal (mutually-authenticated TLS client
+    /// certificate) mapped to a credential-pinned trusted binding.
+    /// Unauthenticated/plaintext connections are always
+    /// connection-isolated and never receive device attribution.
+    /// Historical claim-based `exp:*` journal records remain readable
+    /// but can never be joined by new connections.
+    #[default]
+    Verified,
+    /// Explicitly UNSAFE compatibility mode retaining BN-021c
+    /// claim-based resolution: self-reported BMP sysName claims may
+    /// promote connections into `exp:*` scopes. Never enable for
+    /// production attribution — a name match is not ownership proof.
+    ClaimCompatible,
+}
+
+/// Mutual-TLS termination settings for the BMP listener (BN-021f).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BmpMtlsConfig {
+    /// PEM-encoded server certificate chain.
+    pub cert_path: PathBuf,
+    /// PEM-encoded server private key.
+    pub key_path: PathBuf,
+    /// PEM file with the trusted client-CA certificate(s) used to
+    /// verify exporter client certificates.
+    pub client_ca_path: PathBuf,
 }
 
 impl RoutingServiceConfig {
@@ -108,6 +187,20 @@ impl RoutingServiceConfig {
                 "max_frame_bytes ({}) must be between 6 and 16777216",
                 self.max_frame_bytes
             ));
+        }
+        if let Some(mtls) = &self.bmp_mtls {
+            for (name, p) in [
+                ("cert_path", &mtls.cert_path),
+                ("key_path", &mtls.key_path),
+                ("client_ca_path", &mtls.client_ca_path),
+            ] {
+                if p.as_os_str().is_empty() {
+                    return Err(format!(
+                        "bmp_mtls.{name} is required when BMP mTLS is configured \
+                         (set BONSAI_ROUTING_BMP_TLS_CERT/_KEY/_CLIENT_CA together)"
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -313,6 +406,93 @@ pub fn resolved_exporter_instance(identity_scope: &str, canonical: &str) -> Stri
     }
 }
 
+/// Build the `vexp:*` logical-exporter scope for a VERIFIED-ingress
+/// resolution (BN-021f). The distinct `vexp:` namespace is deliberate
+/// provenance fencing: `exp:*` records in existing journals were
+/// attributed from self-reported claims and must never be joined or
+/// contaminated by authenticated state. Verified and claim-based
+/// resolutions therefore occupy disjoint speaker namespaces; a
+/// deployment enabling verified mode on top of claim-era journals
+/// keeps the historical speakers frozen as legacy last-known state
+/// (operators should archive/reset journals when cutting over).
+pub fn verified_exporter_instance(identity_scope: &str, canonical: &str) -> String {
+    if identity_scope == DEFAULT_IDENTITY_SCOPE {
+        format!("vexp:{}", encode_exporter_component(canonical))
+    } else {
+        format!(
+            "vexp:{}:{}",
+            encode_exporter_component(identity_scope),
+            encode_exporter_component(canonical)
+        )
+    }
+}
+
+/// Build the mutual-TLS acceptor for the BMP listener (BN-021f).
+/// Client certificates are mandatory: the verifier is built from
+/// `client_ca_path` and rustls rejects handshakes without a certificate
+/// chaining to it. Shared by the `bonsai-routing` binary and tests.
+pub fn build_bmp_mtls_acceptor(cfg: &BmpMtlsConfig) -> anyhow::Result<TlsAcceptor> {
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+    let cert_pem = std::fs::read(&cfg.cert_path).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to read BMP TLS cert '{}': {e}",
+            cfg.cert_path.display()
+        )
+    })?;
+    let key_pem = std::fs::read(&cfg.key_path).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to read BMP TLS key '{}': {e}",
+            cfg.key_path.display()
+        )
+    })?;
+    let ca_pem = std::fs::read(&cfg.client_ca_path).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to read BMP client CA '{}': {e}",
+            cfg.client_ca_path.display()
+        )
+    })?;
+
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_pem.as_slice())
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| anyhow::anyhow!("failed to parse BMP TLS certificate PEM: {e}"))?;
+    if certs.is_empty() {
+        anyhow::bail!("no certificates found in BMP TLS cert file");
+    }
+    let key = rustls_pemfile::private_key(&mut key_pem.as_slice())
+        .map_err(|e| anyhow::anyhow!("failed to parse BMP TLS key PEM: {e}"))?
+        .ok_or_else(|| anyhow::anyhow!("no private key found in BMP TLS key file"))?;
+
+    let mut roots = rustls::RootCertStore::empty();
+    let ca_certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut ca_pem.as_slice())
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| anyhow::anyhow!("failed to parse BMP client CA PEM: {e}"))?;
+    if ca_certs.is_empty() {
+        anyhow::bail!("no CA certificates found in BMP client CA file");
+    }
+    let (added, _ignored) = roots.add_parsable_certificates(ca_certs);
+    if added == 0 {
+        anyhow::bail!("no usable BMP client CA certificates parsed");
+    }
+
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+        Arc::new(roots),
+        provider.clone(),
+    )
+    .build()
+    .map_err(|e| anyhow::anyhow!("failed to build BMP client-cert verifier: {e}"))?;
+
+    let server_config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| anyhow::anyhow!("invalid BMP TLS protocol versions: {e}"))?
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(certs, PrivateKeyDer::try_from(key)?)
+        .map_err(|e| anyhow::anyhow!("failed to build BMP mTLS ServerConfig: {e}"))?;
+
+    Ok(TlsAcceptor::from(Arc::new(server_config)))
+}
+
 /// Outcome of resolving a BMP connection's Initiation evidence against
 /// the trusted binding store.
 #[derive(Debug, Clone)]
@@ -473,21 +653,49 @@ impl RoutingServiceState {
     }
 
     /// Resolve a BMP connection's Initiation evidence against trusted
-    /// bindings (BN-021c).
+    /// bindings.
     ///
-    /// - `Resolved` → stable `exp:{canonical_exporter_id}` scope shared
-    ///   by every connection that resolves identically (multi-instance
-    ///   exporters such as FRR global+VRF stay associated).
-    /// - `Provisional`/`Unknown`/`Ambiguous`/`Conflicting` → isolated
-    ///   `conn:{connection_id}` scope. Unresolved exporters are never
-    ///   promoted into canonical device state, and ambiguous or
-    ///   contradictory evidence fails closed into isolation.
+    /// `verified` is the transport-authenticated principal established
+    /// by the ingress layer (mTLS client certificate, BN-021f) — `None`
+    /// for plaintext/unauthenticated transports. It is the ONLY input
+    /// allowed to produce canonical attribution; BMP Initiation fields
+    /// remain self-reported evidence.
+    ///
+    /// - [`BmpIdentityMode::Verified`] (default): only
+    ///   `resolve_verified_ingress` may produce authoritative state —
+    ///   a credential-pinned binding must match the verified
+    ///   fingerprint, and the resolved scope is the provenance-fenced
+    ///   `vexp:*` namespace. Everything else gets an isolated
+    ///   `conn:{id}` scope with `device_id = None`.
+    /// - [`BmpIdentityMode::ClaimCompatible`] (explicitly unsafe):
+    ///   BN-021c claim-based resolution — `Resolved` → `exp:*` scope,
+    ///   everything else → `conn:*` isolation.
+    /// Resolve a BMP connection with no transport-verified principal
+    /// (plaintext/unauthenticated path). Equivalent to
+    /// [`Self::resolve_bmp_exporter_with_ingress`] with `verified = None`.
     pub fn resolve_bmp_exporter(
         &self,
         speaker_addr: IpAddr,
         connection_id: &str,
         sys_name: Option<&str>,
         sys_descr: Option<&str>,
+    ) -> SpeakerResolution {
+        self.resolve_bmp_exporter_with_ingress(
+            speaker_addr,
+            connection_id,
+            sys_name,
+            sys_descr,
+            None,
+        )
+    }
+
+    pub fn resolve_bmp_exporter_with_ingress(
+        &self,
+        speaker_addr: IpAddr,
+        connection_id: &str,
+        sys_name: Option<&str>,
+        sys_descr: Option<&str>,
+        verified: Option<&VerifiedIngressPrincipal>,
     ) -> SpeakerResolution {
         let provisional_claim = sys_name
             .map(str::trim)
@@ -503,10 +711,85 @@ impl RoutingServiceState {
         );
         // The scope is the operator-configured trusted ingress scope —
         // never inferred from the self-reported sysName (BN-021c/P0-D).
-        let observed =
+        let mut observed =
             identity_from_bmp_observation(&probe, sys_name, self.config.identity_scope.clone());
         let _ = sys_descr;
         let bindings = self.trusted_bmp_bindings();
+
+        if self.config.bmp_identity_mode == BmpIdentityMode::Verified {
+            // ── BN-021f verified-ingress resolution ──
+            let Some(principal) = verified else {
+                // Plaintext/unauthenticated transport: never authoritative.
+                return SpeakerResolution {
+                    scope: ExporterScope {
+                        exporter_instance: format!("conn:{connection_id}"),
+                        exporter_id: sys_name
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(|n| format!("bmp:{n}")),
+                        device_id: None,
+                    },
+                    status: "unauthenticated",
+                    binding_id: None,
+                };
+            };
+            observed = observed.with_verified_ingress(principal.clone());
+            let resolution =
+                IdentityResolver::resolve_verified_ingress(&observed, &bindings, principal);
+            return match resolution.status {
+                crate::telemetry_identity::IdentityStatus::Resolved => {
+                    let canonical = resolution
+                        .canonical_exporter_id
+                        .clone()
+                        .unwrap_or_else(|| provisional_claim.clone());
+                    SpeakerResolution {
+                        scope: ExporterScope {
+                            exporter_instance: verified_exporter_instance(
+                                observed.resolution_scope(),
+                                &canonical,
+                            ),
+                            exporter_id: Some(canonical),
+                            device_id: resolution.device_id.clone(),
+                        },
+                        status: "resolved",
+                        binding_id: resolution.binding_id.clone(),
+                    }
+                }
+                status => {
+                    if !matches!(
+                        status,
+                        crate::telemetry_identity::IdentityStatus::Provisional
+                            | crate::telemetry_identity::IdentityStatus::Unknown
+                    ) {
+                        tracing::warn!(
+                            %speaker_addr,
+                            ?status,
+                            credential = %principal.credential_fingerprint,
+                            "verified BMP credential failed binding resolution; isolating connection scope"
+                        );
+                    }
+                    SpeakerResolution {
+                        scope: ExporterScope {
+                            exporter_instance: format!("conn:{connection_id}"),
+                            exporter_id: sys_name
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                                .map(|n| format!("bmp:{n}")),
+                            device_id: None,
+                        },
+                        status: match status {
+                            crate::telemetry_identity::IdentityStatus::Ambiguous => "ambiguous",
+                            crate::telemetry_identity::IdentityStatus::Conflicting => "conflicting",
+                            crate::telemetry_identity::IdentityStatus::Provisional => "provisional",
+                            _ => "unknown",
+                        },
+                        binding_id: None,
+                    }
+                }
+            };
+        }
+
+        // ── BN-021c claim-compatible resolution (explicitly unsafe) ──
         let resolution = IdentityResolver::resolve(&observed, &bindings);
 
         match resolution.status {
@@ -916,11 +1199,82 @@ impl RoutingServiceState {
     }
 }
 
-/// Spawn a bounded TCP BMP listener that feeds accepted frames into `RoutingServiceState`.
+/// Per-connection BMP byte stream: plaintext TCP or a mutually-
+/// authenticated TLS session (BN-021f). Both implement
+/// `AsyncRead`/`AsyncWrite` so the frame loop is transport-agnostic.
+enum BmpIo {
+    Plain(TcpStream),
+    Tls(tokio_rustls::server::TlsStream<TcpStream>),
+}
+
+impl AsyncRead for BmpIo {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            BmpIo::Plain(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+            BmpIo::Tls(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for BmpIo {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            BmpIo::Plain(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+            BmpIo::Tls(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+        }
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            BmpIo::Plain(s) => std::pin::Pin::new(s).poll_flush(cx),
+            BmpIo::Tls(s) => std::pin::Pin::new(s).poll_flush(cx),
+        }
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            BmpIo::Plain(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+            BmpIo::Tls(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
+/// Extract the verified ingress principal from a completed mTLS
+/// session: SHA-256 of the DER-encoded leaf client certificate. This is
+/// the ONLY producer of [`VerifiedIngressPrincipal`] — it can never be
+/// influenced by BMP payload content.
+fn mtls_peer_principal(
+    tls: &tokio_rustls::server::TlsStream<TcpStream>,
+) -> Option<VerifiedIngressPrincipal> {
+    let (_, conn) = tls.get_ref();
+    let leaf = conn.peer_certificates()?.first()?;
+    let digest = Sha256::digest(leaf.as_ref());
+    Some(VerifiedIngressPrincipal {
+        method: IngressAuthMethod::MutualTls,
+        credential_fingerprint: format!("sha256:{digest:x}"),
+    })
+}
+
+/// Spawn a bounded BMP listener that feeds accepted frames into `RoutingServiceState`.
 ///
-/// BN-021c exporter isolation: every accepted TCP connection must open
-/// with a BMP Initiation (RFC 7854 §4.4). Its sysName/sysDescr evidence
-/// is resolved against the trusted binding store:
+/// `mtls_acceptor`: when `Some`, every accepted TCP connection must
+/// complete a mutual-TLS handshake (client certificate chaining to the
+/// configured CA) before any BMP byte is read. The verified credential
+/// fingerprint is passed to identity resolution; plaintext or
+/// unauthenticated connections can never obtain canonical attribution
+/// under [`BmpIdentityMode::Verified`].
 ///
 /// - `Resolved` → the connection joins the stable `exp:{exporter_id}`
 ///   speaker scope. Connections positively associated with the same
@@ -938,6 +1292,7 @@ impl RoutingServiceState {
 /// transport gap as before.
 pub async fn run_bmp_listener(
     listener: TcpListener,
+    mtls_acceptor: Option<TlsAcceptor>,
     state: Arc<RoutingServiceState>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
@@ -964,11 +1319,40 @@ pub async fn run_bmp_listener(
             accept_res = listener.accept() => {
                 let Ok((stream, peer_sock)) = accept_res else { continue; };
                 let speaker_ip = peer_sock.ip();
+                // ── Transport authentication (BN-021f) ──
+                // mTLS termination happens BEFORE any BMP byte is
+                // read: a failed or timed-out handshake yields no
+                // verified principal and no state. The principal is
+                // derived solely from the peer certificate.
+                let (io, verified) = match &mtls_acceptor {
+                    Some(acceptor) => {
+                        match tokio::time::timeout(
+                            Duration::from_secs(10),
+                            acceptor.accept(stream),
+                        )
+                        .await
+                        {
+                            Ok(Ok(tls)) => {
+                                let principal = mtls_peer_principal(&tls);
+                                (BmpIo::Tls(tls), principal)
+                            }
+                            Ok(Err(e)) => {
+                                tracing::debug!(%speaker_ip, error = %e, "BMP mTLS handshake rejected");
+                                continue;
+                            }
+                            Err(_) => {
+                                tracing::debug!(%speaker_ip, "BMP mTLS handshake timed out");
+                                continue;
+                            }
+                        }
+                    }
+                    None => (BmpIo::Plain(stream), None),
+                };
                 let st = Arc::clone(&state);
                 let sessions = Arc::clone(&live_sessions);
                 let deferred = Arc::clone(&deferred_terminations);
                 tokio::spawn(async move {
-                    let mut reader = BufReader::new(stream);
+                    let mut reader = BufReader::new(io);
                     let hdr_timeout = Duration::from_secs(30);
                     let body_timeout = Duration::from_secs(10);
                     let bmp_trace = std::env::var("BONSAI_BMP_TRACE").is_ok_and(|v| v == "1");
@@ -1014,11 +1398,12 @@ pub async fn run_bmp_listener(
                         };
 
                     let connection_id = Uuid::new_v4().simple().to_string();
-                    let resolution = st.resolve_bmp_exporter(
+                    let resolution = st.resolve_bmp_exporter_with_ingress(
                         speaker_ip,
                         &connection_id,
                         sys_name.as_deref(),
                         sys_descr.as_deref(),
+                        verified.as_ref(),
                     );
                     let mut scope = resolution.scope;
 
@@ -1027,20 +1412,22 @@ pub async fn run_bmp_listener(
                         // Lock ordering: `sessions` is only ever acquired before `rib`
                         // (never the reverse), so holding it across the rib write is safe.
                         let mut live = sessions.lock().await;
-                        // P0-1 hardening: at most ONE live connection may
-                        // hold a resolved `exp:*` speaker scope. BMP
-                        // sysName is a self-reported claim — a second
-                        // simultaneous connection presenting the same
-                        // claim (impostor or legitimate multi-session
+                        // P0-1/BN-021f hardening: at most ONE live
+                        // connection may hold a CLAIM-resolved `exp:*`
+                        // speaker scope. BMP sysName is a
+                        // self-reported claim — a second simultaneous
+                        // connection presenting the same claim
+                        // (impostor or legitimate multi-session
                         // exporter) cannot be proven to share exporter
-                        // ownership, so it is isolated into its own
-                        // `conn:*` scope instead of merging authoritative
-                        // speaker/RIB state. Resolved attribution fields
-                        // are preserved; only the shared speaker state is
-                        // denied. Sequential same-claim connections still
-                        // rejoin the persistent `exp:*` scope (indistin-
-                        // guishable from a legitimate reconnect) — full
-                        // resolution requires authenticated ingress.
+                        // ownership in claim-compatible mode, so it is
+                        // isolated into its own `conn:*` scope instead
+                        // of merging authoritative speaker/RIB state.
+                        // `vexp:*` verified scopes are exempt: multiple
+                        // connections presenting the SAME verified
+                        // credential legitimately share the authorized
+                        // exporter (FRR global+VRF sessions). Isolated
+                        // `conn:*` scopes NEVER carry device
+                        // attribution — the claim remains evidence-only.
                         if scope.exporter_instance.starts_with("exp:") {
                             let claimed = scope.speaker_key(speaker_ip);
                             if live.get(&claimed).is_some_and(|&(_, c)| c > 0) {
@@ -1055,7 +1442,7 @@ pub async fn run_bmp_listener(
                                 scope = ExporterScope {
                                     exporter_instance: format!("conn:{connection_id}"),
                                     exporter_id: scope.exporter_id.clone(),
-                                    device_id: scope.device_id.clone(),
+                                    device_id: None,
                                 };
                             }
                         }
@@ -1714,7 +2101,7 @@ fn speaker_matches_filter(speaker_addr: IpAddr, exporter_instance: &str, filter:
 /// legacy/unspecified scopes are explicitly `legacy_unresolved`.
 fn speaker_identity_status(source: &rbmp_core::bmp::types::ObservationSource) -> &'static str {
     let inst = source.exporter_instance.as_str();
-    if source.device_id.is_some() || inst.starts_with("exp:") {
+    if source.device_id.is_some() || inst.starts_with("exp:") || inst.starts_with("vexp:") {
         "resolved"
     } else if inst.starts_with("conn:") {
         "provisional"
@@ -1833,11 +2220,7 @@ pub async fn build_peers_json(state: &RoutingServiceState, q: &PeersQuery) -> se
             let completeness = if has_transport_gap {
                 "gap"
             } else if peer.state == PeerState::Down {
-                if peer.llgr_active {
-                    "stale"
-                } else {
-                    "gap"
-                }
+                if peer.llgr_active { "stale" } else { "gap" }
             } else if !peer.eor_families.is_empty() {
                 "complete_for_observed_view"
             } else {

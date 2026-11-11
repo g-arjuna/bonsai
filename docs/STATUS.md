@@ -580,6 +580,36 @@ evidence: `docs/merger/evidence/2026-11-11-bn021c-pr2-review/`.
 Merge recommendation: Outcome B — mergeable as restricted partial
 capability with explicit acceptance of the same-claim limitation.
 
+BN-021f authenticated BMP ingress (11 November): the BN-021c P0
+identity-attribution gate is now closed for the default deployment
+mode. `bonsai-routing` can terminate mutual TLS on the BMP listener
+(`bmp_mtls`; env `BONSAI_ROUTING_BMP_TLS_{CERT,KEY,CLIENT_CA}`); the
+verified principal is the SHA-256 of the client-certificate DER,
+produced only by the TLS layer — never from BMP payload fields.
+Trusted bindings gained `match_ingress_credential` (schema v4,
+additive migration); `IdentityResolver::resolve_verified_ingress`
+authorizes only credential-pinned bindings, with the existing
+evidence/contradiction rules. Verified resolutions get the
+provenance-fenced `vexp:*` scope namespace — legacy claim-based `exp:*`
+journal records stay readable but can never be joined by new
+connections, and replay never upgrades unverified provenance.
+`BmpIdentityMode::Verified` is the default; plaintext/unauthenticated
+or unbound-credential connections always isolate into `conn:*` with
+`device_id = None` (also fixing the BN-021c defect where an isolated
+same-claim sibling retained `device_id`). `ClaimCompatible` remains an
+explicit, unsafe opt-in. Live NAT lab (`lab/acceptance/bn021c-nat`)
+now runs FRR → per-exporter mTLS shim → shared SNAT source → Bonsai:
+sequential same-claim impersonation (the exact BN-021c P0 repro) is
+rejected, legitimate reconnects keep canonical identity, SIGKILL
+replay preserves verified provenance. Verified: bn021f suite 9/9,
+bn021c 17/17, bn021b 13/13, bn005_closeout 11/11, rbmp-rib/rbmp-store,
+bn006, r01_r04, r05_r06, bn022 — 0 failures; clippy warnings only
+plus one pre-existing `never_loop` error in untouched
+`src/http_server/device.rs`. Remaining: active-session revocation for
+already-connected exporters, cert-rotation runbook, production
+exporter mTLS story. Evidence:
+`docs/merger/evidence/2026-11-11-bn021f-authenticated-bmp/`.
+
 BN-022 containment slice (10 November): ad-hoc graph reads are now
 denied-by-default for non-admin principals. `src/graph/explorer.rs`
 gained `GraphReadAccess` + `validate_query_for_access`: a positive

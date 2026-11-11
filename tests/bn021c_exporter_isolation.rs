@@ -10,10 +10,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bonsai::routing_service::{
+    BmpIdentityMode, RoutingServiceConfig, RoutingServiceState, TransportDisconnectOutcome,
     build_internal_routing_router, resolved_exporter_instance, run_bmp_listener,
-    RoutingServiceConfig, RoutingServiceState, TransportDisconnectOutcome,
 };
-use bonsai::sqlite_store::{SqliteStore, CONFIG_DB_FILE_NAME};
+use bonsai::sqlite_store::{CONFIG_DB_FILE_NAME, SqliteStore};
 use bonsai::telemetry_identity::{
     BindingProvenance, BindingStatus, CanonicalDevice, TrustedBinding,
 };
@@ -174,6 +174,8 @@ async fn test_state(dir: &TempDir, identity_db: Option<PathBuf>) -> Arc<RoutingS
         internal_service_token: Some("bn021c-test-token".to_string()),
         identity_db_path: identity_db,
         identity_scope: None,
+        bmp_identity_mode: BmpIdentityMode::ClaimCompatible,
+        bmp_mtls: None,
     })
     .await
     .expect("routing state")
@@ -299,6 +301,7 @@ fn bmp_binding(exporter_id: &str, device_id: &str, sys_name: &str) -> TrustedBin
         match_reported_identity: Some(sys_name.to_string()),
         match_exporter_claim: Some(format!("bmp:{sys_name}")),
         match_observation_domain: None,
+        match_ingress_credential: None,
         provenance: BindingProvenance::OperatorProvisioned,
         status: BindingStatus::Active,
         created_at_ns: 0,
@@ -728,10 +731,12 @@ async fn replay_retires_connection_scoped_speakers_like_live() {
 
     // Decode contexts for the retired conn:a peer must not survive replay.
     let a_instance = rbmp_core::bmp::types::exporter_instance_id(scope_a);
-    assert!(outcome
-        .decode_contexts
-        .keys()
-        .all(|k| !(k.speaker_addr == nat_addr() && k.speaker_instance == a_instance)));
+    assert!(
+        outcome
+            .decode_contexts
+            .keys()
+            .all(|k| !(k.speaker_addr == nat_addr() && k.speaker_instance == a_instance))
+    );
 }
 
 // ── G. Real-TCP NAT acceptance: two exporters, one visible source IP ─────────
@@ -838,6 +843,7 @@ async fn live_tcp_nat_two_exporters_stay_isolated() {
         match_reported_identity: Some(sys_name.to_string()),
         match_exporter_claim: Some(format!("bmp:{sys_name}")),
         match_observation_domain: None,
+        match_ingress_credential: None,
         provenance: BindingProvenance::OperatorProvisioned,
         status: BindingStatus::Active,
         created_at_ns: 0,
@@ -871,6 +877,8 @@ async fn live_tcp_nat_two_exporters_stay_isolated() {
         internal_service_token: Some("bn021c-test-token".to_string()),
         identity_db_path: Some(db_path),
         identity_scope: None,
+        bmp_identity_mode: BmpIdentityMode::ClaimCompatible,
+        bmp_mtls: None,
     })
     .await
     .unwrap();
@@ -880,7 +888,9 @@ async fn live_tcp_nat_two_exporters_stay_isolated() {
     let bmp_addr: SocketAddr = bmp_listener.local_addr().unwrap();
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let listener_state = Arc::clone(&state);
-    tokio::spawn(async move { run_bmp_listener(bmp_listener, listener_state, shutdown_rx).await });
+    tokio::spawn(
+        async move { run_bmp_listener(bmp_listener, None, listener_state, shutdown_rx).await },
+    );
 
     let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let http_addr: SocketAddr = http_listener.local_addr().unwrap();
@@ -1049,11 +1059,13 @@ async fn live_tcp_nat_two_exporters_stay_isolated() {
         &format!("{base}/routes?exporter_instance={conn_inst}"),
     )
     .await;
-    assert!(routes_x["routes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|r| r["prefix"] == pfx_b_str));
+    assert!(
+        routes_x["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["prefix"] == pfx_b_str)
+    );
 
     // 4: withdraw A's route — B unaffected.
     let withdraw_a = bonsai::routing_service::sample_bmp_withdraw_frame(peer_ip, peer_as, pfx_a);
@@ -1076,11 +1088,13 @@ async fn live_tcp_nat_two_exporters_stay_isolated() {
         &format!("{base}/routes?exporter_instance=exp:exp-rtr-b"),
     )
     .await;
-    assert!(routes_b2["routes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|r| r["prefix"] == pfx_b_str));
+    assert!(
+        routes_b2["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["prefix"] == pfx_b_str)
+    );
 
     // 5: PeerDown on A does not affect B's peer/RIB.
     write_frame(&mut conn_a, &peer_down_frame(peer_ip, peer_as)).await;
@@ -1094,11 +1108,13 @@ async fn live_tcp_nat_two_exporters_stay_isolated() {
         &format!("{base}/routes?exporter_instance=exp:exp-rtr-b"),
     )
     .await;
-    assert!(routes_b3["routes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|r| r["prefix"] == pfx_b_str));
+    assert!(
+        routes_b3["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["prefix"] == pfx_b_str)
+    );
 
     // 6: disconnecting A does not affect B's active session.
     drop(conn_a);
@@ -1114,9 +1130,12 @@ async fn live_tcp_nat_two_exporters_stay_isolated() {
     .await;
     let speakers2 = get_json(&client, &format!("{base}/speakers")).await;
     let list2 = speakers2["speakers"].as_array().unwrap();
-    assert!(list2
-        .iter()
-        .any(|s| s["exporter_instance"] == "exp:exp-rtr-b" && s["peer_count"].as_u64() == Some(1)));
+    assert!(
+        list2
+            .iter()
+            .any(|s| s["exporter_instance"] == "exp:exp-rtr-b"
+                && s["peer_count"].as_u64() == Some(1))
+    );
     let spk_a2 = list2
         .iter()
         .find(|s| s["exporter_instance"] == "exp:exp-rtr-a")
@@ -1124,13 +1143,15 @@ async fn live_tcp_nat_two_exporters_stay_isolated() {
     assert_eq!(spk_a2["completeness_state"], "gap");
 
     // 10 (partial): the unknown conn:* exporter fails closed — no device id.
-    assert!(list2
-        .iter()
-        .filter(|s| s["exporter_instance"]
-            .as_str()
-            .unwrap()
-            .starts_with("conn:"))
-        .all(|s| s["device_id"].is_null()));
+    assert!(
+        list2
+            .iter()
+            .filter(|s| s["exporter_instance"]
+                .as_str()
+                .unwrap()
+                .starts_with("conn:"))
+            .all(|s| s["device_id"].is_null())
+    );
 
     // Disconnect the unknown exporter: its conn:* speaker must retire.
     drop(conn_x);
@@ -1146,11 +1167,13 @@ async fn live_tcp_nat_two_exporters_stay_isolated() {
     .await;
     // B is still fully alive.
     let speakers3 = get_json(&client, &format!("{base}/speakers")).await;
-    assert!(speakers3["speakers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|s| s["exporter_instance"] == "exp:exp-rtr-b"));
+    assert!(
+        speakers3["speakers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["exporter_instance"] == "exp:exp-rtr-b")
+    );
 
     // 8: journal replay reconstructs the same effective state.
     drop(conn_b);
@@ -1178,10 +1201,11 @@ async fn live_tcp_nat_two_exporters_stay_isolated() {
         .sum();
     assert_eq!(replay_routes_b, 1, "replay keeps B's route");
     // No conn:* speaker may survive replay.
-    assert!(rib
-        .speakers()
-        .iter()
-        .all(|s| !s.source.exporter_instance.starts_with("conn:")));
+    assert!(
+        rib.speakers()
+            .iter()
+            .all(|s| !s.source.exporter_instance.starts_with("conn:"))
+    );
     // Both disconnects are fenced to their own speaker keys.
     assert!(outcome.transport_gaps.contains_key(&key_b));
     assert!(outcome.transport_gaps.contains_key(&key_a));
@@ -1226,6 +1250,8 @@ async fn configured_identity_scope_reaches_site_scoped_bindings() {
         internal_service_token: None,
         identity_db_path: Some(db_path),
         identity_scope: Some("site-a".to_string()),
+        bmp_identity_mode: BmpIdentityMode::ClaimCompatible,
+        bmp_mtls: None,
     })
     .await
     .unwrap();
@@ -1262,18 +1288,23 @@ async fn identity_store_is_opened_read_only() {
     }
 
     let ro = SqliteStore::open_file_readonly(&db_file).unwrap();
-    assert_eq!(ro.schema_version().unwrap(), 3);
+    assert_eq!(
+        ro.schema_version().unwrap(),
+        bonsai::sqlite_store::CURRENT_SCHEMA_VERSION
+    );
     // Reads still work.
-    assert!(ro
-        .list_canonical_devices()
-        .unwrap()
-        .iter()
-        .any(|d| d.address == "10.30.0.1"));
+    assert!(
+        ro.list_canonical_devices()
+            .unwrap()
+            .iter()
+            .any(|d| d.address == "10.30.0.1")
+    );
     // Writes must fail — the routing service can never mutate the
     // shared management database.
-    assert!(ro
-        .upsert_canonical_device(&canonical_device("10.30.0.2"), "test")
-        .is_err());
+    assert!(
+        ro.upsert_canonical_device(&canonical_device("10.30.0.2"), "test")
+            .is_err()
+    );
 
     // A missing database must NOT be created (previous open_file would
     // have created an empty schema-bearing file).
@@ -1394,7 +1425,9 @@ async fn start_tcp_services(state: &Arc<RoutingServiceState>) -> TcpServices {
     let bmp_addr = bmp_listener.local_addr().unwrap();
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let listener_state = Arc::clone(state);
-    tokio::spawn(async move { run_bmp_listener(bmp_listener, listener_state, shutdown_rx).await });
+    tokio::spawn(
+        async move { run_bmp_listener(bmp_listener, None, listener_state, shutdown_rx).await },
+    );
 
     let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let http_addr = http_listener.local_addr().unwrap();
@@ -1435,6 +1468,7 @@ fn loopback_binding(sys_name: &str, exporter_id: &str, device_id: &str) -> Trust
         match_reported_identity: Some(sys_name.to_string()),
         match_exporter_claim: Some(format!("bmp:{sys_name}")),
         match_observation_domain: None,
+        match_ingress_credential: None,
         provenance: BindingProvenance::OperatorProvisioned,
         status: BindingStatus::Active,
         created_at_ns: 0,
@@ -1534,10 +1568,12 @@ async fn invalid_frame_records_disconnect_and_retires_conn_scope() {
             .all(|s| !s.source.exporter_instance.starts_with("conn:")),
         "replay must not resurrect retired conn:* speaker"
     );
-    assert!(outcome
-        .transport_gaps
-        .values()
-        .all(|g| !g.exporter_instance.starts_with("conn:")));
+    assert!(
+        outcome
+            .transport_gaps
+            .values()
+            .all(|g| !g.exporter_instance.starts_with("conn:"))
+    );
 
     let _ = svc.shutdown.send(true);
 }
@@ -1558,7 +1594,7 @@ async fn same_claim_concurrent_connections_stay_isolated() {
     let dir = tempfile::tempdir().unwrap();
     let bmp_path = dir.path().join("bmp.jsonl");
     let db_path = dir.path().join(CONFIG_DB_FILE_NAME);
-    let dev_id = {
+    let _dev_id = {
         let store = SqliteStore::open(dir.path()).unwrap();
         let d = store
             .upsert_canonical_device(&canonical_device("10.50.0.9"), "test")
@@ -1633,8 +1669,11 @@ async fn same_claim_concurrent_connections_stay_isolated() {
         .expect("conn speaker");
     assert_eq!(conn_spk["peer_count"].as_u64(), Some(1));
     assert_eq!(conn_spk["total_routes"].as_u64(), Some(1));
-    // Attribution is preserved even though speaker state is isolated.
-    assert_eq!(conn_spk["device_id"], dev_id);
+    // BN-021f: an isolated conn:* speaker must NOT carry authoritative
+    // device attribution — a same-claim sibling is unverified, so its
+    // device_id stays absent even though the claim is preserved as
+    // evidence (exporter_id).
+    assert!(conn_spk["device_id"].is_null());
     let conn_inst = conn_spk["exporter_instance"].as_str().unwrap().to_string();
 
     // conn2's prefix must be visible ONLY under its conn scope.

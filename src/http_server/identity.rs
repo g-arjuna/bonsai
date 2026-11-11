@@ -178,6 +178,13 @@ struct BindingCreate {
     match_exporter_claim: Option<String>,
     #[serde(default)]
     match_observation_domain: Option<u32>,
+    /// Verified-ingress credential pin (BN-021f): the
+    /// `"sha256:<hex>"` fingerprint of the authorized mTLS client
+    /// certificate. When set, this binding can ONLY authorize
+    /// observations arriving over a transport-authenticated connection
+    /// presenting that exact credential.
+    #[serde(default)]
+    match_ingress_credential: Option<String>,
 }
 
 async fn create_binding(
@@ -202,6 +209,7 @@ async fn create_binding(
         match_reported_identity: req.match_reported_identity,
         match_exporter_claim: req.match_exporter_claim,
         match_observation_domain: req.match_observation_domain,
+        match_ingress_credential: req.match_ingress_credential,
         provenance: BindingProvenance::OperatorProvisioned,
         status: crate::telemetry_identity::BindingStatus::Active,
         created_at_ns: 0,

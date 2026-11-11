@@ -1,12 +1,27 @@
 #!/usr/bin/env python3
-"""Create the BN-021c lab identity DB (schema v3 subset) for the routing
-service's read-only binding store. Only the tables the resolver reads are
-required; user_version is pinned to CURRENT_SCHEMA_VERSION (3)."""
+"""Create the BN-021f lab identity DB (schema v4) for the routing
+service's read-only binding store.
+
+Only the tables the resolver reads are required; user_version is pinned
+to CURRENT_SCHEMA_VERSION (4). Bindings for exporters A and B pin the
+SHA-256 fingerprint of their mTLS client certificate
+(`match_ingress_credential`) — the transport-verified credential is the
+authorization anchor; sysName remains evidence only. Exporter C and the
+impostor get NO binding: valid certificates without a binding can never
+reach canonical attribution.
+
+Usage:
+    make_identity_db.py <db-path> <fp-a> <fp-b>
+where <fp-*> are "sha256:<hex>" fingerprints of the DER client certs
+(computed by up.sh via openssl).
+"""
 import sqlite3
 import sys
 import time
 
 DB = sys.argv[1] if len(sys.argv) > 1 else "bonsai_config.db"
+FP_A = sys.argv[2] if len(sys.argv) > 2 else ""
+FP_B = sys.argv[3] if len(sys.argv) > 3 else ""
 
 con = sqlite3.connect(DB)
 cur = con.cursor()
@@ -32,6 +47,7 @@ cur.executescript(
         match_reported_identity TEXT,
         match_exporter_claim TEXT,
         match_observation_domain INTEGER,
+        match_ingress_credential TEXT,
         provenance TEXT NOT NULL,
         status TEXT NOT NULL,
         created_at_ns INTEGER,
@@ -48,17 +64,18 @@ for dev_id, addr, site, host in [
 ]:
     cur.execute(
         "INSERT OR REPLACE INTO canonical_devices VALUES (?,?,?,?,?,?,?,?)",
-        (dev_id, addr, site, host, now, now, "bn021c-lab", "bn021c-lab"),
+        (dev_id, addr, site, host, now, now, "bn021f-lab", "bn021f-lab"),
     )
-# Both exporters' BMP connections arrive at Bonsai from the SAME
-# translated source 10.240.0.200; the binding distinguishes them by the
-# self-reported sysName (the documented trust anchor, P0-D).
-for bid, exp, dev, sysname in [
-    ("bind-frr-a", "exp-frr-a", "dev-frr-a", "frr-a"),
-    ("bind-frr-b", "exp-frr-b", "dev-frr-b", "frr-b"),
+# All exporters' BMP connections arrive at Bonsai from the SAME
+# translated source 10.240.0.200. BN-021f: the credential fingerprint
+# is the authorization anchor — sysName/sysDescr remain self-reported
+# evidence and can only contradict, never establish, ownership.
+for bid, exp, dev, sysname, fp in [
+    ("bind-frr-a", "exp-frr-a", "dev-frr-a", "frr-a", FP_A),
+    ("bind-frr-b", "exp-frr-b", "dev-frr-b", "frr-b", FP_B),
 ]:
     cur.execute(
-        "INSERT OR REPLACE INTO exporter_bindings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO exporter_bindings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             bid,
             "default",
@@ -69,15 +86,16 @@ for bid, exp, dev, sysname in [
             sysname,          # match_reported_identity: BMP sysName claim
             f"bmp:{sysname}", # match_exporter_claim
             None,
+            fp,               # match_ingress_credential: sha256:<cert DER>
             "operator_provisioned",
             "active",
             now,
             now,
-            "bn021c-lab",
-            "bn021c-lab",
+            "bn021f-lab",
+            "bn021f-lab",
         ),
     )
-cur.execute("PRAGMA user_version=3")
+cur.execute("PRAGMA user_version=4")
 con.commit()
 con.close()
-print(f"wrote {DB}")
+print(f"wrote {DB} (fps: a={FP_A[:19]}… b={FP_B[:19]}…)")

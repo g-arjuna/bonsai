@@ -74,6 +74,8 @@ fn test_bn005_routing_config_deployment_validation() {
         internal_service_token: Some("secret-token-xyz".to_string()),
         identity_db_path: None,
         identity_scope: None,
+        bmp_identity_mode: bonsai::routing_service::BmpIdentityMode::Verified,
+        bmp_mtls: None,
         ..RoutingServiceConfig::default()
     };
     let res2 = with_token.validate_deployment();
@@ -111,6 +113,8 @@ async fn test_bn005_fail_closed_internal_endpoints() {
         internal_service_token: Some(token.to_string()),
         identity_db_path: None,
         identity_scope: None,
+        bmp_identity_mode: bonsai::routing_service::BmpIdentityMode::Verified,
+        bmp_mtls: None,
         ..RoutingServiceConfig::default()
     };
     assert!(routing_cfg.validate_deployment().is_ok());
@@ -247,6 +251,8 @@ async fn test_bn005_identity_derived_tenant_and_exporter_scoping() {
         internal_service_token: Some(internal_token.to_string()),
         identity_db_path: None,
         identity_scope: None,
+        bmp_identity_mode: bonsai::routing_service::BmpIdentityMode::Verified,
+        bmp_mtls: None,
         ..RoutingServiceConfig::default()
     };
     let routing_state = RoutingServiceState::new(routing_cfg).await.unwrap();
@@ -555,6 +561,8 @@ async fn test_bn005_rib_event_journal_latest_evidence_without_truncation() {
         internal_service_token: Some(internal_token.to_string()),
         identity_db_path: None,
         identity_scope: None,
+        bmp_identity_mode: bonsai::routing_service::BmpIdentityMode::Verified,
+        bmp_mtls: None,
         ..RoutingServiceConfig::default()
     };
     let state = RoutingServiceState::new(routing_cfg).await.unwrap();
@@ -733,6 +741,8 @@ async fn test_bn005_conflicting_speaker_aliases_are_rejected() {
         internal_service_token: Some("audit-internal".to_string()),
         identity_db_path: None,
         identity_scope: None,
+        bmp_identity_mode: bonsai::routing_service::BmpIdentityMode::Verified,
+        bmp_mtls: None,
         ..RoutingServiceConfig::default()
     };
     let state = RoutingServiceState::new(routing_cfg).await.unwrap();
@@ -839,6 +849,8 @@ async fn test_bn005_decoded_bmp_vrf_mismatch_is_rejected() {
         internal_service_token: Some("audit-internal".to_string()),
         identity_db_path: None,
         identity_scope: None,
+        bmp_identity_mode: bonsai::routing_service::BmpIdentityMode::Verified,
+        bmp_mtls: None,
         ..RoutingServiceConfig::default()
     };
     let state = RoutingServiceState::new(routing_cfg).await.unwrap();

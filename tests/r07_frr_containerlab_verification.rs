@@ -136,6 +136,8 @@ async fn execute_clean_frr_nos_run(run_number: u32) -> Result<FrrRunEvidence> {
         internal_service_token: None,
         identity_db_path: None,
         identity_scope: None,
+        bmp_identity_mode: bonsai::routing_service::BmpIdentityMode::Verified,
+        bmp_mtls: None,
     };
     let state = RoutingServiceState::new(config).await?;
     let speaker_addr: IpAddr = SPEAKER_IP.parse().expect("parse speaker IP");
