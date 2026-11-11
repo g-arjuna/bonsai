@@ -840,6 +840,13 @@ impl SyslogArchive {
         file.write_all(&line)
             .await
             .context("write syslog archive line")?;
+        // tokio::fs::File::write_all returns once bytes are accepted into its
+        // internal buffer — the blocking write(2) may still be in flight.
+        // flush() drains the pending operation so a returned Ok means the
+        // line is actually in the file (forensic archive ordering).
+        file.flush()
+            .await
+            .context("flush syslog archive line")?;
         Ok(())
     }
 }
