@@ -708,3 +708,30 @@ and POST rejects credential classes (`user`, `session`, `api_key`,
 (`tests/bn022_graph_read_boundary.rs`, synthetic markers only), 8 new
 explorer/nl_query unit tests, bn005 suites 24/24 — all pass. Storage
 migration (JWT secret/verifiers out of the graph) remains open.
+
+BN-021e syslog identity isolation (11 November, second adapter slice):
+the syslog receiver no longer treats a message's claimed hostname as
+device identity. Every frame now yields a provisional
+`syslogsrc/{collector}/{transport}/{peer}[/conn{id}]` source key —
+UDP sender endpoint, TCP connection peer plus per-connection session
+scope, and collector namespace (`SyslogConfig.collector_id`, default
+`default`). The hostname→target match is demoted to an explicit
+candidate hypothesis: exactly one configured hostname match →
+`unique_hostname_match`; duplicates across sites/tenants →
+`ambiguous_hostname_match` with all candidates preserved (no arbitrary
+selection, and ambiguous claims no longer steer vendor pattern
+selection); none → `unresolved`. Relay vs originator stays separated:
+the source key identifies the sender while `reported_hostname`,
+`peer_addr`, `transport` and raw bytes remain evidence. The graph
+projection fails closed for every syslog update: provisional
+`StateChangeEvent`s scoped to the source key (no `REPORTED_BY`, no
+`Device` upsert) plus read-only candidate probes against
+BgpNeighbor/Interface/BfdSession/OspfNeighbor/IsisAdjacency state.
+Fact events are now `syslog_fact_candidate`/`syslog_fact_unresolved`
+(the mutating joiners were removed); forged serialized
+`identity_resolution`/`device_id`/`verified_ingress` fields cannot
+authorize anything. Category events keep `syslog_{category}` names
+scoped to the source key. Verified:
+`tests/bn021e_syslog_source_identity.rs` 10/10 + 13 lib tests incl.
+the 44-fixture corpus. SNMP/OTLP adapters remain open under BN-021e;
+canonical attribution awaits BN-021g verified ingress.

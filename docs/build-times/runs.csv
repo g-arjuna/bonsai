@@ -105,3 +105,9 @@ date,command,scope,wall_seconds,result,notes
 2026-11-11,cargo test -j 1 -p bonsai --lib streaming::sflow,bn021e unit tests,134,pass,5/5 incl. 2 new source-key/provisional-resolution tests
 2026-11-11,cargo check -p bonsai --all-targets,bonsai check all-targets bn021e,30,pass,warm; clean (settings.rs collector_id init fixed)
 2026-11-11,cargo test -j 1 --test bn021d_flow_exporter_isolation --test bn022_graph_read_boundary --test bn021b_trusted_identity,bn021d+bn022+bn021b regression batch,87,pass,33/33 (15+5+13); sflow/graph changes did not regress NetFlow isolation
+2026-11-11,cargo test -j 1 --test bn021e_syslog_source_identity,bn021e syslog suite,463,pass,10/10; cold-ish link 7m39s 5.2GB RSS; impersonation/relay/TCP-scope/NAT/tenant-ambiguity/unresolved/evidence/replay/forged-identity/read-only-probe
+2026-11-11,cargo test -j 1 -p bonsai --lib syslog,bn021e syslog unit+fixture tests,161,pass,13/13 incl. 44-fixture corpus + 6 rewritten graph unit tests
+2026-11-11,cargo check -p bonsai --lib --tests,bonsai check lib+tests bn021e syslog,14,pass,warm; clean
+2026-11-11,cargo test -j 1 --test bn021b_trusted_identity --test bn021c_exporter_isolation --test bn021d_flow_exporter_isolation --test bn021e_sflow_exporter_isolation --test bn021f_hardening --test bn021f_authenticated_ingress --test bn022_graph_read_boundary,bn021/022 regression batch post-syslog,209,pass,75/75 (13+17+15+7+9+9+5); -j1 sequential links
+2026-11-11,cargo test -j 1 -p bonsai --lib syslog,bn021e syslog unit+fixture tests post-fmt,105,pass,13/13
+2026-11-11,cargo test -j 1 --test bn021e_syslog_source_identity,bn021e syslog suite post-fmt,317,pass,10/10

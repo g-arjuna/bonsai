@@ -211,9 +211,9 @@ before claiming equivalent history or enabling it as an authority.
   — VERIFIED for observational separation; canonical attribution
   remains gated on verified ingress by design.
 
-**BN-021e — Remaining protocol adapters** — OPEN (sFlow slice IMPLEMENTED 11 November).
+**BN-021e — Remaining protocol adapters** — OPEN (sFlow + syslog slices IMPLEMENTED 11 November).
 - sFlow: DONE for the isolation slice — provisional `sflowsrc/{collector}/{transport}/agent{addr}/sub{id}` keys separate NAT-shared agents, agent claims, sub-agents and collector scopes; `agent_address`/`sub_agent_id`/sequence/uptime preserved as self-reported evidence; graph fails closed (AppFlow + source-scoped events only — no `DeviceAddress` refresh, `CARRIES_FLOW`, `SRC_HOST`/`DST_HOST`, `Interface` counter mutation, or flow-derived device alerts); AppFlow id is the full 5-tuple. Verified: `tests/bn021e_sflow_exporter_isolation.rs` 7/7 + 2 unit tests. Canonical sFlow attribution still awaits a transport-attested ingress path (BN-021g).
-- Syslog: relay transport identity vs claimed originator (trust levels).
+- Syslog: DONE for the isolation slice — provisional `syslogsrc/{collector}/{transport}/{peer}[/conn{id}]` keys separate transport senders (incl. relays and NAT endpoints) and TCP sessions; claimed hostname is demoted to an explicit candidate hypothesis (`unique`/`ambiguous`/`unresolved` — duplicate hostnames across tenants never pick arbitrarily); `SyslogConfig.collector_id` added; graph fails closed (provisional `StateChangeEvent` scoped to the source key + read-only candidate probes — no `Device` upsert, `REPORTED_BY`, canonical state mutation, or `IsisAdjacency`/service/QoS writes from claims; forged serialized identity fields ignored). Fact events renamed `syslog_fact_candidate`/`syslog_fact_unresolved` — old `joined`/`orphan` python rules no longer fire (intentional). Verified: `tests/bn021e_syslog_source_identity.rs` 10/10 + 13 lib tests incl. 44-fixture corpus. Canonical syslog attribution still awaits a transport-attested ingress path (BN-021g). Residual: device-scoped `SignalPolicy` filters key on the source key now (role/site scopes still apply).
 - SNMP: configured polling target vs trap sender vs engine identity.
 - OTLP: trusted resource/service identity, not collector IP.
 
