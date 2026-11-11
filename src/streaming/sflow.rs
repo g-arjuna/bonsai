@@ -9,8 +9,11 @@ use tracing::{debug, info, warn};
 
 use crate::config::SflowConfig;
 use crate::event_bus::InProcessBus;
-use crate::streaming::netflow::classify_amplification_vector;
+use crate::streaming::netflow::{
+    classify_amplification_vector, encode_key_component, resolve_flow_identity,
+};
 use crate::telemetry::TelemetryUpdate;
+use crate::telemetry_identity::{IdentityResolution, TelemetrySourceIdentity};
 
 const MAX_UDP_PAYLOAD: usize = 65535;
 
@@ -38,6 +41,7 @@ pub async fn run_sflow_receiver(
 ) -> Result<()> {
     let socket = UdpSocket::bind(&cfg.udp_addr).await?;
     info!(addr = %cfg.udp_addr, "sFlow v5 UDP receiver listening");
+    let collector_id = cfg.collector_id.clone();
 
     let mut buf = vec![0u8; MAX_UDP_PAYLOAD];
 
@@ -47,7 +51,7 @@ pub async fn run_sflow_receiver(
                 match result {
                     Ok((len, peer)) => {
                         let pkt = &buf[..len];
-                        if let Err(e) = handle_datagram(pkt, peer, &bus) {
+                        if let Err(e) = handle_datagram(pkt, peer, &collector_id, &bus) {
                             debug!(%peer, error = %e, "sflow parse error");
                         }
                     }
@@ -62,7 +66,73 @@ pub async fn run_sflow_receiver(
     Ok(())
 }
 
-fn handle_datagram(pkt: &[u8], peer: SocketAddr, bus: &Arc<InProcessBus>) -> Result<()> {
+/// BN-021e: per-datagram provisional source context. Every component is
+/// *evidence* — the observed UDP transport endpoint, the collector
+/// namespace, and the self-reported sFlow agent address/sub-agent id.
+/// None of them can mint a canonical `device_id` on their own.
+struct SflowSource {
+    /// Collision-resistant provisional key:
+    /// `sflowsrc/{collector}/{transport}/{agent}/{sub}`.
+    source_key: String,
+    /// Observed transport IP (post-NAT), evidence only.
+    transport_ip: String,
+    /// Observed transport endpoint `ip:port`, evidence only.
+    transport_endpoint: String,
+    collector_id: String,
+    /// Self-reported agent address from the sFlow header — spoofable.
+    agent_address: String,
+    /// Self-reported sub-agent id from the sFlow header — spoofable.
+    sub_agent_id: u32,
+    sequence_number: u32,
+    uptime: u32,
+}
+
+impl SflowSource {
+    fn build(
+        peer: SocketAddr,
+        collector_id: &str,
+        agent_address: String,
+        sub_agent_id: u32,
+        sequence_number: u32,
+        uptime: u32,
+    ) -> Self {
+        let source_key = format!(
+            "sflowsrc/{}/{}/agent{}/sub{}",
+            encode_key_component(collector_id),
+            peer,
+            agent_address,
+            sub_agent_id
+        );
+        Self {
+            source_key,
+            transport_ip: peer.ip().to_string(),
+            transport_endpoint: peer.to_string(),
+            collector_id: collector_id.to_string(),
+            agent_address,
+            sub_agent_id,
+            sequence_number,
+            uptime,
+        }
+    }
+
+    /// Provisional identity envelope. Plain UDP sFlow can never produce a
+    /// transport-attested `VerifiedIngressPrincipal`, so resolution is
+    /// always provisional — bindings cannot claim this observation.
+    fn identity(&self) -> TelemetrySourceIdentity {
+        TelemetrySourceIdentity::observed(self.transport_endpoint.clone())
+            .with_protocol("sflow")
+            .with_exporter(self.source_key.clone())
+            .with_reported(format!("{}#sub={}", self.agent_address, self.sub_agent_id))
+            .with_collector(self.collector_id.clone())
+    }
+}
+
+fn handle_datagram(
+    pkt: &[u8],
+    peer: SocketAddr,
+    collector_id: &str,
+    bus: &Arc<InProcessBus>,
+) -> Result<()> {
     if pkt.len() < 28 {
         bail!("datagram too short");
     }
@@ -77,11 +147,28 @@ fn handle_datagram(pkt: &[u8], peer: SocketAddr, bus: &Arc<InProcessBus>) -> Res
         bail!("unsupported agent address type {addr_type} (only IPv4 supported)");
     }
 
-    // agent_address is the authoritative source identity (not UDP src IP)
+    // agent_address is a SELF-REPORTED claim inside the datagram — it is
+    // evidence, never proof of exporter ownership. The observed UDP
+    // transport endpoint (`peer`) is likewise evidence only. Canonical
+    // device identity requires a future transport-attested ingress path.
     let agent_addr = Ipv4Addr::from(read_u32_bytes(pkt, 8)?).to_string();
 
-    // sub_agent_id(4) @ 12, sequence_number(4) @ 16, uptime(4) @ 20
+    // sub_agent_id(4) @ 12, sequence_number(4) @ 16, uptime(4) @ 20,
+    // num_samples(4) @ 24
+    let sub_agent_id = read_u32(pkt, 12)?;
+    let sequence_number = read_u32(pkt, 16)?;
+    let uptime = read_u32(pkt, 20)?;
     let num_samples = read_u32(pkt, 24)? as usize;
+
+    let src = SflowSource::build(
+        peer,
+        collector_id,
+        agent_addr.clone(),
+        sub_agent_id,
+        sequence_number,
+        uptime,
+    );
+    let resolution = resolve_flow_identity(&src.identity(), &[], None);
     debug!(%peer, agent = %agent_addr, num_samples, len = pkt.len(), "sflow datagram accepted");
 
     let mut offset = 28usize;
@@ -104,12 +191,12 @@ fn handle_datagram(pkt: &[u8], peer: SocketAddr, bus: &Arc<InProcessBus>) -> Res
         if enterprise == 0 {
             match format {
                 SAMPLE_FLOW => {
-                    if let Err(e) = parse_flow_sample(sample_data, &agent_addr, bus) {
+                    if let Err(e) = parse_flow_sample(sample_data, &src, &resolution, bus) {
                         debug!(agent = %agent_addr, error = %e, "sflow flow sample parse error");
                     }
                 }
                 SAMPLE_COUNTER => {
-                    if let Err(e) = parse_counter_sample(sample_data, &agent_addr, bus) {
+                    if let Err(e) = parse_counter_sample(sample_data, &src, &resolution, bus) {
                         debug!(agent = %agent_addr, error = %e, "sflow counter sample parse error");
                     }
                 }
@@ -120,14 +207,18 @@ fn handle_datagram(pkt: &[u8], peer: SocketAddr, bus: &Arc<InProcessBus>) -> Res
         offset += sample_len;
     }
 
-    let _ = peer; // peer IP intentionally not used — agent_address is the authoritative exporter identity
     Ok(())
 }
 
 /// Parse a flow sample (RFC 3176 §3.4.4):
 /// sequence_number(4) source_id(4) sampling_rate(4) sample_pool(4)
 /// drops(4) input_if(4) output_if(4) num_records(4) records...
-fn parse_flow_sample(data: &[u8], agent_addr: &str, bus: &Arc<InProcessBus>) -> Result<()> {
+fn parse_flow_sample(
+    data: &[u8],
+    src: &SflowSource,
+    resolution: &IdentityResolution,
+    bus: &Arc<InProcessBus>,
+) -> Result<()> {
     if data.len() < 32 {
         bail!("flow sample too short");
     }
@@ -156,12 +247,12 @@ fn parse_flow_sample(data: &[u8], agent_addr: &str, bus: &Arc<InProcessBus>) -> 
             match format {
                 FLOW_DATA_RAW_PACKET => {
                     if let Some(flow) = parse_raw_packet_header(record_data) {
-                        publish_flow(flow, agent_addr, sampling_rate, bus);
+                        publish_flow(flow, src, resolution, sampling_rate, bus);
                     }
                 }
                 FLOW_DATA_IPV4 => {
                     if let Some(flow) = parse_ipv4_sampled_header(record_data) {
-                        publish_flow(flow, agent_addr, sampling_rate, bus);
+                        publish_flow(flow, src, resolution, sampling_rate, bus);
                     }
                 }
                 _ => {}
@@ -175,7 +266,12 @@ fn parse_flow_sample(data: &[u8], agent_addr: &str, bus: &Arc<InProcessBus>) -> 
 
 /// Parse a counter sample (RFC 3176 §3.4.6):
 /// sequence_number(4) source_id(4) num_records(4) records...
-fn parse_counter_sample(data: &[u8], agent_addr: &str, bus: &Arc<InProcessBus>) -> Result<()> {
+fn parse_counter_sample(
+    data: &[u8],
+    src: &SflowSource,
+    resolution: &IdentityResolution,
+    bus: &Arc<InProcessBus>,
+) -> Result<()> {
     if data.len() < 12 {
         bail!("counter sample too short");
     }
@@ -201,7 +297,7 @@ fn parse_counter_sample(data: &[u8], agent_addr: &str, bus: &Arc<InProcessBus>) 
 
         if enterprise == 0 && format == COUNTER_GENERIC_INTERFACE {
             if let Some(counters) = parse_generic_interface_counters(record_data) {
-                publish_counters(counters, agent_addr, bus);
+                publish_counters(counters, src, resolution, bus);
             }
         }
 
@@ -377,7 +473,13 @@ fn parse_generic_interface_counters(data: &[u8]) -> Option<InterfaceCounters> {
     })
 }
 
-fn publish_flow(flow: SampledFlow, agent_addr: &str, sampling_rate: u32, bus: &Arc<InProcessBus>) {
+fn publish_flow(
+    flow: SampledFlow,
+    src: &SflowSource,
+    resolution: &IdentityResolution,
+    sampling_rate: u32,
+    bus: &Arc<InProcessBus>,
+) {
     let proto_str = protocol_name(flow.protocol);
     let now_ns = now_ns();
 
@@ -387,8 +489,28 @@ fn publish_flow(flow: SampledFlow, agent_addr: &str, sampling_rate: u32, bus: &A
     let amplification_vector = classify_amplification_vector(flow.protocol, flow.dst_port);
     let tcp_flags_pattern = classify_tcp_flags_sflow(flow.tcp_flags, flow.protocol);
 
+    // Identity fields: `exporter_address`/`transport_source` are observed
+    // transport evidence, `agent_address`/`agent_sub_id` are self-reported
+    // claims, and `device_id`/`canonical_exporter_id` stay null unless a
+    // future verified-ingress resolution populates them.
+    let identity_status =
+        serde_json::to_value(resolution.status).unwrap_or(serde_json::Value::Null);
+    let identity_resolution = serde_json::to_value(resolution).unwrap_or(serde_json::Value::Null);
+
     let value = serde_json::json!({
-        "exporter_address": agent_addr,
+        "exporter_address": src.transport_ip,
+        "exporter_id": src.source_key,
+        "exporter_endpoint": src.transport_endpoint,
+        "transport_source": src.transport_endpoint,
+        "collector_id": src.collector_id,
+        "agent_address": src.agent_address,
+        "agent_sub_id": src.sub_agent_id,
+        "sflow_sequence": src.sequence_number,
+        "sflow_uptime": src.uptime,
+        "identity_status": identity_status,
+        "device_id": resolution.device_id,
+        "canonical_exporter_id": resolution.canonical_exporter_id,
+        "identity_resolution": identity_resolution,
         "src_address": flow.src_address,
         "dst_address": flow.dst_address,
         "src_port": flow.src_port,
@@ -406,7 +528,7 @@ fn publish_flow(flow: SampledFlow, agent_addr: &str, sampling_rate: u32, bus: &A
     });
 
     debug!(
-        agent = %agent_addr,
+        agent = %src.agent_address,
         src = %flow.src_address,
         dst = %flow.dst_address,
         protocol = %proto_str,
@@ -416,7 +538,7 @@ fn publish_flow(flow: SampledFlow, agent_addr: &str, sampling_rate: u32, bus: &A
     );
 
     bus.publish(TelemetryUpdate {
-        target: agent_addr.to_string(),
+        target: src.source_key.clone(),
         vendor: String::new(),
         hostname: String::new(),
         role: String::new(),
@@ -427,11 +549,32 @@ fn publish_flow(flow: SampledFlow, agent_addr: &str, sampling_rate: u32, bus: &A
     });
 }
 
-fn publish_counters(c: InterfaceCounters, agent_addr: &str, bus: &Arc<InProcessBus>) {
+fn publish_counters(
+    c: InterfaceCounters,
+    src: &SflowSource,
+    resolution: &IdentityResolution,
+    bus: &Arc<InProcessBus>,
+) {
     let now_ns = now_ns();
 
+    let identity_status =
+        serde_json::to_value(resolution.status).unwrap_or(serde_json::Value::Null);
+    let identity_resolution = serde_json::to_value(resolution).unwrap_or(serde_json::Value::Null);
+
     let value = serde_json::json!({
-        "exporter_address": agent_addr,
+        "exporter_address": src.transport_ip,
+        "exporter_id": src.source_key,
+        "exporter_endpoint": src.transport_endpoint,
+        "transport_source": src.transport_endpoint,
+        "collector_id": src.collector_id,
+        "agent_address": src.agent_address,
+        "agent_sub_id": src.sub_agent_id,
+        "sflow_sequence": src.sequence_number,
+        "sflow_uptime": src.uptime,
+        "identity_status": identity_status,
+        "device_id": resolution.device_id,
+        "canonical_exporter_id": resolution.canonical_exporter_id,
+        "identity_resolution": identity_resolution,
         "if_index": c.if_index,
         "if_speed": c.if_speed,
         "in_octets": c.if_in_octets,
@@ -443,7 +586,7 @@ fn publish_counters(c: InterfaceCounters, agent_addr: &str, bus: &Arc<InProcessB
     });
 
     bus.publish(TelemetryUpdate {
-        target: agent_addr.to_string(),
+        target: src.source_key.clone(),
         vendor: String::new(),
         hostname: String::new(),
         role: String::new(),
@@ -534,6 +677,33 @@ fn protocol_name(proto: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::telemetry_identity::IdentityStatus;
+
+    #[test]
+    fn provisional_source_key_separates_transport_agent_and_collector() {
+        let peer: SocketAddr = "10.0.0.1:49152".parse().unwrap();
+        let base = SflowSource::build(peer, "site-a", "192.0.2.1".into(), 0, 1, 0);
+        let other_port =
+            SflowSource::build("10.0.0.1:49153".parse().unwrap(), "site-a", "192.0.2.1".into(), 0, 1, 0);
+        let other_agent = SflowSource::build(peer, "site-a", "192.0.2.2".into(), 0, 1, 0);
+        let other_sub = SflowSource::build(peer, "site-a", "192.0.2.1".into(), 7, 1, 0);
+        let other_collector = SflowSource::build(peer, "site-b", "192.0.2.1".into(), 0, 1, 0);
+
+        assert!(base.source_key.starts_with("sflowsrc/site-a/"));
+        for other in [other_port, other_agent, other_sub, other_collector] {
+            assert_ne!(base.source_key, other.source_key);
+        }
+    }
+
+    #[test]
+    fn udp_sflow_identity_stays_provisional() {
+        let peer: SocketAddr = "10.0.0.1:49152".parse().unwrap();
+        let src = SflowSource::build(peer, "site-a", "192.0.2.1".into(), 0, 1, 0);
+        let resolution = resolve_flow_identity(&src.identity(), &[], None);
+        assert_eq!(resolution.status, IdentityStatus::Provisional);
+        assert!(resolution.device_id.is_none());
+        assert!(resolution.canonical_exporter_id.is_none());
+    }
 
     #[test]
     fn test_read_u32() {

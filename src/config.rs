@@ -791,6 +791,11 @@ pub struct SflowConfig {
     pub enabled: bool,
     #[serde(default = "default_sflow_udp_addr")]
     pub udp_addr: String,
+    /// Collector/ingress namespace included in provisional sFlow source
+    /// keys (BN-021e). Distinguishes observations received by different
+    /// collectors or trusted relays. Defaults to "default".
+    #[serde(default = "default_flow_collector_id")]
+    pub collector_id: String,
 }
 
 impl Default for SflowConfig {
@@ -798,6 +803,7 @@ impl Default for SflowConfig {
         Self {
             enabled: false,
             udp_addr: default_sflow_udp_addr(),
+            collector_id: default_flow_collector_id(),
         }
     }
 }
