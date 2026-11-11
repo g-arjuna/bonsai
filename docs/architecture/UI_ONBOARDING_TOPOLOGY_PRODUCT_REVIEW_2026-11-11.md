@@ -82,7 +82,7 @@ The three P0 risks above are **source contradictions**; no external or deployed-
 
 ## C. Every current UI workspace / component: ownership and targeted acceptance
 
-Inventory is based on all 41 routed/legacy `.svelte` workspace files plus the core shared components in `ui/src`. Components that are present but not routed by `App.svelte` are marked **legacy/unreachable**, not absent.
+Inventory covers 44 Svelte files in `ui/src` (32 route files, 11 shared library components and `App.svelte`). The table groups related controls by functional surface rather than repeating every input, button and tooltip. Components that are present but not routed by `App.svelte` are marked **legacy/unreachable**, not absent.
 
 | Existing surface | Existing purpose/strength | Acceptance for 2026 truthful operation | Backlog |
 |---|---|---|---|
