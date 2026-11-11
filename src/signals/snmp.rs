@@ -16,7 +16,9 @@ use crate::config::{SnmpConfig, TargetConfig};
 use crate::event_bus::InProcessBus;
 use crate::receiver_supervisor::SharedReceiverSupervisor;
 use crate::resource_governor::GovernorHandle;
+use crate::streaming::netflow::{encode_key_component, resolve_flow_identity};
 use crate::telemetry::TelemetryUpdate;
+use crate::telemetry_identity::{IdentityResolution, TelemetrySourceIdentity};
 
 const OID_SYS_UPTIME: &str = "1.3.6.1.2.1.1.3.0";
 const OID_SNMP_TRAP: &str = "1.3.6.1.6.3.1.1.4.1.0";
@@ -59,6 +61,10 @@ pub struct SnmpTrapEvent {
     /// per RFC 3411; evidence for source attribution, not proof of device.
     #[serde(default)]
     pub engine_id: String,
+    /// SNMPv1 agent-addr field — self-reported agent identity from inside
+    /// the PDU. Evidence only; never authenticated. Empty for v2c/v3.
+    #[serde(default)]
+    pub agent_address: String,
 }
 
 /// A structured fact extracted from SNMP varbinds using an OID pattern.
@@ -279,6 +285,196 @@ fn parse_index_suffix(components: &[&str], isf: &IndexSuffixField) -> Option<Str
     }
 }
 
+/// BN-021e: per-source provisional identity context for SNMP traps.
+///
+/// The SNMP trap receiver has no authenticated ingress: the observed UDP
+/// transport endpoint is evidence only, and every identity claim inside
+/// the packet (v1 agent-addr, v3 engine ID / context engine ID / USM
+/// security name, community string) is self-reported. A configured
+/// polling target is not automatically the authenticated sender of a
+/// trap. The provisional `snmpsrc/...` key scopes source-level
+/// correlation without ever collapsing unrelated exporters.
+#[derive(Clone)]
+struct SnmpSource {
+    /// Collision-resistant provisional key:
+    /// `snmpsrc/{collector}/udp/{peer_ip}:{peer_port}`.
+    source_key: String,
+    /// Observed transport endpoint `ip:port`, evidence only.
+    peer_endpoint: String,
+    collector_id: String,
+}
+
+impl SnmpSource {
+    fn udp(peer_endpoint: &str, collector_id: &str) -> Self {
+        Self {
+            source_key: format!(
+                "snmpsrc/{}/udp/{}",
+                encode_key_component(collector_id),
+                peer_endpoint
+            ),
+            peer_endpoint: peer_endpoint.to_string(),
+            collector_id: collector_id.to_string(),
+        }
+    }
+
+    /// Provisional identity envelope. Plain SNMP/UDP can never produce a
+    /// transport-attested `VerifiedIngressPrincipal`, so resolution is
+    /// always provisional — bindings cannot claim this observation.
+    fn identity(&self, event: &SnmpTrapEvent) -> TelemetrySourceIdentity {
+        let mut identity = TelemetrySourceIdentity::observed(self.peer_endpoint.clone())
+            .with_protocol("snmp")
+            .with_exporter(self.source_key.clone())
+            .with_collector(self.collector_id.clone());
+        // Self-reported claims are preserved as *reported* evidence —
+        // never as verified identity.
+        if !event.agent_address.trim().is_empty() {
+            identity = identity.with_reported(format!("agent:{}", event.agent_address));
+        }
+        identity
+    }
+}
+
+/// How a configured polling target relates to the observed trap sender.
+/// This is a *hypothesis* for evidence annotation and read-only graph
+/// probes — never authorization for canonical device state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnmpCandidateStatus {
+    /// Exactly one configured target shares the observed source IP.
+    Unique,
+    /// Multiple configured targets share the observed source IP
+    /// (e.g. duplicate private IPs across tenants) — no arbitrary
+    /// selection is permitted.
+    Ambiguous,
+    /// No configured target matches; the sender is unknown.
+    Unresolved,
+}
+
+#[derive(Clone)]
+struct ResolvedTarget {
+    /// Candidate device address — populated only for `Unique` matches.
+    address: String,
+    hostname: String,
+    vendor: String,
+    role: String,
+    site: String,
+    candidate_status: SnmpCandidateStatus,
+    /// All matching configured addresses — populated for `Ambiguous`.
+    candidate_addresses: Vec<String>,
+}
+
+impl ResolvedTarget {
+    /// Vendor used for fact-pattern selection. Only a unique target
+    /// match may steer pattern choice; ambiguous/unresolved stay empty.
+    fn candidate_vendor(&self) -> &str {
+        match self.candidate_status {
+            SnmpCandidateStatus::Unique => &self.vendor,
+            _ => "",
+        }
+    }
+
+    fn candidate_role(&self) -> &str {
+        match self.candidate_status {
+            SnmpCandidateStatus::Unique => &self.role,
+            _ => "",
+        }
+    }
+
+    fn candidate_site(&self) -> &str {
+        match self.candidate_status {
+            SnmpCandidateStatus::Unique => &self.site,
+            _ => "",
+        }
+    }
+}
+
+/// Dedup trust domains keep provisional and future verified observations
+/// separate: an unauthenticated packet must never suppress an
+/// independently authenticated observation with the same trap OID.
+const SNMP_DEDUP_DOMAIN_PROVISIONAL: &str = "provisional";
+const SNMP_DEDUP_WINDOW_NS: i64 = 5_000_000_000;
+const SNMP_DEDUP_MAX_ENTRIES: usize = 8192;
+const SNMP_DEDUP_SWEEP_NS: i64 = 30_000_000_000;
+
+/// Map a verified-ingress principal fingerprint to its dedup domain.
+/// There is no authenticated SNMP ingress today, so every observation is
+/// `provisional`; the parameter exists so a future verified path gets an
+/// isolated dedup domain by construction.
+fn snmp_dedup_domain(verified_principal: Option<&str>) -> String {
+    match verified_principal {
+        Some(fingerprint) => format!("verified:{fingerprint}"),
+        None => SNMP_DEDUP_DOMAIN_PROVISIONAL.to_string(),
+    }
+}
+
+/// Bounded dedup store keyed by (trust domain, source key, trap OID).
+/// The source key already scopes collector + transport endpoint, so
+/// senders sharing a NAT IP but using different source ports cannot
+/// collide; a spoofed identical endpoint is indistinguishable at the
+/// transport layer and remains a documented UDP limitation.
+#[derive(Default)]
+struct SnmpDedup {
+    map: HashMap<(String, String, String), i64>,
+    last_sweep_ns: i64,
+}
+
+impl SnmpDedup {
+    /// Returns true when this observation was already seen within the
+    /// dedup window for the same trust domain. Stale entries are swept
+    /// periodically and the map is hard-capped.
+    fn should_suppress(
+        &mut self,
+        domain: &str,
+        source_key: &str,
+        trap_oid: &str,
+        timestamp_ns: i64,
+    ) -> bool {
+        let key = (
+            domain.to_string(),
+            source_key.to_string(),
+            trap_oid.to_string(),
+        );
+        if let Some(&prev_ns) = self.map.get(&key)
+            && timestamp_ns - prev_ns < SNMP_DEDUP_WINDOW_NS
+        {
+            return true;
+        }
+        if timestamp_ns - self.last_sweep_ns > SNMP_DEDUP_SWEEP_NS {
+            self.map
+                .retain(|_, ts| timestamp_ns - *ts < SNMP_DEDUP_WINDOW_NS);
+            self.last_sweep_ns = timestamp_ns;
+        }
+        if self.map.len() >= SNMP_DEDUP_MAX_ENTRIES {
+            // Hard bound: drop the oldest half rather than grow unbounded.
+            let mut entries: Vec<((String, String, String), i64)> = self.map.drain().collect();
+            entries.sort_by_key(|(_, ts)| *ts);
+            let keep_from = entries.len() / 2;
+            for (k, ts) in entries.into_iter().skip(keep_from) {
+                self.map.insert(k, ts);
+            }
+            metrics::counter!("bonsai_snmp_dedup_cap_evictions_total").increment(1);
+        }
+        self.map.insert(key, timestamp_ns);
+        false
+    }
+}
+
+/// Community allowlist semantics (v1/v2c only).
+///
+/// A configured allowlist must not be bypassed by an empty, missing or
+/// malformed community value: when the allowlist is non-empty, a v1/v2c
+/// trap is accepted only if its community string is present AND listed.
+/// SNMPv3 carries no community (it is cleared after USM parsing) and is
+/// governed by the USM security-name check instead. Parse failures
+/// (`version == "unknown"`, empty community) fail closed under an
+/// allowlist. A matching community is still only "accepted for parsing"
+/// — never authenticated canonical identity.
+fn community_permits(allowlist: &[String], event: &SnmpTrapEvent) -> bool {
+    if allowlist.is_empty() || event.version == "v3" {
+        return true;
+    }
+    !event.community.is_empty() && allowlist.iter().any(|c| c == &event.community)
+}
+
 pub async fn run_snmp_receiver(
     cfg: SnmpConfig,
     targets: Vec<TargetConfig>,
@@ -297,6 +493,7 @@ pub async fn run_snmp_receiver(
     ));
     let community_allowlist: Vec<String> = cfg.community_allowlist.clone();
     let v3_users: Vec<crate::config::SnmpV3User> = cfg.v3_users.clone();
+    let collector_id = cfg.collector_id.clone();
 
     if cfg.udp_addr.trim().is_empty() {
         warn!("snmp receiver enabled but udp_addr empty");
@@ -308,10 +505,13 @@ pub async fn run_snmp_receiver(
         .with_context(|| format!("bind snmp UDP listener at {}", cfg.udp_addr))?;
     info!(addr = %cfg.udp_addr, "snmp UDP listener started");
 
-    // Dedup window: suppress duplicate traps from same device+OID within 5 seconds.
-    const DEDUP_WINDOW_NS: i64 = 5_000_000_000;
-    let mut dedup_map: HashMap<(String, String), i64> = HashMap::new();
-    let mut dedup_sweep_ns: i64 = now_ns();
+    // BN-021e: dedup is keyed by (trust domain, provisional source key,
+    // trap OID) and evaluated only AFTER community/USM filtering, so an
+    // unauthenticated packet can never suppress a later observation that
+    // passed the same filters. There is no authenticated SNMP ingress
+    // today — every observation is in the `provisional` domain.
+    let mut dedup = SnmpDedup::default();
+    let dedup_domain = snmp_dedup_domain(None);
 
     let mut buf = vec![0_u8; cfg.max_frame_bytes.max(1)];
     loop {
@@ -368,23 +568,8 @@ pub async fn run_snmp_receiver(
                                 usm_security_name: String::new(),
                                 usm_auth_protocol: String::new(),
                                 engine_id: String::new(),
+                                agent_address: String::new(),
                             });
-
-                        // Dedup check: skip if same (device, trap_oid) seen within window.
-                        let dedup_key = (peer_ip.clone(), event.trap_oid.clone());
-                        if let Some(&prev_ns) = dedup_map.get(&dedup_key) {
-                            if timestamp_ns - prev_ns < DEDUP_WINDOW_NS {
-                                metrics::counter!("bonsai_snmp_dedup_suppressed_total").increment(1);
-                                continue;
-                            }
-                        }
-                        dedup_map.insert(dedup_key, timestamp_ns);
-
-                        // Periodic sweep of stale dedup entries (every 30s).
-                        if timestamp_ns - dedup_sweep_ns > 30_000_000_000 {
-                            dedup_map.retain(|_, ts| timestamp_ns - *ts < DEDUP_WINDOW_NS);
-                            dedup_sweep_ns = timestamp_ns;
-                        }
 
                         metrics::counter!(
                             "bonsai_snmp_traps_total",
@@ -397,36 +582,51 @@ pub async fn run_snmp_receiver(
                             metrics::counter!("bonsai_snmp_archive_errors_total").increment(1);
                         }
 
-                        // Community allowlist filtering: drop traps from unknown communities.
-                        // Archive write above is intentionally before this check so every
-                        // trap (including blocked ones) is preserved for forensic review.
-                        if !community_allowlist.is_empty()
-                            && !event.community.is_empty()
-                            && !community_allowlist.iter().any(|c| c == &event.community)
-                        {
+                        // Community allowlist filtering (v1/v2c): drop traps
+                        // from unknown, missing or empty communities.
+                        // Archive write above is intentionally before this
+                        // check so every trap (including blocked ones) is
+                        // preserved for forensic review. Never log the
+                        // community string itself.
+                        if !community_permits(&community_allowlist, &event) {
                             warn!(
                                 peer = %peer_ip,
-                                community = %event.community,
-                                "snmp trap from unknown community — dropping (not in allowlist)"
+                                version = %event.version,
+                                "snmp trap community not permitted — dropping (not in allowlist)"
                             );
                             metrics::counter!("bonsai_snmp_community_blocked_total").increment(1);
                             continue;
                         }
 
-                        // D4-1 T3: SNMPv3 USM user validation.
-                        // If v3_users is configured and this is a v3 trap, check that the
-                        // security name is in the allowlist. Unknown users are dropped.
+                        // D4-1 T3: SNMPv3 USM security-name validation.
+                        // A *recognized* username is NOT authentication:
+                        // this receiver does not verify the USM auth
+                        // digest, so a v3 packet carrying an allowed
+                        // security_name is still only a provisional claim.
                         if event.version == "v3" && !v3_users.is_empty() {
                             let matched = v3_users.iter().find(|u| u.security_name == event.usm_security_name);
                             if matched.is_none() {
                                 warn!(
                                     peer = %peer_ip,
-                                    security_name = %event.usm_security_name,
                                     "snmpv3 trap from unknown USM security_name — dropping"
                                 );
                                 metrics::counter!("bonsai_snmpv3_usm_blocked_total").increment(1);
                                 continue;
                             }
+                        }
+
+                        // BN-021e: dedup runs only after community/USM
+                        // filtering and is scoped to the provisional source
+                        // key — filtered-out packets cannot poison dedup.
+                        let src = SnmpSource::udp(&peer_addr, &collector_id);
+                        if dedup.should_suppress(
+                            &dedup_domain,
+                            &src.source_key,
+                            &event.trap_oid,
+                            timestamp_ns,
+                        ) {
+                            metrics::counter!("bonsai_snmp_dedup_suppressed_total").increment(1);
+                            continue;
                         }
 
                         // D4-21 T5: Under rate shedding or memory pressure, skip bus
@@ -437,14 +637,17 @@ pub async fn run_snmp_receiver(
                         }
 
                         let resolved = target_map.resolve(&peer_ip, &event);
-                        let value = serde_json::to_value(&event)
-                            .unwrap_or_else(|_| json!({"peer_addr": event.peer_addr.clone()}));
+                        let resolution =
+                            resolve_flow_identity(&src.identity(&event), &[], None);
+                        let identity_json =
+                            provisional_identity_json(&src, &resolved, &resolution, &event);
+                        let value = publish_value(&event, &identity_json);
                         bus.publish(TelemetryUpdate {
-                            target: resolved.address.clone(),
-                            vendor: resolved.vendor.clone(),
-                            hostname: resolved.hostname.clone(),
-                            role: resolved.role.clone(),
-                            site: resolved.site.clone(),
+                            target: src.source_key.clone(),
+                            vendor: resolved.candidate_vendor().to_string(),
+                            hostname: event.agent_address.clone(),
+                            role: resolved.candidate_role().to_string(),
+                            site: resolved.candidate_site().to_string(),
                             timestamp_ns: event.timestamp_ns,
                             path: format!("signals/snmp/{}", event.event_type),
                             value,
@@ -454,14 +657,17 @@ pub async fn run_snmp_receiver(
                         // signals/snmp_fact/{fact_type} if an OID pattern matches.
                         if let Some(fact) = fact_extractor.extract(&event) {
                             let fact_path = format!("signals/snmp_fact/{}", fact.fact_type);
-                            let fact_value = serde_json::to_value(&fact)
-                                .unwrap_or_else(|_| json!({"peer_addr": fact.peer_addr.clone()}));
+                            let fact_value = with_identity(
+                                serde_json::to_value(&fact)
+                                    .unwrap_or_else(|_| json!({"peer_addr": fact.peer_addr.clone()})),
+                                &identity_json,
+                            );
                             bus.publish(TelemetryUpdate {
-                                target: resolved.address,
-                                vendor: resolved.vendor,
-                                hostname: resolved.hostname,
-                                role: resolved.role,
-                                site: resolved.site,
+                                target: src.source_key.clone(),
+                                vendor: resolved.candidate_vendor().to_string(),
+                                hostname: event.agent_address.clone(),
+                                role: resolved.candidate_role().to_string(),
+                                site: resolved.candidate_site().to_string(),
                                 timestamp_ns: event.timestamp_ns,
                                 path: fact_path,
                                 value: fact_value,
@@ -489,15 +695,6 @@ struct SnmpTargetMap {
 
 #[derive(Clone)]
 struct SnmpTargetEntry {
-    address: String,
-    hostname: String,
-    vendor: String,
-    role: String,
-    site: String,
-}
-
-#[derive(Clone)]
-struct ResolvedTarget {
     address: String,
     hostname: String,
     vendor: String,
@@ -536,6 +733,11 @@ impl SnmpArchive {
         file.write_all(&line)
             .await
             .context("write snmp archive line")?;
+        // tokio::fs::File::write_all returns once bytes are accepted into
+        // its internal buffer — the blocking write(2) may still be in
+        // flight. flush() drains the pending operation so a returned Ok
+        // means the line is actually in the file.
+        file.flush().await.context("flush snmp archive line")?;
         Ok(())
     }
 }
@@ -555,15 +757,27 @@ impl SnmpTargetMap {
         Self { entries }
     }
 
+    /// Resolve the observed transport source IP against configured
+    /// polling targets.
+    ///
+    /// BN-021e: this is candidate correlation, not identity resolution.
+    /// A configured polling target is NOT automatically the authenticated
+    /// sender of a trap — the match only produces a hypothesis for
+    /// evidence annotation and read-only graph probes. Multiple targets
+    /// sharing the observed IP (e.g. duplicate private addresses across
+    /// tenants) resolve to `Ambiguous` with no arbitrary selection.
     fn resolve(&self, peer_ip: &str, _event: &SnmpTrapEvent) -> ResolvedTarget {
         let peer_base = crate::registry::strip_port(peer_ip);
-        if let Some(entry) = self
+        let matches: Vec<&SnmpTargetEntry> = self
             .entries
             .iter()
-            .find(|entry| crate::registry::strip_port(&entry.address) == peer_base)
-        {
-            return ResolvedTarget {
-                // Return bare IP as canonical Device identity — strips gNMI port.
+            .filter(|entry| crate::registry::strip_port(&entry.address) == peer_base)
+            .collect();
+
+        match matches.as_slice() {
+            [entry] => ResolvedTarget {
+                // Bare IP candidate — strip any gNMI port so a future
+                // verified binding lands on the same Device node.
                 address: crate::registry::strip_port(&entry.address).to_string(),
                 hostname: if entry.hostname.is_empty() {
                     peer_base.to_string()
@@ -573,16 +787,122 @@ impl SnmpTargetMap {
                 vendor: entry.vendor.clone(),
                 role: entry.role.clone(),
                 site: entry.site.clone(),
-            };
-        }
-        ResolvedTarget {
-            address: peer_base.to_string(),
-            hostname: peer_base.to_string(),
-            vendor: String::new(),
-            role: String::new(),
-            site: String::new(),
+                candidate_status: SnmpCandidateStatus::Unique,
+                candidate_addresses: Vec::new(),
+            },
+            [] => ResolvedTarget {
+                address: String::new(),
+                hostname: String::new(),
+                vendor: String::new(),
+                role: String::new(),
+                site: String::new(),
+                candidate_status: SnmpCandidateStatus::Unresolved,
+                candidate_addresses: Vec::new(),
+            },
+            many => ResolvedTarget {
+                address: String::new(),
+                hostname: String::new(),
+                vendor: String::new(),
+                role: String::new(),
+                site: String::new(),
+                candidate_status: SnmpCandidateStatus::Ambiguous,
+                candidate_addresses: many
+                    .iter()
+                    .map(|entry| crate::registry::strip_port(&entry.address).to_string())
+                    .collect(),
+            },
         }
     }
+}
+
+/// Merge the provisional identity envelope into a serialized SnmpFact
+/// payload. All identity fields are evidence — the graph projection
+/// treats them as hints for read-only probes only.
+fn with_identity(mut value: serde_json::Value, identity: &serde_json::Value) -> serde_json::Value {
+    if let serde_json::Value::Object(map) = &mut value {
+        if let serde_json::Value::Object(id_map) = identity {
+            for (k, v) in id_map {
+                map.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    value
+}
+
+/// Serialize a SnmpTrapEvent for bus publication with credential material
+/// redacted. The community string and raw packet hex remain available in
+/// the restricted forensic archive (`SnmpArchive`) but must never reach
+/// graph properties or LLM-visible event detail.
+fn publish_value(event: &SnmpTrapEvent, identity: &serde_json::Value) -> serde_json::Value {
+    let mut value =
+        serde_json::to_value(event).unwrap_or_else(|_| json!({ "peer_addr": event.peer_addr }));
+    if let serde_json::Value::Object(map) = &mut value {
+        if !event.community.is_empty() {
+            map.insert("community".to_string(), json!(""));
+            map.insert("community_redacted".to_string(), json!(true));
+        }
+        if !event.raw_hex.is_empty() {
+            map.insert("raw_hex".to_string(), json!(""));
+            map.insert("raw_hex_redacted".to_string(), json!(true));
+        }
+        if let serde_json::Value::Object(id_map) = identity {
+            for (k, v) in id_map {
+                map.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    value
+}
+
+/// Build the provisional identity evidence object carried by every
+/// published SNMP update. `candidate` records the deterministic
+/// source-IP→target hypothesis — it is never an authoritative join.
+/// Engine ID, agent address, USM security name and community presence
+/// are preserved as separately typed self-reported claims.
+fn provisional_identity_json(
+    src: &SnmpSource,
+    target: &ResolvedTarget,
+    resolution: &IdentityResolution,
+    event: &SnmpTrapEvent,
+) -> serde_json::Value {
+    let candidate = match target.candidate_status {
+        SnmpCandidateStatus::Unique => json!({
+            "status": "unique_target_match",
+            "device_address": target.address,
+            "hostname": target.hostname,
+            "vendor": target.vendor,
+            "role": target.role,
+            "site": target.site,
+        }),
+        SnmpCandidateStatus::Ambiguous => json!({
+            "status": "ambiguous_target_match",
+            "alternatives": target.candidate_addresses,
+        }),
+        SnmpCandidateStatus::Unresolved => json!({
+            "status": "unresolved",
+        }),
+    };
+    json!({
+        "source_key": src.source_key,
+        "exporter_id": src.source_key,
+        "identity_status": serde_json::to_value(resolution.status)
+            .unwrap_or(serde_json::Value::Null),
+        "device_id": resolution.device_id,
+        "canonical_exporter_id": resolution.canonical_exporter_id,
+        "identity_resolution": serde_json::to_value(resolution)
+            .unwrap_or(serde_json::Value::Null),
+        "transport_source": src.peer_endpoint,
+        "transport_protocol": "udp",
+        "collector_id": src.collector_id,
+        "connection_id": serde_json::Value::Null,
+        "reported_agent_address": event.agent_address,
+        "reported_engine_id": event.engine_id,
+        "usm_security_name": event.usm_security_name,
+        "usm_auth_status": "unverified",
+        "community_present": !event.community.is_empty(),
+        "candidate": candidate,
+        "authority": "unverified",
+    })
 }
 
 pub fn parse_snmp_message(raw: &[u8], peer_addr: &str, timestamp_ns: i64) -> Result<SnmpTrapEvent> {
@@ -619,7 +939,14 @@ pub fn parse_snmp_message(raw: &[u8], peer_addr: &str, timestamp_ns: i64) -> Res
             let context_engine_id = scoped.read_octet_string()?;
             let _context_name = scoped.read_octet_string()?;
             let (tag, pdu) = scoped.read_tlv()?;
-            (format!("{}:{}", hex::encode(usm_engine_id), hex::encode(context_engine_id)), usm_security_name, tag, pdu.to_vec())
+            (
+                // parse_usm_security_name already returns the USM engine ID
+                // as a hex string; only the context engine ID needs encoding.
+                format!("{}:{}", usm_engine_id, hex::encode(context_engine_id)),
+                usm_security_name,
+                tag,
+                pdu.to_vec(),
+            )
         }
         _ => bail!("unsupported snmp version {version}"),
     };
@@ -669,7 +996,10 @@ fn parse_usm_security_name(params: &[u8]) -> (String, String) {
         let _ = sr.read_tlv(); // engine boots (INTEGER)
         let _ = sr.read_tlv(); // engine time (INTEGER)
         if let Ok(name_bytes) = sr.read_octet_string() {
-            return (hex::encode(engine_id), String::from_utf8_lossy(name_bytes).to_string());
+            return (
+                hex::encode(engine_id),
+                String::from_utf8_lossy(name_bytes).to_string(),
+            );
         }
     }
     (String::new(), String::new())
@@ -684,7 +1014,15 @@ fn parse_v1_trap(
 ) -> Result<SnmpTrapEvent> {
     let mut reader = BerReader::new(pdu);
     let enterprise_oid = reader.read_oid()?;
-    let _agent_addr = reader.read_expected(0x40)?;
+    let agent_addr_raw = reader.read_expected(0x40)?;
+    let agent_address = if agent_addr_raw.len() == 4 {
+        format!(
+            "{}.{}.{}.{}",
+            agent_addr_raw[0], agent_addr_raw[1], agent_addr_raw[2], agent_addr_raw[3]
+        )
+    } else {
+        String::new()
+    };
     let generic_trap = reader.read_integer()?;
     let specific_trap = reader.read_integer()?;
     let uptime_ticks = Some(reader.read_unsigned(0x43)?);
@@ -724,7 +1062,8 @@ fn parse_v1_trap(
         raw_len: 0,
         usm_security_name: String::new(),
         usm_auth_protocol: String::new(),
-                                engine_id: String::new(),
+        engine_id: String::new(),
+        agent_address,
     })
 }
 
@@ -772,7 +1111,8 @@ fn parse_v2_trap(
         raw_len: 0,
         usm_security_name: String::new(),
         usm_auth_protocol: String::new(),
-                                engine_id: String::new(),
+        engine_id: String::new(),
+        agent_address: String::new(),
     })
 }
 
@@ -1124,7 +1464,8 @@ mod tests {
             raw_len: 4,
             usm_security_name: String::new(),
             usm_auth_protocol: String::new(),
-                                engine_id: String::new(),
+            engine_id: String::new(),
+            agent_address: String::new(),
         };
         archive.append(&event).await.unwrap();
         let contents = tokio::fs::read_to_string(&path).await.unwrap();
@@ -1236,12 +1577,194 @@ mod tests {
                 raw_len: 0,
                 usm_security_name: String::new(),
                 usm_auth_protocol: String::new(),
-                                engine_id: String::new(),
+                engine_id: String::new(),
+                agent_address: String::new(),
             },
         );
         assert_eq!(resolved.address, "192.0.2.44");
         assert_eq!(resolved.hostname, "xrd-pe1");
         assert_eq!(resolved.vendor, "cisco");
+        // BN-021e: a source-IP match is a *candidate hypothesis*, never
+        // canonical attribution.
+        assert_eq!(resolved.candidate_status, SnmpCandidateStatus::Unique);
+        assert_eq!(resolved.candidate_vendor(), "cisco");
+    }
+
+    #[test]
+    fn duplicate_target_ips_are_ambiguous_not_arbitrary() {
+        let mk = |address: &str, site: &str| TargetConfig {
+            extra_ips: Vec::new(),
+            optional: false,
+            paths: Vec::new(),
+            address: address.to_string(),
+            enabled: true,
+            tls_domain: None,
+            ca_cert: None,
+            vendor: Some("cisco".to_string()),
+            credential_alias: None,
+            username_env: None,
+            password_env: None,
+            username: None,
+            password: None,
+            hostname: Some(format!("dev-{site}")),
+            role: Some("pe".to_string()),
+            site: Some(site.to_string()),
+            collector_id: None,
+            selected_paths: vec![],
+            created_at_ns: 0,
+            updated_at_ns: 0,
+            created_by: String::new(),
+            updated_by: String::new(),
+            last_operator_action: String::new(),
+        };
+        // Two tenants reuse the same private IP.
+        let map = SnmpTargetMap::new(&[
+            mk("10.0.0.1:57400", "site-a"),
+            mk("10.0.0.1:57401", "site-b"),
+        ]);
+        let event = SnmpTrapEvent {
+            timestamp_ns: 1,
+            peer_addr: "10.0.0.1:55555".to_string(),
+            version: "v2c".to_string(),
+            community: String::new(),
+            event_type: "snmp_link_down".to_string(),
+            trap_oid: OID_LINK_DOWN.to_string(),
+            category: "interface".to_string(),
+            message: String::new(),
+            enterprise_oid: String::new(),
+            generic_trap: None,
+            specific_trap: None,
+            uptime_ticks: None,
+            varbinds: vec![],
+            parse_error: String::new(),
+            raw_hex: String::new(),
+            raw_len: 0,
+            usm_security_name: String::new(),
+            usm_auth_protocol: String::new(),
+            engine_id: String::new(),
+            agent_address: String::new(),
+        };
+        let resolved = map.resolve("10.0.0.1", &event);
+        assert_eq!(resolved.candidate_status, SnmpCandidateStatus::Ambiguous);
+        assert!(resolved.address.is_empty());
+        assert_eq!(resolved.candidate_addresses.len(), 2);
+        // Ambiguous matches must not steer vendor selection either.
+        assert_eq!(resolved.candidate_vendor(), "");
+    }
+
+    #[test]
+    fn community_allowlist_rejects_empty_and_missing() {
+        let allow = vec!["private-community".to_string()];
+        let mk_event = |version: &str, community: &str| SnmpTrapEvent {
+            timestamp_ns: 1,
+            peer_addr: "10.0.0.1:162".to_string(),
+            version: version.to_string(),
+            community: community.to_string(),
+            event_type: "snmp_link_down".to_string(),
+            trap_oid: OID_LINK_DOWN.to_string(),
+            category: "interface".to_string(),
+            message: String::new(),
+            enterprise_oid: String::new(),
+            generic_trap: None,
+            specific_trap: None,
+            uptime_ticks: None,
+            varbinds: vec![],
+            parse_error: String::new(),
+            raw_hex: String::new(),
+            raw_len: 0,
+            usm_security_name: String::new(),
+            usm_auth_protocol: String::new(),
+            engine_id: String::new(),
+            agent_address: String::new(),
+        };
+        // Listed community accepted for parsing.
+        assert!(community_permits(
+            &allow,
+            &mk_event("v2c", "private-community")
+        ));
+        // Unknown, empty and missing communities all rejected.
+        assert!(!community_permits(&allow, &mk_event("v2c", "public")));
+        assert!(!community_permits(&allow, &mk_event("v2c", "")));
+        assert!(!community_permits(&allow, &mk_event("unknown", "")));
+        // v3 has no community — governed by the USM check instead.
+        assert!(community_permits(&allow, &mk_event("v3", "")));
+        // Empty allowlist accepts everything.
+        assert!(community_permits(&[], &mk_event("v2c", "anything")));
+    }
+
+    #[test]
+    fn dedup_domains_isolate_provisional_from_verified() {
+        assert_eq!(snmp_dedup_domain(None), "provisional");
+        assert_eq!(snmp_dedup_domain(Some("sha256:abc")), "verified:sha256:abc");
+        assert_ne!(
+            snmp_dedup_domain(None),
+            snmp_dedup_domain(Some("sha256:abc"))
+        );
+    }
+
+    #[test]
+    fn dedup_store_suppresses_only_same_domain_key() {
+        let mut dedup = SnmpDedup::default();
+        let t = 1_000_000_000i64;
+        // First observation recorded.
+        assert!(!dedup.should_suppress(
+            "provisional",
+            "snmpsrc/c/udp/10.0.0.1:162",
+            "1.3.6.1.6.3.1.1.5.3",
+            t
+        ));
+        // Same domain+key+OID within window → suppressed.
+        assert!(dedup.should_suppress(
+            "provisional",
+            "snmpsrc/c/udp/10.0.0.1:162",
+            "1.3.6.1.6.3.1.1.5.3",
+            t + 1
+        ));
+        // Different source key (e.g. another sender port) → not suppressed.
+        assert!(!dedup.should_suppress(
+            "provisional",
+            "snmpsrc/c/udp/10.0.0.1:55555",
+            "1.3.6.1.6.3.1.1.5.3",
+            t + 1
+        ));
+        // Verified domain is never suppressed by a prior provisional entry.
+        assert!(!dedup.should_suppress(
+            "verified:sha256:x",
+            "snmpsrc/c/udp/10.0.0.1:162",
+            "1.3.6.1.6.3.1.1.5.3",
+            t + 1
+        ));
+        // Outside the window → not suppressed.
+        assert!(!dedup.should_suppress(
+            "provisional",
+            "snmpsrc/c/udp/10.0.0.1:162",
+            "1.3.6.1.6.3.1.1.5.3",
+            t + SNMP_DEDUP_WINDOW_NS + 1
+        ));
+    }
+
+    #[test]
+    fn v1_agent_address_is_decoded_as_claim() {
+        let packet = encode_sequence(&[
+            encode_integer(0),
+            encode_octet_string(b"public"),
+            encode_tag(
+                0xA4,
+                &[
+                    encode_oid("1.3.6.1.4.1.9"),
+                    encode_tag(0x40, &[192, 0, 2, 44]),
+                    encode_integer(6),
+                    encode_integer(1),
+                    encode_tag(0x43, &[0x00, 0x00, 0x01, 0x00]),
+                    encode_sequence(&[]),
+                ]
+                .concat(),
+            ),
+        ]);
+        let event = parse_snmp_message(&packet, "10.1.2.3:162", 7).unwrap();
+        // Self-reported claim preserved as evidence.
+        assert_eq!(event.agent_address, "192.0.2.44");
+        assert_eq!(event.version, "v1");
     }
 
     #[test]
@@ -1281,7 +1804,8 @@ mod tests {
             raw_len: 0,
             usm_security_name: String::new(),
             usm_auth_protocol: String::new(),
-                                engine_id: String::new(),
+            engine_id: String::new(),
+            agent_address: String::new(),
         };
 
         let fact = extractor.extract(&event).expect("should extract fact");

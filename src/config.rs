@@ -463,6 +463,11 @@ pub struct SnmpConfig {
     /// SNMPv3 USM users. Each entry defines a user for v3 trap authentication.
     #[serde(default)]
     pub v3_users: Vec<SnmpV3User>,
+    /// Collector/ingress namespace included in provisional SNMP source
+    /// keys (BN-021e). Distinguishes observations received by different
+    /// collectors or trusted relays. Defaults to "default".
+    #[serde(default = "default_flow_collector_id")]
+    pub collector_id: String,
 }
 
 /// SNMPv3 USM user configuration for trap receiver authentication.
@@ -500,6 +505,7 @@ impl Default for SnmpConfig {
             oid_pattern_dir: None,
             community_allowlist: Vec::new(),
             v3_users: Vec::new(),
+            collector_id: default_flow_collector_id(),
         }
     }
 }

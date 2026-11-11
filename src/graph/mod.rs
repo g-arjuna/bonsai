@@ -3632,8 +3632,7 @@ impl GraphStore {
             if sig_filter.needs_refresh() {
                 sig_filter.refresh(&conn);
             }
-            let result =
-                write_blocking(&conn, &update, &event_tx, &corr_buf, &sig_filter);
+            let result = write_blocking(&conn, &update, &event_tx, &corr_buf, &sig_filter);
             metrics::histogram!("bonsai_graph_write_latency_seconds", "target" => target)
                 .record(t0.elapsed().as_secs_f64());
             result
@@ -4960,10 +4959,10 @@ fn write_blocking(
             write_syslog_fact_event(conn, update, &fact_type, event_tx, corr_buf)
         }
         TelemetryEvent::SnmpTrap { event_type } => {
-            write_signal_state_change_event(conn, update, &event_type, "snmp", event_tx, corr_buf)
+            write_snmp_state_change_event(conn, update, &event_type, event_tx)
         }
         TelemetryEvent::SnmpFact { fact_type } => {
-            write_snmp_fact_event(conn, update, &fact_type, event_tx, corr_buf)
+            write_snmp_fact_event(conn, update, &fact_type, event_tx)
         }
         TelemetryEvent::ConfigChange {
             yang_path,
@@ -5639,9 +5638,7 @@ fn write_netflow_record(
     // exporters reporting identical tuples — and distinct flows from
     // one exporter differing only in source port — remain distinct,
     // independently queryable flow records instead of collapsing.
-    let id = format!(
-        "{exporter_id}:{src_address}:{src_port}:{dst_address}:{dst_port}:{protocol}"
-    );
+    let id = format!("{exporter_id}:{src_address}:{src_port}:{dst_address}:{dst_port}:{protocol}");
     let v = &update.value;
     let ddos = AppFlowDdosFields {
         tcp_flags: json_f64(v, "tcp_flags") as u8,
@@ -5782,9 +5779,7 @@ fn write_sflow_record(
     // BN-021e: the AppFlow id includes the provisional exporter source
     // key AND the full 5-tuple so NAT-shared agents and distinct flows
     // differing only in source port never merge.
-    let id = format!(
-        "{exporter_id}:{src_address}:{src_port}:{dst_address}:{dst_port}:{protocol}"
-    );
+    let id = format!("{exporter_id}:{src_address}:{src_port}:{dst_address}:{dst_port}:{protocol}");
     let v = &update.value;
     let ddos = AppFlowDdosFields {
         tcp_flags: json_f64(v, "tcp_flags") as u8,
@@ -7268,32 +7263,77 @@ fn probe_generic_fact(
 
 // ── SNMP OID Fact pipeline ────────────────────────────────────────────────────
 
+/// BN-021e: SNMP trap events fail closed.
+///
+/// SNMP traps arrive over unauthenticated UDP: the transport endpoint,
+/// community string, v1 agent-addr, v3 engine IDs and USM security name
+/// are all self-reported claims. This projection therefore never calls
+/// `upsert_device`, never writes a `REPORTED_BY` edge, and never lets a
+/// trap mutate canonical device state. The observation is preserved as
+/// a `StateChangeEvent` scoped to the provisional `snmpsrc/...` source
+/// key plus a source-scoped `BonsaiEvent`.
+fn write_snmp_state_change_event(
+    conn: &Connection<'_>,
+    update: &TelemetryUpdate,
+    event_type: &str,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+) -> Result<()> {
+    let detail = serde_json::to_string(&update.value).context("serialize snmp event detail")?;
+    write_provisional_state_change_event(
+        conn,
+        &update.target,
+        event_type,
+        &detail,
+        "snmp",
+        ts(update.timestamp_ns),
+        update.timestamp_ns,
+        event_tx,
+    )?;
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct SnmpFactEventDetail {
+    fact_type: String,
+    trap_oid: String,
+    peer_addr: String,
+    enterprise_oid: String,
+    field_schema: std::collections::BTreeMap<String, String>,
+    fields: std::collections::BTreeMap<String, String>,
+    device_context: JsonValue,
+    join: JsonValue,
+}
+
+/// BN-021e: SNMP facts fail closed.
+///
+/// An SNMP fact is self-reported trap content delivered over an
+/// unauthenticated transport. This projection therefore:
+/// - never calls `upsert_device` (no Device node is created or refreshed);
+/// - never runs mutating joins against canonical Interface/BgpNeighbor/
+///   OspfNeighbor/IsisAdjacency state;
+/// - only performs READ-ONLY probes against a *candidate* device address
+///   carried as an explicit hypothesis in the payload.
+///
+/// The fact is persisted as a `StateChangeEvent` scoped to the
+/// provisional `snmpsrc/...` source key with event types
+/// `snmp_fact_candidate` / `snmp_fact_unresolved` — `joined` semantics
+/// return only when a transport-attested ingress path exists (BN-021g).
 fn write_snmp_fact_event(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     fact_type: &str,
     event_tx: &broadcast::Sender<BonsaiEvent>,
-    corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
     let fact: SnmpFact = serde_json::from_value(update.value.clone()).context("parse snmp fact")?;
-    upsert_device(
-        conn,
-        &update.target,
-        &update.vendor,
-        &update.hostname,
-        &update.role,
-        &update.site,
-        ts(update.timestamp_ns),
-    )?;
-    let join = join_snmp_fact(conn, update, &fact)?;
+    let join = probe_snmp_fact(conn, update, &fact)?;
     let join_status = join
         .get("status")
         .and_then(JsonValue::as_str)
-        .unwrap_or("orphan");
-    let event_type = if join_status == "joined" {
-        "snmp_fact_joined"
+        .unwrap_or("unresolved");
+    let event_type = if join_status == "candidate" {
+        "snmp_fact_candidate"
     } else {
-        "snmp_fact_orphan"
+        "snmp_fact_unresolved"
     };
     metrics::counter!(
         "bonsai_snmp_fact_join_total",
@@ -7301,111 +7341,181 @@ fn write_snmp_fact_event(
         "status" => join_status.to_string(),
     )
     .increment(1);
-    let bare_target = crate::registry::strip_port(&update.target).to_string();
-    let detail_json = serde_json::to_string(&serde_json::json!({
-        "fact_type": fact_type,
-        "trap_oid": fact.trap_oid,
-        "peer_addr": fact.peer_addr,
-        "enterprise_oid": fact.enterprise_oid,
-        "field_schema": fact.field_schema,
-        "fields": fact.fields,
-        "device_context": {
-            "device_address": bare_target,
+    let detail = SnmpFactEventDetail {
+        fact_type: fact_type.to_string(),
+        trap_oid: fact.trap_oid,
+        peer_addr: fact.peer_addr,
+        enterprise_oid: fact.enterprise_oid,
+        field_schema: fact.field_schema,
+        fields: fact.fields,
+        device_context: json!({
+            "device_address": update.target,
             "vendor": update.vendor,
             "hostname": update.hostname,
             "role": update.role,
             "site": update.site,
-        },
-        "join": join,
-    }))
-    .context("serialize snmp fact detail")?;
-    let _ = write_state_change_event(
+            "identity_status": "provisional",
+        }),
+        join,
+    };
+    let detail_json = serde_json::to_string(&detail).context("serialize snmp fact detail")?;
+    write_provisional_state_change_event(
         conn,
-        &bare_target,
+        &update.target,
         event_type,
         &detail_json,
         "snmp",
         ts(update.timestamp_ns),
         update.timestamp_ns,
         event_tx,
-        corr_buf,
     )?;
     Ok(())
 }
 
-/// Join an SNMP fact against graph context.
-/// - link_down / link_up → correlate with Interface oper_status via `interface_name` or `interface_index`
-/// - bgp_peer_state / bgp_peer_backward_transition → correlate with BgpNeighbor via `peer_address`
-/// - ospf / isis → correlate with existing StateChangeEvents on the same device
-/// - everything else → orphan (still written as a state-change event)
-fn join_snmp_fact(
+/// Read-only candidate probe for a provisional SNMP fact.
+///
+/// The candidate device address comes from the payload's `candidate`
+/// hypothesis (unique source-IP→target match only). Even a forged
+/// candidate can only cause read-only graph lookups — no node or edge is
+/// ever written from SNMP evidence. Returns explicit
+/// `ambiguous`/`unresolved` statuses rather than guessing.
+fn probe_snmp_fact(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     fact: &SnmpFact,
 ) -> Result<JsonValue> {
-    // Interface facts: link_down / link_up
-    if matches!(fact.fact_type.as_str(), "link_down" | "link_up") {
-        if let Some(iface_name) = fact.fields.get("interface_name").filter(|v| !v.is_empty()) {
-            let if_id = format!("{}:{}", update.target, iface_name);
-            let mut stmt = conn
-                .prepare("MATCH (i:Interface {id: $id}) RETURN i.oper_status")
-                .context("prepare interface join")?;
-            let rows: Vec<_> = conn
-                .execute(&mut stmt, vec![("id", Value::String(if_id.clone()))])
-                .context("execute interface join")?
-                .collect();
-            if let Some(row) = rows.first() {
-                return Ok(serde_json::json!({
-                    "status": "joined",
-                    "join_type": "interface",
-                    "interface_id": if_id,
-                    "current_oper_status": read_str(&row[0]),
-                }));
-            }
-        }
+    let candidate = update
+        .value
+        .get("candidate")
+        .cloned()
+        .unwrap_or(JsonValue::Null);
+    let candidate_status = candidate
+        .get("status")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("");
+    let candidate_addr = candidate
+        .get("device_address")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("");
+
+    if candidate_status == "ambiguous_target_match" {
+        return Ok(json!({
+            "status": "ambiguous",
+            "authority": "unverified",
+            "candidate": candidate,
+            "reason": "duplicate_target_ip",
+        }));
+    }
+    if candidate_status != "unique_target_match" || candidate_addr.is_empty() {
+        return Ok(json!({
+            "status": "unresolved",
+            "authority": "unverified",
+            "candidate": candidate,
+            "reason": "no_unique_target_candidate",
+        }));
     }
 
-    // BGP facts: bgp_peer_state / bgp_peer_backward_transition
-    if matches!(
-        fact.fact_type.as_str(),
-        "bgp_peer_state" | "bgp_peer_backward_transition"
-    ) {
-        if let Some(peer_addr) = fact.fields.get("peer_address").filter(|v| !v.is_empty()) {
-            let mut stmt = conn
-                .prepare(
-                    "MATCH (n:BgpNeighbor {device_address: $dev, peer_address: $peer}) \
-                     RETURN n.session_state, n.peer_as",
-                )
-                .context("prepare bgp neighbor join")?;
-            let rows: Vec<_> = conn
-                .execute(
-                    &mut stmt,
-                    vec![
-                        (
-                            "dev",
-                            Value::String(crate::registry::strip_port(&update.target).to_string()),
-                        ),
-                        ("peer", Value::String(peer_addr.clone())),
-                    ],
-                )
-                .context("execute bgp neighbor join")?
-                .collect();
-            if let Some(row) = rows.first() {
-                return Ok(serde_json::json!({
-                    "status": "joined",
-                    "join_type": "bgp_neighbor",
-                    "peer_address": peer_addr,
-                    "current_session_state": read_str(&row[0]),
-                    "peer_as": read_str(&row[1]),
-                }));
+    let probe = match fact.fact_type.as_str() {
+        "link_down" | "link_up" => match fact.fields.get("interface_name") {
+            Some(if_name) => match lookup_interface_state(conn, candidate_addr, if_name)? {
+                Some(graph_state) => json!({
+                    "kind": "interface",
+                    "matched": true,
+                    "key": if_name,
+                    "graph_state": graph_state,
+                }),
+                None => json!({
+                    "kind": "interface",
+                    "matched": false,
+                    "key": if_name,
+                    "reason": "no_interface_match",
+                }),
+            },
+            None => json!({
+                "kind": "interface",
+                "matched": false,
+                "reason": "no_interface_name_field",
+            }),
+        },
+        "bgp_peer_state" | "bgp_peer_backward_transition" => {
+            match fact.fields.get("peer_address") {
+                Some(peer_addr) => {
+                    match lookup_bgp_neighbor_state(conn, candidate_addr, peer_addr)? {
+                        Some(graph_state) => json!({
+                            "kind": "bgp_neighbor",
+                            "matched": true,
+                            "key": peer_addr,
+                            "graph_state": graph_state,
+                        }),
+                        None => json!({
+                            "kind": "bgp_neighbor",
+                            "matched": false,
+                            "key": peer_addr,
+                            "reason": "no_bgp_neighbor_match",
+                        }),
+                    }
+                }
+                None => json!({
+                    "kind": "bgp_neighbor",
+                    "matched": false,
+                    "reason": "no_peer_address_field",
+                }),
             }
         }
-    }
+        "ospf_nbr_state_change" => match fact.fields.get("neighbor_address") {
+            Some(addr) => match lookup_ospf_neighbor_state(conn, candidate_addr, addr)? {
+                Some(graph_state) => json!({
+                    "kind": "ospf_neighbor",
+                    "matched": true,
+                    "key": addr,
+                    "graph_state": graph_state,
+                }),
+                None => json!({
+                    "kind": "ospf_neighbor",
+                    "matched": false,
+                    "key": addr,
+                    "reason": "no_ospf_neighbor_match",
+                }),
+            },
+            None => json!({
+                "kind": "ospf_neighbor",
+                "matched": false,
+                "reason": "no_neighbor_address_field",
+            }),
+        },
+        "isis_adj_state_change" => match fact.fields.get("system_id") {
+            Some(nid) => match lookup_isis_adjacency_state(conn, candidate_addr, nid)? {
+                Some(graph_state) => json!({
+                    "kind": "isis_adjacency",
+                    "matched": true,
+                    "key": nid,
+                    "graph_state": graph_state,
+                }),
+                None => json!({
+                    "kind": "isis_adjacency",
+                    "matched": false,
+                    "key": nid,
+                    "reason": "no_isis_adjacency_match",
+                }),
+            },
+            None => json!({
+                "kind": "isis_adjacency",
+                "matched": false,
+                "reason": "no_system_id_field",
+            }),
+        },
+        _ => json!({
+            "kind": fact.fact_type,
+            "matched": false,
+            "reason": "no_probe_for_fact_type",
+        }),
+    };
 
-    Ok(serde_json::json!({
-        "status": "orphan",
-        "reason": "no_graph_entity_matched",
-        "fact_type": fact.fact_type,
+    Ok(json!({
+        "status": "candidate",
+        "authority": "unverified",
+        "candidate_device_address": candidate_addr,
+        "graph_probe": probe,
     }))
 }
 
@@ -7596,40 +7706,6 @@ fn value_i64(value: &Value) -> i64 {
         Value::Int64(number) => *number,
         _ => 0,
     }
-}
-
-fn write_signal_state_change_event(
-    conn: &Connection<'_>,
-    update: &TelemetryUpdate,
-    event_type: &str,
-    source_type: &str,
-    event_tx: &broadcast::Sender<BonsaiEvent>,
-    corr_buf: &CorrelationBuffer,
-) -> Result<()> {
-    let bare = crate::registry::strip_port(&update.target).to_string();
-    let now = ts(update.timestamp_ns);
-    upsert_device(
-        conn,
-        &update.target,
-        &update.vendor,
-        &update.hostname,
-        &update.role,
-        &update.site,
-        now.clone(),
-    )?;
-    let detail = serde_json::to_string(&update.value).context("serialize syslog event detail")?;
-    let _ = write_state_change_event(
-        conn,
-        &bare,
-        event_type,
-        &detail,
-        source_type,
-        now,
-        update.timestamp_ns,
-        event_tx,
-        corr_buf,
-    )?;
-    Ok(())
 }
 
 fn bmp_session_id(bare_target: &str, event: &BmpEvent) -> String {

@@ -412,8 +412,11 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
                 None
             }
         }
-        // SNMP fact events: direction from fact_type, interface from fields.interface_name
-        "snmp_fact_joined" | "snmp_fact_orphan" => {
+        // SNMP fact events: direction from fact_type, interface from fields.interface_name.
+        // BN-021e renamed the event types to candidate/unresolved; the detail
+        // schema is unchanged, so provisional facts keep contributing
+        // correlation evidence (scoped to their source key, never canonical).
+        "snmp_fact_candidate" | "snmp_fact_unresolved" => {
             let fact_type = detail
                 .get("fact_type")
                 .and_then(|v| v.as_str())
@@ -446,8 +449,12 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
                 _ => None,
             }
         }
-        // Syslog structured fact events (same event_type pattern as SNMP facts)
-        "syslog_fact_joined" | "syslog_fact_orphan" => {
+        // Syslog structured fact events (same event_type pattern as SNMP facts).
+        // BN-021e renamed these to candidate/unresolved — the detail schema is
+        // unchanged. Provisional syslog/snmp events bypass this buffer today
+        // (only the canonical write_state_change_event records), so these arms
+        // only fire for canonical-path events; the names are kept truthful.
+        "syslog_fact_candidate" | "syslog_fact_unresolved" => {
             let fact_type = detail
                 .get("fact_type")
                 .and_then(|v| v.as_str())
@@ -562,5 +569,78 @@ pub fn semantic_key_for_event(event_type: &str, detail_json: &str) -> Option<(St
         }
         // Inherently single-source — do not buffer
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::semantic_key_for_event;
+
+    /// BN-021e: syslog/snmp fact events were renamed to
+    /// candidate/unresolved. The semantic extraction must recognize the
+    /// new names with the same detail schema (fact_type + fields).
+    #[test]
+    fn syslog_fact_candidate_names_map_to_semantics() {
+        let detail = serde_json::json!({
+            "fact_type": "bgp_neighbor",
+            "fields": {"new_state": "established", "peer_address": "10.0.0.2"},
+        })
+        .to_string();
+        for event_type in ["syslog_fact_candidate", "syslog_fact_unresolved"] {
+            let (semantic, sub) = semantic_key_for_event(event_type, &detail).expect("must map");
+            assert_eq!(semantic, "bgp_neighbor_up");
+            assert_eq!(sub, "10.0.0.2");
+        }
+    }
+
+    #[test]
+    fn syslog_fact_candidate_interface_state() {
+        let detail = serde_json::json!({
+            "fact_type": "interface_state",
+            "fields": {"new_state": "down", "if_name": "ethernet-1/1"},
+        })
+        .to_string();
+        let (semantic, sub) =
+            semantic_key_for_event("syslog_fact_candidate", &detail).expect("must map");
+        assert_eq!(semantic, "interface_down");
+        assert_eq!(sub, "ethernet-1/1");
+    }
+
+    #[test]
+    fn snmp_fact_candidate_names_map_to_semantics() {
+        let detail = serde_json::json!({
+            "fact_type": "link_down",
+            "fields": {"interface_name": "xe-0/0/1"},
+        })
+        .to_string();
+        for event_type in ["snmp_fact_candidate", "snmp_fact_unresolved"] {
+            let (semantic, sub) = semantic_key_for_event(event_type, &detail).expect("must map");
+            assert_eq!(semantic, "interface_down");
+            assert_eq!(sub, "xe-0/0/1");
+        }
+    }
+
+    #[test]
+    fn unknown_fact_type_is_explicit_nonmatch() {
+        let detail = serde_json::json!({
+            "fact_type": "not_a_real_fact",
+            "fields": {},
+        })
+        .to_string();
+        assert!(semantic_key_for_event("syslog_fact_candidate", &detail).is_none());
+        assert!(semantic_key_for_event("snmp_fact_candidate", &detail).is_none());
+    }
+
+    #[test]
+    fn legacy_joined_names_no_longer_map() {
+        // The pre-BN-021e event types must not silently keep working —
+        // producers no longer emit them.
+        let detail = serde_json::json!({
+            "fact_type": "link_down",
+            "fields": {"interface_name": "xe-0/0/1"},
+        })
+        .to_string();
+        assert!(semantic_key_for_event("snmp_fact_joined", &detail).is_none());
+        assert!(semantic_key_for_event("syslog_fact_orphan", &detail).is_none());
     }
 }
