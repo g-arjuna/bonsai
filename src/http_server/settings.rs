@@ -582,6 +582,7 @@ pub async fn patch_streaming_settings_handler(
     let sflow_to_restart = patch.sflow.is_some().then(|| crate::config::SflowConfig {
         enabled: new_sf_enabled,
         udp_addr: new_sf_addr.clone(),
+        ..state.streaming.sflow.clone()
     });
     let syslog_to_restart = (patch.syslog_udp.is_some() || patch.syslog_tcp.is_some()).then(|| {
         crate::config::SyslogConfig {

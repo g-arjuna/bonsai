@@ -673,6 +673,25 @@ and clean malformed-packet rejection. Evidence:
 `docs/merger/evidence/2026-11-11-bn021d-flow-exporter-isolation/`;
 lab `lab/acceptance/bn021d-flow-nat/`.
 
+BN-021e sFlow identity isolation (11 November, first adapter slice):
+the sFlow receiver no longer treats the self-reported `agent_address`
+as exporter identity. Every datagram now yields a provisional
+`sflowsrc/{collector}/{transport}/{agent}/{sub}` source key covering
+the observed UDP endpoint (IP + source port), collector namespace,
+agent claim and sub-agent id; `agent_address`, `agent_sub_id`,
+`sflow_sequence` and `sflow_uptime` are preserved as self-reported
+evidence and `exporter_address` is the observed transport IP.
+`sFlowConfig.collector_id` added (default `default`). The graph writer
+fails closed exactly like NetFlow: AppFlow (full 5-tuple id) +
+source-scoped `app_flow_event`/`sflow_counters_event` only — no
+`DeviceAddress` refresh, `CARRIES_FLOW`, `SRC_HOST`/`DST_HOST`,
+canonical `Interface` counter mutation, or flow-derived device alerts
+(the now-unused utilization/DDoS emitters were removed). Plain UDP
+sFlow stays `provisional` with `device_id = null`; canonical
+attribution awaits a transport-attested ingress path (BN-021g).
+Verified: `tests/bn021e_sflow_exporter_isolation.rs` 7/7 + 2 unit
+tests. Syslog/SNMP/OTLP adapters remain open under BN-021e.
+
 BN-022 containment slice (10 November): ad-hoc graph reads are now
 denied-by-default for non-admin principals. `src/graph/explorer.rs`
 gained `GraphReadAccess` + `validate_query_for_access`: a positive

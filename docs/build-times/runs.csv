@@ -100,3 +100,8 @@ date,command,scope,wall_seconds,result,notes
 2026-11-11,cargo check -p bonsai --all-targets,bonsai check all-targets post-review,19,pass,warm; clean
 2026-11-11,cargo test -j 1 --test bn021f_hardening --test bn021f_authenticated_ingress --test bn021c_exporter_isolation --test bn021b_trusted_identity --test bn022_graph_read_boundary,identity+graph regression batch,170,pass,53/53 (13+17+9+9+5); -j1 sequential links
 2026-11-11,cargo test -j 1 --test r01_r04_routing_history_recovery --test r05_r06_runtime_wiring_and_scope --test bn006_reconnect_projection --test bn005_closeout --test bn005_deployment_and_scope_hardening --test bn006_collection_wiring,BN-005/006+routing recovery batch,199,pass,36 pass + 1 ignored (containerlab-gated live native collection); -j1 sequential links
+2026-11-11,cargo test -j 1 --test bn021e_sflow_exporter_isolation,bn021e sflow suite,423,fail,first compile+link ~7m; 1 fixture error (Interface node missing pk id); counter-sample test added (6->7)
+2026-11-11,cargo test -j 1 --test bn021e_sflow_exporter_isolation,bn021e sflow suite,43,pass,7/7 warm; NAT separation, agent-claim isolation, collector scope, source-scoped counters, graph fail-closed, 5-tuple AppFlow id
+2026-11-11,cargo test -j 1 -p bonsai --lib streaming::sflow,bn021e unit tests,134,pass,5/5 incl. 2 new source-key/provisional-resolution tests
+2026-11-11,cargo check -p bonsai --all-targets,bonsai check all-targets bn021e,30,pass,warm; clean (settings.rs collector_id init fixed)
+2026-11-11,cargo test -j 1 --test bn021d_flow_exporter_isolation --test bn022_graph_read_boundary --test bn021b_trusted_identity,bn021d+bn022+bn021b regression batch,87,pass,33/33 (15+5+13); sflow/graph changes did not regress NetFlow isolation

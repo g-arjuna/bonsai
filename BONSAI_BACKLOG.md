@@ -211,11 +211,11 @@ before claiming equivalent history or enabling it as an authority.
   — VERIFIED for observational separation; canonical attribution
   remains gated on verified ingress by design.
 
-**BN-021e — Remaining protocol adapters** — OPEN.
+**BN-021e — Remaining protocol adapters** — OPEN (sFlow slice IMPLEMENTED 11 November).
+- sFlow: DONE for the isolation slice — provisional `sflowsrc/{collector}/{transport}/agent{addr}/sub{id}` keys separate NAT-shared agents, agent claims, sub-agents and collector scopes; `agent_address`/`sub_agent_id`/sequence/uptime preserved as self-reported evidence; graph fails closed (AppFlow + source-scoped events only — no `DeviceAddress` refresh, `CARRIES_FLOW`, `SRC_HOST`/`DST_HOST`, `Interface` counter mutation, or flow-derived device alerts); AppFlow id is the full 5-tuple. Verified: `tests/bn021e_sflow_exporter_isolation.rs` 7/7 + 2 unit tests. Canonical sFlow attribution still awaits a transport-attested ingress path (BN-021g).
 - Syslog: relay transport identity vs claimed originator (trust levels).
 - SNMP: configured polling target vs trap sender vs engine identity.
 - OTLP: trusted resource/service identity, not collector IP.
-- sFlow: keep payload agent address; validate trust/binding.
 
 **BN-021f — Authenticated BMP ingress** — IMPLEMENTED + LAB VERIFIED (11 November).
 - Done: mutual-TLS BMP ingress terminated in `bonsai-routing`

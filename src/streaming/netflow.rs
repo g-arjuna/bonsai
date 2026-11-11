@@ -665,7 +665,7 @@ impl FlowProtocol {
 
 /// Percent-encode a collector/ingress scope component so it can never
 /// inject key delimiters. Only `[A-Za-z0-9._~-]` pass through.
-fn encode_key_component(s: &str) -> String {
+pub(crate) fn encode_key_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {

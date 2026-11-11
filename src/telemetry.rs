@@ -130,10 +130,15 @@ pub enum TelemetryEvent {
         bytes_per_sec: f64,
         packets_per_sec: f64,
     },
-    /// sFlow v5 sampled flow record — same AppFlow/CARRIES_FLOW graph path as NetflowRecord.
+    /// sFlow v5 sampled flow record — same AppFlow graph path as NetflowRecord.
+    /// BN-021e: `exporter_id` is the provisional `sflowsrc/...` source key;
+    /// `exporter_address` is the observed transport IP (evidence only).
     SflowRecord {
         exporter_address: String,
+        exporter_id: String,
         src_address: String,
+        /// Source port is part of the flow identity (full 5-tuple).
+        src_port: i64,
         dst_address: String,
         dst_port: i64,
         protocol: String,
@@ -141,9 +146,12 @@ pub enum TelemetryEvent {
         packets_per_sec: f64,
         sampling_rate: u32,
     },
-    /// sFlow v5 counter sample — updates Interface node in/out octets + error counters.
+    /// sFlow v5 counter sample. BN-021e: `exporter_id` is the provisional
+    /// `sflowsrc/...` source key — counter evidence is source-scoped and
+    /// must not update canonical Interface state without verified ingress.
     SflowCounters {
         exporter_address: String,
+        exporter_id: String,
         if_index: u32,
         if_speed: u64,
         in_octets: u64,
@@ -598,12 +606,23 @@ impl TelemetryUpdate {
                 .and_then(|v| v.as_str())
                 .unwrap_or(&self.target)
                 .to_string();
+            let exporter_id = self
+                .value
+                .get("exporter_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or(exporter_address.as_str())
+                .to_string();
             let src_address = self
                 .value
                 .get("src_address")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            let src_port = self
+                .value
+                .get("src_port")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             let dst_address = self
                 .value
                 .get("dst_address")
@@ -638,7 +657,9 @@ impl TelemetryUpdate {
                 .unwrap_or(1) as u32;
             return TelemetryEvent::SflowRecord {
                 exporter_address,
+                exporter_id,
                 src_address,
+                src_port,
                 dst_address,
                 dst_port,
                 protocol,
@@ -654,6 +675,12 @@ impl TelemetryUpdate {
                 .get("exporter_address")
                 .and_then(|v| v.as_str())
                 .unwrap_or(&self.target)
+                .to_string();
+            let exporter_id = self
+                .value
+                .get("exporter_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or(exporter_address.as_str())
                 .to_string();
             let if_index = self
                 .value
@@ -697,6 +724,7 @@ impl TelemetryUpdate {
                 .unwrap_or(0) as u32;
             return TelemetryEvent::SflowCounters {
                 exporter_address,
+                exporter_id,
                 if_index,
                 if_speed,
                 in_octets,

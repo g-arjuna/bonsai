@@ -3621,7 +3621,6 @@ impl GraphStore {
         let event_tx = self.event_tx.clone();
         let write_lock = Arc::clone(&self.write_lock);
         let corr_buf = Arc::clone(&self.correlation_buffer);
-        let ddos_cfg = Arc::clone(&self.ddos_config);
         let sig_filter = self.signal_filter.clone();
         let target = update.target.clone();
         tokio::task::spawn_blocking(move || {
@@ -3634,7 +3633,7 @@ impl GraphStore {
                 sig_filter.refresh(&conn);
             }
             let result =
-                write_blocking(&conn, &update, &event_tx, &corr_buf, &ddos_cfg, &sig_filter);
+                write_blocking(&conn, &update, &event_tx, &corr_buf, &sig_filter);
             metrics::histogram!("bonsai_graph_write_latency_seconds", "target" => target)
                 .record(t0.elapsed().as_secs_f64());
             result
@@ -3649,7 +3648,6 @@ impl GraphStore {
         let event_tx = self.event_tx.clone();
         let write_lock = Arc::clone(&self.write_lock);
         let corr_buf = Arc::clone(&self.correlation_buffer);
-        let ddos_cfg = Arc::clone(&self.ddos_config);
         let sig_filter = self.signal_filter.clone();
         tokio::task::spawn_blocking(move || {
             let t0 = Instant::now();
@@ -3664,7 +3662,7 @@ impl GraphStore {
             for update in &updates {
                 metrics::counter!("bonsai_telemetry_updates_total", "target" => update.target.clone())
                     .increment(1);
-                if let Err(error) = write_blocking(&conn, &update, &event_tx, &corr_buf, &ddos_cfg, &sig_filter) {
+                if let Err(error) = write_blocking(&conn, &update, &event_tx, &corr_buf, &sig_filter) {
                     // Log individual failures but keep processing — a single bad update
                     // from buggy device firmware must not poison the entire batch (C-1).
                     tracing::warn!(
@@ -3693,7 +3691,7 @@ impl GraphStore {
                     let path = update.path.clone();
                     let single_conn = Connection::new(&db).context("single-write fallback connection")?;
                     if let Err(single_error) =
-                        write_blocking(&single_conn, &update, &event_tx, &corr_buf, &ddos_cfg, &sig_filter)
+                        write_blocking(&single_conn, &update, &event_tx, &corr_buf, &sig_filter)
                     {
                         tracing::warn!(
                             target = %target,
@@ -4884,7 +4882,6 @@ fn write_blocking(
     update: &TelemetryUpdate,
     event_tx: &broadcast::Sender<BonsaiEvent>,
     corr_buf: &CorrelationBuffer,
-    ddos_cfg: &DdosConfig,
     sig_filter: &SignalFilter,
 ) -> Result<()> {
     let signal_type = signal_type_for_path(&update.path);
@@ -5066,7 +5063,9 @@ fn write_blocking(
         ),
         TelemetryEvent::SflowRecord {
             exporter_address,
+            exporter_id,
             src_address,
+            src_port,
             dst_address,
             dst_port,
             protocol,
@@ -5077,7 +5076,9 @@ fn write_blocking(
             conn,
             update,
             &exporter_address,
+            &exporter_id,
             &src_address,
+            src_port,
             &dst_address,
             dst_port,
             &protocol,
@@ -5085,11 +5086,10 @@ fn write_blocking(
             packets_per_sec,
             sampling_rate,
             event_tx,
-            corr_buf,
-            ddos_cfg,
         ),
         TelemetryEvent::SflowCounters {
             exporter_address,
+            exporter_id,
             if_index,
             if_speed,
             in_octets,
@@ -5102,6 +5102,7 @@ fn write_blocking(
             conn,
             update,
             &exporter_address,
+            &exporter_id,
             if_index,
             if_speed,
             in_octets,
@@ -5110,6 +5111,7 @@ fn write_blocking(
             out_errors,
             in_discards,
             out_discards,
+            event_tx,
         ),
         TelemetryEvent::OpticalChannel { channel_name } => {
             write_optical_channel(conn, update, &channel_name)
@@ -5750,14 +5752,25 @@ fn write_netflow_record(
     Ok(())
 }
 
-/// D4-5 T1: sFlow sampled flow record — same AppFlow/CARRIES_FLOW path as NetFlow.
-/// Sampling rate is recorded in the BonsaiEvent detail for downstream rate scaling.
+/// D4-5 T1 / BN-021e: sFlow sampled flow record.
+///
+/// sFlow has no authenticated ingress yet, so — exactly like NetFlow —
+/// this projection boundary fails closed for EVERY flow update: the AppFlow
+/// node and a source-scoped `app_flow_event` are the only outputs. No
+/// `DeviceAddress` refresh, no `CARRIES_FLOW`, no `SRC_HOST`/`DST_HOST`
+/// edges, and no flow-derived device alerts. `exporter_id` is the
+/// provisional `sflowsrc/...` key; `agent_address` inside the payload is
+/// a self-reported claim and `exporter_address` is observed transport
+/// evidence — neither is canonical device identity. Sampling rate is
+/// recorded in the event detail for downstream rate scaling.
 #[allow(clippy::too_many_arguments)]
 fn write_sflow_record(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     exporter_address: &str,
+    exporter_id: &str,
     src_address: &str,
+    src_port: i64,
     dst_address: &str,
     dst_port: i64,
     protocol: &str,
@@ -5765,10 +5778,13 @@ fn write_sflow_record(
     packets_per_sec: f64,
     sampling_rate: u32,
     event_tx: &broadcast::Sender<BonsaiEvent>,
-    corr_buf: &CorrelationBuffer,
-    ddos_cfg: &DdosConfig,
 ) -> Result<()> {
-    let id = format!("{src_address}:{dst_address}:{dst_port}:{protocol}");
+    // BN-021e: the AppFlow id includes the provisional exporter source
+    // key AND the full 5-tuple so NAT-shared agents and distinct flows
+    // differing only in source port never merge.
+    let id = format!(
+        "{exporter_id}:{src_address}:{src_port}:{dst_address}:{dst_port}:{protocol}"
+    );
     let v = &update.value;
     let ddos = AppFlowDdosFields {
         tcp_flags: json_f64(v, "tcp_flags") as u8,
@@ -5803,84 +5819,48 @@ fn write_sflow_record(
         &ddos,
     )?;
 
-    // Register exporter IP as DeviceAddress for sFlow.
-    let exporter_bare = crate::registry::strip_port(exporter_address);
-    let _ = upsert_device_address(conn, exporter_bare, "sflow", ts(update.timestamp_ns));
+    // Record the provisional source key, identity status and source port
+    // on the AppFlow node — source-scoped evidence only.
+    {
+        let identity_status = v
+            .get("identity_status")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mut stmt = conn.prepare(
+            "MATCH (f:AppFlow {id: $fid}) \
+             SET f.exporter_id = $eid, f.identity_status = $istatus, f.src_port = $sport",
+        )?;
+        conn.execute(
+            &mut stmt,
+            vec![
+                ("fid", Value::String(id.clone())),
+                ("eid", Value::String(exporter_id.to_string())),
+                ("istatus", Value::String(identity_status)),
+                ("sport", Value::Int64(src_port)),
+            ],
+        )?;
+    }
 
-    let mut carries = conn
-        .prepare(
-            "MATCH (d:Device {address: $addr}), (f:AppFlow {id: $fid}) \
-             MERGE (d)-[:CARRIES_FLOW]->(f)",
-        )
-        .context("prepare CARRIES_FLOW merge (sflow)")?;
-    conn.execute(
-        &mut carries,
-        vec![
-            ("addr", Value::String(exporter_bare.to_string())),
-            ("fid", Value::String(id.clone())),
-        ],
-    )
-    .context("execute CARRIES_FLOW merge (sflow)")?;
-
-    let mut src_host = conn
-        .prepare(
-            "MATCH (h:HostEndpoint {ip: $ip}), (f:AppFlow {id: $fid}) \
-             MERGE (f)-[:SRC_HOST]->(h)",
-        )
-        .context("prepare SRC_HOST merge (sflow)")?;
-    conn.execute(
-        &mut src_host,
-        vec![
-            ("ip", Value::String(src_address.to_string())),
-            ("fid", Value::String(id.clone())),
-        ],
-    )
-    .context("execute SRC_HOST merge (sflow)")?;
-
-    let mut dst_host = conn
-        .prepare(
-            "MATCH (h:HostEndpoint {ip: $ip}), (f:AppFlow {id: $fid}) \
-             MERGE (f)-[:DST_HOST]->(h)",
-        )
-        .context("prepare DST_HOST merge (sflow)")?;
-    conn.execute(
-        &mut dst_host,
-        vec![
-            ("ip", Value::String(dst_address.to_string())),
-            ("fid", Value::String(id.clone())),
-        ],
-    )
-    .context("execute DST_HOST merge (sflow)")?;
-
-    emit_flow_utilization_event(
-        conn,
-        update,
-        exporter_address,
-        &id,
-        bytes_per_sec,
-        event_tx,
-        corr_buf,
-    );
-    emit_ddos_pps_spike_event(
-        conn,
-        update,
-        exporter_address,
-        protocol,
-        packets_per_sec,
-        &ddos.amplification_vector,
-        &ddos.tcp_flags_pattern,
-        event_tx,
-        corr_buf,
-        ddos_cfg,
-    );
+    // Fail closed: no authoritative projections until a typed,
+    // transport-attested sFlow ingress path exists (BN-021e/g).
+    let identity_status_str = v
+        .get("identity_status")
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
 
     let evt = BonsaiEvent {
-        device_address: exporter_address.to_string(),
+        device_address: exporter_id.to_string(),
         event_type: "app_flow_event".to_string(),
         detail_json: serde_json::json!({
             "flow_id": id,
             "exporter_address": exporter_address,
+            "exporter_id": exporter_id,
+            "agent_address": v.get("agent_address").cloned().unwrap_or(serde_json::Value::Null),
+            "agent_sub_id": v.get("agent_sub_id").cloned().unwrap_or(serde_json::Value::Null),
+            "identity_status": identity_status_str,
             "src_address": src_address,
+            "src_port": src_port,
             "dst_address": dst_address,
             "dst_port": dst_port,
             "protocol": protocol,
@@ -5899,232 +5879,56 @@ fn write_sflow_record(
     Ok(())
 }
 
-/// D4-5 T1: sFlow counter sample — update Interface node counters by if_index lookup.
-/// Silently no-ops when no Interface with matching device+if_index exists.
+/// D4-5 T1 / BN-021e: sFlow counter sample.
+///
+/// Counter evidence is source-scoped like flow evidence: without a
+/// transport-attested ingress path there is no way to know which canonical
+/// Device/Interface an `if_index` belongs to, so this projection fails
+/// closed — no `Interface` counter state is mutated. The sample remains
+/// visible as a `sflow_counters_event` keyed by the provisional
+/// `sflowsrc/...` source id until BN-021e/g defines verified sFlow ingress.
 #[allow(clippy::too_many_arguments)]
 fn write_sflow_counters(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     exporter_address: &str,
+    exporter_id: &str,
     if_index: u32,
-    _if_speed: u64,
+    if_speed: u64,
     in_octets: u64,
     out_octets: u64,
     in_errors: u32,
     out_errors: u32,
     in_discards: u32,
     out_discards: u32,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
 ) -> Result<()> {
-    let now = ts(update.timestamp_ns);
-    let mut stmt = conn
-        .prepare(
-            "MATCH (i:Interface) \
-             WHERE i.device_address = $addr AND i.if_index = $idx \
-             SET i.in_octets = $in_oct, i.out_octets = $out_oct, \
-                 i.in_errors = $in_err, i.out_errors = $out_err, \
-                 i.in_discards = $in_dis, i.out_discards = $out_dis, \
-                 i.updated_at = $ts",
-        )
-        .context("prepare sflow counter update")?;
-    conn.execute(
-        &mut stmt,
-        vec![
-            ("addr", Value::String(exporter_address.to_string())),
-            ("idx", Value::Int64(if_index as i64)),
-            (
-                "in_oct",
-                Value::Int64(in_octets.min(i64::MAX as u64) as i64),
-            ),
-            (
-                "out_oct",
-                Value::Int64(out_octets.min(i64::MAX as u64) as i64),
-            ),
-            ("in_err", Value::Int64(in_errors as i64)),
-            ("out_err", Value::Int64(out_errors as i64)),
-            ("in_dis", Value::Int64(in_discards as i64)),
-            ("out_dis", Value::Int64(out_discards as i64)),
-            ("ts", now),
-        ],
-    )
-    .context("execute sflow counter update")?;
+    let _ = conn;
+    let evt = BonsaiEvent {
+        device_address: exporter_id.to_string(),
+        event_type: "sflow_counters_event".to_string(),
+        detail_json: serde_json::json!({
+            "exporter_address": exporter_address,
+            "exporter_id": exporter_id,
+            "agent_address": update.value.get("agent_address").cloned().unwrap_or(serde_json::Value::Null),
+            "agent_sub_id": update.value.get("agent_sub_id").cloned().unwrap_or(serde_json::Value::Null),
+            "identity_status": update.value.get("identity_status").cloned().unwrap_or(serde_json::Value::Null),
+            "if_index": if_index,
+            "if_speed": if_speed,
+            "in_octets": in_octets,
+            "out_octets": out_octets,
+            "in_errors": in_errors,
+            "out_errors": out_errors,
+            "in_discards": in_discards,
+            "out_discards": out_discards,
+        })
+        .to_string(),
+        occurred_at_ns: update.timestamp_ns,
+        state_change_event_id: String::new(),
+        source_type: "sflow".to_string(),
+    };
+    let _ = event_tx.send(evt);
     Ok(())
-}
-
-/// D4-10 T1: Check if a new AppFlow record implies interface utilization > 90%.
-/// Queries the exporter device's max interface speed from the graph and compares
-/// `bytes_per_sec * 8` against that speed.  Fires an `app_flow_high_utilization`
-/// StateChangeEvent if the threshold is breached.  Silent no-op when no Interface
-/// speed is known (avoids false positives for unregistered exporters).
-#[allow(clippy::too_many_arguments)]
-fn emit_flow_utilization_event(
-    conn: &Connection<'_>,
-    update: &TelemetryUpdate,
-    exporter_address: &str,
-    flow_id: &str,
-    bytes_per_sec: f64,
-    event_tx: &broadcast::Sender<BonsaiEvent>,
-    corr_buf: &CorrelationBuffer,
-) {
-    const UTIL_THRESHOLD: f64 = 0.90;
-    let mut stmt = match conn.prepare(
-        "MATCH (d:Device)-[:HAS_INTERFACE]->(i:Interface) \
-         WHERE (d.address = $addr OR d.address STARTS WITH $addr_pfx) AND i.speed > 0 \
-         RETURN i.speed ORDER BY i.speed DESC LIMIT 1",
-    ) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let mut rows = match conn.execute(
-        &mut stmt,
-        vec![
-            ("addr", Value::String(exporter_address.to_string())),
-            ("addr_pfx", Value::String(format!("{exporter_address}:"))),
-        ],
-    ) {
-        Ok(r) => r,
-        Err(_) => return,
-    };
-    let speed_bps = match rows.next() {
-        Some(row) => match &row[0] {
-            Value::Int64(s) => *s as f64,
-            Value::Double(s) => *s,
-            _ => return,
-        },
-        None => return,
-    };
-    if speed_bps <= 0.0 {
-        return;
-    }
-    let utilization = (bytes_per_sec * 8.0) / speed_bps;
-    if utilization < UTIL_THRESHOLD {
-        return;
-    }
-    let detail = serde_json::json!({
-        "exporter_address": exporter_address,
-        "flow_id": flow_id,
-        "bytes_per_sec": bytes_per_sec,
-        "interface_speed_bps": speed_bps,
-        "utilization_pct": (utilization * 100.0).round() as i64,
-    })
-    .to_string();
-    let _ = write_state_change_event(
-        conn,
-        exporter_address,
-        "app_flow_high_utilization",
-        &detail,
-        "flow",
-        ts(update.timestamp_ns),
-        update.timestamp_ns,
-        event_tx,
-        corr_buf,
-    );
-}
-
-/// DS-3 T1: Compare observed flow PPS against the stored TrafficBaseline and
-/// fire a `ddos_interface_pps_spike` StateChangeEvent when the deviation score
-/// exceeds `ddos_cfg.spike_deviation_threshold`.
-///
-/// Guards:
-///   1. `ddos_cfg.enabled` must be true — silent no-op otherwise.
-///   2. The exporter device must have a `DdosScope` node with `enabled=true`
-///      (per-device opt-in) — avoids false positives on excluded devices.
-///   3. A `TrafficBaseline` row must already exist for the device+protocol
-///      (cold-start grace period).
-#[allow(clippy::too_many_arguments)]
-fn emit_ddos_pps_spike_event(
-    conn: &Connection<'_>,
-    update: &TelemetryUpdate,
-    exporter_address: &str,
-    protocol: &str,
-    packets_per_sec: f64,
-    amplification_vector: &str,
-    tcp_flags_pattern: &str,
-    event_tx: &broadcast::Sender<BonsaiEvent>,
-    corr_buf: &CorrelationBuffer,
-    ddos_cfg: &DdosConfig,
-) {
-    if !ddos_cfg.enabled {
-        return;
-    }
-
-    let bare = crate::registry::strip_port(exporter_address);
-
-    // ── Per-device scope check ───────────────────────────────────────────────
-    // A device must be explicitly added to DdosScope with enabled=true before
-    // any spike events fire for it.  This prevents false positives on devices
-    // that have not been reviewed by the operator.
-    let scope_in = {
-        let mut ok = false;
-        if let Ok(mut s) = conn.prepare(
-            "MATCH (ds:DdosScope {device_address: $addr}) \
-             WHERE ds.enabled = true RETURN ds.device_address LIMIT 1",
-        ) {
-            if let Ok(mut r) = conn.execute(&mut s, vec![("addr", Value::String(bare.to_string()))])
-            {
-                ok = r.next().is_some();
-            }
-        }
-        ok
-    };
-    if !scope_in {
-        return;
-    }
-
-    // ── Baseline lookup ──────────────────────────────────────────────────────
-    // Key format: "{device_address}::{protocol}" (if_name is blank for global baseline)
-    let baseline_id = format!("{}::{}", bare, protocol);
-
-    let mut stmt = match conn.prepare("MATCH (b:TrafficBaseline {id: $bid}) RETURN b.p95_pps") {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let mut rows = match conn.execute(&mut stmt, vec![("bid", Value::String(baseline_id))]) {
-        Ok(r) => r,
-        Err(_) => return,
-    };
-
-    let p95_pps = match rows.next() {
-        Some(row) => match &row[0] {
-            Value::Double(v) => *v,
-            Value::Int64(v) => *v as f64,
-            _ => 0.0,
-        },
-        None => return,
-    };
-
-    if p95_pps <= 0.0 {
-        return;
-    }
-
-    let deviation = packets_per_sec / p95_pps;
-    if deviation < ddos_cfg.spike_deviation_threshold {
-        return;
-    }
-
-    let detail = serde_json::json!({
-        "exporter_address": exporter_address,
-        "protocol": protocol,
-        "observed_pps": packets_per_sec,
-        "p95_pps": p95_pps,
-        "deviation_score": deviation,
-        "amplification_vector": amplification_vector,
-        "tcp_flags_pattern": tcp_flags_pattern,
-        "threshold": ddos_cfg.spike_deviation_threshold,
-        "source_type": "netflow",
-    })
-    .to_string();
-
-    let _ = write_state_change_event(
-        conn,
-        exporter_address,
-        "ddos_interface_pps_spike",
-        &detail,
-        "flow",
-        ts(update.timestamp_ns),
-        update.timestamp_ns,
-        event_tx,
-        corr_buf,
-    );
 }
 
 fn write_interface_summary(
