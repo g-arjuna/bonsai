@@ -1338,6 +1338,15 @@ pub struct RuntimeConfig {
     /// Optional TLS/mTLS settings for the distributed collector-core channel.
     #[serde(default)]
     pub tls: RuntimeTlsConfig,
+    /// gRPC authorization policy (BN-021g G5):
+    /// - `"required"` (default): every RPC needs a transport-attested
+    ///   principal with an authorized binding; missing principals,
+    ///   plaintext transport and unattested identities fail closed.
+    /// - `"development-compat"`: explicit opt-in for isolated local
+    ///   development — connections without a transport principal keep
+    ///   the legacy pass-through behavior. Never inferred automatically.
+    #[serde(default = "default_runtime_auth_mode")]
+    pub auth_mode: String,
 }
 
 impl Default for RuntimeConfig {
@@ -1348,6 +1357,7 @@ impl Default for RuntimeConfig {
             collector_id: default_collector_id(),
             core_ingest_endpoint: default_core_ingest_endpoint(),
             tls: RuntimeTlsConfig::default(),
+            auth_mode: default_runtime_auth_mode(),
         }
     }
 }
@@ -1392,6 +1402,19 @@ impl RuntimeConfig {
             "collector" => Ok(RuntimeMode::Collector),
             other => anyhow::bail!(
                 "invalid runtime.mode '{other}' - expected one of: all, core, collector"
+            ),
+        }
+    }
+
+    /// Parse `runtime.auth_mode` into the service authorization policy.
+    pub fn auth_policy(&self) -> Result<crate::collector_auth::AuthPolicy> {
+        match self.auth_mode.trim().to_ascii_lowercase().as_str() {
+            "required" => Ok(crate::collector_auth::AuthPolicy::Required),
+            "development-compat" | "development_compat" | "dev-compat" => {
+                Ok(crate::collector_auth::AuthPolicy::DevelopmentCompat)
+            }
+            other => anyhow::bail!(
+                "invalid runtime.auth_mode '{other}' - expected one of: required, development-compat"
             ),
         }
     }
@@ -1864,6 +1887,10 @@ fn default_collector_queue_drain_batch_size() -> usize {
 
 fn default_collector_queue_log_interval_seconds() -> u64 {
     30
+}
+
+fn default_runtime_auth_mode() -> String {
+    "required".to_string()
 }
 
 fn default_runtime_mode() -> String {

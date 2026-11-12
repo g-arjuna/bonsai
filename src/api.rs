@@ -8,7 +8,9 @@ use tokio_stream::wrappers::BroadcastStream;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::collector_auth::{
-    CORE_ADMIN_PROTOCOL, CollectorAuthz, CollectorGrant, SIDECAR_PROTOCOL,
+    AuthPolicy, CORE_ADMIN_PROTOCOL, CollectorAuthz, CollectorGrant,
+    DETECTION_INGEST_PROTOCOL, OPERATOR_READ_PROTOCOL, ReadScope, SIDECAR_PROTOCOL,
+    STREAM_REVALIDATE_INTERVAL,
 };
 use crate::config::{SelectedSubscriptionPath, TargetConfig};
 use crate::credentials::{CredentialSummary, CredentialVault, ResolvePurpose, ResolvedCredential};
@@ -79,6 +81,7 @@ pub struct BonsaiService<S: BonsaiStore> {
     sidecar_registry: Arc<SidecarRegistry>,
     sqlite_store: Option<Arc<crate::sqlite_store::SqliteStore>>,
     collector_authz: CollectorAuthz,
+    auth_policy: AuthPolicy,
     ha_coordinator: Option<Arc<crate::ha_coordinator::HACoordinator>>,
     detection_coordinator: Option<Arc<WriteCoordinator>>,
 }
@@ -107,9 +110,19 @@ impl<S: BonsaiStore> BonsaiService<S> {
             sidecar_registry,
             sqlite_store,
             collector_authz,
+            // Fail closed by default: deployments must opt in to
+            // development-compat explicitly via runtime.auth_mode.
+            auth_policy: AuthPolicy::Required,
             ha_coordinator,
             detection_coordinator,
         }
+    }
+
+    /// Set the runtime authentication policy (G5). `server_startup`
+    /// derives this from `runtime.auth_mode`; tests may select either.
+    pub fn with_auth_policy(mut self, policy: AuthPolicy) -> Self {
+        self.auth_policy = policy;
+        self
     }
 
     pub fn with_sqlite_store(mut self, store: Arc<crate::sqlite_store::SqliteStore>) -> Self {
@@ -172,55 +185,95 @@ impl<S: BonsaiStore> BonsaiService<S> {
         }
     }
 
-    /// Extract TLS certificate fingerprint from the gRPC request.
-    /// This requires access to the TLS connection which is not directly exposed
-    /// by tonic's Request. For now, this returns None and can be enhanced
-    /// with custom interceptors if needed.
-    async fn extract_tls_cert_fingerprint(
-        &self,
-        _req: &Request<CollectorIdentity>,
-    ) -> Option<String> {
-        // TODO: Extract TLS cert fingerprint using custom interceptor
-        // This would require:
-        // 1. Custom tonic interceptor to capture peer cert
-        // 2. Extension mechanism to pass cert info to handler
-        // For now, return None - cert fingerprint pinning is optional
-        None
-    }
-
-    // ── BN-021g: transport-authenticated collector authorization ──────────
-    //
-    // `peer_principal` reads the peer certificate from tonic's
-    // `TlsConnectInfo` request extension — populated by the TLS layer
-    // only after the handshake verified the client cert against the
-    // configured client CA. Payload fields and RPC metadata are never
-    // consulted. `None` means a plaintext connection: the explicit
-    // legacy development mode in which every gate below passes.
-
     fn peer_principal<T>(req: &Request<T>) -> Option<VerifiedIngressPrincipal> {
         CollectorAuthz::principal(req)
     }
 
-    /// Capability gate for non-ingest RPCs. mTLS peers need an active
-    /// credential-pinned binding for `protocol`; plaintext passes.
-    fn require_capability<T>(&self, req: &Request<T>, protocol: &str) -> Result<(), Status> {
+    /// Resolve the transport principal under the runtime auth policy.
+    /// `Required` fails closed on missing/unattested principals;
+    /// `DevelopmentCompat` returns `None` for plaintext (legacy).
+    fn require_principal<T>(
+        &self,
+        req: &Request<T>,
+    ) -> Result<Option<VerifiedIngressPrincipal>, Status> {
         match Self::peer_principal(req) {
-            Some(p) => self.collector_authz.authorize_capability(&p, protocol),
-            None => Ok(()),
+            Some(p) => {
+                if !p.is_transport_attested() {
+                    return Err(Status::unauthenticated(
+                        "peer principal is not transport-attested",
+                    ));
+                }
+                Ok(Some(p))
+            }
+            None => match self.auth_policy {
+                AuthPolicy::Required => Err(Status::unauthenticated(
+                    "authenticated transport required (runtime.auth_mode)",
+                )),
+                AuthPolicy::DevelopmentCompat => Ok(None),
+            },
         }
     }
 
-    /// Read-plane gate: mTLS peers need at least one active
-    /// credential-pinned binding (any protocol); plaintext passes.
+    /// Capability gate for non-ingest RPCs. mTLS peers need an active
+    /// credential-pinned binding for `protocol`; dev-compat plaintext
+    /// passes; required-mode missing principals already failed.
+    fn require_capability<T>(&self, req: &Request<T>, protocol: &str) -> Result<(), Status> {
+        if let Some(p) = self.require_principal(req)? {
+            self.collector_authz.authorize_capability(&p, protocol)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Any-binding gate for collector core-discovery (`get_leader`).
+    /// Deliberately narrow: reveals leadership metadata only.
     fn require_any_binding<T>(&self, req: &Request<T>) -> Result<(), Status> {
-        match Self::peer_principal(req) {
-            Some(p) => self.collector_authz.authorize_any_binding(&p),
-            None => Ok(()),
+        if let Some(p) = self.require_principal(req)? {
+            self.collector_authz.authorize_any_binding(&p)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Global operational read gate (`operator-read` capability).
+    fn require_global_read<T>(&self, req: &Request<T>) -> Result<(), Status> {
+        self.require_capability(req, OPERATOR_READ_PROTOCOL)
+    }
+
+    /// Read scope for device-scoped read RPCs (G3). `Global` =
+    /// operator-read; `CollectorScoped(ids)` = collector bindings only;
+    /// dev-compat plaintext = Global (legacy).
+    fn read_scope<T>(&self, req: &Request<T>) -> Result<ReadScope, Status> {
+        match self.require_principal(req)? {
+            Some(p) => self.collector_authz.read_scope(&p),
+            None => Ok(ReadScope::Global),
+        }
+    }
+
+    /// Whether `address` is readable under `scope`: Global reads
+    /// everything; collector-scoped reads only devices assigned to the
+    /// credential's collectors.
+    fn scope_permits_device(&self, scope: &ReadScope, address: &str) -> bool {
+        match scope {
+            ReadScope::Global => true,
+            ReadScope::CollectorScoped(collector_ids) => {
+                let bare = crate::registry::strip_port(address);
+                collector_ids.iter().any(|cid| {
+                    self.registry
+                        .get_device(&bare)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|t| {
+                            t.enabled && t.collector_id.as_deref() == Some(cid.as_str())
+                        })
+                })
+            }
         }
     }
 
     /// Ingest-plane gate evaluated per claimed `collector_id`. Returns
-    /// the grant for provenance/audit; plaintext yields `None`.
+    /// the grant for provenance/audit; dev-compat plaintext yields
+    /// `None`.
     fn authorize_ingest(
         &self,
         principal: Option<&VerifiedIngressPrincipal>,
@@ -231,6 +284,178 @@ impl<S: BonsaiStore> BonsaiService<S> {
                 self.collector_authz.authorize_collector(p, collector_id)?,
             )),
             None => Ok(None),
+        }
+    }
+
+    /// G1 observation-authorization boundary. For an authenticated
+    /// collector, canonical (non-provisional) telemetry may only target
+    /// a registry device ASSIGNED to that collector; producer-supplied
+    /// vendor/hostname/role/site are replaced by authoritative inventory
+    /// values. Provisional protocol paths (`streaming/`, `signals/`)
+    /// remain provisional downstream and pass through unchanged.
+    /// Dev-compat plaintext keeps legacy behavior.
+    fn authorize_observation(
+        &self,
+        grant: Option<&CollectorGrant>,
+        update: &TelemetryIngestUpdate,
+    ) -> Result<Option<(String, String, String, String)>, Status> {
+        let Some(grant) = grant else {
+            return Ok(None);
+        };
+        if is_provisional_observation_path(&update.path) {
+            return Ok(None);
+        }
+        let bare = crate::registry::strip_port(&update.target);
+        let target = self.registry.get_device(&bare).map_err(|e| {
+            tracing::error!(%e, "observation authorization registry lookup failed");
+            Status::internal("device registry error")
+        })?;
+        let authorized = target
+            .as_ref()
+            .is_some_and(|t| t.enabled && t.collector_id.as_deref() == Some(grant.collector_id()));
+        if !authorized {
+            metrics::counter!(
+                "bonsai_telemetry_observation_denied_total",
+                "reason" => "unauthorized_target"
+            )
+            .increment(1);
+            tracing::warn!(
+                collector_id = %grant.collector_id(),
+                target = %update.target,
+                path = %update.path,
+                "canonical telemetry denied: target not assigned to collector"
+            );
+            return Err(Status::permission_denied(
+                "observation target is not assigned to this collector",
+            ));
+        }
+        let t = target.expect("checked above");
+        // Untrusted metadata never overrides canonical inventory.
+        Ok(Some((
+            t.vendor.clone().unwrap_or_default(),
+            t.hostname.clone().unwrap_or_default(),
+            t.role.clone().unwrap_or_default(),
+            t.site.clone().unwrap_or_default(),
+        )))
+    }
+
+    /// Verify remote-detection provenance (G2). The detection target
+    /// must be a registry device assigned to the authorized collector,
+    /// and every referenced StateChangeEvent must exist, belong to that
+    /// same canonical device, and not be provisional-source evidence.
+    /// Dev-compat plaintext keeps legacy behavior (returns Ok).
+    async fn verify_detection_scope(
+        &self,
+        grant: Option<&CollectorGrant>,
+        device_address: &str,
+        event_ids: &[String],
+    ) -> Result<(), Status> {
+        let Some(grant) = grant else {
+            return Ok(());
+        };
+        if event_ids.len() > crate::collector_auth::MAX_DETECTION_EVENT_REFS {
+            return Err(Status::invalid_argument("too many source event references"));
+        }
+        let bare = crate::registry::strip_port(device_address).to_string();
+        let target = self.registry.get_device(&bare).map_err(|e| {
+            tracing::error!(%e, "detection authorization registry lookup failed");
+            Status::internal("device registry error")
+        })?;
+        let authorized = target
+            .as_ref()
+            .is_some_and(|t| t.enabled && t.collector_id.as_deref() == Some(grant.collector_id()));
+        if !authorized {
+            metrics::counter!(
+                "bonsai_detection_ingest_denied_total",
+                "reason" => "unauthorized_target"
+            )
+            .increment(1);
+            return Err(Status::permission_denied(
+                "detection target is not assigned to this collector",
+            ));
+        }
+        if event_ids.is_empty() {
+            return Ok(());
+        }
+        let ids = event_ids.to_vec();
+        let want = bare;
+        let db = self.store.db();
+        let verified = tokio::task::spawn_blocking(move || {
+            let conn = lbug::Connection::new(&db).map_err(|e| e.to_string())?;
+            for id in &ids {
+                let mut stmt = conn
+                    .prepare(
+                        "MATCH (e:StateChangeEvent {id: $id}) RETURN e.device_address, e.detail",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = conn
+                    .execute(
+                        &mut stmt,
+                        vec![("id", lbug::Value::String(id.clone()))],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let row = rows.into_iter().next().ok_or_else(|| {
+                    format!("state change event '{id}' does not exist")
+                })?;
+                let ev_addr = match &row[0] {
+                    lbug::Value::String(s) => crate::registry::strip_port(s).to_string(),
+                    _ => String::new(),
+                };
+                if ev_addr != want {
+                    return Err(format!(
+                        "state change event '{id}' belongs to '{ev_addr}', not '{want}'"
+                    ));
+                }
+                // Provisional-source events are keyed by their
+                // `*src/...` source key, never a canonical device
+                // address — but defense in depth: reject events whose
+                // detail marks them unverified/provisional.
+                if let lbug::Value::String(detail) = &row[1]
+                    && (detail.contains("\"identity_status\":\"provisional\"")
+                        || detail.contains("\"authority\":\"unverified\""))
+                {
+                    return Err(format!(
+                        "state change event '{id}' is provisional/unverified evidence"
+                    ));
+                }
+            }
+            Ok::<(), String>(())
+        })
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+        verified.map_err(|reason| {
+            metrics::counter!(
+                "bonsai_detection_ingest_denied_total",
+                "reason" => "bad_event_reference"
+            )
+            .increment(1);
+            tracing::warn!(
+                collector_id = %grant.collector_id(),
+                device = %device_address,
+                %reason,
+                "remote detection denied: invalid source-event reference"
+            );
+            Status::permission_denied(format!("detection rejected: {reason}"))
+        })
+    }
+
+    /// Addresses a collector-scoped read may see; `None` = global.
+    fn scoped_addresses(&self, scope: &ReadScope) -> Option<std::collections::HashSet<String>> {
+        match scope {
+            ReadScope::Global => None,
+            ReadScope::CollectorScoped(collector_ids) => {
+                let mut addrs = std::collections::HashSet::new();
+                for cid in collector_ids {
+                    if let Ok(targets) = self.registry.list_assigned_to(cid) {
+                        for t in targets {
+                            if t.enabled {
+                                addrs.insert(crate::registry::strip_port(&t.address).to_string());
+                            }
+                        }
+                    }
+                }
+                Some(addrs)
+            }
         }
     }
 
@@ -247,34 +472,73 @@ impl<S: BonsaiStore> BonsaiService<S> {
     ) {
         let key = (
             principal.credential_fingerprint().to_string(),
-            grant.collector_id.clone(),
+            grant.collector_id().to_string(),
         );
         if !audited.insert(key) {
             return;
         }
         if let Some(store) = &self.sqlite_store {
             let detail = serde_json::json!({
-                "binding_id": grant.binding_id,
-                "scope": grant.scope,
-                "device_id": grant.device_id,
-                "collector_id": grant.collector_id,
+                "binding_id": grant.binding_id(),
+                "binding_revision": grant.binding_revision(),
+                "scope": grant.scope(),
+                "device_id": grant.device_id(),
+                "collector_id": grant.collector_id(),
             });
-            let _ = store.audit(
+            // G7: audit failure is observable, never silently claimed.
+            // The record proves stream-level collector authorization
+            // for this (credential, collector, binding revision) — it
+            // does NOT authenticate any individual observation's
+            // original source. Ingest availability is preserved; the
+            // failure is counted and logged for operators.
+            if let Err(e) = store.audit(
                 "collector_ingest",
                 "AUTHZ",
-                &grant.collector_id,
+                grant.collector_id(),
                 principal.credential_fingerprint(),
                 "ingest_authorized",
                 None,
                 Some(&detail.to_string()),
-            );
+            ) {
+                metrics::counter!("bonsai_audit_write_failure_total", "action" => "collector_ingest")
+                    .increment(1);
+                tracing::error!(
+                    %e,
+                    collector_id = %grant.collector_id(),
+                    "collector ingest provenance audit write failed"
+                );
+            }
         }
         metrics::counter!(
             "bonsai_collector_ingest_authorized_total",
-            "collector_id" => grant.collector_id.clone()
+            "collector_id" => grant.collector_id().to_string()
         )
         .increment(1);
     }
+}
+
+/// Stream-side revalidation for the assignment channel (G4): the
+/// claimed collector id must still be pinned to the connection's
+/// credential. Plaintext dev-compat always passes.
+fn stream_collector_authorized(
+    principal: &Option<VerifiedIngressPrincipal>,
+    authz: &CollectorAuthz,
+    collector_id: &str,
+) -> bool {
+    match principal {
+        Some(p) => authz.authorize_collector(p, collector_id).is_ok(),
+        None => true,
+    }
+}
+
+/// Provisional protocol evidence paths (BN-021d/e/f). Observations on
+/// these paths are keyed by `*src/...` exporter source keys and remain
+/// provisional downstream — they can never gain canonical device
+/// authority through the collector channel. An attacker relabeling a
+/// flow/OTLP/syslog payload onto a canonical YANG path is caught by the
+/// assigned-device check in `authorize_observation`, not by the prefix.
+fn is_provisional_observation_path(path: &str) -> bool {
+    path.starts_with("streaming/") || path.starts_with("signals/")
 }
 
 pub type CollectorService = BonsaiService<crate::collector::graph::CollectorGraphStore>;
@@ -335,11 +599,16 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<CollectorIdentity>,
     ) -> Result<Response<Self::RegisterCollectorStream>, Status> {
-        // G5: Extract peer info from TLS connection
+        // G5: peer info; the certificate fingerprint now comes from the
+        // same transport-attested principal used for authorization —
+        // there is exactly one TLS-identity extraction path (G7).
         let peer_addr = req.remote_addr().map(|addr| addr.to_string());
-        let cert_fingerprint = self.extract_tls_cert_fingerprint(&req).await;
         // BN-021g: transport-attested principal from the TLS layer.
-        let principal = Self::peer_principal(&req);
+        // `require_principal` enforces the runtime auth policy (G5).
+        let principal = self.require_principal(&req)?;
+        let cert_fingerprint = principal
+            .as_ref()
+            .map(|p| p.credential_fingerprint().to_string());
 
         let identity = req.into_inner();
         let collector_id = identity.collector_id.clone();
@@ -470,20 +739,55 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             .as_ref()
             .ok_or_else(|| Status::unimplemented("collector manager not enabled on this node"))?;
 
-        let mut rx = manager
+        let (mut rx, generation) = manager
             .register_collector(collector_id.clone())
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
         let manager_for_stream = manager.clone();
         let collector_id_for_stream = collector_id.clone();
+        let principal_for_stream = principal.clone();
+        let authz_for_stream = self.collector_authz.clone();
 
         let stream = async_stream::stream! {
-            while let Some(update) = rx.recv().await {
-                yield Ok(update);
+            // G4: bounded revalidation of this credential-bearing stream.
+            // Authorization is re-checked before the initial assignment
+            // delivery, before every subsequent delivery, and
+            // periodically while idle — a revoked principal loses future
+            // stream access within ~AUTHZ_CACHE_TTL. Session generation
+            // fencing ensures a stale close cannot unregister a newer
+            // session for the same collector id.
+            let mut revalidate = tokio::time::interval(STREAM_REVALIDATE_INTERVAL);
+            revalidate.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    msg = rx.recv() => match msg {
+                        Some(update) => {
+                            if !stream_collector_authorized(
+                                &principal_for_stream,
+                                &authz_for_stream,
+                                &collector_id_for_stream,
+                            ) {
+                                break;
+                            }
+                            yield Ok(update);
+                        }
+                        None => break,
+                    },
+                    _ = revalidate.tick() => {
+                        if !stream_collector_authorized(
+                            &principal_for_stream,
+                            &authz_for_stream,
+                            &collector_id_for_stream,
+                        ) {
+                            break;
+                        }
+                    }
+                }
             }
-            // Cleanup on stream close
-            manager_for_stream.unregister_collector(&collector_id_for_stream);
+            // Cleanup on stream close — fenced by session generation.
+            manager_for_stream
+                .unregister_collector(&collector_id_for_stream, generation);
         };
 
         Ok(Response::new(Box::pin(stream)))
@@ -493,7 +797,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<pb::CollectorStats>,
     ) -> Result<Response<pb::HeartbeatAck>, Status> {
-        let principal = Self::peer_principal(&req);
+        let principal = self.require_principal(&req)?;
         let stats = req.into_inner();
         if let Some(p) = &principal {
             self.collector_authz
@@ -576,7 +880,10 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<GetDevicesRequest>,
     ) -> Result<Response<GetDevicesResponse>, Status> {
-        self.require_any_binding(&req)?;
+        // G3: global inventory requires operator-read; collector
+        // credentials get only their assigned devices.
+        let scope = self.read_scope(&req)?;
+        let allowed = self.scoped_addresses(&scope);
         let db = self.store.db();
         let devices = tokio::task::spawn_blocking(move || {
             let conn = Connection::new(&db).map_err(|e| e.to_string())?;
@@ -585,8 +892,14 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 .map_err(|e| e.to_string())?;
             let mut out = Vec::new();
             for row in rows {
+                let address = str_val(&row[0]);
+                if let Some(ref allowed) = allowed
+                    && !allowed.contains(crate::registry::strip_port(&address))
+                {
+                    continue;
+                }
                 out.push(Device {
-                    address: str_val(&row[0]),
+                    address,
                     vendor: str_val(&row[1]),
                     hostname: str_val(&row[2]),
                     updated_at_ns: ts_val(&row[3]),
@@ -605,14 +918,28 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<pb::ListManagedDevicesRequest>,
     ) -> Result<Response<pb::ListManagedDevicesResponse>, Status> {
-        self.require_any_binding(&req)?;
-        let devices = self
-            .registry
-            .list_active()
-            .map_err(|e| Status::internal(e.to_string()))?
-            .into_iter()
-            .map(|target| managed_device_from_target(&target))
-            .collect();
+        // G3: collector credentials see only devices assigned to their
+        // collectors; global listing requires operator-read.
+        let scope = self.read_scope(&req)?;
+        let devices = match &scope {
+            ReadScope::Global => self
+                .registry
+                .list_active()
+                .map_err(|e| Status::internal(e.to_string()))?,
+            ReadScope::CollectorScoped(collector_ids) => {
+                let mut out = Vec::new();
+                for cid in collector_ids {
+                    if let Ok(targets) = self.registry.list_assigned_to(cid) {
+                        out.extend(targets);
+                    }
+                }
+                out
+            }
+        }
+        .into_iter()
+        .filter(|t| t.enabled)
+        .map(|t| managed_device_from_target(&t))
+        .collect();
 
         Ok(Response::new(pb::ListManagedDevicesResponse { devices }))
     }
@@ -764,7 +1091,8 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<pb::ListSitesRequest>,
     ) -> Result<Response<pb::ListSitesResponse>, Status> {
-        self.require_any_binding(&req)?;
+        // G3: site hierarchy is global topology — operator-read only.
+        self.require_global_read(&req)?;
         let sites = self
             .store
             .list_sites()
@@ -885,8 +1213,22 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<GetInterfacesRequest>,
     ) -> Result<Response<GetInterfacesResponse>, Status> {
-        self.require_any_binding(&req)?;
+        // G3: empty device_address = global read (operator-read);
+        // a specific device is allowed under collector scope when the
+        // device is assigned to the credential's collector.
+        let scope = self.read_scope(&req)?;
         let device_address = req.into_inner().device_address;
+        if device_address.is_empty() {
+            if !matches!(scope, ReadScope::Global) {
+                return Err(Status::permission_denied(
+                    "global interface read requires operator-read capability",
+                ));
+            }
+        } else if !self.scope_permits_device(&scope, &device_address) {
+            return Err(Status::permission_denied(
+                "device is outside this credential's read scope",
+            ));
+        }
         let db = self.store.db();
 
         let interfaces = tokio::task::spawn_blocking(move || {
@@ -930,8 +1272,20 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<GetBgpNeighborsRequest>,
     ) -> Result<Response<GetBgpNeighborsResponse>, Status> {
-        self.require_any_binding(&req)?;
+        // G3: same scoping rule as get_interfaces.
+        let scope = self.read_scope(&req)?;
         let device_address = req.into_inner().device_address;
+        if device_address.is_empty() {
+            if !matches!(scope, ReadScope::Global) {
+                return Err(Status::permission_denied(
+                    "global BGP neighbor read requires operator-read capability",
+                ));
+            }
+        } else if !self.scope_permits_device(&scope, &device_address) {
+            return Err(Status::permission_denied(
+                "device is outside this credential's read scope",
+            ));
+        }
         let db = self.store.db();
 
         let neighbors = tokio::task::spawn_blocking(move || {
@@ -970,7 +1324,9 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<GetTopologyRequest>,
     ) -> Result<Response<GetTopologyResponse>, Status> {
-        self.require_any_binding(&req)?;
+        // G3: topology is global — operator-read only. Collector
+        // credentials are denied rather than given a pretend filter.
+        self.require_global_read(&req)?;
         let db = self.store.db();
         let edges = tokio::task::spawn_blocking(move || {
             let conn = Connection::new(&db).map_err(|e| e.to_string())?;
@@ -1002,36 +1358,85 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<StreamEventsRequest>,
     ) -> Result<Response<EventStream>, Status> {
-        self.require_any_binding(&req)?;
+        // G3+G4: the event stream exposes global state — requires the
+        // operator-read capability, and the authorization is
+        // revalidated periodically for the life of the stream so a
+        // revoked principal loses access within ~AUTHZ_CACHE_TTL even
+        // when the stream is idle.
+        let principal = self.require_principal(&req)?;
+        if let Some(p) = &principal {
+            self.collector_authz
+                .authorize_capability(p, OPERATOR_READ_PROTOCOL)?;
+        }
         let inner = req.into_inner();
         let filter_types = inner.event_types;
         let filter_device = inner.device_address;
         let rx = self.store.subscribe_events();
+        let authz_for_stream = self.collector_authz.clone();
 
-        let stream = BroadcastStream::new(rx).filter_map(move |item| {
-            let filter_types = filter_types.clone();
-            let filter_device = filter_device.clone();
-            async move {
-                match item {
-                    Ok(ev) => {
-                        if !filter_device.is_empty() && ev.device_address != filter_device {
-                            return None;
+        let stream = async_stream::stream! {
+            let events = BroadcastStream::new(rx).filter_map({
+                let filter_types = filter_types.clone();
+                let filter_device = filter_device.clone();
+                move |item| {
+                    let filter_types = filter_types.clone();
+                    let filter_device = filter_device.clone();
+                    async move {
+                        match item {
+                            Ok(ev) => {
+                                if !filter_device.is_empty() && ev.device_address != filter_device {
+                                    return None;
+                                }
+                                if !filter_types.is_empty() && !filter_types.contains(&ev.event_type) {
+                                    return None;
+                                }
+                                Some(Ok(pb::StateEvent {
+                                    device_address: ev.device_address,
+                                    event_type: ev.event_type,
+                                    detail_json: ev.detail_json,
+                                    occurred_at_ns: ev.occurred_at_ns,
+                                    state_change_event_id: ev.state_change_event_id,
+                                }))
+                            }
+                            Err(_) => Some(Err(Status::internal("broadcast stream error"))),
                         }
-                        if !filter_types.is_empty() && !filter_types.contains(&ev.event_type) {
-                            return None;
-                        }
-                        Some(Ok(pb::StateEvent {
-                            device_address: ev.device_address,
-                            event_type: ev.event_type,
-                            detail_json: ev.detail_json,
-                            occurred_at_ns: ev.occurred_at_ns,
-                            state_change_event_id: ev.state_change_event_id,
-                        }))
                     }
-                    Err(_) => Some(Err(Status::internal("broadcast stream error"))),
+                }
+            });
+            futures::pin_mut!(events);
+            let mut revalidate = tokio::time::interval(STREAM_REVALIDATE_INTERVAL);
+            revalidate.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    item = events.next() => match item {
+                        Some(ev) => {
+                            let still_ok = match &principal {
+                                Some(p) => authz_for_stream
+                                    .authorize_capability(p, OPERATOR_READ_PROTOCOL)
+                                    .is_ok(),
+                                None => true,
+                            };
+                            if !still_ok {
+                                break;
+                            }
+                            yield ev;
+                        }
+                        None => break,
+                    },
+                    _ = revalidate.tick() => {
+                        let still_ok = match &principal {
+                            Some(p) => authz_for_stream
+                                .authorize_capability(p, OPERATOR_READ_PROTOCOL)
+                                .is_ok(),
+                            None => true,
+                        };
+                        if !still_ok {
+                            break;
+                        }
+                    }
                 }
             }
-        });
+        };
 
         Ok(Response::new(Box::pin(stream)))
     }
@@ -1044,20 +1449,23 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         // each message's claimed collector_id is authorized separately
         // against credential-pinned bindings. Cached decisions bound the
         // revocation window to AUTHZ_CACHE_TTL (5s).
-        let principal = Self::peer_principal(&req);
+        let principal = self.require_principal(&req)?;
         let mut audited = std::collections::HashSet::new();
         let mut stream = req.into_inner();
         let mut accepted = 0_u64;
+        let mut denied = 0_u64;
 
-        while let Some(update) = stream
+        while let Some(mut update) = stream
             .message()
             .await
             .map_err(|e| Status::unavailable(e.to_string()))?
         {
+            let mut grant = None;
             if let Some(p) = &principal {
                 let collector_id = update.collector_id.clone();
-                if let Some(grant) = self.authorize_ingest(Some(p), &collector_id)? {
-                    self.audit_ingest_grant(p, &grant, &mut audited);
+                if let Some(g) = self.authorize_ingest(Some(p), &collector_id)? {
+                    self.audit_ingest_grant(p, &g, &mut audited);
+                    grant = Some(g);
                 }
             }
             if accepted == 0 {
@@ -1085,6 +1493,24 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 }
             }
 
+            // G1: observation authorization — an authenticated collector
+            // may only project canonical telemetry for devices assigned
+            // to it; producer metadata is rewritten from inventory.
+            // Denied observations are dropped, never published.
+            match self.authorize_observation(grant.as_ref(), &update) {
+                Ok(Some((vendor, hostname, role, site))) => {
+                    update.vendor = vendor;
+                    update.hostname = hostname;
+                    update.role = role;
+                    update.site = site;
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    denied += 1;
+                    continue;
+                }
+            }
+
             let collector_id = update.collector_id.clone();
             let telemetry = ingest::ingest_update_to_telemetry(update)
                 .map_err(|e| Status::invalid_argument(format!("{e:#}")))?;
@@ -1104,6 +1530,9 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             }
         }
 
+        if denied > 0 {
+            tracing::warn!(accepted, denied, "telemetry ingest dropped unauthorized observations");
+        }
         Ok(Response::new(pb::TelemetryIngestResponse {
             accepted,
             error: String::new(),
@@ -1115,23 +1544,53 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<Streaming<pb::DetectionEventIngest>>,
     ) -> Result<Response<pb::DetectionIngestResponse>, Status> {
-        let principal = Self::peer_principal(&req);
+        // G5+G2: transport policy first, then the SEPARATE detection
+        // capability — ordinary collector ingest authority never implies
+        // detection-authoring authority.
+        let principal = self.require_principal(&req)?;
+        if let Some(p) = &principal {
+            self.collector_authz
+                .authorize_capability(p, DETECTION_INGEST_PROTOCOL)?;
+        }
         let mut audited = std::collections::HashSet::new();
         let mut stream = req.into_inner();
         let mut accepted = 0_u64;
+        let mut denied = 0_u64;
 
         while let Some(d) = stream
             .message()
             .await
             .map_err(|e| Status::unavailable(e.to_string()))?
         {
+            let mut grant = None;
             if let Some(p) = &principal {
                 let collector_id = d.collector_id.clone();
-                if let Some(grant) = self.authorize_ingest(Some(p), &collector_id)? {
-                    self.audit_ingest_grant(p, &grant, &mut audited);
+                if let Some(g) = self.authorize_ingest(Some(p), &collector_id)? {
+                    self.audit_ingest_grant(p, &g, &mut audited);
+                    grant = Some(g);
                 }
             }
             let collector_id = d.collector_id.clone();
+            // G2: verify target scope and source-event provenance before
+            // any authoritative DetectionEvent write. Failures drop the
+            // detection — they never reach the graph.
+            let mut event_ids = d.source_event_ids.clone();
+            if !d.state_change_event_id.is_empty() {
+                event_ids.push(d.state_change_event_id.clone());
+            }
+            if let Err(status) = self
+                .verify_detection_scope(grant.as_ref(), &d.device_address, &event_ids)
+                .await
+            {
+                denied += 1;
+                tracing::warn!(
+                    %collector_id,
+                    device = %d.device_address,
+                    code = ?status.code(),
+                    "remote detection dropped by authorization boundary"
+                );
+                continue;
+            }
             match self
                 .write_detection_for_ingest(
                     d.device_address,
@@ -1155,6 +1614,9 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             }
         }
 
+        if denied > 0 {
+            tracing::warn!(accepted, denied, "detection ingest dropped unauthorized detections");
+        }
         Ok(Response::new(pb::DetectionIngestResponse {
             accepted,
             error: String::new(),

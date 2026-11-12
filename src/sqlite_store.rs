@@ -1327,6 +1327,90 @@ impl SqliteStore {
             .map_err(|e| anyhow!("failed to collect exporter bindings: {e}"))
     }
 
+    /// Indexed lookup for credential-pinned bindings (BN-021g authz).
+    /// Returns ACTIVE bindings matching the optional protocol and
+    /// exporter-id constraints for an exact `match_ingress_credential`
+    /// fingerprint. Bounded by `LIMIT` — callers needing ambiguity
+    /// detection request enough rows to see duplicates.
+    pub fn find_credential_bindings(
+        &self,
+        protocol: Option<&str>,
+        exporter_id: Option<&str>,
+        credential: &str,
+    ) -> Result<Vec<crate::telemetry_identity::TrustedBinding>> {
+        let db = self.db.lock().unwrap();
+        let mut sql = String::from(
+            "SELECT binding_id, scope, protocol, exporter_id, device_id, match_transport, match_reported_identity, match_exporter_claim, match_observation_domain, match_ingress_credential, provenance, status, created_at_ns, updated_at_ns, created_by, updated_by FROM exporter_bindings WHERE status = 'active' AND match_ingress_credential = ?1",
+        );
+        if protocol.is_some() {
+            sql.push_str(" AND protocol = ?2");
+        }
+        if exporter_id.is_some() {
+            sql.push_str(if protocol.is_some() { " AND exporter_id = ?3" } else { " AND exporter_id = ?2" });
+        }
+        sql.push_str(" LIMIT 16");
+        let mut stmt = db.prepare(&sql)?;
+        let params_vec: Vec<rusqlite::types::Value> = match (protocol, exporter_id) {
+            (Some(p), Some(e)) => vec![
+                rusqlite::types::Value::Text(credential.to_string()),
+                rusqlite::types::Value::Text(p.to_string()),
+                rusqlite::types::Value::Text(e.to_string()),
+            ],
+            (Some(p), None) => vec![
+                rusqlite::types::Value::Text(credential.to_string()),
+                rusqlite::types::Value::Text(p.to_string()),
+            ],
+            (None, Some(e)) => vec![
+                rusqlite::types::Value::Text(credential.to_string()),
+                rusqlite::types::Value::Text(e.to_string()),
+            ],
+            (None, None) => vec![rusqlite::types::Value::Text(credential.to_string())],
+        };
+        let rows = stmt.query_map(rusqlite::params_from_iter(params_vec), |row| {
+            binding_from_row(row)
+        })?;
+        rows.collect::<Result<Vec<crate::telemetry_identity::TrustedBinding>, _>>()
+            .map_err(|e| anyhow!("failed to collect credential bindings: {e}"))
+    }
+
+    /// Whether at least one ACTIVE binding pins this credential for the
+    /// given protocol (`None` = any protocol). Indexed `LIMIT 1` probe —
+    /// never enumerates the binding table.
+    pub fn credential_binding_permits(
+        &self,
+        protocol: Option<&str>,
+        credential: &str,
+    ) -> Result<bool> {
+        let db = self.db.lock().unwrap();
+        let sql = if protocol.is_some() {
+            "SELECT 1 FROM exporter_bindings WHERE status = 'active' AND match_ingress_credential = ?1 AND protocol = ?2 LIMIT 1"
+        } else {
+            "SELECT 1 FROM exporter_bindings WHERE status = 'active' AND match_ingress_credential = ?1 LIMIT 1"
+        };
+        let mut stmt = db.prepare(sql)?;
+        let params_vec: Vec<rusqlite::types::Value> = match protocol {
+            Some(p) => vec![
+                rusqlite::types::Value::Text(credential.to_string()),
+                rusqlite::types::Value::Text(p.to_string()),
+            ],
+            None => vec![rusqlite::types::Value::Text(credential.to_string())],
+        };
+        let mut rows = stmt.query(rusqlite::params_from_iter(params_vec))?;
+        Ok(rows.next()?.is_some())
+    }
+
+    /// Collector ids (`exporter_id` on ACTIVE `"collector"` bindings)
+    /// pinned to this credential — the collector-scoped read boundary.
+    pub fn collector_ids_for_credential(&self, credential: &str) -> Result<Vec<String>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT DISTINCT exporter_id FROM exporter_bindings WHERE status = 'active' AND protocol = 'collector' AND match_ingress_credential = ?1",
+        )?;
+        let rows = stmt.query_map(params![credential], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<String>, _>>()
+            .map_err(|e| anyhow!("failed to collect collector scope: {e}"))
+    }
+
     /// Explicitly invalidate a binding. Revocation is the only supported
     /// "unbind" operation — bindings are never silently deleted, keeping
     /// the audit trail intact.

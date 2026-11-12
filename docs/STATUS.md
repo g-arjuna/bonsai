@@ -862,3 +862,57 @@ authorized ingest/heartbeat/register/get_leader, collector-id
 impersonation, unbound certificate, forged serialized principal,
 active revocation, credential rotation and replayed-record denial.
 Evidence: `docs/merger/evidence/2026-11-12-bn021g-collector-trust-foundation/`.
+
+BN-021g-1 review hardening (12 November, same branch): independent
+review found the first slice authorized the CONNECTION but not the
+OBSERVATION — an authenticated collector could submit canonical-path
+telemetry for any target, forge inventory metadata, submit arbitrary
+DetectionEvents, read global topology, and keep revoked assignment
+streams alive. All findings G1–G7 are now closed:
+
+- **G1 observation boundary** — `telemetry_ingest` authorizes each
+  update: provisional paths (`streaming/`, `signals/`) stay
+  provisional; canonical paths require the target to be an enabled
+  registry device assigned to the authenticated collector, and
+  vendor/hostname/role/site are rewritten from authoritative inventory.
+  Relabeling a flow/OTLP payload onto a YANG path cannot bypass the
+  assigned-device check.
+- **G2 detection authority** — `DetectionIngest` requires the separate
+  `detection-ingest` capability plus verification that the target is
+  assigned and every `source_event_ids` reference exists, belongs to
+  the same canonical device, and is not provisional evidence. Remote
+  `auto_remediate`/`remediation_action` fields are ignored.
+- **G3 RPC matrix** — explicit capabilities: `collector` (ingest,
+  heartbeat, register stream), `detection-ingest`, `core-admin`
+  (mutations, `query`, remediation writes), `sidecar`, `operator-read`
+  (global reads incl. topology/sites/event stream); device-scoped
+  reads return only assigned devices; `get_leader` needs any pinned
+  binding. Exporter-protocol bindings grant no core RPC access.
+- **G4 stream fencing** — assignment and event streams revalidate
+  authorization per delivery and periodically while idle (revoked
+  credentials stop receiving device usernames/passwords within ~5s);
+  collector sessions are generation-fenced so a stale stream cannot
+  unregister or displace a reconnect.
+- **G5 auth policy** — `runtime.auth_mode` = `required` (default;
+  missing/unattested principal fails closed) or `development-compat`
+  (explicit opt-in, loud startup warning); unknown values fail config
+  parsing.
+- **G6 grant hardening** — every authorization path requires a
+  transport-attested principal; ambiguous bindings fail closed.
+- **G7 provenance** — registration audit records the real certificate
+  fingerprint; audit-write failures are logged and metric'd rather
+  than claimed durable; cache stays bounded (4096, 5s TTL) with
+  indexed lookups per miss.
+
+Trust contract documented: assignment authorizes the collector's
+acquisition process for the configured device — it is NOT cryptographic
+proof of original device identity (BN-021g-2+). Revocation cannot
+recall credentials already delivered over a stream; rotate device
+credentials when revoking a collector. Verified:
+`tests/bn021g_collector_trust_foundation.rs` 19/19 (real mTLS + real
+GraphStore graph-writer wiring — cross-collector/unknown-target/
+forged-metadata denial, provisional-flow isolation, detection
+provenance denial, capability matrix, active-stream revocation,
+generation fencing, auth-mode enforcement). `cargo test --lib`
+290 pass / 5 fail = unchanged BN-019-B6 baseline. Evidence:
+`docs/merger/evidence/2026-11-12-bn021g-collector-trust-foundation/`.

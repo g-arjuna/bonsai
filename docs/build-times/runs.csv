@@ -130,3 +130,11 @@ date,command,scope,wall_seconds,result,notes
 2026-11-12,cargo test --test bn021g_collector_trust_foundation,bn021g mTLS acceptance,65,pass,42s relink + 10.3s run; 6/6 real loopback mTLS scenarios
 2026-11-12,cargo test --test bn021f_authenticated_ingress --test bn021f_hardening --test bn022_graph_read_boundary --test bn021b_trusted_identity,bn021f/b trust regressions post-gn,~120,pass,36/36 (9+9+5+13); warm binaries
 2026-11-12,cargo check -p bonsai --lib (post-fmt),bonsai --lib,10.71,pass,warm
+2026-11-12,cargo test -j 1 --test bn021g_collector_trust_foundation (hardening, run1),bn021g extended suite,~290,fail-1,4m24s link + 18.6s run; 18/19 — provisional flow fixture used wrong value keys (l4_protocol, missing exporter_id)
+2026-11-12,cargo test -j 1 --test bn021g_collector_trust_foundation provisional_payloads (fix attempt),bn021g focused,~55,fail-1,57s relink; still flowsrc/ assertion — classifier needs exporter_id+protocol fields
+2026-11-12,cargo test -j 1 --test bn021g_collector_trust_foundation provisional_payloads (final),bn021g focused,~50,pass,47.7s relink + 3.2s run; NetFlow evidence is AppFlow node keyed by exporter_id, not StateChangeEvent
+2026-11-12,cargo test -j 1 --test bn021g_collector_trust_foundation (final full),bn021g extended suite,~50,pass,19/19 in 18.62s; real mTLS + real GraphStore writer wiring
+2026-11-12,cargo test -p bonsai --lib,bonsai lib unit tests,~195,baseline,2m40s compile + 35.1s run; 290 pass / 5 fail = unchanged BN-019-B6 baseline (archive overflow, site_sync, subscription_status, registry, service_discovery)
+2026-11-12,cargo test -j 1 --test bn021b..bn022 batch (6 targets),bn021b/c/d/f + bn022 regressions,~195,pass,3m15s links + runs; 68/68 (13+17+15+9+9+5)
+2026-11-12,cargo test -j 1 --test bn021e* bn005* bn006* ownership batch (10 targets),bn021e isolation + bn005/006 + ownership,~246,pass,4m06s links + runs; 72 pass / 1 ignored (containerlab-required live test, documented skip)
+2026-11-12,cargo test -j 1 --test bn006_native_nos_adapter,bn006 adapter unit suite,~22,pass,7/7; unaffected module, run for completeness

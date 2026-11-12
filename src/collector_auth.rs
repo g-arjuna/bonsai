@@ -1,33 +1,49 @@
 //! BN-021g — authenticated collector identity and scoped ingest
 //! authorization for the collector→core gRPC channel.
 //!
-//! Trust model (three independent layers):
+//! Trust model (independent layers, never conflated):
 //!
 //! 1. **Transport authentication** — the peer certificate is extracted
 //!    from tonic's `TlsConnectInfo` request extension, populated by the
 //!    TLS layer only after a completed handshake against the configured
 //!    client CA. RPC metadata and payload fields are never identity.
-//! 2. **Credential→collector binding** — the `"sha256:<hex>"` leaf
+//! 2. **Principal attestation** — every authorization decision requires
+//!    `VerifiedIngressPrincipal::is_transport_attested()`. A principal
+//!    deserialized from journals, API payloads, or any other non-transport
+//!    source carries a valid-looking fingerprint but is NEVER authorized.
+//! 3. **Credential→identity binding** — the `"sha256:<hex>"` leaf
 //!    fingerprint must match `exporter_bindings.match_ingress_credential`
-//!    on an ACTIVE binding with `protocol = "collector"` and
-//!    `exporter_id` equal to the claimed `collector_id`. A valid
-//!    certificate alone grants nothing; claiming another collector's id
-//!    fails because the binding pins both credential and identity.
-//! 3. **Capability authorization** — non-ingest RPCs require an active
-//!    credential-pinned binding for their capability protocol
-//!    (`"core-admin"`, `"sidecar"`); read-only RPCs require any active
-//!    pinned binding. Revocation takes effect within
-//!    [`AUTHZ_CACHE_TTL`] because decisions are cached briefly, never
-//!    for the connection lifetime.
+//!    on an ACTIVE binding. Collector ingest additionally requires the
+//!    binding's `exporter_id` to equal the claimed `collector_id`, so a
+//!    valid certificate cannot claim another collector's id. Ambiguous
+//!    matches (same credential+collector id provisioned under multiple
+//!    scopes) fail closed — the first row is never selected.
+//! 4. **Capability authorization** — an explicit RPC capability matrix
+//!    (see [`CAPABILITY_MATRIX`] in `api.rs`): ingest plane per claimed
+//!    collector id, `"detection-ingest"` for remote detection submission,
+//!    `"operator-read"` for global read RPCs, `"core-admin"` for
+//!    administrative mutations and ad-hoc query, `"sidecar"` for sidecar
+//!    registration. Collector-scoped reads are derived from the
+//!    credential's collector bindings, never from client-supplied labels.
+//! 5. **Observation authorization** — authenticating the forwarding
+//!    collector is not authority over its payload. `api.rs` additionally
+//!    requires canonical (non-provisional) telemetry to target a registry
+//!    device assigned to the authorized collector and rewrites
+//!    site/role/hostname/vendor from authoritative inventory. Provisional
+//!    protocol paths (`streaming/`, `signals/`) remain provisional
+//!    downstream exactly as BN-021d/e/f define.
 //!
-//! Plaintext mode (no TLS peer certificate — development deployments
-//! without `runtime.tls`) is the explicit legacy compatibility path:
-//! every check passes. When server TLS is enabled the handshake already
-//! requires a client certificate, so `None` principals cannot occur.
+//! Revocation: decisions are cached for [`AUTHZ_CACHE_TTL`] (5s) so
+//! revocation/binding changes take effect within a bounded window.
+//! Long-lived streams revalidate through the same cache — the TTL bounds
+//! database cost, not the revocation window.
 //!
-//! This slice authenticates the FORWARDING COLLECTOR only. It does not
-//! authenticate downstream exporters: observations inside an authorized
-//! stream remain provisional evidence exactly as BN-021d/e/f define.
+//! Runtime policy ([`AuthPolicy`]): `Required` fails closed when no
+//! transport principal exists (missing TLS peer, plaintext transport,
+//! unattested principal, unavailable identity store). `DevelopmentCompat`
+//! is the explicit opt-in legacy path for isolated local development.
+//! It is NEVER inferred from the absence of TLS peer information — the
+//! deployment chooses it via `runtime.auth_mode`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -40,52 +56,138 @@ use crate::sqlite_store::SqliteStore;
 use crate::telemetry_identity::{IngressAuthMethod, VerifiedIngressPrincipal};
 
 /// `exporter_bindings.protocol` value authorizing the collector ingest
-/// plane (telemetry/detection ingest, registration, heartbeat). The
-/// binding's `exporter_id` is the authorized `collector_id`.
+/// plane (telemetry/detection ingest identity, registration, heartbeat).
+/// The binding's `exporter_id` is the authorized `collector_id`.
 pub const COLLECTOR_PROTOCOL: &str = "collector";
+/// Capability protocol for remote detection submission
+/// (`DetectionIngest`). Separate from `"collector"` so ordinary ingest
+/// authority never implies detection-authoring authority (G2).
+pub const DETECTION_INGEST_PROTOCOL: &str = "detection-ingest";
 /// Capability protocol for privileged core RPCs (device/site/credential
-/// mutation, ad-hoc query, detection/remediation writes).
+/// mutation, ad-hoc query, detection/remediation writes, remediation
+/// execution).
 pub const CORE_ADMIN_PROTOCOL: &str = "core-admin";
 /// Capability protocol for sidecar registration and heartbeat.
 pub const SIDECAR_PROTOCOL: &str = "sidecar";
+/// Capability protocol for GLOBAL operational reads (full inventory,
+/// topology, event stream). Collector-scoped reads do not use this
+/// protocol — they are derived from collector bindings (see
+/// [`CollectorAuthz::read_scope`]).
+pub const OPERATOR_READ_PROTOCOL: &str = "operator-read";
+
+/// Runtime authentication policy for the gRPC service (G5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthPolicy {
+    /// Authenticated distributed operation: every RPC requires a
+    /// transport-attested principal with an authorized binding. Missing
+    /// principals, plaintext transport, unattested principals and
+    /// unavailable identity stores all fail closed.
+    Required,
+    /// Explicit isolated-development compatibility: connections without
+    /// a transport principal keep the legacy pass-through behavior.
+    /// Must be opted into via `runtime.auth_mode = "development-compat"`.
+    DevelopmentCompat,
+}
 
 /// Authorization decisions are cached this long so revocation and
 /// binding changes take effect within a bounded window without a
-/// database lookup per telemetry message.
-const AUTHZ_CACHE_TTL: Duration = Duration::from_secs(5);
+/// database lookup per telemetry message. Long-lived streams revalidate
+/// through this same cache on this cadence.
+pub const AUTHZ_CACHE_TTL: Duration = Duration::from_secs(5);
+/// How often an idle long-lived stream revalidates its authorization.
+/// Equal to the cache TTL: a revoked principal loses stream access within
+/// roughly one TTL of the revocation becoming visible to the cache.
+pub const STREAM_REVALIDATE_INTERVAL: Duration = AUTHZ_CACHE_TTL;
 /// Bound on cached decisions; on overflow the cache is cleared rather
 /// than growing unboundedly (next lookup re-reads the store).
 const AUTHZ_CACHE_CAPACITY: usize = 4096;
+/// Maximum accepted length for attacker-controlled identity fields
+/// (claimed collector ids, credential fingerprints). Bounds cache keys
+/// and store query parameters.
+const MAX_IDENTITY_FIELD_LEN: usize = 256;
+/// Maximum source-event references verified per remote detection.
+pub const MAX_DETECTION_EVENT_REFS: usize = 64;
+
+/// Result of read-plane authorization (G3).
+#[derive(Debug, Clone)]
+pub enum ReadScope {
+    /// Credential holds `operator-read`: unrestricted operational reads.
+    Global,
+    /// Credential maps to collector binding(s): reads are restricted to
+    /// devices assigned to those collectors. Global topology/site/event
+    /// reads are NOT available in this scope.
+    CollectorScoped(Vec<String>),
+}
 
 /// A granted collector-ingest authorization: the transport-attested
 /// principal plus the trusted binding that authorized the claimed
-/// `collector_id`. Carries scope/device provenance only — it confers
-/// NO authority over downstream observation identity.
+/// `collector_id`. Fields are private — only the authorization engine
+/// can construct one, so application code or deserialized data cannot
+/// mint a grant. Carries scope/device provenance only — it confers NO
+/// authority over downstream observation identity.
 #[derive(Debug, Clone)]
 pub struct CollectorGrant {
-    pub fingerprint: String,
-    pub collector_id: String,
-    pub binding_id: String,
-    pub scope: String,
-    pub device_id: String,
+    fingerprint: String,
+    collector_id: String,
+    binding_id: String,
+    scope: String,
+    device_id: String,
+    /// `updated_at_ns` of the authorizing binding row — the grant
+    /// revision recorded in provenance audits so stale audit records
+    /// cannot substitute for the live authorization decision.
+    binding_revision: i64,
+}
+
+impl CollectorGrant {
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+    pub fn collector_id(&self) -> &str {
+        &self.collector_id
+    }
+    pub fn binding_id(&self) -> &str {
+        &self.binding_id
+    }
+    pub fn scope(&self) -> &str {
+        &self.scope
+    }
+    pub fn device_id(&self) -> &str {
+        &self.device_id
+    }
+    pub fn binding_revision(&self) -> i64 {
+        self.binding_revision
+    }
+}
+
+/// Cached authorization decision. `Collector` carries the full grant;
+/// `Allowed` memoizes capability/any-binding approvals;
+/// `CollectorScope` memoizes the collector-id set behind a scoped read.
+#[derive(Clone)]
+enum CachedDecision {
+    Collector(CollectorGrant),
+    Allowed,
+    CollectorScope(Vec<String>),
 }
 
 /// Shared authorization engine for the gRPC service. One instance per
-/// `BonsaiService`; the cache is process-local and rebuilt after
-/// restart (bindings themselves are durable in SQLite).
+/// `BonsaiService`; clones share the same store handle and decision
+/// cache (used by long-lived streams for bounded revalidation). The
+/// cache is process-local and rebuilt after restart (bindings
+/// themselves are durable in SQLite).
+#[derive(Clone)]
 pub struct CollectorAuthz {
     store: Option<Arc<SqliteStore>>,
     /// (fingerprint, subject) → (decision, evaluated_at). `subject` is
-    /// the claimed collector id for ingest or `"cap:<protocol>"` /
-    /// `"any"` for capability checks. `None` decision = recent denial.
-    cache: Mutex<HashMap<(String, String), (Option<CollectorGrant>, Instant)>>,
+    /// `"collector:<id>"`, `"cap:<protocol>"`, `"any"` or `"read:scope"`.
+    /// `None` decision = recent denial.
+    cache: Arc<Mutex<HashMap<(String, String), (Option<CachedDecision>, Instant)>>>,
 }
 
 impl CollectorAuthz {
     pub fn new(store: Option<Arc<SqliteStore>>) -> Self {
         Self {
             store,
-            cache: Mutex::new(HashMap::new()),
+            cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -106,33 +208,52 @@ impl CollectorAuthz {
         ))
     }
 
-    fn bindings(
+    /// Fail-closed attestation gate applied before ANY binding lookup.
+    /// A serialized/restored principal has a fingerprint but no live
+    /// transport attestation and must never authorize anything.
+    fn require_attested(
         &self,
-        protocol: Option<&str>,
-    ) -> Result<Vec<crate::telemetry_identity::TrustedBinding>, Status> {
-        let store = self
-            .store
-            .as_ref()
-            .ok_or_else(|| Status::unavailable("identity store unavailable"))?;
-        store
-            .list_exporter_bindings(None, protocol, false)
-            .map_err(|e| {
-                tracing::error!(%e, "collector authz binding lookup failed");
-                Status::internal("identity store error")
-            })
+        principal: &VerifiedIngressPrincipal,
+    ) -> Result<String, Status> {
+        if !principal.is_transport_attested() {
+            metrics::counter!("bonsai_collector_authz_total", "result" => "unattested_denied")
+                .increment(1);
+            tracing::warn!(
+                fingerprint = principal.credential_fingerprint(),
+                "authorization denied: principal is not transport-attested"
+            );
+            return Err(Status::permission_denied(
+                "principal is not transport-attested",
+            ));
+        }
+        let fp = principal.credential_fingerprint();
+        if fp.len() > MAX_IDENTITY_FIELD_LEN {
+            return Err(Status::invalid_argument("credential fingerprint too long"));
+        }
+        Ok(fp.to_string())
     }
 
-    fn cached(&self, fp: &str, subject: &str) -> Option<Option<CollectorGrant>> {
+    fn identity_field(value: &str) -> Result<&str, Status> {
+        if value.is_empty() || value.len() > MAX_IDENTITY_FIELD_LEN {
+            return Err(Status::invalid_argument("invalid collector identity"));
+        }
+        Ok(value)
+    }
+
+    fn cached(&self, fp: &str, subject: &str) -> Option<Option<CachedDecision>> {
         let cache = self.cache.lock().unwrap();
         cache
             .get(&(fp.to_string(), subject.to_string()))
             .and_then(|(decision, at)| (at.elapsed() < AUTHZ_CACHE_TTL).then(|| decision.clone()))
     }
 
-    fn store_decision(&self, fp: &str, subject: &str, decision: Option<CollectorGrant>) {
+    fn store_decision(&self, fp: &str, subject: &str, decision: Option<CachedDecision>) {
         let mut cache = self.cache.lock().unwrap();
         if cache.len() >= AUTHZ_CACHE_CAPACITY {
+            // Bounded clear: a flood of distinct (credential, subject)
+            // pairs cannot grow the map; next lookups re-read the store.
             cache.clear();
+            metrics::counter!("bonsai_collector_authz_cache_clears_total").increment(1);
         }
         cache.insert(
             (fp.to_string(), subject.to_string()),
@@ -140,45 +261,79 @@ impl CollectorAuthz {
         );
     }
 
+    fn store(&self) -> Result<&SqliteStore, Status> {
+        self.store
+            .as_ref()
+            .map(|s| s.as_ref())
+            .ok_or_else(|| Status::unavailable("identity store unavailable"))
+    }
+
     /// Authorize a claimed `collector_id` for the ingest plane. The
     /// credential fingerprint AND the collector identity must both be
     /// pinned by the same active binding — a certificate authorized for
-    /// collector A cannot claim collector B.
+    /// collector A cannot claim collector B. Multiple distinct matching
+    /// bindings (same credential+id provisioned under several scopes)
+    /// are ambiguous and fail closed.
     pub fn authorize_collector(
         &self,
         principal: &VerifiedIngressPrincipal,
         collector_id: &str,
     ) -> Result<CollectorGrant, Status> {
-        let fp = principal.credential_fingerprint();
+        let fp = self.require_attested(principal)?;
+        Self::identity_field(collector_id)?;
         let subject = format!("collector:{collector_id}");
-        if let Some(hit) = self.cached(fp, &subject) {
-            return hit.ok_or_else(|| {
-                metrics::counter!("bonsai_collector_authz_total", "result" => "denied_cached")
-                    .increment(1);
-                Status::permission_denied(format!(
-                    "collector '{collector_id}' is not authorized for this credential"
-                ))
-            });
+        if let Some(hit) = self.cached(&fp, &subject) {
+            return match hit {
+                Some(CachedDecision::Collector(g)) => Ok(g),
+                _ => Err(self.denied(&fp, collector_id, "denied_cached")),
+            };
         }
 
-        let bindings = self.bindings(Some(COLLECTOR_PROTOCOL))?;
-        let grant = bindings
-            .iter()
-            .find(|b| {
-                b.is_active()
-                    && b.exporter_id == collector_id
-                    && b.match_ingress_credential.as_deref() == Some(fp)
-            })
-            .map(|b| CollectorGrant {
-                fingerprint: fp.to_string(),
-                collector_id: collector_id.to_string(),
-                binding_id: b.binding_id.clone(),
-                scope: b.scope.clone(),
-                device_id: b.device_id.clone(),
-            });
+        let bindings = self
+            .store()?
+            .find_credential_bindings(Some(COLLECTOR_PROTOCOL), Some(collector_id), &fp)
+            .map_err(|e| {
+                tracing::error!(%e, "collector authz binding lookup failed");
+                Status::internal("identity store error")
+            })?;
+        let active: Vec<_> = bindings.iter().filter(|b| b.is_active()).collect();
+
+        let grant = match active.len() {
+            0 => None,
+            1 => {
+                let b = active[0];
+                Some(CollectorGrant {
+                    fingerprint: fp.clone(),
+                    collector_id: collector_id.to_string(),
+                    binding_id: b.binding_id.clone(),
+                    scope: b.scope.clone(),
+                    device_id: b.device_id.clone(),
+                    binding_revision: b.updated_at_ns,
+                })
+            }
+            _ => {
+                // Ambiguous provisioning: never select the first row.
+                metrics::counter!("bonsai_collector_authz_total", "result" => "ambiguous_denied")
+                    .increment(1);
+                tracing::warn!(
+                    collector_id,
+                    fingerprint = %fp,
+                    matches = active.len(),
+                    "collector authorization denied: ambiguous credential bindings"
+                );
+                self.store_decision(&fp, &subject, None);
+                return Err(Status::permission_denied(format!(
+                    "collector '{collector_id}' authorization is ambiguous"
+                )));
+            }
+        };
 
         let result = grant.clone();
-        self.store_decision(fp, &subject, grant);
+        self.store_decision(
+            &fp,
+            &subject,
+            grant.map(CachedDecision::Collector),
+        );
         match result {
             Some(g) => {
                 metrics::counter!("bonsai_collector_authz_total", "result" => "allowed")
@@ -191,56 +346,53 @@ impl CollectorAuthz {
                 );
                 Ok(g)
             }
-            None => {
-                metrics::counter!("bonsai_collector_authz_total", "result" => "denied")
-                    .increment(1);
-                tracing::warn!(
-                    collector_id,
-                    fingerprint = fp,
-                    "collector ingest denied: no active credential-pinned binding"
-                );
-                Err(Status::permission_denied(format!(
-                    "collector '{collector_id}' is not authorized for this credential"
-                )))
-            }
+            None => Err(self.denied(&fp, collector_id, "denied")),
         }
     }
 
-    /// Authorize a capability-class RPC (admin mutations, sidecar).
-    /// Any ACTIVE binding pinning this credential with the required
-    /// protocol authorizes the capability.
+    fn denied(&self, fp: &str, collector_id: &str, result: &str) -> Status {
+        metrics::counter!("bonsai_collector_authz_total", "result" => result.to_string())
+            .increment(1);
+        tracing::warn!(
+            collector_id,
+            fingerprint = fp,
+            "collector ingest denied: no unique active credential-pinned binding"
+        );
+        Status::permission_denied(format!(
+            "collector '{collector_id}' is not authorized for this credential"
+        ))
+    }
+
+    /// Authorize a capability-class RPC (admin mutations, sidecar,
+    /// detection submission, global reads). Any ACTIVE binding pinning
+    /// this credential with the required protocol authorizes the
+    /// capability; multiple matches are not ambiguous for a boolean
+    /// capability.
     pub fn authorize_capability(
         &self,
         principal: &VerifiedIngressPrincipal,
         protocol: &str,
     ) -> Result<(), Status> {
-        let fp = principal.credential_fingerprint();
+        let fp = self.require_attested(principal)?;
+        Self::identity_field(protocol)?;
         let subject = format!("cap:{protocol}");
-        if let Some(hit) = self.cached(fp, &subject) {
-            return hit.map(|_| ()).ok_or_else(|| {
-                Status::permission_denied(format!(
+        if let Some(hit) = self.cached(&fp, &subject) {
+            return match hit {
+                Some(CachedDecision::Allowed) => Ok(()),
+                _ => Err(Status::permission_denied(format!(
                     "credential is not authorized for '{protocol}' operations"
-                ))
-            });
+                ))),
+            };
         }
 
-        let bindings = self.bindings(Some(protocol))?;
-        let allowed = bindings
-            .iter()
-            .any(|b| b.is_active() && b.match_ingress_credential.as_deref() == Some(fp));
-        // Cache a synthetic grant-shaped marker is unnecessary — store a
-        // decision with empty fields purely as an authorization memo.
-        self.store_decision(
-            fp,
-            &subject,
-            allowed.then(|| CollectorGrant {
-                fingerprint: fp.to_string(),
-                collector_id: String::new(),
-                binding_id: String::new(),
-                scope: String::new(),
-                device_id: String::new(),
-            }),
-        );
+        let allowed = self
+            .store()?
+            .credential_binding_permits(Some(protocol), &fp)
+            .map_err(|e| {
+                tracing::error!(%e, "collector authz capability lookup failed");
+                Status::internal("identity store error")
+            })?;
+        self.store_decision(&fp, &subject, allowed.then_some(CachedDecision::Allowed));
         if allowed {
             metrics::counter!("bonsai_collector_authz_total", "result" => "capability_allowed")
                 .increment(1);
@@ -249,7 +401,7 @@ impl CollectorAuthz {
             metrics::counter!("bonsai_collector_authz_total", "result" => "capability_denied")
                 .increment(1);
             tracing::warn!(
-                fingerprint = fp,
+                fingerprint = %fp,
                 protocol,
                 "capability denied: no active credential-pinned binding"
             );
@@ -259,36 +411,31 @@ impl CollectorAuthz {
         }
     }
 
-    /// Read-plane authorization: the credential must be pinned by at
-    /// least one active binding of ANY protocol — i.e. it is a
-    /// provisioned identity, not an arbitrary CA-issued certificate.
+    /// Read-plane authorization for RPCs that require ANY active
+    /// credential-pinned binding (collector discovery of the active
+    /// core). This is deliberately narrow: it reveals only leadership
+    /// metadata, not inventory.
     pub fn authorize_any_binding(
         &self,
         principal: &VerifiedIngressPrincipal,
     ) -> Result<(), Status> {
-        let fp = principal.credential_fingerprint();
+        let fp = self.require_attested(principal)?;
         let subject = "any".to_string();
-        if let Some(hit) = self.cached(fp, &subject) {
-            return hit
-                .map(|_| ())
-                .ok_or_else(|| Status::permission_denied("credential has no active binding"));
+        if let Some(hit) = self.cached(&fp, &subject) {
+            return match hit {
+                Some(CachedDecision::Allowed) => Ok(()),
+                _ => Err(Status::permission_denied("credential has no active binding")),
+            };
         }
 
-        let bindings = self.bindings(None)?;
-        let allowed = bindings
-            .iter()
-            .any(|b| b.is_active() && b.match_ingress_credential.as_deref() == Some(fp));
-        self.store_decision(
-            fp,
-            &subject,
-            allowed.then(|| CollectorGrant {
-                fingerprint: fp.to_string(),
-                collector_id: String::new(),
-                binding_id: String::new(),
-                scope: String::new(),
-                device_id: String::new(),
-            }),
-        );
+        let allowed = self
+            .store()?
+            .credential_binding_permits(None, &fp)
+            .map_err(|e| {
+                tracing::error!(%e, "collector authz binding lookup failed");
+                Status::internal("identity store error")
+            })?;
+        self.store_decision(&fp, &subject, allowed.then_some(CachedDecision::Allowed));
         if allowed {
             Ok(())
         } else {
@@ -298,5 +445,58 @@ impl CollectorAuthz {
                 "credential has no active binding",
             ))
         }
+    }
+
+    /// Resolve the read scope for a credential (G3). Global operational
+    /// reads require an explicit `operator-read` binding; otherwise the
+    /// credential's ACTIVE collector bindings define a collector-scoped
+    /// read limited to assigned devices. Exporter-only credentials
+    /// (BMP/OTLP/etc.) get neither.
+    pub fn read_scope(
+        &self,
+        principal: &VerifiedIngressPrincipal,
+    ) -> Result<ReadScope, Status> {
+        let fp = self.require_attested(principal)?;
+
+        if self
+            .authorize_capability(principal, OPERATOR_READ_PROTOCOL)
+            .is_ok()
+        {
+            return Ok(ReadScope::Global);
+        }
+
+        let subject = "read:scope".to_string();
+        if let Some(hit) = self.cached(&fp, &subject) {
+            return match hit {
+                Some(CachedDecision::CollectorScope(ids)) => {
+                    Ok(ReadScope::CollectorScoped(ids))
+                }
+                _ => Err(Status::permission_denied(
+                    "credential has no read capability",
+                )),
+            };
+        }
+
+        let ids = self
+            .store()?
+            .collector_ids_for_credential(&fp)
+            .map_err(|e| {
+                tracing::error!(%e, "collector authz scope lookup failed");
+                Status::internal("identity store error")
+            })?;
+        if ids.is_empty() {
+            self.store_decision(&fp, &subject, None);
+            metrics::counter!("bonsai_collector_authz_total", "result" => "read_denied")
+                .increment(1);
+            return Err(Status::permission_denied(
+                "credential has no read capability",
+            ));
+        }
+        self.store_decision(
+            &fp,
+            &subject,
+            Some(CachedDecision::CollectorScope(ids.clone())),
+        );
+        Ok(ReadScope::CollectorScoped(ids))
     }
 }

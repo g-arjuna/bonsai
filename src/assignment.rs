@@ -12,10 +12,23 @@ use crate::credentials::{CredentialVault, ResolvePurpose};
 use crate::graph::{BonsaiEvent, SiteRecord};
 use crate::registry::ApiRegistry;
 
+/// One live assignment stream session. `generation` fences reconnect
+/// races: an old stream closing must never unregister a newer session
+/// registered under the same collector id (BN-021g G4).
+struct CollectorSession {
+    generation: u64,
+    /// Held only for channel liveness: dropping the session (on
+    /// unregister/supersede) closes the receiver and ends the stream.
+    #[allow(dead_code)]
+    tx: mpsc::Sender<AssignmentUpdate>,
+}
+
 pub struct CollectorManager {
     registry: Arc<ApiRegistry>,
     credentials: Arc<CredentialVault>,
-    active_collectors: Arc<Mutex<HashMap<String, mpsc::Sender<AssignmentUpdate>>>>,
+    active_collectors: Arc<Mutex<HashMap<String, CollectorSession>>>,
+    /// Per-collector monotonically increasing session generation.
+    session_generations: Arc<Mutex<HashMap<String, u64>>>,
     runtime_state: Arc<Mutex<HashMap<String, CollectorRuntimeState>>>,
     /// Routing rules sorted descending by priority (highest first).
     rules: Arc<Mutex<Vec<AssignmentRule>>>,
@@ -65,6 +78,7 @@ impl CollectorManager {
             registry,
             credentials,
             active_collectors: Arc::new(Mutex::new(HashMap::new())),
+            session_generations: Arc::new(Mutex::new(HashMap::new())),
             runtime_state: Arc::new(Mutex::new(HashMap::new())),
             rules: Arc::new(Mutex::new(rules)),
             sites_cache: Arc::new(Mutex::new(Vec::new())),
@@ -173,10 +187,16 @@ impl CollectorManager {
         }
     }
 
+    /// Register an assignment stream session. Returns the update
+    /// receiver plus a session generation that fences `unregister_collector`
+    /// against stale-stream cleanup. A newer registration for the same
+    /// collector id supersedes the previous session: the old sender is
+    /// dropped, ending the old stream, and the old generation can no
+    /// longer unregister or trigger device reassignment.
     pub async fn register_collector(
         &self,
         collector_id: String,
-    ) -> Result<mpsc::Receiver<AssignmentUpdate>> {
+    ) -> Result<(mpsc::Receiver<AssignmentUpdate>, u64)> {
         // G6: Emit metric for collector connection
         metrics::gauge!("bonsai_collector_connected_total").increment(1);
 
@@ -203,9 +223,18 @@ impl CollectorManager {
         })
         .await?;
 
+        let generation = {
+            let mut generations = self.session_generations.lock().unwrap();
+            let next = generations.entry(collector_id.clone()).or_insert(0);
+            *next += 1;
+            *next
+        };
         {
             let mut collectors = self.active_collectors.lock().unwrap();
-            collectors.insert(collector_id.clone(), tx);
+            collectors.insert(
+                collector_id.clone(),
+                CollectorSession { generation, tx },
+            );
         }
         {
             let mut runtime = self.runtime_state.lock().unwrap();
@@ -222,11 +251,32 @@ impl CollectorManager {
             state_change_event_id: String::new(),
             source_type: "collector".to_string(),
         });
-        info!(%collector_id, "collector registered, initial assignments sent");
-        Ok(rx)
+        info!(%collector_id, generation, "collector registered, initial assignments sent");
+        Ok((rx, generation))
     }
 
-    pub fn unregister_collector(&self, collector_id: &str) {
+    /// Unregister a session. Only the CURRENT generation may remove the
+    /// session and run device-reassignment cleanup — a stale stream
+    /// closing after a reconnect is a no-op and must not disconnect the
+    /// newer valid session or orphan its devices.
+    pub fn unregister_collector(&self, collector_id: &str, generation: u64) -> bool {
+        let removed = {
+            let mut collectors = self.active_collectors.lock().unwrap();
+            match collectors.get(collector_id) {
+                Some(session) if session.generation == generation => {
+                    collectors.remove(collector_id).is_some()
+                }
+                _ => false,
+            }
+        };
+        if !removed {
+            info!(
+                %collector_id,
+                generation,
+                "stale collector session close ignored (superseded or already unregistered)"
+            );
+            return false;
+        }
         // G6: Emit metric for collector disconnection
         metrics::gauge!("bonsai_collector_connected_total").decrement(1);
 
@@ -235,10 +285,6 @@ impl CollectorManager {
             emitter.emit_collector_disconnected(collector_id, "unknown");
         }
 
-        {
-            let mut collectors = self.active_collectors.lock().unwrap();
-            collectors.remove(collector_id);
-        }
         {
             let mut runtime = self.runtime_state.lock().unwrap();
             if let Some(entry) = runtime.get_mut(collector_id) {
@@ -296,6 +342,7 @@ impl CollectorManager {
                 );
             }
         }
+        true
     }
 
     pub fn record_heartbeat(

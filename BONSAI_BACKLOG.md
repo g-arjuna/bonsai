@@ -259,23 +259,35 @@ LAB VERIFIED (11 November).
 (12 November): authenticated collector identity + scoped ingest
 authorization on the existing collector→core gRPC channel.
 
-- **BN-021g-1 collector trust foundation (this slice):** transport
-  principal extracted from tonic `TlsConnectInfo` peer certificates
-  (never payload/metadata); `"sha256:<hex>"` leaf fingerprint must
-  match `exporter_bindings.match_ingress_credential` on an ACTIVE
-  `protocol="collector"` binding whose `exporter_id` equals the claimed
-  `collector_id` — certificate/collector mismatch, unbound certs,
-  revoked bindings and unauthorized scopes are rejected per message.
-  Capability gates: `core-admin` (device/site/credential mutation,
-  query, remediation), `sidecar`, any-pinned-binding (read plane),
-  `get_leader`. Authz decisions cached ≤5s (bounded 4096-entry cache)
-  so revocation/rotation take effect within a documented window;
-  durable provenance via `audit_log` per (credential, collector).
-  Plaintext mode remains the explicit legacy dev path. Verified:
-  `tests/bn021g_collector_trust_foundation.rs` 6/6 real loopback mTLS —
-  authorized ingest/heartbeat/register/get_leader, impersonation,
-  unbound cert, forged payload principal, revocation, rotation,
-  replayed-record denial. Evidence:
+- **BN-021g-1 collector trust foundation (this slice, hardened after
+  independent review):** transport principal extracted from tonic
+  `TlsConnectInfo` peer certificates (never payload/metadata);
+  `"sha256:<hex>"` leaf fingerprint must match
+  `exporter_bindings.match_ingress_credential` on an ACTIVE
+  credential-pinned binding — certificate/collector mismatch, unbound
+  certs, revoked bindings, ambiguous bindings, unattested principals
+  and unauthorized scopes are rejected per message. Capability gates:
+  `collector` (ingest plane per claimed `collector_id`, heartbeat,
+  register stream), `detection-ingest` (separate authority + target/
+  source-event provenance verification), `core-admin` (device/site/
+  credential mutation, query, remediation writes), `sidecar`,
+  `operator-read` (global reads incl. topology/sites/event stream;
+  device-scoped reads limited to assigned devices), any-pinned-binding
+  (`get_leader`). **Observation boundary:** canonical-path telemetry
+  requires an enabled registry device assigned to the authenticated
+  collector; producer metadata is rewritten from inventory; provisional
+  `streaming/`/`signals/` paths stay provisional and cannot be relabeled
+  into canonical authority. **Stream fencing:** assignment/event streams
+  revalidate per delivery and while idle; generation-fenced sessions.
+  **Auth policy:** `runtime.auth_mode` = `required` (default, fail
+  closed) / `development-compat` (explicit dev opt-in). Authz decisions
+  cached ≤5s (bounded 4096-entry cache); durable provenance via
+  `audit_log`. Verified: `tests/bn021g_collector_trust_foundation.rs`
+  19/19 real loopback mTLS + real GraphStore wiring — cross-collector
+  denial, unknown-target denial, forged-metadata rewrite, provisional
+  isolation, detection provenance, capability matrix, active-stream
+  revocation, generation fencing, auth-mode enforcement, rotation,
+  replay. Evidence:
   `docs/merger/evidence/2026-11-12-bn021g-collector-trust-foundation/`.
 - **BN-021g-2 first verified original-source projection:** narrow OTLP
   case via direct authenticated producer identity or explicitly
@@ -288,13 +300,18 @@ authorization on the existing collector→core gRPC channel.
   migration, coverage, evidence retention, explicit trust states in
   API/UI.
 
-Remaining BN-021g-1 limitations: per-observation verified context is
-not yet carried on `TelemetryUpdate` (projection stays fail-closed —
-nothing downstream consumes it yet); scope is recorded but per-update
-site/target claims are not independently verified (they remain
-provisional evidence by design); `core-admin`/`sidecar`/`reader`
-capability bindings must be provisioned via the existing identity admin
-API before mTLS clients can use those RPCs.
+Remaining BN-021g-1 limitations: assignment authorizes the collector's
+acquisition process for a configured device — it is NOT cryptographic
+proof of original device identity, so a compromised collector can
+still forge observations for its assigned devices (BN-021g-2+ owns
+verified original-source projection); revocation cannot recall device
+credentials already delivered over an assignment stream (rotate them
+operationally); the 5s authz cache is the documented maximum
+revocation window; capability bindings (`collector`,
+`detection-ingest`, `core-admin`, `sidecar`, `operator-read`) must be
+provisioned via the existing identity admin API before mTLS clients
+can use those RPCs; `runtime.auth_mode=development-compat` must never
+be used outside isolated loopback development.
 
 ### Source-audited correctness refinements (existing BN ownership)
 

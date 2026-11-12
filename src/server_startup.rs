@@ -1086,7 +1086,9 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             // in mode=all the core already manages subscriptions directly, so
             // we just drop the receiver — it keeps the collector marked as connected.
             match manager.register_collector(local_id).await {
-                Ok(_assignment_rx) => info!("local in-process collector registered"),
+                Ok((_assignment_rx, _generation)) => {
+                    info!("local in-process collector registered")
+                }
                 Err(e) => warn!(%e, "failed to auto-register local collector (non-fatal)"),
             }
         }
@@ -1372,6 +1374,14 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         // credential→collector binding authorization. ApiRegistry already
         // opened it (same DB the HTTP identity admin API writes to).
         let sqlite_for_api = registry_for_api.sqlite_store();
+        // BN-021g G5: explicit runtime auth policy — "required" fails
+        // closed; "development-compat" is an explicit local-dev opt-in.
+        let auth_policy = cfg.runtime.auth_policy()?;
+        if auth_policy == bonsai::collector_auth::AuthPolicy::DevelopmentCompat {
+            warn!(
+                "runtime.auth_mode=development-compat: gRPC RPCs without a transport principal are permitted — do not use outside isolated development"
+            );
+        }
 
         let mut server = tonic::transport::Server::builder();
         if cfg.runtime.tls.enabled {
@@ -1402,7 +1412,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         sqlite_for_api.clone(),
                         None,
                         coordinator.clone(),
-                    ))
+                    ).with_auth_policy(auth_policy))
                     .accept_compressed(CompressionEncoding::Zstd);
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {
                         warn!(%error, "gRPC core server error");
@@ -1420,7 +1430,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         sqlite_for_api,
                         None,
                         None,
-                    ))
+                    ).with_auth_policy(auth_policy))
                     .accept_compressed(CompressionEncoding::Zstd);
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {
                         warn!(%error, "gRPC collector server error");

@@ -96,3 +96,50 @@ not app-level).
 ## Build timings
 
 Appended to `docs/build-times/runs.csv`.
+
+---
+
+## Review-hardening round (same branch, same day)
+
+Independent review of PR #12 found material authorization gaps (G1–G7).
+This round closes them without redesigning the collector architecture.
+
+### Findings disposition
+
+| Finding | Disposition |
+|---|---|
+| G1 observation authorization | FIXED — per-message assigned-device + provisional-path boundary in `telemetry_ingest`; registry metadata overrides forged claims |
+| G2 DetectionIngest bypass | FIXED — separate `detection-ingest` capability + target/event provenance verification; remediation fields ignored remotely |
+| G3 unrestricted reads | FIXED — explicit capability matrix; global reads require `operator-read`; collector reads scoped to assigned devices; `Query` requires `core-admin` |
+| G4 active-stream revocation | FIXED — per-delivery + periodic stream revalidation; generation-fenced sessions; credential-delivery caveat documented |
+| G5 missing principal | FIXED — `runtime.auth_mode` = `required` (default) / `development-compat`; unknown values fail config parsing |
+| G6 grants/principal hardening | FIXED — transport-attestation enforced on every authz path; ambiguous bindings fail closed; grants are internal context, not bearer tokens |
+| G7 provenance/audit/cache | FIXED — real cert fingerprint in registration audit; audit failure logged + metric'd (no fabricated success); bounded indexed lookups |
+
+### Verification — extended suite
+
+`tests/bn021g_collector_trust_foundation.rs` — **19/19 PASS** (was 6/6),
+real loopback mTLS + real `GraphStore` wired to the bus exactly as
+`server_startup` does (bus → `BonsaiStore::write`):
+
+- Cross-collector canonical telemetry denial; unknown-target denial;
+  forged site/role/hostname/vendor rewritten from inventory.
+- Provisional flow payload stays `flowsrc/`-scoped `AppFlow` evidence;
+  relabeled canonical path on unassigned target denied; no canonical
+  `Device` minted for the exporter.
+- Detection ingest: cross-collector device denied, cross-device and
+  provisional `source_event_ids` rejected, fabricated detection denied,
+  valid authorized detection accepted.
+- RPC matrix: collector credential denied `operator-read` globals and
+  `core-admin`; exporter-only credential denied everything; sidecar
+  credential limited to sidecar RPCs; operator-read gets scoped reads.
+- Active assignment-stream revocation stops credential-bearing
+  deliveries; idle `StreamEvents` revocation; reconnect generation
+  fencing (old stream close cannot remove new session).
+- `runtime.auth_mode=required` denies plaintext; `development-compat`
+  permits it explicitly; missing TLS principal fails closed; serialized
+  (unattested) principal denied; ambiguous binding fails closed;
+  registration audit records the genuine certificate fingerprint.
+
+Regression: `cargo test -p bonsai --lib` 290 pass / 5 fail — the same
+5 documented BN-019-B6 baseline failures, none new.
