@@ -65,13 +65,19 @@ impl Lab {
     }
 
     async fn post(&self, path: &str, body: &Value) -> reqwest::StatusCode {
-        reqwest::Client::new()
+        self.post_json(path, body).await.0
+    }
+
+    async fn post_json(&self, path: &str, body: &Value) -> (reqwest::StatusCode, Value) {
+        let resp = reqwest::Client::new()
             .post(format!("{}{}", self.base_url, path))
             .json(body)
             .send()
             .await
-            .expect("post")
-            .status()
+            .expect("post");
+        let status = resp.status();
+        let json = resp.json::<Value>().await.unwrap_or(json!({}));
+        (status, json)
     }
 }
 
@@ -252,12 +258,18 @@ async fn malformed_and_oversized_input_is_safe() {
         .status();
     assert!(status.is_client_error(), "status={status}");
 
-    // Missing resourceSpans → accepted no-op.
+    // Missing resourceSpans → legitimately empty, accepted.
     assert_eq!(lab.post("/v1/traces", &json!({})).await, 200);
+    // Wrong-typed top-level container → malformed, rejected (B2).
     assert_eq!(
         lab.post("/v1/metrics", &json!({"resourceMetrics": "nope"}))
             .await,
-        200
+        400
+    );
+    assert_eq!(
+        lab.post("/v1/traces", &json!({"resourceSpans": {"a": 1}}))
+            .await,
+        400
     );
 
     // Extreme arrays: more resource groups than the budget allows —
@@ -729,4 +741,412 @@ async fn live_ingestion_produces_provisional_evidence() {
     let conn = lbug::Connection::new(&db).unwrap();
     let mut rows = conn.query("MATCH (a:Application) RETURN count(a)").unwrap();
     assert_eq!(rows.next().unwrap()[0].to_string(), "0");
+}
+
+// ── B1/B2 (PR #11 review): honest numerics and HTTP acceptance ──────────────
+
+fn gauge_body(dp: Value) -> Value {
+    json!({
+        "resourceMetrics": [{
+            "resource": {"attributes": [attr("service.name", "svc")]},
+            "scopeMetrics": [{
+                "scope": {"name": "t"},
+                "metrics": [{
+                    "name": "test.gauge",
+                    "gauge": {"dataPoints": [dp]}
+                }]
+            }]
+        }]
+    })
+}
+
+fn dp_with(extra: Value) -> Value {
+    let mut dp = json!({"timeUnixNano": "1700000000000000000", "attributes": []});
+    if let (Value::Object(base), Value::Object(ext)) = (&mut dp, extra) {
+        for (k, v) in ext {
+            base.insert(k, v);
+        }
+    }
+    dp
+}
+
+async fn assert_no_update(
+    rx: &mut broadcast::Receiver<Arc<TelemetryUpdate>>,
+    prefix: &str,
+    dur: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + dur;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return;
+        }
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Ok(u)) if u.path.starts_with(prefix) => {
+                panic!("unexpected {prefix} update published: {}", u.value)
+            }
+            Ok(Ok(_)) | Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(_)) => return,
+            Err(_) => return,
+        }
+    }
+}
+
+/// B1: a data point with no usable numeric value is rejected and
+/// reported — it must NOT be published as a fabricated 0.0. A genuine
+/// reported zero IS published. String-encoded int64 (canonical OTLP
+/// JSON) is accepted; a string-encoded double is a type violation.
+#[tokio::test]
+async fn invalid_metric_values_are_rejected_not_zeroed() {
+    let lab = start_lab("num-site").await;
+    let mut rx = lab.rx.resubscribe();
+
+    // Missing asDouble/asInt entirely → rejected, no publish.
+    let (status, body) = lab
+        .post_json("/v1/metrics", &gauge_body(dp_with(json!({}))))
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["partialSuccess"]["rejectedDataPoints"], 1);
+    assert_no_update(&mut rx, "streaming/otlp/metrics", Duration::from_millis(300)).await;
+
+    // Non-numeric AnyValue kind → rejected.
+    let (status, body) = lab
+        .post_json(
+            "/v1/metrics",
+            &gauge_body(dp_with(json!({"asString": "not-a-number"}))),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["partialSuccess"]["rejectedDataPoints"], 1);
+
+    // asDouble of the wrong JSON type → rejected (no silent fallback).
+    let (status, body) = lab
+        .post_json(
+            "/v1/metrics",
+            &gauge_body(dp_with(json!({"asDouble": "1.5"}))),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["partialSuccess"]["rejectedDataPoints"], 1);
+
+    // Genuine reported zero → published as 0.0, NOT rejected.
+    let (status, body) = lab
+        .post_json(
+            "/v1/metrics",
+            &gauge_body(dp_with(json!({"asDouble": 0.0}))),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert!(body.get("partialSuccess").is_none());
+    let u = next_update(&mut rx, "streaming/otlp/metrics").await;
+    assert_eq!(u.value["value"], 0.0);
+
+    // Canonical OTLP int64 string encoding → accepted as 42.0.
+    lab.post(
+        "/v1/metrics",
+        &gauge_body(dp_with(json!({"asInt": "42"}))),
+    )
+    .await;
+    let u = next_update(&mut rx, "streaming/otlp/metrics").await;
+    assert_eq!(u.value["value"], 42.0);
+
+    // Bare JSON integer asInt → accepted.
+    lab.post(
+        "/v1/metrics",
+        &gauge_body(dp_with(json!({"asInt": 7}))),
+    )
+    .await;
+    let u = next_update(&mut rx, "streaming/otlp/metrics").await;
+    assert_eq!(u.value["value"], 7.0);
+
+    lab.stop().await;
+}
+
+/// B1: histogram data points preserve cumulative count/sum/min/max and
+/// bucket structure as distinct evidence fields. No mean, rate or
+/// request-per-second is synthesized; `value` stays null. A reported
+/// count of 0 is genuine evidence; a missing count is rejected.
+#[tokio::test]
+async fn histogram_preserves_cumulative_semantics() {
+    let lab = start_lab("hist-site").await;
+    let mut rx = lab.rx.resubscribe();
+
+    let hist_body = |dps: Vec<Value>| {
+        json!({
+            "resourceMetrics": [{
+                "resource": {"attributes": [attr("service.name", "svc")]},
+                "scopeMetrics": [{
+                    "scope": {"name": "t"},
+                    "metrics": [{
+                        "name": "http.server.duration",
+                        "histogram": {"dataPoints": dps}
+                    }]
+                }]
+            }]
+        })
+    };
+
+    let (status, body) = lab
+        .post_json(
+            "/v1/metrics",
+            &hist_body(vec![dp_with(json!({
+                "count": "10",
+                "sum": 100.5,
+                "min": 1.0,
+                "max": 9.0,
+                "bucketCounts": [2, 8],
+                "explicitBounds": [5.0],
+            }))]),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert!(body.get("partialSuccess").is_none());
+    let u = next_update(&mut rx, "streaming/otlp/metrics").await;
+    assert!(u.value["value"].is_null(), "histogram value must stay null");
+    assert_eq!(u.value["histogram_count"], 10);
+    assert_eq!(u.value["histogram_sum"], 100.5);
+    assert_eq!(u.value["histogram_min"], 1.0);
+    assert_eq!(u.value["histogram_max"], 9.0);
+    assert_eq!(u.value["histogram_bucket_count"], 2);
+    assert_eq!(u.value["histogram_explicit_bound_count"], 1);
+    assert_eq!(u.value["value_semantics"], "histogram_cumulative");
+
+    // Reported zero-count histogram → genuine evidence, published.
+    lab.post(
+        "/v1/metrics",
+        &hist_body(vec![dp_with(json!({"count": "0", "sum": 0.0}))]),
+    )
+    .await;
+    let u = next_update(&mut rx, "streaming/otlp/metrics").await;
+    assert_eq!(u.value["histogram_count"], 0);
+
+    // Missing count → rejected, not published.
+    let (status, body) = lab
+        .post_json(
+            "/v1/metrics",
+            &hist_body(vec![dp_with(json!({"sum": 5.0}))]),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["partialSuccess"]["rejectedDataPoints"], 1);
+
+    // Malformed optional field (sum as string) → rejected.
+    let (status, body) = lab
+        .post_json(
+            "/v1/metrics",
+            &hist_body(vec![dp_with(json!({"count": "3", "sum": "NaN-ish"}))]),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["partialSuccess"]["rejectedDataPoints"], 1);
+
+    lab.stop().await;
+}
+
+/// B2: structurally malformed requests are rejected with 400, never
+/// acknowledged; legitimately empty requests stay 200.
+#[tokio::test]
+async fn malformed_structures_are_not_acknowledged() {
+    let lab = start_lab("shape-site").await;
+
+    // Precise per-endpoint assertions.
+    assert_eq!(
+        lab.post_json("/v1/metrics", &json!({"resourceMetrics": {"a": 1}}))
+            .await
+            .0,
+        400
+    );
+    assert_eq!(
+        lab.post_json(
+            "/v1/metrics",
+            &json!({"resourceMetrics": [{"scopeMetrics": {}}]})
+        )
+        .await
+        .0,
+        400
+    );
+    assert_eq!(
+        lab.post_json(
+            "/v1/metrics",
+            &json!({"resourceMetrics": [{"scopeMetrics": [{"metrics": [{"name": "m", "gauge": {"dataPoints": "bad"}}]}]}]})
+        )
+        .await
+        .0,
+        400
+    );
+    assert_eq!(
+        lab.post_json("/v1/traces", &json!({"resourceSpans": [{"scopeSpans": "x"}]}))
+            .await
+            .0,
+        400
+    );
+    assert_eq!(lab.post_json("/v1/traces", &json!([])).await.0, 400);
+    assert_eq!(lab.post_json("/v1/metrics", &json!([])).await.0, 400);
+
+    // Empty / absent containers remain legitimately accepted.
+    assert_eq!(lab.post("/v1/traces", &json!({})).await, 200);
+    assert_eq!(
+        lab.post("/v1/traces", &json!({"resourceSpans": []})).await,
+        200
+    );
+    assert_eq!(
+        lab.post("/v1/metrics", &json!({"resourceMetrics": []})).await,
+        200
+    );
+    // A resource group with no scopeSpans is an accepted no-op.
+    assert_eq!(
+        lab.post(
+            "/v1/traces",
+            &json!({"resourceSpans": [{"resource": {"attributes": []}}]})
+        )
+        .await,
+        200
+    );
+
+    lab.stop().await;
+}
+
+/// B2: resource-budget truncation reports the EXACT rejected count in
+/// partialSuccess — not one-per-truncation-event — and the drop reason
+/// is visible to the producer.
+#[tokio::test]
+async fn budget_truncation_reports_exact_reject_count() {
+    let lab = start_lab("budget-site").await;
+
+    // 40 resource groups × 1 span; MAX_RESOURCE_GROUPS = 32 → exactly
+    // 8 spans rejected.
+    let groups: Vec<Value> = (0..40)
+        .map(|i| {
+            json!({
+                "resource": {"attributes": [attr("service.name", &format!("svc-{i}"))]},
+                "scopeSpans": [{"spans": [{"name": "s", "attributes": []}]}]
+            })
+        })
+        .collect();
+    let (status, body) = lab
+        .post_json("/v1/traces", &json!({"resourceSpans": groups}))
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["partialSuccess"]["rejectedSpans"], 8);
+    let msg = body["partialSuccess"]["errorMessage"].as_str().unwrap();
+    assert!(msg.contains("over_budget"), "msg={msg}");
+
+    lab.stop().await;
+}
+
+/// B2: a mixed request reports only the actually-rejected data points.
+#[tokio::test]
+async fn mixed_valid_and_invalid_points_report_partial_success() {
+    let lab = start_lab("mixed-site").await;
+    let mut rx = lab.rx.resubscribe();
+
+    let body = json!({
+        "resourceMetrics": [{
+            "resource": {"attributes": []},
+            "scopeMetrics": [{
+                "scope": {"name": "t"},
+                "metrics": [{
+                    "name": "mixed",
+                    "gauge": {"dataPoints": [
+                        dp_with(json!({"asDouble": 3.5})),
+                        dp_with(json!({})),
+                        dp_with(json!({"asInt": "11"}))
+                    ]}
+                }]
+            }]
+        }]
+    });
+    let (status, resp) = lab.post_json("/v1/metrics", &body).await;
+    assert_eq!(status, 200);
+    assert_eq!(resp["partialSuccess"]["rejectedDataPoints"], 1);
+
+    let mut values = Vec::new();
+    for _ in 0..2 {
+        values.push(next_update(&mut rx, "streaming/otlp/metrics").await.value["value"].clone());
+    }
+    values.sort_by(|a, b| a.as_f64().partial_cmp(&b.as_f64()).unwrap());
+    assert_eq!(values, vec![json!(3.5), json!(11.0)]);
+
+    lab.stop().await;
+}
+
+/// B3: the read-only candidate probe must report ambiguity explicitly.
+/// Multiple entities matching — within one probe kind or across kinds —
+/// must never collapse to an arbitrary first match, and candidates
+/// remain `authority: "unverified"` evidence only.
+#[tokio::test]
+async fn candidate_probe_reports_ambiguity() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = GraphStore::open(
+        dir.path().join("graph.db").to_str().unwrap(),
+        128 * 1024 * 1024,
+    )
+    .unwrap();
+    {
+        let db = store.db();
+        let conn = lbug::Connection::new(&db).unwrap();
+        // Two devices share one hostname → hostname probe ambiguous.
+        conn.query("CREATE (d:Device {address: '10.1.0.1', hostname: 'dup-host', site: 'dc-a'})")
+            .unwrap();
+        conn.query("CREATE (d2:Device {address: '10.1.0.2', hostname: 'dup-host', site: 'dc-b'})")
+            .unwrap();
+        // Unique hostname → single candidate.
+        conn.query("CREATE (d3:Device {address: '10.2.0.1', hostname: 'uniq-host', site: 'dc-a'})")
+            .unwrap();
+        // peer.address matching BOTH a Device and a HostEndpoint →
+        // multi-kind match set > 1 → ambiguous, not an arbitrary pick.
+        conn.query("CREATE (d4:Device {address: '10.3.0.1', hostname: 'multi-kind', site: 'dc-a'})")
+            .unwrap();
+        conn.query("CREATE (h:HostEndpoint {id: '10.3.0.1', ip: '10.3.0.1', kind: 'server', site_id: 'dc-a'})")
+            .unwrap();
+    }
+
+    let key = "otlpsrc/amb/http/127.0.0.1:4000";
+    store
+        .write(otlp_span_update(key, "svc", "", json!({"host_name": "dup-host"})))
+        .await
+        .unwrap();
+    store
+        .write(otlp_span_update(key, "svc", "10.3.0.1", json!({"host_name": ""})))
+        .await
+        .unwrap();
+    store
+        .write(otlp_span_update(key, "svc", "", json!({"host_name": "uniq-host"})))
+        .await
+        .unwrap();
+    store
+        .write(otlp_span_update(key, "svc", "192.0.2.1", json!({"host_name": "no-such"})))
+        .await
+        .unwrap();
+
+    let db = store.db();
+    let conn = lbug::Connection::new(&db).unwrap();
+    let mut rows = conn
+        .query("MATCH (e:StateChangeEvent {event_type: 'otlp_span_event'}) RETURN e.detail")
+        .unwrap();
+    let mut probes: Vec<(String, String)> = Vec::new();
+    while let Some(row) = rows.next() {
+        let detail: Value = serde_json::from_str(&row[0].to_string()).unwrap();
+        let probe = detail["candidate_probe"].clone();
+        assert_eq!(probe["authority"], json!("unverified"));
+        assert_eq!(probe["scope"], json!("unscoped"));
+        let label = format!(
+            "{}|{}",
+            detail["host_name"].as_str().unwrap_or(""),
+            detail["peer_address"].as_str().unwrap_or("")
+        );
+        probes.push((label, probe["status"].as_str().unwrap().to_string()));
+    }
+    assert_eq!(probes.len(), 4, "probes={probes:?}");
+    let status_of = |label: &str| {
+        probes
+            .iter()
+            .find(|(l, _)| l == label)
+            .map(|(_, s)| s.as_str())
+            .unwrap_or_else(|| panic!("missing probe for {label}: {probes:?}"))
+    };
+    assert_eq!(status_of("dup-host|"), "ambiguous");
+    assert_eq!(status_of("|10.3.0.1"), "ambiguous");
+    assert_eq!(status_of("uniq-host|"), "candidate");
+    assert_eq!(status_of("no-such|192.0.2.1"), "unresolved");
 }

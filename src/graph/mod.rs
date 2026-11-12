@@ -5384,6 +5384,17 @@ fn write_otlp_span(
 /// produce exact-match read-only lookups — an exact match is still not
 /// proof of ownership, so results are reported as `candidate` evidence
 /// with `authority: "unverified"`. No node or edge is ever written.
+///
+/// B3 (PR #11 review): `LIMIT 1` arbitrary first-match selection is
+/// replaced by bounded multi-match collection. When more than one
+/// entity matches a single probe kind the result is explicitly
+/// `ambiguous` — operators and AI investigations must not be misled by
+/// an arbitrary pick. The observation carries no independently
+/// established tenant/network scope at this layer, so the probe is
+/// explicitly `"scope": "unscoped"`: it reports inventory hints only,
+/// never authorization, and match metadata stays clearly unverified.
+const OTLP_CANDIDATE_PROBE_LIMIT: usize = 8;
+
 fn probe_otlp_candidate(conn: &Connection<'_>, update: &TelemetryUpdate) -> Result<JsonValue> {
     let peer_address = update
         .value
@@ -5396,47 +5407,83 @@ fn probe_otlp_candidate(conn: &Connection<'_>, update: &TelemetryUpdate) -> Resu
         .and_then(JsonValue::as_str)
         .unwrap_or("");
 
+    // Fetch one extra row beyond the report cap so truncation is
+    // detectable without a second count query.
+    let fetch = (OTLP_CANDIDATE_PROBE_LIMIT + 1) as i64;
     let mut matches: Vec<JsonValue> = Vec::new();
+    let mut ambiguous_kinds: Vec<&'static str> = Vec::new();
+    let mut truncated = false;
+
+    // Returns (rows_kept, was_ambiguous_or_truncated).
+    fn collect_rows(
+        rows: lbug::QueryResult<'_>,
+        kind: &'static str,
+        matches: &mut Vec<JsonValue>,
+        ambiguous_kinds: &mut Vec<&'static str>,
+        truncated: &mut bool,
+        make: impl Fn(&[lbug::Value]) -> JsonValue,
+    ) {
+        let mut collected: Vec<Vec<lbug::Value>> = Vec::new();
+        for row in rows {
+            collected.push(row);
+            if collected.len() > OTLP_CANDIDATE_PROBE_LIMIT {
+                *truncated = true;
+                break;
+            }
+        }
+        if collected.len() > 1 {
+            ambiguous_kinds.push(kind);
+        }
+        for row in collected.into_iter().take(OTLP_CANDIDATE_PROBE_LIMIT) {
+            matches.push(make(&row));
+        }
+    }
 
     if !peer_address.is_empty() {
         // Exact Device.address match only — never prefix matching.
         let mut stmt = conn
-            .prepare("MATCH (d:Device {address: $addr}) RETURN d.hostname, d.site LIMIT 1")
+            .prepare("MATCH (d:Device {address: $addr}) RETURN d.hostname, d.site LIMIT $lim")
             .context("prepare otlp device candidate probe")?;
-        let mut rows = conn
+        let rows = conn
             .execute(
                 &mut stmt,
-                vec![("addr", Value::String(peer_address.to_string()))],
+                vec![
+                    ("addr", Value::String(peer_address.to_string())),
+                    ("lim", Value::Int64(fetch)),
+                ],
             )
             .context("execute otlp device candidate probe")?;
-        if let Some(row) = rows.next() {
-            matches.push(json!({
+        collect_rows(rows, "device_address", &mut matches, &mut ambiguous_kinds, &mut truncated, |row| {
+            json!({
                 "kind": "device_address",
                 "matched": true,
                 "address": peer_address,
                 "hostname": read_str(&row[0]),
                 "site": read_str(&row[1]),
-            }));
-        }
+            })
+        });
 
         // Exact HostEndpoint.ip match (table may not exist yet).
-        match conn.prepare("MATCH (h:HostEndpoint {ip: $ip}) RETURN h.kind, h.site_id LIMIT 1") {
+        match conn.prepare("MATCH (h:HostEndpoint {ip: $ip}) RETURN h.kind, h.site_id LIMIT $lim") {
             Ok(mut stmt) => {
-                let mut rows = conn
+                let rows = conn
                     .execute(
                         &mut stmt,
-                        vec![("ip", Value::String(peer_address.to_string()))],
+                        vec![
+                            ("ip", Value::String(peer_address.to_string())),
+                            ("lim", Value::Int64(fetch)),
+                        ],
                     )
                     .context("execute otlp hostendpoint candidate probe")?;
-                if let Some(row) = rows.next() {
-                    matches.push(json!({
+                collect_rows(rows, "host_endpoint", &mut matches, &mut ambiguous_kinds, &mut truncated, |row| {
+                    json!({
                         "kind": "host_endpoint",
                         "matched": true,
                         "ip": peer_address,
                         "endpoint_kind": read_str(&row[0]),
                         "site_id": read_str(&row[1]),
-                    }));
-                }
+                    })
+                });
             }
             Err(e) if e.to_string().contains("does not exist") => {}
             Err(e) => return Err(e).context("prepare otlp hostendpoint candidate probe"),
@@ -5447,33 +5494,47 @@ fn probe_otlp_candidate(conn: &Connection<'_>, update: &TelemetryUpdate) -> Resu
         // Exact Device.hostname match — hostname claims are weaker
         // evidence than addresses but still worth a read-only probe.
         let mut stmt = conn
-            .prepare("MATCH (d:Device {hostname: $hn}) RETURN d.address, d.site LIMIT 1")
+            .prepare("MATCH (d:Device {hostname: $hn}) RETURN d.address, d.site LIMIT $lim")
             .context("prepare otlp hostname candidate probe")?;
-        let mut rows = conn
+        let rows = conn
             .execute(
                 &mut stmt,
-                vec![("hn", Value::String(host_name.to_string()))],
+                vec![
+                    ("hn", Value::String(host_name.to_string())),
+                    ("lim", Value::Int64(fetch)),
+                ],
             )
             .context("execute otlp hostname candidate probe")?;
-        if let Some(row) = rows.next() {
-            matches.push(json!({
+        collect_rows(rows, "device_hostname", &mut matches, &mut ambiguous_kinds, &mut truncated, |row| {
+            json!({
                 "kind": "device_hostname",
                 "matched": true,
                 "hostname": host_name,
                 "address": read_str(&row[0]),
                 "site": read_str(&row[1]),
-            }));
-        }
+            })
+        });
     }
 
+    // Ambiguity is explicit: more than one matched entity — whether
+    // within a single probe kind or across kinds (e.g. peer.address
+    // matching a Device while host.name matches a different Device) —
+    // must never collapse to an arbitrary "candidate".
     let status = if matches.is_empty() {
         "unresolved"
+    } else if !ambiguous_kinds.is_empty() || matches.len() > 1 {
+        "ambiguous"
     } else {
         "candidate"
     };
     Ok(json!({
         "status": status,
         "authority": "unverified",
+        "scope": "unscoped",
+        "match_count": matches.len(),
+        "ambiguous": !ambiguous_kinds.is_empty(),
+        "ambiguous_kinds": ambiguous_kinds,
+        "truncated": truncated,
         "matches": matches,
     }))
 }
@@ -5495,11 +5556,11 @@ fn write_otlp_metrics(
     update: &TelemetryUpdate,
     service_name: &str,
     metric_name: &str,
-    value: f64,
+    _value: Option<f64>,
     _peer_address: &str,
     event_tx: &broadcast::Sender<BonsaiEvent>,
 ) -> Result<()> {
-    let _ = (service_name, metric_name, value);
+    let _ = (service_name, metric_name);
     let probe = probe_otlp_candidate(conn, update)?;
     let mut detail = update.value.clone();
     if let JsonValue::Object(map) = &mut detail {

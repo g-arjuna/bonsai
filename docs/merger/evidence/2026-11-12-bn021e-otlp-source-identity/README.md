@@ -141,3 +141,60 @@ limitation). Reverse-proxy deployments collapse to the proxy endpoint
    quarantine/fallback.
 4. Production acceptance matrix: NAT, duplicate IPs, impersonation,
    restart/replay, revocation, rotation, multi-protocol correlation.
+
+## Independent review resolution (PR #11, 2026-11-12)
+
+Post-submission review confirmed four findings; all resolved on this
+branch before merge:
+
+- **B1 — fabricated zeros.** `metrics_handler` no longer falls back to
+  `0.0` for absent/malformed numerics. `asDouble`/`asInt` are parsed
+  strictly (`Option<f64>` end-to-end into `TelemetryEvent::OtlpMetrics`);
+  missing, wrong-typed, string-vs-number violations, non-finite and
+  out-of-contract values are counted in `invalid_items` and reported
+  via `partialSuccess.rejectedDataPoints` — a genuine reported `0`
+  remains valid. Histogram `count` is required (`uint64` string or
+  number); `sum`/`min`/`max`/`bucketCounts`/`explicitBounds` are
+  preserved as distinct cumulative evidence fields — no mean, rate or
+  rps is synthesized (`value` stays null for histograms).
+- **B2 — acceptance semantics.** Handlers now return 400 for
+  structurally malformed requests (non-object bodies, non-array
+  `resourceSpans`/`resourceMetrics`/`scopeSpans`/`scopeMetrics`/
+  `metrics`/`dataPoints`, non-object entries at any level), 200 with
+  `partialSuccess.rejectedSpans`/`rejectedDataPoints` for partially
+  accepted requests, and 200 for legitimately empty requests. Reject
+  counts are exact per item (budget truncation, invalid numerics,
+  unsupported metric kinds each counted individually), surfaced via
+  `bonsai_otlp_items_dropped_total`. Supported subset only: HTTP/JSON,
+  gauge/sum/histogram — no gRPC, no exponentialHistogram/summary.
+- **B3 — candidate ambiguity.** `probe_otlp_candidate` no longer uses
+  `LIMIT 1`. Each probe kind collects up to 8 matches (+1 for
+  truncation detection); >1 match within a kind OR >1 total match
+  across kinds yields `status: "ambiguous"`, zero yields
+  `"unresolved"`, exactly one yields `"candidate"` — always with
+  `authority: "unverified"`, `scope: "unscoped"`. New focused test
+  `candidate_probe_reports_ambiguity` covers same-hostname duplicates,
+  multi-kind matches, unique candidate and unresolved cases.
+- **B4 — provisional evidence growth.** Verified: provisional
+  observations are durable `StateChangeEvent` nodes (Kuzu), not
+  broadcast-only; broadcast is supplementary. Growth is bounded by
+  per-request budgets (32/32/1024/4096 items, 256 attrs, 512-char
+  fields) and existing retention (`retention.max_age_hours` default
+  24h, `max_state_change_events` default 10k, age+count prune in
+  `server_startup`). Ephemeral `otlpsrc/...` source-key cardinality is
+  bounded by the same count cap. Follow-up recorded: enterprise-scale
+  per-source retention/aggregation policy remains a BN-021g/retention
+  concern — no new storage system added in this PR.
+
+### Review verification
+
+- `cargo test --test bn021e_otlp_source_identity` — **14/14** (13
+  prior + `candidate_probe_reports_ambiguity`).
+- Regression batch — **109/109**: bn021b 13, bn021c 17, bn021d 15,
+  bn021e-sflow 7, bn021e-snmp 11, bn021e-syslog 10, bn021e-otlp 14,
+  bn021f 9+9, bn022 5.
+- `cargo test --lib` — 5 failures, all reproduced identically on the
+  pre-change baseline SHA (archive overflow, site_sync,
+  subscription_status, registry, service_discovery); unrelated to
+  OTLP. Tracked under BN-019-B6 baseline reliability.
+- Build timings appended to `docs/build-times/runs.csv`.
