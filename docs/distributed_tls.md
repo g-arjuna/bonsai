@@ -91,3 +91,31 @@ certificate; it may differ from the host portion of `core_ingest_endpoint`.
    handshake should fail before any telemetry is accepted.
 4. Sign a collector certificate with another CA and restart; the core should
    reject it during handshake.
+
+## BN-021g: credential→collector authorization (added 12 November 2026)
+
+When `runtime.tls.enabled = true`, the core additionally requires every
+mTLS client certificate to be pinned to an authorized binding — a
+certificate chaining to the lab CA is necessary but NOT sufficient:
+
+- Compute the credential fingerprint: `sha256:<hex>` of the DER-encoded
+  client certificate leaf (same convention as BN-021f BMP ingress).
+- Provision a canonical device for the collector entity, then create an
+  exporter binding via `POST /api/identity/bindings` (admin):
+  - `protocol`: `"collector"` for the ingest plane
+    (`TelemetryIngest`, `DetectionIngest`, `Heartbeat`,
+    `RegisterCollector`), `"core-admin"` for device/site/credential
+    mutation, `query` and remediation writes, `"sidecar"` for sidecar
+    RPCs. Read RPCs accept any active pinned binding.
+  - `exporter_id`: the collector's `collector_id` (ingest plane) or any
+    label (capability planes).
+  - `match_ingress_credential`: the fingerprint above.
+- The claimed `collector_id` in each ingest message must equal the
+  bound `exporter_id` — certificate A cannot claim collector B.
+- Authorization decisions are cached ≤5s; revoking the binding
+  (`POST /api/identity/bindings/{id}/revoke`) stops privileged ingest
+  within that window. Rotation = update `match_ingress_credential`
+  on the same binding (sequential re-pin; old fingerprint loses
+  authority immediately after cache expiry).
+- Plaintext mode (`runtime.tls.enabled = false`) remains the explicit
+  legacy development path with no authorization.

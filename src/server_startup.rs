@@ -1368,6 +1368,10 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         let store_for_api = store.clone();
         let collector_manager_for_api = collector_manager.clone();
         let sidecar_registry_for_api = std::sync::Arc::clone(&sidecar_registry);
+        // BN-021g: the gRPC service needs the shared config store for
+        // credential→collector binding authorization. ApiRegistry already
+        // opened it (same DB the HTTP identity admin API writes to).
+        let sqlite_for_api = registry_for_api.sqlite_store();
 
         let mut server = tonic::transport::Server::builder();
         if cfg.runtime.tls.enabled {
@@ -1395,7 +1399,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         Some(std::sync::Arc::clone(&debouncer)),
                         collector_manager_for_api,
                         sidecar_registry_for_api,
-                        None,
+                        sqlite_for_api.clone(),
                         None,
                         coordinator.clone(),
                     ))
@@ -1413,7 +1417,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         Some(std::sync::Arc::clone(&debouncer)),
                         None,
                         sidecar_registry_for_api,
-                        None,
+                        sqlite_for_api,
                         None,
                         None,
                     ))

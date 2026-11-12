@@ -8,6 +8,7 @@ pub mod audit;
 pub mod catalogue;
 pub mod change_detection;
 pub mod collector;
+pub mod collector_auth;
 pub mod config;
 pub mod config_store;
 pub mod correlation_buffer;

@@ -126,3 +126,7 @@ date,command,scope,wall_seconds,result,notes
 2026-11-12,cargo check -p bonsai --lib,bonsai --lib,9.30,pass,warm; post B3 ambiguity edit
 2026-11-12,cargo test --test bn021e_otlp_source_identity (B3 ambiguity),bn021e otlp suite B3,533,pass,8m53s relink + focused run; candidate_probe_reports_ambiguity ok
 2026-11-12,cargo test --test bn021e_otlp_source_identity (final),bn021e otlp suite final,3.48,pass,14/14 no rebuild; run only
+2026-11-12,cargo test --test bn021g_collector_trust_foundation (attempt1),bn021g mTLS acceptance,~150,fail-fixture,buffer pool 64MB too small + rustls CryptoProvider missing; fixture fixes only
+2026-11-12,cargo test --test bn021g_collector_trust_foundation,bn021g mTLS acceptance,65,pass,42s relink + 10.3s run; 6/6 real loopback mTLS scenarios
+2026-11-12,cargo test --test bn021f_authenticated_ingress --test bn021f_hardening --test bn022_graph_read_boundary --test bn021b_trusted_identity,bn021f/b trust regressions post-gn,~120,pass,36/36 (9+9+5+13); warm binaries
+2026-11-12,cargo check -p bonsai --lib (post-fmt),bonsai --lib,10.71,pass,warm

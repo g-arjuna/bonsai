@@ -7,6 +7,9 @@ use lbug::{Connection, Value};
 use tokio_stream::wrappers::BroadcastStream;
 use tonic::{Request, Response, Status, Streaming};
 
+use crate::collector_auth::{
+    CORE_ADMIN_PROTOCOL, CollectorAuthz, CollectorGrant, SIDECAR_PROTOCOL,
+};
 use crate::config::{SelectedSubscriptionPath, TargetConfig};
 use crate::credentials::{CredentialSummary, CredentialVault, ResolvePurpose, ResolvedCredential};
 use crate::discovery;
@@ -17,6 +20,7 @@ use crate::ingest;
 use crate::registry::{ApiRegistry, DeviceRegistry};
 use crate::sidecar_registry::SidecarRegistry;
 use crate::store::BonsaiStore;
+use crate::telemetry_identity::VerifiedIngressPrincipal;
 use crate::write_coordinator::{PriorityWriteRequest, WriteCoordinator};
 
 pub const PROTOCOL_VERSION_CURRENT: u32 = 1;
@@ -74,6 +78,7 @@ pub struct BonsaiService<S: BonsaiStore> {
     collector_manager: Option<Arc<crate::assignment::CollectorManager>>,
     sidecar_registry: Arc<SidecarRegistry>,
     sqlite_store: Option<Arc<crate::sqlite_store::SqliteStore>>,
+    collector_authz: CollectorAuthz,
     ha_coordinator: Option<Arc<crate::ha_coordinator::HACoordinator>>,
     detection_coordinator: Option<Arc<WriteCoordinator>>,
 }
@@ -91,6 +96,7 @@ impl<S: BonsaiStore> BonsaiService<S> {
         ha_coordinator: Option<Arc<crate::ha_coordinator::HACoordinator>>,
         detection_coordinator: Option<Arc<WriteCoordinator>>,
     ) -> Self {
+        let collector_authz = CollectorAuthz::new(sqlite_store.clone());
         Self {
             store,
             registry,
@@ -100,12 +106,14 @@ impl<S: BonsaiStore> BonsaiService<S> {
             collector_manager,
             sidecar_registry,
             sqlite_store,
+            collector_authz,
             ha_coordinator,
             detection_coordinator,
         }
     }
 
     pub fn with_sqlite_store(mut self, store: Arc<crate::sqlite_store::SqliteStore>) -> Self {
+        self.collector_authz = CollectorAuthz::new(Some(Arc::clone(&store)));
         self.sqlite_store = Some(store);
         self
     }
@@ -179,6 +187,94 @@ impl<S: BonsaiStore> BonsaiService<S> {
         // For now, return None - cert fingerprint pinning is optional
         None
     }
+
+    // ── BN-021g: transport-authenticated collector authorization ──────────
+    //
+    // `peer_principal` reads the peer certificate from tonic's
+    // `TlsConnectInfo` request extension — populated by the TLS layer
+    // only after the handshake verified the client cert against the
+    // configured client CA. Payload fields and RPC metadata are never
+    // consulted. `None` means a plaintext connection: the explicit
+    // legacy development mode in which every gate below passes.
+
+    fn peer_principal<T>(req: &Request<T>) -> Option<VerifiedIngressPrincipal> {
+        CollectorAuthz::principal(req)
+    }
+
+    /// Capability gate for non-ingest RPCs. mTLS peers need an active
+    /// credential-pinned binding for `protocol`; plaintext passes.
+    fn require_capability<T>(&self, req: &Request<T>, protocol: &str) -> Result<(), Status> {
+        match Self::peer_principal(req) {
+            Some(p) => self.collector_authz.authorize_capability(&p, protocol),
+            None => Ok(()),
+        }
+    }
+
+    /// Read-plane gate: mTLS peers need at least one active
+    /// credential-pinned binding (any protocol); plaintext passes.
+    fn require_any_binding<T>(&self, req: &Request<T>) -> Result<(), Status> {
+        match Self::peer_principal(req) {
+            Some(p) => self.collector_authz.authorize_any_binding(&p),
+            None => Ok(()),
+        }
+    }
+
+    /// Ingest-plane gate evaluated per claimed `collector_id`. Returns
+    /// the grant for provenance/audit; plaintext yields `None`.
+    fn authorize_ingest(
+        &self,
+        principal: Option<&VerifiedIngressPrincipal>,
+        collector_id: &str,
+    ) -> Result<Option<CollectorGrant>, Status> {
+        match principal {
+            Some(p) => Ok(Some(
+                self.collector_authz.authorize_collector(p, collector_id)?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Durable provenance record for an authorized ingest stream —
+    /// written once per (credential, collector_id) per stream. This is
+    /// the durable record distinguishing the authenticated forwarding
+    /// collector; per-observation source claims remain provisional
+    /// evidence and are never upgraded by this record.
+    fn audit_ingest_grant(
+        &self,
+        principal: &VerifiedIngressPrincipal,
+        grant: &CollectorGrant,
+        audited: &mut std::collections::HashSet<(String, String)>,
+    ) {
+        let key = (
+            principal.credential_fingerprint().to_string(),
+            grant.collector_id.clone(),
+        );
+        if !audited.insert(key) {
+            return;
+        }
+        if let Some(store) = &self.sqlite_store {
+            let detail = serde_json::json!({
+                "binding_id": grant.binding_id,
+                "scope": grant.scope,
+                "device_id": grant.device_id,
+                "collector_id": grant.collector_id,
+            });
+            let _ = store.audit(
+                "collector_ingest",
+                "AUTHZ",
+                &grant.collector_id,
+                principal.credential_fingerprint(),
+                "ingest_authorized",
+                None,
+                Some(&detail.to_string()),
+            );
+        }
+        metrics::counter!(
+            "bonsai_collector_ingest_authorized_total",
+            "collector_id" => grant.collector_id.clone()
+        )
+        .increment(1);
+    }
 }
 
 pub type CollectorService = BonsaiService<crate::collector::graph::CollectorGraphStore>;
@@ -196,8 +292,9 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
     // G3 Session 7: GetLeader RPC for collector re-homing
     async fn get_leader(
         &self,
-        _req: Request<pb::GetLeaderRequest>,
+        req: Request<pb::GetLeaderRequest>,
     ) -> Result<Response<pb::GetLeaderResponse>, Status> {
+        self.require_any_binding(&req)?;
         let response = if let Some(ref ha_coordinator) = self.ha_coordinator {
             let state = ha_coordinator.state().await;
             let is_leader = matches!(state, crate::ha_coordinator::LeaderState::Leader);
@@ -241,9 +338,17 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         // G5: Extract peer info from TLS connection
         let peer_addr = req.remote_addr().map(|addr| addr.to_string());
         let cert_fingerprint = self.extract_tls_cert_fingerprint(&req).await;
+        // BN-021g: transport-attested principal from the TLS layer.
+        let principal = Self::peer_principal(&req);
 
         let identity = req.into_inner();
         let collector_id = identity.collector_id.clone();
+        // BN-021g: when the connection is mTLS-authenticated, the claimed
+        // collector_id must be pinned to this exact credential by an
+        // active binding — a valid certificate cannot claim another id.
+        if let Some(p) = &principal {
+            self.collector_authz.authorize_collector(p, &collector_id)?;
+        }
         let collector_version = identity.protocol_version;
         let hostname = identity.hostname.clone();
         let auth_token = identity.auth_token;
@@ -388,7 +493,12 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<pb::CollectorStats>,
     ) -> Result<Response<pb::HeartbeatAck>, Status> {
+        let principal = Self::peer_principal(&req);
         let stats = req.into_inner();
+        if let Some(p) = &principal {
+            self.collector_authz
+                .authorize_collector(p, &stats.collector_id)?;
+        }
         if let Some(manager) = &self.collector_manager {
             let receiver_records: Vec<crate::assignment::ReceiverStatusRecord> = stats
                 .receiver_statuses
@@ -434,6 +544,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
     }
 
     async fn query(&self, req: Request<QueryRequest>) -> Result<Response<QueryResponse>, Status> {
+        self.require_capability(&req, CORE_ADMIN_PROTOCOL)?;
         let cypher = req.into_inner().cypher;
         let db = self.store.db();
 
@@ -463,8 +574,9 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
 
     async fn get_devices(
         &self,
-        _req: Request<GetDevicesRequest>,
+        req: Request<GetDevicesRequest>,
     ) -> Result<Response<GetDevicesResponse>, Status> {
+        self.require_any_binding(&req)?;
         let db = self.store.db();
         let devices = tokio::task::spawn_blocking(move || {
             let conn = Connection::new(&db).map_err(|e| e.to_string())?;
@@ -491,8 +603,9 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
 
     async fn list_managed_devices(
         &self,
-        _req: Request<pb::ListManagedDevicesRequest>,
+        req: Request<pb::ListManagedDevicesRequest>,
     ) -> Result<Response<pb::ListManagedDevicesResponse>, Status> {
+        self.require_any_binding(&req)?;
         let devices = self
             .registry
             .list_active()
@@ -508,6 +621,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<pb::AddDeviceRequest>,
     ) -> Result<Response<pb::DeviceMutationResponse>, Status> {
+        self.require_capability(&req, CORE_ADMIN_PROTOCOL)?;
         let target = target_from_managed_device(req.into_inner().device)
             .map_err(Status::invalid_argument)?;
         match self
@@ -544,6 +658,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<pb::UpdateDeviceRequest>,
     ) -> Result<Response<pb::DeviceMutationResponse>, Status> {
+        self.require_capability(&req, CORE_ADMIN_PROTOCOL)?;
         let target = target_from_managed_device(req.into_inner().device)
             .map_err(Status::invalid_argument)?;
         match self
@@ -580,6 +695,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<RemoveDeviceRequest>,
     ) -> Result<Response<DeviceMutationResponse>, Status> {
+        self.require_capability(&req, CORE_ADMIN_PROTOCOL)?;
         let address = req.into_inner().address;
         match self.registry.remove_device(&address) {
             Ok(Some(target)) => {
@@ -608,6 +724,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<pb::DiscoverRequest>,
     ) -> Result<Response<pb::DiscoveryReport>, Status> {
+        self.require_capability(&req, CORE_ADMIN_PROTOCOL)?;
         let request = req.into_inner();
         let credentials = resolve_request_credentials(
             &self.credentials,
@@ -645,8 +762,9 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
 
     async fn list_sites(
         &self,
-        _req: Request<pb::ListSitesRequest>,
+        req: Request<pb::ListSitesRequest>,
     ) -> Result<Response<pb::ListSitesResponse>, Status> {
+        self.require_any_binding(&req)?;
         let sites = self
             .store
             .list_sites()
@@ -662,6 +780,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<pb::AddSiteRequest>,
     ) -> Result<Response<pb::SiteMutationResponse>, Status> {
+        self.require_capability(&req, CORE_ADMIN_PROTOCOL)?;
         let site = site_from_proto(req.into_inner().site)
             .map_err(|e| Status::invalid_argument(format!("{e:#}")))?;
         match self.store.upsert_site(site).await {
@@ -682,6 +801,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<pb::UpdateSiteRequest>,
     ) -> Result<Response<pb::SiteMutationResponse>, Status> {
+        self.require_capability(&req, CORE_ADMIN_PROTOCOL)?;
         let site = site_from_proto(req.into_inner().site)
             .map_err(|e| Status::invalid_argument(format!("{e:#}")))?;
         match self.store.upsert_site(site).await {
@@ -700,8 +820,9 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
 
     async fn list_credentials(
         &self,
-        _req: Request<pb::ListCredentialsRequest>,
+        req: Request<pb::ListCredentialsRequest>,
     ) -> Result<Response<pb::ListCredentialsResponse>, Status> {
+        self.require_capability(&req, CORE_ADMIN_PROTOCOL)?;
         let credentials = self
             .credentials
             .list()
@@ -716,6 +837,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<pb::AddCredentialRequest>,
     ) -> Result<Response<pb::CredentialMutationResponse>, Status> {
+        self.require_capability(&req, CORE_ADMIN_PROTOCOL)?;
         let req = req.into_inner();
         match self
             .credentials
@@ -738,6 +860,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<pb::RemoveCredentialRequest>,
     ) -> Result<Response<pb::CredentialMutationResponse>, Status> {
+        self.require_capability(&req, CORE_ADMIN_PROTOCOL)?;
         let alias = req.into_inner().alias;
         match self.credentials.remove(&alias) {
             Ok(Some(credential)) => Ok(Response::new(pb::CredentialMutationResponse {
@@ -762,6 +885,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<GetInterfacesRequest>,
     ) -> Result<Response<GetInterfacesResponse>, Status> {
+        self.require_any_binding(&req)?;
         let device_address = req.into_inner().device_address;
         let db = self.store.db();
 
@@ -806,6 +930,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<GetBgpNeighborsRequest>,
     ) -> Result<Response<GetBgpNeighborsResponse>, Status> {
+        self.require_any_binding(&req)?;
         let device_address = req.into_inner().device_address;
         let db = self.store.db();
 
@@ -843,8 +968,9 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
 
     async fn get_topology(
         &self,
-        _req: Request<GetTopologyRequest>,
+        req: Request<GetTopologyRequest>,
     ) -> Result<Response<GetTopologyResponse>, Status> {
+        self.require_any_binding(&req)?;
         let db = self.store.db();
         let edges = tokio::task::spawn_blocking(move || {
             let conn = Connection::new(&db).map_err(|e| e.to_string())?;
@@ -876,6 +1002,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<StreamEventsRequest>,
     ) -> Result<Response<EventStream>, Status> {
+        self.require_any_binding(&req)?;
         let inner = req.into_inner();
         let filter_types = inner.event_types;
         let filter_device = inner.device_address;
@@ -913,6 +1040,12 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<Streaming<pb::TelemetryIngestUpdate>>,
     ) -> Result<Response<pb::TelemetryIngestResponse>, Status> {
+        // BN-021g: the peer principal is per-CONNECTION (TLS layer);
+        // each message's claimed collector_id is authorized separately
+        // against credential-pinned bindings. Cached decisions bound the
+        // revocation window to AUTHZ_CACHE_TTL (5s).
+        let principal = Self::peer_principal(&req);
+        let mut audited = std::collections::HashSet::new();
         let mut stream = req.into_inner();
         let mut accepted = 0_u64;
 
@@ -921,6 +1054,12 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             .await
             .map_err(|e| Status::unavailable(e.to_string()))?
         {
+            if let Some(p) = &principal {
+                let collector_id = update.collector_id.clone();
+                if let Some(grant) = self.authorize_ingest(Some(p), &collector_id)? {
+                    self.audit_ingest_grant(p, &grant, &mut audited);
+                }
+            }
             if accepted == 0 {
                 match check_protocol_compat(update.protocol_version, PROTOCOL_VERSION_CURRENT) {
                     VersionCompat::Compatible => {}
@@ -976,6 +1115,8 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<Streaming<pb::DetectionEventIngest>>,
     ) -> Result<Response<pb::DetectionIngestResponse>, Status> {
+        let principal = Self::peer_principal(&req);
+        let mut audited = std::collections::HashSet::new();
         let mut stream = req.into_inner();
         let mut accepted = 0_u64;
 
@@ -984,6 +1125,12 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             .await
             .map_err(|e| Status::unavailable(e.to_string()))?
         {
+            if let Some(p) = &principal {
+                let collector_id = d.collector_id.clone();
+                if let Some(grant) = self.authorize_ingest(Some(p), &collector_id)? {
+                    self.audit_ingest_grant(p, &grant, &mut audited);
+                }
+            }
             let collector_id = d.collector_id.clone();
             match self
                 .write_detection_for_ingest(
@@ -1018,6 +1165,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<CreateDetectionRequest>,
     ) -> Result<Response<CreateDetectionResponse>, Status> {
+        self.require_capability(&req, CORE_ADMIN_PROTOCOL)?;
         let r = req.into_inner();
         match self
             .write_detection_for_ingest(
@@ -1048,6 +1196,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<CreateRemediationRequest>,
     ) -> Result<Response<CreateRemediationResponse>, Status> {
+        self.require_capability(&req, CORE_ADMIN_PROTOCOL)?;
         let r = req.into_inner();
         match self
             .store
@@ -1076,6 +1225,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<PushRemediationRequest>,
     ) -> Result<Response<PushRemediationResponse>, Status> {
+        self.require_capability(&req, CORE_ADMIN_PROTOCOL)?;
         let r = req.into_inner();
         let target = self
             .registry
@@ -1119,6 +1269,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<RegisterSidecarRequest>,
     ) -> Result<Response<RegisterSidecarResponse>, Status> {
+        self.require_capability(&req, SIDECAR_PROTOCOL)?;
         let r = req.into_inner();
         if r.name.trim().is_empty() {
             return Ok(Response::new(RegisterSidecarResponse {
@@ -1158,6 +1309,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         &self,
         req: Request<SidecarHeartbeatRequest>,
     ) -> Result<Response<SidecarHeartbeatResponse>, Status> {
+        self.require_capability(&req, SIDECAR_PROTOCOL)?;
         let r = req.into_inner();
         match self
             .sidecar_registry

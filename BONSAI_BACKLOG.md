@@ -255,12 +255,46 @@ LAB VERIFIED (11 November).
   saturation + recovery, SIGKILL restart/replay).
 - Evidence: `docs/merger/evidence/2026-11-11-bn021f-revocation-hardening/`.
 
-**BN-021g — Production acceptance** — OPEN (renamed from BN-021f slot;
-see above for the implemented slice).
-- Cross-protocol identity regression tests; multi-site overlapping
-  addresses; unknown/conflicting handling; collector restart/failover;
-  source-alias migration + journal replay; identity metrics/diagnostics;
-  simultaneous credential-authorization rotation (schema v5 candidate).
+**BN-021g — Production trust foundation** — SLICE 1 IMPLEMENTED
+(12 November): authenticated collector identity + scoped ingest
+authorization on the existing collector→core gRPC channel.
+
+- **BN-021g-1 collector trust foundation (this slice):** transport
+  principal extracted from tonic `TlsConnectInfo` peer certificates
+  (never payload/metadata); `"sha256:<hex>"` leaf fingerprint must
+  match `exporter_bindings.match_ingress_credential` on an ACTIVE
+  `protocol="collector"` binding whose `exporter_id` equals the claimed
+  `collector_id` — certificate/collector mismatch, unbound certs,
+  revoked bindings and unauthorized scopes are rejected per message.
+  Capability gates: `core-admin` (device/site/credential mutation,
+  query, remediation), `sidecar`, any-pinned-binding (read plane),
+  `get_leader`. Authz decisions cached ≤5s (bounded 4096-entry cache)
+  so revocation/rotation take effect within a documented window;
+  durable provenance via `audit_log` per (credential, collector).
+  Plaintext mode remains the explicit legacy dev path. Verified:
+  `tests/bn021g_collector_trust_foundation.rs` 6/6 real loopback mTLS —
+  authorized ingest/heartbeat/register/get_leader, impersonation,
+  unbound cert, forged payload principal, revocation, rotation,
+  replayed-record denial. Evidence:
+  `docs/merger/evidence/2026-11-12-bn021g-collector-trust-foundation/`.
+- **BN-021g-2 first verified original-source projection:** narrow OTLP
+  case via direct authenticated producer identity or explicitly
+  authorized attestation; no arbitrary remote-peer ownership inference.
+- **BN-021g-3 trusted syslog acquisition.**
+- **BN-021g-4 NetFlow/IPFIX + sFlow acquisition.**
+- **BN-021g-5 SNMPv3 USM cryptographic verification (supported libs).**
+- **BN-021g-6 production acceptance:** NAT, overlapping private
+  addresses, replay, rotation overlap, failover, revocation fan-out,
+  migration, coverage, evidence retention, explicit trust states in
+  API/UI.
+
+Remaining BN-021g-1 limitations: per-observation verified context is
+not yet carried on `TelemetryUpdate` (projection stays fail-closed —
+nothing downstream consumes it yet); scope is recorded but per-update
+site/target claims are not independently verified (they remain
+provisional evidence by design); `core-admin`/`sidecar`/`reader`
+capability bindings must be provisioned via the existing identity admin
+API before mTLS clients can use those RPCs.
 
 ### Source-audited correctness refinements (existing BN ownership)
 

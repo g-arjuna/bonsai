@@ -806,3 +806,59 @@ Verified: `tests/bn021e_otlp_source_identity.rs` 8/8 + BN-021/022
 regression batch. All BN-021e unauthenticated adapters (NetFlow/
 IPFIX, sFlow, syslog, SNMP, OTLP) are now isolated; BN-021g
 production acceptance is next.
+
+PR #11 review resolution + merge (12 November): independent review of
+the OTLP slice confirmed and fixed four findings before merge.
+B1 — strict numeric parsing: absent/malformed/non-finite
+`asDouble`/`asInt`, missing histogram `count` and unsupported value
+shapes are rejected and counted (`partialSuccess.rejectedDataPoints`),
+never fabricated into `0.0`; a genuine reported `0` stays valid, and
+histograms preserve cumulative count/sum/min/max/bucket evidence
+without synthesizing mean/rate/rps. B2 — honest HTTP acceptance:
+structurally malformed requests get 400, partial acceptance reports
+exact per-item `rejectedSpans`/`rejectedDataPoints`, legitimately
+empty requests stay 200; drop accounting is per item, not per
+truncation event. B3 — `probe_otlp_candidate` dropped `LIMIT 1`:
+bounded multi-match collection reports `unresolved`/`ambiguous`/
+`candidate` explicitly, always `authority: "unverified"`,
+`scope: "unscoped"`. B4 — verified provisional `StateChangeEvent`s
+are durable (Kuzu) and bounded by request budgets plus existing
+age/count retention; no new storage. Verified: OTLP suite 14/14
+(incl. new `candidate_probe_reports_ambiguity`), BN-021/022
+regression batch 109/109, `cargo test --lib` 290 pass / 5 fail —
+the same 5 pre-existing baseline failures (archive overflow,
+site_sync, subscription_status, registry, service_discovery),
+tracked under BN-019-B6. Merged as `9b80cd4`.
+
+BN-021g-1 collector trust foundation (12 November): the collector→core
+gRPC channel now authenticates and authorizes the FORWARDING
+collector without granting it authority over downstream observations.
+New `src/collector_auth.rs`: the peer principal is extracted from
+tonic `TlsConnectInfo` peer certificates (populated only after the
+TLS handshake verified the client cert against the configured client
+CA — payload and metadata are never consulted) and hashed as
+`sha256:<hex>` of the DER leaf, the same convention as BN-021f.
+Authorization reuses `exporter_bindings`: an ACTIVE binding with
+`protocol="collector"`, `exporter_id` = claimed `collector_id` and
+`match_ingress_credential` = the connection fingerprint must exist —
+a valid certificate cannot claim another collector's id, an unbound
+CA-issued cert gains nothing, and revocation/rotation take effect
+within a bounded 5s decision-cache window (4096-entry cap). Every
+relevant RPC is gated by capability: ingest plane per claimed
+`collector_id` (telemetry/detection streams, register, heartbeat),
+`core-admin` for device/site/credential mutation, query and
+remediation writes, `sidecar` for sidecar registration, and
+any-active-pinned-binding for the read plane; `get_leader` stays
+reachable for provisioned collectors. Durable provenance is recorded
+once per (credential, collector) per stream in `audit_log`.
+Plaintext deployments remain the explicit legacy dev mode. The
+authorized collector's payload claims remain provisional evidence —
+this slice changes nothing downstream (BN-021g-2+ owns verified
+original-source projection). `server_startup` now passes the shared
+registry SQLite store into the gRPC service (previously `None`, which
+would have left authz without bindings). Verified: real loopback mTLS
+acceptance `tests/bn021g_collector_trust_foundation.rs` 6/6 —
+authorized ingest/heartbeat/register/get_leader, collector-id
+impersonation, unbound certificate, forged serialized principal,
+active revocation, credential rotation and replayed-record denial.
+Evidence: `docs/merger/evidence/2026-11-12-bn021g-collector-trust-foundation/`.
