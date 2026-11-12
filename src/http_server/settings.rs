@@ -570,6 +570,7 @@ pub async fn patch_streaming_settings_handler(
     let otlp_to_restart = patch.otlp.is_some().then(|| crate::config::OtlpConfig {
         enabled: new_otlp_enabled,
         http_addr: new_otlp_addr.clone(),
+        ..state.streaming.otlp.clone()
     });
     let netflow_to_restart = patch
         .netflow

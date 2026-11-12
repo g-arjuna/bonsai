@@ -772,3 +772,37 @@ fields cannot authorize anything. Verified:
 `tests/bn021e_snmp_source_identity.rs` 11/11 + lib SNMP parser/target
 tests + BN-021/022 regression batch. OTLP remains the open BN-021e
 adapter; canonical SNMP attribution awaits BN-021g verified ingress.
+
+BN-021e OTLP source identity isolation (12 November, fourth adapter
+slice — completes the BN-021e unauthenticated-adapter set): the OTLP
+HTTP/JSON receiver no longer treats `service.name`, `host.name` or
+`peer.address` as identity. Every observation is keyed to a
+provisional `otlpsrc/{collector}/http/{peer_ip}:{peer_port}` source
+identity derived from the observed TCP peer (`ConnectInfo`) —
+`X-Forwarded-For`, forwarding headers and payload fields are never
+consulted for identity. Reported resource/span attributes are
+preserved as evidence; a consistent source-scoped
+`otlpapp/{source_key}/{service}` provisional id replaces the old
+inconsistent `app:{service}` / `{peer}:{service}` schemes, and no
+canonical Application node is created per unverified service name.
+The graph projection fails closed: provisional
+`StateChangeEvent`s (`otlp_span_event`/`otlp_metric_event`) scoped to
+the source key plus read-only exact-match candidate probes against
+Device/HostEndpoint — the `address STARTS WITH` prefix joins,
+`RUNS_SERVICE`/`HOST_RUNS_SERVICE`/`APP_IMPACTED_BY_NETWORK` edges
+and Application health-column writes (cpu_pct, memory_mb,
+req_per_sec, error_rate, metric_json) from untrusted claims are
+removed. Ingestion budgets bound body size (axum default 2 MiB),
+resource groups (32), scopes (32), items per request (4096) and per
+scope (1024), attributes scanned (256), string fields (512 chars)
+and timestamps (non-positive/>+24h fall back to receive time);
+non-finite metric values are dropped, never coerced; drops are
+counted via `bonsai_otlp_items_dropped_total`. Evidence is durable
+through the parquet archiver and graph `StateChangeEvent`s. OTLP
+canonical Application metrics therefore no longer update from
+unverified producers — a deliberate coverage change pending
+BN-021g verified ingress; HTTP/JSON only (no gRPC claimed).
+Verified: `tests/bn021e_otlp_source_identity.rs` 8/8 + BN-021/022
+regression batch. All BN-021e unauthenticated adapters (NetFlow/
+IPFIX, sFlow, syslog, SNMP, OTLP) are now isolated; BN-021g
+production acceptance is next.

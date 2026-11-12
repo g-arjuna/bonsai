@@ -5035,6 +5035,7 @@ fn write_blocking(
             &metric_name,
             value,
             &peer_address,
+            event_tx,
         ),
         TelemetryEvent::NetflowRecord {
             exporter_address,
@@ -5333,289 +5334,249 @@ fn write_config_change_event(
     Ok(())
 }
 
+/// BN-021e: OTLP observations fail closed.
+///
+/// OTLP arrives over unauthenticated HTTP/JSON: `service.name`,
+/// `host.name`, `peer.address` and every metric value are self-reported
+/// producer claims. This projection therefore:
+/// - never upserts `Application` nodes from claimed service names;
+/// - never writes `RUNS_SERVICE`/`HOST_RUNS_SERVICE`/`CARRIES_APPLICATION`
+///   edges or `APP_IMPACTED_BY_NETWORK` correlations from claimed
+///   addresses (the previous `address STARTS WITH $pfx` join could match
+///   unrelated devices on a shared prefix);
+/// - never overwrites canonical Application health columns
+///   (cpu_pct/memory_mb/req_per_sec/error_rate/metric_json);
+/// - performs only READ-ONLY exact-match probes against Device /
+///   HostEndpoint inventory, reported as candidate evidence.
+///
+/// The observation is preserved as a provisional `StateChangeEvent`
+/// scoped to the `otlpsrc/...` source key plus a source-scoped
+/// `BonsaiEvent`. Canonical OTLP attribution awaits BN-021g.
 fn write_otlp_span(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
-    service_name: &str,
-    peer_address: &str,
+    _service_name: &str,
+    _peer_address: &str,
     event_tx: &broadcast::Sender<BonsaiEvent>,
 ) -> Result<()> {
-    tracing::debug!(
-        target = %update.target,
-        service_name,
-        peer_address,
-        timestamp_ns = update.timestamp_ns,
-        "write_otlp_span invoked"
-    );
-    if service_name.is_empty() {
-        let _ = event_tx.send(BonsaiEvent {
-            device_address: crate::registry::strip_port(&update.target).to_string(),
-            event_type: "otlp_span_event".to_string(),
-            detail_json: serde_json::json!({
-                "service_name": service_name,
-                "peer_address": peer_address,
-            })
-            .to_string(),
-            occurred_at_ns: update.timestamp_ns,
-            state_change_event_id: String::new(),
-            source_type: "otlp".to_string(),
-        });
-        return Ok(());
+    let probe = probe_otlp_candidate(conn, update)?;
+    let mut detail = update.value.clone();
+    if let JsonValue::Object(map) = &mut detail {
+        map.insert("candidate_probe".to_string(), probe);
     }
-
-    let now = ts(update.timestamp_ns);
-    let app_id = format!("app:{service_name}");
-
-    // Track F1: Upsert Application node.
-    let mut app_stmt = conn
-        .prepare(
-            "MERGE (a:Application {id: $id}) \
-             ON CREATE SET a.name = $name, a.criticality = 'unknown', \
-               a.owner_group = '', a.source_name = $src, a.updated_at = $ts \
-             ON MATCH SET a.updated_at = $ts",
-        )
-        .context("prepare Application upsert")?;
-    conn.execute(
-        &mut app_stmt,
-        vec![
-            ("id", Value::String(app_id.clone())),
-            ("name", Value::String(service_name.to_string())),
-            ("src", Value::String("otlp".to_string())),
-            ("ts", now),
-        ],
-    )
-    .context("execute Application upsert")?;
-    tracing::debug!(app_id = %app_id, "write_otlp_span upserted application");
-
-    // RUNS_SERVICE: Device → Application (if peer_address matches a Device).
-    if !peer_address.is_empty() {
-        let mut dev_edge = conn
-            .prepare(
-                "MATCH (d:Device) WHERE d.address STARTS WITH $pfx \
-                 MATCH (a:Application {id: $aid}) \
-                 MERGE (d)-[:RUNS_SERVICE]->(a)",
-            )
-            .context("prepare RUNS_SERVICE merge")?;
-        conn.execute(
-            &mut dev_edge,
-            vec![
-                ("pfx", Value::String(peer_address.to_string())),
-                ("aid", Value::String(app_id.clone())),
-            ],
-        )
-        .context("execute RUNS_SERVICE merge")?;
-        tracing::debug!(peer_address, app_id = %app_id, "write_otlp_span attempted RUNS_SERVICE merge");
-
-        // HOST_RUNS_SERVICE: HostEndpoint → Application (if peer_address matches a HostEndpoint).
-        let mut host_edge = conn
-            .prepare(
-                "MATCH (h:HostEndpoint {ip: $ip}) \
-                 MATCH (a:Application {id: $aid}) \
-                 MERGE (h)-[:HOST_RUNS_SERVICE]->(a)",
-            )
-            .context("prepare HOST_RUNS_SERVICE merge")?;
-        conn.execute(
-            &mut host_edge,
-            vec![
-                ("ip", Value::String(peer_address.to_string())),
-                ("aid", Value::String(app_id.clone())),
-            ],
-        )
-        .context("execute HOST_RUNS_SERVICE merge")?;
-        tracing::debug!(peer_address, app_id = %app_id, "write_otlp_span attempted HOST_RUNS_SERVICE merge");
-    }
-
-    // D4-10 T3: OTLP trace + network event temporal correlation.
-    // If the peer device (or any device hosting this application) has an active
-    // DetectionEvent within ±30s, create an APP_IMPACTED_BY_NETWORK edge.
-    if !peer_address.is_empty() {
-        let window_ns = 30_000_000_000_i64;
-        let ts_lo = update.timestamp_ns - window_ns;
-        let ts_hi = update.timestamp_ns + window_ns;
-        let mut corr_select = conn
-            .prepare(
-                "MATCH (d:Device)-[:TRIGGERED]->(de:DetectionEvent) \
-             WHERE d.address STARTS WITH $pfx \
-               AND de.severity IN ['critical', 'high'] \
-               AND de.fired_at > $lo AND de.fired_at < $hi \
-             RETURN de.id",
-            )
-            .context("prepare APP_IMPACTED_BY_NETWORK correlation select")?;
-        let mut rows = conn
-            .execute(
-                &mut corr_select,
-                vec![
-                    ("pfx", Value::String(peer_address.to_string())),
-                    ("lo", ts(ts_lo)),
-                    ("hi", ts(ts_hi)),
-                ],
-            )
-            .context("execute APP_IMPACTED_BY_NETWORK correlation select")?;
-        let mut detection_ids = Vec::new();
-        while let Some(row) = rows.next() {
-            if let Value::String(id) = &row[0] {
-                detection_ids.push(id.clone());
-            }
-        }
-        if !detection_ids.is_empty() {
-            let mut attach_stmt = conn
-                .prepare(
-                    "MATCH (a:Application {id: $aid}), (de:DetectionEvent {id: $did}) \
-                 MERGE (a)-[:APP_IMPACTED_BY_NETWORK]->(de)",
-                )
-                .context("prepare APP_IMPACTED_BY_NETWORK attach")?;
-            for did in detection_ids {
-                conn.execute(
-                    &mut attach_stmt,
-                    vec![
-                        ("aid", Value::String(app_id.clone())),
-                        ("did", Value::String(did)),
-                    ],
-                )
-                .context("execute APP_IMPACTED_BY_NETWORK attach")?;
-            }
-        }
-    }
-
-    let _ = event_tx.send(BonsaiEvent {
-        device_address: crate::registry::strip_port(&update.target).to_string(),
-        event_type: "otlp_span_event".to_string(),
-        detail_json: serde_json::json!({
-            "service_name": service_name,
-            "peer_address": peer_address,
-            "app_id": app_id,
-        })
-        .to_string(),
-        occurred_at_ns: update.timestamp_ns,
-        state_change_event_id: String::new(),
-        source_type: "otlp".to_string(),
-    });
+    let detail_json = serde_json::to_string(&detail).context("serialize otlp span detail")?;
+    write_provisional_state_change_event(
+        conn,
+        &update.target,
+        "otlp_span_event",
+        &detail_json,
+        "otlp",
+        ts(update.timestamp_ns),
+        update.timestamp_ns,
+        event_tx,
+    )?;
     Ok(())
 }
 
-/// D4-10 T2: Write OTLP metric data point to Application node.
-/// Maps well-known OpenTelemetry metric names to typed columns:
-///   system.cpu.utilization / process.cpu.utilization → cpu_pct
-///   system.memory.usage / process.memory.usage      → memory_mb (bytes→MB)
-///   http.server.request_count / rpc.server.requests  → req_per_sec
-///   http.server.error_count                          → error_rate
-/// Unknown metric names are stored in the generic `metric_json` column.
+/// Read-only candidate probe for a provisional OTLP observation.
+///
+/// The claims (`peer.address`, `host.name`, `service.name`) may only
+/// produce exact-match read-only lookups — an exact match is still not
+/// proof of ownership, so results are reported as `candidate` evidence
+/// with `authority: "unverified"`. No node or edge is ever written.
+///
+/// B3 (PR #11 review): `LIMIT 1` arbitrary first-match selection is
+/// replaced by bounded multi-match collection. When more than one
+/// entity matches a single probe kind the result is explicitly
+/// `ambiguous` — operators and AI investigations must not be misled by
+/// an arbitrary pick. The observation carries no independently
+/// established tenant/network scope at this layer, so the probe is
+/// explicitly `"scope": "unscoped"`: it reports inventory hints only,
+/// never authorization, and match metadata stays clearly unverified.
+const OTLP_CANDIDATE_PROBE_LIMIT: usize = 8;
+
+fn probe_otlp_candidate(conn: &Connection<'_>, update: &TelemetryUpdate) -> Result<JsonValue> {
+    let peer_address = update
+        .value
+        .get("peer_address")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("");
+    let host_name = update
+        .value
+        .get("host_name")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("");
+
+    // Fetch one extra row beyond the report cap so truncation is
+    // detectable without a second count query.
+    let fetch = (OTLP_CANDIDATE_PROBE_LIMIT + 1) as i64;
+    let mut matches: Vec<JsonValue> = Vec::new();
+    let mut ambiguous_kinds: Vec<&'static str> = Vec::new();
+    let mut truncated = false;
+
+    // Returns (rows_kept, was_ambiguous_or_truncated).
+    fn collect_rows(
+        rows: lbug::QueryResult<'_>,
+        kind: &'static str,
+        matches: &mut Vec<JsonValue>,
+        ambiguous_kinds: &mut Vec<&'static str>,
+        truncated: &mut bool,
+        make: impl Fn(&[lbug::Value]) -> JsonValue,
+    ) {
+        let mut collected: Vec<Vec<lbug::Value>> = Vec::new();
+        for row in rows {
+            collected.push(row);
+            if collected.len() > OTLP_CANDIDATE_PROBE_LIMIT {
+                *truncated = true;
+                break;
+            }
+        }
+        if collected.len() > 1 {
+            ambiguous_kinds.push(kind);
+        }
+        for row in collected.into_iter().take(OTLP_CANDIDATE_PROBE_LIMIT) {
+            matches.push(make(&row));
+        }
+    }
+
+    if !peer_address.is_empty() {
+        // Exact Device.address match only — never prefix matching.
+        let mut stmt = conn
+            .prepare("MATCH (d:Device {address: $addr}) RETURN d.hostname, d.site LIMIT $lim")
+            .context("prepare otlp device candidate probe")?;
+        let rows = conn
+            .execute(
+                &mut stmt,
+                vec![
+                    ("addr", Value::String(peer_address.to_string())),
+                    ("lim", Value::Int64(fetch)),
+                ],
+            )
+            .context("execute otlp device candidate probe")?;
+        collect_rows(rows, "device_address", &mut matches, &mut ambiguous_kinds, &mut truncated, |row| {
+            json!({
+                "kind": "device_address",
+                "matched": true,
+                "address": peer_address,
+                "hostname": read_str(&row[0]),
+                "site": read_str(&row[1]),
+            })
+        });
+
+        // Exact HostEndpoint.ip match (table may not exist yet).
+        match conn.prepare("MATCH (h:HostEndpoint {ip: $ip}) RETURN h.kind, h.site_id LIMIT $lim") {
+            Ok(mut stmt) => {
+                let rows = conn
+                    .execute(
+                        &mut stmt,
+                        vec![
+                            ("ip", Value::String(peer_address.to_string())),
+                            ("lim", Value::Int64(fetch)),
+                        ],
+                    )
+                    .context("execute otlp hostendpoint candidate probe")?;
+                collect_rows(rows, "host_endpoint", &mut matches, &mut ambiguous_kinds, &mut truncated, |row| {
+                    json!({
+                        "kind": "host_endpoint",
+                        "matched": true,
+                        "ip": peer_address,
+                        "endpoint_kind": read_str(&row[0]),
+                        "site_id": read_str(&row[1]),
+                    })
+                });
+            }
+            Err(e) if e.to_string().contains("does not exist") => {}
+            Err(e) => return Err(e).context("prepare otlp hostendpoint candidate probe"),
+        }
+    }
+
+    if !host_name.is_empty() {
+        // Exact Device.hostname match — hostname claims are weaker
+        // evidence than addresses but still worth a read-only probe.
+        let mut stmt = conn
+            .prepare("MATCH (d:Device {hostname: $hn}) RETURN d.address, d.site LIMIT $lim")
+            .context("prepare otlp hostname candidate probe")?;
+        let rows = conn
+            .execute(
+                &mut stmt,
+                vec![
+                    ("hn", Value::String(host_name.to_string())),
+                    ("lim", Value::Int64(fetch)),
+                ],
+            )
+            .context("execute otlp hostname candidate probe")?;
+        collect_rows(rows, "device_hostname", &mut matches, &mut ambiguous_kinds, &mut truncated, |row| {
+            json!({
+                "kind": "device_hostname",
+                "matched": true,
+                "hostname": host_name,
+                "address": read_str(&row[0]),
+                "site": read_str(&row[1]),
+            })
+        });
+    }
+
+    // Ambiguity is explicit: more than one matched entity — whether
+    // within a single probe kind or across kinds (e.g. peer.address
+    // matching a Device while host.name matches a different Device) —
+    // must never collapse to an arbitrary "candidate".
+    let status = if matches.is_empty() {
+        "unresolved"
+    } else if !ambiguous_kinds.is_empty() || matches.len() > 1 {
+        "ambiguous"
+    } else {
+        "candidate"
+    };
+    Ok(json!({
+        "status": status,
+        "authority": "unverified",
+        "scope": "unscoped",
+        "match_count": matches.len(),
+        "ambiguous": !ambiguous_kinds.is_empty(),
+        "ambiguous_kinds": ambiguous_kinds,
+        "truncated": truncated,
+        "matches": matches,
+    }))
+}
+
+/// BN-021e: OTLP metric data points fail closed.
+///
+/// Metric name/value pairs are self-reported producer claims delivered
+/// over unauthenticated HTTP. Canonical Application health columns
+/// (cpu_pct, memory_mb, req_per_sec, error_rate, metric_json) are
+/// NEVER written from OTLP evidence — an arbitrary producer must not
+/// overwrite application health. Instead each data point is preserved
+/// as a provisional `StateChangeEvent` scoped to the `otlpsrc/...`
+/// source key with a read-only candidate probe. Coverage stays
+/// explicit: these events carry `identity_status: "provisional"`, so
+/// dashboards can distinguish observed-but-unverified from
+/// authenticated-and-resolved (BN-021g).
 fn write_otlp_metrics(
     conn: &Connection<'_>,
     update: &TelemetryUpdate,
     service_name: &str,
     metric_name: &str,
-    value: f64,
-    peer_address: &str,
+    _value: Option<f64>,
+    _peer_address: &str,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
 ) -> Result<()> {
-    if service_name.is_empty() {
-        return Ok(());
+    let _ = (service_name, metric_name);
+    let probe = probe_otlp_candidate(conn, update)?;
+    let mut detail = update.value.clone();
+    if let JsonValue::Object(map) = &mut detail {
+        map.insert("candidate_probe".to_string(), probe);
     }
-    let app_id = if !peer_address.is_empty() {
-        format!("{}:{}", peer_address, service_name)
-    } else {
-        service_name.to_string()
-    };
-    let now = ts(update.timestamp_ns);
-
-    // Upsert Application node (CREATE if new, no-op ON MATCH for identity fields)
-    let mut stmt = conn
-        .prepare(
-            "MERGE (a:Application {id: $id}) \
-             ON CREATE SET a.name = $name, a.source = $src, a.updated_at = $ts \
-             ON MATCH SET a.updated_at = $ts",
-        )
-        .context("prepare Application upsert (metrics)")?;
-    conn.execute(
-        &mut stmt,
-        vec![
-            ("id", Value::String(app_id.clone())),
-            ("name", Value::String(service_name.to_string())),
-            ("src", Value::String("otlp".to_string())),
-            ("ts", now.clone()),
-        ],
-    )
-    .context("execute Application upsert (metrics)")?;
-
-    // Map metric name to Application column
-    let set_clause = match metric_name {
-        "system.cpu.utilization" | "process.cpu.utilization" => {
-            let pct = (value * 100.0).clamp(0.0, 100.0);
-            let mut s = conn.prepare(
-                "MATCH (a:Application {id: $id}) SET a.cpu_pct = $v, a.updated_at = $ts",
-            )?;
-            conn.execute(
-                &mut s,
-                vec![
-                    ("id", Value::String(app_id.clone())),
-                    ("v", Value::Double(pct)),
-                    ("ts", now.clone()),
-                ],
-            )?;
-            None::<()>
-        }
-        "system.memory.usage" | "process.memory.usage" => {
-            let mb = (value / 1_048_576.0).max(0.0);
-            let mut s = conn.prepare(
-                "MATCH (a:Application {id: $id}) SET a.memory_mb = $v, a.updated_at = $ts",
-            )?;
-            conn.execute(
-                &mut s,
-                vec![
-                    ("id", Value::String(app_id.clone())),
-                    ("v", Value::Double(mb)),
-                    ("ts", now.clone()),
-                ],
-            )?;
-            None
-        }
-        "http.server.request_count" | "rpc.server.requests" | "http.server.requests_total" => {
-            let mut s = conn.prepare(
-                "MATCH (a:Application {id: $id}) SET a.req_per_sec = $v, a.updated_at = $ts",
-            )?;
-            conn.execute(
-                &mut s,
-                vec![
-                    ("id", Value::String(app_id.clone())),
-                    ("v", Value::Double(value)),
-                    ("ts", now.clone()),
-                ],
-            )?;
-            None
-        }
-        "http.server.error_count" | "http.server.errors_total" => {
-            let mut s = conn.prepare(
-                "MATCH (a:Application {id: $id}) SET a.error_rate = $v, a.updated_at = $ts",
-            )?;
-            conn.execute(
-                &mut s,
-                vec![
-                    ("id", Value::String(app_id.clone())),
-                    ("v", Value::Double(value)),
-                    ("ts", now.clone()),
-                ],
-            )?;
-            None
-        }
-        _ => {
-            // Store unknown metric as JSON blob in metric_json column
-            let blob = serde_json::json!({"metric": metric_name, "value": value}).to_string();
-            let mut s = conn.prepare(
-                "MATCH (a:Application {id: $id}) SET a.metric_json = $v, a.updated_at = $ts",
-            )?;
-            conn.execute(
-                &mut s,
-                vec![
-                    ("id", Value::String(app_id.clone())),
-                    ("v", Value::String(blob)),
-                    ("ts", now),
-                ],
-            )
-            .context("execute Application metric_json update")?;
-            None
-        }
-    };
-    let _ = set_clause;
+    let detail_json = serde_json::to_string(&detail).context("serialize otlp metric detail")?;
+    write_provisional_state_change_event(
+        conn,
+        &update.target,
+        "otlp_metric_event",
+        &detail_json,
+        "otlp",
+        ts(update.timestamp_ns),
+        update.timestamp_ns,
+        event_tx,
+    )?;
     Ok(())
 }
 

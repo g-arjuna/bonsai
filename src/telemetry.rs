@@ -107,10 +107,13 @@ pub enum TelemetryEvent {
         peer_address: String,
     },
     /// D4-10 T2: OTLP metric data point — updates Application node properties.
+    /// `value` is `None` for histograms (cumulative count/sum evidence is
+    /// carried in the payload fields instead) and must never be
+    /// fabricated — a missing numeric is not a reported zero.
     OtlpMetrics {
         service_name: String,
         metric_name: String,
-        value: f64,
+        value: Option<f64>,
         peer_address: String,
     },
     NetflowRecord {
@@ -501,11 +504,7 @@ impl TelemetryUpdate {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let value = self
-                .value
-                .get("value")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0);
+            let value = self.value.get("value").and_then(|v| v.as_f64());
             let peer_address = self
                 .value
                 .get("peer_address")

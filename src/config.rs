@@ -689,6 +689,11 @@ pub struct OtlpConfig {
     pub enabled: bool,
     #[serde(default = "default_otlp_http_addr")]
     pub http_addr: String,
+    /// Collector/ingress namespace included in provisional OTLP source
+    /// keys (BN-021e). Distinguishes observations received by different
+    /// collectors or trusted relays. Defaults to "default".
+    #[serde(default = "default_flow_collector_id")]
+    pub collector_id: String,
 }
 
 impl Default for OtlpConfig {
@@ -696,6 +701,7 @@ impl Default for OtlpConfig {
         Self {
             enabled: false,
             http_addr: default_otlp_http_addr(),
+            collector_id: default_flow_collector_id(),
         }
     }
 }

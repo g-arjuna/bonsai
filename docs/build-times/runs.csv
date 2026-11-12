@@ -116,3 +116,13 @@ date,command,scope,wall_seconds,result,notes
 2026-11-11,cargo test -j 1 --test bn021e_snmp_source_identity,bn021e snmp suite final,407,pass,11/11; lib recompile after snmp.rs+correlation_buffer edits
 2026-11-11,cargo test -j 1 --lib snmp --test bn021b..bn022 batch,bn021/022 regression compile+lib,692,partial,11m31s compile; lib snmp 11/11 pass; integration targets accidentally name-filtered (0 ran) — rerun required
 2026-11-11,cargo test -j 1 --test bn021b_trusted_identity --test bn021c_exporter_isolation --test bn021d_flow_exporter_isolation --test bn021e_sflow_exporter_isolation --test bn021e_syslog_source_identity --test bn021f_authenticated_ingress --test bn021f_hardening --test bn022_graph_read_boundary,bn021/022 regression batch post-snmp,24,pass,85/85 (13+17+15+7+10+9+9+5); warm binaries
+2026-11-12,cargo test -j 1 --test bn021e_otlp_source_identity,bn021e otlp suite attempt1,373,pass,8/8; ~6m09s compile+link, 4.12s run; first link of new target
+2026-11-12,cargo test -j 1 --lib --test bn021b..bn022 batch,bn021/022+lib regression compile+run,766,partial,12m46s wall; compile 12m11s; lib 290 pass / 5 fail (all pre-existing on baseline, unrelated modules); integration targets not reached
+2026-11-12,cargo test --lib <5 named filters> baseline verify,bn021/022 lib baseline check,123,fail-confirmed-preexisting,1m59s compile + 4.42s run on stashed pre-OTLP src; identical 5 failures => not OTLP regressions
+2026-11-12,cargo test -j 1 --test bn021b..bn022 batch (10 targets),bn021/022+otlp regression post-stash-restore,550,pass,104/104 (13+17+15+8+7+11+10+9+9+5); 8m39s relink after stash pop + 3m30s run
+2026-11-12,cargo test --test bn021e_otlp_source_identity (B1/B2 fix build),bn021e otlp suite review-fix,833,partial,13m53s wall; 12/13 pass, malformed_structures dataPoints-string case exposed validator gap
+2026-11-12,cargo test --test bn021e_otlp_source_identity (validator fix),bn021e otlp suite review-fix,460,pass,7m40s relink + 3.5s run; 13/13
+2026-11-12,cargo test --test bn021b..bn022 batch (9 targets),bn021/022 regression post-review-fixes,~600,pass,109/109 (13+17+15+7+11+10+9+9+5); sequential links, warm deps
+2026-11-12,cargo check -p bonsai --lib,bonsai --lib,9.30,pass,warm; post B3 ambiguity edit
+2026-11-12,cargo test --test bn021e_otlp_source_identity (B3 ambiguity),bn021e otlp suite B3,533,pass,8m53s relink + focused run; candidate_probe_reports_ambiguity ok
+2026-11-12,cargo test --test bn021e_otlp_source_identity (final),bn021e otlp suite final,3.48,pass,14/14 no rebuild; run only
