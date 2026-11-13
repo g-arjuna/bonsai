@@ -309,6 +309,36 @@ authorization on the existing collector→core gRPC channel.
   cleanup — plus real-server queue drain tests (interleaved
   rejection, all-reject, retryable failure). Evidence:
   `docs/merger/evidence/2026-11-12-bn021g-collector-trust-foundation/`.
+- **Residual-findings round (R1–R4, 13 November, same branch):** a
+  third review confirmed four residual defects, all closed:
+  **R1** provisional normalization now unconditionally pins effective
+  `source_key`/`exporter_id`/`identity_status` server-side (missing,
+  null, numeric or malformed producer claims cannot reach
+  `classify()`'s untrusted `exporter_address` fallback; originals
+  preserved under `claimed_*` evidence; `otlpapp/` ids re-derived
+  under the authenticated namespace; payload prefix must match the
+  classified protocol). **R2** `verify_detection_scope` is a positive
+  allowlist of server-established `source_type` provenance with
+  structured detail parsing — the previously missing `sce-no-prov`
+  submission is now tested; malformed details permanent, store
+  failures retryable. **R3** the collector validates ingest responses
+  before acking (response protocol version not major-skewed;
+  `accepted + rejected` == submitted via checked arithmetic —
+  violations retain the batch); protocol version is verified per
+  record; `InProcessBus::publish` returns `PublishOutcome` so router
+  saturation is a retryable failure, not silent loss. **R4** active
+  `protocol="collector"` identities are globally unique (schema v5
+  partial unique indexes + provisioning checks + authorization
+  fail-closed on ambiguous rows; rotation keeps one `binding_id`).
+  Cache epoch is captured before the store read and bumped before
+  audit persistence; indexed credential lookup verified via
+  `EXPLAIN QUERY PLAN`. Verified:
+  `tests/bn021g_collector_trust_foundation.rs` **31/31** + 16/16
+  ingest drain tests (scripted-core contract: consistent batch,
+  accounting mismatch, impossible counts, version skew, bus
+  saturation, replay) + lib 299 pass/5 documented BN-019-B6 baseline
+  failures + 110/110 BN-021b–f/BN-022/syslog/snmp/otlp/sflow
+  regressions.
 - **BN-021g-2 first verified original-source projection:** narrow OTLP
   case via direct authenticated producer identity or explicitly
   authorized attestation; no arbitrary remote-peer ownership inference.

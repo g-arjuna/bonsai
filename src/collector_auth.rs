@@ -229,10 +229,7 @@ impl CollectorAuthz {
     /// Fail-closed attestation gate applied before ANY binding lookup.
     /// A serialized/restored principal has a fingerprint but no live
     /// transport attestation and must never authorize anything.
-    fn require_attested(
-        &self,
-        principal: &VerifiedIngressPrincipal,
-    ) -> Result<String, Status> {
+    fn require_attested(&self, principal: &VerifiedIngressPrincipal) -> Result<String, Status> {
         if !principal.is_transport_attested() {
             metrics::counter!("bonsai_collector_authz_total", "result" => "unattested_denied")
                 .increment(1);
@@ -264,13 +261,23 @@ impl CollectorAuthz {
         cache
             .get(&(fp.to_string(), subject.to_string()))
             .and_then(|(decision, at, entry_epoch)| {
-                (at.elapsed() < AUTHZ_CACHE_TTL && *entry_epoch == epoch)
-                    .then(|| decision.clone())
+                (at.elapsed() < AUTHZ_CACHE_TTL && *entry_epoch == epoch).then(|| decision.clone())
             })
     }
 
-    fn store_decision(&self, fp: &str, subject: &str, decision: Option<CachedDecision>) {
-        let epoch = self.authz_epoch();
+    /// Store a decision stamped with `epoch` — the authorization epoch
+    /// captured BEFORE the backing store was read. If a binding
+    /// mutation lands between the epoch capture and this store, the
+    /// entry is born stale (its epoch no longer matches) and the next
+    /// check re-reads — a lookup begun before revocation can never
+    /// cache an obsolete decision under the new epoch.
+    fn store_decision(
+        &self,
+        fp: &str,
+        subject: &str,
+        decision: Option<CachedDecision>,
+        epoch: u64,
+    ) {
         let mut cache = self.cache.lock().unwrap();
         if cache.len() >= AUTHZ_CACHE_CAPACITY {
             // Bounded clear: a flood of distinct (credential, subject)
@@ -312,6 +319,9 @@ impl CollectorAuthz {
             };
         }
 
+        // Capture the epoch BEFORE the store read so a concurrent
+        // mutation cannot stamp a stale decision as fresh.
+        let epoch = self.authz_epoch();
         let bindings = self
             .store()?
             .find_credential_bindings(Some(COLLECTOR_PROTOCOL), Some(collector_id), &fp)
@@ -344,19 +354,36 @@ impl CollectorAuthz {
                     matches = active.len(),
                     "collector authorization denied: ambiguous credential bindings"
                 );
-                self.store_decision(&fp, &subject, None);
+                self.store_decision(&fp, &subject, None, epoch);
                 return Err(Status::permission_denied(format!(
                     "collector '{collector_id}' authorization is ambiguous"
                 )));
             }
         };
 
+        // BN-021g R4 global uniqueness: even when THIS credential's
+        // (credential, collector id) pair is unique, the collector
+        // identity must be globally unique — one active binding across
+        // all scopes/credentials — and the credential must map to at
+        // most one collector identity. Ambiguous pre-existing rows
+        // (written before enforcement, or via direct DB edits) fail
+        // closed for EVERY claimant rather than silently picking a row.
+        if grant.is_some() && self.collector_identity_ambiguous(&fp, collector_id)? {
+            metrics::counter!("bonsai_collector_authz_total", "result" => "ambiguous_denied")
+                .increment(1);
+            tracing::warn!(
+                collector_id,
+                fingerprint = %fp,
+                "collector authorization denied: globally ambiguous collector identity"
+            );
+            self.store_decision(&fp, &subject, None, epoch);
+            return Err(Status::permission_denied(format!(
+                "collector '{collector_id}' authorization is ambiguous"
+            )));
+        }
+
         let result = grant.clone();
-        self.store_decision(
-            &fp,
-            &subject,
-            grant.map(CachedDecision::Collector),
-        );
+        self.store_decision(&fp, &subject, grant.map(CachedDecision::Collector), epoch);
         match result {
             Some(g) => {
                 metrics::counter!("bonsai_collector_authz_total", "result" => "allowed")
@@ -371,6 +398,32 @@ impl CollectorAuthz {
             }
             None => Err(self.denied(&fp, collector_id, "denied")),
         }
+    }
+
+    /// BN-021g R4 global uniqueness probe. Returns `Ok(true)` when the
+    /// collector identity is claimed by more than one ACTIVE
+    /// `protocol='collector'` binding across all scopes/credentials, or
+    /// when the credential itself is bound to more than one distinct
+    /// collector identity — both are ambiguous and must fail closed.
+    /// Store failures propagate as retryable `Status::internal`.
+    fn collector_identity_ambiguous(&self, fp: &str, collector_id: &str) -> Result<bool, Status> {
+        let store = self.store()?;
+        let identity_rows = store
+            .collector_bindings_for_exporter(collector_id)
+            .map_err(|e| {
+                tracing::error!(%e, "collector authz identity lookup failed");
+                Status::internal("identity store error")
+            })?;
+        if identity_rows.len() != 1 {
+            return Ok(true);
+        }
+        let cred_rows = store.collector_bindings_for_credential(fp).map_err(|e| {
+            tracing::error!(%e, "collector authz credential lookup failed");
+            Status::internal("identity store error")
+        })?;
+        let distinct_ids: std::collections::HashSet<&str> =
+            cred_rows.iter().map(|b| b.exporter_id.as_str()).collect();
+        Ok(distinct_ids.len() > 1)
     }
 
     fn denied(&self, fp: &str, collector_id: &str, result: &str) -> Status {
@@ -408,6 +461,7 @@ impl CollectorAuthz {
             };
         }
 
+        let epoch = self.authz_epoch();
         let allowed = self
             .store()?
             .credential_binding_permits(Some(protocol), &fp)
@@ -415,7 +469,12 @@ impl CollectorAuthz {
                 tracing::error!(%e, "collector authz capability lookup failed");
                 Status::internal("identity store error")
             })?;
-        self.store_decision(&fp, &subject, allowed.then_some(CachedDecision::Allowed));
+        self.store_decision(
+            &fp,
+            &subject,
+            allowed.then_some(CachedDecision::Allowed),
+            epoch,
+        );
         if allowed {
             metrics::counter!("bonsai_collector_authz_total", "result" => "capability_allowed")
                 .increment(1);
@@ -447,10 +506,13 @@ impl CollectorAuthz {
         if let Some(hit) = self.cached(&fp, &subject) {
             return match hit {
                 Some(CachedDecision::Allowed) => Ok(()),
-                _ => Err(Status::permission_denied("credential has no active binding")),
+                _ => Err(Status::permission_denied(
+                    "credential has no active binding",
+                )),
             };
         }
 
+        let epoch = self.authz_epoch();
         let allowed = self
             .store()?
             .credential_binding_permits(None, &fp)
@@ -458,7 +520,12 @@ impl CollectorAuthz {
                 tracing::error!(%e, "collector authz binding lookup failed");
                 Status::internal("identity store error")
             })?;
-        self.store_decision(&fp, &subject, allowed.then_some(CachedDecision::Allowed));
+        self.store_decision(
+            &fp,
+            &subject,
+            allowed.then_some(CachedDecision::Allowed),
+            epoch,
+        );
         if allowed {
             Ok(())
         } else {
@@ -475,10 +542,7 @@ impl CollectorAuthz {
     /// credential's ACTIVE collector bindings define a collector-scoped
     /// read limited to assigned devices. Exporter-only credentials
     /// (BMP/OTLP/etc.) get neither.
-    pub fn read_scope(
-        &self,
-        principal: &VerifiedIngressPrincipal,
-    ) -> Result<ReadScope, Status> {
+    pub fn read_scope(&self, principal: &VerifiedIngressPrincipal) -> Result<ReadScope, Status> {
         let fp = self.require_attested(principal)?;
 
         if self
@@ -491,15 +555,14 @@ impl CollectorAuthz {
         let subject = "read:scope".to_string();
         if let Some(hit) = self.cached(&fp, &subject) {
             return match hit {
-                Some(CachedDecision::CollectorScope(ids)) => {
-                    Ok(ReadScope::CollectorScoped(ids))
-                }
+                Some(CachedDecision::CollectorScope(ids)) => Ok(ReadScope::CollectorScoped(ids)),
                 _ => Err(Status::permission_denied(
                     "credential has no read capability",
                 )),
             };
         }
 
+        let epoch = self.authz_epoch();
         let bindings = self
             .store()?
             .collector_bindings_for_credential(&fp)
@@ -524,7 +587,7 @@ impl CollectorAuthz {
         ids.sort();
         ids.dedup();
         if ids.is_empty() {
-            self.store_decision(&fp, &subject, None);
+            self.store_decision(&fp, &subject, None, epoch);
             metrics::counter!("bonsai_collector_authz_total", "result" => "read_denied")
                 .increment(1);
             return Err(Status::permission_denied(
@@ -535,6 +598,7 @@ impl CollectorAuthz {
             &fp,
             &subject,
             Some(CachedDecision::CollectorScope(ids.clone())),
+            epoch,
         );
         Ok(ReadScope::CollectorScoped(ids))
     }

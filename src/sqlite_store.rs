@@ -24,7 +24,7 @@ const DB_FILE: &str = CONFIG_DB_FILE_NAME;
 /// Schema version the management service migrates to. Read-only
 /// consumers (routing service) compare against this and fail closed
 /// when the database is older.
-pub const CURRENT_SCHEMA_VERSION: i64 = 4;
+pub const CURRENT_SCHEMA_VERSION: i64 = 5;
 
 /// SQLite config store with versioned schema and audit trail.
 pub struct SqliteStore {
@@ -303,6 +303,51 @@ impl SqliteStore {
             );
 
             db.execute("PRAGMA user_version=4", [])
+                .context("failed to set schema version")?;
+        }
+
+        // Version 5: BN-021g R4 — global collector identity uniqueness.
+        // Additive only: two partial unique indexes enforce, at the
+        // database level (including concurrent provisioning), that an
+        // ACTIVE `protocol='collector'` binding's `exporter_id`
+        // (the collector id) is globally unique across scopes and
+        // credentials, and that each ingress credential pins at most
+        // one collector identity. If pre-existing ambiguous rows make
+        // an index un-creatable we log loudly and continue — runtime
+        // authorization still fails closed on ambiguous rows and
+        // provisioning checks still reject new conflicts.
+        if user_version < 5 {
+            for (name, sql) in [
+                // General credential lookup index: `find_credential_bindings`
+                // and `credential_binding_permits` filter on
+                // `match_ingress_credential` across ALL protocols —
+                // without this they full-scan exporter_bindings.
+                (
+                    "idx_exporter_bindings_credential",
+                    "CREATE INDEX IF NOT EXISTS idx_exporter_bindings_credential ON exporter_bindings(match_ingress_credential)",
+                ),
+                (
+                    "idx_exporter_bindings_collector_identity",
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_exporter_bindings_collector_identity ON exporter_bindings(exporter_id) WHERE protocol = 'collector' AND status = 'active'",
+                ),
+                (
+                    "idx_exporter_bindings_collector_credential",
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_exporter_bindings_collector_credential ON exporter_bindings(match_ingress_credential) WHERE protocol = 'collector' AND status = 'active'",
+                ),
+            ] {
+                if let Err(e) = db.execute_batch(sql) {
+                    tracing::error!(
+                        index = name,
+                        error = %e,
+                        "collector uniqueness index could not be created — \
+                         existing ambiguous exporter_bindings rows detected; \
+                         authorization fails closed on ambiguous rows and \
+                         new conflicting provisioning is still rejected"
+                    );
+                }
+            }
+
+            db.execute("PRAGMA user_version=5", [])
                 .context("failed to set schema version")?;
         }
 
@@ -1243,6 +1288,42 @@ impl SqliteStore {
             }
         }
 
+        // BN-021g R4: `protocol = 'collector'` identity is GLOBAL —
+        // collector ids are not scoped. Enforce across ALL scopes:
+        //   - one active binding per collector id (any credential);
+        //   - one collector identity per ingress credential.
+        // The partial unique indexes (schema v5) make this atomic at
+        // the database level; these checks produce precise errors and
+        // cover databases where index creation was skipped.
+        if stored.protocol == crate::collector_auth::COLLECTOR_PROTOCOL {
+            for other in self.list_exporter_bindings(
+                None,
+                Some(crate::collector_auth::COLLECTOR_PROTOCOL),
+                false,
+            )? {
+                if other.binding_id == stored.binding_id {
+                    continue;
+                }
+                if other.exporter_id == stored.exporter_id {
+                    anyhow::bail!(
+                        "collector identity '{}' is already bound by '{}'",
+                        stored.exporter_id,
+                        other.binding_id
+                    );
+                }
+                if let (Some(new_cred), Some(old_cred)) = (
+                    stored.match_ingress_credential.as_deref(),
+                    other.match_ingress_credential.as_deref(),
+                ) && new_cred == old_cred
+                {
+                    anyhow::bail!(
+                        "credential is already bound to collector identity '{}'",
+                        other.exporter_id
+                    );
+                }
+            }
+        }
+
         let old = existing
             .as_ref()
             .map(|b| serde_json::to_string(b).unwrap_or_default());
@@ -1273,6 +1354,10 @@ impl SqliteStore {
             )?;
         }
 
+        // Invalidate authorization caches BEFORE audit persistence:
+        // a committed binding mutation must invalidate cached
+        // decisions even if the audit write subsequently fails.
+        self.bump_authz_epoch();
         self.audit(
             "exporter_bindings",
             "UPSERT",
@@ -1282,7 +1367,6 @@ impl SqliteStore {
             old.as_deref(),
             Some(&new),
         )?;
-        self.bump_authz_epoch();
 
         Ok(stored)
     }
@@ -1366,7 +1450,11 @@ impl SqliteStore {
             sql.push_str(" AND protocol = ?2");
         }
         if exporter_id.is_some() {
-            sql.push_str(if protocol.is_some() { " AND exporter_id = ?3" } else { " AND exporter_id = ?2" });
+            sql.push_str(if protocol.is_some() {
+                " AND exporter_id = ?3"
+            } else {
+                " AND exporter_id = ?2"
+            });
         }
         sql.push_str(" LIMIT 16");
         let mut stmt = db.prepare(&sql)?;
@@ -1437,6 +1525,25 @@ impl SqliteStore {
             .map_err(|e| anyhow!("failed to collect collector scope bindings: {e}"))
     }
 
+    /// ACTIVE `"collector"` bindings for a collector identity
+    /// (`exporter_id`) across ALL scopes and credentials — the global
+    /// uniqueness read used by authorization to fail closed on
+    /// ambiguous pre-existing rows (BN-021g R4). Returns full rows so
+    /// the caller can count distinct credentials, never `SELECT
+    /// DISTINCT` (which would hide the ambiguity).
+    pub fn collector_bindings_for_exporter(
+        &self,
+        exporter_id: &str,
+    ) -> Result<Vec<crate::telemetry_identity::TrustedBinding>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT binding_id, scope, protocol, exporter_id, device_id, match_transport, match_reported_identity, match_exporter_claim, match_observation_domain, match_ingress_credential, provenance, status, created_at_ns, updated_at_ns, created_by, updated_by FROM exporter_bindings WHERE status = 'active' AND protocol = 'collector' AND exporter_id = ?1 LIMIT 1024",
+        )?;
+        let rows = stmt.query_map(params![exporter_id], |row| binding_from_row(row))?;
+        rows.collect::<Result<Vec<crate::telemetry_identity::TrustedBinding>, _>>()
+            .map_err(|e| anyhow!("failed to collect collector identity bindings: {e}"))
+    }
+
     /// Explicitly invalidate a binding. Revocation is the only supported
     /// "unbind" operation — bindings are never silently deleted, keeping
     /// the audit trail intact.
@@ -1468,6 +1575,9 @@ impl SqliteStore {
             )?;
         }
 
+        // Invalidate authorization caches BEFORE audit persistence —
+        // see `upsert_exporter_binding`.
+        self.bump_authz_epoch();
         self.audit(
             "exporter_bindings",
             "REVOKE",
@@ -1477,7 +1587,6 @@ impl SqliteStore {
             Some(&serde_json::to_string(&existing).unwrap_or_default()),
             Some(&serde_json::to_string(&updated).unwrap_or_default()),
         )?;
-        self.bump_authz_epoch();
 
         Ok(updated)
     }

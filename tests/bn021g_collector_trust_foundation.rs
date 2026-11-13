@@ -25,8 +25,7 @@ use bonsai::sidecar_registry::SidecarRegistry;
 use bonsai::sqlite_store::SqliteStore;
 use bonsai::store::BonsaiStore;
 use bonsai::telemetry_identity::{
-    BindingProvenance, BindingStatus, CanonicalDevice, TrustedBinding,
-    VerifiedIngressPrincipal,
+    BindingProvenance, BindingStatus, CanonicalDevice, TrustedBinding, VerifiedIngressPrincipal,
 };
 use rcgen::{CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
 use sha2::{Digest, Sha256};
@@ -99,11 +98,7 @@ struct Lab {
 
 /// Start the core service. `use_tls` selects the mTLS listener;
 /// `policy` selects the runtime auth policy (G5).
-async fn start_lab_mode(
-    pki: Option<&Pki>,
-    use_tls: bool,
-    policy: AuthPolicy,
-) -> Lab {
+async fn start_lab_mode(pki: Option<&Pki>, use_tls: bool, policy: AuthPolicy) -> Lab {
     // rustls cannot auto-pick a CryptoProvider when multiple providers
     // are compiled in; install ring explicitly (idempotent across tests).
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -346,6 +341,56 @@ fn bind_capability(sqlite: &SqliteStore, protocol: &str, fp: &str) -> String {
         .binding_id
 }
 
+/// Insert an ambiguous collector binding row directly via SQL —
+/// bypassing BOTH provisioning checks and the schema-v5 uniqueness
+/// indexes — to simulate pre-existing ambiguous rows that runtime
+/// authorization must fail closed on (BN-021g R4).
+fn insert_raw_collector_binding(lab: &Lab, collector_id: &str, fp: &str, scope: &str) {
+    let db_path = lab
+        ._dir
+        .path()
+        .join(bonsai::sqlite_store::CONFIG_DB_FILE_NAME);
+    let conn = rusqlite::Connection::open(db_path).unwrap();
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_exporter_bindings_collector_identity;
+         DROP INDEX IF EXISTS idx_exporter_bindings_collector_credential;
+         DROP INDEX IF EXISTS idx_exporter_bindings_credential;",
+    )
+    .unwrap();
+    let dev = lab
+        .sqlite
+        .upsert_canonical_device(
+            &CanonicalDevice {
+                device_id: String::new(),
+                address: format!("collector:{collector_id}"),
+                site: Some(scope.to_string()),
+                hostname: None,
+                created_at_ns: 0,
+                updated_at_ns: 0,
+                created_by: String::new(),
+                updated_by: String::new(),
+            },
+            "test",
+        )
+        .unwrap();
+    conn.execute(
+        "INSERT INTO exporter_bindings (binding_id, scope, protocol, exporter_id, \
+         device_id, match_transport, match_reported_identity, match_exporter_claim, \
+         match_observation_domain, match_ingress_credential, provenance, status, \
+         created_at_ns, updated_at_ns, created_by, updated_by) \
+         VALUES (?1, ?2, 'collector', ?3, ?4, NULL, NULL, NULL, NULL, ?5, \
+         'operator_provisioned', 'active', 0, 0, 'test', 'test')",
+        rusqlite::params![
+            SqliteStore::new_binding_id(),
+            scope,
+            collector_id,
+            dev.device_id,
+            fp
+        ],
+    )
+    .unwrap();
+}
+
 fn target(
     address: &str,
     collector_id: Option<&str>,
@@ -386,12 +431,7 @@ fn add_device(registry: &ApiRegistry, t: TargetConfig) {
         .add_device_with_audit(t.clone(), "test", "test_add")
         .unwrap();
     registry
-        .assign_device_with_audit(
-            &t.address,
-            t.collector_id.clone(),
-            "test",
-            "test_assign",
-        )
+        .assign_device_with_audit(&t.address, t.collector_id.clone(), "test", "test_assign")
         .unwrap();
 }
 
@@ -628,7 +668,9 @@ async fn authorized_collector_ingests_and_impersonation_is_rejected() {
     // get_leader and registration all succeed.
     let mut client_a = mtls_client(&lab, &pki, &cert_a).await;
     assert_eq!(
-        ingest_one(&mut client_a, "site-a", "10.0.0.1", "state/foo").await.unwrap(),
+        ingest_one(&mut client_a, "site-a", "10.0.0.1", "state/foo")
+            .await
+            .unwrap(),
         1
     );
     let hb = client_a
@@ -671,7 +713,9 @@ async fn authorized_collector_ingests_and_impersonation_is_rejected() {
     // the NAT-shared-collector case F10).
     let mut client_b = mtls_client(&lab, &pki, &cert_b).await;
     assert_eq!(
-        ingest_one(&mut client_b, "site-b", "10.0.0.2", "state/foo").await.unwrap(),
+        ingest_one(&mut client_b, "site-b", "10.0.0.2", "state/foo")
+            .await
+            .unwrap(),
         1
     );
 }
@@ -750,8 +794,13 @@ async fn forged_payload_principal_is_inert() {
         );
         match tokio::time::timeout(remaining, lab.bus_rx.recv()).await {
             Ok(Ok(u)) if u.path == "streaming/otlp/metrics" => {
-                assert_eq!(u.value["identity_status"], "resolved"); // claim preserved as data
-                assert!(u.value["device_id"].is_string());
+                // R1: the forged "resolved" claim is demoted — the
+                // EFFECTIVE identity is provisional and the original
+                // claim survives only as inert `claimed_*` evidence.
+                assert_eq!(u.value["identity_status"], "provisional");
+                assert_eq!(u.value["claimed_identity_status"], "resolved");
+                assert!(u.value["device_id"].is_null());
+                assert_eq!(u.value["claimed_device_id"], "dev-forged");
                 break;
             }
             Ok(Ok(_)) => continue,
@@ -777,7 +826,9 @@ async fn revocation_stops_ingest_within_ttl() {
 
     let mut client = mtls_client(&lab, &pki, &cert_a).await;
     assert_eq!(
-        ingest_one(&mut client, "site-a", "10.0.0.1", "state/foo").await.unwrap(),
+        ingest_one(&mut client, "site-a", "10.0.0.1", "state/foo")
+            .await
+            .unwrap(),
         1
     );
 
@@ -809,7 +860,9 @@ async fn credential_rotation_repins_without_impersonation() {
     // Old credential works before rotation.
     let mut old_client = mtls_client(&lab, &pki, &cert_old).await;
     assert_eq!(
-        ingest_one(&mut old_client, "site-a", "10.0.0.1", "state/foo").await.unwrap(),
+        ingest_one(&mut old_client, "site-a", "10.0.0.1", "state/foo")
+            .await
+            .unwrap(),
         1
     );
 
@@ -828,7 +881,9 @@ async fn credential_rotation_repins_without_impersonation() {
     // New credential authorized for the same collector identity.
     let mut new_client = mtls_client(&lab, &pki, &cert_new).await;
     assert_eq!(
-        ingest_one(&mut new_client, "site-a", "10.0.0.1", "state/foo").await.unwrap(),
+        ingest_one(&mut new_client, "site-a", "10.0.0.1", "state/foo")
+            .await
+            .unwrap(),
         1
     );
     // Old credential now denied — no implicit trust carry-over.
@@ -858,7 +913,9 @@ async fn replayed_records_cannot_mint_authority() {
     // And the rightful collector still works afterwards.
     let mut client = mtls_client(&lab, &pki, &cert_a).await;
     assert_eq!(
-        ingest_one(&mut client, "site-a", "10.0.0.1", "state/foo").await.unwrap(),
+        ingest_one(&mut client, "site-a", "10.0.0.1", "state/foo")
+            .await
+            .unwrap(),
         1
     );
 }
@@ -885,7 +942,14 @@ async fn canonical_telemetry_requires_assigned_device_and_inventory_metadata() {
     );
     add_device(
         &lab.registry,
-        target("10.0.0.2", Some("site-b"), "dc-b", "spine", "rtr-b", "junos"),
+        target(
+            "10.0.0.2",
+            Some("site-b"),
+            "dc-b",
+            "spine",
+            "rtr-b",
+            "junos",
+        ),
     );
 
     let mut client_a = mtls_client(&lab, &pki, &cert_a).await;
@@ -1019,13 +1083,13 @@ async fn provisional_payloads_cannot_gain_canonical_authority() {
         serde_json::json!({"in-octets": 1}),
     );
 
-    let accepted = ingest_updates(
-        &mut client,
-        vec![flow, relabel_unassigned],
-    )
-    .await
-    .unwrap();
-    assert_eq!(accepted, 1, "provisional flow passes; relabeled canonical path denied");
+    let accepted = ingest_updates(&mut client, vec![flow, relabel_unassigned])
+        .await
+        .unwrap();
+    assert_eq!(
+        accepted, 1,
+        "provisional flow passes; relabeled canonical path denied"
+    );
 
     // The flow stayed provisional: no canonical Interface/Device state
     // was created for the relabeled target, and the flow evidence is
@@ -1087,7 +1151,14 @@ async fn detection_ingest_enforces_capability_scope_and_provenance() {
     );
     add_device(
         &lab.registry,
-        target("10.0.0.2", Some("site-b"), "dc-b", "spine", "rtr-b", "junos"),
+        target(
+            "10.0.0.2",
+            Some("site-b"),
+            "dc-b",
+            "spine",
+            "rtr-b",
+            "junos",
+        ),
     );
     // Canonical graph state: devices + state events.
     prepopulate_device(&lab.graph, "10.0.0.1");
@@ -1138,8 +1209,7 @@ async fn detection_ingest_enforces_capability_scope_and_provenance() {
     assert_eq!(accepted, 0, "all unauthorized detections must be dropped");
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert!(
-        graph_query(&lab.graph, "MATCH (e:DetectionEvent) RETURN e.id")
-            .is_empty(),
+        graph_query(&lab.graph, "MATCH (e:DetectionEvent) RETURN e.id").is_empty(),
         "no DetectionEvent may be written by unauthorized submissions"
     );
 
@@ -1204,7 +1274,14 @@ async fn rpc_capability_matrix_scopes_reads_and_denies_exporters() {
     );
     add_device(
         &lab.registry,
-        target("10.0.0.2", Some("site-b"), "dc-b", "spine", "rtr-b", "junos"),
+        target(
+            "10.0.0.2",
+            Some("site-b"),
+            "dc-b",
+            "spine",
+            "rtr-b",
+            "junos",
+        ),
     );
     prepopulate_device(&lab.graph, "10.0.0.1");
     prepopulate_device(&lab.graph, "10.0.0.2");
@@ -1220,7 +1297,12 @@ async fn rpc_capability_matrix_scopes_reads_and_denies_exporters() {
         .get_devices(Request::new(GetDevicesRequest {}))
         .await
         .expect("collector-scoped get_devices");
-    let addrs: Vec<String> = resp.into_inner().devices.iter().map(|d| d.address.clone()).collect();
+    let addrs: Vec<String> = resp
+        .into_inner()
+        .devices
+        .iter()
+        .map(|d| d.address.clone())
+        .collect();
     assert_eq!(addrs, vec!["10.0.0.1".to_string()], "scope leak: {addrs:?}");
     // list_managed_devices likewise.
     let resp = col
@@ -1331,9 +1413,7 @@ async fn rpc_capability_matrix_scopes_reads_and_denies_exporters() {
         .unwrap_err();
     assert_eq!(err.code(), Code::PermissionDenied);
     let err = operator
-        .add_device(Request::new(AddDeviceRequest {
-            device: None,
-        }))
+        .add_device(Request::new(AddDeviceRequest { device: None }))
         .await
         .unwrap_err();
     assert_eq!(err.code(), Code::PermissionDenied);
@@ -1448,7 +1528,10 @@ async fn reconnect_generation_fencing_preserves_new_session() {
         .unwrap()
         .into_inner();
     tokio::pin!(s1);
-    assert!(s1.message().await.unwrap().is_some(), "session 1 initial sync");
+    assert!(
+        s1.message().await.unwrap().is_some(),
+        "session 1 initial sync"
+    );
 
     // Session 2 supersedes session 1 for the same collector id.
     let mut client2 = mtls_client(&lab, &pki, &cert_a).await;
@@ -1458,7 +1541,10 @@ async fn reconnect_generation_fencing_preserves_new_session() {
         .unwrap()
         .into_inner();
     tokio::pin!(s2);
-    assert!(s2.message().await.unwrap().is_some(), "session 2 initial sync");
+    assert!(
+        s2.message().await.unwrap().is_some(),
+        "session 2 initial sync"
+    );
 
     // Session 1's sender was replaced → its stream ends → its fenced
     // unregister must be a no-op.
@@ -1544,7 +1630,10 @@ async fn missing_transport_principal_fails_closed() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err.code(), Code::Unauthenticated | Code::PermissionDenied | Code::Unknown | Code::Unavailable),
+        matches!(
+            err.code(),
+            Code::Unauthenticated | Code::PermissionDenied | Code::Unknown | Code::Unavailable
+        ),
         "missing principal must fail: {err}"
     );
     let err = client
@@ -1552,7 +1641,10 @@ async fn missing_transport_principal_fails_closed() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err.code(), Code::Unauthenticated | Code::PermissionDenied | Code::Unknown | Code::Unavailable),
+        matches!(
+            err.code(),
+            Code::Unauthenticated | Code::PermissionDenied | Code::Unknown | Code::Unavailable
+        ),
         "missing principal read must fail: {err}"
     );
 }
@@ -1620,7 +1712,10 @@ fn unattested_serialized_principal_is_denied() {
     assert!(!principal.is_transport_attested());
 
     assert_eq!(
-        authz.authorize_collector(&principal, "site-a").unwrap_err().code(),
+        authz
+            .authorize_collector(&principal, "site-a")
+            .unwrap_err()
+            .code(),
         Code::PermissionDenied
     );
     assert_eq!(
@@ -1647,9 +1742,12 @@ async fn ambiguous_binding_fails_closed() {
     let pki = make_pki();
     let lab = start_lab(&pki).await;
     let cert_a = issue_leaf(&pki, "collector-a", false);
-    // Same collector id + same credential under TWO scopes.
+    // Same collector id + same credential under TWO scopes. Provisioning
+    // now rejects this (R4 global uniqueness), so the ambiguous rows are
+    // inserted directly to prove runtime authorization still fails
+    // closed on pre-existing bad data.
     bind_collector_scoped(&lab.sqlite, "site-x", &cert_a.fingerprint, "dc-a");
-    bind_collector_scoped(&lab.sqlite, "site-x", &cert_a.fingerprint, "dc-b");
+    insert_raw_collector_binding(&lab, "site-x", &cert_a.fingerprint, "dc-b");
     add_device(
         &lab.registry,
         target("10.0.0.1", Some("site-x"), "dc-a", "leaf", "rtr-a", "ios"),
@@ -1769,7 +1867,14 @@ async fn classified_authority_gates_canonical_writers_on_streaming_paths() {
     );
     add_device(
         &lab.registry,
-        target("10.0.0.2", Some("site-b"), "dc-b", "spine", "rtr-b", "junos"),
+        target(
+            "10.0.0.2",
+            Some("site-b"),
+            "dc-b",
+            "spine",
+            "rtr-b",
+            "junos",
+        ),
     );
     let mut client = mtls_client(&lab, &pki, &cert_a).await;
 
@@ -1921,7 +2026,9 @@ async fn detection_stream_revocation_stops_authoring_mid_stream() {
         let mut client = mtls_client(&lab, &pki, &cert_a).await;
         tokio::spawn(async move {
             client
-                .detection_ingest(Request::new(tokio_stream::wrappers::ReceiverStream::new(rx)))
+                .detection_ingest(Request::new(tokio_stream::wrappers::ReceiverStream::new(
+                    rx,
+                )))
                 .await
         })
     };
@@ -1987,7 +2094,9 @@ async fn detection_stream_revocation_stops_authoring_mid_stream() {
     // Ordinary collector telemetry on the SAME credential still works.
     let mut tel = mtls_client(&lab, &pki, &cert_a).await;
     assert_eq!(
-        ingest_one(&mut tel, "site-a", "10.0.0.1", "state/foo").await.unwrap(),
+        ingest_one(&mut tel, "site-a", "10.0.0.1", "state/foo")
+            .await
+            .unwrap(),
         1,
         "collector ingest authority must survive detection-capability revocation"
     );
@@ -2018,17 +2127,51 @@ async fn detection_ingest_requires_verified_nonprovisional_evidence() {
     );
     add_device(
         &lab.registry,
-        target("10.0.0.2", Some("site-b"), "dc-b", "spine", "rtr-b", "junos"),
+        target(
+            "10.0.0.2",
+            Some("site-b"),
+            "dc-b",
+            "spine",
+            "rtr-b",
+            "junos",
+        ),
     );
     prepopulate_device(&lab.graph, "10.0.0.1");
     prepopulate_device(&lab.graph, "10.0.0.2");
     prepopulate_event(&lab.graph, "sce-a-1", "10.0.0.1", "{}", "gnmi");
+    // Real cross-device event: exists, canonical provenance, but belongs
+    // to collector B's device — must be denied for device 10.0.0.1.
+    prepopulate_event(&lab.graph, "sce-b-1", "10.0.0.2", "{}", "gnmi");
     // Provisional-source event that nonetheless carries a canonical-
     // looking device_address and a clean detail — only the
     // server-owned source_type marks it untrusted.
     prepopulate_event(&lab.graph, "sce-prov-canon", "10.0.0.1", "{}", "syslog");
     // Canonical-address event with NO server-owned provenance at all.
     prepopulate_event(&lab.graph, "sce-no-prov", "10.0.0.1", "{}", "");
+    // Unknown source_type — positive allowlist must fail closed.
+    prepopulate_event(
+        &lab.graph,
+        "sce-unknown-src",
+        "10.0.0.1",
+        "{}",
+        "mystery-proto",
+    );
+    // Malformed (non-JSON) event detail — cannot prove provenance.
+    prepopulate_event(
+        &lab.graph,
+        "sce-bad-detail",
+        "10.0.0.1",
+        "{not json",
+        "gnmi",
+    );
+    // Canonical source_type but detail asserts provisional identity.
+    prepopulate_event(
+        &lab.graph,
+        "sce-prov-detail",
+        "10.0.0.1",
+        "{\"identity_status\":\"provisional\"}",
+        "gnmi",
+    );
 
     let mut client = mtls_client(&lab, &pki, &cert_a).await;
     let accepted = ingest_detections(
@@ -2069,13 +2212,53 @@ async fn detection_ingest_requires_verified_nonprovisional_evidence() {
                 "sce-prov-canon",
                 vec!["sce-prov-canon".to_string()],
             ),
-            // Cross-device reference.
+            // Event with NO server-owned provenance (empty source_type).
+            detection_update(
+                "site-a",
+                "10.0.0.1",
+                "high",
+                "sce-no-prov",
+                vec!["sce-no-prov".to_string()],
+            ),
+            // Unknown source_type — not on the eligible allowlist.
+            detection_update(
+                "site-a",
+                "10.0.0.1",
+                "high",
+                "sce-unknown-src",
+                vec!["sce-unknown-src".to_string()],
+            ),
+            // Malformed event detail cannot prove non-provisional status.
+            detection_update(
+                "site-a",
+                "10.0.0.1",
+                "high",
+                "sce-bad-detail",
+                vec!["sce-bad-detail".to_string()],
+            ),
+            // Canonical source_type but detail asserts provisional identity.
+            detection_update(
+                "site-a",
+                "10.0.0.1",
+                "high",
+                "sce-prov-detail",
+                vec!["sce-prov-detail".to_string()],
+            ),
+            // Cross-device reference: sce-b-1 exists on 10.0.0.2.
             detection_update(
                 "site-a",
                 "10.0.0.1",
                 "high",
                 "sce-b-1",
                 vec!["sce-b-1".to_string()],
+            ),
+            // Fabricated reference: event does not exist at all.
+            detection_update(
+                "site-a",
+                "10.0.0.1",
+                "high",
+                "sce-nonexistent",
+                vec!["sce-nonexistent".to_string()],
             ),
         ],
     )
@@ -2128,9 +2311,10 @@ async fn ambiguous_collector_binding_denies_scoped_reads() {
     let pki = make_pki();
     let lab = start_lab(&pki).await;
     let cert_a = issue_leaf(&pki, "collector-a", false);
-    // Same collector id + same credential under TWO scopes.
+    // Same collector id + same credential under TWO scopes — inserted
+    // raw because provisioning now rejects the duplicate (R4).
     bind_collector_scoped(&lab.sqlite, "site-a", &cert_a.fingerprint, "dc-a");
-    bind_collector_scoped(&lab.sqlite, "site-a", &cert_a.fingerprint, "dc-b");
+    insert_raw_collector_binding(&lab, "site-a", &cert_a.fingerprint, "dc-b");
     add_device(
         &lab.registry,
         target("10.0.0.1", Some("site-a"), "dc-a", "leaf", "rtr-a", "ios"),
@@ -2194,7 +2378,9 @@ async fn credential_cannot_bind_multiple_collector_identities() {
         updated_by: String::new(),
     };
     assert!(
-        lab.sqlite.upsert_exporter_binding(&binding, "test").is_err(),
+        lab.sqlite
+            .upsert_exporter_binding(&binding, "test")
+            .is_err(),
         "one credential must not be provisioned for two collector identities"
     );
 }
@@ -2262,4 +2448,639 @@ async fn assignment_stream_disconnect_still_cleans_up_session() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// R1 — provisional source identity is server-normalized at ingest
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn netflow_update(
+    collector_id: &str,
+    target_key: &str,
+    value: serde_json::Value,
+) -> TelemetryIngestUpdate {
+    TelemetryIngestUpdate {
+        collector_id: collector_id.to_string(),
+        target: target_key.to_string(),
+        vendor: String::new(),
+        hostname: String::new(),
+        role: String::new(),
+        site: String::new(),
+        timestamp_ns: 1_700_000_000_000_000_000,
+        path: "streaming/netflow/flow".to_string(),
+        value_msgpack: rmp_serde::to_vec(&value).unwrap(),
+        protocol_version: PROTOCOL_VERSION,
+        interface_summary: None,
+    }
+}
+
+fn flow_value(extra: serde_json::Value) -> serde_json::Value {
+    let mut v = serde_json::json!({
+        "exporter_address": "203.0.113.50",
+        "src_address": "10.1.0.1",
+        "src_port": 40000,
+        "dst_address": "10.1.0.2",
+        "dst_port": 443,
+        "protocol": "tcp",
+        "bytes_per_sec": 1.0,
+        "packets_per_sec": 1.0
+    });
+    if let (Some(dst), Some(src)) = (v.as_object_mut(), extra.as_object()) {
+        for (k, val) in src {
+            dst.insert(k.clone(), val.clone());
+        }
+    }
+    v
+}
+
+/// R1: for EVERY provisional observation the ingest boundary pins the
+/// effective identity fields server-side. Missing, null, numeric or
+/// malformed producer `exporter_id`/`source_key` claims can never make
+/// `classify()` fall back to the untrusted `exporter_address`; foreign
+/// collector namespaces are rewritten to the authenticated collector;
+/// protocol prefixes must match the classified protocol; and forged
+/// "resolved"/canonical claims remain provisional evidence only.
+#[tokio::test]
+async fn provisional_source_identity_is_server_normalized() {
+    let pki = make_pki();
+    let lab = start_lab(&pki).await;
+    let cert_a = issue_leaf(&pki, "collector-a", false);
+    let cert_c = issue_leaf(&pki, "collector-c", false);
+    bind_collector(&lab.sqlite, "site-a", &cert_a.fingerprint);
+    // A collector id containing namespace delimiters must be
+    // percent-encoded into the composite key unambiguously. It gets its
+    // own credential — one credential authorizes one collector identity.
+    bind_collector(&lab.sqlite, "site/delimited%", &cert_c.fingerprint);
+
+    let mut client_a = mtls_client(&lab, &pki, &cert_a).await;
+    let mut client_c = mtls_client(&lab, &pki, &cert_c).await;
+
+    // Case batch for collector site-a (all target the flowsrc family).
+    let updates = vec![
+        // 1+3. Missing exporter_id AND forged exporter_address AND
+        //    forged resolved/canonical claims, foreign namespace:
+        //    effective identity must be the normalized site-a key.
+        netflow_update(
+            "site-a",
+            "flowsrc/site-b/nf9/10.9.0.9:49152/s1",
+            flow_value(serde_json::json!({
+                "exporter_address": "6.6.6.6",
+                "identity_status": "resolved",
+                "authority": "canonical_device",
+                "canonical_exporter_id": "10.9.9.9",
+                "identity_resolution": {"status": "resolved", "device_id": "dev-x"},
+                "device_id": "dev-x",
+                "collector_id": "site-b"
+            })),
+        ),
+        // 2. Null exporter_id.
+        netflow_update(
+            "site-a",
+            "flowsrc/site-b/nf9/10.9.0.10:49152/s2",
+            flow_value(serde_json::json!({"exporter_id": null, "src_port": 40001})),
+        ),
+        // 2b. Non-string (numeric) exporter_id.
+        netflow_update(
+            "site-a",
+            "flowsrc/site-b/nf9/10.9.0.11:49152/s3",
+            flow_value(serde_json::json!({"exporter_id": 12345, "src_port": 40002})),
+        ),
+        // 5. Wrong protocol prefix on the TARGET — must be rejected,
+        //    not silently rewritten into the flow family.
+        netflow_update(
+            "site-a",
+            "sflowsrc/site-a/agent1/sub0",
+            flow_value(serde_json::json!({"src_port": 40003})),
+        ),
+        // Payload exporter_id under the WRONG protocol family collapses
+        // to the normalized target key rather than surviving as a
+        // foreign-namespace identity.
+        netflow_update(
+            "site-a",
+            "flowsrc/site-b/nf9/10.9.0.12:49152/s4",
+            flow_value(serde_json::json!({
+                "exporter_id": "sflowsrc/site-b/evil/agent",
+                "src_port": 40004
+            })),
+        ),
+    ];
+    let resp = ingest_updates_full(&mut client_a, updates).await.unwrap();
+    assert_eq!(
+        resp.accepted, 4,
+        "four valid provisional records accepted: {resp:?}"
+    );
+    assert_eq!(resp.rejected, 1, "wrong-protocol target rejected: {resp:?}");
+
+    // Delimited collector id: percent-encoded namespace, no raw
+    // delimiter ambiguity.
+    let resp_c = ingest_updates_full(
+        &mut client_c,
+        vec![netflow_update(
+            "site/delimited%",
+            "flowsrc/foreign/nf9/10.9.0.20:49152/s9",
+            flow_value(serde_json::json!({"src_port": 40010})),
+        )],
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp_c.accepted, 1, "{resp_c:?}");
+
+    // ── Graph assertions ────────────────────────────────────────────
+    // Effective AppFlow identity = normalized site-a source keys; the
+    // forged exporter_address never became identity.
+    let expected_keys = [
+        "flowsrc/site-a/nf9/10.9.0.9:49152/s1",
+        "flowsrc/site-a/nf9/10.9.0.10:49152/s2",
+        "flowsrc/site-a/nf9/10.9.0.11:49152/s3",
+        "flowsrc/site-a/nf9/10.9.0.12:49152/s4",
+    ];
+    for key in expected_keys {
+        let row = wait_for_graph_row(
+            &lab.graph,
+            &format!(
+                "MATCH (f:AppFlow) WHERE f.exporter_id = '{}' RETURN f.identity_status",
+                key
+            ),
+            &format!("AppFlow for {key}"),
+        )
+        .await;
+        assert_eq!(
+            row[0], "provisional",
+            "forged resolved claims must not upgrade identity: {key}"
+        );
+    }
+    // The wrong-prefix payload exporter_id did NOT survive: its flow is
+    // keyed by the normalized target key, not 'sflowsrc/...evil...'.
+    assert!(
+        graph_query(
+            &lab.graph,
+            "MATCH (f:AppFlow) WHERE f.exporter_id CONTAINS 'evil' RETURN f.id"
+        )
+        .is_empty(),
+        "foreign-protocol payload identity must not persist"
+    );
+    // Delimited collector id produced an unambiguous encoded key.
+    let delim = wait_for_graph_row(
+        &lab.graph,
+        "MATCH (f:AppFlow) WHERE f.exporter_id STARTS WITH 'flowsrc/' \
+         AND f.exporter_id CONTAINS 'delimited' RETURN f.exporter_id",
+        "delimited-collector AppFlow",
+    )
+    .await;
+    assert_eq!(
+        delim[0], "flowsrc/site%2Fdelimited%25/nf9/10.9.0.20:49152/s9",
+        "collector id must be percent-encoded into the namespace segment"
+    );
+    // AppFlow separation: each normalized source key is a distinct
+    // flow identity (4 site-a keys + 1 delimited key).
+    let count = graph_query(
+        &lab.graph,
+        "MATCH (f:AppFlow) WHERE f.exporter_id STARTS WITH 'flowsrc/' RETURN count(f)",
+    );
+    assert_eq!(
+        count[0][0], "5",
+        "distinct normalized sources stay distinct"
+    );
+    // No canonical graph changes: no Device minted for the forged
+    // exporter_address or canonical_exporter_id claims.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for addr in ["6.6.6.6", "10.9.9.9", "203.0.113.50"] {
+        assert!(
+            graph_query_one(
+                &lab.graph,
+                &format!("MATCH (d:Device {{address: '{addr}'}}) RETURN d.address")
+            )
+            .is_none(),
+            "provisional evidence must not mint canonical Device {addr}"
+        );
+    }
+}
+
+/// R1 (OTLP): `provisional_app_id` embeds the source key — a forged app
+/// id cannot carry a foreign collector namespace; the service-name
+/// claim is preserved under the normalized key.
+#[tokio::test]
+async fn otlp_provisional_app_id_is_renamespaced() {
+    let pki = make_pki();
+    let lab = start_lab(&pki).await;
+    let cert_a = issue_leaf(&pki, "collector-a", false);
+    bind_collector(&lab.sqlite, "site-a", &cert_a.fingerprint);
+    let mut client = mtls_client(&lab, &pki, &cert_a).await;
+
+    let update = TelemetryIngestUpdate {
+        collector_id: "site-a".to_string(),
+        target: "otlpsrc/site-b/http/10.4.0.5:4317".to_string(),
+        vendor: String::new(),
+        hostname: String::new(),
+        role: String::new(),
+        site: String::new(),
+        timestamp_ns: 1_700_000_000_000_000_000,
+        path: "streaming/otlp/span".to_string(),
+        value_msgpack: rmp_serde::to_vec(&serde_json::json!({
+            "service_name": "payments-svc",
+            "peer_address": "10.4.0.5",
+            "span_name": "checkout",
+            "provisional_app_id": "otlpapp/otlpsrc/site-b/http/10.4.0.5:4317/payments-svc",
+            "identity_status": "resolved"
+        }))
+        .unwrap(),
+        protocol_version: PROTOCOL_VERSION,
+        interface_summary: None,
+    };
+    let resp = ingest_updates_full(&mut client, vec![update])
+        .await
+        .unwrap();
+    assert_eq!(resp.accepted, 1, "{resp:?}");
+
+    let row = wait_for_graph_row(
+        &lab.graph,
+        "MATCH (e:StateChangeEvent) WHERE e.device_address = 'otlpsrc/site-a/http/10.4.0.5:4317' RETURN e.detail",
+        "normalized otlp provisional event",
+    )
+    .await;
+    // Parse the event detail structurally: EFFECTIVE identity fields
+    // must carry the authenticated namespace, while `claimed_*`
+    // evidence keys legitimately preserve the forged producer claims.
+    let detail: serde_json::Value =
+        serde_json::from_str(&row[0]).expect("event detail must be JSON");
+    assert_eq!(
+        detail["provisional_app_id"],
+        "otlpapp/otlpsrc/site-a/http/10.4.0.5:4317/payments-svc",
+        "app id must be re-derived under the authenticated namespace: {}",
+        row[0]
+    );
+    assert_eq!(
+        detail["source_key"], "otlpsrc/site-a/http/10.4.0.5:4317",
+        "effective source key must be namespaced: {}",
+        row[0]
+    );
+    assert_eq!(
+        detail["exporter_id"], "otlpsrc/site-a/http/10.4.0.5:4317",
+        "effective exporter id must be namespaced: {}",
+        row[0]
+    );
+    assert_eq!(
+        detail["identity_status"], "provisional",
+        "forged resolved claim must stay provisional: {}",
+        row[0]
+    );
+    assert_eq!(
+        detail["claimed_identity_status"], "resolved",
+        "original claim preserved as evidence: {}",
+        row[0]
+    );
+    assert!(
+        detail["claimed_provisional_app_id"]
+            .as_str()
+            .is_some_and(|s| s.contains("otlpsrc/site-b")),
+        "forged app id preserved under claimed_* evidence: {}",
+        row[0]
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// R3 — per-record protocol version verification
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// R3: protocol compatibility is verified on EVERY record, not just the
+/// first — a major-skew record mid-stream is permanently rejected while
+/// compatible and minor-skew records still flow.
+#[tokio::test]
+async fn per_record_protocol_version_is_verified() {
+    let pki = make_pki();
+    let lab = start_lab(&pki).await;
+    let cert_a = issue_leaf(&pki, "collector-a", false);
+    bind_collector(&lab.sqlite, "site-a", &cert_a.fingerprint);
+    let mut client = mtls_client(&lab, &pki, &cert_a).await;
+
+    let mut v0 = netflow_update(
+        "site-a",
+        "flowsrc/site-a/nf9/10.8.0.1:49152/a",
+        flow_value(serde_json::json!({"src_port": 41000})),
+    );
+    v0.protocol_version = 0; // pre-versioning / major skew
+    let mut v11 = netflow_update(
+        "site-a",
+        "flowsrc/site-a/nf9/10.8.0.2:49152/b",
+        flow_value(serde_json::json!({"src_port": 41001})),
+    );
+    v11.protocol_version = PROTOCOL_VERSION + 10; // major skew
+    let mut v2 = netflow_update(
+        "site-a",
+        "flowsrc/site-a/nf9/10.8.0.3:49152/c",
+        flow_value(serde_json::json!({"src_port": 41002})),
+    );
+    v2.protocol_version = PROTOCOL_VERSION + 1; // minor skew — warn only
+
+    // Interleave: valid, major-skew, minor-skew, major-skew, valid.
+    let mut first = netflow_update(
+        "site-a",
+        "flowsrc/site-a/nf9/10.8.0.0:49152/z",
+        flow_value(serde_json::json!({"src_port": 40999})),
+    );
+    first.protocol_version = PROTOCOL_VERSION;
+    let resp = ingest_updates_full(
+        &mut client,
+        vec![
+            first,
+            v0,
+            v2,
+            v11,
+            netflow_update(
+                "site-a",
+                "flowsrc/site-a/nf9/10.8.0.4:49152/d",
+                flow_value(serde_json::json!({"src_port": 41003})),
+            ),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        resp.accepted, 3,
+        "compatible + minor-skew accepted: {resp:?}"
+    );
+    assert_eq!(
+        resp.rejected, 2,
+        "both major-skew records rejected: {resp:?}"
+    );
+
+    // Only the three compatible records produced AppFlows.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let rows = graph_query(
+        &lab.graph,
+        "MATCH (f:AppFlow) WHERE f.exporter_id STARTS WITH 'flowsrc/site-a/' RETURN f.exporter_id",
+    );
+    assert_eq!(
+        rows.len(),
+        3,
+        "major-skew records must not reach the graph: {rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .all(|r| !r[0].contains("10.8.0.1") && !r[0].contains("10.8.0.2"))
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// R4 — global collector identity uniqueness
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn collector_binding(
+    sqlite: &SqliteStore,
+    collector_id: &str,
+    fp: &str,
+    scope: &str,
+) -> Result<String, anyhow::Error> {
+    let dev = sqlite
+        .upsert_canonical_device(
+            &CanonicalDevice {
+                device_id: String::new(),
+                address: format!("collector:{collector_id}"),
+                site: Some(scope.to_string()),
+                hostname: None,
+                created_at_ns: 0,
+                updated_at_ns: 0,
+                created_by: String::new(),
+                updated_by: String::new(),
+            },
+            "test",
+        )
+        .unwrap();
+    let binding = TrustedBinding {
+        binding_id: SqliteStore::new_binding_id(),
+        scope: scope.to_string(),
+        protocol: bonsai::collector_auth::COLLECTOR_PROTOCOL.to_string(),
+        exporter_id: collector_id.to_string(),
+        device_id: dev.device_id,
+        match_transport: None,
+        match_reported_identity: None,
+        match_exporter_claim: None,
+        match_observation_domain: None,
+        match_ingress_credential: Some(fp.to_string()),
+        provenance: BindingProvenance::OperatorProvisioned,
+        status: BindingStatus::Active,
+        created_at_ns: 0,
+        updated_at_ns: 0,
+        created_by: String::new(),
+        updated_by: String::new(),
+    };
+    sqlite
+        .upsert_exporter_binding(&binding, "test")
+        .map(|b| b.binding_id)
+}
+
+/// R4: collector identity is globally unique — the same collector id
+/// cannot be claimed by a different credential through a different
+/// scope, and ambiguous pre-existing rows fail closed at runtime for
+/// EVERY claimant.
+#[tokio::test]
+async fn collector_identity_uniqueness_is_global() {
+    let pki = make_pki();
+    let lab = start_lab(&pki).await;
+    let cert_a = issue_leaf(&pki, "collector-a", false);
+    let cert_b = issue_leaf(&pki, "collector-b", false);
+
+    // Legitimate provisioning: two distinct collector identities.
+    assert!(collector_binding(&lab.sqlite, "site-a", &cert_a.fingerprint, "dc-a").is_ok());
+    assert!(collector_binding(&lab.sqlite, "site-b", &cert_b.fingerprint, "dc-b").is_ok());
+
+    // Same collector id, DIFFERENT credential, different scope —
+    // rejected at provisioning.
+    let dup = collector_binding(&lab.sqlite, "site-a", &cert_b.fingerprint, "dc-b");
+    assert!(
+        dup.is_err(),
+        "same collector id under a different credential must be rejected"
+    );
+
+    // Same credential, different collector id under a different scope —
+    // rejected (one credential, one collector identity).
+    let dup2 = collector_binding(&lab.sqlite, "site-c", &cert_a.fingerprint, "dc-b");
+    assert!(
+        dup2.is_err(),
+        "one credential must not bind multiple collector identities"
+    );
+
+    // Rotation updates the SAME logical binding (same binding_id,
+    // new credential) rather than creating an ambiguous second row.
+    let rotated_cert = issue_leaf(&pki, "collector-a-rotated", false);
+    let rotated_fp = rotated_cert.fingerprint.clone();
+    let existing = lab
+        .sqlite
+        .list_exporter_bindings(
+            Some("dc-a"),
+            Some(bonsai::collector_auth::COLLECTOR_PROTOCOL),
+            false,
+        )
+        .unwrap()
+        .into_iter()
+        .find(|b| b.exporter_id == "site-a")
+        .unwrap();
+    let mut rotated = existing.clone();
+    rotated.match_ingress_credential = Some(rotated_fp.clone());
+    lab.sqlite
+        .upsert_exporter_binding(&rotated, "test")
+        .unwrap();
+    let rows = lab
+        .sqlite
+        .collector_bindings_for_exporter("site-a")
+        .unwrap();
+    assert_eq!(rows.len(), 1, "rotation must keep exactly one binding");
+    assert_eq!(
+        rows[0].match_ingress_credential.as_deref(),
+        Some(rotated_fp.as_str())
+    );
+
+    // Pre-existing ambiguous row (a THIRD credential claiming the same
+    // collector id, bypassing provisioning) fails closed for EVERY
+    // claimant — exercised end-to-end over mTLS because attested
+    // principals can only be minted by the transport layer.
+    let cert_c = issue_leaf(&pki, "collector-c", false);
+    insert_raw_collector_binding(&lab, "site-a", &cert_c.fingerprint, "dc-c");
+
+    let mut client_a = mtls_client(&lab, &pki, &rotated_cert).await;
+    let err = client_a
+        .heartbeat(Request::new(CollectorStats {
+            collector_id: "site-a".to_string(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.code(),
+        Code::PermissionDenied,
+        "ambiguous collector identity must fail closed for the legitimate claimant"
+    );
+    let mut client_c = mtls_client(&lab, &pki, &cert_c).await;
+    let err = client_c
+        .heartbeat(Request::new(CollectorStats {
+            collector_id: "site-a".to_string(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.code(),
+        Code::PermissionDenied,
+        "ambiguous collector identity must fail closed for the usurping claimant"
+    );
+    // Unambiguous identities still authorize.
+    let mut client_b = mtls_client(&lab, &pki, &cert_b).await;
+    let hb = client_b
+        .heartbeat(Request::new(CollectorStats {
+            collector_id: "site-b".to_string(),
+            ..Default::default()
+        }))
+        .await
+        .expect("unambiguous collector identity must still authorize");
+    assert!(hb.into_inner().error.is_empty());
+}
+
+/// R4: concurrent provisioning of the same collector identity cannot
+/// bypass uniqueness — exactly one writer wins.
+#[test]
+fn concurrent_collector_provisioning_is_serialized() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(SqliteStore::open(dir.path()).unwrap());
+    let anchor = store
+        .upsert_canonical_device(
+            &CanonicalDevice {
+                device_id: String::new(),
+                address: "collector:race".to_string(),
+                site: None,
+                hostname: None,
+                created_at_ns: 0,
+                updated_at_ns: 0,
+                created_by: String::new(),
+                updated_by: String::new(),
+            },
+            "test",
+        )
+        .unwrap()
+        .device_id;
+    let mk = |fp: &str, scope: &str| TrustedBinding {
+        binding_id: SqliteStore::new_binding_id(),
+        scope: scope.to_string(),
+        protocol: bonsai::collector_auth::COLLECTOR_PROTOCOL.to_string(),
+        exporter_id: "race".to_string(),
+        device_id: anchor.clone(),
+        match_transport: None,
+        match_reported_identity: None,
+        match_exporter_claim: None,
+        match_observation_domain: None,
+        match_ingress_credential: Some(fp.to_string()),
+        provenance: BindingProvenance::OperatorProvisioned,
+        status: BindingStatus::Active,
+        created_at_ns: 0,
+        updated_at_ns: 0,
+        created_by: String::new(),
+        updated_by: String::new(),
+    };
+    let b1 = mk("sha256:aaa", "scope-1");
+    let b2 = mk("sha256:bbb", "scope-2");
+    let (r1, r2) = std::thread::scope(|s| {
+        let h1 = s.spawn(|| store.upsert_exporter_binding(&b1, "t1").is_ok());
+        let h2 = s.spawn(|| store.upsert_exporter_binding(&b2, "t2").is_ok());
+        (h1.join().unwrap(), h2.join().unwrap())
+    });
+    assert!(
+        r1 != r2,
+        "exactly one concurrent provisioning must win (got {r1}, {r2})"
+    );
+    assert_eq!(
+        store.collector_bindings_for_exporter("race").unwrap().len(),
+        1
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 6 — indexed credential lookup evidence
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The credential-pinned binding lookups used by `CollectorAuthz` must
+/// be served by a real SQLite index, not a full table scan.
+#[test]
+fn credential_binding_lookups_use_sqlite_indexes() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(dir.path()).unwrap();
+    drop(store);
+    let conn =
+        rusqlite::Connection::open(dir.path().join(bonsai::sqlite_store::CONFIG_DB_FILE_NAME))
+            .unwrap();
+
+    let plan_for = |sql: &str| -> Vec<String> {
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+
+    // find_credential_bindings shape (collector protocol, credential-
+    // pinned). SQLite may pick either credential index — the general
+    // one or the partial unique collector-scoped one — both are real
+    // indexes on match_ingress_credential.
+    let plan = plan_for(
+        "SELECT binding_id FROM exporter_bindings \
+         WHERE status = 'active' AND match_ingress_credential = 'sha256:x' \
+         AND protocol = 'collector' AND exporter_id = 'c1' LIMIT 16",
+    );
+    assert!(
+        plan.iter().any(|l| {
+            l.contains("match_ingress_credential=?")
+                && (l.contains("idx_exporter_bindings_credential")
+                    || l.contains("idx_exporter_bindings_collector_credential"))
+        }),
+        "credential lookup must use a credential index: {plan:?}"
+    );
+
+    // collector_bindings_for_exporter shape.
+    let plan = plan_for(
+        "SELECT binding_id FROM exporter_bindings \
+         WHERE status = 'active' AND protocol = 'collector' AND exporter_id = 'c1' LIMIT 1024",
+    );
+    assert!(
+        plan.iter()
+            .any(|l| l.contains("idx_exporter_bindings_collector_identity")),
+        "collector identity lookup must use the partial unique index: {plan:?}"
+    );
 }

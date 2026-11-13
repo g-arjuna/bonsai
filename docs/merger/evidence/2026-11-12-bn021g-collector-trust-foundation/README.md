@@ -195,3 +195,72 @@ Focused lib modules (`ingest::`, `assignment::`, `collector_auth::`,
 - `Query` remains unrestricted Cypher behind `core-admin` — privileged
   administrative trust boundary; broader query-policy redesign and
   credential-storage migration stay under BN-022.
+
+---
+
+## Residual-findings round (R1–R4, same branch, 13 November)
+
+A third independent review confirmed the H1–H6 closures but identified
+four residual implementation defects. All are closed on the same
+architecture; no redesign.
+
+> **Correction to earlier evidence:** the previously documented
+> `detection_ingest_requires_verified_nonprovisional_evidence` test
+> created the `sce-no-prov` event but never submitted a detection
+> referencing it — the missing-provenance path was untested. This
+> round adds the submission and the full provenance matrix below.
+
+### Findings disposition
+
+| Finding | Disposition |
+|---|---|
+| R1 provisional identity normalization incomplete | FIXED — `authorize_provisional_source` now unconditionally pins effective `source_key`/`exporter_id` (missing/null/numeric/malformed producer claims can never reach `classify()`'s untrusted `exporter_address` fallback), pins `identity_status=provisional`/`authority=unverified`/null canonical fields regardless of producer claims, re-derives `otlpapp/` ids under the authenticated namespace, preserves all original claims under `claimed_*`/`claimed_payload_*` evidence keys, and requires the payload source prefix to match the classified protocol (`provisional_prefix_for_event`) |
+| R2 detection provenance was a denylist | FIXED — `verify_detection_scope` rewritten as a positive allowlist of server-established `source_type` values with structured detail parsing; missing/null/empty/unknown provenance and malformed event details are permanent rejections; store/graph failures are retryable stream errors; the `sce-no-prov` case is now actually submitted |
+| R3 queue ack contract unenforced | FIXED — `drain_queue_to_core` validates the response before acking: response `protocol_version` must not be major-skewed and `accepted + rejected` must exactly equal the submitted count via checked arithmetic; violations retain the batch for replay. Core-side `telemetry_ingest` verifies `protocol_version` on EVERY record (major skew = permanent per-record rejection). `InProcessBus::publish` returns a `PublishOutcome` so router-queue overload is a retryable failure, not silent loss |
+| R4 collector identity uniqueness was scope-local | FIXED — schema v5 adds partial unique indexes making active `protocol="collector"` `exporter_id` (collector identity) and `match_ingress_credential` globally unique; `upsert_exporter_binding` enforces the same rules at provisioning (concurrent provisioning serialized — exactly one winner); authorization re-checks and pre-existing ambiguous rows fail closed for every claimant; rotation updates the same `binding_id` |
+
+### Verification — final suite
+
+`tests/bn021g_collector_trust_foundation.rs` — **31/31 PASS**
+(new/updated: `provisional_source_identity_is_server_normalized`,
+`otlp_provisional_app_id_is_renamespaced`,
+`per_record_protocol_version_is_verified`,
+`collector_identity_uniqueness_is_global`,
+`concurrent_collector_provisioning_is_serialized`,
+`credential_binding_lookups_use_sqlite_indexes` (EXPLAIN QUERY PLAN
+evidence), `ambiguous_binding_fails_closed`,
+`credential_cannot_bind_multiple_collector_identities`, corrected
+`detection_ingest_requires_verified_nonprovisional_evidence` and
+`forged_payload_principal_is_inert` assertions for the `claimed_*`
+evidence contract).
+
+`src/ingest.rs` drain tests — **16/16 PASS** including new scripted-core
+contract tests: consistent accepted/rejected batch acked, accounting
+mismatch retained, impossible counts retained, response protocol skew
+retained, interleaved rejections retired, bus router saturation retains
+batch for replay, core outage retains records, restart/replay.
+
+`cargo test -p bonsai --lib` — **299 pass / 5 fail**, the same five
+documented BN-019-B6 baseline failures; none new.
+
+Risk-linked regressions — **110/110 PASS** across
+`bn021b_trusted_identity`, `bn021c_exporter_isolation`,
+`bn021d_flow_exporter_isolation`, `bn021e_{otlp,sflow,snmp,syslog}`,
+`bn021f_{authenticated_ingress,hardening}`, `bn022_graph_read_boundary`.
+
+### Phase-6 cache/index evidence
+
+- Authz decisions are stamped with the epoch captured BEFORE the store
+  read; a lookup begun before revocation can never cache an obsolete
+  decision under the new epoch. Epoch bumps happen inside the binding
+  mutation before audit persistence, so a later audit failure cannot
+  leave stale grants.
+- Revocation guarantee (accurate): within one core process, binding
+  mutations are visible on the next authorization check. Cross-process
+  or direct-DB changes remain bounded by the 5s TTL — recorded as a
+  BN-021g-6 production-acceptance limitation, not silently claimed.
+- `match_ingress_credential` lookups are served by real SQLite
+  indexes (`idx_exporter_bindings_credential`, and for collector
+  protocol the partial unique `idx_exporter_bindings_collector_credential`);
+  verified via `EXPLAIN QUERY PLAN` in
+  `credential_binding_lookups_use_sqlite_indexes`.

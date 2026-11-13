@@ -112,11 +112,15 @@ certificate chaining to the lab CA is necessary but NOT sufficient:
   - `match_ingress_credential`: the fingerprint above.
 - The claimed `collector_id` in each ingest message must equal the
   bound `exporter_id` — certificate A cannot claim collector B.
-- Authorization decisions are cached ≤5s; revoking the binding
-  (`POST /api/identity/bindings/{id}/revoke`) stops privileged ingest
-  within that window. Rotation = update `match_ingress_credential`
-  on the same binding (sequential re-pin; old fingerprint loses
-  authority immediately after cache expiry).
+- Authorization decisions are cached ≤5s **stamped with a
+  process-local authorization epoch**: every `exporter_bindings`
+  upsert/revoke bumps the epoch, so within one core process revoking
+  the binding (`POST /api/identity/bindings/{id}/revoke`) is visible
+  on the next authorization check — not after the TTL. The TTL only
+  bounds staleness for changes made outside the process (e.g. direct
+  DB edits on another node in a multi-node deployment). Rotation =
+  update `match_ingress_credential` on the same binding (sequential
+  re-pin; old fingerprint loses authority on the next check).
 - Plaintext mode (`runtime.tls.enabled = false`) remains the explicit
   legacy development path with no authorization.
 
@@ -266,12 +270,22 @@ the authz epoch/decision cache). Per-message verification:
   protocol+collector+fingerprint across scopes) fail closed — for
   ingest AND for collector-scoped reads. `collector_ids_for_credential`
   no longer collapses identities with `SELECT DISTINCT`; the same
-  trusted-binding ambiguity rules apply to both planes. The binding
-  store additionally rejects provisioning a second collector identity
-  for one credential (overlap on canonical pair), so scoped reads can
-  never first-match across identities. Note: canonical graph entities
-  remain globally address-keyed — collector scoping limits which
-  devices are returned/written, it is not multi-tenant isolation.
+  trusted-binding ambiguity rules apply to both planes.
+- **Global collector identity uniqueness (R4):** for active
+  `protocol="collector"` bindings the `(exporter_id)` collector
+  identity and the `match_ingress_credential` credential are each
+  globally unique — enforced at provisioning time in
+  `upsert_exporter_binding` (schema v5 partial unique indexes
+  `idx_exporter_bindings_collector_identity` /
+  `idx_exporter_bindings_collector_credential`) and re-checked at
+  authorization time, where pre-existing ambiguous rows fail closed
+  for every claimant. One credential cannot be provisioned for two
+  collector identities; one collector identity cannot be claimed by
+  two credentials — including across different scopes. Rotation
+  updates the same logical binding (same `binding_id`). Note:
+  canonical graph entities remain globally address-keyed — collector
+  scoping limits which devices are returned/written, it is not
+  multi-tenant isolation.
 
 ### Queue acknowledgement contract (H2)
 
@@ -284,6 +298,17 @@ a response means every record in the batch was processed:
   retired. Rejected records (authorization denial, malformed payload,
   protocol major skew) are permanently refused — never replayed — so
   a poison record cannot block later legitimate telemetry.
+- The collector validates the response **before** acking: the
+  response `protocol_version` must not be major-skewed, and
+  `accepted + rejected` must exactly equal the submitted count using
+  checked arithmetic. An inconsistent, impossible or
+  protocol-incompatible response is a protocol violation — the
+  collector writes no acknowledgement and retains the whole batch
+  for replay (loud failure, never silent record loss).
+- Protocol version is verified on **every** record core-side, not
+  just the first of a stream: equal = compatible, non-equal
+  same-major = minor skew (logged, processed), major skew =
+  permanent per-record rejection.
 - RPC error / connection loss → no ack → whole batch retained for
   at-least-once replay. Accepted means published to the in-memory bus,
   not a durable graph commit; exactly-once is not claimed.

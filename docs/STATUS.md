@@ -964,3 +964,53 @@ closed on the same architecture:
 Verified: `tests/bn021g_collector_trust_foundation.rs` **25/25** +
 3 real-server queue-drain unit tests + focused lib modules 15/15.
 Evidence: `docs/merger/evidence/2026-11-12-bn021g-collector-trust-foundation/`.
+
+BN-021g-1 residual round (13 November, same branch): a third
+independent review confirmed four residual defects (R1–R4), all now
+closed:
+
+- **R1 provisional normalization** — `authorize_provisional_source`
+  unconditionally pins effective `source_key`/`exporter_id` to the
+  authenticated collector namespace and classified protocol prefix;
+  `identity_status`/`authority`/canonical fields are forced
+  provisional/unverified regardless of producer claims; missing, null,
+  numeric or malformed identity fields can no longer trigger
+  `classify()`'s untrusted `exporter_address` fallback; `otlpapp/`
+  provisional ids are re-derived under the normalized key; every
+  original producer claim is preserved under `claimed_*` evidence
+  keys.
+- **R2 detection provenance** — `verify_detection_scope` is now a
+  positive allowlist of server-established `source_type` values with
+  structured detail parsing (missing/null/empty/unknown provenance
+  and malformed details permanently rejected; store failures
+  retryable). Correction: the earlier
+  `sce-no-prov` test never actually submitted a referencing
+  detection — it does now, along with unknown/provisional/missing/
+  cross-device/malformed/db-failure cases.
+- **R3 queue ack contract** — `drain_queue_to_core` refuses to ack
+  inconsistent or impossible `accepted + rejected` accounting
+  (checked arithmetic) and major-skewed response protocol versions;
+  violations retain the batch for replay. Core verifies
+  `protocol_version` on every record — major skew is a permanent
+  per-record rejection even mid-stream. `InProcessBus::publish`
+  returns `PublishOutcome`; router-queue saturation surfaces as a
+  retryable drain failure instead of a silent drop.
+- **R4 global collector uniqueness** — schema v5 partial unique
+  indexes make active `protocol="collector"` `exporter_id` and
+  `match_ingress_credential` globally unique; provisioning rejects
+  cross-scope/cross-credential conflicts (concurrent provisioning
+  serialized, one winner); authorization fails closed on
+  pre-existing ambiguous rows for every claimant; rotation keeps a
+  single `binding_id`. Authz decisions are epoch-stamped with the
+  epoch captured before the store read and the epoch bumps before
+  audit persistence, so a pre-revocation lookup cannot cache a stale
+  grant and an audit failure cannot strand one. Indexed credential
+  lookup proven via `EXPLAIN QUERY PLAN`.
+
+Verified: `tests/bn021g_collector_trust_foundation.rs` **31/31** +
+16/16 ingest drain tests + lib 299 pass / 5 documented BN-019-B6
+baseline failures + 110/110 BN-021b–f / BN-022 / syslog / snmp /
+otlp / sflow regressions. Revocation guarantee is process-local
+(epoch) with cross-process changes bounded by the 5s TTL — recorded
+under BN-021g-6 production acceptance. Evidence:
+`docs/merger/evidence/2026-11-12-bn021g-collector-trust-foundation/`.
