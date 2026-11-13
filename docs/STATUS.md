@@ -1065,3 +1065,24 @@ globally address-keyed schema fails closed on overlapping private
 peer addresses (no cross-tenant isolation claim); gNMI path carries
 no VRF discriminator. Evidence:
 `docs/merger/evidence/2026-11-13-bn016-u1-bgp-session-identity/`.
+
+BN-016-U1 Phase B P0 closure (13 November, merged PR #14 at
+`25ce360e86b79a5d7d0478297bcd9a9e5a833a90`): the remaining correctness
+defects are fixed. `reconcile_bgp_session_edge` opened a nested
+transaction inside `write_batch`'s active transaction — lbug rejects
+nested write transactions, so every BGP/BMP write inside production
+batches failed; one transaction owner per write op now, with
+dead-transaction tracking and per-update fallback retry (batching
+stays enabled, failures surfaced). `BGP_SESSION_WITH` is keyed by
+`session_id` plus `peer_type`/`route_distinguisher`/
+`network_instance`/`source`; gNMI `network-instance[name=X]` joins
+session identity for non-default instances. `resolve_peer_typed` fails
+closed with an explicit `Unavailable` outcome when evidence tiers
+cannot be examined. Ownership mutations re-resolve affected edges
+immediately; a startup migration re-keys or invalidates legacy unkeyed
+edges; schema ALTERs distinguish already-present columns from real
+failures. Effective persisted peer-as is projected; duplicate BMP
+reconcile removed; topology resolution cached per peer per request.
+Verified: `graph::tests::bgp_session` 18/18, `graph::` 98 pass / 1
+documented BN-019-B6 baseline failure, `bn016_u1_topology_browser`
+1/1 (real Chromium, canonical router), ui build clean.
