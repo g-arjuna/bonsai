@@ -131,19 +131,36 @@ pub(super) async fn topology_handler(
                  RETURN n.device_address, n.peer_address, n.session_state, n.peer_as, n.source",
             )
             .map_err(|e| e.to_string())?;
+        // Resolution is cached per peer address for the duration of this
+        // snapshot: many sessions can share a peer, and each resolution
+        // costs up to three evidence-tier queries. The cache lives only
+        // for this request — no long-lived stale identity cache.
+        let mut resolution_cache: HashMap<String, (String, String, String)> = HashMap::new();
         let bgp_raw: Vec<(String, String, String, i64, String, String, String, String)> = bgp_rows
             .map(|row| {
                 let peer = read_str(&row[1]);
-                let resolution = crate::graph::common::resolve_peer_typed(&conn, &peer);
+                let (peer_device, resolution, reason) = match resolution_cache.get(&peer) {
+                    Some(hit) => hit.clone(),
+                    None => {
+                        let r = crate::graph::common::resolve_peer_typed(&conn, &peer);
+                        let entry = (
+                            r.device().unwrap_or_default().to_string(),
+                            r.status().to_string(),
+                            r.reason(),
+                        );
+                        resolution_cache.insert(peer.clone(), entry.clone());
+                        entry
+                    }
+                };
                 (
                     read_str(&row[0]),
                     peer,
                     read_str(&row[2]),
                     read_i64(&row[3]),
                     read_str(&row[4]),
-                    resolution.device().unwrap_or_default().to_string(),
-                    resolution.status().to_string(),
-                    resolution.reason(),
+                    peer_device,
+                    resolution,
+                    reason,
                 )
             })
             .collect();

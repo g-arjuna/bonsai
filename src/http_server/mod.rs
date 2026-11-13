@@ -245,7 +245,8 @@ pub(super) struct BgpJson {
     /// Observation provenance: "gnmi" or "bmp". Empty for legacy rows.
     #[serde(skip_serializing_if = "String::is_empty")]
     source: String,
-    /// BN-016-U1 resolution status: resolved | unresolved | ambiguous | conflict.
+    /// BN-016-U1 resolution status: resolved | unresolved | ambiguous |
+    /// conflict | unavailable (evidence lookup failed — fail closed).
     #[serde(skip_serializing_if = "String::is_empty")]
     resolution: String,
     /// Machine-readable explanation for non-resolved outcomes.
