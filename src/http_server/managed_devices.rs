@@ -797,7 +797,9 @@ pub(super) fn target_from_request(
         password: None,
         hostname: option_string(req.hostname),
         role: option_string(req.role),
-        site: option_string(req.site),
+        // Preserve an explicit empty string: it is the "clear site"
+        // signal, distinct from an omitted field (None → inherit).
+        site: req.site.map(|site| site.trim().to_string()),
         collector_id: None,
         selected_paths: req
             .selected_paths
@@ -2015,4 +2017,167 @@ pub(super) fn site_subtree_ids(
         }
     }
     ids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::{GraphStore, SiteRecord};
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use lbug::{Connection, Value};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    fn test_site(id: &str, name: &str) -> SiteRecord {
+        SiteRecord {
+            id: id.to_string(),
+            name: name.to_string(),
+            parent_id: String::new(),
+            kind: "dc".to_string(),
+            lat: 0.0,
+            lon: 0.0,
+            metadata_json: "{}".to_string(),
+            environment_id: String::new(),
+        }
+    }
+
+    fn located_at(store: &GraphStore, device_address: &str) -> Vec<String> {
+        let db = store.db();
+        let conn = Connection::new(&db).expect("graph connection");
+        let mut stmt = conn
+            .prepare("MATCH (d:Device {address: $addr})-[:LOCATED_AT]->(s:Site) RETURN s.id")
+            .expect("prepare LOCATED_AT query");
+        conn.execute(
+            &mut stmt,
+            vec![("addr", Value::String(device_address.to_string()))],
+        )
+        .expect("LOCATED_AT query")
+        .into_iter()
+        .map(|row| read_str(&row[0]))
+        .collect()
+    }
+
+    async fn post_device(
+        router: &axum::Router,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let request = Request::post("/api/onboarding/devices")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("build request");
+        let response = router
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("oneshot response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    /// BN-015-U2/B3: exercise the REAL managed-device save/update API
+    /// (axum route → serde → save_managed_device → registry →
+    /// sync_sites_from_targets → graph) rather than GraphStore alone.
+    #[tokio::test]
+    async fn managed_device_api_site_claim_lifecycle() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let graph_path = dir.path().join("graph").to_string_lossy().into_owned();
+        let store = Arc::new(GraphStore::open(&graph_path, 256 * 1024 * 1024).expect("open"));
+        let state = AppState::new_minimal_with_runtime_dir(
+            Arc::clone(&store),
+            dir.path().to_str().expect("utf8 tempdir"),
+        );
+        let router = crate::http_server::managed_device_routes().with_state(state);
+
+        // Seed sites through the site admin surface (store.upsert_site is
+        // the same path /api/sites uses).
+        store
+            .upsert_site(test_site("site-a", "Site A"))
+            .await
+            .expect("site a");
+        for id in ["shared-1", "shared-2"] {
+            store
+                .upsert_site(test_site(id, "Shared"))
+                .await
+                .expect("shared site");
+        }
+
+        // 1. Create with a resolvable site claim.
+        let (status, body) = post_device(
+            &router,
+            serde_json::json!({"address": "10.9.9.1", "hostname": "r1", "site": "Site A"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["success"], true, "save failed: {body}");
+        assert_eq!(located_at(&store, "10.9.9.1"), vec!["site-a"]);
+
+        // 2. Partial update omitting `site` preserves the association.
+        let (status, body) = post_device(
+            &router,
+            serde_json::json!({"address": "10.9.9.1", "hostname": "r1-renamed"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["success"], true, "update failed: {body}");
+        assert_eq!(
+            located_at(&store, "10.9.9.1"),
+            vec!["site-a"],
+            "omitted site field must preserve the existing LOCATED_AT"
+        );
+
+        // 3. Move to an ambiguous site name: stale edge is dropped.
+        let (status, body) = post_device(
+            &router,
+            serde_json::json!({"address": "10.9.9.1", "site": "Shared"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["success"], true, "ambiguous save failed: {body}");
+        assert!(
+            located_at(&store, "10.9.9.1").is_empty(),
+            "ambiguous claim must not leave the stale Site-A edge"
+        );
+
+        // 4. Corrected assignment resolves again through the API.
+        let (status, body) = post_device(
+            &router,
+            serde_json::json!({"address": "10.9.9.1", "site": "Site A"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["success"], true);
+        assert_eq!(located_at(&store, "10.9.9.1"), vec!["site-a"]);
+
+        // 5. Explicit clear via "site": "" drops edge and claim mirror.
+        let (status, body) = post_device(
+            &router,
+            serde_json::json!({"address": "10.9.9.1", "site": ""}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["success"], true, "clear failed: {body}");
+        assert!(located_at(&store, "10.9.9.1").is_empty());
+        let db = store.db();
+        let conn = Connection::new(&db).expect("graph connection");
+        let mut stmt = conn
+            .prepare("MATCH (d:Device {address: $addr}) RETURN d.site")
+            .expect("prepare d.site query");
+        let rows: Vec<Vec<Value>> = conn
+            .execute(
+                &mut stmt,
+                vec![("addr", Value::String("10.9.9.1".to_string()))],
+            )
+            .expect("d.site query")
+            .into_iter()
+            .collect();
+        assert!(
+            rows.iter().all(|row| read_str(&row[0]).is_empty()),
+            "explicit clear must blank the mirrored d.site claim"
+        );
+    }
 }

@@ -2663,26 +2663,34 @@ impl GraphStore {
                         let _ = link_device_address(&conn, ip, &primary);
                     }
                 }
-                let Some(site_name) = target
-                    .site
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                else {
-                    continue;
-                };
-                let site = SiteRecord {
-                    id: site_id_from_name(site_name),
-                    name: site_name.to_string(),
-                    parent_id: String::new(),
-                    kind: "unknown".to_string(),
-                    lat: 0.0,
-                    lon: 0.0,
-                    metadata_json: "{}".to_string(),
-                    environment_id: String::new(),
-                };
-                upsert_site_record(&conn, &site, now.clone())?;
-                link_device_to_site(&conn, &primary, &site.id)?;
+                // BN-015-U2: a device's free-text `site` claim resolves
+                // to a Site for LOCATED_AT linking only — it must NEVER
+                // mutate an existing Site record. Site hierarchy,
+                // kind, coordinates, metadata and parentage are owned
+                // by the site admin API, not by device saves.
+                //
+                // Claim semantics:
+                //   None       — partial update omitted the claim: the
+                //                existing LOCATED_AT association (from any
+                //                writer) is preserved untouched.
+                //   Some("")   — explicit clear: drop LOCATED_AT and the
+                //                mirrored d.site claim so no writer can
+                //                resurrect the association.
+                //   Some(name) — authoritative claim: resolved →
+                //                transactional replace; ambiguous or
+                //                slug-colliding → the stale edge is
+                //                dropped rather than left presenting the
+                //                previous site as current.
+                match target.site.as_deref().map(str::trim) {
+                    None => {}
+                    Some("") => update_device_site(&conn, &primary, None, true)?,
+                    Some(site_name) => match ensure_target_site(&conn, site_name, now.clone())? {
+                        Some(site_id) => {
+                            update_device_site(&conn, &primary, Some(&site_id), false)?
+                        }
+                        None => update_device_site(&conn, &primary, None, false)?,
+                    },
+                }
             }
             Ok::<_, anyhow::Error>(())
         })
@@ -9132,6 +9140,145 @@ pub fn site_id_from_name(name: &str) -> String {
     }
 }
 
+/// Deterministic outcome of resolving a device's free-text `site` claim
+/// against existing Site records. A free-text claim is NEVER treated as
+/// an explicit stable site id — only display-name evidence and the
+/// name-derived slug convention are consulted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SiteClaimResolution {
+    /// Exactly one existing Site carries this display name — safe to
+    /// link (covers slug-id sites, explicit-id imports and admin-created
+    /// sites uniformly).
+    Existing(String),
+    /// No existing Site matches and the name-derived id is unclaimed —
+    /// the caller may create the minimal name-derived record.
+    NewSite { id: String },
+    /// Ambiguous display name (multiple Sites share it) or a slug
+    /// collision (the name-derived id belongs to an unrelated Site) —
+    /// the claim must not be linked and no duplicate may be created.
+    Unresolved,
+}
+
+/// Resolve a free-text site claim WITHOUT mutating the graph. Rules:
+///
+/// 1. UNIQUE exact display-name match → `Existing`. An ambiguous
+///    display name is `Unresolved` even when one candidate happens to
+///    own the name-derived id — a free-text claim cannot pick a branch.
+/// 2. No name match → inspect the name-derived id (`site_id_from_name`):
+///    if a Site already owns that id under a DIFFERENT display name the
+///    claim is a slug collision → `Unresolved` (never link the unrelated
+///    site, never create a duplicate under a taken id).
+/// 3. Otherwise → `NewSite` with the name-derived id.
+///
+/// Explicit stable site ids remain the domain of the site admin API
+/// (`upsert_site`); this resolver intentionally has no id-lookup tier.
+pub(crate) fn resolve_site_claim(
+    conn: &Connection<'_>,
+    site_name: &str,
+) -> Result<SiteClaimResolution> {
+    let name_matches = site_ids_named(conn, site_name)?;
+    match name_matches.as_slice() {
+        [id] => return Ok(SiteClaimResolution::Existing(id.clone())),
+        [] => {}
+        _ => {
+            tracing::warn!(
+                site = %site_name,
+                matches = name_matches.len(),
+                "device site claim is ambiguous; no Site created and no LOCATED_AT written"
+            );
+            return Ok(SiteClaimResolution::Unresolved);
+        }
+    }
+
+    let slug = site_id_from_name(site_name);
+    if site_id_exists(conn, &slug)? {
+        tracing::warn!(
+            site = %site_name,
+            slug = %slug,
+            "device site claim collides with an unrelated Site id; no Site created and no LOCATED_AT written"
+        );
+        return Ok(SiteClaimResolution::Unresolved);
+    }
+    Ok(SiteClaimResolution::NewSite { id: slug })
+}
+
+/// BN-015-U2: resolve a device's free-text `site` claim to a Site id
+/// for `LOCATED_AT` linking WITHOUT ever mutating an existing Site
+/// record. See `resolve_site_claim` for the deterministic rules; this
+/// wrapper additionally creates the minimal name-derived Site record
+/// for the `NewSite` outcome (same shape the sync has always produced
+/// for genuinely new sites). Existing Sites are never overwritten:
+/// hierarchy, parent, kind, coordinates, environment and metadata are
+/// preserved byte-for-byte.
+fn ensure_target_site(
+    conn: &Connection<'_>,
+    site_name: &str,
+    now: Value,
+) -> Result<Option<String>> {
+    let site_id = match resolve_site_claim(conn, site_name)? {
+        SiteClaimResolution::Existing(id) => return Ok(Some(id)),
+        SiteClaimResolution::Unresolved => return Ok(None),
+        SiteClaimResolution::NewSite { id } => id,
+    };
+
+    let site = SiteRecord {
+        id: site_id.clone(),
+        name: site_name.to_string(),
+        parent_id: String::new(),
+        kind: "unknown".to_string(),
+        lat: 0.0,
+        lon: 0.0,
+        metadata_json: "{}".to_string(),
+        environment_id: String::new(),
+    };
+    // Create-only upsert: identical to the NetBox backfill
+    // pattern — ON CREATE sets the defaults, ON MATCH touches
+    // nothing but updated_at so an existing record's fields
+    // and PARENT_OF edges are never rewritten.
+    let mut stmt = conn
+        .prepare(
+            "MERGE (s:Site {id: $id}) \
+             ON CREATE SET s.name = $name, s.parent_id = '', s.kind = 'unknown', \
+                           s.lat = 0.0, s.lon = 0.0, s.metadata_json = '{}', \
+                           s.updated_at = $ts \
+             ON MATCH SET s.updated_at = $ts",
+        )
+        .context("prepare target Site ensure")?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(site.id.clone())),
+            ("name", Value::String(site.name.clone())),
+            ("ts", now),
+        ],
+    )
+    .context("execute target Site ensure")?;
+    Ok(Some(site.id))
+}
+
+fn site_id_exists(conn: &Connection<'_>, site_id: &str) -> Result<bool> {
+    let mut stmt = conn
+        .prepare("MATCH (s:Site {id: $id}) RETURN s.id LIMIT 1")
+        .context("prepare Site id lookup")?;
+    Ok(conn
+        .execute(&mut stmt, vec![("id", Value::String(site_id.to_string()))])
+        .context("execute Site id lookup")?
+        .next()
+        .is_some())
+}
+
+fn site_ids_named(conn: &Connection<'_>, name: &str) -> Result<Vec<String>> {
+    let mut stmt = conn
+        .prepare("MATCH (s:Site {name: $name}) RETURN s.id")
+        .context("prepare Site name lookup")?;
+    Ok(conn
+        .execute(&mut stmt, vec![("name", Value::String(name.to_string()))])
+        .context("execute Site name lookup")?
+        .into_iter()
+        .map(|row| read_str(&row[0]))
+        .collect())
+}
+
 fn upsert_site_record(conn: &Connection<'_>, site: &SiteRecord, now: Value) -> Result<()> {
     validate_site_hierarchy(conn, site)?;
 
@@ -9235,31 +9382,77 @@ fn read_site_parent_id(conn: &Connection<'_>, site_id: &str) -> Result<Option<St
     Ok(rows.first().map(|row| read_str(&row[0])))
 }
 
-fn link_device_to_site(conn: &Connection<'_>, device_address: &str, site_id: &str) -> Result<()> {
-    let mut clear = conn
-        .prepare("MATCH (d:Device {address: $addr})-[r:LOCATED_AT]->(:Site) DELETE r")
-        .context("prepare LOCATED_AT clear")?;
-    conn.execute(
-        &mut clear,
-        vec![("addr", Value::String(device_address.to_string()))],
-    )
-    .context("execute LOCATED_AT clear")?;
-
-    let mut link = conn
-        .prepare(
-            "MATCH (d:Device {address: $addr}), (s:Site {id: $site_id}) \
-         MERGE (d)-[:LOCATED_AT]->(s)",
+/// Transactionally reconcile a device's `LOCATED_AT` association.
+///
+/// * `resolved_site_id = Some(id)` — replace any existing edge with a
+///   single edge to that Site (the Site must already exist).
+/// * `resolved_site_id = None, clear_site_claim = false` — remove all
+///   `LOCATED_AT` edges but keep the mirrored `d.site` claim string
+///   (present-but-unresolvable claim: explicit unknown, not stale).
+/// * `resolved_site_id = None, clear_site_claim = true` — explicit
+///   clear: also blank `d.site` so claim-driven backfills cannot
+///   resurrect the association.
+///
+/// The delete + optional re-link (+ optional claim clear) run inside a
+/// single write transaction so a failure cannot leave a half-applied
+/// association.
+fn update_device_site(
+    conn: &Connection<'_>,
+    device_address: &str,
+    resolved_site_id: Option<&str>,
+    clear_site_claim: bool,
+) -> Result<()> {
+    conn.query("BEGIN TRANSACTION")
+        .context("begin device site update")?;
+    let outcome = (|| -> Result<()> {
+        let mut clear = conn
+            .prepare("MATCH (d:Device {address: $addr})-[r:LOCATED_AT]->(:Site) DELETE r")
+            .context("prepare LOCATED_AT clear")?;
+        conn.execute(
+            &mut clear,
+            vec![("addr", Value::String(device_address.to_string()))],
         )
-        .context("prepare LOCATED_AT edge")?;
-    conn.execute(
-        &mut link,
-        vec![
-            ("addr", Value::String(device_address.to_string())),
-            ("site_id", Value::String(site_id.to_string())),
-        ],
-    )
-    .context("execute LOCATED_AT edge")?;
-    Ok(())
+        .context("execute LOCATED_AT clear")?;
+
+        if clear_site_claim {
+            let mut clear_claim = conn
+                .prepare("MATCH (d:Device {address: $addr}) SET d.site = ''")
+                .context("prepare device site claim clear")?;
+            conn.execute(
+                &mut clear_claim,
+                vec![("addr", Value::String(device_address.to_string()))],
+            )
+            .context("execute device site claim clear")?;
+        }
+
+        if let Some(site_id) = resolved_site_id {
+            let mut link = conn
+                .prepare(
+                    "MATCH (d:Device {address: $addr}), (s:Site {id: $site_id}) \
+                     MERGE (d)-[:LOCATED_AT]->(s)",
+                )
+                .context("prepare LOCATED_AT edge")?;
+            conn.execute(
+                &mut link,
+                vec![
+                    ("addr", Value::String(device_address.to_string())),
+                    ("site_id", Value::String(site_id.to_string())),
+                ],
+            )
+            .context("execute LOCATED_AT edge")?;
+        }
+        Ok(())
+    })();
+    match outcome {
+        Ok(()) => conn
+            .query("COMMIT")
+            .context("commit device site update")
+            .map(|_| ()),
+        Err(error) => {
+            let _ = conn.query("ROLLBACK");
+            Err(error)
+        }
+    }
 }
 
 fn site_from_row(row: Vec<Value>) -> SiteRecord {
@@ -10076,10 +10269,12 @@ mod tests {
                  RETURN d.hostname, s.id, s.name, s.kind",
             )
             .expect("prepare site query");
+        // Device.address is the canonical port-stripped key —
+        // "dut:57400" upserts as "dut" (endpoint kept separately).
         let rows = conn
             .execute(
                 &mut site_query,
-                vec![("addr", Value::String("dut:57400".to_string()))],
+                vec![("addr", Value::String("dut".to_string()))],
             )
             .expect("query site edge")
             .collect::<Vec<_>>();
@@ -10160,6 +10355,543 @@ mod tests {
             metadata_json: "{}".to_string(),
             environment_id: String::new(),
         }
+    }
+
+    // ── BN-015-U2: device saves must never mutate Site records ─────────────
+
+    fn sync_target(address: &str, site: Option<&str>) -> TargetConfig {
+        TargetConfig {
+            extra_ips: Vec::new(),
+            optional: false,
+            paths: Vec::new(),
+            address: address.to_string(),
+            enabled: true,
+            tls_domain: None,
+            ca_cert: None,
+            vendor: Some("nokia_srl".to_string()),
+            credential_alias: None,
+            username_env: None,
+            password_env: None,
+            username: None,
+            password: None,
+            hostname: Some(format!("host-{address}")),
+            role: Some("leaf".to_string()),
+            site: site.map(str::to_string),
+            selected_paths: Vec::new(),
+            collector_id: None,
+            created_at_ns: 0,
+            updated_at_ns: 0,
+            created_by: String::new(),
+            updated_by: String::new(),
+            last_operator_action: String::new(),
+        }
+    }
+
+    /// (id, name, parent_id, kind, lat, lon, metadata_json) for every Site.
+    fn site_rows(store: &GraphStore) -> Vec<Vec<String>> {
+        let conn = Connection::new(&store.db).expect("graph connection");
+        conn.query(
+            "MATCH (s:Site) \
+             RETURN s.id, s.name, s.parent_id, s.kind, \
+                    s.lat, s.lon, s.metadata_json \
+             ORDER BY s.id",
+        )
+        .expect("site query")
+        .into_iter()
+        .map(|row| {
+            row.iter()
+                .map(|v| match v {
+                    Value::String(s) => s.clone(),
+                    Value::Double(d) => d.to_string(),
+                    Value::Int64(n) => n.to_string(),
+                    other => format!("{other:?}"),
+                })
+                .collect()
+        })
+        .collect()
+    }
+
+    fn parent_edges(store: &GraphStore) -> Vec<(String, String)> {
+        let conn = Connection::new(&store.db).expect("graph connection");
+        conn.query("MATCH (p:Site)-[:PARENT_OF]->(s:Site) RETURN p.id, s.id")
+            .expect("parent edge query")
+            .into_iter()
+            .map(|row| (read_str(&row[0]), read_str(&row[1])))
+            .collect()
+    }
+
+    fn located_at(store: &GraphStore, device_address: &str) -> Vec<String> {
+        let conn = Connection::new(&store.db).expect("graph connection");
+        let mut stmt = conn
+            .prepare("MATCH (d:Device {address: $addr})-[:LOCATED_AT]->(s:Site) RETURN s.id")
+            .expect("prepare LOCATED_AT query");
+        conn.execute(
+            &mut stmt,
+            vec![("addr", Value::String(device_address.to_string()))],
+        )
+        .expect("LOCATED_AT query")
+        .into_iter()
+        .map(|row| read_str(&row[0]))
+        .collect()
+    }
+
+    /// Build Region → Datacenter → Building → Rack with distinct kinds,
+    /// coordinates and metadata on every level.
+    async fn seed_hierarchy(store: &GraphStore) {
+        let mut region = test_site("region-emea", "");
+        region.name = "EMEA".to_string();
+        region.kind = "region".to_string();
+        region.lat = 48.1;
+        region.lon = 11.5;
+        region.metadata_json = r#"{"owner":"infra"}"#.to_string();
+        store.upsert_site(region).await.expect("region");
+
+        let mut dc = test_site("dc-fra", "region-emea");
+        dc.name = "Frankfurt DC".to_string();
+        dc.kind = "datacenter".to_string();
+        dc.lat = 50.1;
+        dc.lon = 8.6;
+        dc.metadata_json = r#"{"power":"dual"}"#.to_string();
+        store.upsert_site(dc).await.expect("dc");
+
+        // Building carries a display name that does NOT slug to its id —
+        // device site claims resolve it by unique name match.
+        let mut bldg = test_site("bldg-tower-a", "dc-fra");
+        bldg.name = "Tower A".to_string();
+        bldg.kind = "building".to_string();
+        bldg.metadata_json = r#"{"floor_count":12}"#.to_string();
+        store.upsert_site(bldg).await.expect("building");
+
+        let mut rack = test_site("rack-a01", "bldg-tower-a");
+        rack.name = "Rack A01".to_string();
+        rack.kind = "rack".to_string();
+        rack.metadata_json = r#"{"u_height":42}"#.to_string();
+        store.upsert_site(rack).await.expect("rack");
+    }
+
+    #[tokio::test]
+    async fn site_sync_preserves_existing_hierarchy() {
+        let path = temp_graph_path("site-sync-preserve");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open");
+        seed_hierarchy(&store).await;
+        let before_sites = site_rows(&store);
+        let before_parents = parent_edges(&store);
+
+        // Save a device whose free-text site claim resolves (by unique
+        // name) to the Building — the whole Region→DC→Building→Rack
+        // chain must survive untouched.
+        store
+            .sync_sites_from_targets(vec![sync_target("10.9.9.1", Some("Tower A"))])
+            .await
+            .expect("sync sites");
+
+        assert_eq!(
+            site_rows(&store),
+            before_sites,
+            "device save must not modify any Site record"
+        );
+        assert_eq!(
+            parent_edges(&store),
+            before_parents,
+            "device save must not modify PARENT_OF edges"
+        );
+        assert_eq!(located_at(&store, "10.9.9.1"), vec!["bldg-tower-a"]);
+
+        // Updating unrelated device properties (second save, new
+        // hostname/role via a fresh target) still preserves the site.
+        let mut t2 = sync_target("10.9.9.1", Some("Tower A"));
+        t2.hostname = Some("renamed".to_string());
+        t2.role = Some("spine".to_string());
+        store
+            .sync_sites_from_targets(vec![t2])
+            .await
+            .expect("resync sites");
+        assert_eq!(site_rows(&store), before_sites);
+        assert_eq!(parent_edges(&store), before_parents);
+        assert_eq!(located_at(&store, "10.9.9.1"), vec!["bldg-tower-a"]);
+
+        // The site admin API retains full authority: an explicit
+        // upsert still updates the record (admin path unchanged).
+        let mut edited = test_site("bldg-tower-a", "dc-fra");
+        edited.name = "Tower A".to_string();
+        edited.kind = "building".to_string();
+        edited.metadata_json = r#"{"floor_count":18}"#.to_string();
+        store.upsert_site(edited).await.expect("admin site edit");
+        let after_admin = site_rows(&store);
+        assert!(
+            after_admin
+                .iter()
+                .any(|r| r[0] == "bldg-tower-a" && r[6].contains("18")),
+            "admin upsert must still update site metadata: {after_admin:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn site_sync_move_changes_only_device_association() {
+        let path = temp_graph_path("site-sync-move");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open");
+        seed_hierarchy(&store).await;
+        let mut other = test_site("dc-lon", "region-emea");
+        other.name = "London DC".to_string();
+        other.kind = "datacenter".to_string();
+        store.upsert_site(other).await.expect("second dc");
+
+        store
+            .sync_sites_from_targets(vec![
+                sync_target("10.9.9.1", Some("Tower A")),
+                sync_target("10.9.9.2", Some("London DC")),
+            ])
+            .await
+            .expect("initial sync");
+        assert_eq!(located_at(&store, "10.9.9.1"), vec!["bldg-tower-a"]);
+        assert_eq!(located_at(&store, "10.9.9.2"), vec!["dc-lon"]);
+        let sites_before = site_rows(&store);
+        let parents_before = parent_edges(&store);
+
+        // Move device 1 to the other site: only ITS association changes.
+        store
+            .sync_sites_from_targets(vec![sync_target("10.9.9.1", Some("London DC"))])
+            .await
+            .expect("move sync");
+        assert_eq!(located_at(&store, "10.9.9.1"), vec!["dc-lon"]);
+        assert_eq!(
+            located_at(&store, "10.9.9.2"),
+            vec!["dc-lon"],
+            "unrelated device association must be untouched"
+        );
+        assert_eq!(site_rows(&store), sites_before);
+        assert_eq!(parent_edges(&store), parents_before);
+    }
+
+    #[tokio::test]
+    async fn site_sync_ambiguous_display_name_creates_no_duplicate() {
+        let path = temp_graph_path("site-sync-ambiguous");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open");
+
+        // Two branches each contain a site displayed as "DC-1" under
+        // explicit distinct ids — the name alone cannot identify one.
+        store
+            .upsert_site(test_site("region-emea", ""))
+            .await
+            .expect("region emea");
+        store
+            .upsert_site(test_site("region-apac", ""))
+            .await
+            .expect("region apac");
+        let mut a = test_site("emea-dc-1", "region-emea");
+        a.name = "DC-1".to_string();
+        store.upsert_site(a).await.expect("emea dc");
+        let mut b = test_site("apac-dc-1", "region-apac");
+        b.name = "DC-1".to_string();
+        store.upsert_site(b).await.expect("apac dc");
+
+        let site_count_before = site_rows(&store).len();
+        store
+            .sync_sites_from_targets(vec![sync_target("10.9.9.1", Some("DC-1"))])
+            .await
+            .expect("sync sites");
+
+        assert_eq!(
+            site_rows(&store).len(),
+            site_count_before,
+            "ambiguous site name must not create a name-derived duplicate"
+        );
+        assert!(
+            located_at(&store, "10.9.9.1").is_empty(),
+            "ambiguous site name must not guess an association"
+        );
+    }
+
+    #[tokio::test]
+    async fn site_sync_preserves_slug_id_site_record() {
+        let path = temp_graph_path("site-sync-slug-id");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open");
+        seed_hierarchy(&store).await;
+
+        // The literal reported defect: an existing Site whose id IS
+        // the name-derived slug, carrying real hierarchy/metadata.
+        // Pre-fix, the sync's blank record MERGEd onto this id and
+        // ON MATCH overwrote parent/kind/coords/metadata and deleted
+        // PARENT_OF edges.
+        let mut slug_site = test_site("tower-a", "dc-fra");
+        slug_site.name = "Tower A".to_string();
+        slug_site.kind = "building".to_string();
+        slug_site.metadata_json = r#"{"floor_count":12}"#.to_string();
+        store.upsert_site(slug_site).await.expect("slug site");
+        let before = site_rows(&store);
+        let parents_before = parent_edges(&store);
+
+        store
+            .sync_sites_from_targets(vec![sync_target("10.9.9.1", Some("Tower A"))])
+            .await
+            .expect("sync sites");
+
+        assert_eq!(
+            site_rows(&store),
+            before,
+            "slug-id site record must not be overwritten by device save"
+        );
+        assert_eq!(parent_edges(&store), parents_before);
+        // The claim "Tower A" is now genuinely ambiguous: seed_hierarchy's
+        // bldg-tower-a AND this slug-id tower-a both carry that display
+        // name. A free-text claim must not arbitrarily pick the slug
+        // owner — no LOCATED_AT edge is written (explicit unknown).
+        assert!(
+            located_at(&store, "10.9.9.1").is_empty(),
+            "ambiguous display name must not resolve to the slug-id site"
+        );
+    }
+
+    #[tokio::test]
+    async fn site_sync_idempotent_and_survives_restart() {
+        let path = temp_graph_path("site-sync-restart");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open");
+        seed_hierarchy(&store).await;
+
+        for _ in 0..2 {
+            store
+                .sync_sites_from_targets(vec![sync_target("10.9.9.1", Some("Tower A"))])
+                .await
+                .expect("sync sites");
+        }
+        let sites_before = site_rows(&store);
+        let parents_before = parent_edges(&store);
+        drop(store);
+
+        // Restart: hierarchy, metadata and the device association all
+        // persist; another save still changes nothing.
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("reopen");
+        assert_eq!(site_rows(&store), sites_before);
+        assert_eq!(parent_edges(&store), parents_before);
+        assert_eq!(located_at(&store, "10.9.9.1"), vec!["bldg-tower-a"]);
+        store
+            .sync_sites_from_targets(vec![sync_target("10.9.9.1", Some("Tower A"))])
+            .await
+            .expect("post-restart sync");
+        assert_eq!(site_rows(&store), sites_before);
+        assert_eq!(parent_edges(&store), parents_before);
+    }
+
+    #[tokio::test]
+    async fn site_sync_preserves_imported_site_record() {
+        let path = temp_graph_path("site-sync-imported");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open");
+
+        // Simulate an imported site record (NetBox backfill / site API
+        // shape): name-derived id carrying importer metadata.
+        let mut imported = test_site("dc-imported", "");
+        imported.name = "Imported DC".to_string();
+        imported.kind = "datacenter".to_string();
+        imported.metadata_json =
+            r#"{"source":"netbox","netbox_id":42,"custom_fields":{"env":"prod"}}"#.to_string();
+        store.upsert_site(imported).await.expect("imported site");
+        let before = site_rows(&store);
+
+        store
+            .sync_sites_from_targets(vec![sync_target("10.9.9.1", Some("Imported DC"))])
+            .await
+            .expect("sync sites");
+
+        assert_eq!(
+            site_rows(&store),
+            before,
+            "imported site metadata must not be overwritten by device save"
+        );
+        // The claim resolves by unique name to the imported record's
+        // explicit id — no slug duplicate is created.
+        assert_eq!(located_at(&store, "10.9.9.1"), vec!["dc-imported"]);
+        assert_eq!(site_rows(&store).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn site_sync_slug_collision_with_unrelated_site() {
+        let path = temp_graph_path("site-sync-slug-collision");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open");
+
+        // Two DIFFERENT display names that slug to the same id:
+        // "Foo-Bar" and "Foo Bar" both derive "foo-bar".
+        let mut existing = test_site("foo-bar", "");
+        existing.name = "Foo-Bar".to_string();
+        existing.kind = "datacenter".to_string();
+        store.upsert_site(existing).await.expect("existing site");
+        let before = site_rows(&store);
+
+        // The claim "Foo Bar" has no display-name match, and its derived
+        // slug "foo-bar" is already owned by the unrelated "Foo-Bar"
+        // site. Resolution must fail closed: no edge to the unrelated
+        // site and no duplicate Site under a taken id.
+        store
+            .sync_sites_from_targets(vec![sync_target("10.9.9.1", Some("Foo Bar"))])
+            .await
+            .expect("sync sites");
+
+        assert_eq!(
+            site_rows(&store),
+            before,
+            "slug collision must not create a Site"
+        );
+        assert!(
+            located_at(&store, "10.9.9.1").is_empty(),
+            "slug collision must not link the unrelated slug owner"
+        );
+    }
+
+    #[tokio::test]
+    async fn site_sync_ambiguous_name_with_slug_owner_stays_unresolved() {
+        let path = temp_graph_path("site-sync-ambig-slug");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open");
+
+        // Two Sites share the display name "DC-1"; one owns the derived
+        // slug id. The free-text claim cannot pick a branch.
+        let mut slug_owner = test_site("dc-1", "");
+        slug_owner.name = "DC-1".to_string();
+        store.upsert_site(slug_owner).await.expect("slug owner");
+        let mut other = test_site("emea-dc-1", "");
+        other.name = "DC-1".to_string();
+        store.upsert_site(other).await.expect("other dc");
+        let before = site_rows(&store);
+
+        store
+            .sync_sites_from_targets(vec![sync_target("10.9.9.1", Some("DC-1"))])
+            .await
+            .expect("sync sites");
+
+        assert_eq!(site_rows(&store), before);
+        assert!(
+            located_at(&store, "10.9.9.1").is_empty(),
+            "ambiguous display name must not resolve to the slug owner"
+        );
+    }
+
+    /// Raw `d.site` claim property for a Device (the mirrored claim,
+    /// distinct from the resolved LOCATED_AT edge).
+    fn device_site_prop(store: &GraphStore, device_address: &str) -> String {
+        let conn = Connection::new(&store.db).expect("graph connection");
+        let mut stmt = conn
+            .prepare("MATCH (d:Device {address: $addr}) RETURN d.site")
+            .expect("prepare d.site query");
+        conn.execute(
+            &mut stmt,
+            vec![("addr", Value::String(device_address.to_string()))],
+        )
+        .expect("d.site query")
+        .into_iter()
+        .next()
+        .map(|row| read_str(&row[0]))
+        .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn site_sync_stale_edge_lifecycle() {
+        let path = temp_graph_path("site-sync-stale-edge");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open");
+
+        let mut site_a = test_site("site-a", "");
+        site_a.name = "Site A".to_string();
+        store.upsert_site(site_a).await.expect("site a");
+        for id in ["shared-1", "shared-2"] {
+            let mut s = test_site(id, "");
+            s.name = "Shared".to_string();
+            store.upsert_site(s).await.expect("shared site");
+        }
+        let sites_before = site_rows(&store);
+        let parents_before = parent_edges(&store);
+
+        // 1. Valid claim resolves.
+        store
+            .sync_sites_from_targets(vec![sync_target("10.9.9.1", Some("Site A"))])
+            .await
+            .expect("initial sync");
+        assert_eq!(located_at(&store, "10.9.9.1"), vec!["site-a"]);
+
+        // 2. Move to an ambiguous site: the stale Site-A edge must not
+        //    remain presenting the old association as current. The raw
+        //    claim string stays mirrored on the device.
+        store
+            .sync_sites_from_targets(vec![sync_target("10.9.9.1", Some("Shared"))])
+            .await
+            .expect("ambiguous move");
+        assert!(
+            located_at(&store, "10.9.9.1").is_empty(),
+            "ambiguous move must drop the stale LOCATED_AT edge"
+        );
+        assert_eq!(device_site_prop(&store, "10.9.9.1"), "Shared");
+
+        // 3. Omitted site field (partial update): existing association
+        //    state is preserved — here, still no edge.
+        store
+            .sync_sites_from_targets(vec![sync_target("10.9.9.1", None)])
+            .await
+            .expect("omitted sync");
+        assert!(located_at(&store, "10.9.9.1").is_empty());
+        assert_eq!(device_site_prop(&store, "10.9.9.1"), "Shared");
+
+        // 4. Corrected assignment resolves again.
+        store
+            .sync_sites_from_targets(vec![sync_target("10.9.9.1", Some("Site A"))])
+            .await
+            .expect("corrected sync");
+        assert_eq!(located_at(&store, "10.9.9.1"), vec!["site-a"]);
+
+        // 5. Explicit clear: edge AND mirrored claim are removed.
+        store
+            .sync_sites_from_targets(vec![sync_target("10.9.9.1", Some(""))])
+            .await
+            .expect("clear sync");
+        assert!(located_at(&store, "10.9.9.1").is_empty());
+        assert_eq!(device_site_prop(&store, "10.9.9.1"), "");
+
+        // 6. Idempotent: repeating the clear changes nothing.
+        store
+            .sync_sites_from_targets(vec![sync_target("10.9.9.1", Some(""))])
+            .await
+            .expect("repeat clear");
+        assert!(located_at(&store, "10.9.9.1").is_empty());
+        assert_eq!(device_site_prop(&store, "10.9.9.1"), "");
+
+        // Site records and hierarchy untouched throughout.
+        assert_eq!(site_rows(&store), sites_before);
+        assert_eq!(parent_edges(&store), parents_before);
+
+        // 7. Restart preserves the cleared state.
+        drop(store);
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("reopen");
+        assert!(located_at(&store, "10.9.9.1").is_empty());
+        assert_eq!(device_site_prop(&store, "10.9.9.1"), "");
+        assert_eq!(site_rows(&store), sites_before);
+        assert_eq!(parent_edges(&store), parents_before);
+    }
+
+    #[tokio::test]
+    async fn site_sync_omitted_site_preserves_existing_association() {
+        let path = temp_graph_path("site-sync-omit-preserve");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open");
+
+        let mut site_a = test_site("site-a", "");
+        site_a.name = "Site A".to_string();
+        store.upsert_site(site_a).await.expect("site a");
+
+        store
+            .sync_sites_from_targets(vec![sync_target("10.9.9.1", Some("Site A"))])
+            .await
+            .expect("initial sync");
+        assert_eq!(located_at(&store, "10.9.9.1"), vec!["site-a"]);
+
+        // Partial update with NO site field: hostname change only. The
+        // LOCATED_AT edge — regardless of which writer established it —
+        // must survive.
+        let mut partial = sync_target("10.9.9.1", None);
+        partial.hostname = Some("renamed".to_string());
+        store
+            .sync_sites_from_targets(vec![partial])
+            .await
+            .expect("partial sync");
+        assert_eq!(
+            located_at(&store, "10.9.9.1"),
+            vec!["site-a"],
+            "omitted site claim must preserve the existing association"
+        );
+        assert_eq!(device_site_prop(&store, "10.9.9.1"), "Site A");
     }
 
     // ── Investigation tests (T3-1) ────────────────────────────────────────────

@@ -148,3 +148,10 @@ date,command,scope,wall_seconds,result,notes
 2026-11-13,cargo test -j 1 --test bn021g_collector_trust_foundation (x2),bn021g final suite,~150,pass-final,31/31 in 24.8s; first run exposed 3 stale assertions (claimed_* evidence contract, partial unique index plan); second run clean
 2026-11-13,cargo test -p bonsai --lib,bonsai lib unit tests,~40,pass-with-baseline,299 pass / 5 fail = documented BN-019-B6 baseline set (archive hourly writer, site_sync, subscription_status, api_registry_persists, service_pattern_matching); no new failures
 2026-11-13,cargo test --test bn021b..bn022 batch (10 targets),bn021b-f+bn022+syslog/snmp/otlp/sflow regressions,~1500,pass,24m22s link+run dominated by 10 ~1GB test binary links; 110/110 pass
+2026-11-13,cargo test -p bonsai --lib graph::tests::site (x2),bonsai lib site tests,~260,pass,2m04s+2m34s compile + ~6s runs; 9/9 site tests incl. 6 new BN-015-U2 regressions; before-fix repro in scratch worktree cold target 38m26s build + 5.83s run (5/6 new tests FAIL as expected)
+2026-11-13,cargo test -p bonsai --lib,bonsai lib unit tests,~40,pass-with-baseline,305 pass / 4 fail; BN-019-B6 baseline now 4 (site_sync baseline failure fixed by BN-015-U2)
+2026-11-13,cargo check -p bonsai --lib --offline,bonsai lib check,25,pass,BN-015-U2 review corrections compile clean
+2026-11-13,cargo check -p bonsai --tests --offline,bonsai test-target check,31,pass,after fixing QueryResult.iter in new API test
+2026-11-13,cargo test -p bonsai --lib --offline site,bonsai lib site tests,172,pass,2m52s link + 12.64s run; 18/18 incl. managed_device_api_site_claim_lifecycle
+2026-11-13,cargo test -p bonsai --lib --offline enrichment::netbox,bonsai lib netbox tests,3,pass,8/8 backfill regression
+2026-11-13,cargo test -p bonsai --lib --offline registry,bonsai lib registry tests,1,baseline-fail,18 pass / 1 fail = documented BN-019-B6 api_registry_persists baseline
