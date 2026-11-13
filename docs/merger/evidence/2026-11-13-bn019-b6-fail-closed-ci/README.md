@@ -104,6 +104,18 @@ Last reported baseline (5 failures at `9b80cd4` era; 3 remained after PR
 Result: `cargo test -p bonsai --lib --offline` → **363 passed, 0 failed**
 (64.77 s test execution after compile). See `docs/build-times/runs.csv`.
 
+## 3b. First gate run caught real breakage
+
+The first `gates.sh l2` execution failed at compile time: PR #15 added five
+inventory fields to `TargetConfig`, and three integration test files
+(`bn021e_snmp_source_identity`, `bn021e_syslog_source_identity`,
+`bn021g_collector_trust_foundation`) still used exhaustive struct literals —
+E0063 on `main`. These targets had never been compiled by the narrower
+test commands used during PR #15 acceptance. Fixed by adding the new fields
+to the literals; `cargo check -p bonsai --tests` now passes for **all**
+test targets. This is the fail-closed gate working as designed: a target
+that cannot compile cannot report green.
+
 ## 4. CI workflow
 
 `.github/workflows/ci.yml` — four jobs on `pull_request` + `push: main`:
